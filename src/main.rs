@@ -6,6 +6,7 @@ use agent_api::cli::{Cli, Command};
 use agent_api::config::{Config, LogFormat};
 use agent_api::logging;
 use agent_api::repository::Neo4jClient;
+use agent_api::services::OpenApiParser;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -100,12 +101,29 @@ async fn run_serve(config: &Config) -> Result<()> {
 }
 
 async fn run_ingest(config: &Config, spec: &str) -> Result<()> {
-    let _client = connect_neo4j(config).await?;
+    let client = connect_neo4j(config).await?;
 
     info!(spec = %spec, "Ingesting OpenAPI specification...");
 
-    // TODO: Implement OpenAPI parsing and ingestion
-    anyhow::bail!("Ingest command not yet implemented");
+    // Initialize schema if needed
+    client.init_schema().await?;
+
+    // Parse and ingest the OpenAPI spec
+    let mut parser = OpenApiParser::new(client);
+    let result = parser.ingest(spec).await?;
+
+    println!("Ingestion Complete");
+    println!("==================");
+    println!(
+        "API:            {} v{}",
+        result.api_title, result.api_version
+    );
+    println!("Resources:      {}", result.resources_created);
+    println!("Endpoints:      {}", result.endpoints_created);
+    println!("Schemas:        {}", result.schemas_created);
+    println!("Parameters:     {}", result.parameters_created);
+
+    Ok(())
 }
 
 async fn run_query(config: &Config, query: &str) -> Result<()> {
