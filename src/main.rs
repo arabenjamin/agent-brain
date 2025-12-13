@@ -179,8 +179,9 @@ async fn run_execute(
     let header_map = parse_headers(&headers)?;
 
     // Parse body as JSON if provided
-    let json_body = body
-        .map(|body_str| serde_json::from_str(&body_str).unwrap_or_else(|_| serde_json::json!(body_str)));
+    let json_body = body.map(|body_str| {
+        serde_json::from_str(&body_str).unwrap_or_else(|_| serde_json::json!(body_str))
+    });
 
     // Build and execute request
     let executor = HttpExecutor::new()?;
