@@ -5,9 +5,10 @@ use tracing::{error, info};
 use agent_api::cli::{Cli, Command};
 use agent_api::config::{Config, LogFormat};
 use agent_api::logging;
+use agent_api::mcp::McpServer;
 use agent_api::models::HttpMethod;
 use agent_api::repository::Neo4jClient;
-use agent_api::services::{HttpExecutor, OpenApiParser, RequestBuilder, parse_headers};
+use agent_api::services::{HttpExecutor, LlmConfig, OpenApiParser, RequestBuilder, parse_headers};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -86,17 +87,19 @@ async fn run_init_db(config: &Config) -> Result<()> {
 }
 
 async fn run_serve(config: &Config) -> Result<()> {
-    let _client = connect_neo4j(config).await?;
+    let client = connect_neo4j(config).await?;
 
     info!("Starting MCP server on stdio...");
 
-    // TODO: Initialize MCP server with stdio transport
-    // For now, just wait indefinitely (placeholder for MCP server loop)
-    info!("MCP server is not yet implemented. Press Ctrl+C to exit.");
+    // Configure LLM for healing
+    let llm_config = LlmConfig::new(&config.ollama_url, &config.ollama_model);
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
-    info!("Shutting down...");
+    // Create and run MCP server
+    let server = McpServer::new()
+        .with_neo4j(client)
+        .with_llm_config(llm_config);
+
+    server.run().await?;
 
     Ok(())
 }
