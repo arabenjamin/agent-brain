@@ -5,8 +5,9 @@ use tracing::{error, info};
 use agent_api::cli::{Cli, Command};
 use agent_api::config::{Config, LogFormat};
 use agent_api::logging;
+use agent_api::models::HttpMethod;
 use agent_api::repository::Neo4jClient;
-use agent_api::services::OpenApiParser;
+use agent_api::services::{HttpExecutor, OpenApiParser, RequestBuilder, parse_headers};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -169,8 +170,61 @@ async fn run_execute(
         "Executing HTTP request..."
     );
 
-    // TODO: Implement HTTP execution with healing loop
-    anyhow::bail!("Execute command not yet implemented");
+    // Parse method
+    let http_method: HttpMethod =
+        serde_json::from_str(&format!("\"{}\"", method.to_uppercase()))
+            .map_err(|_| anyhow::anyhow!("Invalid HTTP method: {}", method))?;
+
+    // Parse headers
+    let header_map = parse_headers(&headers)?;
+
+    // Parse body as JSON if provided
+    let json_body = body
+        .map(|body_str| serde_json::from_str(&body_str).unwrap_or_else(|_| serde_json::json!(body_str)));
+
+    // Build and execute request
+    let executor = HttpExecutor::new()?;
+
+    let mut builder = RequestBuilder::new()
+        .base_url(url)
+        .method(http_method)
+        .headers(header_map);
+
+    if let Some(body) = json_body {
+        builder = builder.body(body);
+    }
+
+    let response = executor.execute(&builder).await?;
+
+    // Display results
+    println!("HTTP Response");
+    println!("=============");
+    println!(
+        "Status:      {} ({:?})",
+        response.status_code, response.class
+    );
+    println!("Duration:    {} ms", response.duration_ms);
+    println!("URL:         {}", response.url);
+    println!("Method:      {}", response.method);
+    println!();
+
+    if !response.headers.is_empty() {
+        println!("Headers:");
+        for (key, value) in &response.headers {
+            println!("  {}: {}", key, value);
+        }
+        println!();
+    }
+
+    println!("Body:");
+    // Try to pretty-print JSON
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response.body) {
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    } else {
+        println!("{}", response.body);
+    }
+
+    Ok(())
 }
 
 async fn run_stats(config: &Config) -> Result<()> {
