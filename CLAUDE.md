@@ -42,17 +42,20 @@ cargo run                      # Same as above
 # Initialize database schema
 cargo run -- init-db
 
+# Ingest OpenAPI spec
+cargo run -- ingest path/to/spec.json
+cargo run -- ingest https://example.com/openapi.json
+
 # Query endpoints
 cargo run -- query "users"
+cargo run -- query "/api/v1"
+
+# Execute HTTP request
+cargo run -- execute -m GET https://api.example.com/users
+cargo run -- execute -m POST https://api.example.com/users -b '{"name":"test"}' -H "Content-Type: application/json"
 
 # Show database statistics
 cargo run -- stats
-
-# Ingest OpenAPI spec (not yet implemented)
-cargo run -- ingest path/to/spec.json
-
-# Execute HTTP request (not yet implemented)
-cargo run -- execute -m GET http://api.example.com/users
 ```
 
 ## Environment Variables
@@ -91,8 +94,18 @@ src/
 ├── cli.rs              # Clap CLI definitions
 ├── config.rs           # Environment configuration
 ├── logging.rs          # Tracing setup
-├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent)
-└── repository/         # Neo4j database layer
+├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod)
+├── repository/         # Neo4j database layer
+├── services/           # Core business logic
+│   ├── openapi.rs      # OpenAPI spec parser and ingester
+│   ├── http.rs         # HTTP request executor with response classification
+│   ├── llm.rs          # Ollama LLM client for error analysis
+│   └── healing.rs      # Self-healing orchestrator
+└── mcp/                # MCP server implementation
+    ├── protocol.rs     # JSON-RPC 2.0 message types
+    ├── transport.rs    # Async stdio transport
+    ├── tools.rs        # Tool definitions and handlers
+    └── server.rs       # MCP server state machine
 
 tests/
 ├── common/mod.rs       # Test utilities
@@ -119,11 +132,22 @@ tests/
 - `(:Schema)-[:LINKS_TO]->(:Schema)`
 - `(:Endpoint)-[:HAS_HISTORY]->(:HealingEvent)`
 
-### MCP Tools (planned)
+### MCP Tools
 
-1. **`ingest_openapi`** - Parses OpenAPI specs (URL or file) and loads into Neo4j
-2. **`graph_query_endpoint`** - Natural language search over endpoints
-3. **`execute_http_request`** - Live HTTP requests with self-healing retry logic
+The server exposes three tools via JSON-RPC 2.0:
+
+1. **`ingest_openapi`** - Parses OpenAPI specs (URL or file path) and loads into Neo4j
+   - Input: `{ "source": "https://example.com/openapi.json" }`
+   - Returns: Count of resources, endpoints, schemas, and parameters created
+
+2. **`graph_query_endpoint`** - Search endpoints by path pattern or keywords
+   - Input: `{ "query": "users" }` or `{ "query": "/api/v1" }`
+   - Returns: Matching endpoints with parameters and schemas
+
+3. **`execute_http_request`** - Execute HTTP requests with optional self-healing
+   - Input: `{ "method": "GET", "url": "https://api.example.com/users", "headers": {}, "body": {} }`
+   - Returns: Status code, response body, duration, headers
+   - Supports automatic error analysis and retry with LLM assistance
 
 ### Self-Healing Flow
 

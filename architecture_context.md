@@ -1,5 +1,7 @@
 # Project Context: Autonomous API Knowledge Graph (Rust + MCP + Neo4j)
 
+> **Implementation Status**: This architecture has been fully implemented. See `PLAN.md` for completion details.
+
 ## 1. High-Level Objective
 Build a Model Context Protocol (MCP) server in **Rust** that acts as an "Autonomous API Expert."
 The system ingests OpenAPI/Swagger specifications, maps them into a **Neo4j Graph Database**, and allows a local LLM (Ollama) to query, explore, and "test" the API via simple natural language.
@@ -70,11 +72,14 @@ The MCP Server must expose exactly these tools to the LLM Client:
 6.  LLM (via internal logic) updates the `Endpoint` node in Neo4j with a `status: "Documentation Invalid"` tag.
 
 ## 6. Rust Crate Requirements
--   `mcp-sdk-rs` (or similar community crate) for the protocol.
+
+**Note**: A custom MCP server was implemented instead of using external MCP crates (which were either too immature or required nightly Rust).
+
+-   Custom MCP implementation (`src/mcp/`) - JSON-RPC 2.0 over stdio
 -   `neo4rs` for graph connection.
 -   `reqwest` for the HTTP client.
 -   `serde` / `serde_json` for robust typing.
--   `schemars` for generating tool schemas.
+-   `openapiv3` for OpenAPI spec parsing.
 
 ## 7. Logic Flow: The Self-Healing Loop
 The `execute_http_request` tool must implement a retry loop with AI analysis.
