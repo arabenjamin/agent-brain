@@ -22,7 +22,7 @@ async fn test_tool_registry_has_six_tools() {
     let registry = ToolRegistry::new();
     let tools = registry.list();
 
-    assert_eq!(tools.len(), 6, "Expected 6 tools");
+    assert_eq!(tools.len(), 7, "Expected 7 tools");
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     assert!(tool_names.contains(&"ingest_openapi"));

@@ -7,8 +7,9 @@ use tracing::{debug, info};
 use crate::models::ParameterLocation;
 use crate::repository::Neo4jClient;
 use crate::services::{
-    ApiContext, ContextStore, EndpointSummary, EndpointWithParams, HealingConfig,
-    HealingOrchestrator, HttpExecutor, LlmClient, LlmConfig, OpenApiParser, ParameterSummary,
+    ApiContext, ContextStore, DiscoveryConfig, DiscoveryService, EndpointSummary,
+    EndpointWithParams, HealingConfig, HealingOrchestrator, HttpExecutor, LlmClient, LlmConfig,
+    OpenApiParser, ParameterSummary,
 };
 
 use super::protocol::{ToolCallResult, ToolDefinition};
@@ -29,6 +30,7 @@ impl ToolRegistry {
                 Self::get_api_context_def(),
                 Self::list_loaded_apis_def(),
                 Self::clear_api_context_def(),
+                Self::discover_openapi_def(),
             ],
         }
     }
@@ -172,6 +174,36 @@ impl ToolRegistry {
             }),
         }
     }
+
+    fn discover_openapi_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "discover_openapi".to_string(),
+            description: "Automatically discover OpenAPI specifications for an API. \
+                         Probes common paths (e.g., /openapi.json, /swagger.json), \
+                         parses HTML documentation pages for spec links, and uses \
+                         LLM to intelligently suggest additional locations based on \
+                         the API's structure and responses."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "base_url": {
+                        "type": "string",
+                        "description": "Base URL of the API to discover specs for (e.g., https://api.example.com)"
+                    },
+                    "use_llm": {
+                        "type": "boolean",
+                        "description": "Whether to use LLM for intelligent discovery suggestions (default: true)"
+                    },
+                    "auto_ingest": {
+                        "type": "boolean",
+                        "description": "Automatically ingest discovered specs into the knowledge graph (default: false)"
+                    }
+                },
+                "required": ["base_url"]
+            }),
+        }
+    }
 }
 
 impl Default for ToolRegistry {
@@ -214,6 +246,19 @@ pub struct GetApiContextInput {
 #[derive(Debug, Deserialize)]
 pub struct ClearApiContextInput {
     pub api_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiscoverOpenApiInput {
+    pub base_url: String,
+    #[serde(default = "default_true")]
+    pub use_llm: bool,
+    #[serde(default)]
+    pub auto_ingest: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // ============================================================================
@@ -269,6 +314,7 @@ impl ToolHandler {
             "get_api_context" => self.handle_get_api_context(arguments).await,
             "list_loaded_apis" => self.handle_list_loaded_apis().await,
             "clear_api_context" => self.handle_clear_api_context(arguments).await,
+            "discover_openapi" => self.handle_discover_openapi(arguments).await,
             _ => ToolCallResult::error(format!("Unknown tool: {}", name)),
         }
     }
@@ -563,6 +609,114 @@ impl ToolHandler {
         }
     }
 
+    async fn handle_discover_openapi(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: DiscoverOpenApiInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        info!(base_url = %input.base_url, use_llm = input.use_llm, "Discovering OpenAPI specifications");
+
+        // Create discovery service
+        let mut service = match DiscoveryService::new() {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(format!("Failed to create discovery service: {}", e)),
+        };
+
+        // Configure LLM if requested
+        if input.use_llm {
+            if let Some(llm_config) = &self.llm_config {
+                if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
+                    service = service.with_llm(llm);
+                }
+            }
+        }
+
+        // Configure discovery
+        let config = DiscoveryConfig {
+            use_llm: input.use_llm && self.llm_config.is_some(),
+            ..Default::default()
+        };
+        service = service.with_config(config);
+
+        // Run discovery
+        let result = match service.discover(&input.base_url).await {
+            Ok(r) => r,
+            Err(e) => return ToolCallResult::error(format!("Discovery failed: {}", e)),
+        };
+
+        // Auto-ingest if requested and we have a database connection
+        let mut ingested_apis = Vec::new();
+        if input.auto_ingest && self.neo4j.is_some() {
+            let neo4j = self.neo4j.as_ref().unwrap();
+
+            // Initialize schema if needed
+            if let Err(e) = neo4j.init_schema().await {
+                return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
+            }
+
+            for candidate in &result.candidates {
+                let mut parser = OpenApiParser::new(neo4j.clone());
+                match parser.ingest(&candidate.url).await {
+                    Ok(ingest_result) => {
+                        // Build and store context
+                        let context = self.build_api_context(
+                            &ingest_result.api_title,
+                            &ingest_result.api_version,
+                            Some(&candidate.url),
+                            ingest_result.description.as_deref(),
+                            &ingest_result.endpoints,
+                        );
+                        self.context_store.set(context).await;
+
+                        ingested_apis.push(json!({
+                            "url": candidate.url,
+                            "api_title": ingest_result.api_title,
+                            "api_version": ingest_result.api_version,
+                            "endpoints_created": ingest_result.endpoints_created
+                        }));
+                    }
+                    Err(e) => {
+                        debug!(url = %candidate.url, error = %e, "Failed to ingest discovered spec");
+                    }
+                }
+            }
+        }
+
+        // Build response
+        let candidates: Vec<Value> = result
+            .candidates
+            .iter()
+            .map(|c| {
+                json!({
+                    "url": c.url,
+                    "method": format!("{:?}", c.method),
+                    "confidence": c.confidence,
+                    "format": c.format,
+                    "api_title": c.api_title,
+                    "api_version": c.api_version
+                })
+            })
+            .collect();
+
+        let mut response = json!({
+            "base_url": result.base_url,
+            "candidates_found": candidates.len(),
+            "candidates": candidates,
+            "urls_probed": result.probed_urls.len()
+        });
+
+        if !result.errors.is_empty() {
+            response["errors"] = json!(result.errors);
+        }
+
+        if !ingested_apis.is_empty() {
+            response["auto_ingested"] = json!(ingested_apis);
+        }
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
@@ -732,7 +886,7 @@ mod tests {
     #[test]
     fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 6);
+        assert_eq!(registry.list().len(), 7);
     }
 
     #[test]
@@ -744,6 +898,7 @@ mod tests {
         assert!(registry.get("get_api_context").is_some());
         assert!(registry.get("list_loaded_apis").is_some());
         assert!(registry.get("clear_api_context").is_some());
+        assert!(registry.get("discover_openapi").is_some());
         assert!(registry.get("unknown_tool").is_none());
     }
 

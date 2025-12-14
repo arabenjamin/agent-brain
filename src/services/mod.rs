@@ -1,4 +1,5 @@
 pub mod context;
+pub mod discovery;
 pub mod healing;
 pub mod http;
 pub mod llm;
@@ -6,6 +7,10 @@ pub mod openapi;
 
 pub use context::{
     ApiContext, ContextError, ContextStore, EndpointSummary, ParameterSummary, SchemaSummary,
+};
+pub use discovery::{
+    DiscoveryCandidate, DiscoveryConfig, DiscoveryError, DiscoveryMethod, DiscoveryResult,
+    DiscoveryService,
 };
 pub use healing::{
     HealingConfig, HealingError, HealingOrchestrator, HealingResult, RequestContext,

@@ -101,7 +101,8 @@ src/
 │   ├── http.rs         # HTTP request executor with response classification
 │   ├── llm.rs          # Ollama LLM client for error analysis
 │   ├── healing.rs      # Self-healing orchestrator
-│   └── context.rs      # In-memory API context store with DB fallback
+│   ├── context.rs      # In-memory API context store with DB fallback
+│   └── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
@@ -135,7 +136,7 @@ tests/
 
 ### MCP Tools
 
-The server exposes six tools via JSON-RPC 2.0:
+The server exposes seven tools via JSON-RPC 2.0:
 
 **Core Tools:**
 
@@ -168,6 +169,15 @@ The server exposes six tools via JSON-RPC 2.0:
 6. **`clear_api_context`** - Remove APIs from in-memory context
    - Input: `{ "api_name": "Petstore" }` (optional - clears all if omitted)
    - Data remains in Neo4j and can be reloaded
+
+**Discovery Tools:**
+
+7. **`discover_openapi`** - Auto-discover OpenAPI specifications for an API
+   - Input: `{ "base_url": "https://api.example.com", "use_llm": true, "auto_ingest": false }`
+   - Probes common paths (`/openapi.json`, `/swagger.json`, `/api-docs`, etc.)
+   - Parses HTML documentation pages for spec links
+   - Uses LLM to intelligently suggest additional locations
+   - Optional `auto_ingest` to automatically load discovered specs
 
 ### Self-Healing Flow
 

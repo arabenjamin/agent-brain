@@ -21,6 +21,12 @@ neo4rs = "0.8"
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
 
+# URL parsing
+url = "2"
+
+# HTML parsing for discovery
+scraper = "0.21"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
