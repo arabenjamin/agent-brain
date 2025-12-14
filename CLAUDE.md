@@ -56,6 +56,19 @@ cargo run -- execute -m POST https://api.example.com/users -b '{"name":"test"}' 
 
 # Show database statistics
 cargo run -- stats
+
+# Export healed graph to OpenAPI spec
+cargo run -- export                           # Output YAML to stdout
+cargo run -- export -o spec.yaml              # Output to file
+cargo run -- export -f json -o spec.json      # Output as JSON
+cargo run -- export --annotations=false       # Without x-healed-by-ai annotations
+cargo run -- export --include-broken          # Include broken endpoints
+
+# Generate diff report (original vs healed)
+cargo run -- diff                             # Markdown report
+cargo run -- diff -f changelog                # Git-style changelog
+cargo run -- diff -f json                     # JSON format
+cargo run -- diff --breaking-only             # Only breaking changes
 ```
 
 ## Environment Variables
@@ -103,7 +116,12 @@ src/
 │   ├── healing.rs      # Self-healing orchestrator
 │   ├── context.rs      # In-memory API context store with DB fallback
 │   ├── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
-│   └── docgen.rs       # Documentation-to-OpenAPI generator with LLM
+│   ├── docgen.rs       # Documentation-to-OpenAPI generator with LLM
+│   └── export/         # Graph-to-Spec export module
+│       ├── builder.rs  # OpenAPI spec builder
+│       ├── exporter.rs # Graph traversal and spec reconstruction
+│       ├── differ.rs   # Spec diff generator
+│       └── report.rs   # Markdown/JSON report generator
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
@@ -140,7 +158,7 @@ tests/
 
 ### MCP Tools
 
-The server exposes eight tools via JSON-RPC 2.0:
+The server exposes ten tools via JSON-RPC 2.0:
 
 **Core Tools:**
 
@@ -190,6 +208,22 @@ The server exposes eight tools via JSON-RPC 2.0:
    - Generates valid OpenAPI 3.0 specification
    - Output formats: `json` (default) or `yaml`
    - Optional `auto_ingest` to load generated spec into the knowledge graph
+
+**Export & Diff Tools:**
+
+9. **`export_openapi`** - Export healed knowledge graph back to OpenAPI 3.0 spec
+   - Input: `{ "format": "yaml", "include_annotations": true, "include_broken": false }`
+   - Traverses Neo4j graph and reconstructs valid OpenAPI spec
+   - Adds `x-healed-by-ai` annotations on AI-corrected fields
+   - Includes `x-original-value` for healed fields when annotations enabled
+   - Output formats: `yaml` (default) or `json`
+
+10. **`diff_api_spec`** - Compare original spec vs current healed graph state
+    - Input: `{ "api_name": "Petstore", "format": "markdown", "breaking_only": false }`
+    - Analyzes HealingEvents to generate change report
+    - Categorizes changes: Parameter, Endpoint, Schema, Response
+    - Identifies breaking vs non-breaking changes
+    - Output formats: `markdown` (default), `changelog`, `json`
 
 ### Self-Healing Flow
 
