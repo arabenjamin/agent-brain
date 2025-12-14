@@ -14,15 +14,19 @@
 - ✅ HTTP request executor service
 - ✅ LLM client service (Ollama integration)
 - ✅ Self-healing orchestrator service
+- ✅ In-memory API context store with DB fallback
+- ✅ OpenAPI spec auto-discovery with LLM assistance
+- ✅ Documentation-to-OpenAPI generator with LLM
 - ✅ Custom MCP server implementation (JSON-RPC 2.0 over stdio)
-- ✅ MCP tools (ingest_openapi, graph_query_endpoint, execute_http_request)
-- ✅ Unit tests (71 tests passing)
+- ✅ 8 MCP tools (ingest, query, execute, context management, discovery, docgen)
+- ✅ Unit tests (95 tests passing)
+- ✅ Integration tests (21+ tests)
 - ✅ Docker Compose setup (Neo4j + Ollama)
 - ✅ GitHub Actions CI/CD pipeline
 - ✅ Production Dockerfile with multi-stage build
 
 **Optional Enhancements:**
-- ⏳ Integration tests with testcontainers
+- ⏳ Testcontainers for isolated Neo4j in CI
 - ⏳ Vector/semantic search for endpoints
 
 ---
@@ -90,6 +94,11 @@
 - [x] `ingest_openapi` - Parse spec, load graph, return counts
 - [x] `graph_query_endpoint` - Search endpoints by path pattern
 - [x] `execute_http_request` - Run request with healing loop
+- [x] `get_api_context` - Retrieve API summaries from in-memory context
+- [x] `list_loaded_apis` - List all APIs in the context store
+- [x] `clear_api_context` - Remove APIs from in-memory context
+- [x] `discover_openapi` - Auto-discover OpenAPI specs with LLM assistance
+- [x] `build_openapi_from_docs` - Generate OpenAPI specs from documentation pages
 
 ### 3.3 Query Enhancement
 - [x] Fuzzy matching on path, summary, operation_id
@@ -98,11 +107,11 @@
 
 ---
 
-## Phase 4: Testing Strategy ✅ (Partial)
+## Phase 4: Testing Strategy ✅
 
 ### 4.1 Unit Tests ✅
 Location: Inline in each module with `#[cfg(test)]`
-**Status: 71 tests passing**
+**Status: 95 tests passing**
 
 | Module | Test Coverage |
 |--------|---------------|
@@ -112,25 +121,32 @@ Location: Inline in each module with `#[cfg(test)]`
 | `services/http` | ✅ Request building, response classification |
 | `services/llm` | ✅ Prompt generation, response parsing |
 | `services/healing` | ✅ State machine transitions |
+| `services/context` | ✅ Context store operations |
+| `services/discovery` | ✅ OpenAPI validation, link extraction |
+| `services/docgen` | ✅ Spec generation, YAML/JSON output |
 | `mcp/protocol` | ✅ JSON-RPC message parsing |
-| `mcp/tools` | ✅ Tool registry, input parsing |
+| `mcp/tools` | ✅ Tool registry, input parsing (8 tools) |
 | `mcp/server` | ✅ Server state transitions |
 
-### 4.2 Integration Tests
+### 4.2 Integration Tests ✅
 Location: `tests/` directory
 
 ```
 tests/
-├── common/mod.rs          # Test utilities, fixtures
-├── repository_test.rs     # Neo4j CRUD (requires running Neo4j)
-└── fixtures/petstore.json # Sample OpenAPI spec
+├── common/mod.rs             # Test utilities, fixtures
+├── repository_test.rs        # Neo4j CRUD (requires running Neo4j)
+├── context_tools_test.rs     # Context management tool tests
+├── discovery_test.rs         # Discovery service tests
+├── docgen_test.rs            # Doc-to-OpenAPI generation tests
+└── fixtures/petstore.json    # Sample OpenAPI spec
 ```
 
 **Test Infrastructure:**
 - [x] Fixture OpenAPI specs in `tests/fixtures/`
+- [x] Integration tests for context management (5 tests)
+- [x] Integration tests for discovery service (6 tests)
+- [x] Integration tests for docgen service (10 tests)
 - [ ] Add `testcontainers` crate for Neo4j (optional)
-- [ ] Add `wiremock` for HTTP mocking (optional)
-- [ ] Add `tokio-test` for async test utilities (optional)
 
 ### 4.3 Test Commands
 ```bash
@@ -362,19 +378,25 @@ agent-api/
 │   │   ├── openapi.rs          # OpenAPI parser (~500 lines)
 │   │   ├── http.rs             # HTTP executor (~750 lines)
 │   │   ├── llm.rs              # Ollama LLM client (~890 lines)
-│   │   └── healing.rs          # Self-healing orchestrator (~740 lines)
+│   │   ├── healing.rs          # Self-healing orchestrator (~740 lines)
+│   │   ├── context.rs          # In-memory API context store (~350 lines)
+│   │   ├── discovery.rs        # OpenAPI auto-discovery (~650 lines)
+│   │   └── docgen.rs           # Doc-to-OpenAPI generator (~880 lines)
 │   └── mcp/
 │       ├── mod.rs
 │       ├── protocol.rs         # JSON-RPC 2.0 types (~300 lines)
 │       ├── transport.rs        # Stdio transport (~100 lines)
-│       ├── tools.rs            # Tool registry & handlers (~400 lines)
+│       ├── tools.rs            # Tool registry & handlers (~1100 lines)
 │       └── server.rs           # MCP server (~300 lines)
 ├── tests/
 │   ├── common/
 │   │   └── mod.rs              # Test utilities
 │   ├── fixtures/
 │   │   └── petstore.json       # Sample OpenAPI spec
-│   └── repository_test.rs      # Neo4j integration tests
+│   ├── repository_test.rs      # Neo4j integration tests
+│   ├── context_tools_test.rs   # Context management tool tests
+│   ├── discovery_test.rs       # Discovery service tests
+│   └── docgen_test.rs          # Doc-to-OpenAPI generation tests
 ├── Cargo.toml
 ├── Cargo.lock
 ├── docker-compose.yml
@@ -414,6 +436,7 @@ All core dependencies are in place in `Cargo.toml`:
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 neo4rs = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 openapiv3 = "2"
@@ -426,6 +449,8 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 url = "2"
+scraper = "0.21"               # HTML parsing for discovery/docgen
+schemars = "0.8"               # JSON Schema generation for MCP tools
 ```
 
 ---
