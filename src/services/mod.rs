@@ -1,8 +1,12 @@
+pub mod context;
 pub mod healing;
 pub mod http;
 pub mod llm;
 pub mod openapi;
 
+pub use context::{
+    ApiContext, ContextError, ContextStore, EndpointSummary, ParameterSummary, SchemaSummary,
+};
 pub use healing::{
     HealingConfig, HealingError, HealingOrchestrator, HealingResult, RequestContext,
 };

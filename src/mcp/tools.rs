@@ -4,9 +4,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, info};
 
+use crate::models::ParameterLocation;
 use crate::repository::Neo4jClient;
 use crate::services::{
-    HealingConfig, HealingOrchestrator, HttpExecutor, LlmClient, LlmConfig, OpenApiParser,
+    ApiContext, ContextStore, EndpointSummary, HealingConfig, HealingOrchestrator, HttpExecutor,
+    LlmClient, LlmConfig, OpenApiParser, ParameterSummary,
 };
 
 use super::protocol::{ToolCallResult, ToolDefinition};
@@ -24,6 +26,9 @@ impl ToolRegistry {
                 Self::ingest_openapi_def(),
                 Self::query_endpoint_def(),
                 Self::execute_request_def(),
+                Self::get_api_context_def(),
+                Self::list_loaded_apis_def(),
+                Self::clear_api_context_def(),
             ],
         }
     }
@@ -112,6 +117,61 @@ impl ToolRegistry {
             }),
         }
     }
+
+    fn get_api_context_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "get_api_context".to_string(),
+            description: "Get a summary of loaded API(s) for context. Returns endpoints, methods, \
+                         and parameters in a format suitable for understanding and working with the API. \
+                         Use this after ingesting an API to get its structure."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "api_name": {
+                        "type": "string",
+                        "description": "Name of the API to get context for (optional - returns all loaded APIs if omitted)"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["summary", "detailed", "compact"],
+                        "description": "Output format: 'summary' (default) for structured JSON, 'detailed' includes schemas, 'compact' for text overview"
+                    }
+                }
+            }),
+        }
+    }
+
+    fn list_loaded_apis_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_loaded_apis".to_string(),
+            description: "List all APIs currently loaded in the context store. \
+                         Shows which APIs are available for querying without hitting the database."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    fn clear_api_context_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "clear_api_context".to_string(),
+            description: "Remove an API from the in-memory context store. \
+                         The API data remains in the database and can be reloaded."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "api_name": {
+                        "type": "string",
+                        "description": "Name of the API to clear (optional - clears all if omitted)"
+                    }
+                }
+            }),
+        }
+    }
 }
 
 impl Default for ToolRegistry {
@@ -144,6 +204,18 @@ pub struct ExecuteRequestInput {
     pub body: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GetApiContextInput {
+    pub api_name: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClearApiContextInput {
+    pub api_name: Option<String>,
+}
+
 // ============================================================================
 // Tool Handler
 // ============================================================================
@@ -152,6 +224,7 @@ pub struct ExecuteRequestInput {
 pub struct ToolHandler {
     neo4j: Option<Neo4jClient>,
     llm_config: Option<LlmConfig>,
+    context_store: ContextStore,
 }
 
 impl ToolHandler {
@@ -160,14 +233,17 @@ impl ToolHandler {
         Self {
             neo4j: None,
             llm_config: None,
+            context_store: ContextStore::new(),
         }
     }
 
     /// Create a tool handler with Neo4j connection.
     pub fn with_neo4j(neo4j: Neo4jClient) -> Self {
+        let context_store = ContextStore::with_neo4j(neo4j.clone());
         Self {
             neo4j: Some(neo4j),
             llm_config: None,
+            context_store,
         }
     }
 
@@ -175,6 +251,11 @@ impl ToolHandler {
     pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
         self.llm_config = Some(config);
         self
+    }
+
+    /// Get a reference to the context store.
+    pub fn context_store(&self) -> &ContextStore {
+        &self.context_store
     }
 
     /// Execute a tool by name with the given arguments.
@@ -185,6 +266,9 @@ impl ToolHandler {
             "ingest_openapi" => self.handle_ingest_openapi(arguments).await,
             "graph_query_endpoint" => self.handle_query_endpoint(arguments).await,
             "execute_http_request" => self.handle_execute_request(arguments).await,
+            "get_api_context" => self.handle_get_api_context(arguments).await,
+            "list_loaded_apis" => self.handle_list_loaded_apis().await,
+            "clear_api_context" => self.handle_clear_api_context(arguments).await,
             _ => ToolCallResult::error(format!("Unknown tool: {}", name)),
         }
     }
@@ -214,6 +298,21 @@ impl ToolHandler {
         let mut parser = OpenApiParser::new(neo4j.clone());
         match parser.ingest(&input.source).await {
             Ok(result) => {
+                // Build and store API context for fast access
+                let context = self
+                    .build_api_context(
+                        &result.api_title,
+                        &result.api_version,
+                        Some(&input.source),
+                        None, // Description not available from IngestResult
+                        neo4j,
+                    )
+                    .await;
+
+                if let Some(ctx) = context {
+                    self.context_store.set(ctx).await;
+                }
+
                 let response = json!({
                     "success": true,
                     "api_title": result.api_title,
@@ -221,7 +320,8 @@ impl ToolHandler {
                     "resources_created": result.resources_created,
                     "endpoints_created": result.endpoints_created,
                     "schemas_created": result.schemas_created,
-                    "parameters_created": result.parameters_created
+                    "parameters_created": result.parameters_created,
+                    "context_loaded": true
                 });
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
             }
@@ -352,9 +452,278 @@ impl ToolHandler {
         }
     }
 
+    async fn handle_get_api_context(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: GetApiContextInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        let format = input.format.as_deref().unwrap_or("summary");
+
+        match &input.api_name {
+            Some(name) => {
+                // Get specific API context
+                match self.context_store.get_or_load(name).await {
+                    Some(ctx) => self.format_context(&ctx, format),
+                    None => ToolCallResult::error(format!(
+                        "API '{}' not found in context. Use ingest_openapi to load it first, or list_loaded_apis to see available APIs.",
+                        name
+                    )),
+                }
+            }
+            None => {
+                // Get all loaded contexts
+                let contexts = self.context_store.get_all().await;
+                if contexts.is_empty() {
+                    return ToolCallResult::success_text(
+                        "No APIs loaded in context. Use ingest_openapi to load an API specification."
+                    );
+                }
+
+                match format {
+                    "compact" => {
+                        let mut output = String::new();
+                        for ctx in &contexts {
+                            output.push_str(&ctx.to_compact_summary());
+                            output.push_str("\n---\n\n");
+                        }
+                        ToolCallResult::success_text(output)
+                    }
+                    _ => {
+                        let summaries: Vec<Value> = contexts
+                            .iter()
+                            .map(|ctx| self.context_to_json(ctx, format == "detailed"))
+                            .collect();
+                        let response = json!({
+                            "count": summaries.len(),
+                            "apis": summaries
+                        });
+                        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_list_loaded_apis(&self) -> ToolCallResult {
+        let contexts = self.context_store.get_all().await;
+
+        if contexts.is_empty() {
+            return ToolCallResult::success_text(
+                "No APIs currently loaded. Use ingest_openapi to load an API specification."
+            );
+        }
+
+        let api_list: Vec<Value> = contexts
+            .iter()
+            .map(|ctx| {
+                json!({
+                    "name": ctx.name,
+                    "version": ctx.version,
+                    "endpoint_count": ctx.endpoint_count,
+                    "schema_count": ctx.schema_count,
+                    "loaded_at": ctx.loaded_at.to_rfc3339()
+                })
+            })
+            .collect();
+
+        let response = json!({
+            "count": api_list.len(),
+            "apis": api_list
+        });
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+    }
+
+    async fn handle_clear_api_context(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: ClearApiContextInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        match &input.api_name {
+            Some(name) => {
+                if self.context_store.contains(name).await {
+                    self.context_store.clear(Some(name)).await;
+                    ToolCallResult::success_text(format!(
+                        "Cleared context for API '{}'. The API data remains in the database and can be reloaded.",
+                        name
+                    ))
+                } else {
+                    ToolCallResult::error(format!(
+                        "API '{}' not found in context. Use list_loaded_apis to see available APIs.",
+                        name
+                    ))
+                }
+            }
+            None => {
+                let count = self.context_store.len().await;
+                self.context_store.clear(None).await;
+                ToolCallResult::success_text(format!(
+                    "Cleared {} API context(s). API data remains in the database and can be reloaded.",
+                    count
+                ))
+            }
+        }
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
+
+    /// Build an ApiContext from freshly ingested data.
+    async fn build_api_context(
+        &self,
+        api_name: &str,
+        api_version: &str,
+        source: Option<&str>,
+        description: Option<&str>,
+        neo4j: &Neo4jClient,
+    ) -> Option<ApiContext> {
+        // Query endpoints for this API
+        let endpoints = match neo4j.find_endpoints_by_path("/").await {
+            Ok(eps) => eps,
+            Err(e) => {
+                debug!(error = %e, "Failed to fetch endpoints for context");
+                return None;
+            }
+        };
+
+        let mut context = ApiContext::new(api_name.to_string(), api_version.to_string());
+
+        if let Some(src) = source {
+            context = context.with_source(src);
+        }
+
+        if let Some(desc) = description {
+            context = context.with_description(desc);
+        }
+
+        for endpoint in endpoints {
+            // Get parameters for this endpoint
+            let params = neo4j
+                .get_parameters_for_endpoint(endpoint.id)
+                .await
+                .unwrap_or_default();
+
+            let mut param_summary = ParameterSummary::default();
+            for param in params {
+                let name = if param.required {
+                    format!("{}*", param.name)
+                } else {
+                    param.name.clone()
+                };
+
+                match param.location {
+                    ParameterLocation::Path => param_summary.path.push(name),
+                    ParameterLocation::Query => param_summary.query.push(name),
+                    ParameterLocation::Header => param_summary.header.push(name),
+                    ParameterLocation::Body => param_summary.body.push(name),
+                }
+            }
+
+            context.add_endpoint(EndpointSummary {
+                method: endpoint.method,
+                path: endpoint.path,
+                summary: endpoint.summary,
+                operation_id: endpoint.operation_id,
+                parameters: param_summary,
+            });
+        }
+
+        Some(context)
+    }
+
+    /// Format a context for output based on requested format.
+    fn format_context(&self, ctx: &ApiContext, format: &str) -> ToolCallResult {
+        match format {
+            "compact" => ToolCallResult::success_text(ctx.to_compact_summary()),
+            "detailed" => {
+                let json = self.context_to_json(ctx, true);
+                ToolCallResult::success_text(serde_json::to_string_pretty(&json).unwrap())
+            }
+            _ => {
+                // "summary" - default
+                let json = self.context_to_json(ctx, false);
+                ToolCallResult::success_text(serde_json::to_string_pretty(&json).unwrap())
+            }
+        }
+    }
+
+    /// Convert context to JSON representation.
+    fn context_to_json(&self, ctx: &ApiContext, include_schemas: bool) -> Value {
+        let endpoints: Vec<Value> = ctx
+            .endpoints
+            .iter()
+            .map(|ep| {
+                let mut ep_json = json!({
+                    "method": ep.method.to_string(),
+                    "path": ep.path,
+                    "summary": ep.summary
+                });
+
+                if let Some(op_id) = &ep.operation_id {
+                    ep_json["operation_id"] = json!(op_id);
+                }
+
+                if !ep.parameters.is_empty() {
+                    let mut params = json!({});
+                    if !ep.parameters.path.is_empty() {
+                        params["path"] = json!(ep.parameters.path);
+                    }
+                    if !ep.parameters.query.is_empty() {
+                        params["query"] = json!(ep.parameters.query);
+                    }
+                    if !ep.parameters.header.is_empty() {
+                        params["header"] = json!(ep.parameters.header);
+                    }
+                    if !ep.parameters.body.is_empty() {
+                        params["body"] = json!(ep.parameters.body);
+                    }
+                    ep_json["parameters"] = params;
+                }
+
+                ep_json
+            })
+            .collect();
+
+        let mut result = json!({
+            "name": ctx.name,
+            "version": ctx.version,
+            "endpoint_count": ctx.endpoint_count,
+            "endpoints": endpoints,
+            "loaded_at": ctx.loaded_at.to_rfc3339()
+        });
+
+        if let Some(base) = &ctx.base_url {
+            result["base_url"] = json!(base);
+        }
+
+        if let Some(desc) = &ctx.description {
+            result["description"] = json!(desc);
+        }
+
+        if let Some(src) = &ctx.source {
+            result["source"] = json!(src);
+        }
+
+        if include_schemas && !ctx.schemas.is_empty() {
+            let schemas: Vec<Value> = ctx
+                .schemas
+                .iter()
+                .map(|s| {
+                    json!({
+                        "name": s.name,
+                        "fields": s.fields
+                    })
+                })
+                .collect();
+            result["schemas"] = json!(schemas);
+            result["schema_count"] = json!(ctx.schema_count);
+        }
+
+        result
+    }
 
     fn parse_args<T: for<'de> Deserialize<'de>>(
         arguments: Option<Value>,
@@ -382,7 +751,7 @@ mod tests {
     #[test]
     fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 3);
+        assert_eq!(registry.list().len(), 6);
     }
 
     #[test]
@@ -391,6 +760,9 @@ mod tests {
         assert!(registry.get("ingest_openapi").is_some());
         assert!(registry.get("graph_query_endpoint").is_some());
         assert!(registry.get("execute_http_request").is_some());
+        assert!(registry.get("get_api_context").is_some());
+        assert!(registry.get("list_loaded_apis").is_some());
+        assert!(registry.get("clear_api_context").is_some());
         assert!(registry.get("unknown_tool").is_none());
     }
 
