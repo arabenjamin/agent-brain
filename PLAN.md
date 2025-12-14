@@ -9,7 +9,7 @@
 - ✅ Error handling infrastructure
 - ✅ Configuration management (config.rs)
 - ✅ Logging & observability (tracing)
-- ✅ CLI with clap (serve, init-db, ingest, query, execute, stats)
+- ✅ CLI with clap (serve, init-db, ingest, query, execute, stats, export, diff)
 - ✅ OpenAPI parser and ingestion service
 - ✅ HTTP request executor service
 - ✅ LLM client service (Ollama integration)
@@ -17,9 +17,10 @@
 - ✅ In-memory API context store with DB fallback
 - ✅ OpenAPI spec auto-discovery with LLM assistance
 - ✅ Documentation-to-OpenAPI generator with LLM
+- ✅ OpenAPI export module (Graph-to-Spec with diff reporting)
 - ✅ Custom MCP server implementation (JSON-RPC 2.0 over stdio)
-- ✅ 8 MCP tools (ingest, query, execute, context management, discovery, docgen)
-- ✅ Unit tests (95 tests passing)
+- ✅ 10 MCP tools (ingest, query, execute, context management, discovery, docgen, export, diff)
+- ✅ Unit tests (120 tests passing)
 - ✅ Integration tests (21+ tests)
 - ✅ Docker Compose setup (Neo4j + Ollama)
 - ✅ GitHub Actions CI/CD pipeline
@@ -99,6 +100,8 @@
 - [x] `clear_api_context` - Remove APIs from in-memory context
 - [x] `discover_openapi` - Auto-discover OpenAPI specs with LLM assistance
 - [x] `build_openapi_from_docs` - Generate OpenAPI specs from documentation pages
+- [x] `export_openapi` - Export healed graph back to OpenAPI 3.0 spec
+- [x] `diff_api_spec` - Compare original vs healed graph, generate diff reports
 
 ### 3.3 Query Enhancement
 - [x] Fuzzy matching on path, summary, operation_id
@@ -111,7 +114,7 @@
 
 ### 4.1 Unit Tests ✅
 Location: Inline in each module with `#[cfg(test)]`
-**Status: 95 tests passing**
+**Status: 120 tests passing**
 
 | Module | Test Coverage |
 |--------|---------------|
@@ -124,8 +127,9 @@ Location: Inline in each module with `#[cfg(test)]`
 | `services/context` | ✅ Context store operations |
 | `services/discovery` | ✅ OpenAPI validation, link extraction |
 | `services/docgen` | ✅ Spec generation, YAML/JSON output |
+| `services/export` | ✅ OpenAPI builder, exporter, differ, report generator |
 | `mcp/protocol` | ✅ JSON-RPC message parsing |
-| `mcp/tools` | ✅ Tool registry, input parsing (8 tools) |
+| `mcp/tools` | ✅ Tool registry, input parsing (10 tools) |
 | `mcp/server` | ✅ Server state transitions |
 
 ### 4.2 Integration Tests ✅
@@ -381,12 +385,18 @@ agent-api/
 │   │   ├── healing.rs          # Self-healing orchestrator (~740 lines)
 │   │   ├── context.rs          # In-memory API context store (~350 lines)
 │   │   ├── discovery.rs        # OpenAPI auto-discovery (~650 lines)
-│   │   └── docgen.rs           # Doc-to-OpenAPI generator (~880 lines)
+│   │   ├── docgen.rs           # Doc-to-OpenAPI generator (~880 lines)
+│   │   └── export/
+│   │       ├── mod.rs          # Export module exports
+│   │       ├── builder.rs      # OpenAPI spec builder (~435 lines)
+│   │       ├── exporter.rs     # Graph-to-Spec exporter (~515 lines)
+│   │       ├── differ.rs       # Spec diff generator (~340 lines)
+│   │       └── report.rs       # Markdown report generator (~200 lines)
 │   └── mcp/
 │       ├── mod.rs
 │       ├── protocol.rs         # JSON-RPC 2.0 types (~300 lines)
 │       ├── transport.rs        # Stdio transport (~100 lines)
-│       ├── tools.rs            # Tool registry & handlers (~1100 lines)
+│       ├── tools.rs            # Tool registry & handlers (~1400 lines)
 │       └── server.rs           # MCP server (~300 lines)
 ├── tests/
 │   ├── common/
@@ -424,6 +434,8 @@ agent-api/
 | 9 | Healing orchestrator | ✅ Complete |
 | 10 | MCP server + tools | ✅ Complete |
 | 11 | Application Dockerfile | ✅ Complete |
+| 12 | OpenAPI export module (Graph-to-Spec) | ✅ Complete |
+| 13 | Diff reporting (original vs healed) | ✅ Complete |
 
 ---
 
