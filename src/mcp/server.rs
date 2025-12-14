@@ -197,13 +197,13 @@ impl McpServer {
         debug!(method = %method, "Handling notification");
 
         match method {
-            "initialized" => {
+            "notifications/initialized" => {
                 if self.state == ServerState::Initializing {
                     self.state = ServerState::Running;
                     info!("Server initialized and ready");
                 }
             }
-            "cancelled" => {
+            "notifications/cancelled" => {
                 debug!("Request cancelled");
             }
             _ => {
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(server.state, ServerState::Initializing);
 
         // Simulate initialized notification
-        server.handle_notification("initialized");
+        server.handle_notification("notifications/initialized");
         assert_eq!(server.state, ServerState::Running);
     }
 
