@@ -8,8 +8,9 @@ use crate::models::ParameterLocation;
 use crate::repository::Neo4jClient;
 use crate::services::{
     ApiContext, ContextStore, DiscoveryConfig, DiscoveryService, DocGenService, EndpointSummary,
-    EndpointWithParams, HealingConfig, HealingOrchestrator, HttpExecutor, LlmClient, LlmConfig,
-    OpenApiParser, ParameterSummary,
+    EndpointWithParams, ExportFormat, ExportOptions, HealingConfig, HealingOrchestrator,
+    HttpExecutor, LlmClient, LlmConfig, MarkdownReportGenerator, OpenApiExporter, OpenApiParser,
+    ParameterSummary, SpecDiffer,
 };
 
 use super::protocol::{ToolCallResult, ToolDefinition};
@@ -32,6 +33,8 @@ impl ToolRegistry {
                 Self::clear_api_context_def(),
                 Self::discover_openapi_def(),
                 Self::build_openapi_from_docs_def(),
+                Self::export_openapi_def(),
+                Self::diff_api_spec_def(),
             ],
         }
     }
@@ -248,6 +251,64 @@ impl ToolRegistry {
             }),
         }
     }
+
+    fn export_openapi_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "export_openapi".to_string(),
+            description: "Export the healed knowledge graph back to an OpenAPI 3.0 specification. \
+                         The exported spec includes x-healed-by-ai annotations showing what was \
+                         auto-corrected, and x-original-value fields preserving the original values. \
+                         Use this to commit the 'healed' documentation back to git."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "enum": ["yaml", "json"],
+                        "description": "Output format (default: yaml, recommended for git)"
+                    },
+                    "include_annotations": {
+                        "type": "boolean",
+                        "description": "Include x-healed-by-ai and x-original-value annotations (default: true)"
+                    },
+                    "include_broken": {
+                        "type": "boolean",
+                        "description": "Include endpoints marked as broken (default: false)"
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "File path to write the spec (returns content if omitted)"
+                    }
+                }
+            }),
+        }
+    }
+
+    fn diff_api_spec_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "diff_api_spec".to_string(),
+            description: "Compare the original ingested spec against the current healed graph state. \
+                         Generates a markdown report showing all documentation drift: parameter renames, \
+                         type changes, added/removed fields, and AI corrections. \
+                         Use this before committing to see what changed."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "json", "changelog"],
+                        "description": "Output format: 'markdown' (detailed report), 'json' (structured data), 'changelog' (git commit message)"
+                    },
+                    "breaking_only": {
+                        "type": "boolean",
+                        "description": "Only show breaking changes (default: false)"
+                    }
+                }
+            }),
+        }
+    }
 }
 
 impl Default for ToolRegistry {
@@ -326,6 +387,33 @@ fn default_output_format() -> String {
     "json".to_string()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ExportOpenApiInput {
+    #[serde(default = "default_yaml_format")]
+    pub format: String,
+    #[serde(default = "default_true")]
+    pub include_annotations: bool,
+    #[serde(default)]
+    pub include_broken: bool,
+    pub output_path: Option<String>,
+}
+
+fn default_yaml_format() -> String {
+    "yaml".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiffApiSpecInput {
+    #[serde(default = "default_markdown_format")]
+    pub format: String,
+    #[serde(default)]
+    pub breaking_only: bool,
+}
+
+fn default_markdown_format() -> String {
+    "markdown".to_string()
+}
+
 // ============================================================================
 // Tool Handler
 // ============================================================================
@@ -381,6 +469,8 @@ impl ToolHandler {
             "clear_api_context" => self.handle_clear_api_context(arguments).await,
             "discover_openapi" => self.handle_discover_openapi(arguments).await,
             "build_openapi_from_docs" => self.handle_build_openapi_from_docs(arguments).await,
+            "export_openapi" => self.handle_export_openapi(arguments).await,
+            "diff_api_spec" => self.handle_diff_api_spec(arguments).await,
             _ => ToolCallResult::error(format!("Unknown tool: {}", name)),
         }
     }
@@ -584,7 +674,7 @@ impl ToolHandler {
                 let contexts = self.context_store.get_all().await;
                 if contexts.is_empty() {
                     return ToolCallResult::success_text(
-                        "No APIs loaded in context. Use ingest_openapi to load an API specification."
+                        "No APIs loaded in context. Use ingest_openapi to load an API specification.",
                     );
                 }
 
@@ -606,7 +696,9 @@ impl ToolHandler {
                             "count": summaries.len(),
                             "apis": summaries
                         });
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                        ToolCallResult::success_text(
+                            serde_json::to_string_pretty(&response).unwrap(),
+                        )
                     }
                 }
             }
@@ -618,7 +710,7 @@ impl ToolHandler {
 
         if contexts.is_empty() {
             return ToolCallResult::success_text(
-                "No APIs currently loaded. Use ingest_openapi to load an API specification."
+                "No APIs currently loaded. Use ingest_openapi to load an API specification.",
             );
         }
 
@@ -686,16 +778,17 @@ impl ToolHandler {
         // Create discovery service
         let mut service = match DiscoveryService::new() {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("Failed to create discovery service: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to create discovery service: {}", e));
+            }
         };
 
         // Configure LLM if requested
-        if input.use_llm {
-            if let Some(llm_config) = &self.llm_config {
-                if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
-                    service = service.with_llm(llm);
-                }
-            }
+        if input.use_llm
+            && let Some(llm_config) = &self.llm_config
+            && let Ok(llm) = LlmClient::with_config(llm_config.clone())
+        {
+            service = service.with_llm(llm);
         }
 
         // Configure discovery
@@ -799,7 +892,7 @@ impl ToolHandler {
         let Some(llm_config) = &self.llm_config else {
             return ToolCallResult::error(
                 "LLM configuration required for documentation analysis. \
-                 Configure an LLM provider (Ollama or Anthropic) to use this tool."
+                 Configure an LLM provider (Ollama or Anthropic) to use this tool.",
             );
         };
 
@@ -811,7 +904,9 @@ impl ToolHandler {
         // Create the doc generator service
         let service = match DocGenService::new(llm) {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("Failed to create doc generator: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to create doc generator: {}", e));
+            }
         };
 
         // Generate the OpenAPI spec
@@ -825,13 +920,21 @@ impl ToolHandler {
             .await
         {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("Documentation analysis failed: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Documentation analysis failed: {}", e));
+            }
         };
 
         // Format the spec based on requested format
         let spec_output = match input.output_format.as_str() {
-            "yaml" => result.spec.to_yaml().unwrap_or_else(|e| format!("YAML error: {}", e)),
-            _ => result.spec.to_json().unwrap_or_else(|e| format!("JSON error: {}", e)),
+            "yaml" => result
+                .spec
+                .to_yaml()
+                .unwrap_or_else(|e| format!("YAML error: {}", e)),
+            _ => result
+                .spec
+                .to_json()
+                .unwrap_or_else(|e| format!("JSON error: {}", e)),
         };
 
         // Auto-ingest if requested and we have a database connection
@@ -888,6 +991,132 @@ impl ToolHandler {
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
     }
 
+    async fn handle_export_openapi(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: ExportOpenApiInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        let Some(neo4j) = &self.neo4j else {
+            return ToolCallResult::error("Database connection not configured");
+        };
+
+        info!(format = %input.format, "Exporting OpenAPI specification from graph");
+
+        // Build export options
+        let options = ExportOptions {
+            include_annotations: input.include_annotations,
+            include_original_values: input.include_annotations,
+            format: match input.format.as_str() {
+                "json" => ExportFormat::Json,
+                _ => ExportFormat::Yaml,
+            },
+            api_name: None,
+            include_broken_endpoints: input.include_broken,
+            include_verification_status: true,
+        };
+
+        // Create exporter and export
+        let exporter = OpenApiExporter::new(neo4j.clone());
+        match exporter.export(&options).await {
+            Ok(result) => {
+                // Write to file if path provided
+                if let Some(ref path) = input.output_path {
+                    if let Err(e) = std::fs::write(path, &result.content) {
+                        return ToolCallResult::error(format!("Failed to write file: {}", e));
+                    }
+
+                    let response = json!({
+                        "success": true,
+                        "output_path": path,
+                        "format": input.format,
+                        "stats": {
+                            "resources_exported": result.stats.resources_exported,
+                            "endpoints_exported": result.stats.endpoints_exported,
+                            "schemas_exported": result.stats.schemas_exported,
+                            "parameters_exported": result.stats.parameters_exported,
+                            "healed_fields_annotated": result.stats.healed_fields_annotated,
+                            "broken_endpoints_skipped": result.stats.broken_endpoints_skipped
+                        },
+                        "warnings": result.warnings
+                    });
+                    ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                } else {
+                    // Return content directly
+                    let response = json!({
+                        "success": true,
+                        "format": input.format,
+                        "stats": {
+                            "resources_exported": result.stats.resources_exported,
+                            "endpoints_exported": result.stats.endpoints_exported,
+                            "schemas_exported": result.stats.schemas_exported,
+                            "parameters_exported": result.stats.parameters_exported,
+                            "healed_fields_annotated": result.stats.healed_fields_annotated,
+                            "broken_endpoints_skipped": result.stats.broken_endpoints_skipped
+                        },
+                        "warnings": result.warnings,
+                        "spec": result.content
+                    });
+                    ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                }
+            }
+            Err(e) => ToolCallResult::error(format!("Export failed: {}", e)),
+        }
+    }
+
+    async fn handle_diff_api_spec(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: DiffApiSpecInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        let Some(neo4j) = &self.neo4j else {
+            return ToolCallResult::error("Database connection not configured");
+        };
+
+        info!(format = %input.format, "Generating API spec diff report");
+
+        // Create differ and generate report
+        let differ = SpecDiffer::new(neo4j.clone());
+        match differ.generate_diff(None).await {
+            Ok(mut report) => {
+                // Filter to breaking only if requested
+                if input.breaking_only {
+                    report.changes.retain(|c| c.breaking);
+                    // Recalculate summary
+                    report.summary.total_changes = report.changes.len();
+                }
+
+                // Format output based on requested format
+                let output = match input.format.as_str() {
+                    "json" => match MarkdownReportGenerator::generate_json(&report) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            return ToolCallResult::error(format!("JSON generation failed: {}", e));
+                        }
+                    },
+                    "changelog" => MarkdownReportGenerator::generate_changelog(&report),
+                    _ => MarkdownReportGenerator::generate(&report), // markdown default
+                };
+
+                let response = json!({
+                    "success": true,
+                    "format": input.format,
+                    "summary": {
+                        "total_changes": report.summary.total_changes,
+                        "breaking_changes": report.summary.breaking_changes,
+                        "healed_by_ai": report.summary.healed_by_ai,
+                        "endpoints_modified": report.summary.endpoints_modified,
+                        "parameters_modified": report.summary.parameters_modified
+                    },
+                    "report": output
+                });
+                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+            }
+            Err(e) => ToolCallResult::error(format!("Diff generation failed: {}", e)),
+        }
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
@@ -929,7 +1158,7 @@ impl ToolHandler {
             }
 
             context.add_endpoint(EndpointSummary {
-                method: ep.endpoint.method.clone(),
+                method: ep.endpoint.method,
                 path: ep.endpoint.path.clone(),
                 summary: ep.endpoint.summary.clone(),
                 operation_id: ep.endpoint.operation_id.clone(),
@@ -1057,7 +1286,7 @@ mod tests {
     #[test]
     fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 8);
+        assert_eq!(registry.list().len(), 10);
     }
 
     #[test]
@@ -1071,6 +1300,8 @@ mod tests {
         assert!(registry.get("clear_api_context").is_some());
         assert!(registry.get("discover_openapi").is_some());
         assert!(registry.get("build_openapi_from_docs").is_some());
+        assert!(registry.get("export_openapi").is_some());
+        assert!(registry.get("diff_api_spec").is_some());
         assert!(registry.get("unknown_tool").is_none());
     }
 

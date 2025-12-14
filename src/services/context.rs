@@ -50,7 +50,10 @@ pub struct ParameterSummary {
 impl ParameterSummary {
     /// Check if there are any parameters.
     pub fn is_empty(&self) -> bool {
-        self.path.is_empty() && self.query.is_empty() && self.header.is_empty() && self.body.is_empty()
+        self.path.is_empty()
+            && self.query.is_empty()
+            && self.header.is_empty()
+            && self.body.is_empty()
     }
 
     /// Get total parameter count.
@@ -146,10 +149,7 @@ impl ApiContext {
 
     /// Generate a compact text summary suitable for LLM context.
     pub fn to_compact_summary(&self) -> String {
-        let mut summary = format!(
-            "API: {} v{}\n",
-            self.name, self.version
-        );
+        let mut summary = format!("API: {} v{}\n", self.name, self.version);
 
         if let Some(base) = &self.base_url {
             summary.push_str(&format!("Base URL: {}\n", base));
@@ -185,7 +185,11 @@ impl ApiContext {
         if !self.schemas.is_empty() {
             summary.push_str(&format!("\nSchemas ({}):\n", self.schema_count));
             for schema in &self.schemas {
-                summary.push_str(&format!("  {} - fields: {}\n", schema.name, schema.fields.join(", ")));
+                summary.push_str(&format!(
+                    "  {} - fields: {}\n",
+                    schema.name,
+                    schema.fields.join(", ")
+                ));
             }
         }
 
@@ -225,9 +229,7 @@ impl ContextStore {
 
     /// Normalize an API name for consistent key lookup.
     fn normalize_name(name: &str) -> String {
-        name.to_lowercase()
-            .replace(' ', "-")
-            .replace('_', "-")
+        name.to_lowercase().replace([' ', '_'], "-")
     }
 
     /// Get a context from memory (fast path).
@@ -324,7 +326,11 @@ impl ContextStore {
     }
 
     /// Load context from Neo4j by querying endpoints and building a summary.
-    async fn load_from_neo4j(&self, neo4j: &Neo4jClient, api_name: &str) -> Result<ApiContext, ContextError> {
+    async fn load_from_neo4j(
+        &self,
+        neo4j: &Neo4jClient,
+        api_name: &str,
+    ) -> Result<ApiContext, ContextError> {
         // Find endpoints matching this API name (by resource name)
         let endpoints = neo4j
             .find_endpoints_by_path(api_name)
@@ -499,8 +505,12 @@ mod tests {
     async fn test_context_store_clear() {
         let store = ContextStore::new();
 
-        store.set(ApiContext::new("API1".to_string(), "1.0".to_string())).await;
-        store.set(ApiContext::new("API2".to_string(), "1.0".to_string())).await;
+        store
+            .set(ApiContext::new("API1".to_string(), "1.0".to_string()))
+            .await;
+        store
+            .set(ApiContext::new("API2".to_string(), "1.0".to_string()))
+            .await;
 
         assert_eq!(store.len().await, 2);
 
@@ -517,8 +527,12 @@ mod tests {
     async fn test_list_active() {
         let store = ContextStore::new();
 
-        store.set(ApiContext::new("Alpha".to_string(), "1.0".to_string())).await;
-        store.set(ApiContext::new("Beta".to_string(), "2.0".to_string())).await;
+        store
+            .set(ApiContext::new("Alpha".to_string(), "1.0".to_string()))
+            .await;
+        store
+            .set(ApiContext::new("Beta".to_string(), "2.0".to_string()))
+            .await;
 
         let active = store.list_active().await;
         assert_eq!(active.len(), 2);

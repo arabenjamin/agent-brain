@@ -71,7 +71,7 @@ impl OpenApiSpec {
 
     /// Add an endpoint.
     pub fn add_endpoint(&mut self, path: &str, method: &str, operation: Operation) {
-        let path_item = self.paths.entry(path.to_string()).or_insert_with(PathItem::default);
+        let path_item = self.paths.entry(path.to_string()).or_default();
         match method.to_lowercase().as_str() {
             "get" => path_item.get = Some(operation),
             "post" => path_item.post = Some(operation),
@@ -359,7 +359,9 @@ impl DocGenService {
         }
 
         if all_content.is_empty() {
-            return Err(DocGenError::NoContent("No documentation content could be fetched".to_string()));
+            return Err(DocGenError::NoContent(
+                "No documentation content could be fetched".to_string(),
+            ));
         }
 
         // Use LLM to extract API endpoints from the content
@@ -379,7 +381,10 @@ impl DocGenService {
         }
 
         // Extract schemas if present
-        let schemas = self.extract_schemas_with_llm(&all_content).await.unwrap_or_default();
+        let schemas = self
+            .extract_schemas_with_llm(&all_content)
+            .await
+            .unwrap_or_default();
         let schemas_count = schemas.len();
         if !schemas.is_empty() {
             spec.components = Some(Components { schemas });
@@ -561,7 +566,10 @@ Return ONLY the JSON array, no other text."#,
     }
 
     /// Parse the LLM response to extract endpoints.
-    fn parse_endpoints_response(&self, response: &str) -> Result<Vec<ExtractedEndpoint>, DocGenError> {
+    fn parse_endpoints_response(
+        &self,
+        response: &str,
+    ) -> Result<Vec<ExtractedEndpoint>, DocGenError> {
         // Try to extract JSON from the response
         let json_str = if let Some(start) = response.find('[') {
             if let Some(end) = response.rfind(']') {
@@ -639,7 +647,10 @@ Extract ALL schemas/models you can find. Return ONLY the JSON object, no other t
     }
 
     /// Parse the LLM response to extract schemas.
-    fn parse_schemas_response(&self, response: &str) -> Result<HashMap<String, SchemaObject>, DocGenError> {
+    fn parse_schemas_response(
+        &self,
+        response: &str,
+    ) -> Result<HashMap<String, SchemaObject>, DocGenError> {
         // Try to extract JSON from the response
         let json_str = if let Some(start) = response.find('{') {
             if let Some(end) = response.rfind('}') {
@@ -666,19 +677,29 @@ Extract ALL schemas/models you can find. Return ONLY the JSON object, no other t
     /// Build an Operation from extracted endpoint data.
     fn build_operation(&self, endpoint: &ExtractedEndpoint) -> Operation {
         let mut operation = Operation::new(
-            endpoint.summary.as_deref().unwrap_or(&format!("{} {}", endpoint.method, endpoint.path)),
+            endpoint
+                .summary
+                .as_deref()
+                .unwrap_or(&format!("{} {}", endpoint.method, endpoint.path)),
         );
 
         operation.description = endpoint.description.clone();
         operation.tags = endpoint.tags.clone();
 
         // Generate operation ID
-        let path_parts: Vec<&str> = endpoint.path.split('/').filter(|s| !s.is_empty() && !s.starts_with('{')).collect();
+        let path_parts: Vec<&str> = endpoint
+            .path
+            .split('/')
+            .filter(|s| !s.is_empty() && !s.starts_with('{'))
+            .collect();
         let method_lower = endpoint.method.to_lowercase();
         operation.operation_id = Some(format!(
             "{}{}",
             method_lower,
-            path_parts.iter().map(|s| capitalize_first(s)).collect::<String>()
+            path_parts
+                .iter()
+                .map(|s| capitalize_first(s))
+                .collect::<String>()
         ));
 
         // Add parameters
@@ -727,7 +748,10 @@ Extract ALL schemas/models you can find. Return ONLY the JSON object, no other t
         // Add response
         if let Some(resp) = &endpoint.response {
             let mut response = Response {
-                description: resp.description.clone().unwrap_or_else(|| "Success".to_string()),
+                description: resp
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| "Success".to_string()),
                 content: None,
             };
 
@@ -749,7 +773,9 @@ Extract ALL schemas/models you can find. Return ONLY the JSON object, no other t
                 response.content = Some(content);
             }
 
-            operation.responses.insert(resp.status_code.clone(), response);
+            operation
+                .responses
+                .insert(resp.status_code.clone(), response);
         }
 
         operation

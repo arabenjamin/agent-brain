@@ -1,6 +1,7 @@
 pub mod context;
 pub mod discovery;
 pub mod docgen;
+pub mod export;
 pub mod healing;
 pub mod http;
 pub mod llm;
@@ -14,6 +15,11 @@ pub use discovery::{
     DiscoveryService,
 };
 pub use docgen::{DocGenConfig, DocGenError, DocGenResult, DocGenService, OpenApiSpec};
+pub use export::{
+    ChangeCategory, ChangeType, DiffError, DiffReport, DiffSummary, ExportError, ExportFormat,
+    ExportOptions, ExportResult, ExportStats, MarkdownReportGenerator, OpenApiBuilder,
+    OpenApiExporter, SpecChange, SpecDiffer,
+};
 pub use healing::{
     HealingConfig, HealingError, HealingOrchestrator, HealingResult, RequestContext,
 };

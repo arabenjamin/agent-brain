@@ -72,6 +72,36 @@ pub enum Command {
 
     /// Show database statistics
     Stats,
+
+    /// Export the knowledge graph to an OpenAPI specification
+    Export {
+        /// Output file path (prints to stdout if omitted)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Output format (yaml or json)
+        #[arg(short, long, default_value = "yaml")]
+        format: String,
+
+        /// Include x-healed-by-ai annotations
+        #[arg(long, default_value = "true")]
+        annotations: bool,
+
+        /// Include endpoints marked as broken
+        #[arg(long)]
+        include_broken: bool,
+    },
+
+    /// Generate a diff report comparing original spec to healed graph
+    Diff {
+        /// Output format (markdown, json, or changelog)
+        #[arg(short, long, default_value = "markdown")]
+        format: String,
+
+        /// Only show breaking changes
+        #[arg(long)]
+        breaking_only: bool,
+    },
 }
 
 impl Cli {

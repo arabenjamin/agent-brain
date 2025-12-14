@@ -14,14 +14,18 @@ fn test_build_openapi_from_docs_tool_exists() {
     assert_eq!(tool.name, "build_openapi_from_docs");
     assert!(tool.description.contains("Generate"));
     assert!(tool.description.contains("OpenAPI"));
-    assert!(tool.input_schema["required"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("doc_urls")));
-    assert!(tool.input_schema["required"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("api_title")));
+    assert!(
+        tool.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("doc_urls"))
+    );
+    assert!(
+        tool.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("api_title"))
+    );
 }
 
 #[test]
@@ -65,7 +69,10 @@ async fn test_build_openapi_from_docs_requires_llm() {
         .await;
 
     // Should return an error because LLM is required
-    assert!(result.is_error.unwrap_or(false), "Should error without LLM config");
+    assert!(
+        result.is_error.unwrap_or(false),
+        "Should error without LLM config"
+    );
 
     if let Some(content) = result.content.first() {
         if let agent_api::mcp::protocol::Content::Text { text } = content {
@@ -89,7 +96,10 @@ async fn test_build_openapi_from_docs_empty_urls() {
         .await;
 
     // Should return an error for empty URLs
-    assert!(result.is_error.unwrap_or(false), "Should error with empty URLs");
+    assert!(
+        result.is_error.unwrap_or(false),
+        "Should error with empty URLs"
+    );
 }
 
 #[test]
@@ -177,6 +187,12 @@ fn test_openapi_spec_multiple_methods_same_path() {
     assert!(path_item.get.is_some());
     assert!(path_item.post.is_some());
 
-    assert_eq!(path_item.get.as_ref().unwrap().summary, Some("List users".to_string()));
-    assert_eq!(path_item.post.as_ref().unwrap().summary, Some("Create user".to_string()));
+    assert_eq!(
+        path_item.get.as_ref().unwrap().summary,
+        Some("List users".to_string())
+    );
+    assert_eq!(
+        path_item.post.as_ref().unwrap().summary,
+        Some("Create user".to_string())
+    );
 }

@@ -8,7 +8,10 @@ use agent_api::logging;
 use agent_api::mcp::McpServer;
 use agent_api::models::HttpMethod;
 use agent_api::repository::Neo4jClient;
-use agent_api::services::{HttpExecutor, LlmConfig, OpenApiParser, RequestBuilder, parse_headers};
+use agent_api::services::{
+    ExportFormat, ExportOptions, HttpExecutor, LlmConfig, MarkdownReportGenerator, OpenApiExporter,
+    OpenApiParser, RequestBuilder, SpecDiffer, parse_headers,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -57,6 +60,16 @@ async fn main() -> Result<()> {
             headers,
         }) => run_execute(&config, &method, &url, body, headers).await,
         Some(Command::Stats) => run_stats(&config).await,
+        Some(Command::Export {
+            output,
+            format,
+            annotations,
+            include_broken,
+        }) => run_export(&config, output, &format, annotations, include_broken).await,
+        Some(Command::Diff {
+            format,
+            breaking_only,
+        }) => run_diff(&config, &format, breaking_only).await,
     };
 
     if let Err(e) = &result {
@@ -252,6 +265,87 @@ async fn run_stats(config: &Config) -> Result<()> {
     println!("Total:          {}", healing_stats.total);
     println!("Verified:       {}", healing_stats.verified);
     println!("Unverified:     {}", healing_stats.unverified);
+
+    Ok(())
+}
+
+async fn run_export(
+    config: &Config,
+    output: Option<String>,
+    format: &str,
+    annotations: bool,
+    include_broken: bool,
+) -> Result<()> {
+    let client = connect_neo4j(config).await?;
+
+    info!(format = %format, annotations = annotations, "Exporting OpenAPI specification...");
+
+    let options = ExportOptions {
+        include_annotations: annotations,
+        include_original_values: annotations,
+        format: match format.to_lowercase().as_str() {
+            "json" => ExportFormat::Json,
+            _ => ExportFormat::Yaml,
+        },
+        api_name: None,
+        include_broken_endpoints: include_broken,
+        include_verification_status: true,
+    };
+
+    let exporter = OpenApiExporter::new(client);
+    let result = exporter.export(&options).await?;
+
+    // Write to file or stdout
+    match output {
+        Some(path) => {
+            std::fs::write(&path, &result.content)?;
+            println!("Export Complete");
+            println!("===============");
+            println!("Output:         {}", path);
+            println!("Format:         {}", format);
+            println!("Resources:      {}", result.stats.resources_exported);
+            println!("Endpoints:      {}", result.stats.endpoints_exported);
+            println!("Schemas:        {}", result.stats.schemas_exported);
+            println!("Parameters:     {}", result.stats.parameters_exported);
+            println!("Healed Fields:  {}", result.stats.healed_fields_annotated);
+            if result.stats.broken_endpoints_skipped > 0 {
+                println!(
+                    "Skipped (broken): {}",
+                    result.stats.broken_endpoints_skipped
+                );
+            }
+        }
+        None => {
+            // Print to stdout
+            println!("{}", result.content);
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_diff(config: &Config, format: &str, breaking_only: bool) -> Result<()> {
+    let client = connect_neo4j(config).await?;
+
+    info!(format = %format, breaking_only = breaking_only, "Generating diff report...");
+
+    let differ = SpecDiffer::new(client);
+    let mut report = differ.generate_diff(None).await?;
+
+    // Filter to breaking only if requested
+    if breaking_only {
+        report.changes.retain(|c| c.breaking);
+        report.summary.total_changes = report.changes.len();
+    }
+
+    // Generate output based on format
+    let output = match format.to_lowercase().as_str() {
+        "json" => MarkdownReportGenerator::generate_json(&report)?,
+        "changelog" => MarkdownReportGenerator::generate_changelog(&report),
+        _ => MarkdownReportGenerator::generate(&report),
+    };
+
+    println!("{}", output);
 
     Ok(())
 }

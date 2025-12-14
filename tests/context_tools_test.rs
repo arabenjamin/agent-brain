@@ -63,7 +63,10 @@ async fn test_ingest_and_get_context() {
         )
         .await;
 
-    assert!(result.is_error.is_none() || !result.is_error.unwrap(), "Ingest failed");
+    assert!(
+        result.is_error.is_none() || !result.is_error.unwrap(),
+        "Ingest failed"
+    );
 
     // List loaded APIs - should now have petstore
     let result = handler.execute("list_loaded_apis", None).await;
@@ -100,9 +103,7 @@ async fn test_clear_api_context() {
         .await;
 
     // Clear all contexts
-    let result = handler
-        .execute("clear_api_context", Some(json!({})))
-        .await;
+    let result = handler.execute("clear_api_context", Some(json!({}))).await;
 
     assert!(result.is_error.is_none() || !result.is_error.unwrap());
     let text = result.content.first().unwrap();

@@ -165,7 +165,10 @@ impl DiscoveryService {
 
         // Phase 3: LLM-assisted discovery
         if self.config.use_llm && self.llm.is_some() {
-            match self.llm_assisted_discovery(&base, &result.candidates, &mut seen_urls).await {
+            match self
+                .llm_assisted_discovery(&base, &result.candidates, &mut seen_urls)
+                .await
+            {
                 Ok(llm_candidates) => {
                     for candidate in llm_candidates {
                         if !result.candidates.iter().any(|c| c.url == candidate.url) {
@@ -377,24 +380,19 @@ impl DiscoveryService {
         let mut context = String::new();
 
         // Try to fetch the root page
-        if let Ok(response) = self
-            .client
-            .get(base.as_str())
-            .send()
-            .await
-        {
+        if let Ok(response) = self.client.get(base.as_str()).send().await {
             // Check for API-related headers
-            if let Some(link) = response.headers().get("link") {
-                if let Ok(link_str) = link.to_str() {
-                    context.push_str(&format!("Link header: {}\n", link_str));
-                }
+            if let Some(link) = response.headers().get("link")
+                && let Ok(link_str) = link.to_str()
+            {
+                context.push_str(&format!("Link header: {}\n", link_str));
             }
 
             // Check content type
-            if let Some(ct) = response.headers().get("content-type") {
-                if let Ok(ct_str) = ct.to_str() {
-                    context.push_str(&format!("Content-Type: {}\n", ct_str));
-                }
+            if let Some(ct) = response.headers().get("content-type")
+                && let Ok(ct_str) = ct.to_str()
+            {
+                context.push_str(&format!("Content-Type: {}\n", ct_str));
             }
 
             // Get a snippet of the response body
@@ -495,7 +493,8 @@ Example format:
         };
 
         // Try to detect if this is an OpenAPI spec
-        let (is_openapi, format, api_title, api_version) = self.validate_openapi_content(&body, &content_type);
+        let (is_openapi, format, api_title, api_version) =
+            self.validate_openapi_content(&body, &content_type);
 
         if !is_openapi {
             debug!(url = %url, "Content is not an OpenAPI spec");
@@ -528,21 +527,20 @@ Example format:
         content_type: &str,
     ) -> (bool, Option<String>, Option<String>, Option<String>) {
         // Try JSON first
-        if content_type.contains("json") || content.trim().starts_with('{') {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(content) {
-                return self.validate_openapi_json(&json, "json");
-            }
+        if (content_type.contains("json") || content.trim().starts_with('{'))
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(content)
+        {
+            return self.validate_openapi_json(&json, "json");
         }
 
         // Try YAML
-        if content_type.contains("yaml")
+        if (content_type.contains("yaml")
             || content_type.contains("yml")
             || content.contains("openapi:")
-            || content.contains("swagger:")
+            || content.contains("swagger:"))
+            && let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(content)
         {
-            if let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(content) {
-                return self.validate_openapi_json(&yaml, "yaml");
-            }
+            return self.validate_openapi_json(&yaml, "yaml");
         }
 
         (false, None, None, None)
@@ -640,10 +638,8 @@ Example format:
                     .iter()
                     .any(|kw| href_lower.contains(kw) || text_lower.contains(kw));
 
-                if is_openapi_link {
-                    if let Ok(absolute) = base.join(href) {
-                        links.push(absolute.to_string());
-                    }
+                if is_openapi_link && let Ok(absolute) = base.join(href) {
+                    links.push(absolute.to_string());
                 }
             }
         }
@@ -659,10 +655,9 @@ Example format:
                     for word in script_text.split(&['"', '\'', ' ', '\n'][..]) {
                         if (word.starts_with('/') || word.starts_with("http"))
                             && openapi_keywords.iter().any(|kw| word.contains(kw))
+                            && let Ok(absolute) = base.join(word)
                         {
-                            if let Ok(absolute) = base.join(word) {
-                                links.push(absolute.to_string());
-                            }
+                            links.push(absolute.to_string());
                         }
                     }
                 }
@@ -746,7 +741,7 @@ mod tests {
             }
         });
 
-        let (is_valid, format, title, version) = service.validate_openapi_json(&json, "json");
+        let (is_valid, _format, title, version) = service.validate_openapi_json(&json, "json");
         assert!(is_valid);
         assert_eq!(title, Some("Legacy API".to_string()));
         assert_eq!(version, Some("2.0.0".to_string()));

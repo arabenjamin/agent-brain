@@ -13,7 +13,12 @@ fn test_discover_openapi_tool_exists() {
     let tool = tool.unwrap();
     assert_eq!(tool.name, "discover_openapi");
     assert!(tool.description.contains("discover"));
-    assert!(tool.input_schema["required"].as_array().unwrap().contains(&json!("base_url")));
+    assert!(
+        tool.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("base_url"))
+    );
 }
 
 #[tokio::test]
@@ -64,10 +69,7 @@ async fn test_discovery_service_github_api() {
             println!("  Candidates found: {}", discovery.candidates.len());
 
             for candidate in &discovery.candidates {
-                println!(
-                    "  - {} ({:?})",
-                    candidate.url, candidate.method
-                );
+                println!("  - {} ({:?})", candidate.url, candidate.method);
             }
         }
         Err(e) => {
