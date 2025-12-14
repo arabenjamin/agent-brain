@@ -100,7 +100,8 @@ src/
 │   ├── openapi.rs      # OpenAPI spec parser and ingester
 │   ├── http.rs         # HTTP request executor with response classification
 │   ├── llm.rs          # Ollama LLM client for error analysis
-│   └── healing.rs      # Self-healing orchestrator
+│   ├── healing.rs      # Self-healing orchestrator
+│   └── context.rs      # In-memory API context store with DB fallback
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
@@ -134,11 +135,14 @@ tests/
 
 ### MCP Tools
 
-The server exposes three tools via JSON-RPC 2.0:
+The server exposes six tools via JSON-RPC 2.0:
+
+**Core Tools:**
 
 1. **`ingest_openapi`** - Parses OpenAPI specs (URL or file path) and loads into Neo4j
    - Input: `{ "source": "https://example.com/openapi.json" }`
    - Returns: Count of resources, endpoints, schemas, and parameters created
+   - Auto-populates the in-memory context store for fast access
 
 2. **`graph_query_endpoint`** - Search endpoints by path pattern or keywords
    - Input: `{ "query": "users" }` or `{ "query": "/api/v1" }`
@@ -148,6 +152,22 @@ The server exposes three tools via JSON-RPC 2.0:
    - Input: `{ "method": "GET", "url": "https://api.example.com/users", "headers": {}, "body": {} }`
    - Returns: Status code, response body, duration, headers
    - Supports automatic error analysis and retry with LLM assistance
+
+**Context Management Tools:**
+
+4. **`get_api_context`** - Retrieve API summaries from in-memory context
+   - Input: `{ "api_name": "Petstore", "format": "summary" }` (both optional)
+   - Formats: `summary` (default JSON), `detailed` (includes schemas), `compact` (text)
+   - Returns all loaded APIs if `api_name` omitted
+   - Falls back to Neo4j on cache miss
+
+5. **`list_loaded_apis`** - List all APIs currently in the context store
+   - Input: `{}` (no parameters)
+   - Returns: API names, versions, endpoint counts, load timestamps
+
+6. **`clear_api_context`** - Remove APIs from in-memory context
+   - Input: `{ "api_name": "Petstore" }` (optional - clears all if omitted)
+   - Data remains in Neo4j and can be reloaded
 
 ### Self-Healing Flow
 
