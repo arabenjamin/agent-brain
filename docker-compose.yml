@@ -5,8 +5,8 @@ services:
       - NEO4J_AUTH=neo4j/password
       - NEO4J_PLUGINS=["apoc"]
     ports:
-      - "7474:7474"    # Browser UI
-      - "7687:7687"    # Bolt protocol
+      - "7475:7474"    # Browser UI (7475 to avoid conflict)
+      - "7688:7687"    # Bolt protocol (7688 to avoid conflict)
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -16,17 +16,14 @@ services:
       timeout: 5s
       retries: 5
 
-  ollama:
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    # Uncomment to auto-pull a model on startup:
-    # command: ["serve"]
-    # To pull models, run: docker compose exec ollama ollama pull llama3
+  # Ollama service (optional - comment out if using local Ollama)
+  # ollama:
+  #   image: ollama/ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
 
 volumes:
   neo4j_data:
   neo4j_logs:
-  ollama_data:
