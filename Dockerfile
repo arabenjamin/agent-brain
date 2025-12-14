@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Build
 # =============================================================================
-FROM rust:1.85-bookworm AS builder
+FROM rust:latest AS builder
 
 WORKDIR /app
 
@@ -14,14 +14,16 @@ RUN apt-get update && apt-get install -y \
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy src to build dependencies
+# Create dummy src to build dependencies only
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
-    echo "pub fn dummy() {}" > src/lib.rs
-
-# Build dependencies only (cached layer)
-RUN cargo build --release && \
-    rm -rf src target/release/deps/agent_api* target/release/agent-api*
+    echo "" > src/lib.rs && \
+    cargo build --release --lib 2>/dev/null || true && \
+    rm -rf src && \
+    rm -rf target/release/.fingerprint/agent* \
+           target/release/deps/agent* \
+           target/release/deps/libagent* \
+           target/release/agent*
 
 # Copy actual source code
 COPY src ./src
