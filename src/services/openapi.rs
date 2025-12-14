@@ -44,6 +44,16 @@ pub struct IngestResult {
     pub parameters_created: usize,
     pub api_title: String,
     pub api_version: String,
+    pub description: Option<String>,
+    /// Endpoints created during this ingestion (for context building)
+    pub endpoints: Vec<EndpointWithParams>,
+}
+
+/// Endpoint with its parameters for context building.
+#[derive(Debug, Clone)]
+pub struct EndpointWithParams {
+    pub endpoint: crate::models::Endpoint,
+    pub parameters: Vec<crate::models::Parameter>,
 }
 
 /// Parser for OpenAPI specifications.
@@ -98,6 +108,7 @@ impl OpenApiParser {
         let mut result = IngestResult {
             api_title: spec.info.title.clone(),
             api_version: spec.info.version.clone(),
+            description: spec.info.description.clone(),
             ..Default::default()
         };
 
@@ -120,9 +131,11 @@ impl OpenApiParser {
         // Second pass: Process all paths and operations
         for (path, path_item_ref) in &spec.paths.paths {
             if let ReferenceOr::Item(path_item) = path_item_ref {
-                let counts = self.process_path(path, path_item).await?;
-                result.endpoints_created += counts.0;
-                result.parameters_created += counts.1;
+                let (endpoint_count, param_count, endpoints) =
+                    self.process_path(path, path_item).await?;
+                result.endpoints_created += endpoint_count;
+                result.parameters_created += param_count;
+                result.endpoints.extend(endpoints);
             }
         }
 
@@ -181,13 +194,15 @@ impl OpenApiParser {
     }
 
     /// Process a path and all its operations.
+    /// Returns (endpoints_created, parameters_created, endpoints_with_params).
     async fn process_path(
         &mut self,
         path: &str,
         path_item: &PathItem,
-    ) -> Result<(usize, usize), OpenApiError> {
+    ) -> Result<(usize, usize, Vec<EndpointWithParams>), OpenApiError> {
         let mut endpoints_created = 0;
         let mut parameters_created = 0;
+        let mut endpoints = Vec::new();
 
         // Process each HTTP method
         let operations = [
@@ -202,22 +217,25 @@ impl OpenApiParser {
 
         for (method, operation) in operations {
             if let Some(op) = operation {
-                let params = self.process_operation(path, method, op).await?;
+                let (param_count, endpoint_with_params) =
+                    self.process_operation(path, method, op).await?;
                 endpoints_created += 1;
-                parameters_created += params;
+                parameters_created += param_count;
+                endpoints.push(endpoint_with_params);
             }
         }
 
-        Ok((endpoints_created, parameters_created))
+        Ok((endpoints_created, parameters_created, endpoints))
     }
 
     /// Process a single operation (endpoint).
+    /// Returns (param_count, endpoint_with_params).
     async fn process_operation(
         &mut self,
         path: &str,
         method: HttpMethod,
         operation: &Operation,
-    ) -> Result<usize, OpenApiError> {
+    ) -> Result<(usize, EndpointWithParams), OpenApiError> {
         let summary = operation
             .summary
             .clone()
@@ -248,11 +266,14 @@ impl OpenApiParser {
                 .await?;
         }
 
-        // Process parameters
+        // Process parameters and collect them
         let mut param_count = 0;
+        let mut parameters = Vec::new();
         for param_ref in &operation.parameters {
             if let ReferenceOr::Item(param) = param_ref {
-                self.process_parameter(&endpoint, param).await?;
+                if let Some(p) = self.process_parameter(&endpoint, param).await? {
+                    parameters.push(p);
+                }
                 param_count += 1;
             }
         }
@@ -269,15 +290,22 @@ impl OpenApiParser {
             }
         }
 
-        Ok(param_count)
+        Ok((
+            param_count,
+            EndpointWithParams {
+                endpoint,
+                parameters,
+            },
+        ))
     }
 
     /// Process a parameter and link it to the endpoint.
+    /// Returns the created Parameter for context building.
     async fn process_parameter(
         &mut self,
         endpoint: &Endpoint,
         param: &OApiParameter,
-    ) -> Result<(), OpenApiError> {
+    ) -> Result<Option<Parameter>, OpenApiError> {
         let param_data = match param {
             OApiParameter::Query { parameter_data, .. } => parameter_data,
             OApiParameter::Path { parameter_data, .. } => parameter_data,
@@ -314,7 +342,7 @@ impl OpenApiParser {
             .link_endpoint_to_parameter(endpoint.id, parameter.id)
             .await?;
 
-        Ok(())
+        Ok(Some(parameter))
     }
 
     /// Process a request body and link schema to endpoint.

@@ -7,8 +7,8 @@ use tracing::{debug, info};
 use crate::models::ParameterLocation;
 use crate::repository::Neo4jClient;
 use crate::services::{
-    ApiContext, ContextStore, EndpointSummary, HealingConfig, HealingOrchestrator, HttpExecutor,
-    LlmClient, LlmConfig, OpenApiParser, ParameterSummary,
+    ApiContext, ContextStore, EndpointSummary, EndpointWithParams, HealingConfig,
+    HealingOrchestrator, HttpExecutor, LlmClient, LlmConfig, OpenApiParser, ParameterSummary,
 };
 
 use super::protocol::{ToolCallResult, ToolDefinition};
@@ -298,20 +298,16 @@ impl ToolHandler {
         let mut parser = OpenApiParser::new(neo4j.clone());
         match parser.ingest(&input.source).await {
             Ok(result) => {
-                // Build and store API context for fast access
-                let context = self
-                    .build_api_context(
-                        &result.api_title,
-                        &result.api_version,
-                        Some(&input.source),
-                        None, // Description not available from IngestResult
-                        neo4j,
-                    )
-                    .await;
+                // Build and store API context from the ingested endpoints
+                let context = self.build_api_context(
+                    &result.api_title,
+                    &result.api_version,
+                    Some(&input.source),
+                    result.description.as_deref(),
+                    &result.endpoints,
+                );
 
-                if let Some(ctx) = context {
-                    self.context_store.set(ctx).await;
-                }
+                self.context_store.set(context).await;
 
                 let response = json!({
                     "success": true,
@@ -571,24 +567,15 @@ impl ToolHandler {
     // Helpers
     // ========================================================================
 
-    /// Build an ApiContext from freshly ingested data.
-    async fn build_api_context(
+    /// Build an ApiContext from freshly ingested endpoints.
+    fn build_api_context(
         &self,
         api_name: &str,
         api_version: &str,
         source: Option<&str>,
         description: Option<&str>,
-        neo4j: &Neo4jClient,
-    ) -> Option<ApiContext> {
-        // Query endpoints for this API
-        let endpoints = match neo4j.find_endpoints_by_path("/").await {
-            Ok(eps) => eps,
-            Err(e) => {
-                debug!(error = %e, "Failed to fetch endpoints for context");
-                return None;
-            }
-        };
-
+        endpoints: &[EndpointWithParams],
+    ) -> ApiContext {
         let mut context = ApiContext::new(api_name.to_string(), api_version.to_string());
 
         if let Some(src) = source {
@@ -599,15 +586,9 @@ impl ToolHandler {
             context = context.with_description(desc);
         }
 
-        for endpoint in endpoints {
-            // Get parameters for this endpoint
-            let params = neo4j
-                .get_parameters_for_endpoint(endpoint.id)
-                .await
-                .unwrap_or_default();
-
+        for ep in endpoints {
             let mut param_summary = ParameterSummary::default();
-            for param in params {
+            for param in &ep.parameters {
                 let name = if param.required {
                     format!("{}*", param.name)
                 } else {
@@ -623,15 +604,15 @@ impl ToolHandler {
             }
 
             context.add_endpoint(EndpointSummary {
-                method: endpoint.method,
-                path: endpoint.path,
-                summary: endpoint.summary,
-                operation_id: endpoint.operation_id,
+                method: ep.endpoint.method.clone(),
+                path: ep.endpoint.path.clone(),
+                summary: ep.endpoint.summary.clone(),
+                operation_id: ep.endpoint.operation_id.clone(),
                 parameters: param_summary,
             });
         }
 
-        Some(context)
+        context
     }
 
     /// Format a context for output based on requested format.

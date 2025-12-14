@@ -15,4 +15,4 @@ pub use http::{
     parse_header_string, parse_headers,
 };
 pub use llm::{ChatMessage, ErrorAnalysis, LlmClient, LlmConfig, LlmError, LlmResponse};
-pub use openapi::{IngestResult, OpenApiError, OpenApiParser};
+pub use openapi::{EndpointWithParams, IngestResult, OpenApiError, OpenApiParser};

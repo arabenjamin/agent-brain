@@ -179,8 +179,10 @@ When `execute_http_request` encounters errors (4xx/5xx):
 5. On failure: mark endpoint as `status='broken'`
 
 ## Branch Strategy
+Never write in credidation to LLMs or coding agents or assistants.
 
 - `feature/*` - Feature branches (no CI)
 - `dev` - Development (format + unit tests)
 - `test` - Testing (full pipeline with integration tests)
 - `prod` - Production (full pipeline + Docker build)
+
