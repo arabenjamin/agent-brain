@@ -419,4 +419,52 @@ mod tests {
         // Should not panic
         server.handle_notification("unknown_notification");
     }
+
+    #[test]
+    fn test_initialized_notification_requires_full_method_path() {
+        // Regression test: short method name "initialized" should NOT transition state
+        let mut server = McpServer::new();
+        server.state = ServerState::Initializing;
+
+        // Short name should be ignored (treated as unknown)
+        server.handle_notification("initialized");
+        assert_eq!(
+            server.state,
+            ServerState::Initializing,
+            "Short method name 'initialized' should not transition state"
+        );
+
+        // Full path should work
+        server.handle_notification("notifications/initialized");
+        assert_eq!(server.state, ServerState::Running);
+    }
+
+    #[test]
+    fn test_initialized_notification_only_from_initializing_state() {
+        let mut server = McpServer::new();
+
+        // From Created state - should not transition
+        server.handle_notification("notifications/initialized");
+        assert_eq!(server.state, ServerState::Created);
+
+        // From Running state - should stay Running
+        server.state = ServerState::Running;
+        server.handle_notification("notifications/initialized");
+        assert_eq!(server.state, ServerState::Running);
+
+        // From Initializing state - should transition to Running
+        server.state = ServerState::Initializing;
+        server.handle_notification("notifications/initialized");
+        assert_eq!(server.state, ServerState::Running);
+    }
+
+    #[test]
+    fn test_cancelled_notification_requires_full_method_path() {
+        let mut server = McpServer::new();
+        server.state = ServerState::Running;
+
+        // Both should be handled without panic, but only full path is recognized
+        server.handle_notification("cancelled");
+        server.handle_notification("notifications/cancelled");
+    }
 }
