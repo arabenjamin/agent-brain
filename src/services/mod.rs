@@ -1,5 +1,6 @@
 pub mod context;
 pub mod discovery;
+pub mod docgen;
 pub mod healing;
 pub mod http;
 pub mod llm;
@@ -12,6 +13,7 @@ pub use discovery::{
     DiscoveryCandidate, DiscoveryConfig, DiscoveryError, DiscoveryMethod, DiscoveryResult,
     DiscoveryService,
 };
+pub use docgen::{DocGenConfig, DocGenError, DocGenResult, DocGenService, OpenApiSpec};
 pub use healing::{
     HealingConfig, HealingError, HealingOrchestrator, HealingResult, RequestContext,
 };

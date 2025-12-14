@@ -102,7 +102,8 @@ src/
 │   ├── llm.rs          # Ollama LLM client for error analysis
 │   ├── healing.rs      # Self-healing orchestrator
 │   ├── context.rs      # In-memory API context store with DB fallback
-│   └── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
+│   ├── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
+│   └── docgen.rs       # Documentation-to-OpenAPI generator with LLM
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
@@ -110,9 +111,12 @@ src/
     └── server.rs       # MCP server state machine
 
 tests/
-├── common/mod.rs       # Test utilities
-├── repository_test.rs  # Integration tests for Neo4j
-└── fixtures/           # Test data (petstore.json)
+├── common/mod.rs          # Test utilities
+├── repository_test.rs     # Integration tests for Neo4j
+├── context_tools_test.rs  # Context management tool tests
+├── discovery_test.rs      # Discovery service tests
+├── docgen_test.rs         # Doc-to-OpenAPI generation tests
+└── fixtures/              # Test data (petstore.json)
 ```
 
 ## Architecture
@@ -136,7 +140,7 @@ tests/
 
 ### MCP Tools
 
-The server exposes seven tools via JSON-RPC 2.0:
+The server exposes eight tools via JSON-RPC 2.0:
 
 **Core Tools:**
 
@@ -170,7 +174,7 @@ The server exposes seven tools via JSON-RPC 2.0:
    - Input: `{ "api_name": "Petstore" }` (optional - clears all if omitted)
    - Data remains in Neo4j and can be reloaded
 
-**Discovery Tools:**
+**Discovery & Generation Tools:**
 
 7. **`discover_openapi`** - Auto-discover OpenAPI specifications for an API
    - Input: `{ "base_url": "https://api.example.com", "use_llm": true, "auto_ingest": false }`
@@ -178,6 +182,14 @@ The server exposes seven tools via JSON-RPC 2.0:
    - Parses HTML documentation pages for spec links
    - Uses LLM to intelligently suggest additional locations
    - Optional `auto_ingest` to automatically load discovered specs
+
+8. **`build_openapi_from_docs`** - Generate OpenAPI specs from documentation pages
+   - Input: `{ "doc_urls": ["https://docs.example.com/api"], "api_title": "My API", "api_version": "1.0.0", "base_url": "https://api.example.com", "output_format": "json", "auto_ingest": false }`
+   - Fetches and parses HTML/markdown documentation
+   - Uses LLM to extract API endpoints, parameters, and schemas
+   - Generates valid OpenAPI 3.0 specification
+   - Output formats: `json` (default) or `yaml`
+   - Optional `auto_ingest` to load generated spec into the knowledge graph
 
 ### Self-Healing Flow
 

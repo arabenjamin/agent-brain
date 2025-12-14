@@ -18,11 +18,11 @@ async fn setup_handler() -> ToolHandler {
 }
 
 #[tokio::test]
-async fn test_tool_registry_has_six_tools() {
+async fn test_tool_registry_has_eight_tools() {
     let registry = ToolRegistry::new();
     let tools = registry.list();
 
-    assert_eq!(tools.len(), 7, "Expected 7 tools");
+    assert_eq!(tools.len(), 8, "Expected 8 tools");
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     assert!(tool_names.contains(&"ingest_openapi"));
@@ -31,6 +31,8 @@ async fn test_tool_registry_has_six_tools() {
     assert!(tool_names.contains(&"get_api_context"));
     assert!(tool_names.contains(&"list_loaded_apis"));
     assert!(tool_names.contains(&"clear_api_context"));
+    assert!(tool_names.contains(&"discover_openapi"));
+    assert!(tool_names.contains(&"build_openapi_from_docs"));
 }
 
 #[tokio::test]

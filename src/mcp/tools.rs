@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use crate::models::ParameterLocation;
 use crate::repository::Neo4jClient;
 use crate::services::{
-    ApiContext, ContextStore, DiscoveryConfig, DiscoveryService, EndpointSummary,
+    ApiContext, ContextStore, DiscoveryConfig, DiscoveryService, DocGenService, EndpointSummary,
     EndpointWithParams, HealingConfig, HealingOrchestrator, HttpExecutor, LlmClient, LlmConfig,
     OpenApiParser, ParameterSummary,
 };
@@ -31,6 +31,7 @@ impl ToolRegistry {
                 Self::list_loaded_apis_def(),
                 Self::clear_api_context_def(),
                 Self::discover_openapi_def(),
+                Self::build_openapi_from_docs_def(),
             ],
         }
     }
@@ -204,6 +205,49 @@ impl ToolRegistry {
             }),
         }
     }
+
+    fn build_openapi_from_docs_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "build_openapi_from_docs".to_string(),
+            description: "Generate an OpenAPI specification from API documentation pages. \
+                         Uses LLM to analyze HTML, markdown, or text documentation and \
+                         extract API endpoints, parameters, request/response schemas. \
+                         Outputs a valid OpenAPI 3.0 spec in JSON or YAML format."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "doc_urls": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "URLs of documentation pages to analyze"
+                    },
+                    "api_title": {
+                        "type": "string",
+                        "description": "Title for the generated API spec"
+                    },
+                    "api_version": {
+                        "type": "string",
+                        "description": "Version for the generated API spec (default: 1.0.0)"
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "description": "Base URL of the API server (optional)"
+                    },
+                    "output_format": {
+                        "type": "string",
+                        "enum": ["json", "yaml"],
+                        "description": "Output format for the spec (default: json)"
+                    },
+                    "auto_ingest": {
+                        "type": "boolean",
+                        "description": "Automatically ingest the generated spec into the knowledge graph (default: false)"
+                    }
+                },
+                "required": ["doc_urls", "api_title"]
+            }),
+        }
+    }
 }
 
 impl Default for ToolRegistry {
@@ -261,6 +305,27 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BuildOpenApiFromDocsInput {
+    pub doc_urls: Vec<String>,
+    pub api_title: String,
+    #[serde(default = "default_api_version")]
+    pub api_version: String,
+    pub base_url: Option<String>,
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+    #[serde(default)]
+    pub auto_ingest: bool,
+}
+
+fn default_api_version() -> String {
+    "1.0.0".to_string()
+}
+
+fn default_output_format() -> String {
+    "json".to_string()
+}
+
 // ============================================================================
 // Tool Handler
 // ============================================================================
@@ -315,6 +380,7 @@ impl ToolHandler {
             "list_loaded_apis" => self.handle_list_loaded_apis().await,
             "clear_api_context" => self.handle_clear_api_context(arguments).await,
             "discover_openapi" => self.handle_discover_openapi(arguments).await,
+            "build_openapi_from_docs" => self.handle_build_openapi_from_docs(arguments).await,
             _ => ToolCallResult::error(format!("Unknown tool: {}", name)),
         }
     }
@@ -717,6 +783,111 @@ impl ToolHandler {
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
     }
 
+    async fn handle_build_openapi_from_docs(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: BuildOpenApiFromDocsInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        info!(
+            urls = ?input.doc_urls,
+            title = %input.api_title,
+            "Building OpenAPI spec from documentation"
+        );
+
+        // Require LLM configuration for this tool
+        let Some(llm_config) = &self.llm_config else {
+            return ToolCallResult::error(
+                "LLM configuration required for documentation analysis. \
+                 Configure an LLM provider (Ollama or Anthropic) to use this tool."
+            );
+        };
+
+        let llm = match LlmClient::with_config(llm_config.clone()) {
+            Ok(l) => l,
+            Err(e) => return ToolCallResult::error(format!("Failed to create LLM client: {}", e)),
+        };
+
+        // Create the doc generator service
+        let service = match DocGenService::new(llm) {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(format!("Failed to create doc generator: {}", e)),
+        };
+
+        // Generate the OpenAPI spec
+        let result = match service
+            .generate(
+                &input.doc_urls,
+                &input.api_title,
+                &input.api_version,
+                input.base_url.as_deref(),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return ToolCallResult::error(format!("Documentation analysis failed: {}", e)),
+        };
+
+        // Format the spec based on requested format
+        let spec_output = match input.output_format.as_str() {
+            "yaml" => result.spec.to_yaml().unwrap_or_else(|e| format!("YAML error: {}", e)),
+            _ => result.spec.to_json().unwrap_or_else(|e| format!("JSON error: {}", e)),
+        };
+
+        // Auto-ingest if requested and we have a database connection
+        let mut ingested = false;
+        if input.auto_ingest && self.neo4j.is_some() {
+            let neo4j = self.neo4j.as_ref().unwrap();
+
+            // Initialize schema if needed
+            if let Err(e) = neo4j.init_schema().await {
+                return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
+            }
+
+            // Write spec to temp file for ingestion
+            let temp_path = format!("/tmp/generated_spec_{}.json", uuid::Uuid::new_v4());
+            if let Ok(()) = std::fs::write(&temp_path, result.spec.to_json().unwrap_or_default()) {
+                let mut parser = OpenApiParser::new(neo4j.clone());
+                if let Ok(ingest_result) = parser.ingest(&temp_path).await {
+                    // Build and store context
+                    let context = self.build_api_context(
+                        &ingest_result.api_title,
+                        &ingest_result.api_version,
+                        None,
+                        ingest_result.description.as_deref(),
+                        &ingest_result.endpoints,
+                    );
+                    self.context_store.set(context).await;
+                    ingested = true;
+                }
+                let _ = std::fs::remove_file(&temp_path);
+            }
+        }
+
+        // Build response
+        let mut response = json!({
+            "success": true,
+            "api_title": input.api_title,
+            "api_version": input.api_version,
+            "endpoints_found": result.endpoints_found,
+            "schemas_found": result.schemas_found,
+            "sources_analyzed": result.sources.len(),
+            "output_format": input.output_format,
+            "spec": spec_output
+        });
+
+        if !result.warnings.is_empty() {
+            response["warnings"] = json!(result.warnings);
+        }
+
+        if ingested {
+            response["auto_ingested"] = json!(true);
+            response["context_loaded"] = json!(true);
+        }
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+    }
+
     // ========================================================================
     // Helpers
     // ========================================================================
@@ -886,7 +1057,7 @@ mod tests {
     #[test]
     fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 7);
+        assert_eq!(registry.list().len(), 8);
     }
 
     #[test]
@@ -899,6 +1070,7 @@ mod tests {
         assert!(registry.get("list_loaded_apis").is_some());
         assert!(registry.get("clear_api_context").is_some());
         assert!(registry.get("discover_openapi").is_some());
+        assert!(registry.get("build_openapi_from_docs").is_some());
         assert!(registry.get("unknown_tool").is_none());
     }
 
