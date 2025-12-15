@@ -3,7 +3,7 @@
 ## Current State Summary
 
 **Completed (100% core implementation):**
-- ✅ Data models (Resource, Endpoint, Schema, Parameter, HealingEvent)
+- ✅ Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, ApiCredential)
 - ✅ Neo4j repository layer with full CRUD operations
 - ✅ Relationship management for all graph edges
 - ✅ Error handling infrastructure
@@ -19,8 +19,10 @@
 - ✅ Documentation-to-OpenAPI generator with LLM
 - ✅ OpenAPI export module (Graph-to-Spec with diff reporting)
 - ✅ Custom MCP server implementation (JSON-RPC 2.0 over stdio)
-- ✅ 10 MCP tools (ingest, query, execute, context management, discovery, docgen, export, diff)
-- ✅ Unit tests (120 tests passing)
+- ✅ 13 MCP tools (ingest, query, execute, context, discovery, docgen, export, diff, credentials)
+- ✅ Secret provider abstraction (Local AES-GCM, Vault, AWS Secrets Manager)
+- ✅ Credential management with URL-based auto-injection
+- ✅ Unit tests (154 tests passing)
 - ✅ Integration tests (21+ tests)
 - ✅ Docker Compose setup (Neo4j + Ollama)
 - ✅ GitHub Actions CI/CD pipeline
@@ -94,7 +96,7 @@
 ### 3.2 Tool Implementations
 - [x] `ingest_openapi` - Parse spec, load graph, return counts
 - [x] `graph_query_endpoint` - Search endpoints by path pattern
-- [x] `execute_http_request` - Run request with healing loop
+- [x] `execute_http_request` - Run request with auto-credential injection
 - [x] `get_api_context` - Retrieve API summaries from in-memory context
 - [x] `list_loaded_apis` - List all APIs in the context store
 - [x] `clear_api_context` - Remove APIs from in-memory context
@@ -102,6 +104,9 @@
 - [x] `build_openapi_from_docs` - Generate OpenAPI specs from documentation pages
 - [x] `export_openapi` - Export healed graph back to OpenAPI 3.0 spec
 - [x] `diff_api_spec` - Compare original vs healed graph, generate diff reports
+- [x] `configure_api_credential` - Store API credentials for auto-injection
+- [x] `list_api_credentials` - List all configured credentials
+- [x] `delete_api_credential` - Remove an API credential
 
 ### 3.3 Query Enhancement
 - [x] Fuzzy matching on path, summary, operation_id
@@ -114,11 +119,12 @@
 
 ### 4.1 Unit Tests ✅
 Location: Inline in each module with `#[cfg(test)]`
-**Status: 120 tests passing**
+**Status: 154 tests passing**
 
 | Module | Test Coverage |
 |--------|---------------|
 | `models/*` | ✅ Serialization/deserialization roundtrips |
+| `models/credential` | ✅ Credential types, inject locations |
 | `config` | ✅ Environment parsing, defaults |
 | `services/openapi` | ✅ Spec parsing, node extraction (mock specs) |
 | `services/http` | ✅ Request building, response classification |
@@ -128,8 +134,12 @@ Location: Inline in each module with `#[cfg(test)]`
 | `services/discovery` | ✅ OpenAPI validation, link extraction |
 | `services/docgen` | ✅ Spec generation, YAML/JSON output |
 | `services/export` | ✅ OpenAPI builder, exporter, differ, report generator |
+| `services/secrets/local` | ✅ AES-GCM encryption, persistence |
+| `services/secrets/vault` | ✅ URL building, config validation |
+| `services/secrets/aws` | ✅ Secret name building, prefix handling |
+| `services/secrets/manager` | ✅ Credential formatting, URL matching |
 | `mcp/protocol` | ✅ JSON-RPC message parsing |
-| `mcp/tools` | ✅ Tool registry, input parsing (10 tools) |
+| `mcp/tools` | ✅ Tool registry, input parsing (13 tools) |
 | `mcp/server` | ✅ Server state transitions |
 
 ### 4.2 Integration Tests ✅
@@ -367,7 +377,8 @@ agent-api/
 │   │   ├── schema.rs
 │   │   ├── parameter.rs
 │   │   ├── healing.rs
-│   │   └── http.rs             # HTTP method, response types
+│   │   ├── http.rs             # HTTP method, response types
+│   │   └── credential.rs       # API credential model
 │   ├── repository/
 │   │   ├── mod.rs
 │   │   ├── client.rs           # Neo4j connection
@@ -376,7 +387,8 @@ agent-api/
 │   │   ├── endpoint.rs
 │   │   ├── schema.rs
 │   │   ├── parameter.rs
-│   │   └── healing.rs
+│   │   ├── healing.rs
+│   │   └── credential.rs       # Credential CRUD operations
 │   ├── services/
 │   │   ├── mod.rs
 │   │   ├── openapi.rs          # OpenAPI parser (~500 lines)
@@ -386,17 +398,25 @@ agent-api/
 │   │   ├── context.rs          # In-memory API context store (~350 lines)
 │   │   ├── discovery.rs        # OpenAPI auto-discovery (~650 lines)
 │   │   ├── docgen.rs           # Doc-to-OpenAPI generator (~880 lines)
-│   │   └── export/
-│   │       ├── mod.rs          # Export module exports
-│   │       ├── builder.rs      # OpenAPI spec builder (~435 lines)
-│   │       ├── exporter.rs     # Graph-to-Spec exporter (~515 lines)
-│   │       ├── differ.rs       # Spec diff generator (~340 lines)
-│   │       └── report.rs       # Markdown report generator (~200 lines)
+│   │   ├── export/
+│   │   │   ├── mod.rs          # Export module exports
+│   │   │   ├── builder.rs      # OpenAPI spec builder (~435 lines)
+│   │   │   ├── exporter.rs     # Graph-to-Spec exporter (~515 lines)
+│   │   │   ├── differ.rs       # Spec diff generator (~340 lines)
+│   │   │   └── report.rs       # Markdown report generator (~200 lines)
+│   │   └── secrets/            # Secret provider abstraction
+│   │       ├── mod.rs          # Module exports
+│   │       ├── error.rs        # Secret error types
+│   │       ├── provider.rs     # SecretProvider trait
+│   │       ├── local.rs        # AES-256-GCM encrypted storage (~440 lines)
+│   │       ├── vault.rs        # HashiCorp Vault KV v2 (~250 lines)
+│   │       ├── aws.rs          # AWS Secrets Manager (~220 lines)
+│   │       └── manager.rs      # CredentialManager (~400 lines)
 │   └── mcp/
 │       ├── mod.rs
 │       ├── protocol.rs         # JSON-RPC 2.0 types (~300 lines)
 │       ├── transport.rs        # Stdio transport (~100 lines)
-│       ├── tools.rs            # Tool registry & handlers (~1400 lines)
+│       ├── tools.rs            # Tool registry & handlers (~1600 lines)
 │       └── server.rs           # MCP server (~300 lines)
 ├── tests/
 │   ├── common/
@@ -436,6 +456,8 @@ agent-api/
 | 11 | Application Dockerfile | ✅ Complete |
 | 12 | OpenAPI export module (Graph-to-Spec) | ✅ Complete |
 | 13 | Diff reporting (original vs healed) | ✅ Complete |
+| 14 | Secret provider abstraction | ✅ Complete |
+| 15 | Credential management tools | ✅ Complete |
 
 ---
 
@@ -463,6 +485,13 @@ dotenvy = "0.15"
 url = "2"
 scraper = "0.21"               # HTML parsing for discovery/docgen
 schemars = "0.8"               # JSON Schema generation for MCP tools
+
+# Secret provider dependencies
+aes-gcm = "0.10"               # AES-256-GCM encryption for local secrets
+rand = "0.8"                   # Random nonce generation
+base64 = "0.22"                # Base64 encoding for Basic auth
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-secretsmanager = "1.54"  # AWS Secrets Manager
 ```
 
 ---

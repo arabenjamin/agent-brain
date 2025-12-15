@@ -6,6 +6,7 @@ pub mod healing;
 pub mod http;
 pub mod llm;
 pub mod openapi;
+pub mod secrets;
 
 pub use context::{
     ApiContext, ContextError, ContextStore, EndpointSummary, ParameterSummary, SchemaSummary,
@@ -29,3 +30,8 @@ pub use http::{
 };
 pub use llm::{ChatMessage, ErrorAnalysis, LlmClient, LlmConfig, LlmError, LlmResponse};
 pub use openapi::{EndpointWithParams, IngestResult, OpenApiError, OpenApiParser};
+pub use secrets::{
+    AwsSecretConfig, AwsSecretProvider, BoxedSecretProvider, CredentialManager,
+    CredentialManagerConfig, LocalSecretConfig, LocalSecretProvider, SecretError, SecretProvider,
+    VaultConfig, VaultSecretProvider,
+};

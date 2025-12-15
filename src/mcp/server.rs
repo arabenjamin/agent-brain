@@ -1,11 +1,13 @@
 //! MCP server implementation.
 
+use std::sync::Arc;
+
 use serde_json::json;
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::Neo4jClient;
-use crate::services::LlmConfig;
+use crate::services::{CredentialManager, LlmConfig};
 
 use super::protocol::{
     IncomingMessage, InitializeParams, InitializeResult, JsonRpcErrorResponse, JsonRpcRequest,
@@ -106,6 +108,12 @@ impl McpServer {
     /// Set the LLM configuration for healing.
     pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
         self.tool_handler = self.tool_handler.with_llm_config(config);
+        self
+    }
+
+    /// Set the credential manager for API authentication.
+    pub fn with_credential_manager(mut self, manager: Arc<CredentialManager>) -> Self {
+        self.tool_handler = self.tool_handler.with_credential_manager(manager);
         self
     }
 

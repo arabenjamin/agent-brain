@@ -1,16 +1,20 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use agent_api::cli::{Cli, Command};
-use agent_api::config::{Config, LogFormat};
+use agent_api::config::{Config, LogFormat, SecretProviderType};
 use agent_api::logging;
 use agent_api::mcp::McpServer;
 use agent_api::models::HttpMethod;
 use agent_api::repository::Neo4jClient;
 use agent_api::services::{
-    ExportFormat, ExportOptions, HttpExecutor, LlmConfig, MarkdownReportGenerator, OpenApiExporter,
-    OpenApiParser, RequestBuilder, SpecDiffer, parse_headers,
+    AwsSecretConfig, AwsSecretProvider, CredentialManager, ExportFormat, ExportOptions,
+    HttpExecutor, LlmConfig, LocalSecretConfig, LocalSecretProvider, MarkdownReportGenerator,
+    OpenApiExporter, OpenApiParser, RequestBuilder, SpecDiffer, VaultConfig, VaultSecretProvider,
+    parse_headers,
 };
 
 #[tokio::main]
@@ -37,6 +41,22 @@ async fn main() -> Result<()> {
             "json" => LogFormat::Json,
             _ => LogFormat::Pretty,
         },
+        secret_provider: std::env::var("SECRET_PROVIDER")
+            .map(|s| match s.to_lowercase().as_str() {
+                "vault" => SecretProviderType::Vault,
+                "aws" => SecretProviderType::Aws,
+                "none" => SecretProviderType::None,
+                _ => SecretProviderType::Local,
+            })
+            .unwrap_or_default(),
+        secrets_file: std::env::var("SECRETS_FILE").ok(),
+        secrets_encryption_key: std::env::var("SECRETS_ENCRYPTION_KEY").ok(),
+        vault_address: std::env::var("VAULT_ADDR").ok(),
+        vault_token: std::env::var("VAULT_TOKEN").ok(),
+        vault_mount_path: std::env::var("VAULT_MOUNT_PATH").ok(),
+        vault_namespace: std::env::var("VAULT_NAMESPACE").ok(),
+        aws_region: std::env::var("AWS_REGION").ok(),
+        aws_secret_prefix: std::env::var("AWS_SECRET_PREFIX").ok(),
     };
 
     // Initialize logging
@@ -107,14 +127,138 @@ async fn run_serve(config: &Config) -> Result<()> {
     // Configure LLM for healing
     let llm_config = LlmConfig::new(&config.ollama_url, &config.ollama_model);
 
+    // Create credential manager with appropriate secret provider
+    let credential_manager = create_credential_manager(config, client.clone()).await;
+
     // Create and run MCP server
-    let server = McpServer::new()
+    let mut server = McpServer::new()
         .with_neo4j(client)
         .with_llm_config(llm_config);
+
+    if let Some(cred_manager) = credential_manager {
+        server = server.with_credential_manager(cred_manager);
+    }
 
     server.run().await?;
 
     Ok(())
+}
+
+/// Create a credential manager based on the configured secret provider.
+async fn create_credential_manager(
+    config: &Config,
+    neo4j: Neo4jClient,
+) -> Option<Arc<CredentialManager>> {
+    match config.secret_provider {
+        SecretProviderType::None => {
+            info!("Secret provider disabled, credential management unavailable");
+            None
+        }
+        SecretProviderType::Local => {
+            let file_path = config
+                .secrets_file
+                .clone()
+                .unwrap_or_else(|| ".secrets.enc".to_string());
+            let encryption_key = config.secrets_encryption_key.clone();
+
+            let local_config = LocalSecretConfig::new(&file_path);
+            let local_config = if let Some(key) = encryption_key {
+                local_config.with_encryption_key(key)
+            } else {
+                warn!(
+                    "No SECRETS_ENCRYPTION_KEY set, using default key (insecure for production)"
+                );
+                local_config
+            };
+
+            match LocalSecretProvider::new(local_config) {
+                Ok(provider) => {
+                    // Load existing secrets
+                    if let Err(e) = provider.load().await {
+                        warn!(error = %e, "Failed to load existing secrets, starting fresh");
+                    }
+
+                    let manager = CredentialManager::new()
+                        .with_secret_provider(Box::new(provider))
+                        .with_neo4j(neo4j);
+
+                    info!("Local secret provider initialized");
+                    Some(Arc::new(manager))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create local secret provider");
+                    None
+                }
+            }
+        }
+        SecretProviderType::Vault => {
+            let vault_address = match &config.vault_address {
+                Some(addr) => addr.clone(),
+                None => {
+                    warn!("VAULT_ADDR not set, skipping Vault provider");
+                    return None;
+                }
+            };
+
+            let vault_token = match &config.vault_token {
+                Some(token) => token.clone(),
+                None => {
+                    warn!("VAULT_TOKEN not set, skipping Vault provider");
+                    return None;
+                }
+            };
+
+            let vault_config = VaultConfig::new(vault_address, vault_token)
+                .with_mount_path(
+                    config
+                        .vault_mount_path
+                        .clone()
+                        .unwrap_or_else(|| "secret".to_string()),
+                );
+
+            let vault_config = if let Some(ns) = &config.vault_namespace {
+                vault_config.with_namespace(ns)
+            } else {
+                vault_config
+            };
+
+            match VaultSecretProvider::new(vault_config) {
+                Ok(provider) => {
+                    let manager = CredentialManager::new()
+                        .with_secret_provider(Box::new(provider))
+                        .with_neo4j(neo4j);
+
+                    info!("Vault secret provider initialized");
+                    Some(Arc::new(manager))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create Vault secret provider");
+                    None
+                }
+            }
+        }
+        SecretProviderType::Aws => {
+            let region = config
+                .aws_region
+                .clone()
+                .unwrap_or_else(|| "us-east-1".to_string());
+
+            let aws_config = AwsSecretConfig::new().with_region(region);
+            let aws_config = if let Some(prefix) = &config.aws_secret_prefix {
+                aws_config.with_prefix(prefix)
+            } else {
+                aws_config
+            };
+
+            let provider = AwsSecretProvider::new(aws_config);
+            let manager = CredentialManager::new()
+                .with_secret_provider(Box::new(provider))
+                .with_neo4j(neo4j);
+
+            info!("AWS Secrets Manager provider initialized");
+            Some(Arc::new(manager))
+        }
+    }
 }
 
 async fn run_ingest(config: &Config, spec: &str) -> Result<()> {

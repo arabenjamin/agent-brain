@@ -56,9 +56,21 @@ clap = { version = "4", features = ["derive", "env"] }
 # OpenAPI parsing
 openapiv3 = "2"
 
+# Encryption for local secret provider
+aes-gcm = "0.10"
+rand = "0.8"
+
+# AWS Secrets Manager
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-secretsmanager = "1.54"
+
+# Base64 encoding for Basic auth
+base64 = "0.22"
+
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["neo4j"] }
 temp-env = "0.3"
+tempfile = "3"

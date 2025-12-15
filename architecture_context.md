@@ -45,23 +45,38 @@ The "Technical Moat" is how we structure the data. We do NOT store text chunks. 
 -   `(:Schema)-[:LINKS_TO]->(:Schema)` (for nested objects)
 
 ## 4. MCP Tool Definitions (The "Arms" of the Agent)
-The MCP Server must expose exactly these tools to the LLM Client:
+The MCP Server exposes 13 tools to the LLM Client:
 
-### Tool A: `ingest_openapi`
--   **Input:** `url` (string) or `file_path` (string)
--   **Action:** Parses the OpenAPI spec and bulk-loads the Nodes/Edges into Neo4j.
--   **Output:** Success message with count of Nodes created.
+### Core Tools
+-   **`ingest_openapi`** - Parse and load OpenAPI specs into Neo4j
+-   **`graph_query_endpoint`** - Search endpoints by path pattern or keywords
+-   **`execute_http_request`** - Execute HTTP requests with auto-credential injection
 
-### Tool B: `graph_query_endpoint`
--   **Input:** `natural_language_query` (string) (e.g., "How do I create a user?")
--   **Action:** Performs a Vector Search (or Cypher fuzzy match) on `Endpoint` nodes to find the relevant API path.
--   **Output:** The full details of the endpoint, including required parameters and schema structure.
+### Context Management Tools
+-   **`get_api_context`** - Retrieve API summaries from in-memory context
+-   **`list_loaded_apis`** - List all APIs in the context store
+-   **`clear_api_context`** - Remove APIs from in-memory context
 
-### Tool C: `execute_http_request` (The "Live" Test)
--   **Input:** `method` (string), `url` (string), `headers` (json), `body` (json)
--   **Action:** Executes the real HTTP request against the target API.
--   **Output:** Status code, response body, and timing.
--   **Side Effect:** If the request succeeds/fails, the agent updates a property `last_verified_status` on the `Endpoint` node in the graph.
+### Discovery & Generation Tools
+-   **`discover_openapi`** - Auto-discover OpenAPI specs from a base URL
+-   **`build_openapi_from_docs`** - Generate specs from documentation pages
+
+### Export & Diff Tools
+-   **`export_openapi`** - Export healed graph back to OpenAPI 3.0 spec
+-   **`diff_api_spec`** - Compare original vs healed graph, generate diff reports
+
+### Credential Management Tools
+-   **`configure_api_credential`** - Store API credentials for auto-injection
+-   **`list_api_credentials`** - List all configured credentials
+-   **`delete_api_credential`** - Remove an API credential
+
+## 4.1 Secret Provider Abstraction
+The system supports multiple secret storage backends:
+-   **Local** - AES-256-GCM encrypted file storage (`.secrets.enc`)
+-   **HashiCorp Vault** - KV v2 secrets engine with token auth
+-   **AWS Secrets Manager** - AWS SDK integration with IAM auth
+
+Credentials are automatically injected into HTTP requests based on URL matching against known API base URLs.
 
 ## 5. Critical Workflow: "Self-Healing" Documentation
 1.  User asks: "Get me the user with ID 5."

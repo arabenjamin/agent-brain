@@ -70,6 +70,9 @@ cargo run --release -- init-db
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `llama3` | LLM model for self-healing |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
+| `SECRET_PROVIDER` | `local` | Secret provider (local/vault/aws/none) |
+| `SECRETS_FILE` | `.secrets.enc` | Encrypted secrets file path |
+| `SECRETS_ENCRYPTION_KEY` | - | Encryption key for local secrets |
 
 ## CLI Usage
 
@@ -196,7 +199,7 @@ Once connected, Claude can use these tools:
 |------|-------------|
 | `ingest_openapi` | Load OpenAPI specs into the knowledge graph |
 | `graph_query_endpoint` | Search endpoints by path or keyword |
-| `execute_http_request` | Execute API calls with optional self-healing |
+| `execute_http_request` | Execute API calls with auto-credential injection |
 | `get_api_context` | Retrieve API summaries for context |
 | `list_loaded_apis` | List all ingested APIs |
 | `clear_api_context` | Clear cached API context |
@@ -204,6 +207,9 @@ Once connected, Claude can use these tools:
 | `build_openapi_from_docs` | Generate specs from documentation pages |
 | `export_openapi` | Export healed specs to YAML/JSON |
 | `diff_api_spec` | Generate documentation drift reports |
+| `configure_api_credential` | Store API credentials for automatic injection |
+| `list_api_credentials` | List all configured credentials |
+| `delete_api_credential` | Remove an API credential |
 
 ### Example Prompts
 
@@ -243,7 +249,7 @@ The healed documentation can then be exported and committed to version control.
 │                       MCP Server                            │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐   │
 │  │   Tools     │ │  Transport  │ │   Protocol Handler  │   │
-│  │  (10 tools) │ │   (stdio)   │ │    (JSON-RPC 2.0)   │   │
+│  │ (13 tools)  │ │   (stdio)   │ │    (JSON-RPC 2.0)   │   │
 │  └─────────────┘ └─────────────┘ └─────────────────────┘   │
 └─────────────────────────┬───────────────────────────────────┘
                           │
@@ -257,6 +263,13 @@ The healed documentation can then be exported and committed to version control.
 │  │ Context  │ │Discovery │ │  DocGen  │ │    Export    │   │
 │  │  Store   │ │ Service  │ │ Service  │ │   Module     │   │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │                  Secrets Module                       │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐             │   │
+│  │  │  Local   │ │  Vault   │ │   AWS    │ (Providers) │   │
+│  │  │(AES-GCM) │ │ (KV v2)  │ │(Secrets) │             │   │
+│  │  └──────────┘ └──────────┘ └──────────┘             │   │
+│  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
@@ -267,6 +280,8 @@ The healed documentation can then be exported and committed to version control.
 │                          ┌───────────┼───────────┐          │
 │                          ▼           ▼           ▼          │
 │                    (Parameter)  (Schema)  (HealingEvent)    │
+│                                                             │
+│   (ApiCredential) ← Stores credential metadata              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -279,7 +294,9 @@ agent-api/
 │   ├── cli.rs               # Command definitions
 │   ├── config.rs            # Environment configuration
 │   ├── models/              # Data models
+│   │   └── credential.rs    # API credential model
 │   ├── repository/          # Neo4j database layer
+│   │   └── credential.rs    # Credential CRUD operations
 │   ├── services/            # Business logic
 │   │   ├── openapi.rs       # Spec parser
 │   │   ├── http.rs          # HTTP executor
@@ -288,15 +305,21 @@ agent-api/
 │   │   ├── context.rs       # In-memory context store
 │   │   ├── discovery.rs     # Spec auto-discovery
 │   │   ├── docgen.rs        # Doc-to-spec generator
-│   │   └── export/          # Export module
-│   │       ├── builder.rs   # OpenAPI builder
-│   │       ├── exporter.rs  # Graph-to-spec export
-│   │       ├── differ.rs    # Diff generator
-│   │       └── report.rs    # Report formatter
+│   │   ├── export/          # Export module
+│   │   │   ├── builder.rs   # OpenAPI builder
+│   │   │   ├── exporter.rs  # Graph-to-spec export
+│   │   │   ├── differ.rs    # Diff generator
+│   │   │   └── report.rs    # Report formatter
+│   │   └── secrets/         # Secret provider abstraction
+│   │       ├── provider.rs  # SecretProvider trait
+│   │       ├── local.rs     # AES-256-GCM encrypted storage
+│   │       ├── vault.rs     # HashiCorp Vault KV v2
+│   │       ├── aws.rs       # AWS Secrets Manager
+│   │       └── manager.rs   # CredentialManager
 │   └── mcp/                 # MCP server implementation
 │       ├── protocol.rs      # JSON-RPC types
 │       ├── transport.rs     # Stdio transport
-│       ├── tools.rs         # Tool handlers
+│       ├── tools.rs         # Tool handlers (13 tools)
 │       └── server.rs        # Server state machine
 ├── tests/                   # Integration tests
 ├── docs/                    # Documentation

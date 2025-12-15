@@ -38,6 +38,7 @@ impl Neo4jClient {
             "CREATE CONSTRAINT schema_id IF NOT EXISTS FOR (s:Schema) REQUIRE s.id IS UNIQUE",
             "CREATE CONSTRAINT parameter_id IF NOT EXISTS FOR (p:Parameter) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT healing_event_id IF NOT EXISTS FOR (h:HealingEvent) REQUIRE h.id IS UNIQUE",
+            "CREATE CONSTRAINT api_credential_api_name IF NOT EXISTS FOR (c:ApiCredential) REQUIRE c.api_name IS UNIQUE",
         ];
 
         let indexes = [

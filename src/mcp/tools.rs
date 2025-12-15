@@ -1,16 +1,18 @@
 //! MCP tool definitions and handlers.
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, info};
 
-use crate::models::ParameterLocation;
+use crate::models::{ApiCredential, CredentialType, InjectLocation, ParameterLocation};
 use crate::repository::Neo4jClient;
 use crate::services::{
-    ApiContext, ContextStore, DiscoveryConfig, DiscoveryService, DocGenService, EndpointSummary,
-    EndpointWithParams, ExportFormat, ExportOptions, HealingConfig, HealingOrchestrator,
-    HttpExecutor, LlmClient, LlmConfig, MarkdownReportGenerator, OpenApiExporter, OpenApiParser,
-    ParameterSummary, SpecDiffer,
+    ApiContext, ContextStore, CredentialManager, DiscoveryConfig, DiscoveryService, DocGenService,
+    EndpointSummary, EndpointWithParams, ExportFormat, ExportOptions, HttpExecutor, LlmClient,
+    LlmConfig, MarkdownReportGenerator, OpenApiExporter, OpenApiParser, ParameterSummary,
+    RequestBuilder, SpecDiffer,
 };
 
 use super::protocol::{ToolCallResult, ToolDefinition};
@@ -35,6 +37,10 @@ impl ToolRegistry {
                 Self::build_openapi_from_docs_def(),
                 Self::export_openapi_def(),
                 Self::diff_api_spec_def(),
+                // Credential management tools
+                Self::configure_api_credential_def(),
+                Self::list_api_credentials_def(),
+                Self::delete_api_credential_def(),
             ],
         }
     }
@@ -309,6 +315,84 @@ impl ToolRegistry {
             }),
         }
     }
+
+    // ========================================================================
+    // Credential Management Tool Definitions
+    // ========================================================================
+
+    fn configure_api_credential_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "configure_api_credential".to_string(),
+            description: "Configure API credentials for authentication. \
+                         Associates a credential (API key, bearer token, etc.) with an API name. \
+                         The actual secret value is stored securely in the configured secret provider."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "api_name": {
+                        "type": "string",
+                        "description": "Name of the API to configure credentials for (e.g., 'OpenWeatherMap')"
+                    },
+                    "credential_type": {
+                        "type": "string",
+                        "enum": ["api_key", "bearer", "basic", "oauth2_client_credentials"],
+                        "description": "Type of credential"
+                    },
+                    "inject_location": {
+                        "type": "string",
+                        "enum": ["header", "query"],
+                        "description": "Where to inject the credential in requests"
+                    },
+                    "inject_key": {
+                        "type": "string",
+                        "description": "Header or query parameter name (e.g., 'X-API-Key', 'Authorization', 'appid')"
+                    },
+                    "secret_value": {
+                        "type": "string",
+                        "description": "The actual secret value to store"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description of the credential"
+                    }
+                },
+                "required": ["api_name", "credential_type", "inject_location", "inject_key", "secret_value"]
+            }),
+        }
+    }
+
+    fn list_api_credentials_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_api_credentials".to_string(),
+            description: "List all configured API credentials. \
+                         Returns credential metadata (not the actual secrets)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    fn delete_api_credential_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "delete_api_credential".to_string(),
+            description: "Delete an API credential configuration. \
+                         Removes both the credential metadata and the stored secret."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "api_name": {
+                        "type": "string",
+                        "description": "Name of the API to delete credentials for"
+                    }
+                },
+                "required": ["api_name"]
+            }),
+        }
+    }
 }
 
 impl Default for ToolRegistry {
@@ -414,6 +498,22 @@ fn default_markdown_format() -> String {
     "markdown".to_string()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ConfigureApiCredentialInput {
+    pub api_name: String,
+    pub credential_type: String,
+    pub inject_location: String,
+    pub inject_key: String,
+    pub secret_value: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteApiCredentialInput {
+    pub api_name: String,
+}
+
 // ============================================================================
 // Tool Handler
 // ============================================================================
@@ -423,6 +523,7 @@ pub struct ToolHandler {
     neo4j: Option<Neo4jClient>,
     llm_config: Option<LlmConfig>,
     context_store: ContextStore,
+    credential_manager: Option<Arc<CredentialManager>>,
 }
 
 impl ToolHandler {
@@ -432,6 +533,7 @@ impl ToolHandler {
             neo4j: None,
             llm_config: None,
             context_store: ContextStore::new(),
+            credential_manager: None,
         }
     }
 
@@ -442,12 +544,19 @@ impl ToolHandler {
             neo4j: Some(neo4j),
             llm_config: None,
             context_store,
+            credential_manager: None,
         }
     }
 
     /// Set the LLM configuration for healing.
     pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
         self.llm_config = Some(config);
+        self
+    }
+
+    /// Set the credential manager for API authentication.
+    pub fn with_credential_manager(mut self, manager: Arc<CredentialManager>) -> Self {
+        self.credential_manager = Some(manager);
         self
     }
 
@@ -471,6 +580,10 @@ impl ToolHandler {
             "build_openapi_from_docs" => self.handle_build_openapi_from_docs(arguments).await,
             "export_openapi" => self.handle_export_openapi(arguments).await,
             "diff_api_spec" => self.handle_diff_api_spec(arguments).await,
+            // Credential management tools
+            "configure_api_credential" => self.handle_configure_api_credential(arguments).await,
+            "list_api_credentials" => self.handle_list_api_credentials().await,
+            "delete_api_credential" => self.handle_delete_api_credential(arguments).await,
             _ => ToolCallResult::error(format!("Unknown tool: {}", name)),
         }
     }
@@ -610,40 +723,77 @@ impl ToolHandler {
             _ => return ToolCallResult::error(format!("Invalid HTTP method: {}", input.method)),
         };
 
+        // Build request
+        let mut builder = RequestBuilder::new().base_url(&input.url).method(method);
+
+        // Add headers if provided
+        if let Some(ref headers) = input.headers {
+            builder = builder.headers(headers.clone());
+        }
+
+        // Add body if provided
+        if let Some(ref body) = input.body {
+            builder = builder.body(body.clone());
+        }
+
+        // Auto-inject credentials if credential manager is configured
+        let (builder, credentials_injected) = if let Some(cred_manager) = &self.credential_manager {
+            // Check if we can detect an API from the URL first
+            let api_detected = cred_manager.detect_api_from_url(&input.url).await.is_some();
+
+            // Try to inject credentials
+            match cred_manager
+                .inject_credentials_for_url(&input.url, builder)
+                .await
+            {
+                Ok(updated_builder) => {
+                    if api_detected {
+                        debug!(url = %input.url, "Auto-injected credentials for request");
+                    }
+                    (updated_builder, api_detected)
+                }
+                Err(e) => {
+                    debug!(error = %e, "Failed to inject credentials, rebuilding request");
+                    // Rebuild the builder since it was consumed
+                    let mut new_builder =
+                        RequestBuilder::new().base_url(&input.url).method(method);
+                    if let Some(headers) = input.headers.clone() {
+                        new_builder = new_builder.headers(headers);
+                    }
+                    if let Some(body) = input.body.clone() {
+                        new_builder = new_builder.body(body);
+                    }
+                    (new_builder, false)
+                }
+            }
+        } else {
+            (builder, false)
+        };
+
         // Create HTTP executor
         let http = match HttpExecutor::new() {
             Ok(h) => h,
             Err(e) => return ToolCallResult::error(format!("Failed to create HTTP client: {}", e)),
         };
 
-        // Build orchestrator with optional LLM for healing
-        let mut orchestrator = HealingOrchestrator::new(http);
-
-        if let Some(llm_config) = &self.llm_config
-            && let Ok(llm) = LlmClient::with_config(llm_config.clone())
-        {
-            orchestrator = orchestrator
-                .with_llm(llm)
-                .with_config(HealingConfig::default());
-        }
-
-        if let Some(neo4j) = &self.neo4j {
-            orchestrator = orchestrator.with_neo4j(neo4j.clone());
-        }
-
-        // Execute the request
-        match orchestrator
-            .execute_simple(method, &input.url, input.body.clone())
-            .await
-        {
+        // Execute the request using the builder
+        // Note: For full healing support, consider using HealingOrchestrator.execute_with_healing()
+        // with an endpoint context, but for simple requests we use HttpExecutor directly
+        match http.execute(&builder).await {
             Ok(response) => {
-                let result = json!({
+                let mut result = json!({
                     "status_code": response.status_code,
                     "status_class": format!("{:?}", response.class),
                     "duration_ms": response.duration_ms,
                     "headers": response.headers,
                     "body": Self::try_parse_json(&response.body)
                 });
+
+                // Include info about credential injection
+                if credentials_injected {
+                    result["credentials_auto_injected"] = json!(true);
+                }
+
                 ToolCallResult::success_text(serde_json::to_string_pretty(&result).unwrap())
             }
             Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
@@ -1118,6 +1268,196 @@ impl ToolHandler {
     }
 
     // ========================================================================
+    // Credential Management Tool Implementations
+    // ========================================================================
+
+    async fn handle_configure_api_credential(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: ConfigureApiCredentialInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        let Some(credential_manager) = &self.credential_manager else {
+            return ToolCallResult::error(
+                "Credential manager not configured. Configure a secret provider to use this tool.",
+            );
+        };
+
+        let Some(neo4j) = &self.neo4j else {
+            return ToolCallResult::error("Database connection not configured");
+        };
+
+        info!(api_name = %input.api_name, "Configuring API credential");
+
+        // Parse credential type
+        let credential_type = match input.credential_type.to_lowercase().as_str() {
+            "api_key" => CredentialType::ApiKey,
+            "bearer" => CredentialType::Bearer,
+            "basic" => CredentialType::Basic,
+            "oauth2_client_credentials" => CredentialType::OAuth2ClientCredentials,
+            _ => {
+                return ToolCallResult::error(format!(
+                    "Invalid credential type: {}. Valid types: api_key, bearer, basic, oauth2_client_credentials",
+                    input.credential_type
+                ));
+            }
+        };
+
+        // Parse inject location
+        let inject_location = match input.inject_location.to_lowercase().as_str() {
+            "header" => InjectLocation::Header,
+            "query" => InjectLocation::Query,
+            _ => {
+                return ToolCallResult::error(format!(
+                    "Invalid inject location: {}. Valid locations: header, query",
+                    input.inject_location
+                ));
+            }
+        };
+
+        // Generate secret reference path
+        let secret_ref = format!(
+            "{}/{}",
+            input.api_name.to_lowercase().replace(' ', "-"),
+            input.credential_type.to_lowercase()
+        );
+
+        // Create the credential
+        let mut credential = ApiCredential::new(
+            input.api_name.clone(),
+            credential_type,
+            inject_location,
+            input.inject_key.clone(),
+            &secret_ref,
+        );
+
+        if let Some(desc) = input.description {
+            credential = credential.with_description(desc);
+        }
+
+        // Store the credential metadata in Neo4j
+        if let Err(e) = neo4j.create_api_credential(&credential).await {
+            return ToolCallResult::error(format!("Failed to store credential metadata: {}", e));
+        }
+
+        // Store the actual secret value
+        if let Err(e) = credential_manager
+            .store_secret(&credential.secret_ref, &input.secret_value)
+            .await
+        {
+            // Rollback the credential metadata
+            let _ = neo4j.delete_api_credential(&input.api_name).await;
+            return ToolCallResult::error(format!("Failed to store secret: {}", e));
+        }
+
+        let response = json!({
+            "success": true,
+            "api_name": credential.api_name,
+            "credential_type": credential.credential_type.to_string(),
+            "inject_location": credential.inject_location.to_string(),
+            "inject_key": credential.inject_key,
+            "secret_ref": credential.secret_ref,
+            "message": format!("Credential configured for API '{}'", input.api_name)
+        });
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+    }
+
+    async fn handle_list_api_credentials(&self) -> ToolCallResult {
+        let Some(neo4j) = &self.neo4j else {
+            return ToolCallResult::error("Database connection not configured");
+        };
+
+        info!("Listing API credentials");
+
+        match neo4j.list_api_credentials().await {
+            Ok(credentials) => {
+                if credentials.is_empty() {
+                    return ToolCallResult::success_text(
+                        "No API credentials configured. Use configure_api_credential to add one.",
+                    );
+                }
+
+                let credential_list: Vec<Value> = credentials
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "api_name": c.api_name,
+                            "credential_type": c.credential_type.to_string(),
+                            "inject_location": c.inject_location.to_string(),
+                            "inject_key": c.inject_key,
+                            "description": c.description,
+                            "active": c.active,
+                            "created_at": c.created_at.to_rfc3339(),
+                            "updated_at": c.updated_at.to_rfc3339()
+                        })
+                    })
+                    .collect();
+
+                let response = json!({
+                    "count": credential_list.len(),
+                    "credentials": credential_list
+                });
+
+                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to list credentials: {}", e)),
+        }
+    }
+
+    async fn handle_delete_api_credential(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: DeleteApiCredentialInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        let Some(credential_manager) = &self.credential_manager else {
+            return ToolCallResult::error(
+                "Credential manager not configured. Configure a secret provider to use this tool.",
+            );
+        };
+
+        let Some(neo4j) = &self.neo4j else {
+            return ToolCallResult::error("Database connection not configured");
+        };
+
+        info!(api_name = %input.api_name, "Deleting API credential");
+
+        // First get the credential to find the secret_ref
+        let credential = match neo4j.get_api_credential(&input.api_name).await {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolCallResult::error(format!(
+                    "Credential not found for API '{}': {}",
+                    input.api_name, e
+                ));
+            }
+        };
+
+        // Delete the secret from the provider
+        if let Err(e) = credential_manager
+            .delete_secret(&credential.secret_ref)
+            .await
+        {
+            // Log but continue - the secret might already be gone
+            debug!(error = %e, "Failed to delete secret, continuing with metadata deletion");
+        }
+
+        // Delete the credential metadata from Neo4j
+        if let Err(e) = neo4j.delete_api_credential(&input.api_name).await {
+            return ToolCallResult::error(format!("Failed to delete credential metadata: {}", e));
+        }
+
+        let response = json!({
+            "success": true,
+            "api_name": input.api_name,
+            "message": format!("Credential deleted for API '{}'", input.api_name)
+        });
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+    }
+
+    // ========================================================================
     // Helpers
     // ========================================================================
 
@@ -1286,7 +1626,7 @@ mod tests {
     #[test]
     fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 10);
+        assert_eq!(registry.list().len(), 13); // 10 core + 3 credential tools
     }
 
     #[test]
@@ -1302,6 +1642,10 @@ mod tests {
         assert!(registry.get("build_openapi_from_docs").is_some());
         assert!(registry.get("export_openapi").is_some());
         assert!(registry.get("diff_api_spec").is_some());
+        // Credential management tools
+        assert!(registry.get("configure_api_credential").is_some());
+        assert!(registry.get("list_api_credentials").is_some());
+        assert!(registry.get("delete_api_credential").is_some());
         assert!(registry.get("unknown_tool").is_none());
     }
 

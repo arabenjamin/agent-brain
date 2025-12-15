@@ -1,4 +1,5 @@
 mod client;
+mod credential;
 mod endpoint;
 mod error;
 mod healing;

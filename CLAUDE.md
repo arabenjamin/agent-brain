@@ -84,6 +84,15 @@ Copy `.env.example` to `.env` and configure:
 | `OLLAMA_MODEL` | `llama3` | LLM model to use |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
+| `SECRET_PROVIDER` | `local` | Secret provider (local/vault/aws/none) |
+| `SECRETS_FILE` | `.secrets.enc` | Path to encrypted secrets file (local provider) |
+| `SECRETS_ENCRYPTION_KEY` | - | Encryption key for local secrets (required for production) |
+| `VAULT_ADDR` | - | HashiCorp Vault server address |
+| `VAULT_TOKEN` | - | Vault authentication token |
+| `VAULT_MOUNT_PATH` | `secret` | Vault KV mount path |
+| `VAULT_NAMESPACE` | - | Vault namespace (enterprise only) |
+| `AWS_REGION` | `us-east-1` | AWS region for Secrets Manager |
+| `AWS_SECRET_PREFIX` | - | Prefix for AWS secret names |
 
 ## Local Development
 
@@ -107,8 +116,9 @@ src/
 ├── cli.rs              # Clap CLI definitions
 ├── config.rs           # Environment configuration
 ├── logging.rs          # Tracing setup
-├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod)
+├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod, ApiCredential)
 ├── repository/         # Neo4j database layer
+│   └── credential.rs   # Credential CRUD operations
 ├── services/           # Core business logic
 │   ├── openapi.rs      # OpenAPI spec parser and ingester
 │   ├── http.rs         # HTTP request executor with response classification
@@ -117,15 +127,22 @@ src/
 │   ├── context.rs      # In-memory API context store with DB fallback
 │   ├── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
 │   ├── docgen.rs       # Documentation-to-OpenAPI generator with LLM
-│   └── export/         # Graph-to-Spec export module
-│       ├── builder.rs  # OpenAPI spec builder
-│       ├── exporter.rs # Graph traversal and spec reconstruction
-│       ├── differ.rs   # Spec diff generator
-│       └── report.rs   # Markdown/JSON report generator
+│   ├── export/         # Graph-to-Spec export module
+│   │   ├── builder.rs  # OpenAPI spec builder
+│   │   ├── exporter.rs # Graph traversal and spec reconstruction
+│   │   ├── differ.rs   # Spec diff generator
+│   │   └── report.rs   # Markdown/JSON report generator
+│   └── secrets/        # Secret provider abstraction
+│       ├── provider.rs # SecretProvider trait
+│       ├── local.rs    # AES-256-GCM encrypted file storage
+│       ├── vault.rs    # HashiCorp Vault KV v2 provider
+│       ├── aws.rs      # AWS Secrets Manager provider
+│       ├── manager.rs  # CredentialManager with URL matching
+│       └── error.rs    # Secret error types
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
-    ├── tools.rs        # Tool definitions and handlers
+    ├── tools.rs        # Tool definitions and handlers (13 tools)
     └── server.rs       # MCP server state machine
 
 tests/
@@ -147,6 +164,7 @@ tests/
 - `Schema` - Data object definitions with `name` and `json_structure`
 - `Parameter` - Endpoint inputs with `name`, `in` (query/path/body/header), `required`
 - `HealingEvent` - Immutable records of AI-driven documentation fixes
+- `ApiCredential` - Credential configuration for API authentication
 
 **Relationships:**
 - `(:Resource)-[:HAS_ENDPOINT]->(:Endpoint)`
@@ -158,7 +176,7 @@ tests/
 
 ### MCP Tools
 
-The server exposes ten tools via JSON-RPC 2.0:
+The server exposes thirteen tools via JSON-RPC 2.0:
 
 **Core Tools:**
 
@@ -171,10 +189,10 @@ The server exposes ten tools via JSON-RPC 2.0:
    - Input: `{ "query": "users" }` or `{ "query": "/api/v1" }`
    - Returns: Matching endpoints with parameters and schemas
 
-3. **`execute_http_request`** - Execute HTTP requests with optional self-healing
+3. **`execute_http_request`** - Execute HTTP requests with auto-credential injection
    - Input: `{ "method": "GET", "url": "https://api.example.com/users", "headers": {}, "body": {} }`
    - Returns: Status code, response body, duration, headers
-   - Supports automatic error analysis and retry with LLM assistance
+   - Automatically injects credentials for matching API URLs
 
 **Context Management Tools:**
 
@@ -224,6 +242,22 @@ The server exposes ten tools via JSON-RPC 2.0:
     - Categorizes changes: Parameter, Endpoint, Schema, Response
     - Identifies breaking vs non-breaking changes
     - Output formats: `markdown` (default), `changelog`, `json`
+
+**Credential Management Tools:**
+
+11. **`configure_api_credential`** - Store API credentials for automatic injection
+    - Input: `{ "api_name": "OpenWeatherMap", "credential_type": "api_key", "inject_location": "query", "inject_key": "appid", "secret_value": "your-api-key" }`
+    - Credential types: `api_key`, `bearer`, `basic`, `oauth2_client_credentials`
+    - Inject locations: `header`, `query`
+    - Secrets stored securely via configured provider (local/vault/aws)
+
+12. **`list_api_credentials`** - List all configured API credentials
+    - Input: `{}` (no parameters)
+    - Returns: Credential metadata (secrets are masked)
+
+13. **`delete_api_credential`** - Remove an API credential
+    - Input: `{ "api_name": "OpenWeatherMap" }`
+    - Deletes both the credential metadata and the stored secret
 
 ### Self-Healing Flow
 
