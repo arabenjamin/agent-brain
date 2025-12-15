@@ -20,3 +20,4 @@ Thumbs.db
 *.profraw
 *.profdata
 specs/
+.mcp.json
