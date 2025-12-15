@@ -23,9 +23,16 @@ reqwest = { version = "0.12", features = ["json"] }
 
 # URL parsing
 url = "2"
+urlencoding = "2"
 
 # HTML parsing for discovery
 scraper = "0.21"
+
+# Glob pattern matching for file discovery
+glob = "0.3"
+
+# Temp directory handling
+tempfile = "3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

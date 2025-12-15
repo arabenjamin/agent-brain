@@ -213,6 +213,7 @@ Once connected, Claude can use these tools:
 | `clear_api_context` | Clear cached API context |
 | `discover_openapi` | Auto-discover OpenAPI specs from a base URL |
 | `build_openapi_from_docs` | Generate specs from documentation pages |
+| `build_openapi_from_repo` | Generate specs from repository source code |
 | `export_openapi` | Export healed specs to YAML/JSON |
 | `diff_api_spec` | Generate documentation drift reports |
 | `configure_api_credential` | Store API credentials for automatic injection |
@@ -267,7 +268,7 @@ The healed documentation can then be exported and committed to version control.
 │                       MCP Server Core                       │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐   │
 │  │   Tools     │ │  Sessions   │ │   Protocol Handler  │   │
-│  │ (13 tools)  │ │  (HTTP)     │ │    (JSON-RPC 2.0)   │   │
+│  │ (14 tools)  │ │  (HTTP)     │ │    (JSON-RPC 2.0)   │   │
 │  └─────────────┘ └─────────────┘ └─────────────────────┘   │
 └─────────────────────────┬───────────────────────────────────┘
                           │
@@ -323,6 +324,7 @@ agent-api/
 │   │   ├── context.rs       # In-memory context store
 │   │   ├── discovery.rs     # Spec auto-discovery
 │   │   ├── docgen.rs        # Doc-to-spec generator
+│   │   ├── repo.rs          # Repo-to-spec generator
 │   │   ├── export/          # Export module
 │   │   │   ├── builder.rs   # OpenAPI builder
 │   │   │   ├── exporter.rs  # Graph-to-spec export
@@ -341,9 +343,17 @@ agent-api/
 │       ├── http_transport.rs   # HTTP+SSE transport (Axum)
 │       ├── session.rs       # HTTP session management
 │       ├── auth.rs          # API key authentication
-│       ├── tools.rs         # Tool handlers (13 tools)
+│       ├── tools.rs         # Tool handlers (14 tools)
 │       └── server.rs        # Server state machine (thread-safe)
-├── tests/                   # Integration tests
+├── tests/
+│   ├── common/              # Test utilities
+│   ├── fixtures/            # Sample OpenAPI specs
+│   ├── repository_test.rs   # Neo4j integration tests
+│   ├── context_tools_test.rs
+│   ├── discovery_test.rs
+│   ├── docgen_test.rs
+│   ├── repo_analyzer_test.rs
+│   └── http_transport_test.rs
 ├── docs/                    # Documentation
 ├── docker-compose.yml       # Neo4j + Ollama stack
 ├── openapi.yaml             # Sample spec for testing

@@ -20,11 +20,11 @@
 - ✅ OpenAPI export module (Graph-to-Spec with diff reporting)
 - ✅ Custom MCP server implementation (JSON-RPC 2.0 over stdio)
 - ✅ HTTP transport with Axum (SSE streaming, session management, API key auth)
-- ✅ 13 MCP tools (ingest, query, execute, context, discovery, docgen, export, diff, credentials)
+- ✅ 14 MCP tools (ingest, query, execute, context, discovery, docgen, repo, export, diff, credentials)
 - ✅ Secret provider abstraction (Local AES-GCM, Vault, AWS Secrets Manager)
 - ✅ Credential management with URL-based auto-injection
-- ✅ Unit tests (213 tests passing)
-- ✅ Integration tests (21+ tests)
+- ✅ Unit tests (226 tests passing)
+- ✅ Integration tests (30+ tests)
 - ✅ Docker Compose setup (Neo4j + Ollama)
 - ✅ GitHub Actions CI/CD pipeline
 - ✅ Production Dockerfile with multi-stage build
@@ -116,6 +116,7 @@
 - [x] `clear_api_context` - Remove APIs from in-memory context
 - [x] `discover_openapi` - Auto-discover OpenAPI specs with LLM assistance
 - [x] `build_openapi_from_docs` - Generate OpenAPI specs from documentation pages
+- [x] `build_openapi_from_repo` - Generate OpenAPI specs from repository source code
 - [x] `export_openapi` - Export healed graph back to OpenAPI 3.0 spec
 - [x] `diff_api_spec` - Compare original vs healed graph, generate diff reports
 - [x] `configure_api_credential` - Store API credentials for auto-injection
@@ -133,7 +134,7 @@
 
 ### 4.1 Unit Tests ✅
 Location: Inline in each module with `#[cfg(test)]`
-**Status: 213 tests passing**
+**Status: 226 tests passing**
 
 | Module | Test Coverage |
 |--------|---------------|
@@ -147,13 +148,14 @@ Location: Inline in each module with `#[cfg(test)]`
 | `services/context` | ✅ Context store operations |
 | `services/discovery` | ✅ OpenAPI validation, link extraction |
 | `services/docgen` | ✅ Spec generation, YAML/JSON output |
+| `services/repo` | ✅ URL parsing, file patterns, merge strategies |
 | `services/export` | ✅ OpenAPI builder, exporter, differ, report generator |
 | `services/secrets/local` | ✅ AES-GCM encryption, persistence |
 | `services/secrets/vault` | ✅ URL building, config validation |
 | `services/secrets/aws` | ✅ Secret name building, prefix handling |
 | `services/secrets/manager` | ✅ Credential formatting, URL matching |
 | `mcp/protocol` | ✅ JSON-RPC message parsing |
-| `mcp/tools` | ✅ Tool registry, input parsing (13 tools) |
+| `mcp/tools` | ✅ Tool registry, input parsing (14 tools) |
 | `mcp/server` | ✅ Server state transitions, McpServerCore thread-safety |
 | `mcp/transport` | ✅ Outgoing message serialization |
 | `mcp/transport_trait` | ✅ Transport abstraction, mock transport |
@@ -171,6 +173,7 @@ tests/
 ├── context_tools_test.rs     # Context management tool tests
 ├── discovery_test.rs         # Discovery service tests
 ├── docgen_test.rs            # Doc-to-OpenAPI generation tests
+├── repo_analyzer_test.rs     # Repo-to-OpenAPI generation tests
 ├── http_transport_test.rs    # HTTP transport infrastructure tests
 └── fixtures/petstore.json    # Sample OpenAPI spec
 ```
@@ -180,6 +183,7 @@ tests/
 - [x] Integration tests for context management (5 tests)
 - [x] Integration tests for discovery service (6 tests)
 - [x] Integration tests for docgen service (10 tests)
+- [x] Integration tests for repo analyzer service (25 tests)
 - [ ] Add `testcontainers` crate for Neo4j (optional)
 
 ### 4.3 Test Commands
@@ -418,6 +422,7 @@ agent-api/
 │   │   ├── context.rs          # In-memory API context store (~350 lines)
 │   │   ├── discovery.rs        # OpenAPI auto-discovery (~650 lines)
 │   │   ├── docgen.rs           # Doc-to-OpenAPI generator (~880 lines)
+│   │   ├── repo.rs             # Repo-to-OpenAPI generator (~1300 lines)
 │   │   ├── export/
 │   │   │   ├── mod.rs          # Export module exports
 │   │   │   ├── builder.rs      # OpenAPI spec builder (~435 lines)
@@ -440,7 +445,7 @@ agent-api/
 │       ├── http_transport.rs   # HTTP+SSE transport (~500 lines)
 │       ├── session.rs          # HTTP session management (~540 lines)
 │       ├── auth.rs             # API key authentication (~360 lines)
-│       ├── tools.rs            # Tool registry & handlers (~1600 lines)
+│       ├── tools.rs            # Tool registry & handlers (~1800 lines)
 │       └── server.rs           # MCP server, McpServerCore (~650 lines)
 ├── tests/
 │   ├── common/
@@ -450,7 +455,9 @@ agent-api/
 │   ├── repository_test.rs      # Neo4j integration tests
 │   ├── context_tools_test.rs   # Context management tool tests
 │   ├── discovery_test.rs       # Discovery service tests
-│   └── docgen_test.rs          # Doc-to-OpenAPI generation tests
+│   ├── docgen_test.rs          # Doc-to-OpenAPI generation tests
+│   ├── repo_analyzer_test.rs   # Repo-to-OpenAPI generation tests
+│   └── http_transport_test.rs  # HTTP transport tests
 ├── Cargo.toml
 ├── Cargo.lock
 ├── docker-compose.yml
@@ -483,6 +490,7 @@ agent-api/
 | 14 | Secret provider abstraction | ✅ Complete |
 | 15 | Credential management tools | ✅ Complete |
 | 16 | HTTP transport (Axum + SSE) | ✅ Complete |
+| 17 | Repository-to-OpenAPI tool | ✅ Complete |
 
 ---
 
@@ -508,8 +516,11 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 url = "2"
+urlencoding = "2"              # URL encoding for GitLab API paths
 scraper = "0.21"               # HTML parsing for discovery/docgen
 schemars = "0.8"               # JSON Schema generation for MCP tools
+glob = "0.3"                   # Glob pattern matching for file discovery
+tempfile = "3"                 # Temp directories for repo cloning
 
 # Secret provider dependencies
 aes-gcm = "0.10"               # AES-256-GCM encryption for local secrets

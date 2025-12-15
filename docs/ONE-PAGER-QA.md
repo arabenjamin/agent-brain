@@ -75,6 +75,7 @@ The MCP server gives AI assistants **live, accurate API context** directly from 
 | `graph_query_endpoint` | Search for relevant endpoints |
 | `execute_http_request` | Test API calls with auto-healing |
 | `list_loaded_apis` | See all available APIs |
+| `build_openapi_from_repo` | Generate specs from source code |
 
 ---
 

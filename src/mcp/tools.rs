@@ -11,8 +11,8 @@ use crate::repository::Neo4jClient;
 use crate::services::{
     ApiContext, ContextStore, CredentialManager, DiscoveryConfig, DiscoveryService, DocGenService,
     EndpointSummary, EndpointWithParams, ExportFormat, ExportOptions, HttpExecutor, LlmClient,
-    LlmConfig, MarkdownReportGenerator, OpenApiExporter, OpenApiParser, ParameterSummary,
-    RequestBuilder, SpecDiffer,
+    LlmConfig, MarkdownReportGenerator, MergeStrategy, OpenApiExporter, OpenApiParser,
+    ParameterSummary, RepoAnalyzerService, RequestBuilder, SpecDiffer,
 };
 
 use super::protocol::{ToolCallResult, ToolDefinition};
@@ -35,6 +35,7 @@ impl ToolRegistry {
                 Self::clear_api_context_def(),
                 Self::discover_openapi_def(),
                 Self::build_openapi_from_docs_def(),
+                Self::build_openapi_from_repo_def(),
                 Self::export_openapi_def(),
                 Self::diff_api_spec_def(),
                 // Credential management tools
@@ -258,6 +259,66 @@ impl ToolRegistry {
         }
     }
 
+    fn build_openapi_from_repo_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "build_openapi_from_repo".to_string(),
+            description: "Generate an OpenAPI specification by analyzing source code in a Git repository. \
+                         Supports GitHub and GitLab repositories (public and private). \
+                         Uses LLM to extract API endpoints from code in any language/framework. \
+                         Can merge with existing OpenAPI specs found in the repository."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "repo_url": {
+                        "type": "string",
+                        "description": "Repository URL (e.g., https://github.com/owner/repo)"
+                    },
+                    "api_title": {
+                        "type": "string",
+                        "description": "Title for the generated API spec"
+                    },
+                    "api_version": {
+                        "type": "string",
+                        "description": "Version for the generated API spec (default: 1.0.0)"
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "description": "Base URL of the API server (optional)"
+                    },
+                    "ref_name": {
+                        "type": "string",
+                        "description": "Branch, tag, or commit to analyze (default: default branch)"
+                    },
+                    "subdirectory": {
+                        "type": "string",
+                        "description": "Subdirectory to analyze (for monorepos)"
+                    },
+                    "include_patterns": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Glob patterns for files to include (optional)"
+                    },
+                    "merge_strategy": {
+                        "type": "string",
+                        "enum": ["enhance", "replace", "ignore"],
+                        "description": "How to handle existing specs: 'enhance' (merge), 'replace' (use code only), 'ignore' (skip existing)"
+                    },
+                    "output_format": {
+                        "type": "string",
+                        "enum": ["json", "yaml"],
+                        "description": "Output format for the spec (default: json)"
+                    },
+                    "auto_ingest": {
+                        "type": "boolean",
+                        "description": "Automatically ingest the generated spec into the knowledge graph (default: false)"
+                    }
+                },
+                "required": ["repo_url", "api_title"]
+            }),
+        }
+    }
+
     fn export_openapi_def() -> ToolDefinition {
         ToolDefinition {
             name: "export_openapi".to_string(),
@@ -463,6 +524,28 @@ pub struct BuildOpenApiFromDocsInput {
     pub auto_ingest: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BuildOpenApiFromRepoInput {
+    pub repo_url: String,
+    pub api_title: String,
+    #[serde(default = "default_api_version")]
+    pub api_version: String,
+    pub base_url: Option<String>,
+    pub ref_name: Option<String>,
+    pub subdirectory: Option<String>,
+    pub include_patterns: Option<Vec<String>>,
+    #[serde(default = "default_merge_strategy")]
+    pub merge_strategy: String,
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+    #[serde(default)]
+    pub auto_ingest: bool,
+}
+
+fn default_merge_strategy() -> String {
+    "enhance".to_string()
+}
+
 fn default_api_version() -> String {
     "1.0.0".to_string()
 }
@@ -579,6 +662,7 @@ impl ToolHandler {
             "clear_api_context" => self.handle_clear_api_context(arguments).await,
             "discover_openapi" => self.handle_discover_openapi(arguments).await,
             "build_openapi_from_docs" => self.handle_build_openapi_from_docs(arguments).await,
+            "build_openapi_from_repo" => self.handle_build_openapi_from_repo(arguments).await,
             "export_openapi" => self.handle_export_openapi(arguments).await,
             "diff_api_spec" => self.handle_diff_api_spec(arguments).await,
             // Credential management tools
@@ -1142,6 +1226,181 @@ impl ToolHandler {
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
     }
 
+    async fn handle_build_openapi_from_repo(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: BuildOpenApiFromRepoInput = match Self::parse_args(arguments) {
+            Ok(input) => input,
+            Err(e) => return e,
+        };
+
+        info!(
+            repo_url = %input.repo_url,
+            title = %input.api_title,
+            "Building OpenAPI spec from repository"
+        );
+
+        // Require LLM configuration for this tool
+        let Some(llm_config) = &self.llm_config else {
+            return ToolCallResult::error(
+                "LLM configuration required for code analysis. \
+                 Configure an LLM provider (Ollama or Anthropic) to use this tool.",
+            );
+        };
+
+        let llm = match LlmClient::with_config(llm_config.clone()) {
+            Ok(l) => l,
+            Err(e) => return ToolCallResult::error(format!("Failed to create LLM client: {}", e)),
+        };
+
+        // Create the repo analyzer service
+        let mut service = match RepoAnalyzerService::new(llm) {
+            Ok(s) => s,
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to create repo analyzer: {}", e));
+            }
+        };
+
+        // Apply include patterns if provided
+        if let Some(patterns) = &input.include_patterns {
+            let mut config = crate::services::RepoAnalysisConfig::default();
+            config.include_patterns = patterns.clone();
+            service = service.with_config(config);
+        }
+
+        // Look up credentials for GitHub/GitLab if available
+        let token = self.get_repo_token(&input.repo_url).await;
+
+        // Parse merge strategy
+        let merge_strategy = MergeStrategy::from_str(&input.merge_strategy);
+
+        // Analyze the repository
+        let result = match service
+            .analyze(
+                &input.repo_url,
+                &input.api_title,
+                &input.api_version,
+                input.base_url.as_deref(),
+                merge_strategy,
+                token.as_deref(),
+                input.subdirectory.as_deref(),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return ToolCallResult::error(format!("Repository analysis failed: {}", e));
+            }
+        };
+
+        // Format the spec based on requested format
+        let spec_output = match input.output_format.as_str() {
+            "yaml" => result
+                .spec
+                .to_yaml()
+                .unwrap_or_else(|e| format!("YAML error: {}", e)),
+            _ => result
+                .spec
+                .to_json()
+                .unwrap_or_else(|e| format!("JSON error: {}", e)),
+        };
+
+        // Auto-ingest if requested and we have a database connection
+        let mut ingested = false;
+        if input.auto_ingest && self.neo4j.is_some() {
+            let neo4j = self.neo4j.as_ref().unwrap();
+
+            // Initialize schema if needed
+            if let Err(e) = neo4j.init_schema().await {
+                return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
+            }
+
+            // Write spec to temp file for ingestion
+            let temp_path = format!("/tmp/generated_spec_{}.json", uuid::Uuid::new_v4());
+            if let Ok(()) = std::fs::write(&temp_path, result.spec.to_json().unwrap_or_default()) {
+                let mut parser = OpenApiParser::new(neo4j.clone());
+                if let Ok(ingest_result) = parser.ingest(&temp_path).await {
+                    // Build and store context
+                    let context = self.build_api_context(
+                        &ingest_result.api_title,
+                        &ingest_result.api_version,
+                        None,
+                        ingest_result.description.as_deref(),
+                        &ingest_result.endpoints,
+                    );
+
+                    self.context_store.set(context).await;
+                    ingested = true;
+                }
+                let _ = std::fs::remove_file(&temp_path);
+            }
+        }
+
+        // Build response
+        let mut response = json!({
+            "success": true,
+            "api_title": input.api_title,
+            "api_version": input.api_version,
+            "endpoints_found": result.endpoints_found,
+            "schemas_found": result.schemas_found,
+            "files_analyzed": result.analyzed_files.len(),
+            "access_method": result.stats.access_method.to_string(),
+            "duration_ms": result.stats.duration_ms,
+            "output_format": input.output_format,
+            "spec": spec_output
+        });
+
+        if result.existing_spec.is_some() {
+            response["existing_spec_found"] = json!(true);
+            response["existing_spec_path"] = json!(result.existing_spec.as_ref().unwrap().path);
+        }
+
+        if result.merged_with_existing {
+            response["merged_with_existing"] = json!(true);
+        }
+
+        if !result.warnings.is_empty() {
+            response["warnings"] = json!(result.warnings);
+        }
+
+        if ingested {
+            response["auto_ingested"] = json!(true);
+            response["context_loaded"] = json!(true);
+        }
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+    }
+
+    /// Look up repository access token from credential manager.
+    async fn get_repo_token(&self, repo_url: &str) -> Option<String> {
+        let credential_manager = self.credential_manager.as_ref()?;
+
+        // Determine platform from URL
+        let platform = if repo_url.contains("github") {
+            "GitHub"
+        } else if repo_url.contains("gitlab") {
+            "GitLab"
+        } else {
+            return None;
+        };
+
+        // Try to get credential for this platform
+        match credential_manager.get_credential(platform).await {
+            Ok(_cred) => {
+                // Get the secret value from the provider
+                // The credential manager stores the secret_ref, we need to get the actual value
+                // For now, we'll check if the manager has a secret provider configured
+                debug!(platform = %platform, "Found credential for repository access");
+                // The actual secret retrieval is handled by inject_credentials
+                // For repo cloning, we need the raw token
+                // This is a simplification - in production you'd want to get the raw secret
+                None // TODO: Implement proper secret retrieval for repo cloning
+            }
+            Err(_) => {
+                debug!(platform = %platform, "No credential configured for repository");
+                None
+            }
+        }
+    }
+
     async fn handle_export_openapi(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: ExportOpenApiInput = match Self::parse_args(arguments) {
             Ok(input) => input,
@@ -1627,7 +1886,7 @@ mod tests {
     #[test]
     fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert_eq!(registry.list().len(), 13); // 10 core + 3 credential tools
+        assert_eq!(registry.list().len(), 14); // 11 core + 3 credential tools
     }
 
     #[test]

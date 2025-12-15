@@ -48,7 +48,7 @@ The "Technical Moat" is how we structure the data. We do NOT store text chunks. 
 -   `(:Schema)-[:LINKS_TO]->(:Schema)` (for nested objects)
 
 ## 4. MCP Tool Definitions (The "Arms" of the Agent)
-The MCP Server exposes 13 tools to the LLM Client:
+The MCP Server exposes 14 tools to the LLM Client:
 
 ### Core Tools
 -   **`ingest_openapi`** - Parse and load OpenAPI specs into Neo4j
@@ -63,6 +63,7 @@ The MCP Server exposes 13 tools to the LLM Client:
 ### Discovery & Generation Tools
 -   **`discover_openapi`** - Auto-discover OpenAPI specs from a base URL
 -   **`build_openapi_from_docs`** - Generate specs from documentation pages
+-   **`build_openapi_from_repo`** - Generate specs from repository source code (GitHub/GitLab)
 
 ### Export & Diff Tools
 -   **`export_openapi`** - Export healed graph back to OpenAPI 3.0 spec

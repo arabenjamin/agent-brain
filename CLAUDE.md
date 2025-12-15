@@ -116,6 +116,33 @@ cargo run -- init-db
 cargo run
 ```
 
+## Docker Deployment (HTTP Transport)
+
+Deploy the MCP server with HTTP transport for integration with OpenWebUI or other HTTP-based MCP clients:
+
+```bash
+# Build and start all services (Neo4j + MCP Server)
+docker compose up -d --build
+
+# With API key authentication
+MCP_API_KEY=your-secret-key docker compose up -d --build
+
+# View logs
+docker compose logs -f agent-api
+
+# Health check
+curl http://localhost:3000/health
+```
+
+**Endpoints:**
+- `POST http://localhost:3000/mcp` - JSON-RPC requests
+- `GET http://localhost:3000/mcp` - SSE stream
+- `GET http://localhost:3000/health` - Health check
+
+**OpenWebUI Integration:**
+- MCP URL: `http://host.docker.internal:3000/mcp` (from Docker) or `http://localhost:3000/mcp` (from host)
+- Authentication: Bearer token (if `MCP_API_KEY` is set)
+
 ## Project Structure
 
 ```
@@ -136,6 +163,7 @@ src/
 │   ├── context.rs      # In-memory API context store with DB fallback
 │   ├── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
 │   ├── docgen.rs       # Documentation-to-OpenAPI generator with LLM
+│   ├── repo.rs         # Repository-to-OpenAPI generator with LLM
 │   ├── export/         # Graph-to-Spec export module
 │   │   ├── builder.rs  # OpenAPI spec builder
 │   │   ├── exporter.rs # Graph traversal and spec reconstruction
@@ -155,7 +183,7 @@ src/
     ├── http_transport.rs   # Axum-based HTTP+SSE transport
     ├── session.rs      # HTTP session management
     ├── auth.rs         # API key authentication
-    ├── tools.rs        # Tool definitions and handlers (13 tools)
+    ├── tools.rs        # Tool definitions and handlers (14 tools)
     └── server.rs       # MCP server state machine (thread-safe)
 
 tests/
@@ -230,13 +258,13 @@ The MCP server supports two transport mechanisms:
      └─────────────────────┬───────────────────────────┘
                            │
      ┌─────────────────────▼───────────────────────────┐
-     │              ToolHandler (13 tools)             │
+     │              ToolHandler (14 tools)             │
      └─────────────────────────────────────────────────┘
 ```
 
 ### MCP Tools
 
-The server exposes thirteen tools via JSON-RPC 2.0:
+The server exposes fourteen tools via JSON-RPC 2.0:
 
 **Core Tools:**
 
@@ -287,16 +315,27 @@ The server exposes thirteen tools via JSON-RPC 2.0:
    - Output formats: `json` (default) or `yaml`
    - Optional `auto_ingest` to load generated spec into the knowledge graph
 
+9. **`build_openapi_from_repo`** - Generate OpenAPI specs from repository source code
+   - Input: `{ "repo_url": "https://github.com/owner/repo", "api_title": "My API", "api_version": "1.0.0", "base_url": "https://api.example.com", "ref_name": "main", "subdirectory": "src/api", "merge_strategy": "enhance", "output_format": "json", "auto_ingest": false }`
+   - Supports GitHub and GitLab repositories (public and private)
+   - Auto-detects access method (API for small repos, clone for larger)
+   - Uses LLM for framework-agnostic code analysis
+   - Detects and merges with existing OpenAPI specs found in the repository
+   - Merge strategies: `enhance` (merge), `replace` (code only), `ignore` (skip existing)
+   - Configure credentials via `configure_api_credential` with `api_name: "GitHub"` or `"GitLab"`
+   - Output formats: `json` (default) or `yaml`
+   - Optional `auto_ingest` to load generated spec into the knowledge graph
+
 **Export & Diff Tools:**
 
-9. **`export_openapi`** - Export healed knowledge graph back to OpenAPI 3.0 spec
+10. **`export_openapi`** - Export healed knowledge graph back to OpenAPI 3.0 spec
    - Input: `{ "format": "yaml", "include_annotations": true, "include_broken": false }`
    - Traverses Neo4j graph and reconstructs valid OpenAPI spec
    - Adds `x-healed-by-ai` annotations on AI-corrected fields
    - Includes `x-original-value` for healed fields when annotations enabled
    - Output formats: `yaml` (default) or `json`
 
-10. **`diff_api_spec`** - Compare original spec vs current healed graph state
+11. **`diff_api_spec`** - Compare original spec vs current healed graph state
     - Input: `{ "api_name": "Petstore", "format": "markdown", "breaking_only": false }`
     - Analyzes HealingEvents to generate change report
     - Categorizes changes: Parameter, Endpoint, Schema, Response
@@ -305,17 +344,17 @@ The server exposes thirteen tools via JSON-RPC 2.0:
 
 **Credential Management Tools:**
 
-11. **`configure_api_credential`** - Store API credentials for automatic injection
+12. **`configure_api_credential`** - Store API credentials for automatic injection
     - Input: `{ "api_name": "OpenWeatherMap", "credential_type": "api_key", "inject_location": "query", "inject_key": "appid", "secret_value": "your-api-key" }`
     - Credential types: `api_key`, `bearer`, `basic`, `oauth2_client_credentials`
     - Inject locations: `header`, `query`
     - Secrets stored securely via configured provider (local/vault/aws)
 
-12. **`list_api_credentials`** - List all configured API credentials
+13. **`list_api_credentials`** - List all configured API credentials
     - Input: `{}` (no parameters)
     - Returns: Credential metadata (secrets are masked)
 
-13. **`delete_api_credential`** - Remove an API credential
+14. **`delete_api_credential`** - Remove an API credential
     - Input: `{ "api_name": "OpenWeatherMap" }`
     - Deletes both the credential metadata and the stored secret
 
@@ -328,6 +367,10 @@ When `execute_http_request` encounters errors (4xx/5xx):
 4. On success: update Neo4j with `HealingEvent` node and corrected schema
 5. On failure: mark endpoint as `status='broken'`
 
+## TODO / Planned Features
+
+- [ ] Add capability to clean up/purge the Neo4j graph (remove duplicate endpoints, reset database, or delete specific APIs)
+
 ## Branch Strategy
 Never write in credidation to LLMs or coding agents or assistants.
 
@@ -335,4 +378,4 @@ Never write in credidation to LLMs or coding agents or assistants.
 - `dev` - Development (format + unit tests)
 - `test` - Testing (full pipeline with integration tests)
 - `prod` - Production (full pipeline + Docker build)
-
+- Update the documentation first, the README, claude, plan, markdowns should reflect our changes.
