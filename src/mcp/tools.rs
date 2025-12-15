@@ -519,6 +519,7 @@ pub struct DeleteApiCredentialInput {
 // ============================================================================
 
 /// Handler for executing MCP tools.
+#[derive(Clone)]
 pub struct ToolHandler {
     neo4j: Option<Neo4jClient>,
     llm_config: Option<LlmConfig>,

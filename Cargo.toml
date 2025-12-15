@@ -67,6 +67,16 @@ aws-sdk-secretsmanager = "1.54"
 # Base64 encoding for Basic auth
 base64 = "0.22"
 
+# HTTP transport (Axum-based MCP server)
+axum = { version = "0.8", features = ["http2"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-stream = "0.3"
+async-trait = "0.1"
+futures-util = "0.3"
+
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"

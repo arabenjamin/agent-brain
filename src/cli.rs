@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Autonomous API Knowledge Graph - MCP Server
 #[derive(Debug, Parser)]
@@ -29,10 +29,32 @@ pub struct Cli {
     pub log_format: String,
 }
 
+/// Transport type for the MCP server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum TransportType {
+    /// Standard input/output transport (default, for local CLI usage)
+    #[default]
+    Stdio,
+    /// HTTP transport with SSE (for remote/cloud deployment)
+    Http,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run as MCP server (stdio transport) - default mode
-    Serve,
+    /// Run as MCP server
+    Serve {
+        /// Transport type to use
+        #[arg(long, env = "MCP_TRANSPORT", default_value = "stdio")]
+        transport: TransportType,
+
+        /// HTTP bind address (only used with --transport http)
+        #[arg(long, env = "MCP_HTTP_BIND", default_value = "127.0.0.1:3000")]
+        bind: String,
+
+        /// API key for authentication (only used with --transport http)
+        #[arg(long, env = "MCP_API_KEY")]
+        api_key: Option<String>,
+    },
 
     /// Initialize the Neo4j database schema
     InitDb,

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use thiserror::Error;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::Neo4jClient;
@@ -16,6 +17,7 @@ use super::protocol::{
 };
 use super::tools::{ToolHandler, ToolRegistry};
 use super::transport::{OutgoingMessage, StdioTransport};
+use super::transport_trait::{McpTransport, TransportMessage};
 
 #[derive(Debug, Error)]
 pub enum McpServerError {
@@ -34,7 +36,7 @@ pub enum McpServerError {
 
 /// MCP server state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ServerState {
+pub enum ServerState {
     /// Waiting for initialize request.
     Created,
     /// Initialize received, waiting for initialized notification.
@@ -70,7 +72,354 @@ impl Default for McpServerConfig {
     }
 }
 
+/// Thread-safe MCP server core that works with any transport.
+///
+/// This struct contains the shared state that can be safely accessed
+/// from multiple async tasks concurrently.
+pub struct McpServerCore {
+    config: McpServerConfig,
+    state: Arc<RwLock<ServerState>>,
+    tool_registry: Arc<ToolRegistry>,
+    tool_handler: Arc<ToolHandler>,
+}
+
+impl McpServerCore {
+    /// Create a new server core with default configuration.
+    pub fn new() -> Self {
+        Self {
+            config: McpServerConfig::default(),
+            state: Arc::new(RwLock::new(ServerState::Created)),
+            tool_registry: Arc::new(ToolRegistry::new()),
+            tool_handler: Arc::new(ToolHandler::new()),
+        }
+    }
+
+    /// Create a new server core with custom configuration.
+    pub fn with_config(config: McpServerConfig) -> Self {
+        Self {
+            config,
+            state: Arc::new(RwLock::new(ServerState::Created)),
+            tool_registry: Arc::new(ToolRegistry::new()),
+            tool_handler: Arc::new(ToolHandler::new()),
+        }
+    }
+
+    /// Set the Neo4j client for database operations.
+    pub fn with_neo4j(mut self, neo4j: Neo4jClient) -> Self {
+        self.tool_handler = Arc::new(ToolHandler::with_neo4j(neo4j));
+        self
+    }
+
+    /// Set the LLM configuration for healing.
+    pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
+        // Need to rebuild tool_handler with the new config
+        let handler = Arc::try_unwrap(self.tool_handler)
+            .unwrap_or_else(|arc| (*arc).clone())
+            .with_llm_config(config);
+        self.tool_handler = Arc::new(handler);
+        self
+    }
+
+    /// Set the credential manager for API authentication.
+    pub fn with_credential_manager(mut self, manager: Arc<CredentialManager>) -> Self {
+        let handler = Arc::try_unwrap(self.tool_handler)
+            .unwrap_or_else(|arc| (*arc).clone())
+            .with_credential_manager(manager);
+        self.tool_handler = Arc::new(handler);
+        self
+    }
+
+    /// Get the current server state.
+    pub async fn get_state(&self) -> ServerState {
+        *self.state.read().await
+    }
+
+    /// Check if the server is shutting down.
+    pub async fn is_shutting_down(&self) -> bool {
+        *self.state.read().await == ServerState::ShuttingDown
+    }
+
+    /// Run the server with a specific transport implementation.
+    pub async fn run_with_transport<T: McpTransport>(
+        &self,
+        transport: &T,
+    ) -> Result<(), McpServerError> {
+        info!(
+            name = %self.config.name,
+            version = %self.config.version,
+            transport = %transport.name(),
+            "Starting MCP server"
+        );
+
+        let mut rx = transport
+            .start()
+            .await
+            .map_err(|e| McpServerError::Transport(e.to_string()))?;
+
+        // Main message loop
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                TransportMessage::Request {
+                    session_id: _,
+                    request,
+                    response_tx,
+                } => {
+                    let response = self.handle_request(request).await;
+                    // Send response back through the oneshot channel
+                    let _ = response_tx.send(response);
+
+                    // Check if we should shut down
+                    if self.is_shutting_down().await {
+                        info!("Server shutting down");
+                        break;
+                    }
+                }
+                TransportMessage::Notification {
+                    session_id: _,
+                    notification,
+                } => {
+                    self.handle_notification(&notification.method).await;
+                }
+            }
+        }
+
+        transport
+            .shutdown()
+            .await
+            .map_err(|e| McpServerError::Transport(e.to_string()))?;
+
+        info!("MCP server stopped");
+        Ok(())
+    }
+
+    /// Handle an incoming JSON-RPC request (thread-safe).
+    pub async fn handle_request(&self, request: JsonRpcRequest) -> OutgoingMessage {
+        debug!(method = %request.method, id = ?request.id, "Handling request");
+
+        let response = match request.method.as_str() {
+            "initialize" => self.handle_initialize(&request).await,
+            "shutdown" => self.handle_shutdown(&request).await,
+            "tools/list" => self.handle_tools_list(&request).await,
+            "tools/call" => self.handle_tools_call(&request).await,
+            "ping" => self.handle_ping(&request),
+            _ => {
+                let state = self.get_state().await;
+                if state != ServerState::Running {
+                    Err(JsonRpcErrorResponse::new(
+                        Some(request.id.clone()),
+                        error_codes::INVALID_REQUEST,
+                        "Server not initialized",
+                    ))
+                } else {
+                    Err(JsonRpcErrorResponse::method_not_found(
+                        request.id.clone(),
+                        &request.method,
+                    ))
+                }
+            }
+        };
+
+        match response {
+            Ok(result) => OutgoingMessage::Response(result),
+            Err(error) => OutgoingMessage::Error(error),
+        }
+    }
+
+    /// Handle a notification (thread-safe, no response expected).
+    pub async fn handle_notification(&self, method: &str) {
+        debug!(method = %method, "Handling notification");
+
+        match method {
+            "notifications/initialized" => {
+                let mut state = self.state.write().await;
+                if *state == ServerState::Initializing {
+                    *state = ServerState::Running;
+                    info!("Server initialized and ready");
+                }
+            }
+            "notifications/cancelled" => {
+                debug!("Request cancelled");
+            }
+            _ => {
+                debug!(method = %method, "Unknown notification");
+            }
+        }
+    }
+
+    // ========================================================================
+    // Request Handlers (thread-safe versions)
+    // ========================================================================
+
+    async fn handle_initialize(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
+        {
+            let state = self.state.read().await;
+            if *state != ServerState::Created {
+                return Err(JsonRpcErrorResponse::new(
+                    Some(request.id.clone()),
+                    error_codes::INVALID_REQUEST,
+                    "Server already initialized",
+                ));
+            }
+        }
+
+        // Parse initialize params
+        let params: InitializeParams = request
+            .params
+            .as_ref()
+            .map(|p| serde_json::from_value(p.clone()))
+            .transpose()
+            .map_err(|e| {
+                JsonRpcErrorResponse::invalid_params(
+                    request.id.clone(),
+                    format!("Invalid initialize params: {}", e),
+                )
+            })?
+            .ok_or_else(|| {
+                JsonRpcErrorResponse::invalid_params(
+                    request.id.clone(),
+                    "Missing initialize params",
+                )
+            })?;
+
+        info!(
+            client = %params.client_info.name,
+            protocol_version = %params.protocol_version,
+            "Client connecting"
+        );
+
+        // Update state
+        {
+            let mut state = self.state.write().await;
+            *state = ServerState::Initializing;
+        }
+
+        let result = InitializeResult {
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+            capabilities: ServerCapabilities {
+                tools: Some(ToolsCapability {
+                    list_changed: false,
+                }),
+                resources: None,
+                prompts: None,
+            },
+            server_info: ServerInfo {
+                name: self.config.name.clone(),
+                version: self.config.version.clone(),
+            },
+            instructions: self.config.instructions.clone(),
+        };
+
+        Ok(JsonRpcResponse::new(
+            request.id.clone(),
+            serde_json::to_value(result).unwrap(),
+        ))
+    }
+
+    async fn handle_shutdown(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
+        info!("Shutdown requested");
+        {
+            let mut state = self.state.write().await;
+            *state = ServerState::ShuttingDown;
+        }
+        Ok(JsonRpcResponse::new(request.id.clone(), json!(null)))
+    }
+
+    async fn handle_tools_list(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
+        let state = self.get_state().await;
+        if state != ServerState::Running {
+            return Err(JsonRpcErrorResponse::new(
+                Some(request.id.clone()),
+                error_codes::INVALID_REQUEST,
+                "Server not initialized",
+            ));
+        }
+
+        let result = ToolsListResult {
+            tools: self.tool_registry.list().to_vec(),
+        };
+
+        Ok(JsonRpcResponse::new(
+            request.id.clone(),
+            serde_json::to_value(result).unwrap(),
+        ))
+    }
+
+    async fn handle_tools_call(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
+        let state = self.get_state().await;
+        if state != ServerState::Running {
+            return Err(JsonRpcErrorResponse::new(
+                Some(request.id.clone()),
+                error_codes::INVALID_REQUEST,
+                "Server not initialized",
+            ));
+        }
+
+        // Parse tool call params
+        let params: ToolCallParams = request
+            .params
+            .as_ref()
+            .map(|p| serde_json::from_value(p.clone()))
+            .transpose()
+            .map_err(|e| {
+                JsonRpcErrorResponse::invalid_params(
+                    request.id.clone(),
+                    format!("Invalid tool call params: {}", e),
+                )
+            })?
+            .ok_or_else(|| {
+                JsonRpcErrorResponse::invalid_params(request.id.clone(), "Missing tool call params")
+            })?;
+
+        // Check if tool exists
+        if self.tool_registry.get(&params.name).is_none() {
+            return Err(JsonRpcErrorResponse::invalid_params(
+                request.id.clone(),
+                format!("Unknown tool: {}", params.name),
+            ));
+        }
+
+        // Execute the tool
+        let result = self
+            .tool_handler
+            .execute(&params.name, params.arguments)
+            .await;
+
+        Ok(JsonRpcResponse::new(
+            request.id.clone(),
+            serde_json::to_value(result).unwrap(),
+        ))
+    }
+
+    fn handle_ping(
+        &self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
+        Ok(JsonRpcResponse::new(request.id.clone(), json!({})))
+    }
+}
+
+impl Default for McpServerCore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// MCP server for the API Knowledge Graph.
+///
+/// This is the original server struct maintained for backward compatibility.
+/// For new code, consider using `McpServerCore` with explicit transport.
 pub struct McpServer {
     config: McpServerConfig,
     state: ServerState,
@@ -474,5 +823,112 @@ mod tests {
         // Both should be handled without panic, but only full path is recognized
         server.handle_notification("cancelled");
         server.handle_notification("notifications/cancelled");
+    }
+
+    // ========================================================================
+    // McpServerCore Tests (thread-safe version)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_server_core_creation() {
+        let server = McpServerCore::new();
+        assert_eq!(server.get_state().await, ServerState::Created);
+    }
+
+    #[tokio::test]
+    async fn test_server_core_with_config() {
+        let config = McpServerConfig {
+            name: "test-server".to_string(),
+            version: "1.0.0".to_string(),
+            instructions: None,
+        };
+        let server = McpServerCore::with_config(config);
+        assert_eq!(server.config.name, "test-server");
+    }
+
+    #[tokio::test]
+    async fn test_server_core_state_transitions() {
+        let server = McpServerCore::new();
+        assert_eq!(server.get_state().await, ServerState::Created);
+
+        // Simulate initialize
+        {
+            let mut state = server.state.write().await;
+            *state = ServerState::Initializing;
+        }
+        assert_eq!(server.get_state().await, ServerState::Initializing);
+
+        // Simulate initialized notification
+        server.handle_notification("notifications/initialized").await;
+        assert_eq!(server.get_state().await, ServerState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_server_core_is_shutting_down() {
+        let server = McpServerCore::new();
+        assert!(!server.is_shutting_down().await);
+
+        {
+            let mut state = server.state.write().await;
+            *state = ServerState::ShuttingDown;
+        }
+        assert!(server.is_shutting_down().await);
+    }
+
+    #[tokio::test]
+    async fn test_server_core_concurrent_state_access() {
+        use std::sync::Arc;
+
+        let server = Arc::new(McpServerCore::new());
+
+        // Spawn multiple tasks reading state concurrently
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let server_clone = Arc::clone(&server);
+            handles.push(tokio::spawn(async move {
+                server_clone.get_state().await
+            }));
+        }
+
+        // All should return Created
+        for handle in handles {
+            let state = handle.await.expect("Task panicked");
+            assert_eq!(state, ServerState::Created);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_server_core_handle_notification_thread_safe() {
+        let server = McpServerCore::new();
+
+        // Set state to Initializing
+        {
+            let mut state = server.state.write().await;
+            *state = ServerState::Initializing;
+        }
+
+        // Handle notification should transition state
+        server.handle_notification("notifications/initialized").await;
+        assert_eq!(server.get_state().await, ServerState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_server_core_ping_request() {
+        let server = McpServerCore::new();
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: super::super::protocol::RequestId::Number(1),
+            method: "ping".to_string(),
+            params: None,
+        };
+
+        let response = server.handle_request(request).await;
+        match response {
+            OutgoingMessage::Response(r) => {
+                assert_eq!(r.result, serde_json::json!({}));
+            }
+            OutgoingMessage::Error(_) => panic!("Expected response, got error"),
+        }
     }
 }

@@ -9,7 +9,8 @@ Autonomous API Knowledge Graph - An MCP server in Rust that ingests OpenAPI/Swag
 ## Tech Stack
 
 - **Language:** Rust (Tokio async runtime, Edition 2024)
-- **Protocol:** Model Context Protocol (MCP) via stdio transport
+- **Protocol:** Model Context Protocol (MCP) via stdio or HTTP transport
+- **Web Framework:** Axum (for HTTP transport with SSE streaming)
 - **Database:** Neo4j via `neo4rs` driver
 - **AI Model:** Local LLM (Ollama - Llama 3 or Mistral) via REST
 
@@ -35,9 +36,14 @@ cargo test -- --nocapture      # Show println output
 ## CLI Commands
 
 ```bash
-# Run as MCP server (default)
+# Run as MCP server (default - stdio transport)
 cargo run -- serve
 cargo run                      # Same as above
+
+# Run as MCP server with HTTP transport
+cargo run -- serve --transport http                           # HTTP on localhost:3000
+cargo run -- serve --transport http --bind 0.0.0.0:8080       # Custom bind address
+cargo run -- serve --transport http --api-key my-secret-key   # With API key auth
 
 # Initialize database schema
 cargo run -- init-db
@@ -84,6 +90,9 @@ Copy `.env.example` to `.env` and configure:
 | `OLLAMA_MODEL` | `llama3` | LLM model to use |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
+| `MCP_TRANSPORT` | `stdio` | MCP transport type (stdio/http) |
+| `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address (for http transport) |
+| `MCP_API_KEY` | - | API key for HTTP transport authentication |
 | `SECRET_PROVIDER` | `local` | Secret provider (local/vault/aws/none) |
 | `SECRETS_FILE` | `.secrets.enc` | Path to encrypted secrets file (local provider) |
 | `SECRETS_ENCRYPTION_KEY` | - | Encryption key for local secrets (required for production) |
@@ -142,8 +151,12 @@ src/
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
+    ├── transport_trait.rs  # McpTransport trait abstraction
+    ├── http_transport.rs   # Axum-based HTTP+SSE transport
+    ├── session.rs      # HTTP session management
+    ├── auth.rs         # API key authentication
     ├── tools.rs        # Tool definitions and handlers (13 tools)
-    └── server.rs       # MCP server state machine
+    └── server.rs       # MCP server state machine (thread-safe)
 
 tests/
 ├── common/mod.rs          # Test utilities
@@ -173,6 +186,53 @@ tests/
 - `(:Endpoint)-[:ACCEPTS_SCHEMA]->(:Schema)`
 - `(:Schema)-[:LINKS_TO]->(:Schema)`
 - `(:Endpoint)-[:HAS_HISTORY]->(:HealingEvent)`
+
+### Transport Architecture
+
+The MCP server supports two transport mechanisms:
+
+**Stdio Transport (Default)**
+- Standard input/output for local CLI usage
+- Best for MCP clients like Claude Desktop that spawn the server as subprocess
+- No authentication required (trusted local process)
+
+**HTTP Transport**
+- Streamable HTTP with Server-Sent Events (SSE) per MCP specification
+- POST `/mcp` - JSON-RPC requests, returns JSON or SSE stream
+- GET `/mcp` - SSE stream for server-initiated messages
+- DELETE `/mcp` - Terminate session
+- GET `/health` - Health check endpoint
+- Headers: `Mcp-Protocol-Version`, `Mcp-Session-Id` for session management
+- Optional API key authentication via Bearer token
+
+```
+                         CLI (main.rs)
+                              │
+               ┌──────────────┴──────────────┐
+               │                             │
+     ┌─────────▼─────────┐         ┌─────────▼─────────┐
+     │  StdioTransport   │         │   HttpTransport   │
+     │    (stdio)        │         │   (Axum + SSE)    │
+     └─────────┬─────────┘         └─────────┬─────────┘
+               │                             │
+               │                   ┌─────────▼─────────┐
+               │                   │  SessionManager   │
+               │                   │ (Mcp-Session-Id)  │
+               │                   └─────────┬─────────┘
+               │                             │
+     ┌─────────▼─────────────────────────────▼─────────┐
+     │            McpTransport Trait                   │
+     └─────────────────────┬───────────────────────────┘
+                           │
+     ┌─────────────────────▼───────────────────────────┐
+     │              McpServerCore                      │
+     │    (Arc<RwLock<ServerState>> for thread-safe)  │
+     └─────────────────────┬───────────────────────────┘
+                           │
+     ┌─────────────────────▼───────────────────────────┐
+     │              ToolHandler (13 tools)             │
+     └─────────────────────────────────────────────────┘
+```
 
 ### MCP Tools
 

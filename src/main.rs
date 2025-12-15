@@ -1,13 +1,14 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing::{error, info, warn};
 
-use agent_api::cli::{Cli, Command};
+use agent_api::cli::{Cli, Command, TransportType};
 use agent_api::config::{Config, LogFormat, SecretProviderType};
 use agent_api::logging;
-use agent_api::mcp::McpServer;
+use agent_api::mcp::{HttpTransport, HttpTransportConfig, McpServer, McpServerCore};
 use agent_api::models::HttpMethod;
 use agent_api::repository::Neo4jClient;
 use agent_api::services::{
@@ -70,7 +71,13 @@ async fn main() -> Result<()> {
     // Execute command
     let result = match cli.command {
         Some(Command::InitDb) => run_init_db(&config).await,
-        Some(Command::Serve) | None => run_serve(&config).await,
+        Some(Command::Serve { transport, bind, api_key }) => {
+            run_serve(&config, transport, &bind, api_key).await
+        }
+        None => {
+            // Default to stdio transport when no command specified
+            run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None).await
+        }
         Some(Command::Ingest { spec }) => run_ingest(&config, &spec).await,
         Some(Command::Query { query }) => run_query(&config, &query).await,
         Some(Command::Execute {
@@ -119,10 +126,13 @@ async fn run_init_db(config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn run_serve(config: &Config) -> Result<()> {
+async fn run_serve(
+    config: &Config,
+    transport_type: TransportType,
+    bind: &str,
+    api_key: Option<String>,
+) -> Result<()> {
     let client = connect_neo4j(config).await?;
-
-    info!("Starting MCP server on stdio...");
 
     // Configure LLM for healing
     let llm_config = LlmConfig::new(&config.ollama_url, &config.ollama_model);
@@ -130,16 +140,51 @@ async fn run_serve(config: &Config) -> Result<()> {
     // Create credential manager with appropriate secret provider
     let credential_manager = create_credential_manager(config, client.clone()).await;
 
-    // Create and run MCP server
-    let mut server = McpServer::new()
-        .with_neo4j(client)
-        .with_llm_config(llm_config);
+    match transport_type {
+        TransportType::Stdio => {
+            info!("Starting MCP server on stdio...");
 
-    if let Some(cred_manager) = credential_manager {
-        server = server.with_credential_manager(cred_manager);
+            // Use the legacy McpServer for backward compatibility
+            let mut server = McpServer::new()
+                .with_neo4j(client)
+                .with_llm_config(llm_config);
+
+            if let Some(cred_manager) = credential_manager {
+                server = server.with_credential_manager(cred_manager);
+            }
+
+            server.run().await?;
+        }
+        TransportType::Http => {
+            // Parse bind address
+            let bind_addr: SocketAddr = bind.parse()
+                .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", bind, e))?;
+
+            info!(addr = %bind_addr, "Starting MCP server on HTTP...");
+
+            // Configure HTTP transport
+            let mut http_config = HttpTransportConfig::default()
+                .with_bind_addr(bind_addr);
+
+            if let Some(key) = api_key {
+                http_config = http_config.with_api_key(key);
+                info!("API key authentication enabled");
+            }
+
+            let transport = HttpTransport::with_config(http_config);
+
+            // Create thread-safe server core
+            let mut server = McpServerCore::new()
+                .with_neo4j(client)
+                .with_llm_config(llm_config);
+
+            if let Some(cred_manager) = credential_manager {
+                server = server.with_credential_manager(cred_manager);
+            }
+
+            server.run_with_transport(&transport).await?;
+        }
     }
-
-    server.run().await?;
 
     Ok(())
 }
