@@ -70,6 +70,9 @@ cargo run --release -- init-db
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `llama3` | LLM model for self-healing |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
+| `MCP_TRANSPORT` | `stdio` | MCP transport (stdio/http) |
+| `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address |
+| `MCP_API_KEY` | - | API key for HTTP authentication |
 | `SECRET_PROVIDER` | `local` | Secret provider (local/vault/aws/none) |
 | `SECRETS_FILE` | `.secrets.enc` | Encrypted secrets file path |
 | `SECRETS_ENCRYPTION_KEY` | - | Encryption key for local secrets |
@@ -142,8 +145,13 @@ cargo run -- diff --breaking-only
 # Show database statistics
 cargo run -- stats
 
-# Run as MCP server (for Claude CLI)
+# Run as MCP server (stdio transport - for Claude CLI)
 cargo run -- serve
+
+# Run as MCP server (HTTP transport - for remote access)
+cargo run -- serve --transport http
+cargo run -- serve --transport http --bind 0.0.0.0:8080
+cargo run -- serve --transport http --api-key my-secret-key
 
 # Initialize/reset database schema
 cargo run -- init-db
@@ -244,12 +252,22 @@ The healed documentation can then be exported and committed to version control.
 ┌─────────────────────────────────────────────────────────────┐
 │                      Claude CLI / MCP Client                │
 └─────────────────────────┬───────────────────────────────────┘
-                          │ JSON-RPC 2.0 (stdio)
-┌─────────────────────────▼───────────────────────────────────┐
-│                       MCP Server                            │
+                          │ JSON-RPC 2.0
+               ┌──────────┴──────────┐
+               ▼                     ▼
+┌─────────────────────┐  ┌─────────────────────┐
+│   Stdio Transport   │  │   HTTP Transport    │
+│  (local CLI usage)  │  │  (remote/cloud)     │
+│                     │  │  - POST /mcp        │
+│                     │  │  - GET /mcp (SSE)   │
+│                     │  │  - API key auth     │
+└──────────┬──────────┘  └──────────┬──────────┘
+           └──────────┬─────────────┘
+┌─────────────────────▼───────────────────────────────────────┐
+│                       MCP Server Core                       │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐   │
-│  │   Tools     │ │  Transport  │ │   Protocol Handler  │   │
-│  │ (13 tools)  │ │   (stdio)   │ │    (JSON-RPC 2.0)   │   │
+│  │   Tools     │ │  Sessions   │ │   Protocol Handler  │   │
+│  │ (13 tools)  │ │  (HTTP)     │ │    (JSON-RPC 2.0)   │   │
 │  └─────────────┘ └─────────────┘ └─────────────────────┘   │
 └─────────────────────────┬───────────────────────────────────┘
                           │
@@ -319,8 +337,12 @@ agent-api/
 │   └── mcp/                 # MCP server implementation
 │       ├── protocol.rs      # JSON-RPC types
 │       ├── transport.rs     # Stdio transport
+│       ├── transport_trait.rs  # Transport abstraction
+│       ├── http_transport.rs   # HTTP+SSE transport (Axum)
+│       ├── session.rs       # HTTP session management
+│       ├── auth.rs          # API key authentication
 │       ├── tools.rs         # Tool handlers (13 tools)
-│       └── server.rs        # Server state machine
+│       └── server.rs        # Server state machine (thread-safe)
 ├── tests/                   # Integration tests
 ├── docs/                    # Documentation
 ├── docker-compose.yml       # Neo4j + Ollama stack

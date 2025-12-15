@@ -11,7 +11,10 @@ The system ingests OpenAPI/Swagger specifications, maps them into a **Neo4j Grap
 
 ## 2. Tech Stack & Constraints
 - **Language:** Rust (Tokio async runtime).
-- **Protocol:** Model Context Protocol (MCP) - Standard Input/Output (stdio) transport.
+- **Protocol:** Model Context Protocol (MCP) - Supports both:
+  - Standard Input/Output (stdio) transport for local CLI usage
+  - HTTP transport with SSE streaming for remote/cloud deployment
+- **Web Framework:** Axum (for HTTP transport)
 - **Database:** Neo4j (GraphDB) via the `neo4rs` driver.
 - **AI Model:** Local LLM (Ollama - Llama 3 or Mistral) accessed via REST.
 - **Input Data:** raw JSON/YAML OpenAPI v3.0+ specs.
@@ -90,7 +93,12 @@ Credentials are automatically injected into HTTP requests based on URL matching 
 
 **Note**: A custom MCP server was implemented instead of using external MCP crates (which were either too immature or required nightly Rust).
 
--   Custom MCP implementation (`src/mcp/`) - JSON-RPC 2.0 over stdio
+-   Custom MCP implementation (`src/mcp/`) - JSON-RPC 2.0 with:
+    - Stdio transport (default, for local CLI usage)
+    - HTTP transport with SSE (for remote/cloud deployment)
+    - Session management (HTTP only)
+    - API key authentication (HTTP only)
+-   `axum` + `tower-http` for HTTP transport
 -   `neo4rs` for graph connection.
 -   `reqwest` for the HTTP client.
 -   `serde` / `serde_json` for robust typing.

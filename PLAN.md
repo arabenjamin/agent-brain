@@ -19,10 +19,11 @@
 - ✅ Documentation-to-OpenAPI generator with LLM
 - ✅ OpenAPI export module (Graph-to-Spec with diff reporting)
 - ✅ Custom MCP server implementation (JSON-RPC 2.0 over stdio)
+- ✅ HTTP transport with Axum (SSE streaming, session management, API key auth)
 - ✅ 13 MCP tools (ingest, query, execute, context, discovery, docgen, export, diff, credentials)
 - ✅ Secret provider abstraction (Local AES-GCM, Vault, AWS Secrets Manager)
 - ✅ Credential management with URL-based auto-injection
-- ✅ Unit tests (154 tests passing)
+- ✅ Unit tests (213 tests passing)
 - ✅ Integration tests (21+ tests)
 - ✅ Docker Compose setup (Neo4j + Ollama)
 - ✅ GitHub Actions CI/CD pipeline
@@ -93,6 +94,19 @@
 - [x] MCP server state machine (Created → Initializing → Running → ShuttingDown)
 - [x] Tool registration with JSON Schema definitions
 
+### 3.1.1 HTTP Transport (`src/mcp/http_transport.rs`) ✅
+- [x] McpTransport trait abstraction (transport_trait.rs)
+- [x] Axum-based HTTP server with SSE streaming
+- [x] Session management with UUID-based session IDs (session.rs)
+- [x] API key authentication via Bearer tokens (auth.rs)
+- [x] Thread-safe McpServerCore with Arc<RwLock<>> state
+- [x] HTTP endpoints:
+  - POST /mcp - JSON-RPC requests
+  - GET /mcp - SSE stream for server-initiated messages
+  - DELETE /mcp - Session termination
+  - GET /health - Health check (bypasses auth)
+- [x] CLI options: --transport stdio|http, --bind, --api-key
+
 ### 3.2 Tool Implementations
 - [x] `ingest_openapi` - Parse spec, load graph, return counts
 - [x] `graph_query_endpoint` - Search endpoints by path pattern
@@ -119,7 +133,7 @@
 
 ### 4.1 Unit Tests ✅
 Location: Inline in each module with `#[cfg(test)]`
-**Status: 154 tests passing**
+**Status: 213 tests passing**
 
 | Module | Test Coverage |
 |--------|---------------|
@@ -140,7 +154,12 @@ Location: Inline in each module with `#[cfg(test)]`
 | `services/secrets/manager` | ✅ Credential formatting, URL matching |
 | `mcp/protocol` | ✅ JSON-RPC message parsing |
 | `mcp/tools` | ✅ Tool registry, input parsing (13 tools) |
-| `mcp/server` | ✅ Server state transitions |
+| `mcp/server` | ✅ Server state transitions, McpServerCore thread-safety |
+| `mcp/transport` | ✅ Outgoing message serialization |
+| `mcp/transport_trait` | ✅ Transport abstraction, mock transport |
+| `mcp/session` | ✅ Session lifecycle, expiration, SSE messaging |
+| `mcp/auth` | ✅ API key validation, Bearer token parsing |
+| `mcp/http_transport` | ✅ Config, error handling, transport state |
 
 ### 4.2 Integration Tests ✅
 Location: `tests/` directory
@@ -152,6 +171,7 @@ tests/
 ├── context_tools_test.rs     # Context management tool tests
 ├── discovery_test.rs         # Discovery service tests
 ├── docgen_test.rs            # Doc-to-OpenAPI generation tests
+├── http_transport_test.rs    # HTTP transport infrastructure tests
 └── fixtures/petstore.json    # Sample OpenAPI spec
 ```
 
@@ -415,9 +435,13 @@ agent-api/
 │   └── mcp/
 │       ├── mod.rs
 │       ├── protocol.rs         # JSON-RPC 2.0 types (~300 lines)
-│       ├── transport.rs        # Stdio transport (~100 lines)
+│       ├── transport.rs        # Stdio transport (~350 lines)
+│       ├── transport_trait.rs  # McpTransport abstraction (~200 lines)
+│       ├── http_transport.rs   # HTTP+SSE transport (~500 lines)
+│       ├── session.rs          # HTTP session management (~540 lines)
+│       ├── auth.rs             # API key authentication (~360 lines)
 │       ├── tools.rs            # Tool registry & handlers (~1600 lines)
-│       └── server.rs           # MCP server (~300 lines)
+│       └── server.rs           # MCP server, McpServerCore (~650 lines)
 ├── tests/
 │   ├── common/
 │   │   └── mod.rs              # Test utilities
@@ -458,6 +482,7 @@ agent-api/
 | 13 | Diff reporting (original vs healed) | ✅ Complete |
 | 14 | Secret provider abstraction | ✅ Complete |
 | 15 | Credential management tools | ✅ Complete |
+| 16 | HTTP transport (Axum + SSE) | ✅ Complete |
 
 ---
 
@@ -492,6 +517,16 @@ rand = "0.8"                   # Random nonce generation
 base64 = "0.22"                # Base64 encoding for Basic auth
 aws-config = { version = "1.5", features = ["behavior-version-latest"] }
 aws-sdk-secretsmanager = "1.54"  # AWS Secrets Manager
+
+# HTTP transport dependencies
+axum = { version = "0.8", features = ["http2"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-stream = "0.3"
+async-trait = "0.1"
+futures-util = "0.3"
 ```
 
 ---
