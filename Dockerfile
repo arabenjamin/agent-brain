@@ -34,7 +34,7 @@ RUN cargo build --release
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -59,7 +59,12 @@ ENV NEO4J_URI=bolt://neo4j:7687 \
     OLLAMA_MODEL=llama3 \
     LOG_LEVEL=info \
     LOG_FORMAT=json \
-    RUST_BACKTRACE=1
+    RUST_BACKTRACE=1 \
+    MCP_TRANSPORT=http \
+    MCP_HTTP_BIND=0.0.0.0:3000
+
+# Expose HTTP port for MCP server
+EXPOSE 3000
 
 ENTRYPOINT ["agent-api"]
 CMD ["serve"]

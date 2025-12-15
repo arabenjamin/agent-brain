@@ -16,6 +16,34 @@ services:
       timeout: 5s
       retries: 5
 
+  # MCP Server with HTTP transport
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"    # MCP HTTP endpoint
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3
+      - MCP_TRANSPORT=http
+      - MCP_HTTP_BIND=0.0.0.0:3000
+      - MCP_API_KEY=${MCP_API_KEY:-}    # Optional: set via .env or export
+      - LOG_LEVEL=info
+      - LOG_FORMAT=json
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # Ollama service (optional - comment out if using local Ollama)
   # ollama:
   #   image: ollama/ollama
