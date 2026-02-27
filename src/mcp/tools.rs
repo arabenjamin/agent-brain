@@ -1,10 +1,12 @@
 //! MCP tool definitions and handlers.
 
 use std::sync::Arc;
+use std::time::Instant;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use crate::mcp::protocol::{Content, ToolCallResult, ToolDefinition};
+use crate::repository::TelemetryClient;
 use crate::skills::Skill;
 
 /// Tool registry containing all available tools.
@@ -56,6 +58,7 @@ impl Default for ToolRegistry {
 #[derive(Clone)]
 pub struct ToolHandler {
     skills: Arc<Vec<Box<dyn Skill>>>,
+    telemetry: Option<TelemetryClient>,
 }
 
 impl ToolHandler {
@@ -63,15 +66,44 @@ impl ToolHandler {
     pub fn new(skills: Vec<Box<dyn Skill>>) -> Self {
         Self {
             skills: Arc::new(skills),
+            telemetry: None,
         }
+    }
+
+    /// Attach a telemetry client to log every tool call.
+    pub fn with_telemetry(mut self, telemetry: TelemetryClient) -> Self {
+        self.telemetry = Some(telemetry);
+        self
     }
 
     /// Execute a tool by name with the given arguments.
     pub async fn execute(&self, name: &str, arguments: Option<Value>) -> ToolCallResult {
         debug!(tool = %name, "Executing tool");
 
+        let start = Instant::now();
+
         for skill in self.skills.iter() {
             if let Some(result) = skill.execute(name, arguments.clone()).await {
+                if let Some(ref tel) = self.telemetry {
+                    let prompt = format!(
+                        "{}: {}",
+                        name,
+                        arguments.as_ref().map(|a| a.to_string()).unwrap_or_default()
+                    );
+                    let response = result.content.first()
+                        .and_then(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None })
+                        .unwrap_or("");
+                    let success = result.is_error.is_none();
+                    let latency_ms = start.elapsed().as_millis() as u64;
+                    let _ = tel.log_interaction(
+                        &prompt,
+                        response,
+                        Some(&serde_json::json!([name])),
+                        success,
+                        latency_ms,
+                        "agent-brain",
+                    );
+                }
                 return result;
             }
         }

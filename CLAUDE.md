@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Autonomous API Knowledge Graph - An MCP server in Rust that ingests OpenAPI/Swagger specifications into a Neo4j graph database, enabling natural language queries and live API testing with "self-healing" documentation capabilities.
+Autonomous Agent Brain — A persistent, self-improving MCP server in Rust backed by a Neo4j knowledge graph. Manages long-term memory with hybrid vector+BM25 RAG, executes background jobs in a durable priority queue, reasons over stored knowledge, ingests and self-heals OpenAPI specs, and runs an autonomous background scheduler that continuously improves itself by dispatching pending tasks as job chains.
 
 ## Tech Stack
 
@@ -12,7 +12,7 @@ Autonomous API Knowledge Graph - An MCP server in Rust that ingests OpenAPI/Swag
 - **Protocol:** Model Context Protocol (MCP) via stdio or HTTP transport
 - **Web Framework:** Axum (for HTTP transport with SSE streaming)
 - **Database:** Neo4j via `neo4rs` driver
-- **AI Model:** Local LLM (Ollama - Llama 3 or Mistral) via REST
+- **AI Model:** Pluggable LLM providers — Ollama (local), Anthropic, or Gemini
 
 ## Build Commands
 
@@ -104,10 +104,13 @@ Copy `.env.example` to `.env` and configure:
 | `AWS_REGION` | `us-east-1` | AWS region for Secrets Manager |
 | `AWS_SECRET_PREFIX` | - | Prefix for AWS secret names |
 | `DATASET_DIR` | `./datasets` | Directory for training data export (`digest_experiences`) |
+| `TELEMETRY_DB_PATH` | - | Path to DuckDB file for interaction logging (enables `SleepSkill`) |
 | `SERPAPI_KEY` | - | SerpApi key for `search_web` tool |
 | `BRAVE_API_KEY` | - | Brave Search API key for `search_web` tool |
 | `GOOGLE_API_KEY` | - | Google Custom Search API key for `search_web` tool |
 | `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
+| `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
+| `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
 
 ## Local Development
 
@@ -158,23 +161,28 @@ src/
 ├── cli.rs              # Clap CLI definitions
 ├── config.rs           # Environment configuration
 ├── logging.rs          # Tracing setup
-├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod, ApiCredential, Task, AgentJob)
+├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod, ApiCredential, Task, AgentJob, ModelSpec)
 ├── repository/         # Neo4j database layer
+│   ├── admin.rs        # Graph cleanup operations (stats, purge, reset)
+│   ├── agent_job.rs    # AgentJob CRUD + chain unpark/cancel operations
 │   ├── credential.rs   # Credential CRUD operations
-│   ├── task.rs         # Task CRUD operations
-│   └── agent_job.rs    # AgentJob CRUD operations
+│   ├── model_spec.rs   # ModelSpec CRUD (upsert by name, usage stats)
+│   └── task.rs         # Task CRUD operations
 ├── services/           # Core business logic
 │   ├── openapi.rs      # OpenAPI spec parser and ingester
 │   ├── http.rs         # HTTP request executor with response classification
-│   ├── llm.rs          # Ollama LLM client for error analysis
+│   ├── llm.rs          # Multi-provider LLM client (Ollama/Anthropic/Gemini)
 │   ├── healing.rs      # Self-healing orchestrator
 │   ├── context.rs      # In-memory API context store with DB fallback
 │   ├── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
 │   ├── docgen.rs       # Documentation-to-OpenAPI generator with LLM
 │   ├── repo.rs         # Repository-to-OpenAPI generator with LLM
 │   ├── knowledge.rs    # Notes/RAG service with vector and keyword search
+│   ├── model_selector.rs # Capability-filter + cheapest-first model selection
 │   ├── procedure_executor.rs # Template-substitution procedure step runner
 │   ├── queue.rs        # Priority job queue + coordinator (AgentJob execution)
+│   ├── scheduler.rs    # Autonomous scheduler (self-improvement loop)
+│   ├── sleep.rs        # Experience digestion and training data export
 │   ├── export/         # Graph-to-Spec export module
 │   │   ├── builder.rs  # OpenAPI spec builder
 │   │   ├── exporter.rs # Graph traversal and spec reconstruction
@@ -189,12 +197,17 @@ src/
 │       └── error.rs    # Secret error types
 ├── skills/             # Pluggable skill implementations
 │   ├── mod.rs          # Skill trait definition
+│   ├── admin.rs        # Graph Admin skill (4 tools)
+│   ├── agent.rs        # Agent Job Queue skill (8 tools)
 │   ├── api.rs          # API Expert skill (14 tools)
-│   ├── search.rs       # Web Search skill (1 tool)
-│   ├── task.rs         # Task Manager skill (6 tools)
-│   ├── knowledge.rs    # Knowledge Manager skill (10 tools)
 │   ├── dynamic.rs      # Dynamic Tool Builder skill (4 tools + runtime tools)
-│   ├── agent.rs        # Agent Job Queue skill (7 tools)
+│   ├── knowledge.rs    # Knowledge Manager skill (10 tools)
+│   ├── model.rs        # Model Registry skill (5 tools)
+│   ├── procedure.rs    # Procedural Memory skill (2 tools)
+│   ├── scheduler.rs    # Autonomous Scheduler skill (5 tools)
+│   ├── search.rs       # Web Search skill (1 tool)
+│   ├── sleep.rs        # Sleep / Telemetry skill (2 tools)
+│   ├── task.rs         # Task Manager skill (6 tools)
 │   └── working_memory.rs # Working Memory skill (3 tools)
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
@@ -296,17 +309,18 @@ The MCP server supports two transport mechanisms:
      └─────────────────────┬───────────────────────────┘
                            │
      ┌─────────────────────▼───────────────────────────┐
-     │         Skill Registry (59 tools total)              │
-     │  ApiSkill(14) SearchSkill(1) TaskSkill(6)            │
-     │  KnowledgeSkill(10) ProcedureSkill(2)                │
-     │  WorkingMemorySkill(3) DynamicSkill(4+runtime)       │
-     │  AgentSkill(7)                                       │
-     └─────────────────────────────────────────────────────┘
+     │    Skill Registry (64 static + N runtime)               │
+     │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)             │
+     │  KnowledgeSkill(10)  ProcedureSkill(2)  AgentSkill(8)  │
+     │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)         │
+     │  AdminSkill(4)  ModelSkill(5)  SleepSkill(2)            │
+     │  SchedulerSkill(5)                                      │
+     └─────────────────────────────────────────────────────────┘
 ```
 
 ### MCP Tools
 
-The server exposes fifty-nine tools via JSON-RPC 2.0, organised across ten skills (plus runtime-defined tools from DynamicSkill):
+The server exposes sixty-four tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -642,6 +656,69 @@ The server exposes fifty-nine tools via JSON-RPC 2.0, organised across ten skill
     - Knowledge data (Notes, Tasks, Procedures, WorkingMemory, AgentJobs) is preserved
     - Requires `confirm: true` — cannot be undone
     - Returns: `{ "reset": true, "removed": { ... }, "message": "..." }`
+
+**Model Registry Tools (ModelSkill):**
+
+55. **`list_models`** - List available LLM providers and all registered model specs
+    - Input: `{}` (no parameters)
+    - Returns: active provider config + list of `ModelSpec` records from Neo4j
+
+56. **`use_model`** - Switch the active LLM provider and model at runtime
+    - Input: `{ "provider": "Ollama"|"Anthropic"|"Gemini", "model"?: "...", "api_key"?: "..." }`
+    - Updates the shared `Arc<RwLock<Option<LlmConfig>>>` used by all skills
+    - Returns: updated provider config
+
+57. **`register_model`** - Register a model spec in the knowledge graph
+    - Input: `{ "name": "...", "provider": "...", "cost_per_1k_input"?: N, "cost_per_1k_output"?: N, "context_window"?: N, "capabilities"?: [...] }`
+    - Upserts a `ModelSpec` node in Neo4j
+    - Returns: `{ "model_id": "...", "name": "...", "registered": true }`
+
+58. **`select_model`** - Auto-select the cheapest capable model for given requirements
+    - Input: `{ "required_capabilities": [...], "max_cost_per_1k"?: N }`
+    - Filters registered models by capabilities, sorts cheapest-first
+    - Returns: `{ "selected": { name, provider, cost, capabilities } }`
+
+59. **`get_model_stats`** - Get usage statistics for a model from AgentJob history
+    - Input: `{ "model_name": "..." }`
+    - Returns: `{ "total_jobs": N, "success_rate": 0.0-1.0, "avg_duration_ms": N }`
+
+**Sleep / Telemetry Tools (SleepSkill):**
+
+60. **`digest_experiences`** - Export successful interactions to JSONL training datasets
+    - Input: `{ "min_score"?: N }` (min_score optional, filters by feedback score 1-5)
+    - Reads from DuckDB `interactions` table; writes JSONL to `DATASET_DIR`
+    - Returns: `{ "exported": N, "file": "..." }`
+
+61. **`analyze_gaps`** - Identify knowledge gaps and missing capabilities from telemetry
+    - Input: `{ "limit"?: N }` (default 20)
+    - Reads from DuckDB `knowledge_gaps` table
+    - Returns: `{ "count": N, "gaps": [{ "topic", "frequency", "last_seen" }] }`
+
+**Scheduler Tools (SchedulerSkill):**
+
+62. **`start_scheduler`** - Enable the autonomous scheduler loop
+    - Input: `{ "interval_secs"?: N, "session_id"?: "..." }` (both optional)
+    - Sets `enabled = true`; optionally updates poll interval and session ID
+    - Returns: `{ "started": true, "interval_secs": N, "session_id": "..." }`
+
+63. **`stop_scheduler`** - Pause the scheduler loop
+    - Input: `{}` (no parameters)
+    - Sets `enabled = false`; in-flight jobs continue running
+    - Returns: `{ "stopped": true, "message": "..." }`
+
+64. **`get_scheduler_status`** - Return current scheduler config and runtime state
+    - Input: `{}` (no parameters)
+    - Returns: `{ "config": { interval_secs, enabled, max_tasks_per_run, error_budget, session_id }, "state": { tasks_dispatched, consecutive_errors, last_run_at, last_error, is_running } }`
+
+65. **`configure_scheduler`** - Update scheduler settings at runtime
+    - Input: `{ "interval_secs"?: N, "enabled"?: bool, "max_tasks_per_run"?: N, "error_budget"?: N, "session_id"?: "..." }` (all optional)
+    - Supports setting `session_id` to `null` to clear it
+    - Returns: `{ "updated": true, "config": { ... } }`
+
+66. **`run_scheduler_tick`** - Execute a scheduler tick immediately (bypasses timer)
+    - Input: `{}` (no parameters)
+    - Lists `created` tasks, builds job chains, enqueues them
+    - Returns: `{ "success": true, "tasks_found": N, "tasks_dispatched": K, "skipped": M }`
 
 ### Self-Healing Flow
 

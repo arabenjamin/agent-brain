@@ -1,6 +1,6 @@
 # Agent Brain
 
-An autonomous MCP server — a persistent, self-improving AI agent backed by a Neo4j knowledge graph.  It ingests OpenAPI specs, manages long-term memory via hybrid vector+BM25 RAG, executes background jobs in a priority queue, reasons over stored knowledge, and learns from its own outcomes.
+An autonomous MCP server — a persistent, self-improving AI agent backed by a Neo4j knowledge graph. It ingests OpenAPI specs, manages long-term memory via hybrid vector+BM25 RAG, executes background jobs in a priority queue, reasons over stored knowledge, learns from its own outcomes, and runs an autonomous background scheduler that continuously improves itself.
 
 ## What It Does
 
@@ -13,7 +13,8 @@ An autonomous MCP server — a persistent, self-improving AI agent backed by a N
 - **Executes** background jobs asynchronously in a durable priority queue
 - **Extends itself** by defining new MCP tools backed by stored procedure pipelines
 - **Searches** the web via SerpApi, Brave, or Google Custom Search
-- **Connects** to Claude CLI or any MCP-compatible client via stdio or HTTP/SSE
+- **Schedules** autonomous background ticks to dispatch pending tasks to the job queue
+- **Connects** to any MCP-compatible client via stdio or HTTP/SSE
 
 ## Quick Start
 
@@ -43,7 +44,7 @@ cargo run -- query "pets"
 
 - Rust 1.75+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 - Docker & Docker Compose
-- (Optional) Ollama for self-healing features
+- Ollama (for LLM-powered features: reasoning, memory consolidation, self-healing)
 
 ### Setup
 
@@ -79,6 +80,9 @@ cargo run --release -- init-db
 | `MCP_TRANSPORT` | `stdio` | MCP transport (stdio/http) |
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address |
 | `MCP_API_KEY` | - | API key for HTTP authentication |
+| `LLM_PROVIDER` | `ollama` | LLM provider (ollama/anthropic/gemini) |
+| `ANTHROPIC_API_KEY` | - | Anthropic API key |
+| `GEMINI_API_KEY` | - | Gemini API key |
 | `SECRET_PROVIDER` | `local` | Secret provider (local/vault/aws/none) |
 | `SECRETS_FILE` | `.secrets.enc` | Encrypted secrets file path |
 | `SECRETS_ENCRYPTION_KEY` | - | Encryption key for local secrets |
@@ -86,6 +90,9 @@ cargo run --release -- init-db
 | `BRAVE_API_KEY` | - | Brave Search API key for `search_web` tool |
 | `GOOGLE_API_KEY` | - | Google Custom Search API key |
 | `GOOGLE_CX` | - | Google Custom Search Engine ID |
+| `SCHEDULER_INTERVAL_SECS` | `300` | How often the autonomous scheduler polls for pending tasks |
+| `SCHEDULER_ENABLED` | `true` | Enable autonomous background scheduling at startup |
+| `DATASET_DIR` | `./datasets` | Directory for training data export |
 
 ## CLI Usage
 
@@ -155,10 +162,10 @@ cargo run -- diff --breaking-only
 # Show database statistics
 cargo run -- stats
 
-# Run as MCP server (stdio transport - for Claude CLI)
+# Run as MCP server (stdio transport — default)
 cargo run -- serve
 
-# Run as MCP server (HTTP transport - for remote access)
+# Run as MCP server (HTTP transport — for remote access)
 cargo run -- serve --transport http
 cargo run -- serve --transport http --bind 0.0.0.0:8080
 cargo run -- serve --transport http --api-key my-secret-key
@@ -167,52 +174,55 @@ cargo run -- serve --transport http --api-key my-secret-key
 cargo run -- init-db
 ```
 
-## Claude CLI Integration
+## MCP Client Integration
 
-Connect this tool to Claude CLI for AI-assisted API exploration and testing.
+Connect this tool to any MCP-compatible client for AI-assisted API exploration, autonomous task execution, and knowledge management.
 
-### Setup
+### Stdio Transport (Local)
 
-1. **Build the release binary:**
-   ```bash
-   cargo build --release
-   ```
+Build the binary and configure your MCP client:
 
-2. **Ensure Neo4j is running:**
-   ```bash
-   docker compose up -d
-   ```
+```bash
+cargo build --release
+```
 
-3. **Add to Claude CLI settings:**
+Example `mcpServers` configuration entry:
 
-   Edit your settings file:
-   - macOS: `~/Library/Application Support/claude-code/settings.json`
-   - Linux: `~/.config/claude-code/settings.json`
+```json
+{
+  "mcpServers": {
+    "agent-brain": {
+      "command": "/path/to/agent-brain/target/release/agent-brain",
+      "args": ["serve"],
+      "env": {
+        "NEO4J_URI": "bolt://localhost:7688",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASSWORD": "password",
+        "OLLAMA_URL": "http://localhost:11434",
+        "OLLAMA_MODEL": "granite3.3:8b",
+        "SERPAPI_KEY": "your-serpapi-key"
+      }
+    }
+  }
+}
+```
 
-   ```json
-   {
-     "mcpServers": {
-       "api-knowledge-graph": {
-         "command": "/path/to/agent-brain/target/release/agent-brain",
-         "args": ["serve"],
-         "env": {
-           "NEO4J_URI": "bolt://localhost:7688",
-           "NEO4J_USER": "neo4j",
-           "NEO4J_PASSWORD": "password",
-           "OLLAMA_URL": "http://localhost:11434",
-           "OLLAMA_MODEL": "granite4:latest",
-           "SERPAPI_KEY": "your-serpapi-key"
-         }
-       }
-     }
-   }
-   ```
+### HTTP Transport (Remote / Docker)
 
-4. **Restart Claude CLI** to load the MCP server.
+```bash
+# Build and start all services (Neo4j + MCP Server)
+docker compose up -d --build
 
-### Available MCP Tools (47)
+# With API key authentication
+MCP_API_KEY=your-secret-key docker compose up -d --build
+```
 
-Once connected, Claude can use these tools:
+**Endpoints:**
+- `POST http://localhost:3000/mcp` — JSON-RPC requests
+- `GET  http://localhost:3000/mcp` — SSE stream for server-initiated messages
+- `GET  http://localhost:3000/health` — Health check
+
+### Available MCP Tools (64)
 
 **API Tools (14)**
 
@@ -289,11 +299,12 @@ Once connected, Claude can use these tools:
 | `list_dynamic_tools` | List all runtime-defined tools |
 | `remove_dynamic_tool` | Delete a dynamic tool and unregister it live |
 
-**Agent Job Queue (7)**
+**Agent Job Queue (8)**
 
 | Tool | Description |
 |------|-------------|
 | `enqueue_agent` | Submit any MCP tool as a background job (priority 0-3, persistent, retryable) |
+| `enqueue_chain` | Submit an ordered chain of jobs; each step auto-promotes when its predecessor completes |
 | `queue_status` | Stats: pending, running, per-status counts, worker config |
 | `get_job_result` | Poll a job for its current status and result |
 | `cancel_job` | Cancel a queued or running job |
@@ -301,19 +312,41 @@ Once connected, Claude can use these tools:
 | `set_worker_config` | Change concurrency limit, enable/pause processing, poll interval |
 | `drain_queue` | Cancel all currently pending jobs |
 
-### Example Prompts
+**Graph Admin Tools (4)**
 
-```
-"Ingest the Stripe API spec"
+| Tool | Description |
+|------|-------------|
+| `delete_api` | Cascade-delete all graph nodes for one ingested API (dry_run supported) |
+| `purge_duplicate_endpoints` | Remove duplicate Endpoint nodes (same resource + path + method) |
+| `purge_orphaned_schemas` | Delete Schema nodes with no Endpoint relationships |
+| `reset_graph` | Wipe all API data; knowledge data preserved (requires `confirm: true`) |
 
-"What endpoints handle payments?"
+**Model Registry Tools (5)**
 
-"Execute a GET request to /users and show me the response"
+| Tool | Description |
+|------|-------------|
+| `list_models` | List available LLM providers and all registered model specs |
+| `use_model` | Switch the active LLM provider and model at runtime |
+| `register_model` | Register a new model spec (capabilities, cost, context window) |
+| `select_model` | Auto-select the cheapest capable model for a set of requirements |
+| `get_model_stats` | Get usage statistics for a model from job history |
 
-"Generate a diff report of API changes"
+**Sleep / Telemetry Tools (2)**
 
-"Export the healed spec to YAML"
-```
+| Tool | Description |
+|------|-------------|
+| `digest_experiences` | Export successful interactions to JSONL datasets for fine-tuning |
+| `analyze_gaps` | Identify knowledge gaps and missing capabilities from telemetry |
+
+**Autonomous Scheduler Tools (5)**
+
+| Tool | Description |
+|------|-------------|
+| `start_scheduler` | Enable autonomous scheduling; optionally set interval and session_id |
+| `stop_scheduler` | Pause the autonomous scheduler |
+| `get_scheduler_status` | Get current scheduler config, stats, and running state |
+| `configure_scheduler` | Update interval, enabled state, max tasks per tick, error budget |
+| `run_scheduler_tick` | Manually trigger a scheduler tick immediately |
 
 ## How Self-Healing Works
 
@@ -332,7 +365,7 @@ The healed documentation can then be exported and committed to version control.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Claude CLI / MCP Client                │
+│                  Any MCP-Compatible Client                  │
 └─────────────────────────┬───────────────────────────────────┘
                           │ JSON-RPC 2.0
                ┌──────────┴──────────┐
@@ -347,9 +380,18 @@ The healed documentation can then be exported and committed to version control.
            └──────────┬─────────────┘
 ┌─────────────────────▼───────────────────────────────────────┐
 │                     McpServerCore                           │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  64 Tools (12 Skills + runtime-defined tools)       │   │
+│   │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)         │   │
+│   │  KnowledgeSkill(10)  ProcedureSkill(2)              │   │
+│   │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)     │   │
+│   │  AgentSkill(8)  AdminSkill(4)  ModelSkill(5)        │   │
+│   │  SleepSkill(2)  SchedulerSkill(5)                   │   │
+│   └─────────────────────────────────────────────────────┘   │
 │   ┌─────────────┐  ┌─────────────┐  ┌────────────────────┐  │
-│   │ 47 Tools    │  │  Sessions   │  │  Protocol Handler  │  │
-│   │ (8 Skills)  │  │  (HTTP)     │  │  (JSON-RPC 2.0)    │  │
+│   │  Sessions   │  │  ToolReg.   │  │  Protocol Handler  │  │
+│   │  (HTTP)     │  │  (Skill     │  │  (JSON-RPC 2.0)    │  │
+│   │             │  │   dispatch) │  │                    │  │
 │   └─────────────┘  └─────────────┘  └────────────────────┘  │
 └────────────────────────┬────────────────────────────────────┘
                          │
@@ -360,9 +402,9 @@ The healed documentation can then be exported and committed to version control.
 │  │ Parser   │ │ Executor │ │  Client  │ │  Service     │   │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐   │
-│  │ Queue    │ │Discovery │ │Procedure │ │    Export    │   │
+│  │ Queue    │ │Scheduler │ │Procedure │ │    Export    │   │
 │  │ Service  │ │ Service  │ │ Executor │ │   Module     │   │
-│  │(BinaryH) │ │          │ │(template)│ │              │   │
+│  │(BinaryH) │ │(background│ │(template)│ │              │   │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  Secrets  │  Local(AES-GCM) │ Vault(KV v2) │ AWS    │   │
@@ -378,6 +420,7 @@ The healed documentation can then be exported and committed to version control.
 │  (Note)──►MENTIONS──►(Entity)                               │
 │  (DynamicTool)──►USES──►(Procedure)                         │
 │  (AgentJob) — background job lifecycle                      │
+│  (ModelSpec) — model registry                               │
 └─────────────────────────────────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────────┐
@@ -397,22 +440,26 @@ agent-brain/
 │   ├── models/              # Data models
 │   │   ├── agent_job.rs     # AgentJob + AgentJobStatus + PrioritizedJob
 │   │   ├── credential.rs    # API credential model
+│   │   ├── model_spec.rs    # ModelSpec — model registry entry
 │   │   ├── procedure.rs     # Procedure (stored workflow) model
 │   │   ├── task.rs          # Task / goal model
 │   │   └── ...              # Endpoint, Schema, Parameter, etc.
 │   ├── repository/          # Neo4j database layer
-│   │   ├── agent_job.rs     # AgentJob CRUD (create/get/list/started/completed/failed/dead/retry)
+│   │   ├── agent_job.rs     # AgentJob CRUD + chain unpark/cancel
 │   │   ├── client.rs        # Neo4jClient + schema init
 │   │   ├── credential.rs    # Credential CRUD
+│   │   ├── model_spec.rs    # ModelSpec CRUD (upsert by name)
 │   │   ├── task.rs          # Task CRUD (including link_subtask, list_tasks, store_outcome_note)
 │   │   └── telemetry.rs     # DuckDB telemetry client
 │   ├── services/            # Business logic
 │   │   ├── queue.rs         # QueueService — priority BinaryHeap + Tokio coordinator
+│   │   ├── scheduler.rs     # SchedulerService — autonomous background tick loop
 │   │   ├── knowledge.rs     # Notes/RAG — reason, audit_action, explain_reasoning
+│   │   ├── model_selector.rs # ModelSelector — capability-filter + cheapest-first selection
 │   │   ├── procedure_executor.rs # Template-substitution step runner ({{input.x}})
 │   │   ├── openapi.rs       # Spec parser + ingester
 │   │   ├── http.rs          # HTTP executor with self-healing
-│   │   ├── llm.rs           # Ollama LLM client
+│   │   ├── llm.rs           # Multi-provider LLM client (Ollama/Anthropic/Gemini)
 │   │   ├── healing.rs       # Self-healing orchestrator
 │   │   ├── context.rs       # In-memory API context store
 │   │   ├── discovery.rs     # Spec auto-discovery
@@ -423,13 +470,16 @@ agent-brain/
 │   │   └── secrets/         # Secret provider abstraction (local/Vault/AWS)
 │   ├── skills/              # Pluggable skill implementations
 │   │   ├── mod.rs           # Skill trait
-│   │   ├── agent.rs         # AgentSkill — 7 queue management tools
+│   │   ├── admin.rs         # AdminSkill — 4 graph cleanup tools
+│   │   ├── agent.rs         # AgentSkill — 8 queue management tools
 │   │   ├── api.rs           # ApiSkill — 14 tools
 │   │   ├── dynamic.rs       # DynamicSkill — 4 tools + runtime-defined tools
 │   │   ├── knowledge.rs     # KnowledgeSkill — 10 tools
+│   │   ├── model.rs         # ModelSkill — 5 model registry tools
 │   │   ├── procedure.rs     # ProcedureSkill — 2 tools
+│   │   ├── scheduler.rs     # SchedulerSkill — 5 autonomous scheduler tools
 │   │   ├── search.rs        # SearchSkill — 1 tool
-│   │   ├── sleep.rs         # SleepSkill — telemetry / experience digestion
+│   │   ├── sleep.rs         # SleepSkill — 2 telemetry / experience digestion tools
 │   │   ├── task.rs          # TaskSkill — 6 tools
 │   │   └── working_memory.rs # WorkingMemorySkill — 3 tools
 │   └── mcp/                 # MCP server implementation
@@ -451,8 +501,9 @@ agent-brain/
 │   ├── repo_analyzer_test.rs
 │   ├── http_transport_test.rs
 │   └── task_test.rs
-├── STATUS.md                # Current state + where we left off
-├── TODO.md                  # Backlog + next phases
+├── STATUS.md                # Current state and skill registry
+├── TODO.md                  # Backlog and next phases
+├── USAGE.md                 # Deployment and session guide
 ├── docker-compose.yml       # Neo4j + MCP server stack
 └── .github/workflows/       # CI/CD pipelines
 ```

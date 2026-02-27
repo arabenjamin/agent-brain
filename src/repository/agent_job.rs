@@ -229,6 +229,111 @@ impl Neo4jClient {
         self.run(q).await
     }
 
+    /// Create a new AgentJob in Neo4j with status `parked` (waiting for parent to complete).
+    pub async fn create_agent_job_parked(
+        &self,
+        tool_name: &str,
+        arguments: Option<&serde_json::Value>,
+        priority: u8,
+        max_attempts: u32,
+        session_id: Option<&str>,
+        parent_job_id: &str,
+        provider_hint: Option<&str>,
+    ) -> Result<String, RepositoryError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let args_json = arguments.map(|a| a.to_string()).unwrap_or_default();
+
+        let q = query(
+            "CREATE (j:AgentJob {
+                id: $id,
+                tool_name: $tool_name,
+                args_json: $args_json,
+                priority: $priority,
+                status: 'parked',
+                created_at: $now,
+                updated_at: $now,
+                attempt_count: 0,
+                max_attempts: $max_attempts,
+                session_id: $session_id,
+                parent_job_id: $parent_job_id,
+                provider_hint: $provider_hint
+            })",
+        )
+        .param("id", id.clone())
+        .param("tool_name", tool_name)
+        .param("args_json", args_json)
+        .param("priority", priority as i64)
+        .param("now", now)
+        .param("max_attempts", max_attempts as i64)
+        .param("session_id", session_id.unwrap_or(""))
+        .param("parent_job_id", parent_job_id)
+        .param("provider_hint", provider_hint.unwrap_or(""));
+
+        self.run(q).await?;
+        info!(id = %id, tool = %tool_name, parent = %parent_job_id, "Created parked AgentJob");
+        Ok(id)
+    }
+
+    /// Promote all parked children of a completed job to `queued`.
+    /// Returns the newly-queued jobs so the coordinator can push them onto the heap.
+    pub async fn unpark_children(
+        &self,
+        parent_job_id: &str,
+    ) -> Result<Vec<AgentJob>, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (j:AgentJob {parent_job_id: $parent_id, status: 'parked'})
+             SET j.status = 'queued', j.updated_at = $now
+             RETURN j",
+        )
+        .param("parent_id", parent_job_id)
+        .param("now", now);
+
+        let rows = self.execute(q).await?;
+        let jobs = rows
+            .into_iter()
+            .map(|row| {
+                let node: Node = row
+                    .get("j")
+                    .map_err(|e| RepositoryError::InvalidData(e.to_string()))?;
+                Ok(node_to_agent_job(&node))
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+
+        if !jobs.is_empty() {
+            info!(count = jobs.len(), parent = %parent_job_id, "Unparked chained jobs");
+        }
+        Ok(jobs)
+    }
+
+    /// Cancel all parked children of a failed/dead job.
+    /// Returns the number of jobs cancelled.
+    pub async fn cancel_parked_children(
+        &self,
+        parent_job_id: &str,
+    ) -> Result<usize, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (j:AgentJob {parent_job_id: $parent_id, status: 'parked'})
+             SET j.status = 'cancelled', j.updated_at = $now
+             RETURN count(j) AS n",
+        )
+        .param("parent_id", parent_job_id)
+        .param("now", now);
+
+        let rows = self.execute(q).await?;
+        let count = rows
+            .first()
+            .and_then(|r| r.get::<i64>("n").ok())
+            .unwrap_or(0) as usize;
+
+        if count > 0 {
+            info!(count, parent = %parent_job_id, "Cancelled parked chain jobs (parent failed)");
+        }
+        Ok(count)
+    }
+
     /// Return a per-status count map plus a total.
     pub async fn get_queue_stats(&self) -> Result<serde_json::Value, RepositoryError> {
         let q = query("MATCH (j:AgentJob) RETURN j.status AS status, count(j) AS n");

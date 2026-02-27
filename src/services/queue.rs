@@ -20,6 +20,7 @@ use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::Deserialize;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
@@ -29,12 +30,21 @@ use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
 use crate::repository::Neo4jClient;
 
 const DEFAULT_MAX_CONCURRENT: usize = 5;
+const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 3;
+const DEFAULT_MAX_CONCURRENT_ANTHROPIC: usize = 2;
+const DEFAULT_MAX_CONCURRENT_GEMINI: usize = 5;
 
 /// Runtime configuration for the queue coordinator.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
-    /// Maximum number of jobs executing concurrently.
+    /// Global maximum number of jobs executing concurrently (informational).
     pub max_concurrent: usize,
+    /// Concurrency limit for Ollama (local) jobs.
+    pub max_concurrent_ollama: usize,
+    /// Concurrency limit for Anthropic API jobs.
+    pub max_concurrent_anthropic: usize,
+    /// Concurrency limit for Gemini API jobs.
+    pub max_concurrent_gemini: usize,
     /// When `false`, the coordinator will not pick up new jobs.
     pub enabled: bool,
     /// How often (seconds) the coordinator polls Neo4j for jobs that might have
@@ -46,10 +56,26 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             max_concurrent: DEFAULT_MAX_CONCURRENT,
+            max_concurrent_ollama: DEFAULT_MAX_CONCURRENT_OLLAMA,
+            max_concurrent_anthropic: DEFAULT_MAX_CONCURRENT_ANTHROPIC,
+            max_concurrent_gemini: DEFAULT_MAX_CONCURRENT_GEMINI,
             enabled: true,
             poll_interval_secs: 30,
         }
     }
+}
+
+/// One step in a sequential job chain submitted via `enqueue_chain`.
+#[derive(Debug, Deserialize)]
+pub struct ChainStep {
+    pub tool_name: String,
+    #[serde(default)]
+    pub arguments: Option<serde_json::Value>,
+    /// 0=low … 3=critical. Defaults to 1 (normal).
+    pub priority: Option<u8>,
+    /// Max execution attempts. Defaults to 3.
+    pub max_attempts: Option<u32>,
+    pub provider_hint: Option<String>,
 }
 
 /// Priority job queue with Neo4j-backed persistence and Tokio worker coordination.
@@ -58,7 +84,10 @@ pub struct QueueService {
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
     heap: Arc<Mutex<BinaryHeap<PrioritizedJob>>>,
     notify: Arc<Notify>,
-    semaphore: Arc<Semaphore>,
+    /// Per-provider concurrency semaphores.
+    semaphore_ollama: Arc<Semaphore>,
+    semaphore_anthropic: Arc<Semaphore>,
+    semaphore_gemini: Arc<Semaphore>,
     /// Publicly readable for `AgentSkill::handle_set_worker_config`.
     pub config: Arc<RwLock<WorkerConfig>>,
     /// Tombstone set — jobs cancelled while still in the heap (lazy deletion).
@@ -74,7 +103,9 @@ impl QueueService {
             tool_handler,
             heap: Arc::new(Mutex::new(BinaryHeap::new())),
             notify: Arc::new(Notify::new()),
-            semaphore: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT)),
+            semaphore_ollama: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_OLLAMA)),
+            semaphore_anthropic: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_ANTHROPIC)),
+            semaphore_gemini: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_GEMINI)),
             config: Arc::new(RwLock::new(WorkerConfig::default())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -145,6 +176,77 @@ impl QueueService {
         }
 
         Ok(id)
+    }
+
+    /// Submit a sequential chain of jobs.
+    ///
+    /// The **first** step is enqueued immediately (`queued`).
+    /// Steps 2..N are stored as `parked`, each with `parent_job_id` pointing to the
+    /// preceding step.  When a job completes the coordinator automatically promotes
+    /// its parked children to `queued`.  If a job fails or is marked dead its parked
+    /// children are cancelled.
+    ///
+    /// Returns the list of job IDs in chain order.
+    pub async fn enqueue_chain(
+        &self,
+        steps: &[ChainStep],
+        session_id: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        if steps.is_empty() {
+            return Err("Chain must contain at least one step".to_string());
+        }
+
+        let mut ids: Vec<String> = Vec::with_capacity(steps.len());
+        let mut prev_id: Option<String> = None;
+
+        for (i, step) in steps.iter().enumerate() {
+            let priority = step.priority.unwrap_or(1);
+            let max_attempts = step.max_attempts.unwrap_or(3);
+
+            let id = if i == 0 {
+                self.neo4j
+                    .create_agent_job(
+                        &step.tool_name,
+                        step.arguments.as_ref(),
+                        priority,
+                        max_attempts,
+                        session_id,
+                        None,
+                        step.provider_hint.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                self.neo4j
+                    .create_agent_job_parked(
+                        &step.tool_name,
+                        step.arguments.as_ref(),
+                        priority,
+                        max_attempts,
+                        session_id,
+                        prev_id.as_deref().unwrap(),
+                        step.provider_hint.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
+
+            prev_id = Some(id.clone());
+            ids.push(id);
+        }
+
+        // Push the first job to the in-memory heap.
+        if let Ok(Some(job)) = self.neo4j.get_agent_job(&ids[0]).await {
+            self.heap.lock().await.push(PrioritizedJob {
+                priority: job.priority,
+                created_at: job.created_at.clone(),
+                job,
+            });
+            self.notify.notify_one();
+        }
+
+        info!(steps = ids.len(), "Enqueued job chain");
+        Ok(ids)
     }
 
     /// Cancel a job by ID.  Returns `true` if the job was found and cancelled.
@@ -230,6 +332,9 @@ impl QueueService {
     }
 
     /// Update the runtime worker configuration.  Returns the new config.
+    ///
+    /// Note: per-provider semaphore sizes are fixed at creation and cannot be
+    /// resized at runtime; only the `WorkerConfig` fields are updated here.
     pub async fn update_config(
         &self,
         max_concurrent: Option<usize>,
@@ -262,15 +367,25 @@ impl QueueService {
             .unwrap_or(serde_json::json!({}));
         let heap_len = self.heap.lock().await.len();
         let cfg = self.config.read().await;
-        let available = self.semaphore.available_permits();
-        let running = cfg.max_concurrent.saturating_sub(available);
+
+        let avail_ollama = self.semaphore_ollama.available_permits();
+        let avail_anthropic = self.semaphore_anthropic.available_permits();
+        let avail_gemini = self.semaphore_gemini.available_permits();
+        let running_ollama = cfg.max_concurrent_ollama.saturating_sub(avail_ollama);
+        let running_anthropic = cfg.max_concurrent_anthropic.saturating_sub(avail_anthropic);
+        let running_gemini = cfg.max_concurrent_gemini.saturating_sub(avail_gemini);
 
         serde_json::json!({
             "in_memory_pending": heap_len,
-            "running_now": running,
+            "running_now": running_ollama + running_anthropic + running_gemini,
             "max_concurrent": cfg.max_concurrent,
             "enabled": cfg.enabled,
             "poll_interval_secs": cfg.poll_interval_secs,
+            "per_provider": {
+                "ollama": { "running": running_ollama, "max": cfg.max_concurrent_ollama },
+                "anthropic": { "running": running_anthropic, "max": cfg.max_concurrent_anthropic },
+                "gemini": { "running": running_gemini, "max": cfg.max_concurrent_gemini },
+            },
             "by_status": db_stats,
         })
     }
@@ -318,8 +433,15 @@ impl QueueService {
                     }
                 }
 
+                // Pick the semaphore based on provider_hint.
+                let semaphore = match pjob.job.provider_hint.as_deref() {
+                    Some("anthropic") => Arc::clone(&self.semaphore_anthropic),
+                    Some("gemini") => Arc::clone(&self.semaphore_gemini),
+                    _ => Arc::clone(&self.semaphore_ollama),
+                };
+
                 // Try to acquire a concurrency slot (non-blocking).
-                let permit = match Arc::clone(&self.semaphore).try_acquire_owned() {
+                let permit = match semaphore.try_acquire_owned() {
                     Ok(p) => p,
                     Err(_) => {
                         // At capacity — put the job back and wait for the next wakeup.
@@ -367,6 +489,25 @@ impl QueueService {
     // Job execution
     // =========================================================================
 
+    /// Promote any parked children of `parent_id` to queued and push them onto the heap.
+    async fn unpark_and_enqueue_children(self: &Arc<Self>, parent_id: &str) {
+        match self.neo4j.unpark_children(parent_id).await {
+            Ok(children) if !children.is_empty() => {
+                let mut heap = self.heap.lock().await;
+                for child in children {
+                    heap.push(PrioritizedJob {
+                        priority: child.priority,
+                        created_at: child.created_at.clone(),
+                        job: child,
+                    });
+                }
+                self.notify.notify_one();
+            }
+            Ok(_) => {}
+            Err(e) => warn!(parent = %parent_id, "Failed to unpark chain children: {}", e),
+        }
+    }
+
     async fn execute_job(self: Arc<Self>, job: AgentJob) {
         info!(job_id = %job.id, tool = %job.tool_name, priority = job.priority, "Executing AgentJob");
 
@@ -394,6 +535,8 @@ impl QueueService {
                 error!(job_id = %job.id, "Failed to store completed result: {}", e);
             } else {
                 info!(job_id = %job.id, "AgentJob completed");
+                // Promote any chained children waiting on this job.
+                self.unpark_and_enqueue_children(&job.id).await;
             }
         } else {
             let error_text = result
@@ -418,9 +561,12 @@ impl QueueService {
             if attempt >= max {
                 let _ = self.neo4j.set_job_dead(&job.id, &error_text).await;
                 warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
+                // Parent chain is broken — cancel any waiting children.
+                let _ = self.neo4j.cancel_parked_children(&job.id).await;
             } else {
                 let _ = self.neo4j.set_job_failed(&job.id, &error_text).await;
                 warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed (retryable)");
+                // Children remain parked — they will run if the job is retried and succeeds.
             }
         }
     }

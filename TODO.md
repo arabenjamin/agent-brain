@@ -4,6 +4,7 @@
 
 - **Phase 2** — Multi-Provider LLM Client (Anthropic + Gemini + Ollama via `LlmProvider` trait) ✓
 - **Phase 3** — Model Registry + Intelligent Selection (`ModelSpec`, `ModelSelector`, 5-tool `ModelSkill`, per-provider semaphores) ✓
+- **Phase 4** — Autonomous Scheduler (`SchedulerSkill`, 5 tools; background Tokio task with configurable tick interval, error budget, keyword-based goal-to-chain mapping, and runtime control via MCP tools) ✓
 
 ---
 

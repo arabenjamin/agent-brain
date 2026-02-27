@@ -2,6 +2,7 @@
 name = "agent-brain"
 version = "0.1.0"
 edition = "2024"
+description = "Autonomous AI agent brain — persistent memory, background jobs, reasoning, and self-improvement via MCP"
 
 [lib]
 name = "agent_brain"

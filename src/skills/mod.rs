@@ -1,15 +1,17 @@
+pub mod admin;
 pub mod agent;
 pub mod api;
 pub mod dynamic;
-pub mod gadget;
 pub mod knowledge;
 pub mod model;
 pub mod procedure;
+pub mod scheduler;
 pub mod search;
 pub mod sleep;
 pub mod task;
 pub mod working_memory;
 
+pub use admin::AdminSkill;
 pub use agent::AgentSkill;
 pub use api::ApiSkill;
 pub use dynamic::DynamicSkill;

@@ -11,6 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::{ContextStore, CredentialManager, LlmConfig};
 use crate::services::queue::QueueService;
+use crate::services::SchedulerService;
 use crate::skills::{
     Skill,
     admin::AdminSkill,
@@ -20,6 +21,7 @@ use crate::skills::{
     knowledge::KnowledgeSkill,
     model::ModelSkill,
     procedure::ProcedureSkill,
+    scheduler::SchedulerSkill,
     sleep::SleepSkill,
     task::TaskSkill,
     search::SearchSkill,
@@ -123,6 +125,8 @@ pub struct McpServerCore {
     // Background job queue (created in build_skills when neo4j is available)
     queue_service: Arc<RwLock<Option<Arc<QueueService>>>>,
 
+    // Autonomous scheduler (created in build_skills after queue is ready)
+    scheduler_service: Arc<RwLock<Option<Arc<SchedulerService>>>>,
 }
 
 impl McpServerCore {
@@ -152,6 +156,7 @@ impl McpServerCore {
                 .unwrap_or_else(|_| PathBuf::from("./datasets")),
             context_store: Arc::new(RwLock::new(None)),
             queue_service: Arc::new(RwLock::new(None)),
+            scheduler_service: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -259,6 +264,18 @@ impl McpServerCore {
             None
         };
 
+        // Create (or reuse) SchedulerService when Neo4j + Queue are available.
+        let scheduler_arc: Option<Arc<SchedulerService>> =
+            if let (Some(neo4j), Some(qs)) = (&self.neo4j, &queue_arc) {
+                let mut g = self.scheduler_service.write().await;
+                if g.is_none() {
+                    *g = Some(SchedulerService::new(neo4j.clone(), Arc::clone(qs)));
+                }
+                g.as_ref().map(Arc::clone)
+            } else {
+                None
+            };
+
         // Create (or reuse) ContextStore when Neo4j is available.
         let context_store = if let Some(neo4j) = &self.neo4j {
             let mut cs_guard = self.context_store.write().await;
@@ -340,6 +357,11 @@ impl McpServerCore {
             registry.register_skill(Box::new(AgentSkill::new(Arc::clone(qs))));
         }
 
+        // Register Scheduler Skill
+        if let Some(ref sched) = scheduler_arc {
+            registry.register_skill(Box::new(SchedulerSkill::new(Arc::clone(sched))));
+        }
+
         // Register DynamicSkill in registry (shared-map clone — registry sees live updates)
         if let Some(ref d) = dynamic_skill {
             registry.register_skill(Box::new(d.clone_shared()));
@@ -402,6 +424,11 @@ impl McpServerCore {
             skills.push(Box::new(AgentSkill::new(Arc::clone(qs))));
         }
 
+        // Scheduler Skill (autonomous self-improvement loop)
+        if let Some(ref sched) = scheduler_arc {
+            skills.push(Box::new(SchedulerSkill::new(Arc::clone(sched))));
+        }
+
         // Push original DynamicSkill to handler (shares tools_map with registry clone)
         if let Some(d) = dynamic_skill {
             skills.push(Box::new(d));
@@ -409,7 +436,11 @@ impl McpServerCore {
 
 
         let mut handler = self.tool_handler.write().await;
-        *handler = Some(ToolHandler::new(skills));
+        let mut tool_handler = ToolHandler::new(skills);
+        if let Some(ref tel) = self.telemetry {
+            tool_handler = tool_handler.with_telemetry(tel.clone());
+        }
+        *handler = Some(tool_handler);
 
         // Spawn the queue coordinator now that the tool handler is populated.
         if let Some(qs) = queue_arc {

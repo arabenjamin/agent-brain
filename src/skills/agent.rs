@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
-use crate::services::queue::QueueService;
+use crate::services::queue::{ChainStep, QueueService};
 use crate::skills::Skill;
 
 pub struct AgentSkill {
@@ -163,6 +163,63 @@ impl AgentSkill {
             name: "drain_queue".to_string(),
             description: "Cancel all currently queued (pending) jobs.".to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    fn enqueue_chain_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "enqueue_chain".to_string(),
+            description:
+                "Submit a sequential chain of background jobs. \
+                 Step 1 is queued immediately; each subsequent step is held as 'parked' until \
+                 its predecessor completes successfully. \
+                 If any step exhausts all retries the remaining steps are automatically cancelled. \
+                 Returns the list of job IDs in chain order."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": "Ordered list of tool calls to execute sequentially.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool_name": {
+                                    "type": "string",
+                                    "description": "The MCP tool to invoke"
+                                },
+                                "arguments": {
+                                    "type": "object",
+                                    "description": "Arguments to pass to the tool"
+                                },
+                                "priority": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 3,
+                                    "description": "0=low, 1=normal (default), 2=high, 3=critical"
+                                },
+                                "max_attempts": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Maximum execution attempts (default 3)"
+                                },
+                                "provider_hint": {
+                                    "type": "string",
+                                    "description": "Optional LLM provider hint (ollama/anthropic/gemini)"
+                                }
+                            },
+                            "required": ["tool_name"]
+                        },
+                        "minItems": 1
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session ID applied to all jobs in the chain"
+                    }
+                },
+                "required": ["steps"]
+            }),
         }
     }
 
@@ -332,6 +389,44 @@ impl AgentSkill {
             Err(e) => ToolCallResult::error(format!("Drain failed: {e}")),
         }
     }
+
+    async fn handle_enqueue_chain(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input {
+            steps: Vec<ChainStep>,
+            #[serde(default)]
+            session_id: Option<String>,
+        }
+
+        let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
+            Some(i) => i,
+            None => return ToolCallResult::error("Missing required field: steps"),
+        };
+
+        if input.steps.is_empty() {
+            return ToolCallResult::error("Chain must contain at least one step");
+        }
+
+        match self
+            .queue
+            .enqueue_chain(&input.steps, input.session_id.as_deref())
+            .await
+        {
+            Ok(ids) => ToolCallResult::success_text(
+                json!({
+                    "chain_length": ids.len(),
+                    "job_ids": ids,
+                    "message": format!(
+                        "Chain of {} jobs enqueued. First job is queued; {} are parked.",
+                        ids.len(),
+                        ids.len().saturating_sub(1)
+                    ),
+                })
+                .to_string(),
+            ),
+            Err(e) => ToolCallResult::error(format!("Failed to enqueue chain: {e}")),
+        }
+    }
 }
 
 #[async_trait]
@@ -349,18 +444,20 @@ impl Skill for AgentSkill {
             Self::retry_job_def(),
             Self::set_worker_config_def(),
             Self::drain_queue_def(),
+            Self::enqueue_chain_def(),
         ]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
-            "enqueue_agent" => Some(self.handle_enqueue_agent(arguments).await),
-            "queue_status" => Some(self.handle_queue_status().await),
+            "enqueue_agent"  => Some(self.handle_enqueue_agent(arguments).await),
+            "queue_status"   => Some(self.handle_queue_status().await),
             "get_job_result" => Some(self.handle_get_job_result(arguments).await),
-            "cancel_job" => Some(self.handle_cancel_job(arguments).await),
-            "retry_job" => Some(self.handle_retry_job(arguments).await),
+            "cancel_job"     => Some(self.handle_cancel_job(arguments).await),
+            "retry_job"      => Some(self.handle_retry_job(arguments).await),
             "set_worker_config" => Some(self.handle_set_worker_config(arguments).await),
-            "drain_queue" => Some(self.handle_drain_queue().await),
+            "drain_queue"    => Some(self.handle_drain_queue().await),
+            "enqueue_chain"  => Some(self.handle_enqueue_chain(arguments).await),
             _ => None,
         }
     }

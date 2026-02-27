@@ -12,6 +12,7 @@ pub mod model_selector;
 pub mod openapi;
 pub mod procedure_executor;
 pub mod repo;
+pub mod scheduler;
 pub mod secrets;
 pub mod sleep;
 
@@ -33,4 +34,5 @@ pub use secrets::{
 };
 pub use model_selector::ModelSelector;
 pub use queue::{QueueService, WorkerConfig, ChainStep};
+pub use scheduler::{SchedulerService, SchedulerConfig};
 pub use sleep::SleepService;

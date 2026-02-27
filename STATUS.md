@@ -1,8 +1,8 @@
 # Brain Status
 
 **Build:** passing — 214 unit tests, 0 failures
-**Tool count:** 59 static registered + N runtime (DynamicSkill)
-**Last updated:** 2026-02-26
+**Tool count:** 64 static registered + N runtime (DynamicSkill)
+**Last updated:** 2026-02-27
 
 ---
 
@@ -21,7 +21,7 @@
 
 ---
 
-## Skill Registry (59 tools static + N runtime)
+## Skill Registry (64 tools static + N runtime)
 
 | Skill | File | Tools | Notes |
 |-------|------|-------|-------|
@@ -31,6 +31,7 @@
 | AgentSkill | `src/skills/agent.rs` | 8 | Background job queue + sequential chaining |
 | AdminSkill | `src/skills/admin.rs` | 4 | Graph cleanup: delete API, purge duplicates/orphans, reset |
 | ModelSkill | `src/skills/model.rs` | 5 | Model registry + intelligent selection |
+| SchedulerSkill | `src/skills/scheduler.rs` | 5 | Autonomous background scheduler with configurable tick interval |
 | DynamicSkill | `src/skills/dynamic.rs` | 4 + N | Runtime tool definition, hot-registration |
 | WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad, LLM summarisation |
 | ProcedureSkill | `src/skills/procedure.rs` | 2 | Stored multi-step workflows |
