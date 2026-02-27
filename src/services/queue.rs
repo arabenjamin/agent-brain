@@ -25,6 +25,7 @@ use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 use crate::mcp::protocol::Content;
+use crate::mcp::session::{SessionManager, SseMessage};
 use crate::mcp::tools::ToolHandler;
 use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
 use crate::repository::Neo4jClient;
@@ -92,12 +93,18 @@ pub struct QueueService {
     pub config: Arc<RwLock<WorkerConfig>>,
     /// Tombstone set — jobs cancelled while still in the heap (lazy deletion).
     cancelled_ids: Arc<Mutex<HashSet<String>>>,
+    /// Optional session manager for pushing SSE notifications on job completion.
+    session_manager: Option<Arc<SessionManager>>,
 }
 
 impl QueueService {
     /// Create a new queue service.  Call `recover().await` and then
     /// `spawn_coordinator()` before enqueuing jobs.
-    pub fn new(neo4j: Neo4jClient, tool_handler: Arc<RwLock<Option<ToolHandler>>>) -> Self {
+    pub fn new(
+        neo4j: Neo4jClient,
+        tool_handler: Arc<RwLock<Option<ToolHandler>>>,
+        session_manager: Option<Arc<SessionManager>>,
+    ) -> Self {
         Self {
             neo4j,
             tool_handler,
@@ -108,6 +115,7 @@ impl QueueService {
             semaphore_gemini: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_GEMINI)),
             config: Arc::new(RwLock::new(WorkerConfig::default())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
+            session_manager,
         }
     }
 
@@ -489,6 +497,28 @@ impl QueueService {
     // Job execution
     // =========================================================================
 
+    /// Push an SSE notification to the session that owns `job`, if any.
+    async fn notify_session(&self, job: &AgentJob, status: &str, error: Option<&str>) {
+        let (Some(sm), Some(sid)) = (&self.session_manager, &job.session_id) else {
+            return;
+        };
+        let mut params = serde_json::json!({
+            "job_id":    job.id,
+            "tool_name": job.tool_name,
+            "status":    status,
+        });
+        if let Some(e) = error {
+            params["error"] = serde_json::Value::String(e.to_string());
+        }
+        let payload = serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method":  "notifications/agent_job",
+            "params":  params,
+        }))
+        .unwrap_or_default();
+        let _ = sm.send_sse(sid, SseMessage::new(payload).with_event("agent_job")).await;
+    }
+
     /// Promote any parked children of `parent_id` to queued and push them onto the heap.
     async fn unpark_and_enqueue_children(self: &Arc<Self>, parent_id: &str) {
         match self.neo4j.unpark_children(parent_id).await {
@@ -537,6 +567,7 @@ impl QueueService {
                 info!(job_id = %job.id, "AgentJob completed");
                 // Promote any chained children waiting on this job.
                 self.unpark_and_enqueue_children(&job.id).await;
+                self.notify_session(&job, "completed", None).await;
             }
         } else {
             let error_text = result
@@ -563,10 +594,12 @@ impl QueueService {
                 warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
                 // Parent chain is broken — cancel any waiting children.
                 let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                self.notify_session(&job, "dead", Some(&error_text)).await;
             } else {
                 let _ = self.neo4j.set_job_failed(&job.id, &error_text).await;
                 warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed (retryable)");
                 // Children remain parked — they will run if the job is retried and succeeds.
+                self.notify_session(&job, "failed", Some(&error_text)).await;
             }
         }
     }

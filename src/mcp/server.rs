@@ -255,7 +255,11 @@ impl McpServerCore {
         let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.neo4j {
             let mut qs_guard = self.queue_service.write().await;
             if qs_guard.is_none() {
-                let qs = Arc::new(QueueService::new(neo4j.clone(), self.tool_handler.clone()));
+                let qs = Arc::new(QueueService::new(
+                    neo4j.clone(),
+                    self.tool_handler.clone(),
+                    self.session_manager.clone(),
+                ));
                 qs.recover().await;
                 *qs_guard = Some(Arc::clone(&qs));
             }
@@ -306,7 +310,7 @@ impl McpServerCore {
 
         // Register Admin Skill (graph cleanup — requires Neo4j)
         if let Some(neo4j) = &self.neo4j {
-            let admin_skill = AdminSkill::new(neo4j.clone(), context_store.clone());
+            let admin_skill = AdminSkill::new(neo4j.clone(), context_store.clone(), llm_snapshot.clone());
             registry.register_skill(Box::new(admin_skill));
         }
 
@@ -416,7 +420,7 @@ impl McpServerCore {
         }
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(AdminSkill::new(neo4j.clone(), context_store.clone())));
+            skills.push(Box::new(AdminSkill::new(neo4j.clone(), context_store.clone(), llm_snapshot.clone())));
         }
 
         // Agent Skill (queue management)

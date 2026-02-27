@@ -197,7 +197,7 @@ src/
 │       └── error.rs    # Secret error types
 ├── skills/             # Pluggable skill implementations
 │   ├── mod.rs          # Skill trait definition
-│   ├── admin.rs        # Graph Admin skill (4 tools)
+│   ├── admin.rs        # Graph Admin skill (5 tools)
 │   ├── agent.rs        # Agent Job Queue skill (8 tools)
 │   ├── api.rs          # API Expert skill (14 tools)
 │   ├── dynamic.rs      # Dynamic Tool Builder skill (4 tools + runtime tools)
@@ -313,14 +313,14 @@ The MCP server supports two transport mechanisms:
      │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)             │
      │  KnowledgeSkill(10)  ProcedureSkill(2)  AgentSkill(8)  │
      │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)         │
-     │  AdminSkill(4)  ModelSkill(5)  SleepSkill(2)            │
+     │  AdminSkill(5)  ModelSkill(5)  SleepSkill(2)            │
      │  SchedulerSkill(5)                                      │
      └─────────────────────────────────────────────────────────┘
 ```
 
 ### MCP Tools
 
-The server exposes sixty-four tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
+The server exposes sixty-five tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -657,65 +657,71 @@ The server exposes sixty-four tools via JSON-RPC 2.0, organised across eleven sk
     - Requires `confirm: true` — cannot be undone
     - Returns: `{ "reset": true, "removed": { ... }, "message": "..." }`
 
+55. **`backfill_endpoint_embeddings`** - Generate embeddings for Endpoint nodes that are missing them
+    - Input: `{ "dry_run"?: false }`
+    - Required to unlock semantic search in `graph_query_endpoint` for endpoints ingested without an LLM
+    - `dry_run: true` counts endpoints needing embeddings without generating any
+    - Returns: `{ "total_endpoints": N, "already_had_embeddings": N, "updated": N, "failed": N }`
+
 **Model Registry Tools (ModelSkill):**
 
-55. **`list_models`** - List available LLM providers and all registered model specs
+56. **`list_models`** - List available LLM providers and all registered model specs
     - Input: `{}` (no parameters)
     - Returns: active provider config + list of `ModelSpec` records from Neo4j
 
-56. **`use_model`** - Switch the active LLM provider and model at runtime
+57. **`use_model`** - Switch the active LLM provider and model at runtime
     - Input: `{ "provider": "Ollama"|"Anthropic"|"Gemini", "model"?: "...", "api_key"?: "..." }`
     - Updates the shared `Arc<RwLock<Option<LlmConfig>>>` used by all skills
     - Returns: updated provider config
 
-57. **`register_model`** - Register a model spec in the knowledge graph
+58. **`register_model`** - Register a model spec in the knowledge graph
     - Input: `{ "name": "...", "provider": "...", "cost_per_1k_input"?: N, "cost_per_1k_output"?: N, "context_window"?: N, "capabilities"?: [...] }`
     - Upserts a `ModelSpec` node in Neo4j
     - Returns: `{ "model_id": "...", "name": "...", "registered": true }`
 
-58. **`select_model`** - Auto-select the cheapest capable model for given requirements
+59. **`select_model`** - Auto-select the cheapest capable model for given requirements
     - Input: `{ "required_capabilities": [...], "max_cost_per_1k"?: N }`
     - Filters registered models by capabilities, sorts cheapest-first
     - Returns: `{ "selected": { name, provider, cost, capabilities } }`
 
-59. **`get_model_stats`** - Get usage statistics for a model from AgentJob history
+60. **`get_model_stats`** - Get usage statistics for a model from AgentJob history
     - Input: `{ "model_name": "..." }`
     - Returns: `{ "total_jobs": N, "success_rate": 0.0-1.0, "avg_duration_ms": N }`
 
 **Sleep / Telemetry Tools (SleepSkill):**
 
-60. **`digest_experiences`** - Export successful interactions to JSONL training datasets
+61. **`digest_experiences`** - Export successful interactions to JSONL training datasets
     - Input: `{ "min_score"?: N }` (min_score optional, filters by feedback score 1-5)
     - Reads from DuckDB `interactions` table; writes JSONL to `DATASET_DIR`
     - Returns: `{ "exported": N, "file": "..." }`
 
-61. **`analyze_gaps`** - Identify knowledge gaps and missing capabilities from telemetry
+62. **`analyze_gaps`** - Identify knowledge gaps and missing capabilities from telemetry
     - Input: `{ "limit"?: N }` (default 20)
     - Reads from DuckDB `knowledge_gaps` table
     - Returns: `{ "count": N, "gaps": [{ "topic", "frequency", "last_seen" }] }`
 
 **Scheduler Tools (SchedulerSkill):**
 
-62. **`start_scheduler`** - Enable the autonomous scheduler loop
+63. **`start_scheduler`** - Enable the autonomous scheduler loop
     - Input: `{ "interval_secs"?: N, "session_id"?: "..." }` (both optional)
     - Sets `enabled = true`; optionally updates poll interval and session ID
     - Returns: `{ "started": true, "interval_secs": N, "session_id": "..." }`
 
-63. **`stop_scheduler`** - Pause the scheduler loop
+64. **`stop_scheduler`** - Pause the scheduler loop
     - Input: `{}` (no parameters)
     - Sets `enabled = false`; in-flight jobs continue running
     - Returns: `{ "stopped": true, "message": "..." }`
 
-64. **`get_scheduler_status`** - Return current scheduler config and runtime state
+65. **`get_scheduler_status`** - Return current scheduler config and runtime state
     - Input: `{}` (no parameters)
     - Returns: `{ "config": { interval_secs, enabled, max_tasks_per_run, error_budget, session_id }, "state": { tasks_dispatched, consecutive_errors, last_run_at, last_error, is_running } }`
 
-65. **`configure_scheduler`** - Update scheduler settings at runtime
+66. **`configure_scheduler`** - Update scheduler settings at runtime
     - Input: `{ "interval_secs"?: N, "enabled"?: bool, "max_tasks_per_run"?: N, "error_budget"?: N, "session_id"?: "..." }` (all optional)
     - Supports setting `session_id` to `null` to clear it
     - Returns: `{ "updated": true, "config": { ... } }`
 
-66. **`run_scheduler_tick`** - Execute a scheduler tick immediately (bypasses timer)
+67. **`run_scheduler_tick`** - Execute a scheduler tick immediately (bypasses timer)
     - Input: `{}` (no parameters)
     - Lists `created` tasks, builds job chains, enqueues them
     - Returns: `{ "success": true, "tasks_found": N, "tasks_dispatched": K, "skipped": M }`
@@ -732,8 +738,8 @@ When `execute_http_request` encounters errors (4xx/5xx):
 ## TODO / Planned Features
 
 - [x] Add capability to clean up/purge the Neo4j graph — implemented as `AdminSkill` (delete_api, purge_duplicate_endpoints, purge_orphaned_schemas, reset_graph)
-- [ ] SSE push notifications for completed agent jobs
-- [ ] Semantic search for `graph_query_endpoint` via vector embeddings
+- [x] Semantic search for `graph_query_endpoint` via vector embeddings — use `backfill_endpoint_embeddings` to populate missing embeddings
+- [x] SSE push notifications for completed agent jobs — coordinator sends `notifications/agent_job` on all terminal states (completed/failed/dead)
 
 ## Branch Strategy
 Never write in credidation to LLMs or coding agents or assistants.
