@@ -50,6 +50,8 @@ pub struct Endpoint {
     pub status: EndpointStatus,
     pub last_verified_status: Option<u16>,
     pub healed_by_ai: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Endpoint {
@@ -68,6 +70,7 @@ impl Endpoint {
             status: EndpointStatus::Unknown,
             last_verified_status: None,
             healed_by_ai: false,
+            embedding: None,
         }
     }
 }

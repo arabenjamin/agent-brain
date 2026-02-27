@@ -1,5 +1,6 @@
 //! MCP server implementation.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -7,9 +8,25 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::repository::Neo4jClient;
-use crate::services::{CredentialManager, LlmConfig};
+use crate::repository::{Neo4jClient, TelemetryClient};
+use crate::services::{ContextStore, CredentialManager, LlmConfig};
+use crate::services::queue::QueueService;
+use crate::skills::{
+    Skill,
+    admin::AdminSkill,
+    agent::AgentSkill,
+    api::ApiSkill,
+    dynamic::DynamicSkill,
+    knowledge::KnowledgeSkill,
+    model::ModelSkill,
+    procedure::ProcedureSkill,
+    sleep::SleepSkill,
+    task::TaskSkill,
+    search::SearchSkill,
+    working_memory::WorkingMemorySkill,
+};
 
+use super::session::{SessionManager, SessionState};
 use super::protocol::{
     IncomingMessage, InitializeParams, InitializeResult, JsonRpcErrorResponse, JsonRpcRequest,
     JsonRpcResponse, MCP_PROTOCOL_VERSION, ServerCapabilities, ServerInfo, ToolCallParams,
@@ -61,11 +78,11 @@ pub struct McpServerConfig {
 impl Default for McpServerConfig {
     fn default() -> Self {
         Self {
-            name: "agent-api".to_string(),
+            name: "agent-brain".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             instructions: Some(
-                "Autonomous API Knowledge Graph server. \
-                 Ingest OpenAPI specs, query endpoints, and execute requests with self-healing."
+                "General Intelligence Agent Core with Graph RAG and MCP. \
+                 Manage long-term memory, execute tasks, and learn from feedback."
                     .to_string(),
             ),
         }
@@ -78,20 +95,40 @@ impl Default for McpServerConfig {
 /// from multiple async tasks concurrently.
 pub struct McpServerCore {
     config: McpServerConfig,
-    state: Arc<RwLock<ServerState>>,
-    tool_registry: Arc<ToolRegistry>,
-    tool_handler: Arc<ToolHandler>,
+    pub(crate) state: Arc<RwLock<ServerState>>,
+    tool_registry: Arc<RwLock<ToolRegistry>>,
+    tool_handler: Arc<RwLock<Option<ToolHandler>>>,
+
+    // Session management for HTTP
+    session_manager: Option<Arc<SessionManager>>,
+
+    // Configuration state needed to build skills
+    neo4j: Option<Neo4jClient>,
+    telemetry: Option<TelemetryClient>,
+    llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    credential_manager: Option<Arc<CredentialManager>>,
+
+    // Search Config
+    brave_api_key: Option<String>,
+    google_api_key: Option<String>,
+    google_cx: Option<String>,
+    serpapi_key: Option<String>,
+
+    // Sleep / training-data export directory
+    dataset_dir: PathBuf,
+
+    // API Context persistent store
+    context_store: Arc<RwLock<Option<ContextStore>>>,
+
+    // Background job queue (created in build_skills when neo4j is available)
+    queue_service: Arc<RwLock<Option<Arc<QueueService>>>>,
+
 }
 
 impl McpServerCore {
     /// Create a new server core with default configuration.
     pub fn new() -> Self {
-        Self {
-            config: McpServerConfig::default(),
-            state: Arc::new(RwLock::new(ServerState::Created)),
-            tool_registry: Arc::new(ToolRegistry::new()),
-            tool_handler: Arc::new(ToolHandler::new()),
-        }
+        Self::with_config(McpServerConfig::default())
     }
 
     /// Create a new server core with custom configuration.
@@ -99,39 +136,285 @@ impl McpServerCore {
         Self {
             config,
             state: Arc::new(RwLock::new(ServerState::Created)),
-            tool_registry: Arc::new(ToolRegistry::new()),
-            tool_handler: Arc::new(ToolHandler::new()),
+            tool_registry: Arc::new(RwLock::new(ToolRegistry::new())),
+            tool_handler: Arc::new(RwLock::new(None)),
+            session_manager: None,
+            neo4j: None,
+            telemetry: None,
+            llm_config: Arc::new(RwLock::new(None)),
+            credential_manager: None,
+            brave_api_key: std::env::var("BRAVE_API_KEY").ok(),
+            google_api_key: std::env::var("GOOGLE_API_KEY").ok(),
+            google_cx: std::env::var("GOOGLE_CX").ok(),
+            serpapi_key: std::env::var("SERPAPI_KEY").ok(),
+            dataset_dir: std::env::var("DATASET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./datasets")),
+            context_store: Arc::new(RwLock::new(None)),
+            queue_service: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// Set the Neo4j client for database operations.
-    pub fn with_neo4j(mut self, neo4j: Neo4jClient) -> Self {
-        self.tool_handler = Arc::new(ToolHandler::with_neo4j(neo4j));
-        self
-    }
-
-    /// Set the LLM configuration for healing.
-    pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
-        // Need to rebuild tool_handler with the new config
-        let handler = Arc::try_unwrap(self.tool_handler)
-            .unwrap_or_else(|arc| (*arc).clone())
-            .with_llm_config(config);
-        self.tool_handler = Arc::new(handler);
-        self
-    }
-
-    /// Set the credential manager for API authentication.
-    pub fn with_credential_manager(mut self, manager: Arc<CredentialManager>) -> Self {
-        let handler = Arc::try_unwrap(self.tool_handler)
-            .unwrap_or_else(|arc| (*arc).clone())
-            .with_credential_manager(manager);
-        self.tool_handler = Arc::new(handler);
+    /// Set the session manager for HTTP transport.
+    pub fn with_session_manager(mut self, manager: Arc<SessionManager>) -> Self {
+        self.session_manager = Some(manager);
         self
     }
 
     /// Get the current server state.
     pub async fn get_state(&self) -> ServerState {
         *self.state.read().await
+    }
+
+    /// Get the state for a specific session, falling back to global state.
+    pub async fn get_session_state(&self, session_id: Option<&str>) -> ServerState {
+        if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
+            if let Ok(state) = manager.get_session_state(id).await {
+                return ServerState::from(state);
+            }
+        }
+        *self.state.read().await
+    }
+
+    /// Update the state for a specific session and the global state.
+    pub async fn update_session_state(&self, session_id: Option<&str>, new_state: ServerState) {
+        if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
+            let _ = manager.set_session_state(id, SessionState::from(new_state)).await;
+        }
+
+        // Always update global state for backward compatibility with stdio
+        let mut state = self.state.write().await;
+        *state = new_state;
+    }
+
+    /// Set the Neo4j client for database operations.
+    pub fn with_neo4j(mut self, neo4j: Neo4jClient) -> Self {
+        self.neo4j = Some(neo4j);
+        self
+    }
+
+    /// Set the Telemetry client for logging.
+    pub fn with_telemetry(mut self, telemetry: TelemetryClient) -> Self {
+        self.telemetry = Some(telemetry);
+        self
+    }
+
+    /// Set the LLM configuration for healing.
+    pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
+        self.llm_config = Arc::new(RwLock::new(Some(config)));
+        self
+    }
+
+    /// Set the credential manager for API authentication.
+    pub fn with_credential_manager(mut self, manager: Arc<CredentialManager>) -> Self {
+        self.credential_manager = Some(manager);
+        self
+    }
+
+    /// Set the Brave API Key for searching.
+    pub fn with_brave_api_key(mut self, key: impl Into<String>) -> Self {
+        self.brave_api_key = Some(key.into());
+        self
+    }
+
+    /// Set the Google API Key and CX for searching.
+    pub fn with_google_config(mut self, key: impl Into<String>, cx: impl Into<String>) -> Self {
+        self.google_api_key = Some(key.into());
+        self.google_cx = Some(cx.into());
+        self
+    }
+
+    /// Set the SerpApi Key for searching.
+    pub fn with_serpapi_key(mut self, key: impl Into<String>) -> Self {
+        self.serpapi_key = Some(key.into());
+        self
+    }
+
+    /// Build the skills and initialize the tool handler.
+    /// This should be called before running the server.
+    pub async fn build_skills(&self) {
+        // Snapshot the LLM config for skills that take Option<LlmConfig> directly
+        let llm_snapshot: Option<LlmConfig> = self.llm_config.read().await.clone();
+
+        // Build DynamicSkill first (before taking locks) so we can share the Arc.
+        // Both the registry clone and the handler original share the same tools_map.
+        let dynamic_skill = if let Some(neo4j) = &self.neo4j {
+            let d = DynamicSkill::new(neo4j.clone(), self.tool_handler.clone());
+            d.load_from_neo4j().await;
+            Some(d)
+        } else {
+            None
+        };
+
+        // Create (or reuse) QueueService when Neo4j is available.
+        let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.neo4j {
+            let mut qs_guard = self.queue_service.write().await;
+            if qs_guard.is_none() {
+                let qs = Arc::new(QueueService::new(neo4j.clone(), self.tool_handler.clone()));
+                qs.recover().await;
+                *qs_guard = Some(Arc::clone(&qs));
+            }
+            qs_guard.as_ref().map(Arc::clone)
+        } else {
+            None
+        };
+
+        // Create (or reuse) ContextStore when Neo4j is available.
+        let context_store = if let Some(neo4j) = &self.neo4j {
+            let mut cs_guard = self.context_store.write().await;
+            if cs_guard.is_none() {
+                let cs = ContextStore::with_neo4j(neo4j.clone());
+                // Pre-load all existing API contexts from DB
+                let _ = cs.load_all().await;
+                *cs_guard = Some(cs);
+            }
+            cs_guard.clone().unwrap()
+        } else {
+            ContextStore::new()
+        };
+
+        let mut registry = self.tool_registry.write().await;
+
+        // Clear registry to allow safe re-registration on reload.
+        registry.clear();
+
+        // Register API Skill
+        let api_skill = ApiSkill::new(
+            self.neo4j.clone(),
+            llm_snapshot.clone(),
+            context_store.clone(),
+            self.credential_manager.clone(),
+        );
+        registry.register_skill(Box::new(api_skill));
+
+        // Register Admin Skill (graph cleanup — requires Neo4j)
+        if let Some(neo4j) = &self.neo4j {
+            let admin_skill = AdminSkill::new(neo4j.clone(), context_store.clone());
+            registry.register_skill(Box::new(admin_skill));
+        }
+
+        // Register Knowledge Skill
+        if let Some(neo4j) = &self.neo4j {
+            let knowledge_skill = KnowledgeSkill::new(neo4j.clone(), llm_snapshot.clone());
+            registry.register_skill(Box::new(knowledge_skill));
+        }
+
+        // Register Task Skill
+        let task_skill = TaskSkill::new(llm_snapshot.clone(), self.neo4j.clone());
+        registry.register_skill(Box::new(task_skill));
+
+        // Register Procedure Skill
+        if let Some(neo4j) = &self.neo4j {
+            let procedure_skill = ProcedureSkill::new(neo4j.clone());
+            registry.register_skill(Box::new(procedure_skill));
+        }
+
+        // Register Search Skill
+        let search_skill = SearchSkill::new(
+            self.telemetry.clone(),
+            self.brave_api_key.clone(),
+            self.google_api_key.clone(),
+            self.google_cx.clone(),
+            self.serpapi_key.clone(),
+        );
+        registry.register_skill(Box::new(search_skill));
+
+        // Register Model Skill (shares Arc<RwLock<>> so runtime provider changes propagate)
+        let model_skill = ModelSkill::new(self.llm_config.clone(), self.neo4j.clone());
+        registry.register_skill(Box::new(model_skill));
+
+        // Register Sleep Skill (requires telemetry / DuckDB)
+        if let Some(ref telemetry) = self.telemetry {
+            let sleep_skill = SleepSkill::new(telemetry.clone(), self.dataset_dir.clone());
+            registry.register_skill(Box::new(sleep_skill));
+        }
+
+        // Register Working Memory Skill
+        if let Some(neo4j) = &self.neo4j {
+            let wm_skill = WorkingMemorySkill::new(neo4j.clone(), llm_snapshot.clone());
+            registry.register_skill(Box::new(wm_skill));
+        }
+
+        // Register Agent Skill (queue management)
+        if let Some(ref qs) = queue_arc {
+            registry.register_skill(Box::new(AgentSkill::new(Arc::clone(qs))));
+        }
+
+        // Register DynamicSkill in registry (shared-map clone — registry sees live updates)
+        if let Some(ref d) = dynamic_skill {
+            registry.register_skill(Box::new(d.clone_shared()));
+        }
+
+
+        drop(registry);
+
+        // Build handler skills list (re-creates non-dynamic skills; DynamicSkill original goes here)
+        let mut skills: Vec<Box<dyn Skill>> = Vec::new();
+
+        skills.push(Box::new(ApiSkill::new(
+            self.neo4j.clone(),
+            llm_snapshot.clone(),
+            if let Some(n) = &self.neo4j {
+                ContextStore::with_neo4j(n.clone())
+            } else {
+                ContextStore::new()
+            },
+            self.credential_manager.clone(),
+        )));
+
+        if let Some(neo4j) = &self.neo4j {
+            skills.push(Box::new(KnowledgeSkill::new(
+                neo4j.clone(),
+                llm_snapshot.clone(),
+            )));
+        }
+
+        skills.push(Box::new(TaskSkill::new(llm_snapshot.clone(), self.neo4j.clone())));
+
+        if let Some(neo4j) = &self.neo4j {
+            skills.push(Box::new(ProcedureSkill::new(neo4j.clone())));
+        }
+
+        skills.push(Box::new(SearchSkill::new(
+            self.telemetry.clone(),
+            self.brave_api_key.clone(),
+            self.google_api_key.clone(),
+            self.google_cx.clone(),
+            self.serpapi_key.clone(),
+        )));
+
+        skills.push(Box::new(ModelSkill::new(self.llm_config.clone(), self.neo4j.clone())));
+
+        if let Some(ref telemetry) = self.telemetry {
+            skills.push(Box::new(SleepSkill::new(telemetry.clone(), self.dataset_dir.clone())));
+        }
+
+        if let Some(neo4j) = &self.neo4j {
+            skills.push(Box::new(WorkingMemorySkill::new(neo4j.clone(), llm_snapshot.clone())));
+        }
+
+        if let Some(neo4j) = &self.neo4j {
+            skills.push(Box::new(AdminSkill::new(neo4j.clone(), context_store.clone())));
+        }
+
+        // Agent Skill (queue management)
+        if let Some(ref qs) = queue_arc {
+            skills.push(Box::new(AgentSkill::new(Arc::clone(qs))));
+        }
+
+        // Push original DynamicSkill to handler (shares tools_map with registry clone)
+        if let Some(d) = dynamic_skill {
+            skills.push(Box::new(d));
+        }
+
+
+        let mut handler = self.tool_handler.write().await;
+        *handler = Some(ToolHandler::new(skills));
+
+        // Spawn the queue coordinator now that the tool handler is populated.
+        if let Some(qs) = queue_arc {
+            QueueService::spawn_coordinator(qs);
+        }
     }
 
     /// Check if the server is shutting down.
@@ -144,6 +427,9 @@ impl McpServerCore {
         &self,
         transport: &T,
     ) -> Result<(), McpServerError> {
+        // Ensure skills are built
+        self.build_skills().await;
+
         info!(
             name = %self.config.name,
             version = %self.config.version,
@@ -343,9 +629,12 @@ impl McpServerCore {
             ));
         }
 
-        let result = ToolsListResult {
-            tools: self.tool_registry.list().to_vec(),
+        let tools = {
+            let registry = self.tool_registry.read().await;
+            registry.list()
         };
+
+        let result = ToolsListResult { tools };
 
         Ok(JsonRpcResponse::new(
             request.id.clone(),
@@ -382,19 +671,33 @@ impl McpServerCore {
                 JsonRpcErrorResponse::invalid_params(request.id.clone(), "Missing tool call params")
             })?;
 
-        // Check if tool exists
-        if self.tool_registry.get(&params.name).is_none() {
-            return Err(JsonRpcErrorResponse::invalid_params(
-                request.id.clone(),
-                format!("Unknown tool: {}", params.name),
-            ));
+        // Check if tool exists (release lock before await)
+        {
+            let registry = self.tool_registry.read().await;
+            if registry.get(&params.name).is_none() {
+                return Err(JsonRpcErrorResponse::invalid_params(
+                    request.id.clone(),
+                    format!("Unknown tool: {}", params.name),
+                ));
+            }
         }
 
-        // Execute the tool
-        let result = self
-            .tool_handler
-            .execute(&params.name, params.arguments)
-            .await;
+        // Clone handler to avoid holding the lock across the await
+        let handler = {
+            let guard = self.tool_handler.read().await;
+            guard.clone()
+        };
+
+        let handler = handler.ok_or_else(|| {
+            JsonRpcErrorResponse::new(
+                Some(request.id.clone()),
+                error_codes::INTERNAL_ERROR,
+                "Tool handler not initialized",
+            )
+        })?;
+
+        // Execute the tool (lock is released)
+        let result = handler.execute(&params.name, params.arguments).await;
 
         Ok(JsonRpcResponse::new(
             request.id.clone(),
@@ -416,62 +719,61 @@ impl Default for McpServerCore {
     }
 }
 
+// ============================================================================
+// Legacy McpServer — wraps McpServerCore for stdio backward compatibility
+// ============================================================================
+
 /// MCP server for the API Knowledge Graph.
 ///
-/// This is the original server struct maintained for backward compatibility.
-/// For new code, consider using `McpServerCore` with explicit transport.
+/// This is a thin wrapper around `McpServerCore` maintained for backward
+/// compatibility with the legacy stdio transport path. For new code, use
+/// `McpServerCore` directly with an explicit transport.
 pub struct McpServer {
-    config: McpServerConfig,
-    state: ServerState,
-    tool_registry: ToolRegistry,
-    tool_handler: ToolHandler,
+    core: McpServerCore,
 }
 
 impl McpServer {
     /// Create a new MCP server with default configuration.
     pub fn new() -> Self {
         Self {
-            config: McpServerConfig::default(),
-            state: ServerState::Created,
-            tool_registry: ToolRegistry::new(),
-            tool_handler: ToolHandler::new(),
+            core: McpServerCore::new(),
         }
     }
 
     /// Create a new MCP server with custom configuration.
     pub fn with_config(config: McpServerConfig) -> Self {
         Self {
-            config,
-            state: ServerState::Created,
-            tool_registry: ToolRegistry::new(),
-            tool_handler: ToolHandler::new(),
+            core: McpServerCore::with_config(config),
         }
     }
 
     /// Set the Neo4j client for database operations.
     pub fn with_neo4j(mut self, neo4j: Neo4jClient) -> Self {
-        self.tool_handler = ToolHandler::with_neo4j(neo4j);
+        self.core = self.core.with_neo4j(neo4j);
         self
     }
 
     /// Set the LLM configuration for healing.
     pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
-        self.tool_handler = self.tool_handler.with_llm_config(config);
+        self.core = self.core.with_llm_config(config);
         self
     }
 
     /// Set the credential manager for API authentication.
     pub fn with_credential_manager(mut self, manager: Arc<CredentialManager>) -> Self {
-        self.tool_handler = self.tool_handler.with_credential_manager(manager);
+        self.core = self.core.with_credential_manager(manager);
         self
     }
 
     /// Run the MCP server with stdio transport.
-    pub async fn run(mut self) -> Result<(), McpServerError> {
+    pub async fn run(self) -> Result<(), McpServerError> {
+        // Build skills first
+        self.core.build_skills().await;
+
         info!(
-            name = %self.config.name,
-            version = %self.config.version,
-            "Starting MCP server"
+            name = %self.core.config.name,
+            version = %self.core.config.version,
+            "Starting MCP server (stdio)"
         );
 
         let (transport, mut rx) = StdioTransport::new();
@@ -480,22 +782,22 @@ impl McpServer {
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(message) => {
-                    if let Some(response) = self.handle_message(message).await
-                        && transport.send(response).await.is_err()
-                    {
-                        error!("Failed to send response - transport closed");
-                        break;
+                    if let Some(response) = self.handle_message(message).await {
+                        if transport.send(response).await.is_err() {
+                            error!("Failed to send response - transport closed");
+                            break;
+                        }
                     }
 
                     // Check if we should shut down
-                    if self.state == ServerState::ShuttingDown {
+                    if self.core.is_shutting_down().await {
                         info!("Server shutting down");
                         break;
                     }
                 }
                 Err(error) => {
                     warn!(error = ?error, "Received malformed message");
-                    if transport.send_error(error).await.is_err() {
+                    if transport.send(OutgoingMessage::Error(error)).await.is_err() {
                         break;
                     }
                 }
@@ -507,217 +809,14 @@ impl McpServer {
     }
 
     /// Handle an incoming message and optionally return a response.
-    async fn handle_message(&mut self, message: IncomingMessage) -> Option<OutgoingMessage> {
+    async fn handle_message(&self, message: IncomingMessage) -> Option<OutgoingMessage> {
         match message {
-            IncomingMessage::Request(request) => Some(self.handle_request(request).await),
+            IncomingMessage::Request(request) => Some(self.core.handle_request(request).await),
             IncomingMessage::Notification(notification) => {
-                self.handle_notification(&notification.method);
+                self.core.handle_notification(&notification.method).await;
                 None
             }
         }
-    }
-
-    /// Handle a JSON-RPC request.
-    async fn handle_request(&mut self, request: JsonRpcRequest) -> OutgoingMessage {
-        debug!(method = %request.method, id = ?request.id, "Handling request");
-
-        let response = match request.method.as_str() {
-            "initialize" => self.handle_initialize(&request),
-            "shutdown" => self.handle_shutdown(&request),
-            "tools/list" => self.handle_tools_list(&request),
-            "tools/call" => self.handle_tools_call(&request).await,
-            "ping" => self.handle_ping(&request),
-            _ => {
-                if self.state != ServerState::Running {
-                    Err(JsonRpcErrorResponse::new(
-                        Some(request.id.clone()),
-                        error_codes::INVALID_REQUEST,
-                        "Server not initialized",
-                    ))
-                } else {
-                    Err(JsonRpcErrorResponse::method_not_found(
-                        request.id.clone(),
-                        &request.method,
-                    ))
-                }
-            }
-        };
-
-        match response {
-            Ok(result) => OutgoingMessage::Response(result),
-            Err(error) => OutgoingMessage::Error(error),
-        }
-    }
-
-    /// Handle a notification (no response expected).
-    fn handle_notification(&mut self, method: &str) {
-        debug!(method = %method, "Handling notification");
-
-        match method {
-            "notifications/initialized" => {
-                if self.state == ServerState::Initializing {
-                    self.state = ServerState::Running;
-                    info!("Server initialized and ready");
-                }
-            }
-            "notifications/cancelled" => {
-                debug!("Request cancelled");
-            }
-            _ => {
-                debug!(method = %method, "Unknown notification");
-            }
-        }
-    }
-
-    // ========================================================================
-    // Request Handlers
-    // ========================================================================
-
-    fn handle_initialize(
-        &mut self,
-        request: &JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
-        if self.state != ServerState::Created {
-            return Err(JsonRpcErrorResponse::new(
-                Some(request.id.clone()),
-                error_codes::INVALID_REQUEST,
-                "Server already initialized",
-            ));
-        }
-
-        // Parse initialize params
-        let params: InitializeParams = request
-            .params
-            .as_ref()
-            .map(|p| serde_json::from_value(p.clone()))
-            .transpose()
-            .map_err(|e| {
-                JsonRpcErrorResponse::invalid_params(
-                    request.id.clone(),
-                    format!("Invalid initialize params: {}", e),
-                )
-            })?
-            .ok_or_else(|| {
-                JsonRpcErrorResponse::invalid_params(
-                    request.id.clone(),
-                    "Missing initialize params",
-                )
-            })?;
-
-        info!(
-            client = %params.client_info.name,
-            protocol_version = %params.protocol_version,
-            "Client connecting"
-        );
-
-        self.state = ServerState::Initializing;
-
-        let result = InitializeResult {
-            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: false,
-                }),
-                resources: None,
-                prompts: None,
-            },
-            server_info: ServerInfo {
-                name: self.config.name.clone(),
-                version: self.config.version.clone(),
-            },
-            instructions: self.config.instructions.clone(),
-        };
-
-        Ok(JsonRpcResponse::new(
-            request.id.clone(),
-            serde_json::to_value(result).unwrap(),
-        ))
-    }
-
-    fn handle_shutdown(
-        &mut self,
-        request: &JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
-        info!("Shutdown requested");
-        self.state = ServerState::ShuttingDown;
-        Ok(JsonRpcResponse::new(request.id.clone(), json!(null)))
-    }
-
-    fn handle_tools_list(
-        &self,
-        request: &JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
-        if self.state != ServerState::Running {
-            return Err(JsonRpcErrorResponse::new(
-                Some(request.id.clone()),
-                error_codes::INVALID_REQUEST,
-                "Server not initialized",
-            ));
-        }
-
-        let result = ToolsListResult {
-            tools: self.tool_registry.list().to_vec(),
-        };
-
-        Ok(JsonRpcResponse::new(
-            request.id.clone(),
-            serde_json::to_value(result).unwrap(),
-        ))
-    }
-
-    async fn handle_tools_call(
-        &self,
-        request: &JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
-        if self.state != ServerState::Running {
-            return Err(JsonRpcErrorResponse::new(
-                Some(request.id.clone()),
-                error_codes::INVALID_REQUEST,
-                "Server not initialized",
-            ));
-        }
-
-        // Parse tool call params
-        let params: ToolCallParams = request
-            .params
-            .as_ref()
-            .map(|p| serde_json::from_value(p.clone()))
-            .transpose()
-            .map_err(|e| {
-                JsonRpcErrorResponse::invalid_params(
-                    request.id.clone(),
-                    format!("Invalid tool call params: {}", e),
-                )
-            })?
-            .ok_or_else(|| {
-                JsonRpcErrorResponse::invalid_params(request.id.clone(), "Missing tool call params")
-            })?;
-
-        // Check if tool exists
-        if self.tool_registry.get(&params.name).is_none() {
-            return Err(JsonRpcErrorResponse::invalid_params(
-                request.id.clone(),
-                format!("Unknown tool: {}", params.name),
-            ));
-        }
-
-        // Execute the tool
-        let result = self
-            .tool_handler
-            .execute(&params.name, params.arguments)
-            .await;
-
-        Ok(JsonRpcResponse::new(
-            request.id.clone(),
-            serde_json::to_value(result).unwrap(),
-        ))
-    }
-
-    fn handle_ping(
-        &self,
-        request: &JsonRpcRequest,
-    ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
-        Ok(JsonRpcResponse::new(request.id.clone(), json!({})))
     }
 }
 
@@ -734,14 +833,13 @@ mod tests {
     #[test]
     fn test_server_config_default() {
         let config = McpServerConfig::default();
-        assert_eq!(config.name, "agent-api");
+        assert_eq!(config.name, "agent-brain");
         assert!(config.instructions.is_some());
     }
 
     #[test]
     fn test_server_creation() {
-        let server = McpServer::new();
-        assert_eq!(server.state, ServerState::Created);
+        let _server = McpServer::new();
     }
 
     #[test]
@@ -752,77 +850,7 @@ mod tests {
             instructions: None,
         };
         let server = McpServer::with_config(config);
-        assert_eq!(server.config.name, "test-server");
-    }
-
-    #[test]
-    fn test_server_state_transitions() {
-        let mut server = McpServer::new();
-        assert_eq!(server.state, ServerState::Created);
-
-        // Simulate initialize
-        server.state = ServerState::Initializing;
-        assert_eq!(server.state, ServerState::Initializing);
-
-        // Simulate initialized notification
-        server.handle_notification("notifications/initialized");
-        assert_eq!(server.state, ServerState::Running);
-    }
-
-    #[test]
-    fn test_handle_unknown_notification() {
-        let mut server = McpServer::new();
-        server.state = ServerState::Running;
-        // Should not panic
-        server.handle_notification("unknown_notification");
-    }
-
-    #[test]
-    fn test_initialized_notification_requires_full_method_path() {
-        // Regression test: short method name "initialized" should NOT transition state
-        let mut server = McpServer::new();
-        server.state = ServerState::Initializing;
-
-        // Short name should be ignored (treated as unknown)
-        server.handle_notification("initialized");
-        assert_eq!(
-            server.state,
-            ServerState::Initializing,
-            "Short method name 'initialized' should not transition state"
-        );
-
-        // Full path should work
-        server.handle_notification("notifications/initialized");
-        assert_eq!(server.state, ServerState::Running);
-    }
-
-    #[test]
-    fn test_initialized_notification_only_from_initializing_state() {
-        let mut server = McpServer::new();
-
-        // From Created state - should not transition
-        server.handle_notification("notifications/initialized");
-        assert_eq!(server.state, ServerState::Created);
-
-        // From Running state - should stay Running
-        server.state = ServerState::Running;
-        server.handle_notification("notifications/initialized");
-        assert_eq!(server.state, ServerState::Running);
-
-        // From Initializing state - should transition to Running
-        server.state = ServerState::Initializing;
-        server.handle_notification("notifications/initialized");
-        assert_eq!(server.state, ServerState::Running);
-    }
-
-    #[test]
-    fn test_cancelled_notification_requires_full_method_path() {
-        let mut server = McpServer::new();
-        server.state = ServerState::Running;
-
-        // Both should be handled without panic, but only full path is recognized
-        server.handle_notification("cancelled");
-        server.handle_notification("notifications/cancelled");
+        assert_eq!(server.core.config.name, "test-server");
     }
 
     // ========================================================================
@@ -930,5 +958,30 @@ mod tests {
             }
             OutgoingMessage::Error(_) => panic!("Expected response, got error"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_server_core_initialized_notification_only_from_initializing_state() {
+        let server = McpServerCore::new();
+
+        // From Created state - should not transition
+        server.handle_notification("notifications/initialized").await;
+        assert_eq!(server.get_state().await, ServerState::Created);
+
+        // From Running state - should stay Running
+        {
+            let mut state = server.state.write().await;
+            *state = ServerState::Running;
+        }
+        server.handle_notification("notifications/initialized").await;
+        assert_eq!(server.get_state().await, ServerState::Running);
+
+        // From Initializing state - should transition to Running
+        {
+            let mut state = server.state.write().await;
+            *state = ServerState::Initializing;
+        }
+        server.handle_notification("notifications/initialized").await;
+        assert_eq!(server.get_state().await, ServerState::Running);
     }
 }

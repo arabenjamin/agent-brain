@@ -87,7 +87,8 @@ Copy `.env.example` to `.env` and configure:
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | *required* | Neo4j password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `llama3` | LLM model to use |
+| `OLLAMA_MODEL` | `granite3.3:8b` | LLM model to use for text generation |
+| `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
 | `MCP_TRANSPORT` | `stdio` | MCP transport type (stdio/http) |
@@ -102,6 +103,11 @@ Copy `.env.example` to `.env` and configure:
 | `VAULT_NAMESPACE` | - | Vault namespace (enterprise only) |
 | `AWS_REGION` | `us-east-1` | AWS region for Secrets Manager |
 | `AWS_SECRET_PREFIX` | - | Prefix for AWS secret names |
+| `DATASET_DIR` | `./datasets` | Directory for training data export (`digest_experiences`) |
+| `SERPAPI_KEY` | - | SerpApi key for `search_web` tool |
+| `BRAVE_API_KEY` | - | Brave Search API key for `search_web` tool |
+| `GOOGLE_API_KEY` | - | Google Custom Search API key for `search_web` tool |
+| `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
 
 ## Local Development
 
@@ -128,7 +134,7 @@ docker compose up -d --build
 MCP_API_KEY=your-secret-key docker compose up -d --build
 
 # View logs
-docker compose logs -f agent-api
+docker compose logs -f agent-brain
 
 # Health check
 curl http://localhost:3000/health
@@ -152,9 +158,11 @@ src/
 ├── cli.rs              # Clap CLI definitions
 ├── config.rs           # Environment configuration
 ├── logging.rs          # Tracing setup
-├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod, ApiCredential)
+├── models/             # Data models (Resource, Endpoint, Schema, Parameter, HealingEvent, HttpMethod, ApiCredential, Task, AgentJob)
 ├── repository/         # Neo4j database layer
-│   └── credential.rs   # Credential CRUD operations
+│   ├── credential.rs   # Credential CRUD operations
+│   ├── task.rs         # Task CRUD operations
+│   └── agent_job.rs    # AgentJob CRUD operations
 ├── services/           # Core business logic
 │   ├── openapi.rs      # OpenAPI spec parser and ingester
 │   ├── http.rs         # HTTP request executor with response classification
@@ -164,6 +172,9 @@ src/
 │   ├── discovery.rs    # OpenAPI spec auto-discovery with LLM assistance
 │   ├── docgen.rs       # Documentation-to-OpenAPI generator with LLM
 │   ├── repo.rs         # Repository-to-OpenAPI generator with LLM
+│   ├── knowledge.rs    # Notes/RAG service with vector and keyword search
+│   ├── procedure_executor.rs # Template-substitution procedure step runner
+│   ├── queue.rs        # Priority job queue + coordinator (AgentJob execution)
 │   ├── export/         # Graph-to-Spec export module
 │   │   ├── builder.rs  # OpenAPI spec builder
 │   │   ├── exporter.rs # Graph traversal and spec reconstruction
@@ -176,6 +187,15 @@ src/
 │       ├── aws.rs      # AWS Secrets Manager provider
 │       ├── manager.rs  # CredentialManager with URL matching
 │       └── error.rs    # Secret error types
+├── skills/             # Pluggable skill implementations
+│   ├── mod.rs          # Skill trait definition
+│   ├── api.rs          # API Expert skill (14 tools)
+│   ├── search.rs       # Web Search skill (1 tool)
+│   ├── task.rs         # Task Manager skill (6 tools)
+│   ├── knowledge.rs    # Knowledge Manager skill (10 tools)
+│   ├── dynamic.rs      # Dynamic Tool Builder skill (4 tools + runtime tools)
+│   ├── agent.rs        # Agent Job Queue skill (7 tools)
+│   └── working_memory.rs # Working Memory skill (3 tools)
 └── mcp/                # MCP server implementation
     ├── protocol.rs     # JSON-RPC 2.0 message types
     ├── transport.rs    # Async stdio transport
@@ -183,7 +203,7 @@ src/
     ├── http_transport.rs   # Axum-based HTTP+SSE transport
     ├── session.rs      # HTTP session management
     ├── auth.rs         # API key authentication
-    ├── tools.rs        # Tool definitions and handlers (14 tools)
+    ├── tools.rs        # Tool registry (skill-based dispatch)
     └── server.rs       # MCP server state machine (thread-safe)
 
 tests/
@@ -192,6 +212,9 @@ tests/
 ├── context_tools_test.rs  # Context management tool tests
 ├── discovery_test.rs      # Discovery service tests
 ├── docgen_test.rs         # Doc-to-OpenAPI generation tests
+├── repo_analyzer_test.rs  # Repo-to-OpenAPI generation tests
+├── http_transport_test.rs # HTTP transport infrastructure tests
+├── task_test.rs           # Task model and repository tests
 └── fixtures/              # Test data (petstore.json)
 ```
 
@@ -206,6 +229,13 @@ tests/
 - `Parameter` - Endpoint inputs with `name`, `in` (query/path/body/header), `required`
 - `HealingEvent` - Immutable records of AI-driven documentation fixes
 - `ApiCredential` - Credential configuration for API authentication
+- `Task` - High-level goals with `id`, `goal`, `context`, `status` (created/in_progress/completed/failed/blocked)
+- `Note` - Stored text memories with optional vector `embedding`, `access_count`, `last_accessed_at`, `note_type` (`semantic`/`episodic`/`reflection`/`consolidated`/`outcome`/`inference`), `next_review_at`, `review_interval_days`, `source_context`, `event_at`
+- `Procedure` - Named multi-step workflows with `id`, `name`, `description`, `steps` (JSON array), `created_at`
+- `WorkingMemory` - Session-scoped scratchpad entries with `id`, `session_id`, `content`, `role`, `turn_index`, `created_at`
+- `Entity` - Named entities extracted from notes with `id`, `name` (unique, lowercased), `entity_type`, `created_at`
+- `DynamicTool` - Runtime-defined MCP tools with `id`, `name` (unique), `description`, `input_schema` (JSON), `created_at`
+- `AgentJob` - Background job record with `id`, `tool_name`, `args_json`, `priority` (0-3), `status` (queued/running/completed/failed/dead/parked/cancelled), `attempt_count`, `max_attempts`, `result_json`, `error`, timestamps, `session_id`, `parent_job_id`
 
 **Relationships:**
 - `(:Resource)-[:HAS_ENDPOINT]->(:Endpoint)`
@@ -214,6 +244,14 @@ tests/
 - `(:Endpoint)-[:ACCEPTS_SCHEMA]->(:Schema)`
 - `(:Schema)-[:LINKS_TO]->(:Schema)`
 - `(:Endpoint)-[:HAS_HISTORY]->(:HealingEvent)`
+- `(:Note)-[:RELATES_TO {similarity: float}]->(:Note)` — auto-created when similarity ≥ 0.75
+- `(:Note)-[:SUMMARIZED_BY]->(:Note)` — source notes pointing to their consolidated summary
+- `(:Note)-[:REFLECTS_ON]->(:Task)` — reflection/outcome notes linked to the task they critique
+- `(:Note)-[:PART_OF]->(:Note)` — semantic chunk linked to its parent note
+- `(:Note)-[:MENTIONS {count}]->(:Entity)` — entity mentions extracted from note content
+- `(:Note {note_type:'inference'})-[:DERIVED_FROM]->(:Note)` — inference notes citing their sources
+- `(:Task)-[:SUBTASK_OF]->(:Task)` — sub-tasks created by `decompose_goal`
+- `(:DynamicTool)-[:USES]->(:Procedure)` — links a dynamic tool to its step definition
 
 ### Transport Architecture
 
@@ -258,13 +296,17 @@ The MCP server supports two transport mechanisms:
      └─────────────────────┬───────────────────────────┘
                            │
      ┌─────────────────────▼───────────────────────────┐
-     │              ToolHandler (14 tools)             │
-     └─────────────────────────────────────────────────┘
+     │         Skill Registry (59 tools total)              │
+     │  ApiSkill(14) SearchSkill(1) TaskSkill(6)            │
+     │  KnowledgeSkill(10) ProcedureSkill(2)                │
+     │  WorkingMemorySkill(3) DynamicSkill(4+runtime)       │
+     │  AgentSkill(7)                                       │
+     └─────────────────────────────────────────────────────┘
 ```
 
 ### MCP Tools
 
-The server exposes fourteen tools via JSON-RPC 2.0:
+The server exposes fifty-nine tools via JSON-RPC 2.0, organised across ten skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -358,6 +400,249 @@ The server exposes fourteen tools via JSON-RPC 2.0:
     - Input: `{ "api_name": "OpenWeatherMap" }`
     - Deletes both the credential metadata and the stored secret
 
+**Web Search Tools (SearchSkill):**
+
+15. **`search_web`** - Search the web for information
+    - Input: `{ "query": "rust async patterns", "engine": "serpapi", "count": 5 }`
+    - Engines: `serpapi` (default), `brave`, `google`
+    - Count: 1–20 results (default 5)
+    - Requires corresponding API key env var (`SERPAPI_KEY`, `BRAVE_API_KEY`, or `GOOGLE_API_KEY`+`GOOGLE_CX`)
+
+**Task Management Tools (TaskSkill):**
+
+16. **`create_task`** - Create and persist a high-level goal
+    - Input: `{ "goal": "Integrate Stripe API", "context": "Use the v3 endpoints" }`
+    - Stores task in Neo4j with UUID, timestamps, and initial status `created`
+    - Returns: `{ "task_id": "...", "status": "created" }`
+
+17. **`reflect_on_work`** - Critique current progress against a goal using LLM
+    - Input: `{ "goal": "...", "current_state": "...", "plan": "...", "task_id": "..." }` (`plan`, `task_id` optional)
+    - Uses Ollama to analyse the gap between goal and current state
+    - When `task_id` is provided, persists a `reflection` Note with a `REFLECTS_ON` edge to the task
+    - Returns a critique, suggested next steps, and optional `reflection_note_id`
+    - Requires Ollama to be configured
+
+**Knowledge Tools (KnowledgeSkill):**
+
+18. **`store_note`** - Persist a text note in the knowledge graph
+    - Input: `{ "content": "...", "note_type": "semantic", "source_context": "...", "event_at": "..." }` (all except content optional)
+    - Note types: `semantic` (default), `episodic`, `reflection`, `consolidated`
+    - Long notes (>1500 chars) are automatically chunked into sub-notes with `PART_OF` edges
+    - Generates vector embedding via Ollama if available (falls back to text-only)
+    - Tracks `access_count`, `last_accessed_at`, `next_review_at`, `review_interval_days`
+    - Auto-creates `RELATES_TO` edges to similar notes (cosine similarity ≥ 0.75)
+    - Extracts named entities when LLM is available (creates `Entity` nodes + `MENTIONS` edges)
+    - Returns: `{ "note_id": "...", "links_created": N, "success": true }`
+
+19. **`search_notes`** - Retrieve notes via hybrid BM25 + vector search with graph expansion
+    - Input: `{ "query": "...", "limit": 5, "graph_hops": 2 }` (limit, graph_hops optional)
+    - Merges vector and full-text BM25 results via Reciprocal Rank Fusion (RRF)
+    - Expands results via up to `graph_hops` RELATES_TO traversals
+    - Falls back to case-insensitive keyword `CONTAINS` query if indexes unavailable
+    - Updates `access_count`, `last_accessed_at`, and doubles `review_interval_days` on hits
+    - Returns: `{ "count": N, "notes": [...] }`
+
+20. **`find_related_notes`** - Find notes linked via RELATES_TO graph edges
+    - Input: `{ "note_id": "..." }`
+    - Returns notes connected by similarity edges, ordered by score
+    - Returns: `{ "count": N, "related_notes": [{ "content", "similarity" }] }`
+
+21. **`prune_old_notes`** - Delete stale notes using adaptive decay or simple time-based pruning
+    - Input: `{ "score_threshold": 0.1, "lambda": 0.1, "dry_run": false, "days_stale": 30, "min_accesses": 2 }` (all optional)
+    - Adaptive decay: computes `score = access_rate * exp(-lambda * days_idle)` weighted by graph in-degree
+    - Legacy mode: deletes by `days_stale` + `min_accesses` (used when score_threshold/lambda absent)
+    - Protected types (`consolidated`, `reflection`) are never deleted
+    - `dry_run: true` returns count without deleting
+    - Returns: `{ "deleted": N, "message": "..." }` or `{ "would_delete": N, "dry_run": true, ... }`
+
+22. **`consolidate_memories`** - LLM-powered memory consolidation
+    - Input: `{ "topic": "...", "limit": 10 }` (`limit` optional, default 10)
+    - Vector-searches top-N notes by topic, feeds them to LLM for synthesis
+    - Stores the consolidated summary as a new Note with `note_type: "consolidated"`
+    - Creates `SUMMARIZED_BY` edges from source notes to the consolidated note
+    - Returns: `{ "consolidated_note_id": "...", "source_count": N, "preview": "..." }`
+    - Requires LLM to be configured
+
+23. **`review_due_notes`** - Fetch notes whose spaced-repetition review interval has elapsed
+    - Input: `{ "limit": 10 }` (optional, default 10)
+    - Returns notes where `next_review_at <= now()` (excludes consolidated notes)
+    - Searching a note via `search_notes` doubles its `review_interval_days`
+    - Returns: `{ "count": N, "notes": [{ "id", "content", "note_type", "next_review_at", "access_count" }] }`
+
+24. **`search_by_entity`** - Find notes that mention a named entity
+    - Input: `{ "entity_name": "neo4j", "entity_type": "technology", "limit": 5 }` (`entity_type`, `limit` optional)
+    - Entities are extracted automatically from notes when LLM is available
+    - Case-insensitive partial match on entity name
+    - Returns: `{ "entity_name": "...", "count": N, "notes": [{ "note_id", "content", "entity", "entity_type", "mention_count" }] }`
+
+25. **`reason`** - Retrieve relevant notes and derive new inferences via LLM
+    - Input: `{ "question": "...", "limit": 8, "store_inference": true }` (`limit`, `store_inference` optional)
+    - Vector + BM25 search with 1-hop graph expansion, then LLM inference
+    - Stores inference as a Note with `DERIVED_FROM` edges to source notes
+    - Returns: `{ "answer", "inferences", "confidence", "gaps", "inference_note_id"? }`
+
+26. **`audit_action`** - Check a proposed action against stored values and principles
+    - Input: `{ "action": "...", "context": "..." }` (`context` optional)
+    - Retrieves ethical guidelines from knowledge graph, evaluates alignment via LLM
+    - Returns: `{ "aligned": bool, "confidence", "concerns", "suggestions", "reasoning" }`
+
+27. **`explain_reasoning`** - Narrate why a decision was taken, citing knowledge sources
+    - Input: `{ "decision": "...", "task_id": "...", "limit": 10 }` (`task_id`, `limit` optional)
+    - Fetches relevant notes + task reflection notes, generates plain-language explanation
+    - Returns: `{ "explanation", "knowledge_sources": [{ "note_id", "preview" }] }`
+
+**Task Management Tools (TaskSkill):**
+
+28. **`create_task`** - Create a new high-level task or goal
+    - Input: `{ "goal": "...", "context": "..." }` (`context` optional)
+    - Returns: `{ "task_id": "...", "status": "created" }`
+
+29. **`reflect_on_work`** - Critique current progress against a goal using LLM
+    - Input: `{ "goal": "...", "current_state": "...", "plan": "...", "task_id": "..." }` (`plan`, `task_id` optional)
+    - When `task_id` provided, persists a reflection Note with `REFLECTS_ON` edge
+    - Returns: `{ "critique", "status", "reflection_note_id"? }`
+
+30. **`decompose_goal`** - Break a task into ordered sub-tasks using LLM
+    - Input: `{ "goal_task_id": "...", "context": "...", "max_steps": 5 }` (`context`, `max_steps` optional)
+    - Creates subtask nodes in Neo4j with `SUBTASK_OF` edges to the parent
+    - Returns: `{ "parent_task_id", "subtasks": [{ "id", "title", "purpose", "tool_hint" }] }`
+
+31. **`update_task`** - Update a task's status and optionally attach a progress note
+    - Input: `{ "task_id": "...", "status": "completed", "note": "..." }` (`note` optional)
+    - Status values: `in_progress`, `completed`, `failed`, `blocked`
+    - Returns: `{ "task_id", "status", "note_id"? }`
+
+32. **`list_tasks`** - List tasks with optional status filter
+    - Input: `{ "status": "...", "limit": 20 }` (both optional)
+    - Returns parent_id for sub-tasks created via `decompose_goal`
+    - Returns: `{ "count", "tasks": [{ "id", "goal", "status", "parent_id"?, "created_at" }] }`
+
+33. **`record_outcome`** - Store an episodic outcome note for a tool call or task attempt
+    - Input: `{ "tool_name": "...", "summary": "...", "success": bool, "task_id": "..." }` (`task_id` optional)
+    - Stores as `note_type: 'outcome'`, retrievable via `search_notes`
+    - Returns: `{ "outcome_id", "tool_name", "success" }`
+
+**Procedural Memory Tools (ProcedureSkill):**
+
+34. **`store_procedure`** - Store a named multi-step workflow
+    - Input: `{ "name": "...", "description": "...", "steps": [{ "tool", "args"?, "purpose" }] }`
+    - Persists a `Procedure` node in Neo4j with steps as JSON
+    - Returns: `{ "procedure_id": "...", "name": "...", "steps_count": N }`
+
+35. **`search_procedures`** - Search stored procedures by keyword
+    - Input: `{ "query": "...", "limit": 5 }` (`limit` optional, default 5)
+    - Case-insensitive CONTAINS search on name and description
+    - Returns: `{ "count": N, "procedures": [{ "id", "name", "description", "steps" }] }`
+
+**Working Memory Tools (WorkingMemorySkill):**
+
+36. **`push_context`** - Append an entry to the session working-memory scratchpad
+    - Input: `{ "session_id": "...", "content": "...", "role": "observation" }` (`role` optional)
+    - Roles: `observation` (default), `plan`, `result`, `error`
+    - Entries are auto-numbered by `turn_index` within each session
+    - Returns: `{ "entry_id": "...", "turn_index": N, "session_id": "..." }`
+
+37. **`get_context`** - Retrieve working-memory entries for a session
+    - Input: `{ "session_id": "...", "limit": 20 }` (`limit` optional, default 20)
+    - Returns entries in turn order
+    - Returns: `{ "session_id": "...", "count": N, "entries": [{ "turn", "role", "content" }] }`
+
+38. **`summarise_session`** - LLM-summarise a session and persist to long-term memory
+    - Input: `{ "session_id": "...", "delete_after_summarise": false }` (`delete_after_summarise` optional)
+    - Fetches all session entries, feeds to LLM, stores consolidated Note
+    - Optionally deletes raw WorkingMemory entries after summarising
+    - Returns: `{ "note_id": "...", "session_id": "...", "entries_summarised": N, "deleted": bool }`
+    - Requires LLM to be configured
+
+**Dynamic Tool Builder (DynamicSkill):**
+
+39. **`define_tool`** - Define a new MCP tool at runtime backed by a procedure pipeline
+    - Input: `{ "name": "...", "description": "...", "input_schema": {...}, "steps": [...], "test_input"?: {...} }`
+    - Steps support `{{input.field}}` and `{{context.var}}` template substitution; `output_var` and `condition` fields
+    - Persists `DynamicTool` and `Procedure` nodes in Neo4j; available immediately in `tools/list`
+    - Survives restarts (loaded via `load_from_neo4j` at startup)
+    - Returns: `{ "tool_id", "name", "steps_count", "registered": true }`
+
+40. **`execute_procedure`** - Execute a stored procedure by ID with optional input
+    - Input: `{ "procedure_id": "...", "input"?: {...}, "dry_run"?: bool }`
+    - `dry_run: true` validates steps and substitutions without calling tools
+    - Returns: `{ "procedure_id", "steps_executed", "results": [{step_index, tool, success, output_preview}], "total_success" }`
+
+41. **`list_dynamic_tools`** - List all runtime-defined tools
+    - Input: `{}` (no parameters)
+    - Returns: `{ "count", "tools": [{ "id", "name", "description", "created_at" }] }`
+
+42. **`remove_dynamic_tool`** - Remove a runtime-defined tool by name
+    - Input: `{ "name": "..." }`
+    - Deletes `DynamicTool` + linked `Procedure` nodes from Neo4j and unregisters immediately
+    - Returns: `{ "removed": true, "name" }`
+
+**Agent Job Queue (AgentSkill):**
+
+43. **`enqueue_agent`** - Submit an MCP tool call as a background job
+    - Input: `{ "tool_name": "...", "arguments"?: {}, "priority"?: 0-3, "max_attempts"?: N, "session_id"?: "...", "parent_job_id"?: "..." }`
+    - Priority: 0=low, 1=normal (default), 2=high, 3=critical
+    - Jobs are persisted to Neo4j and survive server restarts
+    - Returns: `{ "job_id": "...", "status": "queued", "tool_name": "...", "priority": N }`
+
+44. **`queue_status`** - Get current queue statistics
+    - Input: `{}` (no parameters)
+    - Returns: `{ "in_memory_pending", "running_now", "max_concurrent", "enabled", "by_status": {...} }`
+
+45. **`get_job_result`** - Get the status and result of a specific job
+    - Input: `{ "job_id": "..." }`
+    - Returns: Full `AgentJob` JSON with status, result, error, attempt_count, timestamps
+
+46. **`cancel_job`** - Cancel a queued or running job
+    - Input: `{ "job_id": "..." }`
+    - Returns: `{ "cancelled": true, "job_id": "..." }`
+
+47. **`retry_job`** - Requeue a failed, dead, or cancelled job
+    - Input: `{ "job_id": "..." }`
+    - Resets attempt_count to 0 and re-enqueues
+    - Returns: `{ "requeued": true, "job_id": "...", "status": "queued" }`
+
+48. **`set_worker_config`** - Update queue worker settings at runtime
+    - Input: `{ "max_concurrent"?: N, "enabled"?: bool, "poll_interval_secs"?: N }`
+    - `enabled: false` pauses job processing without losing queued jobs
+    - Returns: updated config object
+
+49. **`drain_queue`** - Cancel all currently pending (queued) jobs
+    - Input: `{}` (no parameters)
+    - Returns: `{ "cancelled": N, "message": "..." }`
+
+50. **`enqueue_chain`** - Submit a sequential chain of background jobs
+    - Input: `{ "steps": [{ "tool_name": "...", "arguments"?: {}, "priority"?: 0-3, "max_attempts"?: N, "provider_hint"?: "..." }], "session_id"?: "..." }`
+    - Step 1 queued immediately; steps 2..N stored as `parked` (each with `parent_job_id` → predecessor)
+    - On step completion: parked children auto-promoted to `queued`
+    - On step death (exhausted retries): parked children cancelled
+    - Returns: `{ "chain_length": N, "job_ids": [...], "message": "..." }`
+
+**Graph Admin Tools (AdminSkill):**
+
+51. **`delete_api`** - Cascade-delete all graph nodes for a specific ingested API
+    - Input: `{ "api_name": "Petstore", "dry_run"?: false }`
+    - Deletes Resource → Endpoints → Parameters → HealingEvents + exclusively-owned Schemas
+    - Also evicts the API from the in-memory context cache
+    - Returns: `{ "deleted": true, "api_name": "...", "removed": { ... } }`
+
+52. **`purge_duplicate_endpoints`** - Remove duplicate Endpoint nodes
+    - Input: `{ "dry_run"?: false }`
+    - Finds endpoints with same Resource + path + method; keeps oldest, removes extras
+    - Returns: `{ "deleted": N, "message": "..." }`
+
+53. **`purge_orphaned_schemas`** - Delete Schema nodes with no Endpoint relationships
+    - Input: `{ "dry_run"?: false }`
+    - Removes schemas not referenced by any RETURNS_SCHEMA, ACCEPTS_SCHEMA, or LINKS_TO relation
+    - Returns: `{ "deleted": N, "message": "..." }`
+
+54. **`reset_graph`** - Wipe all API data from the graph
+    - Input: `{ "confirm": true, "dry_run"?: false }`
+    - Deletes Resource, Endpoint, Schema, Parameter, HealingEvent nodes
+    - Knowledge data (Notes, Tasks, Procedures, WorkingMemory, AgentJobs) is preserved
+    - Requires `confirm: true` — cannot be undone
+    - Returns: `{ "reset": true, "removed": { ... }, "message": "..." }`
+
 ### Self-Healing Flow
 
 When `execute_http_request` encounters errors (4xx/5xx):
@@ -369,7 +654,9 @@ When `execute_http_request` encounters errors (4xx/5xx):
 
 ## TODO / Planned Features
 
-- [ ] Add capability to clean up/purge the Neo4j graph (remove duplicate endpoints, reset database, or delete specific APIs)
+- [x] Add capability to clean up/purge the Neo4j graph — implemented as `AdminSkill` (delete_api, purge_duplicate_endpoints, purge_orphaned_schemas, reset_graph)
+- [ ] SSE push notifications for completed agent jobs
+- [ ] Semantic search for `graph_query_endpoint` via vector embeddings
 
 ## Branch Strategy
 Never write in credidation to LLMs or coding agents or assistants.

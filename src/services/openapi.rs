@@ -59,6 +59,7 @@ pub struct EndpointWithParams {
 /// Parser for OpenAPI specifications.
 pub struct OpenApiParser {
     client: Neo4jClient,
+    llm: Option<crate::services::LlmClient>,
     /// Cache of schema name -> Schema (with UUID) for linking
     schema_cache: HashMap<String, Schema>,
     /// Cache of resource name -> Resource (with UUID) for linking
@@ -69,9 +70,16 @@ impl OpenApiParser {
     pub fn new(client: Neo4jClient) -> Self {
         Self {
             client,
+            llm: None,
             schema_cache: HashMap::new(),
             resource_cache: HashMap::new(),
         }
+    }
+
+    /// Set the LLM client for embedding generation.
+    pub fn with_llm(mut self, llm: crate::services::LlmClient) -> Self {
+        self.llm = Some(llm);
+        self
     }
 
     /// Ingest an OpenAPI spec from a file path or URL.
@@ -242,7 +250,15 @@ impl OpenApiParser {
             .unwrap_or_else(|| format!("{} {}", method, path));
         let operation_id = operation.operation_id.clone();
 
-        let endpoint = Endpoint::new(path, method, &summary, operation_id);
+        let mut endpoint = Endpoint::new(path, method, &summary, operation_id);
+
+        // Generate embedding if LLM is available
+        if let Some(llm) = &self.llm {
+            let embedding_text = format!("{} {} - {}", method, path, summary);
+            if let Ok(emb) = llm.embeddings(&embedding_text).await {
+                endpoint.embedding = Some(emb);
+            }
+        }
 
         debug!(
             path = %path,

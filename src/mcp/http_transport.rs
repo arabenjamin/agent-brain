@@ -31,7 +31,7 @@ use tracing::{debug, error, info};
 
 use super::auth::{ApiKeyAuth, AuthError};
 use super::protocol::{IncomingMessage, JsonRpcErrorResponse};
-use super::session::{SessionManager, SessionState};
+use super::session::{SessionManager, SessionState, SessionConfig};
 use super::transport::OutgoingMessage;
 use super::transport_trait::{McpTransport, TransportError, TransportMessage};
 
@@ -57,6 +57,8 @@ pub struct HttpTransportConfig {
     pub max_sessions: usize,
     /// Channel buffer size for messages.
     pub channel_buffer_size: usize,
+    /// Optional shared session manager.
+    pub session_manager: Option<Arc<SessionManager>>,
 }
 
 impl Default for HttpTransportConfig {
@@ -68,6 +70,7 @@ impl Default for HttpTransportConfig {
             session_timeout: Duration::from_secs(3600),
             max_sessions: 1000,
             channel_buffer_size: 32,
+            session_manager: None,
         }
     }
 }
@@ -88,6 +91,12 @@ impl HttpTransportConfig {
     /// Set allowed CORS origins.
     pub fn with_origins(mut self, origins: Vec<String>) -> Self {
         self.allowed_origins = origins;
+        self
+    }
+
+    /// Set the shared session manager.
+    pub fn with_session_manager(mut self, manager: Arc<SessionManager>) -> Self {
+        self.session_manager = Some(manager);
         self
     }
 }
@@ -186,13 +195,17 @@ impl McpTransport for HttpTransport {
             *guard = Some(shutdown_tx);
         }
 
-        // Create session manager
-        let session_config = super::session::SessionConfig {
-            max_sessions: self.config.max_sessions,
-            session_timeout: self.config.session_timeout,
-            ..Default::default()
+        // Create or use shared session manager
+        let sessions = if let Some(ref manager) = self.config.session_manager {
+            manager.clone()
+        } else {
+            let session_config = SessionConfig {
+                max_sessions: self.config.max_sessions,
+                session_timeout: self.config.session_timeout,
+                ..Default::default()
+            };
+            Arc::new(SessionManager::with_config(session_config))
         };
-        let sessions = Arc::new(SessionManager::with_config(session_config));
 
         // Create authenticator
         let auth = if let Some(ref key) = self.config.api_key {
@@ -312,13 +325,14 @@ async fn handle_post_mcp(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, McpHttpError> {
-    // Validate protocol version header
+    // Accept requests without the protocol version header for compatibility with
+    // clients that don't implement it (e.g. OpenWebUI). Log at debug level only.
     let protocol_version = headers
         .get(MCP_PROTOCOL_VERSION_HEADER)
         .and_then(|v| v.to_str().ok());
 
     if protocol_version.is_none() {
-        return Err(McpHttpError::MissingProtocolVersion);
+        debug!("Request missing {}, assuming {}", MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION);
     }
 
     // Get or create session
@@ -370,11 +384,13 @@ async fn handle_post_mcp(
                 McpHttpError::InternalError("No response from server".to_string())
             })?;
 
-            // Update session state on initialize
+            // On initialize, advance the session straight to Running so that
+            // clients which don't send notifications/initialized (e.g. OpenWebUI)
+            // can immediately use tools/list and tools/call.
             if method == "initialize" {
                 let _ = state
                     .sessions
-                    .set_session_state(&session_id, SessionState::Initializing)
+                    .set_session_state(&session_id, SessionState::Running)
                     .await;
             }
 

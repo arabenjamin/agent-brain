@@ -39,6 +39,7 @@ use super::llm::{ChatMessage, LlmClient};
 pub enum RepoPlatform {
     GitHub,
     GitLab,
+    Local,
 }
 
 impl std::fmt::Display for RepoPlatform {
@@ -46,6 +47,7 @@ impl std::fmt::Display for RepoPlatform {
         match self {
             RepoPlatform::GitHub => write!(f, "GitHub"),
             RepoPlatform::GitLab => write!(f, "GitLab"),
+            RepoPlatform::Local => write!(f, "Local"),
         }
     }
 }
@@ -53,84 +55,100 @@ impl std::fmt::Display for RepoPlatform {
 /// Parsed repository source information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoSource {
-    /// Platform type (GitHub or GitLab)
+    /// Platform type (GitHub, GitLab, or Local)
     pub platform: RepoPlatform,
-    /// Repository owner/organization
+    /// Repository owner/organization (empty for Local)
     pub owner: String,
-    /// Repository name
+    /// Repository name (folder name for Local)
     pub repo: String,
-    /// Branch/tag/commit reference
+    /// Branch/tag/commit reference (None for Local)
     pub ref_name: Option<String>,
-    /// Original URL
+    /// Original URL or path
     pub url: String,
 }
 
 impl RepoSource {
-    /// Parse a repository URL into its components.
+    /// Parse a repository URL or local path into its components.
     ///
     /// Supports:
     /// - `https://github.com/owner/repo`
     /// - `https://github.com/owner/repo/tree/branch`
     /// - `https://gitlab.com/owner/repo`
-    /// - `https://gitlab.com/owner/repo/-/tree/branch`
+    /// - `/path/to/local/repo`
+    /// - `./relative/path`
     pub fn parse(url: &str) -> Result<Self, RepoError> {
         let url = url.trim().trim_end_matches('/');
 
-        // Parse URL
-        let parsed = url::Url::parse(url).map_err(|_| RepoError::InvalidUrl(url.to_string()))?;
+        // Check if it's a URL
+        if url.starts_with("http://") || url.starts_with("https://") {
+            let parsed = url::Url::parse(url).map_err(|_| RepoError::InvalidUrl(url.to_string()))?;
+            let host = parsed.host_str().ok_or_else(|| RepoError::InvalidUrl(url.to_string()))?;
 
-        let host = parsed.host_str().ok_or_else(|| RepoError::InvalidUrl(url.to_string()))?;
+            // Detect platform
+            let platform = if host.contains("github") {
+                RepoPlatform::GitHub
+            } else if host.contains("gitlab") {
+                RepoPlatform::GitLab
+            } else {
+                return Err(RepoError::UnsupportedPlatform(host.to_string()));
+            };
 
-        // Detect platform
-        let platform = if host.contains("github") {
-            RepoPlatform::GitHub
-        } else if host.contains("gitlab") {
-            RepoPlatform::GitLab
+            // Parse path segments
+            let path = parsed.path().trim_start_matches('/');
+            let segments: Vec<&str> = path.split('/').collect();
+
+            if segments.len() < 2 {
+                return Err(RepoError::InvalidUrl(format!(
+                    "URL must include owner and repository: {}",
+                    url
+                )));
+            }
+
+            let owner = segments[0].to_string();
+            let repo = segments[1].to_string();
+
+            // Extract branch/ref if present
+            let ref_name = match platform {
+                RepoPlatform::GitHub => {
+                    if segments.len() >= 4 && segments[2] == "tree" {
+                        Some(segments[3..].join("/"))
+                    } else {
+                        None
+                    }
+                }
+                RepoPlatform::GitLab => {
+                    if segments.len() >= 5 && segments[2] == "-" && segments[3] == "tree" {
+                        Some(segments[4..].join("/"))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            Ok(Self {
+                platform,
+                owner,
+                repo,
+                ref_name,
+                url: url.to_string(),
+            })
         } else {
-            return Err(RepoError::UnsupportedPlatform(host.to_string()));
-        };
+            // Assume local path
+            let path = Path::new(url);
+            let repo_name = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("local-repo")
+                .to_string();
 
-        // Parse path segments
-        let path = parsed.path().trim_start_matches('/');
-        let segments: Vec<&str> = path.split('/').collect();
-
-        if segments.len() < 2 {
-            return Err(RepoError::InvalidUrl(format!(
-                "URL must include owner and repository: {}",
-                url
-            )));
+            Ok(Self {
+                platform: RepoPlatform::Local,
+                owner: String::new(),
+                repo: repo_name,
+                ref_name: None,
+                url: url.to_string(),
+            })
         }
-
-        let owner = segments[0].to_string();
-        let repo = segments[1].to_string();
-
-        // Extract branch/ref if present
-        let ref_name = match platform {
-            RepoPlatform::GitHub => {
-                // GitHub: /owner/repo/tree/branch
-                if segments.len() >= 4 && segments[2] == "tree" {
-                    Some(segments[3..].join("/"))
-                } else {
-                    None
-                }
-            }
-            RepoPlatform::GitLab => {
-                // GitLab: /owner/repo/-/tree/branch
-                if segments.len() >= 5 && segments[2] == "-" && segments[3] == "tree" {
-                    Some(segments[4..].join("/"))
-                } else {
-                    None
-                }
-            }
-        };
-
-        Ok(Self {
-            platform,
-            owner,
-            repo,
-            ref_name,
-            url: url.to_string(),
-        })
     }
 
     /// Get the API base URL for this repository.
@@ -138,6 +156,7 @@ impl RepoSource {
         match self.platform {
             RepoPlatform::GitHub => "https://api.github.com".to_string(),
             RepoPlatform::GitLab => "https://gitlab.com/api/v4".to_string(),
+            RepoPlatform::Local => String::new(),
         }
     }
 
@@ -152,6 +171,7 @@ impl RepoSource {
                 let encoded = urlencoding::encode(&project_path);
                 format!("{}/projects/{}", self.api_base_url(), encoded)
             }
+            RepoPlatform::Local => self.url.clone(),
         }
     }
 
@@ -175,6 +195,7 @@ impl RepoSource {
                     format!("https://gitlab.com/{}/{}.git", self.owner, self.repo)
                 }
             }
+            RepoPlatform::Local => self.url.clone(),
         }
     }
 }
@@ -595,6 +616,23 @@ impl RepoAnalyzerService {
         token: Option<&str>,
         subdirectory: Option<&str>,
     ) -> Result<(RepoAccessMethod, Vec<(String, String)>), RepoError> {
+        // Handle local repositories
+        if source.platform == RepoPlatform::Local {
+            let path = Path::new(&source.url);
+            let base_path = if let Some(subdir) = subdirectory {
+                path.join(subdir)
+            } else {
+                path.to_path_buf()
+            };
+
+            if !path.exists() {
+                return Err(RepoError::RepoNotFound(source.url.clone()));
+            }
+
+            let files = self.read_local_files(&base_path, path).await?;
+            return Ok((RepoAccessMethod::Clone, files)); // Use Clone as a proxy for local access
+        }
+
         // First, get repository metadata to determine size
         let repo_size = self.get_repo_size(source, token).await?;
 
@@ -633,6 +671,7 @@ impl RepoAnalyzerService {
             request = match source.platform {
                 RepoPlatform::GitHub => request.header("Authorization", format!("Bearer {}", t)),
                 RepoPlatform::GitLab => request.header("PRIVATE-TOKEN", t),
+                RepoPlatform::Local => request,
             };
         }
 
@@ -649,6 +688,7 @@ impl RepoAnalyzerService {
                     RepoPlatform::GitLab => {
                         body["statistics"]["repository_size"].as_u64().unwrap_or(0)
                     }
+                    RepoPlatform::Local => 0, // Should not be reached for Local
                 };
                 Ok(size)
             }
@@ -669,6 +709,7 @@ impl RepoAnalyzerService {
         match source.platform {
             RepoPlatform::GitHub => self.fetch_github_files(source, token, subdirectory).await,
             RepoPlatform::GitLab => self.fetch_gitlab_files(source, token, subdirectory).await,
+            RepoPlatform::Local => unreachable!("Local repo should not use API method"),
         }
     }
 
@@ -1022,7 +1063,18 @@ impl RepoAnalyzerService {
         files
             .iter()
             .filter(|(path, _)| {
-                // Prioritize files matching API patterns
+                // If include_patterns is specified, we already filtered in fetch step, 
+                // but let's be safe and check again or just accept all if they passed is_relevant_file.
+                
+                // Prioritize files matching API patterns or include patterns
+                if !self.config.include_patterns.is_empty() {
+                    return self.config.include_patterns.iter().any(|pattern| {
+                        Pattern::new(pattern)
+                            .map(|p| p.matches(path))
+                            .unwrap_or(false)
+                    });
+                }
+
                 API_FILE_PATTERNS.iter().any(|pattern| {
                     Pattern::new(pattern)
                         .map(|p| p.matches(path))
@@ -1582,8 +1634,10 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_url() {
-        assert!(RepoSource::parse("not-a-url").is_err());
+        // Unsupported hosting platform should fail
         assert!(RepoSource::parse("https://bitbucket.org/owner/repo").is_err());
+        // Local paths are accepted as a fallback
+        assert!(RepoSource::parse("not-a-url").is_ok());
     }
 
     #[test]

@@ -377,6 +377,30 @@ impl ContextStore {
 
         Ok(context)
     }
+
+    /// Load all available API contexts from Neo4j.
+    pub async fn load_all(&self) -> Result<usize, ContextError> {
+        let Some(neo4j) = &self.neo4j else {
+            return Ok(0);
+        };
+
+        info!("Pre-loading all API contexts from Neo4j");
+        let resources = neo4j
+            .list_resources()
+            .await
+            .map_err(|e| ContextError::DatabaseError(e.to_string()))?;
+
+        let mut count = 0;
+        for resource in resources {
+            if let Some(ctx) = self.get_or_load(&resource.name).await {
+                debug!(api = %resource.name, "Pre-loaded API context");
+                count += 1;
+            }
+        }
+
+        info!(loaded = count, "Finished pre-loading API contexts");
+        Ok(count)
+    }
 }
 
 impl Default for ContextStore {

@@ -1,12 +1,21 @@
 //! Integration tests for the discovery service.
 
-use agent_api::mcp::tools::{ToolHandler, ToolRegistry};
-use agent_api::services::{DiscoveryService, LlmConfig};
+use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
+use agent_brain::services::{DiscoveryService, LlmConfig, ContextStore};
+use agent_brain::skills::{api::ApiSkill, Skill};
 use serde_json::json;
+
+fn create_api_skill(llm_config: Option<LlmConfig>) -> ApiSkill {
+    let context_store = ContextStore::new();
+    ApiSkill::new(None, llm_config, context_store, None)
+}
 
 #[test]
 fn test_discover_openapi_tool_exists() {
-    let registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::new();
+    let api_skill = create_api_skill(None);
+    registry.register_skill(Box::new(api_skill));
+    
     let tool = registry.get("discover_openapi");
     assert!(tool.is_some());
 
@@ -80,7 +89,8 @@ async fn test_discovery_service_github_api() {
 
 #[tokio::test]
 async fn test_discovery_tool_handler() {
-    let handler = ToolHandler::new();
+    let api_skill = create_api_skill(None);
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     // Test without LLM (just common path probing)
     let result = handler
@@ -100,7 +110,7 @@ async fn test_discovery_tool_handler() {
     );
 
     if let Some(content) = result.content.first() {
-        if let agent_api::mcp::protocol::Content::Text { text } = content {
+        if let agent_brain::mcp::protocol::Content::Text { text } = content {
             println!("Tool output:\n{}", text);
             assert!(text.contains("base_url"));
             assert!(text.contains("candidates"));
@@ -110,7 +120,8 @@ async fn test_discovery_tool_handler() {
 
 #[tokio::test]
 async fn test_discovery_invalid_url() {
-    let handler = ToolHandler::new();
+    let api_skill = create_api_skill(None);
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -132,7 +143,8 @@ async fn test_discovery_invalid_url() {
 #[tokio::test]
 async fn test_discovery_with_llm_config() {
     // Test that LLM config is properly handled
-    let handler = ToolHandler::new().with_llm_config(LlmConfig::default());
+    let api_skill = create_api_skill(Some(LlmConfig::default()));
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -146,7 +158,7 @@ async fn test_discovery_with_llm_config() {
 
     // Should still work even if LLM is not available
     if let Some(content) = result.content.first() {
-        if let agent_api::mcp::protocol::Content::Text { text } = content {
+        if let agent_brain::mcp::protocol::Content::Text { text } = content {
             println!("Tool output with LLM enabled:\n{}", text);
         }
     }

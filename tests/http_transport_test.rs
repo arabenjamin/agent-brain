@@ -6,7 +6,7 @@
 //! - DELETE /mcp for session termination
 //! - Authentication and header validation
 
-use agent_api::mcp::{
+use agent_brain::mcp::{
     AuthConfig, ApiKeyAuth, SessionManager, SessionConfig,
 };
 use axum::{
@@ -88,7 +88,7 @@ async fn test_session_manager_integration() {
 
 #[tokio::test]
 async fn test_session_state_transitions() {
-    use agent_api::mcp::SessionState;
+    use agent_brain::mcp::SessionState;
 
     let manager = SessionManager::new();
     let session_id = manager.create_session().await.expect("Create session");
@@ -230,7 +230,7 @@ async fn test_session_id_header_format() {
 
 #[tokio::test]
 async fn test_sse_message_format() {
-    use agent_api::mcp::SseMessage;
+    use agent_brain::mcp::SseMessage;
 
     let msg = SseMessage::new(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.to_string());
 
@@ -244,7 +244,7 @@ async fn test_sse_message_format() {
 
 #[tokio::test]
 async fn test_sse_message_with_custom_event() {
-    use agent_api::mcp::SseMessage;
+    use agent_brain::mcp::SseMessage;
 
     let msg = SseMessage::new("data".to_string()).with_event("notification");
 

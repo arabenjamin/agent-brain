@@ -7,18 +7,35 @@ use crate::models::{Endpoint, EndpointStatus, HttpMethod};
 impl Neo4jClient {
     /// Create a new Endpoint node.
     pub async fn create_endpoint(&self, endpoint: &Endpoint) -> Result<()> {
-        let q = query(
-            "CREATE (e:Endpoint {
-                id: $id,
-                path: $path,
-                method: $method,
-                summary: $summary,
-                operation_id: $operation_id,
-                status: $status,
-                last_verified_status: $last_verified_status,
-                healed_by_ai: $healed_by_ai
-            })",
-        )
+        let q = if let Some(ref emb) = endpoint.embedding {
+            query(
+                "CREATE (e:Endpoint {
+                    id: $id,
+                    path: $path,
+                    method: $method,
+                    summary: $summary,
+                    operation_id: $operation_id,
+                    status: $status,
+                    last_verified_status: $last_verified_status,
+                    healed_by_ai: $healed_by_ai,
+                    embedding: $embedding
+                })",
+            )
+            .param("embedding", emb.clone())
+        } else {
+            query(
+                "CREATE (e:Endpoint {
+                    id: $id,
+                    path: $path,
+                    method: $method,
+                    summary: $summary,
+                    operation_id: $operation_id,
+                    status: $status,
+                    last_verified_status: $last_verified_status,
+                    healed_by_ai: $healed_by_ai
+                })",
+            )
+        }
         .param("id", endpoint.id.to_string())
         .param("path", endpoint.path.clone())
         .param("method", endpoint.method.to_string())
@@ -33,6 +50,16 @@ impl Neo4jClient {
             endpoint.last_verified_status.map(|s| s as i64),
         )
         .param("healed_by_ai", endpoint.healed_by_ai);
+
+        self.graph().run(q).await?;
+        Ok(())
+    }
+
+    /// Update the embedding for an endpoint.
+    pub async fn update_endpoint_embedding(&self, id: Uuid, embedding: Vec<f32>) -> Result<()> {
+        let q = query("MATCH (e:Endpoint {id: $id}) SET e.embedding = $embedding")
+            .param("id", id.to_string())
+            .param("embedding", embedding);
 
         self.graph().run(q).await?;
         Ok(())
@@ -96,6 +123,31 @@ impl Neo4jClient {
     /// Get all Endpoints.
     pub async fn list_endpoints(&self) -> Result<Vec<Endpoint>> {
         let q = query("MATCH (e:Endpoint) RETURN e ORDER BY e.path, e.method");
+        let mut result = self.graph().execute(q).await?;
+        let mut endpoints = Vec::new();
+
+        while let Some(row) = result.next().await? {
+            endpoints.push(row_to_endpoint(row)?);
+        }
+
+        Ok(endpoints)
+    }
+
+    /// Find endpoints using semantic search (vector similarity).
+    pub async fn find_endpoints_semantic(
+        &self,
+        embedding: Vec<f32>,
+        limit: usize,
+    ) -> Result<Vec<Endpoint>> {
+        let q = query(
+            "CALL db.index.vector.queryNodes('endpoint_embeddings', $limit, $embedding)
+             YIELD node AS e, score
+             RETURN e, score
+             ORDER BY score DESC",
+        )
+        .param("limit", limit as i64)
+        .param("embedding", embedding);
+
         let mut result = self.graph().execute(q).await?;
         let mut endpoints = Vec::new();
 
@@ -186,8 +238,9 @@ fn row_to_endpoint(row: Row) -> Result<Endpoint> {
     let status: String = node
         .get("status")
         .unwrap_or_else(|_| "\"unknown\"".to_string());
-    let last_verified_status: Option<i64> = node.get("last_verified_status").ok();
+    let status_code: Option<i64> = node.get("last_verified_status").ok();
     let healed_by_ai: bool = node.get("healed_by_ai").unwrap_or(false);
+    let embedding: Option<Vec<f32>> = node.get("embedding").ok();
 
     let method: HttpMethod = serde_json::from_str(&format!("\"{}\"", method))
         .map_err(|e| RepositoryError::InvalidData(format!("Invalid method: {}", e)))?;
@@ -206,7 +259,8 @@ fn row_to_endpoint(row: Row) -> Result<Endpoint> {
             Some(operation_id)
         },
         status,
-        last_verified_status: last_verified_status.map(|s| s as u16),
+        last_verified_status: status_code.map(|s| s as u16),
         healed_by_ai,
+        embedding,
     })
 }

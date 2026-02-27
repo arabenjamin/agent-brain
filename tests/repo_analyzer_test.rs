@@ -1,11 +1,17 @@
 //! Integration tests for the repository-to-OpenAPI generation service.
 
-use agent_api::mcp::tools::{ToolHandler, ToolRegistry};
-use agent_api::services::{
+use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
+use agent_brain::services::{
     LlmConfig, MergeStrategy, RepoAccessMethod, RepoAnalysisConfig, RepoError, RepoPlatform,
-    RepoSource,
+    RepoSource, ContextStore
 };
+use agent_brain::skills::{api::ApiSkill, Skill};
 use serde_json::json;
+
+fn create_api_skill(llm_config: Option<LlmConfig>) -> ApiSkill {
+    let context_store = ContextStore::new();
+    ApiSkill::new(None, llm_config, context_store, None)
+}
 
 // ============================================================================
 // Tool Registry Tests
@@ -13,7 +19,10 @@ use serde_json::json;
 
 #[test]
 fn test_build_openapi_from_repo_tool_exists() {
-    let registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::new();
+    let api_skill = create_api_skill(None);
+    registry.register_skill(Box::new(api_skill));
+    
     let tool = registry.get("build_openapi_from_repo");
     assert!(tool.is_some());
 
@@ -37,7 +46,10 @@ fn test_build_openapi_from_repo_tool_exists() {
 
 #[test]
 fn test_build_openapi_from_repo_tool_schema() {
-    let registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::new();
+    let api_skill = create_api_skill(None);
+    registry.register_skill(Box::new(api_skill));
+    
     let tool = registry.get("build_openapi_from_repo").unwrap();
 
     let props = &tool.input_schema["properties"];
@@ -291,7 +303,9 @@ fn test_repo_source_clone_url_with_token() {
 
 #[tokio::test]
 async fn test_build_openapi_from_repo_requires_llm() {
-    let handler = ToolHandler::new(); // No LLM config
+    // No LLM config
+    let api_skill = create_api_skill(None);
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -310,7 +324,7 @@ async fn test_build_openapi_from_repo_requires_llm() {
     );
 
     if let Some(content) = result.content.first() {
-        if let agent_api::mcp::protocol::Content::Text { text } = content {
+        if let agent_brain::mcp::protocol::Content::Text { text } = content {
             assert!(text.contains("LLM") || text.contains("configuration"));
         }
     }
@@ -318,7 +332,8 @@ async fn test_build_openapi_from_repo_requires_llm() {
 
 #[tokio::test]
 async fn test_build_openapi_from_repo_invalid_url() {
-    let handler = ToolHandler::new().with_llm_config(LlmConfig::default());
+    let api_skill = create_api_skill(Some(LlmConfig::default()));
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -339,7 +354,8 @@ async fn test_build_openapi_from_repo_invalid_url() {
 
 #[tokio::test]
 async fn test_build_openapi_from_repo_unsupported_platform() {
-    let handler = ToolHandler::new().with_llm_config(LlmConfig::default());
+    let api_skill = create_api_skill(Some(LlmConfig::default()));
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -365,7 +381,8 @@ async fn test_build_openapi_from_repo_unsupported_platform() {
 #[tokio::test]
 #[ignore] // Requires network access and valid repo
 async fn test_build_openapi_from_public_repo() {
-    let handler = ToolHandler::new().with_llm_config(LlmConfig::default());
+    let api_skill = create_api_skill(Some(LlmConfig::default()));
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     // Test with a small public repo
     let result = handler
@@ -380,7 +397,7 @@ async fn test_build_openapi_from_public_repo() {
         .await;
 
     if let Some(content) = result.content.first() {
-        if let agent_api::mcp::protocol::Content::Text { text } = content {
+        if let agent_brain::mcp::protocol::Content::Text { text } = content {
             println!("Tool output:\n{}", text);
         }
     }
@@ -390,7 +407,8 @@ async fn test_build_openapi_from_public_repo() {
 #[ignore] // Requires network access
 async fn test_github_api_rate_limit_handling() {
     // Test that rate limit errors are handled gracefully
-    let handler = ToolHandler::new().with_llm_config(LlmConfig::default());
+    let api_skill = create_api_skill(Some(LlmConfig::default()));
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -406,7 +424,7 @@ async fn test_github_api_rate_limit_handling() {
     // Should either succeed, fail gracefully, or clone instead
     if result.is_error.unwrap_or(false) {
         if let Some(content) = result.content.first() {
-            if let agent_api::mcp::protocol::Content::Text { text } = content {
+            if let agent_brain::mcp::protocol::Content::Text { text } = content {
                 println!("Expected error for large repo: {}", text);
             }
         }

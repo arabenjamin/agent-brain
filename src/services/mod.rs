@@ -1,42 +1,36 @@
 pub mod context;
 pub mod discovery;
+pub mod queue;
 pub mod docgen;
 pub mod export;
 pub mod healing;
 pub mod http;
+pub mod knowledge;
 pub mod llm;
+pub mod llm_providers;
+pub mod model_selector;
 pub mod openapi;
+pub mod procedure_executor;
 pub mod repo;
 pub mod secrets;
+pub mod sleep;
 
-pub use context::{
-    ApiContext, ContextError, ContextStore, EndpointSummary, ParameterSummary, SchemaSummary,
-};
-pub use discovery::{
-    DiscoveryCandidate, DiscoveryConfig, DiscoveryError, DiscoveryMethod, DiscoveryResult,
-    DiscoveryService,
-};
-pub use docgen::{DocGenConfig, DocGenError, DocGenResult, DocGenService, OpenApiSpec};
-pub use export::{
-    ChangeCategory, ChangeType, DiffError, DiffReport, DiffSummary, ExportError, ExportFormat,
-    ExportOptions, ExportResult, ExportStats, MarkdownReportGenerator, OpenApiBuilder,
-    OpenApiExporter, SpecChange, SpecDiffer,
-};
-pub use healing::{
-    HealingConfig, HealingError, HealingOrchestrator, HealingResult, RequestContext,
-};
-pub use http::{
-    HttpConfig, HttpError, HttpExecutor, HttpResponse, RequestBuilder, ResponseClass,
-    parse_header_string, parse_headers,
-};
-pub use llm::{ChatMessage, ErrorAnalysis, LlmClient, LlmConfig, LlmError, LlmResponse};
-pub use openapi::{EndpointWithParams, IngestResult, OpenApiError, OpenApiParser};
-pub use repo::{
-    ExistingSpecInfo, MergeStrategy, RepoAccessMethod, RepoAnalysisConfig, RepoAnalysisResult,
-    RepoAnalyzerService, RepoError, RepoPlatform, RepoSource, RepoStats,
-};
+pub use context::{ContextStore, ApiContext, EndpointSummary, ParameterSummary};
+pub use discovery::{DiscoveryService, DiscoveryConfig};
+pub use docgen::DocGenService;
+pub use export::{ExportFormat, ExportOptions, OpenApiExporter, MarkdownReportGenerator, SpecDiffer};
+pub use healing::{HealingOrchestrator, HealingConfig, RequestContext};
+pub use http::{HttpExecutor, RequestBuilder, parse_headers};
+pub use knowledge::KnowledgeService;
+pub use llm::{LlmClient, LlmConfig, LlmProviderType};
+pub use openapi::{OpenApiParser, EndpointWithParams};
+pub use repo::{RepoAnalyzerService, RepoAnalysisConfig, MergeStrategy};
 pub use secrets::{
-    AwsSecretConfig, AwsSecretProvider, BoxedSecretProvider, CredentialManager,
-    CredentialManagerConfig, LocalSecretConfig, LocalSecretProvider, SecretError, SecretProvider,
-    VaultConfig, VaultSecretProvider,
+    CredentialManager, SecretProvider,
+    AwsSecretConfig, AwsSecretProvider,
+    LocalSecretConfig, LocalSecretProvider,
+    VaultConfig, VaultSecretProvider
 };
+pub use model_selector::ModelSelector;
+pub use queue::{QueueService, WorkerConfig, ChainStep};
+pub use sleep::SleepService;

@@ -1,21 +1,26 @@
-# API Knowledge Graph
+# Agent Brain
 
-An MCP server that ingests OpenAPI specifications into a Neo4j graph database, enabling natural language queries, live API testing, and self-healing documentation.
+An autonomous MCP server — a persistent, self-improving AI agent backed by a Neo4j knowledge graph.  It ingests OpenAPI specs, manages long-term memory via hybrid vector+BM25 RAG, executes background jobs in a priority queue, reasons over stored knowledge, and learns from its own outcomes.
 
 ## What It Does
 
 - **Ingests** OpenAPI/Swagger specs into a queryable knowledge graph
 - **Self-heals** documentation when API requests fail (AI-powered corrections)
 - **Exports** healed specs back to OpenAPI 3.0 for version control
-- **Generates** drift reports showing what changed vs. original docs
-- **Connects** to Claude CLI as an MCP server for AI-assisted API work
+- **Remembers** notes and knowledge with hybrid vector+BM25 search and spaced-repetition
+- **Reasons** over stored knowledge to answer questions and derive new inferences
+- **Plans** by decomposing high-level goals into ordered sub-tasks
+- **Executes** background jobs asynchronously in a durable priority queue
+- **Extends itself** by defining new MCP tools backed by stored procedure pipelines
+- **Searches** the web via SerpApi, Brave, or Google Custom Search
+- **Connects** to Claude CLI or any MCP-compatible client via stdio or HTTP/SSE
 
 ## Quick Start
 
 ```bash
 # 1. Clone and build
 git clone <repo-url>
-cd agent-api
+cd agent-brain
 cargo build --release
 
 # 2. Start Neo4j
@@ -45,7 +50,7 @@ cargo run -- query "pets"
 ```bash
 # Clone repository
 git clone <repo-url>
-cd agent-api
+cd agent-brain
 
 # Start Neo4j database
 docker compose up -d
@@ -68,7 +73,8 @@ cargo run --release -- init-db
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | `password` | Neo4j password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `llama3` | LLM model for self-healing |
+| `OLLAMA_MODEL` | `granite3.3:8b` | LLM model for text generation / self-healing |
+| `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `MCP_TRANSPORT` | `stdio` | MCP transport (stdio/http) |
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address |
@@ -76,6 +82,10 @@ cargo run --release -- init-db
 | `SECRET_PROVIDER` | `local` | Secret provider (local/vault/aws/none) |
 | `SECRETS_FILE` | `.secrets.enc` | Encrypted secrets file path |
 | `SECRETS_ENCRYPTION_KEY` | - | Encryption key for local secrets |
+| `SERPAPI_KEY` | - | SerpApi key for `search_web` tool |
+| `BRAVE_API_KEY` | - | Brave Search API key for `search_web` tool |
+| `GOOGLE_API_KEY` | - | Google Custom Search API key |
+| `GOOGLE_CX` | - | Google Custom Search Engine ID |
 
 ## CLI Usage
 
@@ -183,14 +193,15 @@ Connect this tool to Claude CLI for AI-assisted API exploration and testing.
    {
      "mcpServers": {
        "api-knowledge-graph": {
-         "command": "/path/to/agent-api/target/release/agent-api",
+         "command": "/path/to/agent-brain/target/release/agent-brain",
          "args": ["serve"],
          "env": {
            "NEO4J_URI": "bolt://localhost:7688",
            "NEO4J_USER": "neo4j",
            "NEO4J_PASSWORD": "password",
            "OLLAMA_URL": "http://localhost:11434",
-           "OLLAMA_MODEL": "llama3"
+           "OLLAMA_MODEL": "granite4:latest",
+           "SERPAPI_KEY": "your-serpapi-key"
          }
        }
      }
@@ -199,9 +210,11 @@ Connect this tool to Claude CLI for AI-assisted API exploration and testing.
 
 4. **Restart Claude CLI** to load the MCP server.
 
-### Available MCP Tools
+### Available MCP Tools (47)
 
 Once connected, Claude can use these tools:
+
+**API Tools (14)**
 
 | Tool | Description |
 |------|-------------|
@@ -219,6 +232,74 @@ Once connected, Claude can use these tools:
 | `configure_api_credential` | Store API credentials for automatic injection |
 | `list_api_credentials` | List all configured credentials |
 | `delete_api_credential` | Remove an API credential |
+
+**Search Tools (1)**
+
+| Tool | Description |
+|------|-------------|
+| `search_web` | Search the web via SerpApi, Brave, or Google Custom Search |
+
+**Task Management Tools (6)**
+
+| Tool | Description |
+|------|-------------|
+| `create_task` | Create and persist a high-level goal or task |
+| `reflect_on_work` | LLM critique of current progress; persists a reflection Note |
+| `decompose_goal` | LLM-breaks a task into ordered sub-tasks with `SUBTASK_OF` graph edges |
+| `update_task` | Set task status (in_progress/completed/failed/blocked) with optional note |
+| `list_tasks` | List tasks with optional status filter and parent_id |
+| `record_outcome` | Store an episodic outcome note linked to a task |
+
+**Knowledge Tools (10)**
+
+| Tool | Description |
+|------|-------------|
+| `store_note` | Persist a note; auto-chunks, embeds, links similar notes, extracts entities |
+| `search_notes` | Hybrid BM25+vector RRF search with multi-hop graph expansion |
+| `find_related_notes` | Find notes linked via RELATES_TO graph edges |
+| `prune_old_notes` | Delete stale notes via adaptive decay or time-based thresholds |
+| `consolidate_memories` | LLM synthesis of multiple notes into a summary note |
+| `review_due_notes` | Return notes whose spaced-repetition review interval has elapsed |
+| `search_by_entity` | Find notes mentioning a named entity |
+| `reason` | RAG + LLM inference; stores inference notes with DERIVED_FROM edges |
+| `audit_action` | Check a proposed action against stored principles via LLM |
+| `explain_reasoning` | Narrate why a decision was made, citing source notes |
+
+**Procedural Memory Tools (2)**
+
+| Tool | Description |
+|------|-------------|
+| `store_procedure` | Store a named multi-step workflow |
+| `search_procedures` | Search stored procedures by name or description |
+
+**Working Memory Tools (3)**
+
+| Tool | Description |
+|------|-------------|
+| `push_context` | Append an entry to a session scratchpad |
+| `get_context` | Retrieve all session scratchpad entries in turn order |
+| `summarise_session` | LLM-summarise the session scratchpad into a long-term Note |
+
+**Dynamic Tool Builder (4 + runtime)**
+
+| Tool | Description |
+|------|-------------|
+| `define_tool` | Define a new MCP tool backed by a procedure pipeline; hot-registered immediately |
+| `execute_procedure` | Run a stored procedure with template substitution (`{{input.field}}`) |
+| `list_dynamic_tools` | List all runtime-defined tools |
+| `remove_dynamic_tool` | Delete a dynamic tool and unregister it live |
+
+**Agent Job Queue (7)**
+
+| Tool | Description |
+|------|-------------|
+| `enqueue_agent` | Submit any MCP tool as a background job (priority 0-3, persistent, retryable) |
+| `queue_status` | Stats: pending, running, per-status counts, worker config |
+| `get_job_result` | Poll a job for its current status and result |
+| `cancel_job` | Cancel a queued or running job |
+| `retry_job` | Requeue a failed, dead, or cancelled job |
+| `set_worker_config` | Change concurrency limit, enable/pause processing, poll interval |
+| `drain_queue` | Cancel all currently pending jobs |
 
 ### Example Prompts
 
@@ -259,104 +340,120 @@ The healed documentation can then be exported and committed to version control.
 ┌─────────────────────┐  ┌─────────────────────┐
 │   Stdio Transport   │  │   HTTP Transport    │
 │  (local CLI usage)  │  │  (remote/cloud)     │
-│                     │  │  - POST /mcp        │
-│                     │  │  - GET /mcp (SSE)   │
-│                     │  │  - API key auth     │
+│                     │  │  POST /mcp          │
+│                     │  │  GET  /mcp (SSE)    │
+│                     │  │  API key auth       │
 └──────────┬──────────┘  └──────────┬──────────┘
            └──────────┬─────────────┘
 ┌─────────────────────▼───────────────────────────────────────┐
-│                       MCP Server Core                       │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐   │
-│  │   Tools     │ │  Sessions   │ │   Protocol Handler  │   │
-│  │ (14 tools)  │ │  (HTTP)     │ │    (JSON-RPC 2.0)   │   │
-│  └─────────────┘ └─────────────┘ └─────────────────────┘   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
+│                     McpServerCore                           │
+│   ┌─────────────┐  ┌─────────────┐  ┌────────────────────┐  │
+│   │ 47 Tools    │  │  Sessions   │  │  Protocol Handler  │  │
+│   │ (8 Skills)  │  │  (HTTP)     │  │  (JSON-RPC 2.0)    │  │
+│   └─────────────┘  └─────────────┘  └────────────────────┘  │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────┐
 │                      Services Layer                         │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐   │
-│  │ OpenAPI  │ │   HTTP   │ │   LLM    │ │   Healing    │   │
-│  │ Parser   │ │ Executor │ │  Client  │ │ Orchestrator │   │
+│  │ OpenAPI  │ │   HTTP   │ │   LLM    │ │  Knowledge   │   │
+│  │ Parser   │ │ Executor │ │  Client  │ │  Service     │   │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐   │
-│  │ Context  │ │Discovery │ │  DocGen  │ │    Export    │   │
-│  │  Store   │ │ Service  │ │ Service  │ │   Module     │   │
+│  │ Queue    │ │Discovery │ │Procedure │ │    Export    │   │
+│  │ Service  │ │ Service  │ │ Executor │ │   Module     │   │
+│  │(BinaryH) │ │          │ │(template)│ │              │   │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │                  Secrets Module                       │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐             │   │
-│  │  │  Local   │ │  Vault   │ │   AWS    │ (Providers) │   │
-│  │  │(AES-GCM) │ │ (KV v2)  │ │(Secrets) │             │   │
-│  │  └──────────┘ └──────────┘ └──────────┘             │   │
+│  │  Secrets  │  Local(AES-GCM) │ Vault(KV v2) │ AWS    │   │
 │  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│                    Neo4j Knowledge Graph                    │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────┐
+│                   Neo4j Knowledge Graph                     │
 │                                                             │
-│   (Resource)──[:HAS_ENDPOINT]──▶(Endpoint)                 │
-│                                      │                      │
-│                          ┌───────────┼───────────┐          │
-│                          ▼           ▼           ▼          │
-│                    (Parameter)  (Schema)  (HealingEvent)    │
-│                                                             │
-│   (ApiCredential) ← Stores credential metadata              │
+│  (Resource)──►(Endpoint)──►(Parameter/Schema/HealingEvent)  │
+│  (Note)──►RELATES_TO/DERIVED_FROM/SUMMARIZED_BY/PART_OF     │
+│  (Note)──►REFLECTS_ON──►(Task)──►SUBTASK_OF──►(Task)        │
+│  (Note)──►MENTIONS──►(Entity)                               │
+│  (DynamicTool)──►USES──►(Procedure)                         │
+│  (AgentJob) — background job lifecycle                      │
+└─────────────────────────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────┐
+│              DuckDB  (brain_logs.db — Telemetry)            │
+│   interactions table │ knowledge_gaps table                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
 
 ```
-agent-api/
+agent-brain/
 ├── src/
 │   ├── main.rs              # CLI entry point
 │   ├── cli.rs               # Command definitions
 │   ├── config.rs            # Environment configuration
 │   ├── models/              # Data models
-│   │   └── credential.rs    # API credential model
+│   │   ├── agent_job.rs     # AgentJob + AgentJobStatus + PrioritizedJob
+│   │   ├── credential.rs    # API credential model
+│   │   ├── procedure.rs     # Procedure (stored workflow) model
+│   │   ├── task.rs          # Task / goal model
+│   │   └── ...              # Endpoint, Schema, Parameter, etc.
 │   ├── repository/          # Neo4j database layer
-│   │   └── credential.rs    # Credential CRUD operations
+│   │   ├── agent_job.rs     # AgentJob CRUD (create/get/list/started/completed/failed/dead/retry)
+│   │   ├── client.rs        # Neo4jClient + schema init
+│   │   ├── credential.rs    # Credential CRUD
+│   │   ├── task.rs          # Task CRUD (including link_subtask, list_tasks, store_outcome_note)
+│   │   └── telemetry.rs     # DuckDB telemetry client
 │   ├── services/            # Business logic
-│   │   ├── openapi.rs       # Spec parser
-│   │   ├── http.rs          # HTTP executor
-│   │   ├── llm.rs           # Ollama client
+│   │   ├── queue.rs         # QueueService — priority BinaryHeap + Tokio coordinator
+│   │   ├── knowledge.rs     # Notes/RAG — reason, audit_action, explain_reasoning
+│   │   ├── procedure_executor.rs # Template-substitution step runner ({{input.x}})
+│   │   ├── openapi.rs       # Spec parser + ingester
+│   │   ├── http.rs          # HTTP executor with self-healing
+│   │   ├── llm.rs           # Ollama LLM client
 │   │   ├── healing.rs       # Self-healing orchestrator
-│   │   ├── context.rs       # In-memory context store
+│   │   ├── context.rs       # In-memory API context store
 │   │   ├── discovery.rs     # Spec auto-discovery
 │   │   ├── docgen.rs        # Doc-to-spec generator
 │   │   ├── repo.rs          # Repo-to-spec generator
-│   │   ├── export/          # Export module
-│   │   │   ├── builder.rs   # OpenAPI builder
-│   │   │   ├── exporter.rs  # Graph-to-spec export
-│   │   │   ├── differ.rs    # Diff generator
-│   │   │   └── report.rs    # Report formatter
-│   │   └── secrets/         # Secret provider abstraction
-│   │       ├── provider.rs  # SecretProvider trait
-│   │       ├── local.rs     # AES-256-GCM encrypted storage
-│   │       ├── vault.rs     # HashiCorp Vault KV v2
-│   │       ├── aws.rs       # AWS Secrets Manager
-│   │       └── manager.rs   # CredentialManager
+│   │   ├── sleep.rs         # Sleep cycle / experience digestion
+│   │   ├── export/          # Graph-to-spec export module
+│   │   └── secrets/         # Secret provider abstraction (local/Vault/AWS)
+│   ├── skills/              # Pluggable skill implementations
+│   │   ├── mod.rs           # Skill trait
+│   │   ├── agent.rs         # AgentSkill — 7 queue management tools
+│   │   ├── api.rs           # ApiSkill — 14 tools
+│   │   ├── dynamic.rs       # DynamicSkill — 4 tools + runtime-defined tools
+│   │   ├── knowledge.rs     # KnowledgeSkill — 10 tools
+│   │   ├── procedure.rs     # ProcedureSkill — 2 tools
+│   │   ├── search.rs        # SearchSkill — 1 tool
+│   │   ├── sleep.rs         # SleepSkill — telemetry / experience digestion
+│   │   ├── task.rs          # TaskSkill — 6 tools
+│   │   └── working_memory.rs # WorkingMemorySkill — 3 tools
 │   └── mcp/                 # MCP server implementation
-│       ├── protocol.rs      # JSON-RPC types
+│       ├── protocol.rs      # JSON-RPC 2.0 message types
 │       ├── transport.rs     # Stdio transport
-│       ├── transport_trait.rs  # Transport abstraction
-│       ├── http_transport.rs   # HTTP+SSE transport (Axum)
+│       ├── transport_trait.rs  # McpTransport abstraction
+│       ├── http_transport.rs   # Axum-based HTTP+SSE transport
 │       ├── session.rs       # HTTP session management
 │       ├── auth.rs          # API key authentication
-│       ├── tools.rs         # Tool handlers (14 tools)
-│       └── server.rs        # Server state machine (thread-safe)
+│       ├── tools.rs         # ToolRegistry + ToolHandler
+│       └── server.rs        # McpServerCore + McpServer (legacy stdio)
 ├── tests/
 │   ├── common/              # Test utilities
-│   ├── fixtures/            # Sample OpenAPI specs
-│   ├── repository_test.rs   # Neo4j integration tests
+│   ├── fixtures/            # Sample OpenAPI specs (petstore.json)
+│   ├── repository_test.rs
 │   ├── context_tools_test.rs
 │   ├── discovery_test.rs
 │   ├── docgen_test.rs
 │   ├── repo_analyzer_test.rs
-│   └── http_transport_test.rs
-├── docs/                    # Documentation
-├── docker-compose.yml       # Neo4j + Ollama stack
-├── openapi.yaml             # Sample spec for testing
+│   ├── http_transport_test.rs
+│   └── task_test.rs
+├── STATUS.md                # Current state + where we left off
+├── TODO.md                  # Backlog + next phases
+├── docker-compose.yml       # Neo4j + MCP server stack
 └── .github/workflows/       # CI/CD pipelines
 ```
 
@@ -389,7 +486,7 @@ cargo clippy
 
 ```bash
 cargo build --release
-# Binary at: target/release/agent-api
+# Binary at: target/release/agent-brain
 ```
 
 ## CI/CD

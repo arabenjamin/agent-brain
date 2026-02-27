@@ -282,7 +282,7 @@ impl Content {
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallResult {
     pub content: Vec<Content>,
-    #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
+    #[serde(default, rename = "isError", skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
 }
 

@@ -1,7 +1,7 @@
 mod common;
 
-use agent_api::models::{Endpoint, HttpMethod, Parameter, ParameterLocation, Resource, Schema};
-use agent_api::repository::Neo4jClient;
+use agent_brain::models::{Endpoint, HttpMethod, Parameter, ParameterLocation, Resource, Schema};
+use agent_brain::repository::Neo4jClient;
 use common::{init_test_env, neo4j_test_config};
 
 async fn setup_client() -> Neo4jClient {

@@ -1,12 +1,21 @@
 //! Integration tests for the documentation-to-OpenAPI generation service.
 
-use agent_api::mcp::tools::{ToolHandler, ToolRegistry};
-use agent_api::services::{DocGenConfig, LlmConfig};
+use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
+use agent_brain::services::{ContextStore, DocGenConfig, LlmConfig};
+use agent_brain::skills::{api::ApiSkill, Skill};
 use serde_json::json;
+
+fn create_api_skill(llm_config: Option<LlmConfig>) -> ApiSkill {
+    let context_store = ContextStore::new();
+    ApiSkill::new(None, llm_config, context_store, None)
+}
 
 #[test]
 fn test_build_openapi_from_docs_tool_exists() {
-    let registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::new();
+    let api_skill = create_api_skill(None);
+    registry.register_skill(Box::new(api_skill));
+    
     let tool = registry.get("build_openapi_from_docs");
     assert!(tool.is_some());
 
@@ -30,7 +39,10 @@ fn test_build_openapi_from_docs_tool_exists() {
 
 #[test]
 fn test_build_openapi_from_docs_tool_schema() {
-    let registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::new();
+    let api_skill = create_api_skill(None);
+    registry.register_skill(Box::new(api_skill));
+    
     let tool = registry.get("build_openapi_from_docs").unwrap();
 
     let props = &tool.input_schema["properties"];
@@ -56,7 +68,9 @@ fn test_build_openapi_from_docs_tool_schema() {
 
 #[tokio::test]
 async fn test_build_openapi_from_docs_requires_llm() {
-    let handler = ToolHandler::new(); // No LLM config
+    // No LLM config
+    let api_skill = create_api_skill(None);
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]); 
 
     let result = handler
         .execute(
@@ -75,7 +89,7 @@ async fn test_build_openapi_from_docs_requires_llm() {
     );
 
     if let Some(content) = result.content.first() {
-        if let agent_api::mcp::protocol::Content::Text { text } = content {
+        if let agent_brain::mcp::protocol::Content::Text { text } = content {
             assert!(text.contains("LLM") || text.contains("configuration"));
         }
     }
@@ -83,7 +97,9 @@ async fn test_build_openapi_from_docs_requires_llm() {
 
 #[tokio::test]
 async fn test_build_openapi_from_docs_empty_urls() {
-    let handler = ToolHandler::new().with_llm_config(LlmConfig::default());
+    // With LLM config
+    let api_skill = create_api_skill(Some(LlmConfig::default()));
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -121,7 +137,7 @@ fn test_docgen_config_customization() {
 
 #[test]
 fn test_openapi_spec_structure() {
-    use agent_api::services::OpenApiSpec;
+    use agent_brain::services::OpenApiSpec;
 
     let mut spec = OpenApiSpec::new("Test API", "2.0.0");
     spec.add_server("https://api.example.com", Some("Production"));
@@ -136,7 +152,7 @@ fn test_openapi_spec_structure() {
 
 #[test]
 fn test_openapi_spec_json_output() {
-    use agent_api::services::OpenApiSpec;
+    use agent_brain::services::OpenApiSpec;
 
     let spec = OpenApiSpec::new("My API", "1.0.0");
     let json = spec.to_json().unwrap();
@@ -148,7 +164,7 @@ fn test_openapi_spec_json_output() {
 
 #[test]
 fn test_openapi_spec_yaml_output() {
-    use agent_api::services::OpenApiSpec;
+    use agent_brain::services::OpenApiSpec;
 
     let spec = OpenApiSpec::new("My API", "1.0.0");
     let yaml = spec.to_yaml().unwrap();
@@ -160,7 +176,7 @@ fn test_openapi_spec_yaml_output() {
 
 #[test]
 fn test_openapi_spec_add_endpoint() {
-    use agent_api::services::{OpenApiSpec, docgen::Operation};
+    use agent_brain::services::{OpenApiSpec, docgen::Operation};
 
     let mut spec = OpenApiSpec::new("Test", "1.0");
     let op = Operation::new("List users");
@@ -177,7 +193,7 @@ fn test_openapi_spec_add_endpoint() {
 
 #[test]
 fn test_openapi_spec_multiple_methods_same_path() {
-    use agent_api::services::{OpenApiSpec, docgen::Operation};
+    use agent_brain::services::{OpenApiSpec, docgen::Operation};
 
     let mut spec = OpenApiSpec::new("Test", "1.0");
     spec.add_endpoint("/users", "GET", Operation::new("List users"));

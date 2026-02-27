@@ -124,6 +124,9 @@ pub enum Command {
         #[arg(long)]
         breaking_only: bool,
     },
+
+    /// Generate embeddings for existing endpoints in the knowledge graph
+    Embed,
 }
 
 impl Cli {

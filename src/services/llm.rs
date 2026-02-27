@@ -1,9 +1,8 @@
 use std::time::Duration;
+use std::sync::Arc;
 
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::models::HealingAction;
@@ -15,7 +14,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 /// Default model to use.
-const DEFAULT_MODEL: &str = "llama3";
+const DEFAULT_MODEL: &str = "granite3.3:8b";
 
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -34,18 +33,61 @@ pub enum LlmError {
     #[error("Failed to parse LLM response: {0}")]
     ParseError(String),
 
-    #[error("Ollama server not reachable: {0}")]
+    #[error("Server not reachable: {0}")]
     ServerNotReachable(String),
+
+    #[error("Provider error: {0}")]
+    Provider(#[from] crate::services::llm_providers::LlmProviderError),
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmProviderType {
+    Ollama,
+    Anthropic,
+    Gemini,
+}
+
+impl std::fmt::Display for LlmProviderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Default for LlmProviderType {
+    fn default() -> Self {
+        Self::Ollama
+    }
 }
 
 /// Configuration for the LLM client.
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
-    /// Ollama API base URL.
-    pub base_url: String,
+    /// LLM provider type.
+    pub provider: LlmProviderType,
 
-    /// Model name to use.
+    /// API base URL.
+    pub base_url: Option<String>,
+
+    /// API key (required for cloud providers).
+    pub api_key: Option<String>,
+
+    /// Model name to use for text generation.
     pub model: String,
+
+    /// Model name to use for embeddings.
+    pub embed_model: Option<String>,
 
     /// Request timeout.
     pub timeout: Duration,
@@ -60,8 +102,11 @@ pub struct LlmConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            base_url: DEFAULT_OLLAMA_URL.to_string(),
+            provider: LlmProviderType::Ollama,
+            base_url: Some(DEFAULT_OLLAMA_URL.to_string()),
+            api_key: None,
             model: DEFAULT_MODEL.to_string(),
+            embed_model: None,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             temperature: 0.7,
             max_tokens: None,
@@ -73,10 +118,40 @@ impl LlmConfig {
     /// Create config from environment-style parameters.
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            base_url: base_url.into(),
+            base_url: Some(base_url.into()),
             model: model.into(),
             ..Default::default()
         }
+    }
+
+    /// Set the provider type.
+    pub fn with_provider(mut self, provider: LlmProviderType) -> Self {
+        self.provider = provider;
+        self
+    }
+
+    /// Set the API key.
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
+    /// Set the base URL.
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    /// Set the model name.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// Set the embedding model (separate from the generation model).
+    pub fn with_embed_model(mut self, model: impl Into<String>) -> Self {
+        self.embed_model = Some(model.into());
+        self
     }
 
     /// Set temperature.
@@ -98,39 +173,7 @@ impl LlmConfig {
     }
 }
 
-/// Ollama generate request payload.
-#[derive(Debug, Serialize)]
-struct GenerateRequest<'a> {
-    model: &'a str,
-    prompt: &'a str,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<&'a str>,
-    options: GenerateOptions,
-}
-
-/// Ollama generate options.
-#[derive(Debug, Serialize)]
-struct GenerateOptions {
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    num_predict: Option<u32>,
-}
-
-/// Ollama generate response.
-#[derive(Debug, Deserialize)]
-struct GenerateResponse {
-    response: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    done: bool,
-    #[serde(default)]
-    total_duration: Option<u64>,
-    #[serde(default)]
-    eval_count: Option<u32>,
-}
-
-/// Ollama chat message.
+/// LLM chat message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -158,43 +201,6 @@ impl ChatMessage {
             content: content.into(),
         }
     }
-}
-
-/// Ollama chat request payload.
-#[derive(Debug, Serialize)]
-struct ChatRequest<'a> {
-    model: &'a str,
-    messages: &'a [ChatMessage],
-    stream: bool,
-    options: GenerateOptions,
-}
-
-/// Ollama chat response.
-#[derive(Debug, Deserialize)]
-struct ChatResponse {
-    message: ChatMessage,
-    #[serde(default)]
-    #[allow(dead_code)]
-    done: bool,
-    #[serde(default)]
-    total_duration: Option<u64>,
-    #[serde(default)]
-    eval_count: Option<u32>,
-}
-
-/// Ollama tags response (list models).
-#[derive(Debug, Deserialize)]
-struct TagsResponse {
-    models: Vec<ModelInfo>,
-}
-
-/// Model information from Ollama.
-#[derive(Debug, Deserialize)]
-struct ModelInfo {
-    name: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    size: u64,
 }
 
 /// Result of LLM generation with metadata.
@@ -229,9 +235,10 @@ pub struct ErrorAnalysis {
     pub corrected_body: Option<serde_json::Value>,
 }
 
-/// LLM client for interacting with Ollama.
+/// LLM client for interacting with various providers.
 pub struct LlmClient {
-    client: Client,
+    provider: Arc<dyn crate::services::llm_providers::LlmProvider>,
+    embed_provider: Arc<dyn crate::services::llm_providers::LlmProvider>,
     config: LlmConfig,
 }
 
@@ -243,9 +250,40 @@ impl LlmClient {
 
     /// Create a new LLM client with custom configuration.
     pub fn with_config(config: LlmConfig) -> Result<Self, LlmError> {
-        let client = Client::builder().timeout(config.timeout).build()?;
+        use crate::services::llm_providers::{ProviderConfig, ollama::OllamaProvider, anthropic::AnthropicProvider, gemini::GeminiProvider};
 
-        Ok(Self { client, config })
+        let provider_config = ProviderConfig {
+            model: config.model.clone(),
+            api_key: config.api_key.clone(),
+            base_url: config.base_url.clone(),
+            timeout: config.timeout,
+            temperature: config.temperature,
+            max_tokens: config.max_tokens,
+        };
+
+        let provider: Arc<dyn crate::services::llm_providers::LlmProvider> = match config.provider {
+            LlmProviderType::Ollama => Arc::new(OllamaProvider::new(provider_config)),
+            LlmProviderType::Anthropic => Arc::new(AnthropicProvider::new(provider_config)),
+            LlmProviderType::Gemini => Arc::new(GeminiProvider::new(provider_config)),
+        };
+
+        // Initialize embedding provider (separate from generation if requested)
+        let embed_provider = if let Some(ref embed_model) = config.embed_model {
+            // If we have a specific embed_model, we assume it's an Ollama local model for the 1024-dim index
+            let embed_config = ProviderConfig {
+                model: embed_model.clone(),
+                api_key: None,
+                base_url: config.base_url.clone(), // Reuse local base URL if available
+                timeout: config.timeout,
+                temperature: 0.0,
+                max_tokens: None,
+            };
+            Arc::new(OllamaProvider::new(embed_config)) as Arc<dyn crate::services::llm_providers::LlmProvider>
+        } else {
+            provider.clone()
+        };
+
+        Ok(Self { provider, embed_provider, config })
     }
 
     /// Get the current configuration.
@@ -253,40 +291,9 @@ impl LlmClient {
         &self.config
     }
 
-    /// Check if the Ollama server is reachable.
+    /// Check if the provider is reachable.
     pub async fn health_check(&self) -> Result<bool, LlmError> {
-        let url = format!("{}/api/tags", self.config.base_url);
-
-        match self.client.get(&url).send().await {
-            Ok(response) => Ok(response.status().is_success()),
-            Err(e) => {
-                warn!(error = %e, "Ollama health check failed");
-                Ok(false)
-            }
-        }
-    }
-
-    /// List available models.
-    pub async fn list_models(&self) -> Result<Vec<String>, LlmError> {
-        let url = format!("{}/api/tags", self.config.base_url);
-
-        let response = self.client.get(&url).send().await?;
-
-        if !response.status().is_success() {
-            return Err(LlmError::ServerNotReachable(format!(
-                "Status: {}",
-                response.status()
-            )));
-        }
-
-        let tags: TagsResponse = response.json().await?;
-        Ok(tags.models.into_iter().map(|m| m.name).collect())
-    }
-
-    /// Check if a specific model is available.
-    pub async fn is_model_available(&self, model: &str) -> Result<bool, LlmError> {
-        let models = self.list_models().await?;
-        Ok(models.iter().any(|m| m.starts_with(model)))
+        Ok(self.provider.health_check().await)
     }
 
     /// Generate text from a prompt.
@@ -300,95 +307,17 @@ impl LlmClient {
         prompt: &str,
         system: Option<&str>,
     ) -> Result<LlmResponse, LlmError> {
-        let url = format!("{}/api/generate", self.config.base_url);
+        self.provider.generate(prompt, system).await.map_err(LlmError::from)
+    }
 
-        let request = GenerateRequest {
-            model: &self.config.model,
-            prompt,
-            stream: false,
-            system,
-            options: GenerateOptions {
-                temperature: self.config.temperature,
-                num_predict: self.config.max_tokens,
-            },
-        };
-
-        debug!(
-            model = %self.config.model,
-            prompt_len = prompt.len(),
-            "Sending generate request to Ollama"
-        );
-
-        let response = self.client.post(&url).json(&request).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::GenerationFailed(format!(
-                "Status {}: {}",
-                status, body
-            )));
-        }
-
-        let gen_response: GenerateResponse = response.json().await?;
-
-        info!(
-            tokens = gen_response.eval_count,
-            duration_ms = gen_response.total_duration.map(|d| d / 1_000_000),
-            "Generation complete"
-        );
-
-        Ok(LlmResponse {
-            text: gen_response.response,
-            duration_ns: gen_response.total_duration,
-            tokens_evaluated: gen_response.eval_count,
-        })
+    /// Generate embeddings for a text.
+    pub async fn embeddings(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        self.embed_provider.embed(text).await.map_err(LlmError::from)
     }
 
     /// Chat with the model using message history.
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmError> {
-        let url = format!("{}/api/chat", self.config.base_url);
-
-        let request = ChatRequest {
-            model: &self.config.model,
-            messages,
-            stream: false,
-            options: GenerateOptions {
-                temperature: self.config.temperature,
-                num_predict: self.config.max_tokens,
-            },
-        };
-
-        debug!(
-            model = %self.config.model,
-            message_count = messages.len(),
-            "Sending chat request to Ollama"
-        );
-
-        let response = self.client.post(&url).json(&request).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(LlmError::GenerationFailed(format!(
-                "Status {}: {}",
-                status, body
-            )));
-        }
-
-        let chat_response: ChatResponse = response.json().await?;
-
-        info!(
-            tokens = chat_response.eval_count,
-            duration_ms = chat_response.total_duration.map(|d| d / 1_000_000),
-            "Chat complete"
-        );
-
-        Ok(LlmResponse {
-            text: chat_response.message.content,
-            duration_ns: chat_response.total_duration,
-            tokens_evaluated: chat_response.eval_count,
-        })
+        self.provider.chat(messages).await.map_err(LlmError::from)
     }
 
     /// Analyze an API error and suggest a fix.
@@ -444,7 +373,7 @@ impl LlmClient {
 
 impl Default for LlmClient {
     fn default() -> Self {
-        Self::new().expect("Failed to create default LLM client")
+        Self::with_config(LlmConfig::default()).expect("Failed to create default LLM client")
     }
 }
 
@@ -452,7 +381,7 @@ impl Default for LlmClient {
 // Prompt Templates
 // ============================================================================
 
-const ERROR_ANALYSIS_SYSTEM_PROMPT: &str = r#"You are an API documentation expert. Your task is to analyze API errors and determine if they indicate documentation issues.
+pub const ERROR_ANALYSIS_SYSTEM_PROMPT: &str = r#"You are an API documentation expert. Your task is to analyze API errors and determine if they indicate documentation issues.
 
 You must respond in valid JSON format with the following structure:
 {
@@ -473,13 +402,13 @@ action_details depends on action_type:
 
 Be precise and only suggest changes when the error clearly indicates a documentation mismatch."#;
 
-const CORRECTION_SYSTEM_PROMPT: &str = r#"You are an API request expert. Your task is to analyze a failed API request and suggest a corrected request body.
+pub const CORRECTION_SYSTEM_PROMPT: &str = r#"You are an API request expert. Your task is to analyze a failed API request and suggest a corrected request body.
 
 You must respond with ONLY a valid JSON object that represents the corrected request body.
 Do not include any explanation or markdown formatting - just the raw JSON.
 If you cannot determine a correction, respond with: null"#;
 
-fn build_error_analysis_prompt(
+pub fn build_error_analysis_prompt(
     endpoint_path: &str,
     method: &str,
     request_body: Option<&serde_json::Value>,
@@ -513,7 +442,7 @@ Determine if this error indicates a documentation issue and suggest a fix if app
     )
 }
 
-fn build_correction_prompt(
+pub fn build_correction_prompt(
     endpoint_path: &str,
     method: &str,
     original_body: &serde_json::Value,
@@ -556,7 +485,7 @@ struct RawErrorAnalysis {
     corrected_body: Option<serde_json::Value>,
 }
 
-fn parse_error_analysis(response: &str) -> Result<ErrorAnalysis, LlmError> {
+pub fn parse_error_analysis(response: &str) -> Result<ErrorAnalysis, LlmError> {
     // Try to extract JSON from the response (it might be wrapped in markdown)
     let json_str = extract_json(response);
 
@@ -622,7 +551,7 @@ fn parse_error_analysis(response: &str) -> Result<ErrorAnalysis, LlmError> {
     })
 }
 
-fn parse_corrected_body(response: &str) -> Result<Option<serde_json::Value>, LlmError> {
+pub fn parse_corrected_body(response: &str) -> Result<Option<serde_json::Value>, LlmError> {
     let json_str = extract_json(response);
 
     if json_str.trim() == "null" {
@@ -635,7 +564,7 @@ fn parse_corrected_body(response: &str) -> Result<Option<serde_json::Value>, Llm
 }
 
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
-fn extract_json(text: &str) -> &str {
+pub fn extract_json(text: &str) -> &str {
     let trimmed = text.trim();
 
     // Check for ```json ... ``` blocks
@@ -677,8 +606,8 @@ mod tests {
     #[test]
     fn test_llm_config_default() {
         let config = LlmConfig::default();
-        assert_eq!(config.base_url, "http://localhost:11434");
-        assert_eq!(config.model, "llama3");
+        assert_eq!(config.base_url.as_deref(), Some("http://localhost:11434"));
+        assert_eq!(config.model, "granite3.3:8b");
         assert_eq!(config.temperature, 0.7);
     }
 
@@ -689,7 +618,7 @@ mod tests {
             .with_max_tokens(1000)
             .with_timeout(Duration::from_secs(60));
 
-        assert_eq!(config.base_url, "http://custom:1234");
+        assert_eq!(config.base_url.as_deref(), Some("http://custom:1234"));
         assert_eq!(config.model, "mistral");
         assert_eq!(config.temperature, 0.5);
         assert_eq!(config.max_tokens, Some(1000));
@@ -879,7 +808,7 @@ That's all."#;
         assert!(client.is_ok());
 
         let client = client.unwrap();
-        assert_eq!(client.config().base_url, "http://test:1234");
+        assert_eq!(client.config().base_url.as_deref(), Some("http://test:1234"));
         assert_eq!(client.config().model, "test-model");
     }
 }

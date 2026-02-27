@@ -26,6 +26,8 @@ pub enum SessionError {
     InvalidFormat,
 }
 
+use super::server::ServerState;
+
 /// Server state for a session (mirrors McpServer state machine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -37,6 +39,28 @@ pub enum SessionState {
     Running,
     /// Shutdown requested.
     ShuttingDown,
+}
+
+impl From<ServerState> for SessionState {
+    fn from(state: ServerState) -> Self {
+        match state {
+            ServerState::Created => SessionState::Created,
+            ServerState::Initializing => SessionState::Initializing,
+            ServerState::Running => SessionState::Running,
+            ServerState::ShuttingDown => SessionState::ShuttingDown,
+        }
+    }
+}
+
+impl From<SessionState> for ServerState {
+    fn from(state: SessionState) -> Self {
+        match state {
+            SessionState::Created => ServerState::Created,
+            SessionState::Initializing => ServerState::Initializing,
+            SessionState::Running => ServerState::Running,
+            SessionState::ShuttingDown => ServerState::ShuttingDown,
+        }
+    }
 }
 
 impl Default for SessionState {

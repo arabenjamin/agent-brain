@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 agent
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/agent-api /usr/local/bin/
+COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 
 # Switch to non-root user
 USER agent
@@ -56,7 +56,7 @@ WORKDIR /home/agent
 ENV NEO4J_URI=bolt://neo4j:7687 \
     NEO4J_USER=neo4j \
     OLLAMA_URL=http://ollama:11434 \
-    OLLAMA_MODEL=llama3 \
+    OLLAMA_MODEL=granite3.3:8b \
     LOG_LEVEL=info \
     LOG_FORMAT=json \
     RUST_BACKTRACE=1 \
@@ -66,9 +66,9 @@ ENV NEO4J_URI=bolt://neo4j:7687 \
 # Expose HTTP port for MCP server
 EXPOSE 3000
 
-ENTRYPOINT ["agent-api"]
+ENTRYPOINT ["agent-brain"]
 CMD ["serve"]
 
 # Labels
-LABEL org.opencontainers.image.title="agent-api" \
-      org.opencontainers.image.description="Autonomous API Knowledge Graph MCP Server"
+LABEL org.opencontainers.image.title="agent-brain" \
+      org.opencontainers.image.description="General Intelligence Agent Core with Graph RAG and MCP"
