@@ -381,11 +381,11 @@ The healed documentation can then be exported and committed to version control.
 ┌─────────────────────▼───────────────────────────────────────┐
 │                     McpServerCore                           │
 │   ┌─────────────────────────────────────────────────────┐   │
-│   │  64 Tools (12 Skills + runtime-defined tools)       │   │
+│   │  65 Tools (12 Skills + runtime-defined tools)       │   │
 │   │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)         │   │
 │   │  KnowledgeSkill(10)  ProcedureSkill(2)              │   │
 │   │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)     │   │
-│   │  AgentSkill(8)  AdminSkill(4)  ModelSkill(5)        │   │
+│   │  AgentSkill(8)  AdminSkill(5)  ModelSkill(5)        │   │
 │   │  SleepSkill(2)  SchedulerSkill(5)                   │   │
 │   └─────────────────────────────────────────────────────┘   │
 │   ┌─────────────┐  ┌─────────────┐  ┌────────────────────┐  │
@@ -470,7 +470,7 @@ agent-brain/
 │   │   └── secrets/         # Secret provider abstraction (local/Vault/AWS)
 │   ├── skills/              # Pluggable skill implementations
 │   │   ├── mod.rs           # Skill trait
-│   │   ├── admin.rs         # AdminSkill — 4 graph cleanup tools
+│   │   ├── admin.rs         # AdminSkill — 5 graph cleanup tools
 │   │   ├── agent.rs         # AgentSkill — 8 queue management tools
 │   │   ├── api.rs           # ApiSkill — 14 tools
 │   │   ├── dynamic.rs       # DynamicSkill — 4 tools + runtime-defined tools

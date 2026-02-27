@@ -21,7 +21,7 @@
 
 ---
 
-## Skill Registry (64 tools static + N runtime)
+## Skill Registry (65 tools static + N runtime)
 
 | Skill | File | Tools | Notes |
 |-------|------|-------|-------|
@@ -29,7 +29,7 @@
 | KnowledgeSkill | `src/skills/knowledge.rs` | 10 | RAG, reasoning, audit, explain, spaced-repetition |
 | TaskSkill | `src/skills/task.rs` | 6 | Goal tracking, decomposition, outcomes, reflection |
 | AgentSkill | `src/skills/agent.rs` | 8 | Background job queue + sequential chaining |
-| AdminSkill | `src/skills/admin.rs` | 4 | Graph cleanup: delete API, purge duplicates/orphans, reset |
+| AdminSkill | `src/skills/admin.rs` | 5 | Graph cleanup: delete API, purge duplicates/orphans, reset, backfill embeddings |
 | ModelSkill | `src/skills/model.rs` | 5 | Model registry + intelligent selection |
 | SchedulerSkill | `src/skills/scheduler.rs` | 5 | Autonomous background scheduler with configurable tick interval |
 | DynamicSkill | `src/skills/dynamic.rs` | 4 + N | Runtime tool definition, hot-registration |

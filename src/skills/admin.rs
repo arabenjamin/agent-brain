@@ -6,17 +6,18 @@ use serde_json::{json, Value};
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
-use crate::services::ContextStore;
+use crate::services::{ContextStore, LlmClient, LlmConfig};
 use crate::skills::Skill;
 
 pub struct AdminSkill {
     neo4j: Neo4jClient,
     context_store: ContextStore,
+    llm_config: Option<LlmConfig>,
 }
 
 impl AdminSkill {
-    pub fn new(neo4j: Neo4jClient, context_store: ContextStore) -> Self {
-        Self { neo4j, context_store }
+    pub fn new(neo4j: Neo4jClient, context_store: ContextStore, llm_config: Option<LlmConfig>) -> Self {
+        Self { neo4j, context_store, llm_config }
     }
 
     // =========================================================================
@@ -81,6 +82,26 @@ impl AdminSkill {
                     "dry_run": {
                         "type": "boolean",
                         "description": "If true, count orphans without deleting. Default: false."
+                    }
+                }
+            }),
+        }
+    }
+
+    fn backfill_endpoint_embeddings_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "backfill_endpoint_embeddings".to_string(),
+            description: "Generate and store vector embeddings for all Endpoint nodes that are \
+                missing them. Required for graph_query_endpoint to use semantic search instead of \
+                falling back to keyword (CONTAINS) matching. Use dry_run: true to count how many \
+                endpoints need embeddings without writing anything."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, count endpoints needing embeddings without generating. Default: false."
                     }
                 }
             }),
@@ -259,6 +280,82 @@ impl AdminSkill {
         }
     }
 
+    async fn handle_backfill_endpoint_embeddings(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Input {
+            #[serde(default)]
+            dry_run: bool,
+        }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+
+        let Some(llm_config) = &self.llm_config else {
+            return ToolCallResult::error(
+                "LLM not configured — cannot generate embeddings. \
+                Set OLLAMA_EMBED_MODEL or configure an LLM provider."
+                    .to_string(),
+            );
+        };
+
+        let llm = match LlmClient::with_config(llm_config.clone()) {
+            Ok(l) => l,
+            Err(e) => return ToolCallResult::error(format!("LLM init failed: {}", e)),
+        };
+
+        let endpoints = match self.neo4j.list_endpoints().await {
+            Ok(e) => e,
+            Err(e) => return ToolCallResult::error(format!("Failed to list endpoints: {}", e)),
+        };
+
+        let total = endpoints.len();
+        let needs_embedding: Vec<_> = endpoints.into_iter().filter(|e| e.embedding.is_none()).collect();
+        let needs_count = needs_embedding.len();
+
+        if input.dry_run {
+            return ToolCallResult::success_text(
+                serde_json::to_string_pretty(&json!({
+                    "dry_run": true,
+                    "total_endpoints": total,
+                    "already_have_embeddings": total - needs_count,
+                    "need_embeddings": needs_count,
+                }))
+                .unwrap(),
+            );
+        }
+
+        let mut updated = 0u64;
+        let mut failed = 0u64;
+
+        for endpoint in needs_embedding {
+            let text = format!("{} {} - {}", endpoint.method, endpoint.path, endpoint.summary);
+            match llm.embeddings(&text).await {
+                Ok(emb) => {
+                    if self.neo4j.update_endpoint_embedding(endpoint.id, emb).await.is_ok() {
+                        updated += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+                Err(_) => {
+                    failed += 1;
+                }
+            }
+        }
+
+        ToolCallResult::success_text(
+            serde_json::to_string_pretty(&json!({
+                "total_endpoints": total,
+                "already_had_embeddings": total - needs_count,
+                "updated": updated,
+                "failed": failed,
+            }))
+            .unwrap(),
+        )
+    }
+
     async fn handle_reset_graph(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
         struct Input {
@@ -322,15 +419,17 @@ impl Skill for AdminSkill {
             Self::purge_duplicate_endpoints_def(),
             Self::purge_orphaned_schemas_def(),
             Self::reset_graph_def(),
+            Self::backfill_endpoint_embeddings_def(),
         ]
     }
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
-            "delete_api"                  => Some(self.handle_delete_api(args).await),
-            "purge_duplicate_endpoints"   => Some(self.handle_purge_duplicate_endpoints(args).await),
-            "purge_orphaned_schemas"      => Some(self.handle_purge_orphaned_schemas(args).await),
-            "reset_graph"                 => Some(self.handle_reset_graph(args).await),
+            "delete_api"                       => Some(self.handle_delete_api(args).await),
+            "purge_duplicate_endpoints"        => Some(self.handle_purge_duplicate_endpoints(args).await),
+            "purge_orphaned_schemas"           => Some(self.handle_purge_orphaned_schemas(args).await),
+            "reset_graph"                      => Some(self.handle_reset_graph(args).await),
+            "backfill_endpoint_embeddings"     => Some(self.handle_backfill_endpoint_embeddings(args).await),
             _ => None,
         }
     }
