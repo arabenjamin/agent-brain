@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{info, warn};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::models::TaskStatus;
@@ -13,20 +15,19 @@ use crate::skills::Skill;
 
 /// Task Skill implementation.
 pub struct TaskSkill {
-    llm: Option<LlmClient>,
+    llm_config: Arc<RwLock<Option<LlmConfig>>>,
     neo4j: Option<Neo4jClient>,
 }
 
 impl TaskSkill {
     /// Create a new task skill.
-    pub fn new(llm_config: Option<LlmConfig>, neo4j: Option<Neo4jClient>) -> Self {
-        let llm = if let Some(config) = llm_config {
-            LlmClient::with_config(config).ok()
-        } else {
-            None
-        };
+    pub fn new(llm_config: Arc<RwLock<Option<LlmConfig>>>, neo4j: Option<Neo4jClient>) -> Self {
+        Self { llm_config, neo4j }
+    }
 
-        Self { llm, neo4j }
+    async fn make_llm(&self) -> Option<LlmClient> {
+        let config = self.llm_config.read().await.clone();
+        config.and_then(|c| LlmClient::with_config(c).ok())
     }
 
     // ========================================================================
@@ -233,7 +234,7 @@ impl TaskSkill {
 
         info!(goal = %input.goal, "Reflecting on work");
 
-        if let Some(llm) = &self.llm {
+        if let Some(llm) = self.make_llm().await {
             let prompt = format!(
                 "You are a critical reviewer. Analyze the following work against the goal.\n\n\
                 GOAL: {}\n\n\
@@ -294,7 +295,7 @@ impl TaskSkill {
             None => return ToolCallResult::error("Neo4j not available".to_string()),
         };
 
-        let llm = match &self.llm {
+        let llm = match self.make_llm().await {
             Some(l) => l,
             None => return ToolCallResult::error("LLM not configured for goal decomposition".to_string()),
         };

@@ -3,6 +3,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
@@ -12,11 +14,11 @@ use crate::skills::Skill;
 pub struct AdminSkill {
     neo4j: Neo4jClient,
     context_store: ContextStore,
-    llm_config: Option<LlmConfig>,
+    llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
 
 impl AdminSkill {
-    pub fn new(neo4j: Neo4jClient, context_store: ContextStore, llm_config: Option<LlmConfig>) -> Self {
+    pub fn new(neo4j: Neo4jClient, context_store: ContextStore, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
         Self { neo4j, context_store, llm_config }
     }
 
@@ -292,7 +294,8 @@ impl AdminSkill {
             Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
         };
 
-        let Some(llm_config) = &self.llm_config else {
+        let llm_config = self.llm_config.read().await.clone();
+        let Some(llm_config) = llm_config else {
             return ToolCallResult::error(
                 "LLM not configured — cannot generate embeddings. \
                 Set OLLAMA_EMBED_MODEL or configure an LLM provider."
@@ -300,7 +303,7 @@ impl AdminSkill {
             );
         };
 
-        let llm = match LlmClient::with_config(llm_config.clone()) {
+        let llm = match LlmClient::with_config(llm_config) {
             Ok(l) => l,
             Err(e) => return ToolCallResult::error(format!("LLM init failed: {}", e)),
         };

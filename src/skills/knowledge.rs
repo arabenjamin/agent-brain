@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
@@ -12,20 +14,20 @@ use crate::skills::Skill;
 
 /// Knowledge Skill implementation.
 pub struct KnowledgeSkill {
-    service: KnowledgeService,
+    neo4j: Neo4jClient,
+    llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
 
 impl KnowledgeSkill {
     /// Create a new knowledge skill.
-    pub fn new(neo4j: Neo4jClient, llm_config: Option<LlmConfig>) -> Self {
-        let llm = if let Some(config) = llm_config {
-            LlmClient::with_config(config).ok()
-        } else {
-            None
-        };
+    pub fn new(neo4j: Neo4jClient, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
+        Self { neo4j, llm_config }
+    }
 
-        let service = KnowledgeService::new(neo4j, llm);
-        Self { service }
+    async fn make_service(&self) -> KnowledgeService {
+        let config = self.llm_config.read().await.clone();
+        let llm = config.and_then(|c| LlmClient::with_config(c).ok());
+        KnowledgeService::new(self.neo4j.clone(), llm)
     }
 
     // ========================================================================
@@ -309,7 +311,8 @@ impl KnowledgeSkill {
 
         info!(content_len = input.content.len(), "Storing note");
 
-        match self.service.store_note(
+        let service = self.make_service().await;
+        match service.store_note(
             &input.content,
             input.note_type.as_deref(),
             input.source_context.as_deref(),
@@ -336,7 +339,8 @@ impl KnowledgeSkill {
 
         info!(query = %input.query, "Searching notes");
 
-        match self.service.search_notes(&input.query, input.limit, input.graph_hops).await {
+        let service = self.make_service().await;
+        match service.search_notes(&input.query, input.limit, input.graph_hops).await {
             Ok(results) => {
                 let response = json!({
                     "count": results.len(),
@@ -356,7 +360,8 @@ impl KnowledgeSkill {
 
         info!(note_id = %input.note_id, "Finding related notes");
 
-        match self.service.find_related_notes(&input.note_id).await {
+        let service = self.make_service().await;
+        match service.find_related_notes(&input.note_id).await {
             Ok(related) => {
                 let notes: Vec<Value> = related
                     .into_iter()
@@ -385,7 +390,8 @@ impl KnowledgeSkill {
             "Pruning stale notes"
         );
 
-        match self.service.prune_old_notes(
+        let service = self.make_service().await;
+        match service.prune_old_notes(
             input.days_stale,
             input.min_accesses,
             input.score_threshold,
@@ -419,7 +425,8 @@ impl KnowledgeSkill {
 
         info!(topic = %input.topic, limit = input.limit, "Consolidating memories");
 
-        match self.service.consolidate_memories(&input.topic, input.limit).await {
+        let service = self.make_service().await;
+        match service.consolidate_memories(&input.topic, input.limit).await {
             Ok((id, source_count, preview)) => {
                 let response = json!({
                     "consolidated_note_id": id,
@@ -440,7 +447,8 @@ impl KnowledgeSkill {
 
         info!(limit = input.limit, "Fetching due notes for review");
 
-        match self.service.review_due_notes(input.limit).await {
+        let service = self.make_service().await;
+        match service.review_due_notes(input.limit).await {
             Ok(notes) => {
                 let response = json!({
                     "count": notes.len(),
@@ -460,7 +468,8 @@ impl KnowledgeSkill {
 
         info!(question = %input.question, limit = input.limit, "Reasoning");
 
-        match self.service.reason(&input.question, input.limit, input.store_inference).await {
+        let service = self.make_service().await;
+        match service.reason(&input.question, input.limit, input.store_inference).await {
             Ok((answer, inferences, confidence, gaps, note_id)) => {
                 let mut response = json!({
                     "answer": answer,
@@ -485,7 +494,8 @@ impl KnowledgeSkill {
 
         info!(action = %input.action, "Auditing action");
 
-        match self.service.audit_action(&input.action, input.context.as_deref()).await {
+        let service = self.make_service().await;
+        match service.audit_action(&input.action, input.context.as_deref()).await {
             Ok((aligned, confidence, concerns, suggestions, reasoning)) => {
                 let response = json!({
                     "aligned": aligned,
@@ -508,7 +518,8 @@ impl KnowledgeSkill {
 
         info!(decision = %input.decision, "Explaining reasoning");
 
-        match self.service.explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit).await {
+        let service = self.make_service().await;
+        match service.explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit).await {
             Ok((explanation, sources)) => {
                 let response = json!({
                     "explanation": explanation,
@@ -528,7 +539,8 @@ impl KnowledgeSkill {
 
         info!(entity = %input.entity_name, "Searching by entity");
 
-        match self.service.search_by_entity(
+        let service = self.make_service().await;
+        match service.search_by_entity(
             &input.entity_name,
             input.entity_type.as_deref(),
             input.limit,

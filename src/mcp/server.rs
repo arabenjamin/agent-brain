@@ -310,18 +310,18 @@ impl McpServerCore {
 
         // Register Admin Skill (graph cleanup — requires Neo4j)
         if let Some(neo4j) = &self.neo4j {
-            let admin_skill = AdminSkill::new(neo4j.clone(), context_store.clone(), llm_snapshot.clone());
+            let admin_skill = AdminSkill::new(neo4j.clone(), context_store.clone(), Arc::clone(&self.llm_config));
             registry.register_skill(Box::new(admin_skill));
         }
 
         // Register Knowledge Skill
         if let Some(neo4j) = &self.neo4j {
-            let knowledge_skill = KnowledgeSkill::new(neo4j.clone(), llm_snapshot.clone());
+            let knowledge_skill = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
             registry.register_skill(Box::new(knowledge_skill));
         }
 
         // Register Task Skill
-        let task_skill = TaskSkill::new(llm_snapshot.clone(), self.neo4j.clone());
+        let task_skill = TaskSkill::new(Arc::clone(&self.llm_config), self.neo4j.clone());
         registry.register_skill(Box::new(task_skill));
 
         // Register Procedure Skill
@@ -352,7 +352,7 @@ impl McpServerCore {
 
         // Register Working Memory Skill
         if let Some(neo4j) = &self.neo4j {
-            let wm_skill = WorkingMemorySkill::new(neo4j.clone(), llm_snapshot.clone());
+            let wm_skill = WorkingMemorySkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
             registry.register_skill(Box::new(wm_skill));
         }
 
@@ -391,11 +391,11 @@ impl McpServerCore {
         if let Some(neo4j) = &self.neo4j {
             skills.push(Box::new(KnowledgeSkill::new(
                 neo4j.clone(),
-                llm_snapshot.clone(),
+                Arc::clone(&self.llm_config),
             )));
         }
 
-        skills.push(Box::new(TaskSkill::new(llm_snapshot.clone(), self.neo4j.clone())));
+        skills.push(Box::new(TaskSkill::new(Arc::clone(&self.llm_config), self.neo4j.clone())));
 
         if let Some(neo4j) = &self.neo4j {
             skills.push(Box::new(ProcedureSkill::new(neo4j.clone())));
@@ -416,11 +416,11 @@ impl McpServerCore {
         }
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(WorkingMemorySkill::new(neo4j.clone(), llm_snapshot.clone())));
+            skills.push(Box::new(WorkingMemorySkill::new(neo4j.clone(), Arc::clone(&self.llm_config))));
         }
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(AdminSkill::new(neo4j.clone(), context_store.clone(), llm_snapshot.clone())));
+            skills.push(Box::new(AdminSkill::new(neo4j.clone(), context_store.clone(), Arc::clone(&self.llm_config))));
         }
 
         // Agent Skill (queue management)

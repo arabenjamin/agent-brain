@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use tracing::info;
 use uuid::Uuid;
 use chrono::Utc;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
@@ -15,16 +17,23 @@ use crate::skills::Skill;
 /// Working Memory Skill — push/retrieve session context and summarise into long-term memory.
 pub struct WorkingMemorySkill {
     neo4j: Neo4jClient,
-    llm: Option<LlmClient>,
-    knowledge: KnowledgeService,
+    llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
 
 impl WorkingMemorySkill {
-    pub fn new(neo4j: Neo4jClient, llm_config: Option<LlmConfig>) -> Self {
-        let llm = llm_config.clone().and_then(|c| LlmClient::with_config(c).ok());
-        let knowledge_llm = llm_config.and_then(|c| LlmClient::with_config(c).ok());
-        let knowledge = KnowledgeService::new(neo4j.clone(), knowledge_llm);
-        Self { neo4j, llm, knowledge }
+    pub fn new(neo4j: Neo4jClient, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
+        Self { neo4j, llm_config }
+    }
+
+    async fn make_llm(&self) -> Option<LlmClient> {
+        let config = self.llm_config.read().await.clone();
+        config.and_then(|c| LlmClient::with_config(c).ok())
+    }
+
+    async fn make_knowledge_service(&self) -> KnowledgeService {
+        let config = self.llm_config.read().await.clone();
+        let llm = config.and_then(|c| LlmClient::with_config(c).ok());
+        KnowledgeService::new(self.neo4j.clone(), llm)
     }
 
     // ========================================================================
@@ -204,7 +213,7 @@ impl WorkingMemorySkill {
             Err(e) => return e,
         };
 
-        let llm = match &self.llm {
+        let llm = match self.make_llm().await {
             Some(l) => l,
             None => return ToolCallResult::error("LLM not configured for session summarisation".to_string()),
         };
@@ -250,7 +259,8 @@ impl WorkingMemorySkill {
         };
 
         // 3. Store in long-term memory as a consolidated note
-        let note_id = match self.knowledge.store_note(
+        let knowledge = self.make_knowledge_service().await;
+        let note_id = match knowledge.store_note(
             &summary,
             Some("consolidated"),
             Some(&input.session_id),
