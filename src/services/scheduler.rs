@@ -260,7 +260,7 @@ impl SchedulerService {
     fn goal_to_steps(goal: &str, task_id: &str) -> Vec<ChainStep> {
         let g = goal.to_lowercase();
 
-        if g.contains("document") || g.contains("current state") {
+        let mut steps = if g.contains("document") || g.contains("current state") {
             // Document / capture state: search knowledge, then consolidate
             vec![
                 ChainStep {
@@ -392,7 +392,22 @@ impl SchedulerService {
                     provider_hint: None,
                 },
             ]
-        }
+        };
+
+        // Always close the task when the chain finishes successfully.
+        steps.push(ChainStep {
+            tool_name: "update_task".to_string(),
+            arguments: Some(json!({
+                "task_id": task_id,
+                "status": "completed",
+                "note": "Task completed autonomously by scheduler job chain."
+            })),
+            priority: Some(1),
+            max_attempts: Some(3),
+            provider_hint: None,
+        });
+
+        steps
     }
 
     // =========================================================================

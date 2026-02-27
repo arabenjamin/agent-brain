@@ -664,7 +664,7 @@ impl KnowledgeService {
 
             let cypher = r#"
             MATCH (n:Note)
-            WHERE COALESCE(n.note_type, 'semantic') NOT IN ['consolidated', 'reflection']
+            WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection']
             OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
             WITH n, count(other) AS in_degree,
                  duration.between(n.last_accessed_at, datetime()).days AS days_idle
