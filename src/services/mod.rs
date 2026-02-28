@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod context;
 pub mod discovery;
 pub mod queue;
@@ -32,6 +33,7 @@ pub use secrets::{
     LocalSecretConfig, LocalSecretProvider,
     VaultConfig, VaultSecretProvider
 };
+pub use chat::{ChatEvent, ChatRequest, ChatService};
 pub use model_selector::ModelSelector;
 pub use queue::{QueueService, WorkerConfig, ChainStep};
 pub use scheduler::{SchedulerService, SchedulerConfig};

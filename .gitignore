@@ -1,4 +1,6 @@
 /target
+hbi-frontend/node_modules
+hbi-frontend/dist
 Cargo.lock
 
 # Environment files

@@ -12,7 +12,7 @@ pub struct Config {
     pub neo4j_password: String,
     /// Ollama API endpoint (e.g., "http://localhost:11434")
     pub ollama_url: String,
-    /// Ollama model to use for text generation (e.g., "granite3.3:8b")
+    /// Ollama model to use for text generation (e.g., "granite4:latest")
     pub ollama_model: String,
     /// Ollama model to use for embeddings (e.g., "nomic-embed-text"). Falls back to ollama_model if not set.
     pub ollama_embed_model: Option<String>,
@@ -87,7 +87,7 @@ impl Config {
                 .map_err(|_| ConfigError::Missing("NEO4J_PASSWORD"))?,
             ollama_url: env::var("OLLAMA_URL")
                 .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            ollama_model: env::var("OLLAMA_MODEL").unwrap_or_else(|_| "granite3.3:8b".to_string()),
+            ollama_model: env::var("OLLAMA_MODEL").unwrap_or_else(|_| "granite4:latest".to_string()),
             ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             log_format: env::var("LOG_FORMAT")
@@ -135,7 +135,7 @@ impl Config {
             neo4j_user: "neo4j".to_string(),
             neo4j_password: "testpassword".to_string(),
             ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: "granite3.3:8b".to_string(),
+            ollama_model: "granite4:latest".to_string(),
             ollama_embed_model: None,
             log_level: "debug".to_string(),
             log_format: LogFormat::Pretty,
@@ -172,7 +172,7 @@ mod tests {
     fn test_config_defaults() {
         let config = Config::test_config();
         assert_eq!(config.neo4j_uri, "bolt://localhost:7687");
-        assert_eq!(config.ollama_model, "granite3.3:8b");
+        assert_eq!(config.ollama_model, "granite4:latest");
         assert_eq!(config.log_format, LogFormat::Pretty);
     }
 

@@ -89,6 +89,25 @@ impl WorkingMemorySkill {
         }
     }
 
+    fn list_sessions_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_sessions".to_string(),
+            description: "List all working-memory sessions, ordered by most recent first. \
+                         Returns session IDs, message counts, start time, and the title \
+                         (first user message in the session)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum sessions to return (default: 50)"
+                    }
+                }
+            }),
+        }
+    }
+
     fn summarise_session_def() -> ToolDefinition {
         ToolDefinition {
             name: "summarise_session".to_string(),
@@ -207,6 +226,50 @@ impl WorkingMemorySkill {
         }
     }
 
+    async fn handle_list_sessions(&self, arguments: Option<Value>) -> ToolCallResult {
+        let limit = arguments
+            .as_ref()
+            .and_then(|v| v.get("limit"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(50);
+
+        info!("Listing working-memory sessions");
+
+        let cypher = r#"
+        MATCH (w:WorkingMemory)
+        WITH w.session_id AS sid,
+             toString(min(w.created_at)) AS started_at,
+             count(w) AS msg_count
+        OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0})
+        RETURN sid AS session_id, started_at, msg_count,
+               COALESCE(first.content, sid) AS title
+        ORDER BY started_at DESC
+        LIMIT $limit
+        "#;
+
+        let q = neo4rs::query(cypher).param("limit", limit);
+
+        match self.neo4j.execute(q).await {
+            Ok(rows) => {
+                let sessions: Vec<Value> = rows.iter().map(|row| {
+                    json!({
+                        "session_id": row.get::<String>("session_id").unwrap_or_default(),
+                        "started_at": row.get::<String>("started_at").unwrap_or_default(),
+                        "msg_count":  row.get::<i64>("msg_count").unwrap_or(0),
+                        "title":      row.get::<String>("title").unwrap_or_default()
+                    })
+                }).collect();
+
+                let response = json!({
+                    "count": sessions.len(),
+                    "sessions": sessions
+                });
+                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to list sessions: {}", e)),
+        }
+    }
+
     async fn handle_summarise_session(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: SummariseSessionInput = match parse_args(arguments) {
             Ok(v) => v,
@@ -303,14 +366,16 @@ impl Skill for WorkingMemorySkill {
             Self::push_context_def(),
             Self::get_context_def(),
             Self::summarise_session_def(),
+            Self::list_sessions_def(),
         ]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
-            "push_context" => Some(self.handle_push_context(arguments).await),
-            "get_context" => Some(self.handle_get_context(arguments).await),
+            "push_context"      => Some(self.handle_push_context(arguments).await),
+            "get_context"       => Some(self.handle_get_context(arguments).await),
             "summarise_session" => Some(self.handle_summarise_session(arguments).await),
+            "list_sessions"     => Some(self.handle_list_sessions(arguments).await),
             _ => None,
         }
     }

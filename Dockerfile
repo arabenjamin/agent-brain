@@ -56,7 +56,7 @@ WORKDIR /home/agent
 ENV NEO4J_URI=bolt://neo4j:7687 \
     NEO4J_USER=neo4j \
     OLLAMA_URL=http://ollama:11434 \
-    OLLAMA_MODEL=granite3.3:8b \
+    OLLAMA_MODEL=granite4:latest \
     LOG_LEVEL=info \
     LOG_FORMAT=json \
     RUST_BACKTRACE=1 \
@@ -64,7 +64,7 @@ ENV NEO4J_URI=bolt://neo4j:7687 \
     MCP_HTTP_BIND=0.0.0.0:3000
 
 # Expose HTTP port for MCP server
-EXPOSE 3000
+EXPOSE 3002
 
 ENTRYPOINT ["agent-brain"]
 CMD ["serve"]

@@ -211,23 +211,11 @@ async fn run_serve(
             let session_config = agent_brain::mcp::SessionConfig::default();
             let session_manager = Arc::new(agent_brain::mcp::SessionManager::with_config(session_config));
 
-            // Configure HTTP transport
-            let mut http_config = HttpTransportConfig::default()
-                .with_bind_addr(bind_addr)
-                .with_session_manager(session_manager.clone());
-
-            if let Some(key) = api_key {
-                http_config = http_config.with_api_key(key);
-                info!("API key authentication enabled");
-            }
-
-            let transport = HttpTransport::with_config(http_config);
-
             // Create thread-safe server core
             let mut server = McpServerCore::new()
                 .with_neo4j(client)
                 .with_llm_config(llm_config)
-                .with_session_manager(session_manager);
+                .with_session_manager(session_manager.clone());
 
             if let Some(t) = telemetry {
                 server = server.with_telemetry(t);
@@ -236,6 +224,19 @@ async fn run_serve(
             if let Some(cred_manager) = credential_manager {
                 server = server.with_credential_manager(cred_manager);
             }
+
+            // Configure HTTP transport
+            let mut http_config = HttpTransportConfig::default()
+                .with_bind_addr(bind_addr)
+                .with_session_manager(session_manager)
+                .with_chat_service(server.chat_service());
+
+            if let Some(key) = api_key {
+                http_config = http_config.with_api_key(key);
+                info!("API key authentication enabled");
+            }
+
+            let transport = HttpTransport::with_config(http_config);
 
             server.run_with_transport(&transport).await?;
         }

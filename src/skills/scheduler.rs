@@ -219,6 +219,7 @@ impl SchedulerSkill {
                     "tasks_found": result.tasks_found,
                     "tasks_dispatched": result.tasks_dispatched,
                     "skipped": result.skipped,
+                    "new_tasks_created": result.new_tasks_created,
                 })
                 .to_string(),
             ),

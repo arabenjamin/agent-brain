@@ -87,7 +87,7 @@ Copy `.env.example` to `.env` and configure:
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | *required* | Neo4j password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `granite3.3:8b` | LLM model to use for text generation |
+| `OLLAMA_MODEL` | `granite4:latest` | LLM model to use for text generation |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
@@ -311,7 +311,7 @@ The MCP server supports two transport mechanisms:
      ┌─────────────────────▼───────────────────────────┐
      │    Skill Registry (64 static + N runtime)               │
      │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)             │
-     │  KnowledgeSkill(10)  ProcedureSkill(2)  AgentSkill(8)  │
+     │  KnowledgeSkill(11)  ProcedureSkill(2)  AgentSkill(8)  │
      │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)         │
      │  AdminSkill(5)  ModelSkill(5)  SleepSkill(2)            │
      │  SchedulerSkill(5)                                      │
@@ -320,7 +320,7 @@ The MCP server supports two transport mechanisms:
 
 ### MCP Tools
 
-The server exposes sixty-five tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
+The server exposes sixty-six tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -504,6 +504,11 @@ The server exposes sixty-five tools via JSON-RPC 2.0, organised across eleven sk
     - Input: `{ "decision": "...", "task_id": "...", "limit": 10 }` (`task_id`, `limit` optional)
     - Fetches relevant notes + task reflection notes, generates plain-language explanation
     - Returns: `{ "explanation", "knowledge_sources": [{ "note_id", "preview" }] }`
+
+28. **`ask_clarification`** - Analyze a request for ambiguity before acting
+    - Input: `{ "request": "...", "context": "...", "available_tools": [...] }` (`context`, `available_tools` optional)
+    - Uses LLM to identify underspecified or multi-interpretation requests
+    - Returns: `{ "needs_clarification": bool, "ambiguities": [...], "clarifying_questions": [...], "assumptions": [...], "recommended_approach": "..." }`
 
 **Task Management Tools (TaskSkill):**
 

@@ -2,6 +2,43 @@
 
 An autonomous MCP server — a persistent, self-improving AI agent backed by a Neo4j knowledge graph. It ingests OpenAPI specs, manages long-term memory via hybrid vector+BM25 RAG, executes background jobs in a priority queue, reasons over stored knowledge, learns from its own outcomes, and runs an autonomous background scheduler that continuously improves itself.
 
+The Brains own self assement: 
+
+
+>1.  **API Management & Interaction:**
+    *   **Ingest & Discover APIs:** I can load OpenAPI (Swagger) specifications from URLs or files, and even automatically discover them from a base URL or generate them from documentation pages or Git repositories.
+    *   **Query & Understand APIs:** I can search for API endpoints, get detailed context about loaded APIs (paths, methods, parameters, schemas), and list all currently loaded APIs.
+    *   **Execute API Calls:** I can execute HTTP requests against API endpoints, with automatic error analysis and self-healing when documentation is incorrect.
+    *   **Manage Credentials:** I can securely configure and manage API credentials for authentication.
+    *   **Maintain API Docs:** I can export healed OpenAPI specs (with annotations of my corrections) and compare (diff) the current graph state against the original spec to highlight changes.
+    *   **Clean Up:** I can delete specific APIs or purge duplicate endpoints and orphaned schemas.
+
+>2.  **Knowledge & Memory Management:**
+    *   **Store & Search Notes:** I can store text notes in my knowledge graph, which are then embedded for semantic search. I can find related notes and search by named entities.
+    *   **Reason & Synthesize:** I can retrieve relevant notes and use an LLM to derive new inferences or consolidate multiple memories into a single summary.
+    *   **Episodic Memory:** I record outcomes of my actions and tool calls as episodic notes.
+    *   **Spaced Repetition:** I can identify notes due for review to reinforce learning.
+    *   **Working Memory:** I have a scratchpad for short-term session context which can also be summarized into long-term memory.
+
+>3.  **Task & Goal Management:**
+    *   **Create & Track Tasks:** I can create high-level tasks, decompose them into sub-tasks, and update their status (in progress, completed, failed, blocked).
+    *   **Reflect & Plan:** I can reflect on my work, analyze progress against goals, and generate plans.
+    *   **Audit Actions:** I can check proposed actions against stored values and principles.
+    *   **Explain Reasoning:** I can narrate why I made a decision, citing my knowledge sources.
+    *   **Clarify Requests:** I can analyze ambiguous requests and ask clarifying questions.
+
+>4.  **Automation & Orchestration:**
+    *   **Background Jobs:** I can submit tool calls as background jobs, manage their priority, retry failed jobs, and monitor their status.
+    *   **Job Chains:** I can execute sequential chains of background jobs.
+    *   **Autonomous Scheduler:** I can enable an autonomous scheduler that periodically dispatches pending tasks as background job chains.
+    *   **Procedural Memory:** I can store multi-step procedures (workflows) and execute them.
+
+>5.  **LLM & Tool Management:**
+    *   **Model Selection:** I can list available LLMs, register new models with their capabilities and costs, and select the cheapest model that meets specific requirements.
+    *   **Dynamic Tools:** I can define new tools at runtime using a sequence of existing tool calls, essentially creating new capabilities on the fly.
+
+>In essence, I can help you manage and interact with APIs, learn and remember information, manage complex tasks, automate workflows, and even expand my own capabilities. "
+
 ## What It Does
 
 - **Ingests** OpenAPI/Swagger specs into a queryable knowledge graph
@@ -74,7 +111,7 @@ cargo run --release -- init-db
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | `password` | Neo4j password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `granite3.3:8b` | LLM model for text generation / self-healing |
+| `OLLAMA_MODEL` | `granite4:latest` | LLM model for text generation / self-healing |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `MCP_TRANSPORT` | `stdio` | MCP transport (stdio/http) |
@@ -199,7 +236,7 @@ Example `mcpServers` configuration entry:
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
         "OLLAMA_URL": "http://localhost:11434",
-        "OLLAMA_MODEL": "granite3.3:8b",
+        "OLLAMA_MODEL": "granite4:latest",
         "SERPAPI_KEY": "your-serpapi-key"
       }
     }

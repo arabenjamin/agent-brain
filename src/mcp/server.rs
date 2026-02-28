@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
-use crate::services::{ContextStore, CredentialManager, LlmConfig};
+use crate::services::{ChatService, ContextStore, CredentialManager, LlmConfig};
 use crate::services::queue::QueueService;
 use crate::services::SchedulerService;
 use crate::skills::{
@@ -235,6 +235,19 @@ impl McpServerCore {
         self
     }
 
+    /// Create a [`ChatService`] backed by this server's live tool handler,
+    /// registry, and LLM config.
+    ///
+    /// Safe to call before or after [`build_skills`] — the `Arc` references
+    /// will always see the most up-to-date state.
+    pub fn chat_service(&self) -> Arc<ChatService> {
+        ChatService::new(
+            Arc::clone(&self.tool_handler),
+            Arc::clone(&self.tool_registry),
+            Arc::clone(&self.llm_config),
+        )
+    }
+
     /// Build the skills and initialize the tool handler.
     /// This should be called before running the server.
     pub async fn build_skills(&self) {
@@ -318,7 +331,11 @@ impl McpServerCore {
         }
 
         // Register Task Skill
-        let task_skill = TaskSkill::new(Arc::clone(&self.llm_config), self.neo4j.clone());
+        let task_skill = TaskSkill::new(
+            Arc::clone(&self.llm_config),
+            self.neo4j.clone(),
+            queue_arc.as_ref().map(Arc::clone),
+        );
         registry.register_skill(Box::new(task_skill));
 
         // Register Procedure Skill
@@ -392,7 +409,11 @@ impl McpServerCore {
             )));
         }
 
-        skills.push(Box::new(TaskSkill::new(Arc::clone(&self.llm_config), self.neo4j.clone())));
+        skills.push(Box::new(TaskSkill::new(
+            Arc::clone(&self.llm_config),
+            self.neo4j.clone(),
+            queue_arc.as_ref().map(Arc::clone),
+        )));
 
         if let Some(neo4j) = &self.neo4j {
             skills.push(Box::new(ProcedureSkill::new(neo4j.clone())));

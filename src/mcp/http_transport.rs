@@ -29,6 +29,8 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info};
 
+use crate::services::{ChatEvent, ChatRequest, ChatService};
+
 use super::auth::{ApiKeyAuth, AuthError};
 use super::protocol::{IncomingMessage, JsonRpcErrorResponse, JsonRpcNotification};
 use super::session::{SessionManager, SessionState, SessionConfig};
@@ -43,7 +45,7 @@ pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Configuration for the HTTP transport.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpTransportConfig {
     /// Address to bind the HTTP server to.
     pub bind_addr: SocketAddr,
@@ -59,6 +61,8 @@ pub struct HttpTransportConfig {
     pub channel_buffer_size: usize,
     /// Optional shared session manager.
     pub session_manager: Option<Arc<SessionManager>>,
+    /// Optional chat service for the `/chat` SSE endpoint.
+    pub chat_service: Option<Arc<ChatService>>,
 }
 
 impl Default for HttpTransportConfig {
@@ -71,6 +75,7 @@ impl Default for HttpTransportConfig {
             max_sessions: 1000,
             channel_buffer_size: 32,
             session_manager: None,
+            chat_service: None,
         }
     }
 }
@@ -99,6 +104,12 @@ impl HttpTransportConfig {
         self.session_manager = Some(manager);
         self
     }
+
+    /// Attach a [`ChatService`] to enable the `/chat` SSE endpoint.
+    pub fn with_chat_service(mut self, svc: Arc<ChatService>) -> Self {
+        self.chat_service = Some(svc);
+        self
+    }
 }
 
 /// Shared state for the HTTP transport.
@@ -112,6 +123,8 @@ struct HttpTransportState {
     message_tx: mpsc::Sender<TransportMessage>,
     /// Configuration.
     config: HttpTransportConfig,
+    /// Optional chat service for the `/chat` SSE endpoint.
+    chat_service: Option<Arc<ChatService>>,
 }
 
 /// HTTP transport for MCP server.
@@ -163,6 +176,7 @@ impl HttpTransport {
             .route("/mcp", post(handle_post_mcp))
             .route("/mcp", get(handle_get_mcp))
             .route("/mcp", delete(handle_delete_mcp))
+            .route("/chat", post(handle_post_chat))
             .route("/health", get(handle_health))
             .layer(cors)
             .layer(middleware::from_fn_with_state(
@@ -219,6 +233,7 @@ impl McpTransport for HttpTransport {
             sessions,
             auth,
             message_tx,
+            chat_service: self.config.chat_service.clone(),
             config: self.config.clone(),
         });
 
@@ -471,6 +486,45 @@ async fn handle_get_mcp(
             }
             Err(_) => None, // Skip lagged messages
         }
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// POST /chat - Agentic chat with SSE streaming.
+///
+/// Accepts `ChatRequest` JSON, runs the server-side LLM ↔ tool loop, and
+/// streams `ChatEvent` objects as SSE events.
+async fn handle_post_chat(
+    State(state): State<Arc<HttpTransportState>>,
+    _headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, McpHttpError> {
+    let svc = state
+        .chat_service
+        .as_ref()
+        .ok_or_else(|| McpHttpError::InternalError("Chat service not available".into()))?
+        .clone();
+
+    let request: ChatRequest = serde_json::from_value(body)
+        .map_err(|e| McpHttpError::InternalError(format!("Invalid chat request: {e}")))?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<ChatEvent>(64);
+    tokio::spawn(async move {
+        svc.run(request, tx).await;
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|event| {
+        let evt_type = match &event {
+            ChatEvent::Thinking { .. }   => "thinking",
+            ChatEvent::ToolCall { .. }   => "tool_call",
+            ChatEvent::ToolResult { .. } => "tool_result",
+            ChatEvent::Message { .. }    => "message",
+            ChatEvent::Error { .. }      => "error",
+            ChatEvent::Done              => "done",
+        };
+        let data = serde_json::to_string(&event).unwrap_or_default();
+        Ok(Event::default().event(evt_type).data(data))
     });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))

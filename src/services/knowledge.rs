@@ -172,12 +172,13 @@ impl KnowledgeService {
     }
 
     /// Reciprocal rank fusion of vector and BM25 result lists.
+    /// Returns `(id, content, rrf_score)` triples so callers can apply further re-ranking.
     fn rrf_merge(
         vec_hits: Vec<(String, String)>,
         bm25_hits: Vec<(String, String)>,
         k: f64,
         limit: usize,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, String, f64)> {
         let mut scores: HashMap<String, f64> = HashMap::new();
         let mut contents: HashMap<String, String> = HashMap::new();
 
@@ -196,8 +197,59 @@ impl KnowledgeService {
 
         ranked
             .into_iter()
-            .filter_map(|(id, _)| contents.remove(&id).map(|c| (id, c)))
+            .filter_map(|(id, score)| contents.remove(&id).map(|c| (id, c, score)))
             .collect()
+    }
+
+    /// Apply freshness boost to a ranked list.
+    /// Boosts notes with higher access counts and more recent access.
+    /// Final score = 0.7 * rrf_score + 0.3 * freshness_score (capped at 1.0).
+    async fn apply_freshness_boost(
+        &self,
+        hits: Vec<(String, String, f64)>,
+    ) -> Vec<(String, String)> {
+        if hits.is_empty() {
+            return Vec::new();
+        }
+
+        let ids: Vec<String> = hits.iter().map(|(id, _, _)| id.clone()).collect();
+        let cypher = r#"
+        MATCH (n:Note) WHERE n.id IN $ids
+        RETURN n.id AS id,
+               COALESCE(n.access_count, 0) AS access_count,
+               COALESCE(
+                   duration.between(datetime(n.last_accessed_at), datetime()).days,
+                   30
+               ) AS days_since_access
+        "#;
+
+        let freshness: HashMap<String, (i64, i64)> = self.neo4j
+            .execute(neo4rs::query(cypher).param("ids", ids))
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.get::<String>("id").ok()?;
+                let ac = row.get::<i64>("access_count").unwrap_or(0);
+                let days = row.get::<i64>("days_since_access").unwrap_or(30);
+                Some((id, (ac, days)))
+            })
+            .collect();
+
+        // Normalise RRF scores to [0,1].
+        let max_rrf = hits.iter().map(|(_, _, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
+
+        let mut boosted: Vec<(String, String, f64)> = hits.into_iter().map(|(id, content, rrf)| {
+            let (ac, days) = freshness.get(&id).copied().unwrap_or((0, 30));
+            let access_score = ((ac as f64 + 1.0).ln() / (10.0_f64).ln()).min(1.0);
+            let recency_score = (-days as f64 / 30.0).exp();
+            let freshness_score = (access_score * 0.5 + recency_score * 0.5).min(1.0);
+            let final_score = (rrf / max_rrf) * 0.7 + freshness_score * 0.3;
+            (id, content, final_score)
+        }).collect();
+
+        boosted.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        boosted.into_iter().map(|(id, content, _)| (id, content)).collect()
     }
 
     /// Traverse RELATES_TO edges up to `hop_limit` hops from `primary_ids`,
@@ -427,7 +479,7 @@ impl KnowledgeService {
         query_text: &str,
         limit: usize,
         graph_hops: usize,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<serde_json::Value>> {
         let fetch_limit = (limit * 3).max(10);
 
         // 1. Vector search (if LLM available)
@@ -482,9 +534,9 @@ impl KnowledgeService {
             }
         }
 
-        // 3. Merge or fall back to keyword search
+        // 3. Merge or fall back to keyword search, then apply freshness boost.
         let mut merged: Vec<(String, String)> = if vec_hits.is_empty() && bm25_hits.is_empty() {
-            // Fallback: CONTAINS keyword search
+            // Fallback: CONTAINS keyword search (no freshness boost needed — already fast-path)
             let cypher = r#"
             MATCH (n:Note)
             WHERE toLower(n.content) CONTAINS toLower($query)
@@ -510,7 +562,8 @@ impl KnowledgeService {
                 })
                 .collect()
         } else {
-            Self::rrf_merge(vec_hits, bm25_hits, 60.0, limit)
+            let rrf_ranked = Self::rrf_merge(vec_hits, bm25_hits, 60.0, limit);
+            self.apply_freshness_boost(rrf_ranked).await
         };
 
         // 3.5 Hybrid Retrieval: Resolve child chunks to parents (Small-to-Big)
@@ -586,7 +639,7 @@ impl KnowledgeService {
             ).await;
         }
 
-        Ok(merged.into_iter().map(|(_, content)| content).collect())
+        Ok(merged.into_iter().map(|(id, content)| serde_json::json!({ "id": id, "content": content })).collect())
     }
 
     /// Return notes whose spaced-repetition review is due.
@@ -857,6 +910,9 @@ impl KnowledgeService {
                 .collect()
         } else {
             Self::rrf_merge(vec_hits, bm25_hits, 60.0, limit)
+                .into_iter()
+                .map(|(id, content, _score)| (id, content))
+                .collect()
         };
 
         if graph_hops > 0 && !merged.is_empty() {

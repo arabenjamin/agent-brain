@@ -272,6 +272,38 @@ impl KnowledgeSkill {
         }
     }
 
+    fn ask_clarification_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "ask_clarification".to_string(),
+            description: "Analyze a request for ambiguity and generate specific clarifying \
+                         questions before acting. Use this when a goal is underspecified, has \
+                         multiple reasonable interpretations, or when acting on wrong assumptions \
+                         would waste significant effort. Returns whether clarification is needed, \
+                         what questions to ask, and what assumptions would be made if proceeding \
+                         without clarification."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "The request or instruction to analyze for ambiguity"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Additional context about the current situation"
+                    },
+                    "available_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of tools available to fulfill the request"
+                    }
+                },
+                "required": ["request"]
+            }),
+        }
+    }
+
     fn search_by_entity_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_by_entity".to_string(),
@@ -531,6 +563,63 @@ impl KnowledgeSkill {
         }
     }
 
+    async fn handle_ask_clarification(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: AskClarificationInput = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        info!(request = %input.request, "Analyzing request for clarification");
+
+        let config = self.llm_config.read().await.clone();
+        let llm = match config.and_then(|c| LlmClient::with_config(c).ok()) {
+            Some(l) => l,
+            None => return ToolCallResult::error("LLM not configured for clarification analysis".to_string()),
+        };
+
+        let mut prompt = format!(
+            "Analyze the following request for ambiguity. Determine if clarification is needed before acting.\n\nREQUEST: {}\n",
+            input.request
+        );
+        if let Some(ctx) = &input.context {
+            prompt.push_str(&format!("\nCONTEXT: {}\n", ctx));
+        }
+        if let Some(tools) = &input.available_tools {
+            if !tools.is_empty() {
+                prompt.push_str(&format!("\nAVAILABLE TOOLS: {}\n", tools.join(", ")));
+            }
+        }
+        prompt.push_str(
+            r#"
+Respond with a JSON object only (no markdown, no explanation):
+{
+  "needs_clarification": true,
+  "ambiguities": ["specific ambiguous aspect 1", "..."],
+  "clarifying_questions": ["question to ask 1", "..."],
+  "assumptions": ["assumption that would be made if proceeding 1", "..."],
+  "recommended_approach": "brief description of how to proceed"
+}"#
+        );
+
+        match llm.generate(&prompt).await {
+            Ok(resp) => {
+                let text = resp.text.trim();
+                let json_start = text.find('{').unwrap_or(0);
+                let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
+                let parsed: Value = serde_json::from_str(&text[json_start..json_end])
+                    .unwrap_or_else(|_| json!({
+                        "needs_clarification": true,
+                        "ambiguities": [],
+                        "clarifying_questions": [text],
+                        "assumptions": [],
+                        "recommended_approach": "Seek clarification before proceeding"
+                    }));
+                ToolCallResult::success_text(serde_json::to_string_pretty(&parsed).unwrap())
+            }
+            Err(e) => ToolCallResult::error(format!("Clarification analysis failed: {}", e)),
+        }
+    }
+
     async fn handle_search_by_entity(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: SearchByEntityInput = match parse_args(arguments) {
             Ok(v) => v,
@@ -576,6 +665,7 @@ impl Skill for KnowledgeSkill {
             Self::reason_def(),
             Self::audit_action_def(),
             Self::explain_reasoning_def(),
+            Self::ask_clarification_def(),
         ]
     }
 
@@ -591,6 +681,7 @@ impl Skill for KnowledgeSkill {
             "reason" => Some(self.handle_reason(arguments).await),
             "audit_action" => Some(self.handle_audit_action(arguments).await),
             "explain_reasoning" => Some(self.handle_explain_reasoning(arguments).await),
+            "ask_clarification" => Some(self.handle_ask_clarification(arguments).await),
             _ => None,
         }
     }
@@ -687,6 +778,15 @@ struct ExplainReasoningInput {
     task_id: Option<String>,
     #[serde(default = "default_explain_limit")]
     limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct AskClarificationInput {
+    request: String,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    available_tools: Option<Vec<String>>,
 }
 
 fn default_limit() -> usize { 5 }

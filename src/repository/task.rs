@@ -197,6 +197,9 @@ impl Neo4jClient {
             let created_at = row.get::<String>("created_at").unwrap_or_default();
             let parent_id: Option<String> = row.get("parent_id").unwrap_or(None);
 
+            // Fetch dependency IDs in a separate query to keep the list query simple.
+            let deps = self.get_task_dependencies(&id).await.unwrap_or_default();
+
             tasks.push(serde_json::json!({
                 "id": id,
                 "goal": goal,
@@ -204,9 +207,42 @@ impl Neo4jClient {
                 "context": context,
                 "created_at": created_at,
                 "parent_id": parent_id,
+                "depends_on": deps,
             }));
         }
         Ok(tasks)
+    }
+
+    /// Create a DEPENDS_ON edge: `from_id` cannot start until `to_id` completes.
+    pub async fn link_task_dependency(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<(), RepositoryError> {
+        let q = query(
+            "MATCH (a:Task {id: $from_id}), (b:Task {id: $to_id}) \
+             MERGE (a)-[:DEPENDS_ON]->(b)",
+        )
+        .param("from_id", from_id)
+        .param("to_id", to_id);
+
+        self.run(q).await?;
+        info!(from_id = %from_id, to_id = %to_id, "Linked task dependency");
+        Ok(())
+    }
+
+    /// Return task IDs that `task_id` directly depends on (i.e., must complete first).
+    pub async fn get_task_dependencies(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<String>, RepositoryError> {
+        let q = query(
+            "MATCH (a:Task {id: $id})-[:DEPENDS_ON]->(b:Task) RETURN b.id AS dep_id",
+        )
+        .param("id", task_id);
+
+        let rows = self.execute(q).await?;
+        Ok(rows.iter().filter_map(|r| r.get::<String>("dep_id").ok()).collect())
     }
 
     /// Store an outcome note (note_type='outcome'), optionally linked to a task.
