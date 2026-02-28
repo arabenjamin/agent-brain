@@ -76,7 +76,9 @@ impl KnowledgeSkill {
         ToolDefinition {
             name: "search_notes".to_string(),
             description: "Search stored notes using hybrid BM25 + semantic search with optional \
-                         multi-hop graph expansion. Falls back to keyword matching if no index available."
+                         multi-hop graph expansion. Falls back to keyword matching if no index available. \
+                         Enable entity_expansion to also surface notes that share named entities with the \
+                         primary results."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -92,9 +94,33 @@ impl KnowledgeSkill {
                     "graph_hops": {
                         "type": "integer",
                         "description": "Number of RELATES_TO hops to expand results (default: 2, 0 to disable)"
+                    },
+                    "entity_expansion": {
+                        "type": "boolean",
+                        "description": "Also surface notes that share named entities with the primary results (default: false)"
                     }
                 },
                 "required": ["query"]
+            }),
+        }
+    }
+
+    fn export_graph_visualization_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "export_graph_visualization".to_string(),
+            description: "Export the knowledge graph as a node/edge structure for visualisation. \
+                         Returns Note, Entity, and Task nodes with RELATES_TO, MENTIONS, PART_OF, \
+                         SUMMARIZED_BY, REFLECTS_ON, SUBTASK_OF, and DERIVED_FROM edges."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_nodes": {
+                        "type": "integer",
+                        "description": "Maximum total nodes to include (default: 200). Notes are \
+                                       prioritised by recency; entities by mention count; tasks by recency."
+                    }
+                }
             }),
         }
     }
@@ -304,6 +330,25 @@ impl KnowledgeSkill {
         }
     }
 
+    fn get_note_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "get_note".to_string(),
+            description: "Fetch a single note by its ID. Returns full content, type, timestamps, \
+                         and access stats. Updates the note's access count and last_accessed_at."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The UUID of the note to retrieve"
+                    }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
     fn search_by_entity_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_by_entity".to_string(),
@@ -372,7 +417,12 @@ impl KnowledgeSkill {
         info!(query = %input.query, "Searching notes");
 
         let service = self.make_service().await;
-        match service.search_notes(&input.query, input.limit, input.graph_hops).await {
+        let results = if input.entity_expansion {
+            service.search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops).await
+        } else {
+            service.search_notes(&input.query, input.limit, input.graph_hops).await
+        };
+        match results {
             Ok(results) => {
                 let response = json!({
                     "count": results.len(),
@@ -620,6 +670,51 @@ Respond with a JSON object only (no markdown, no explanation):
         }
     }
 
+    async fn handle_export_graph_visualization(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Input {
+            #[serde(default = "default_max_nodes")]
+            max_nodes: usize,
+        }
+        fn default_max_nodes() -> usize { 200 }
+
+        let input: Input = arguments
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+
+        let service = self.make_service().await;
+        match service.export_graph_visualization(input.max_nodes).await {
+            Ok((nodes, edges)) => {
+                let response = json!({
+                    "node_count": nodes.len(),
+                    "edge_count": edges.len(),
+                    "nodes": nodes,
+                    "edges": edges
+                });
+                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+            }
+            Err(e) => ToolCallResult::error(format!("Graph export failed: {}", e)),
+        }
+    }
+
+    async fn handle_get_note(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input { id: String }
+        let input: Input = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let service = self.make_service().await;
+        match service.get_note(&input.id).await {
+            Ok(Some(note)) => ToolCallResult::success_text(
+                serde_json::to_string_pretty(&note).unwrap()
+            ),
+            Ok(None) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
+            Err(e) => ToolCallResult::error(format!("Failed to get note: {}", e)),
+        }
+    }
+
     async fn handle_search_by_entity(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: SearchByEntityInput = match parse_args(arguments) {
             Ok(v) => v,
@@ -657,6 +752,7 @@ impl Skill for KnowledgeSkill {
         vec![
             Self::store_note_def(),
             Self::search_notes_def(),
+            Self::get_note_def(),
             Self::find_related_notes_def(),
             Self::prune_old_notes_def(),
             Self::consolidate_memories_def(),
@@ -666,6 +762,8 @@ impl Skill for KnowledgeSkill {
             Self::audit_action_def(),
             Self::explain_reasoning_def(),
             Self::ask_clarification_def(),
+            Self::get_note_def(),
+            Self::export_graph_visualization_def(),
         ]
     }
 
@@ -673,6 +771,7 @@ impl Skill for KnowledgeSkill {
         match tool_name {
             "store_note" => Some(self.handle_store_note(arguments).await),
             "search_notes" => Some(self.handle_search_notes(arguments).await),
+            "get_note" => Some(self.handle_get_note(arguments).await),
             "find_related_notes" => Some(self.handle_find_related_notes(arguments).await),
             "prune_old_notes" => Some(self.handle_prune_old_notes(arguments).await),
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),
@@ -682,6 +781,8 @@ impl Skill for KnowledgeSkill {
             "audit_action" => Some(self.handle_audit_action(arguments).await),
             "explain_reasoning" => Some(self.handle_explain_reasoning(arguments).await),
             "ask_clarification" => Some(self.handle_ask_clarification(arguments).await),
+            "get_note" => Some(self.handle_get_note(arguments).await),
+            "export_graph_visualization" => Some(self.handle_export_graph_visualization(arguments).await),
             _ => None,
         }
     }
@@ -712,6 +813,8 @@ struct SearchNotesInput {
     limit: usize,
     #[serde(default = "default_graph_hops")]
     graph_hops: usize,
+    #[serde(default)]
+    entity_expansion: bool,
 }
 
 #[derive(Debug, Deserialize)]

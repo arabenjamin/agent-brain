@@ -19,18 +19,16 @@ export default function KnowledgePanel() {
   const [loadingRelated, setLoadingRelated] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Initial load: fetch recent notes with empty query.
+  // Initial load: fetch notes due for review.
   useEffect(() => {
-    search("");
+    loadInitial();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const search = useCallback(async (q: string) => {
+  const loadInitial = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setSelected(null);
-    setRelated([]);
     try {
-      const json = await callTool("search_notes", { query: q || " ", limit: 30 });
+      const json = await callTool("review_due_notes", { limit: 20 });
       const data = JSON.parse(json);
       setNotes(data.notes ?? []);
     } catch (e) {
@@ -39,6 +37,26 @@ export default function KnowledgePanel() {
       setLoading(false);
     }
   }, []);
+
+  const search = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      loadInitial();
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setSelected(null);
+    setRelated([]);
+    try {
+      const json = await callTool("search_notes", { query: q, limit: 30 });
+      const data = JSON.parse(json);
+      setNotes(data.notes ?? []);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [loadInitial]);
 
   const selectNote = useCallback(async (note: Note) => {
     setSelected(note);

@@ -45,14 +45,28 @@ export async function callTool(
   name: string,
   args: Record<string, unknown> = {}
 ): Promise<string> {
-  const client = await getMcpClient();
-  const result = await client.callTool({ name, arguments: args });
+  try {
+    const client = await getMcpClient();
+    const result = await client.callTool({ name, arguments: args });
 
-  const content = result.content as Array<{ type: string; text?: string }>;
-  return content
-    .filter((c) => c.type === "text")
-    .map((c) => c.text ?? "")
-    .join("\n");
+    const content = result.content as Array<{ type: string; text?: string }>;
+    return content
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "")
+      .join("\n");
+  } catch (e) {
+    console.warn(`MCP tool call failed (${name}), attempting reconnect:`, e);
+    // Attempt reconnect once on transport error
+    resetMcpClient();
+    const client = await getMcpClient();
+    const result = await client.callTool({ name, arguments: args });
+
+    const content = result.content as Array<{ type: string; text?: string }>;
+    return content
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "")
+      .join("\n");
+  }
 }
 
 /** Reset the singleton (called on disconnect). */

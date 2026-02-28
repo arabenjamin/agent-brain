@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import type { ForceGraphMethods } from "react-force-graph-2d";
 import { callTool } from "../../api/mcp";
@@ -64,6 +64,31 @@ export default function GraphPanel() {
   const [error, setError] = useState<string | null>(null);
   const [searchQ, setSearchQ] = useState("");
   const fgRef = useRef<ForceGraphMethods<GraphNode, GraphLink>>(undefined);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ w: 800, h: 600 });
+  const [selectedNote, setSelectedNote] = useState<RawNote | null>(null);
+
+  useLayoutEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setDims({ w: Math.floor(width), h: Math.floor(height) });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const handleNodeClick = useCallback(async (node: GraphNode) => {
+    try {
+      const json = await callTool("get_note", { id: node.id });
+      const data = JSON.parse(json);
+      if (data) {
+        setSelectedNote(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch note:", e);
+    }
+  }, []);
 
   const buildGraph = useCallback(async (query: string) => {
     setLoading(true);
@@ -184,7 +209,7 @@ export default function GraphPanel() {
 
       {error && <div className="error-msg">{error}</div>}
 
-      <div className="graph-container">
+      <div ref={containerRef} className="graph-container">
         <div className="graph-search-bar">
           <input
             placeholder="Filter graph… (Enter)"
@@ -219,6 +244,7 @@ export default function GraphPanel() {
         <ForceGraph2D
           ref={fgRef}
           graphData={graphData}
+          onNodeClick={handleNodeClick}
           nodeColor={(n) => (n as GraphNode).color}
           nodeVal={(n) => (n as GraphNode).val}
           nodeLabel={(n) => (n as GraphNode).label}
@@ -230,9 +256,26 @@ export default function GraphPanel() {
           backgroundColor="transparent"
           nodeCanvasObject={paintNode as Parameters<typeof ForceGraph2D>[0]["nodeCanvasObject"]}
           nodeCanvasObjectMode={() => "after"}
-          width={undefined}
-          height={undefined}
+          width={dims.w}
+          height={dims.h}
         />
+
+        {selectedNote && (
+          <div className="graph-detail-overlay">
+            <div className="graph-detail-header">
+              <span className={`note-type-badge ${selectedNote.note_type ?? "semantic"}`}>
+                {selectedNote.note_type ?? "semantic"}
+              </span>
+              <button className="close-btn" onClick={() => setSelectedNote(null)}>×</button>
+            </div>
+            <div className="graph-detail-content scroll">
+              {selectedNote.content}
+            </div>
+            <div className="graph-detail-footer">
+              ID: {selectedNote.id.slice(0, 8)}…
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

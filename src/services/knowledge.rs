@@ -6,7 +6,7 @@ use anyhow::Result;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::repository::Neo4jClient;
 use crate::services::LlmClient;
@@ -145,29 +145,72 @@ impl KnowledgeService {
     }
 
     /// Ask the LLM to split long content into self-contained sub-concepts.
-    async fn maybe_chunk_content(
-        &self,
-        content: &str,
-        llm: &LlmClient,
-    ) -> Result<Option<Vec<String>>> {
-        let prompt = format!(
-            "Split the following text into 2-5 self-contained sub-concepts separated by '---'. \
-             Each chunk must be independently meaningful. Output chunks only:\n\n{}",
-            content
-        );
+    /// Split long content at paragraph and sentence boundaries.
+    /// Returns `Some(chunks)` when 2+ chunks of ≥200 chars can be produced, else `None`.
+    /// This is deterministic and requires no LLM call.
+    fn chunk_by_boundaries(content: &str) -> Option<Vec<String>> {
+        const MIN_CHUNK: usize = 200;
+        const MAX_CHUNK: usize = CHUNK_THRESHOLD_CHARS;
 
-        let response = llm.generate(&prompt).await?;
-        let chunks: Vec<String> = response
-            .text
-            .split("---")
-            .map(|s| s.trim().to_string())
-            .filter(|s| s.len() >= 100)
-            .collect();
+        // First pass: split by blank lines (paragraph boundaries)
+        let paragraphs: Vec<&str> = content.split("\n\n").map(str::trim).filter(|s| !s.is_empty()).collect();
 
-        if chunks.len() <= 1 {
-            Ok(None)
+        let mut chunks: Vec<String> = Vec::new();
+        let mut current = String::new();
+
+        for para in &paragraphs {
+            if current.is_empty() {
+                current.push_str(para);
+            } else if current.len() + para.len() + 2 > MAX_CHUNK && current.len() >= MIN_CHUNK {
+                chunks.push(current.trim().to_string());
+                current = para.to_string();
+            } else {
+                current.push_str("\n\n");
+                current.push_str(para);
+            }
+        }
+        if !current.trim().is_empty() {
+            chunks.push(current.trim().to_string());
+        }
+
+        if chunks.len() > 1 {
+            return Some(chunks);
+        }
+
+        // Second pass: fall back to sentence boundaries (handles single-paragraph walls of text)
+        let mut sentence_chunks: Vec<String> = Vec::new();
+        let mut current = String::new();
+
+        for (i, raw) in content.split(". ").enumerate() {
+            let sentence = raw.trim();
+            if sentence.is_empty() {
+                continue;
+            }
+            // Restore the period on all but the final fragment
+            let piece = if !content.trim_end().ends_with(sentence) {
+                format!("{}.", sentence)
+            } else {
+                sentence.to_string()
+            };
+            // Use index 0 check as a proxy for "first fragment"
+            if i == 0 || current.is_empty() {
+                current = piece;
+            } else if current.len() + piece.len() + 1 > MAX_CHUNK && current.len() >= MIN_CHUNK {
+                sentence_chunks.push(current.trim().to_string());
+                current = piece;
+            } else {
+                current.push(' ');
+                current.push_str(&piece);
+            }
+        }
+        if !current.trim().is_empty() {
+            sentence_chunks.push(current.trim().to_string());
+        }
+
+        if sentence_chunks.len() > 1 {
+            Some(sentence_chunks)
         } else {
-            Ok(Some(chunks))
+            None
         }
     }
 
@@ -299,8 +342,16 @@ impl KnowledgeService {
     /// Extract named entities from note content and persist them to the graph.
     async fn extract_entities(&self, note_id: &str, content: &str, llm: &LlmClient) -> Result<usize> {
         let prompt = format!(
-            "Extract named entities (APIs, technologies, organisations, concepts, people). \
-             Output only JSON: [{{\"name\":\"rust\",\"type\":\"technology\"}},...] or []\n\nTEXT:\n{}",
+            "Extract named entities from the text. Classify each into one of: \
+             person, tool, technology, concept, organisation, url, date.\n\
+             Rules:\n\
+             - Only extract specific, meaningful entities (no generic words like \"system\", \"data\", \"task\")\n\
+             - Normalise names to lowercase (e.g. \"Rust\" → \"rust\", \"Neo4J\" → \"neo4j\")\n\
+             - Merge obvious aliases (e.g. \"the brain\" and \"agent-brain\" → \"agent-brain\")\n\
+             - Output ONLY a valid JSON array, no markdown, no explanation\n\
+             - If no entities, output: []\n\n\
+             Examples: [{{\"name\":\"neo4j\",\"type\":\"technology\"}},{{\"name\":\"tokio\",\"type\":\"tool\"}}]\n\n\
+             TEXT:\n{}",
             content
         );
 
@@ -325,6 +376,13 @@ impl KnowledgeService {
             }
         };
 
+        // Stopwords that produce useless entity nodes
+        const STOPWORDS: &[&str] = &[
+            "system", "data", "task", "note", "user", "tool", "value", "result",
+            "process", "item", "object", "type", "name", "list", "set", "get",
+            "this", "that", "the", "a", "an",
+        ];
+
         let mut count = 0usize;
         let timestamp = Utc::now().to_rfc3339();
 
@@ -333,6 +391,10 @@ impl KnowledgeService {
                 Some(n) if !n.trim().is_empty() => n.trim().to_lowercase(),
                 _ => continue,
             };
+            // Skip stopwords and single-character names
+            if name.len() < 2 || STOPWORDS.contains(&name.as_str()) {
+                continue;
+            }
             let entity_type = entity
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -382,9 +444,8 @@ impl KnowledgeService {
         let skip_chunk = matches!(note_type, Some("consolidated") | Some("reflection"));
 
         if !skip_chunk && content.len() > CHUNK_THRESHOLD_CHARS {
-            if let Some(llm) = &self.llm {
-                match self.maybe_chunk_content(content, llm).await {
-                    Ok(Some(chunks)) if chunks.len() > 1 => {
+            if let Some(chunks) = Self::chunk_by_boundaries(content) {
+                if chunks.len() > 1 {
                         info!(chunks = chunks.len(), "Chunking long note into sub-notes");
 
                         // Create parent note
@@ -423,9 +484,6 @@ impl KnowledgeService {
                         }
 
                         return Ok((parent_id, total_links));
-                    }
-                    Err(e) => warn!("Chunking failed, storing as single note: {}", e),
-                    _ => {}
                 }
             }
         }
@@ -448,6 +506,47 @@ impl KnowledgeService {
         }
 
         Ok((note_id, links_created))
+    }
+
+    /// Fetch a single note by ID. Updates access stats and returns full note data.
+    pub async fn get_note(&self, note_id: &str) -> Result<Option<Value>> {
+        let cypher = r#"
+        MATCH (n:Note {id: $id})
+        SET n.last_accessed_at = datetime(),
+            n.access_count = coalesce(n.access_count, 0) + 1
+        RETURN n.id AS id,
+               n.content AS content,
+               n.note_type AS note_type,
+               toString(n.created_at) AS created_at,
+               n.access_count AS access_count,
+               n.review_interval_days AS review_interval_days
+        "#;
+
+        let rows = self.neo4j.execute(
+            neo4rs::query(cypher).param("id", note_id)
+        ).await?;
+
+        if let Some(row) = rows.into_iter().next() {
+            let id = row.get::<String>("id").unwrap_or_default();
+            if id.is_empty() {
+                return Ok(None);
+            }
+            let content = row.get::<String>("content").unwrap_or_default();
+            let note_type = row.get::<String>("note_type").unwrap_or_default();
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            let access_count = row.get::<i64>("access_count").unwrap_or(0);
+            let review_interval = row.get::<i64>("review_interval_days").unwrap_or(1);
+            Ok(Some(json!({
+                "id": id,
+                "content": content,
+                "note_type": note_type,
+                "created_at": created_at,
+                "access_count": access_count,
+                "review_interval_days": review_interval
+            })))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Find notes related to a given note via RELATES_TO edges.
@@ -474,11 +573,33 @@ impl KnowledgeService {
 
     /// Search notes using hybrid BM25 + vector RRF, with optional graph expansion.
     /// Updates spaced-repetition fields on accessed notes.
+    /// Pass `entity_expansion = true` to bridge through shared Entity nodes after
+    /// the primary results are collected (adds notes that mention the same entities).
     pub async fn search_notes(
         &self,
         query_text: &str,
         limit: usize,
         graph_hops: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.search_notes_inner(query_text, limit, graph_hops, false).await
+    }
+
+    /// Like `search_notes` but with entity-bridging enabled.
+    pub async fn search_notes_with_entity_expansion(
+        &self,
+        query_text: &str,
+        limit: usize,
+        graph_hops: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.search_notes_inner(query_text, limit, graph_hops, true).await
+    }
+
+    async fn search_notes_inner(
+        &self,
+        query_text: &str,
+        limit: usize,
+        graph_hops: usize,
+        entity_expansion: bool,
     ) -> Result<Vec<serde_json::Value>> {
         let fetch_limit = (limit * 3).max(10);
 
@@ -615,6 +736,33 @@ impl KnowledgeService {
                     merged.truncate(limit);
                 }
                 Err(e) => warn!("Graph expansion failed: {}", e),
+            }
+        }
+
+        // 4.5 Entity-bridge expansion: find other notes that mention the same entities.
+        if entity_expansion && !merged.is_empty() {
+            let primary_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
+            let entity_cypher = r#"
+            MATCH (n:Note)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(m:Note)
+            WHERE n.id IN $primary_ids AND NOT m.id IN $primary_ids
+            RETURN DISTINCT m.id AS id, m.content AS content
+            LIMIT $limit
+            "#;
+            let extra_limit = (limit / 2).max(3) as i64;
+            if let Ok(rows) = self.neo4j.execute(
+                neo4rs::query(entity_cypher)
+                    .param("primary_ids", primary_ids.clone())
+                    .param("limit", extra_limit),
+            ).await {
+                let existing: std::collections::HashSet<String> = primary_ids.into_iter().collect();
+                for row in rows {
+                    if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
+                        if !existing.contains(&id) {
+                            merged.push((id, content));
+                        }
+                    }
+                }
+                merged.truncate(limit);
             }
         }
 
@@ -1268,5 +1416,163 @@ impl KnowledgeService {
         let preview: String = consolidated_content.chars().take(200).collect();
 
         Ok((consolidated_id, source_count, preview))
+    }
+
+    /// Export the full knowledge graph as a node/edge structure for visualisation.
+    ///
+    /// Returns `(nodes, edges)` where each node is
+    /// `{"id","label","type","note_type?}` and each edge is
+    /// `{"source","target","type","weight"}`.
+    ///
+    /// Node types: `note`, `entity`, `task`
+    /// Edge types: `relates_to`, `mentions`, `part_of`, `summarized_by`,
+    ///             `reflects_on`, `subtask_of`, `depends_on`, `derived_from`
+    pub async fn export_graph_visualization(
+        &self,
+        max_nodes: usize,
+    ) -> Result<(Vec<Value>, Vec<Value>)> {
+        let limit = max_nodes as i64;
+
+        // --- Notes ---
+        let note_q = neo4rs::query(
+            "MATCH (n:Note) \
+             RETURN n.id AS id, n.content AS content, n.note_type AS note_type \
+             ORDER BY n.last_accessed_at DESC LIMIT $limit",
+        ).param("limit", limit);
+
+        let mut nodes: Vec<Value> = Vec::new();
+        let note_rows = self.neo4j.execute(note_q).await.unwrap_or_default();
+        for row in note_rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let content = row.get::<String>("content").unwrap_or_default();
+            let note_type = row.get::<String>("note_type").unwrap_or_else(|_| "semantic".to_string());
+            let label: String = content.chars().take(60).collect();
+            nodes.push(json!({
+                "id": id,
+                "label": label,
+                "type": "note",
+                "note_type": note_type
+            }));
+        }
+
+        // --- Entities (most-mentioned first) ---
+        let entity_limit = (max_nodes / 4).max(20) as i64;
+        let entity_q = neo4rs::query(
+            "MATCH (e:Entity)<-[r:MENTIONS]-() \
+             RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, \
+                    count(r) AS mentions \
+             ORDER BY mentions DESC LIMIT $limit",
+        ).param("limit", entity_limit);
+
+        let entity_rows = self.neo4j.execute(entity_q).await.unwrap_or_default();
+        for row in entity_rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let name = row.get::<String>("name").unwrap_or_default();
+            let entity_type = row.get::<String>("entity_type").unwrap_or_else(|_| "unknown".to_string());
+            nodes.push(json!({
+                "id": id,
+                "label": name,
+                "type": "entity",
+                "entity_type": entity_type
+            }));
+        }
+
+        // --- Tasks ---
+        let task_limit = (max_nodes / 8).max(10) as i64;
+        let task_q = neo4rs::query(
+            "MATCH (t:Task) \
+             RETURN t.id AS id, t.goal AS goal, t.status AS status \
+             ORDER BY t.created_at DESC LIMIT $limit",
+        ).param("limit", task_limit);
+
+        let task_rows = self.neo4j.execute(task_q).await.unwrap_or_default();
+        for row in task_rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let goal = row.get::<String>("goal").unwrap_or_default();
+            let status = row.get::<String>("status").unwrap_or_default();
+            let label: String = goal.chars().take(60).collect();
+            nodes.push(json!({
+                "id": id,
+                "label": label,
+                "type": "task",
+                "status": status
+            }));
+        }
+
+        // Build the set of node IDs so we only emit edges between included nodes
+        let node_ids: std::collections::HashSet<String> = nodes.iter()
+            .filter_map(|n| n["id"].as_str().map(str::to_string))
+            .collect();
+
+        // --- Edges ---
+        let mut edges: Vec<Value> = Vec::new();
+
+        let edge_queries: &[(&str, &str, f64)] = &[
+            (
+                "MATCH (a:Note)-[r:RELATES_TO]->(b:Note) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, r.similarity AS weight",
+                "relates_to", 1.0,
+            ),
+            (
+                "MATCH (a:Note)-[:MENTIONS]->(b:Entity) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
+                "mentions", 1.0,
+            ),
+            (
+                "MATCH (a:Note)-[:PART_OF]->(b:Note) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
+                "part_of", 0.5,
+            ),
+            (
+                "MATCH (a:Note)-[:SUMMARIZED_BY]->(b:Note) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
+                "summarized_by", 0.5,
+            ),
+            (
+                "MATCH (a:Note)-[:REFLECTS_ON]->(b:Task) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
+                "reflects_on", 0.8,
+            ),
+            (
+                "MATCH (a:Task)-[:SUBTASK_OF]->(b:Task) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
+                "subtask_of", 0.7,
+            ),
+            (
+                "MATCH (a:Note)-[:DERIVED_FROM]->(b:Note) \
+                 WHERE a.id IN $ids AND b.id IN $ids \
+                 RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
+                "derived_from", 0.6,
+            ),
+        ];
+
+        let ids_vec: Vec<String> = node_ids.iter().cloned().collect();
+        for (cypher, edge_type, default_weight) in edge_queries {
+            if let Ok(rows) = self.neo4j.execute(
+                neo4rs::query(cypher).param("ids", ids_vec.clone())
+            ).await {
+                for row in rows {
+                    let src = row.get::<String>("src").unwrap_or_default();
+                    let tgt = row.get::<String>("tgt").unwrap_or_default();
+                    let weight = row.get::<f64>("weight").unwrap_or(*default_weight);
+                    if !src.is_empty() && !tgt.is_empty() {
+                        edges.push(json!({
+                            "source": src,
+                            "target": tgt,
+                            "type": edge_type,
+                            "weight": weight
+                        }));
+                    }
+                }
+            }
+        }
+
+        Ok((nodes, edges))
     }
 }

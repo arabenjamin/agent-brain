@@ -1081,3 +1081,64 @@ html, body, #root {
   transform: scale(0.95);
 }
 
+
+/* Graph Detail Overlay */
+.graph-detail-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: 300px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 15px rgba(0,0,0,0.3);
+  z-index: 100;
+  animation: slideInRight 0.2s ease-out;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.graph-detail-header {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.graph-detail-content {
+  padding: 16px;
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.graph-detail-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.close-btn:hover {
+  color: var(--text);
+}
+

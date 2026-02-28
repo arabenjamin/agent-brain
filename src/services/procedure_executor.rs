@@ -7,16 +7,23 @@
 //!   "args": { "query": "{{input.topic}}", "limit": 5 },
 //!   "purpose": "Find notes",
 //!   "output_var": "search_result",
-//!   "condition": "{{input.topic}} != \"\""
+//!   "condition": "{{input.topic}} != \"\"",
+//!   "on_failure": "abort"
 //! }
 //! ```
 //!
 //! Template variables:
 //! - `{{input.field}}` — substituted from caller's input arguments
 //! - `{{context.var}}` — output captured from a previous step's `output_var`
+//! - `{{context.steps.N}}` — positional output of step N (0-indexed)
 //!
 //! Conditions are evaluated after substitution; an empty, "false", or "null"
 //! result causes the step to be skipped.
+//!
+//! `on_failure` values:
+//! - `"continue"` (default) — record failure, proceed to next step
+//! - `"abort"` — stop the procedure immediately and return failure
+//! - `"skip"` — record the failure but do not execute any further steps
 
 use std::collections::HashMap;
 
@@ -49,9 +56,13 @@ pub async fn execute_procedure(
 ) -> (Vec<StepResult>, bool) {
     let mut results = Vec::new();
     let mut context: HashMap<String, Value> = HashMap::new();
+    // Positional step outputs: steps[0], steps[1], ... accessible via {{context.steps.N}}
+    let mut step_outputs: Vec<Value> = Vec::new();
     let mut all_success = true;
 
     for (idx, step) in steps.iter().enumerate() {
+        // Inject positional step outputs into context so {{context.steps.0}} etc. resolve.
+        context.insert("steps".to_string(), Value::Array(step_outputs.clone()));
         let tool_name = match step.get("tool").and_then(|v| v.as_str()) {
             Some(t) => t.to_string(),
             None => {
@@ -128,9 +139,6 @@ pub async fn execute_procedure(
             }
 
             let call_result = last_call_result.unwrap();
-            if !step_success {
-                all_success = false;
-            }
 
             // Extract text content for output_var capture
             let output_text = call_result
@@ -149,6 +157,8 @@ pub async fn execute_procedure(
             if let Some(var) = step.get("output_var").and_then(|v| v.as_str()) {
                 context.insert(var.to_string(), parsed_output.clone());
             }
+            // Also store positionally so {{context.steps.N}} works in later steps
+            step_outputs.push(parsed_output.clone());
 
             let res = StepResult {
                 step_index: idx,
@@ -157,6 +167,29 @@ pub async fn execute_procedure(
                 output_preview: preview,
                 output: parsed_output,
             };
+
+            // Handle failure according to on_failure policy
+            if !step_success {
+                all_success = false;
+                let on_failure = step.get("on_failure").and_then(|v| v.as_str()).unwrap_or("continue");
+                match on_failure {
+                    "abort" => {
+                        debug!(step = idx, tool = %tool_name, "Step failed — aborting procedure (on_failure=abort)");
+                        results.push(res);
+                        return (results, false);
+                    }
+                    "skip" => {
+                        debug!(step = idx, tool = %tool_name, "Step failed — skipping remaining steps (on_failure=skip)");
+                        results.push(StepResult {
+                            success: false,
+                            output_preview: format!("(on_failure=skip) {}", res.output_preview),
+                            ..res
+                        });
+                        break;
+                    }
+                    _ => {} // "continue" (default) — record failure and keep going
+                }
+            }
 
             // Check loop condition
             if is_loop && loop_count < max_loop {

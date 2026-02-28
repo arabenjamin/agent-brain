@@ -67,6 +67,51 @@ export default function TaskPanel() {
   const statusCount = (s: StatusFilter) =>
     s === "all" ? tasks.length : tasks.filter((t) => t.status === s).length;
 
+  // Build a tree structure for rendering
+  const buildTree = () => {
+    const filtered = tasks.filter(t => filter === "all" || t.status === filter);
+    const roots = filtered.filter(t => !t.parent_id || !tasks.find(pt => pt.id === t.parent_id));
+    const childrenMap = new Map<string, Task[]>();
+    
+    tasks.forEach(t => {
+      if (t.parent_id) {
+        const list = childrenMap.get(t.parent_id) ?? [];
+        list.push(t);
+        childrenMap.set(t.parent_id, list);
+      }
+    });
+
+    return { roots, childrenMap };
+  };
+
+  const { roots, childrenMap } = buildTree();
+
+  const renderTask = (task: Task, depth = 0) => {
+    const children = childrenMap.get(task.id) ?? [];
+    
+    return (
+      <div key={task.id} style={{ marginLeft: depth * 20 }}>
+        <div className="task-card">
+          <div className="task-card-header">
+            <span className="task-goal" title={task.goal}>
+              {depth > 0 ? "↳ " : ""}{task.goal}
+            </span>
+            <span className={`task-status-badge ${task.status}`}>
+              {task.status.replace("_", " ")}
+            </span>
+          </div>
+          <div className="task-meta">
+            ID: {task.id.slice(0, 8)}…
+            {task.created_at && (
+              <> · {new Date(task.created_at).toLocaleString()}</>
+            )}
+          </div>
+        </div>
+        {children.map(child => renderTask(child, depth + 1))}
+      </div>
+    );
+  };
+
   return (
     <div className="panel">
       <div className="panel-header">
@@ -97,30 +142,13 @@ export default function TaskPanel() {
       <div className="tasks-grid">
         {/* Task list */}
         <div className="tasks-list">
-          {filtered.length === 0 && !loading && (
+          {roots.length === 0 && !loading && (
             <div className="empty-state" style={{ flex: 1, paddingTop: 40 }}>
               <span className="icon">✓</span>
               <span>No tasks matching "{filter}"</span>
             </div>
           )}
-          {filtered.map((task) => (
-            <div key={task.id} className="task-card">
-              <div className="task-card-header">
-                <span className="task-goal" title={task.goal}>
-                  {task.parent_id ? "↳ " : ""}{task.goal}
-                </span>
-                <span className={`task-status-badge ${task.status}`}>
-                  {task.status.replace("_", " ")}
-                </span>
-              </div>
-              <div className="task-meta">
-                ID: {task.id.slice(0, 8)}…
-                {task.created_at && (
-                  <> · {new Date(task.created_at).toLocaleString()}</>
-                )}
-              </div>
-            </div>
-          ))}
+          {roots.map(task => renderTask(task))}
         </div>
 
         {/* Queue sidebar */}
