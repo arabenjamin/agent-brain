@@ -30,7 +30,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info};
 
 use super::auth::{ApiKeyAuth, AuthError};
-use super::protocol::{IncomingMessage, JsonRpcErrorResponse};
+use super::protocol::{IncomingMessage, JsonRpcErrorResponse, JsonRpcNotification};
 use super::session::{SessionManager, SessionState, SessionConfig};
 use super::transport::OutgoingMessage;
 use super::transport_trait::{McpTransport, TransportError, TransportMessage};
@@ -384,14 +384,24 @@ async fn handle_post_mcp(
                 McpHttpError::InternalError("No response from server".to_string())
             })?;
 
-            // On initialize, advance the session straight to Running so that
-            // clients which don't send notifications/initialized (e.g. OpenWebUI)
-            // can immediately use tools/list and tools/call.
+            // On initialize, advance the session straight to Running and also
+            // send a synthetic notifications/initialized to the server core so
+            // that clients which don't send the notification explicitly (e.g.
+            // OpenWebUI) can immediately use tools/list and tools/call.
             if method == "initialize" {
                 let _ = state
                     .sessions
                     .set_session_state(&session_id, SessionState::Running)
                     .await;
+                let synthetic = TransportMessage::Notification {
+                    session_id: Some(session_id.clone()),
+                    notification: JsonRpcNotification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "notifications/initialized".to_string(),
+                        params: None,
+                    },
+                };
+                let _ = state.message_tx.send(synthetic).await;
             }
 
             // Build response with session ID header

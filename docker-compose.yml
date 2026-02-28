@@ -27,10 +27,13 @@ services:
       - /home/ara/agent-brain:/home/agent/agent-brain:ro
     networks:
       - agent-api_default
+      - ai-network
     restart: unless-stopped
 
 networks:
   agent-api_default:
+    external: true
+  ai-network:
     external: true
 
 volumes:

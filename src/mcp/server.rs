@@ -572,15 +572,18 @@ impl McpServerCore {
         &self,
         request: &JsonRpcRequest,
     ) -> Result<JsonRpcResponse, JsonRpcErrorResponse> {
-        {
+        let current_state = {
             let state = self.state.read().await;
-            if *state != ServerState::Created {
-                return Err(JsonRpcErrorResponse::new(
-                    Some(request.id.clone()),
-                    error_codes::INVALID_REQUEST,
-                    "Server already initialized",
-                ));
-            }
+            *state
+        };
+
+        // Reject only if shutting down.
+        if current_state == ServerState::ShuttingDown {
+            return Err(JsonRpcErrorResponse::new(
+                Some(request.id.clone()),
+                error_codes::INVALID_REQUEST,
+                "Server is shutting down",
+            ));
         }
 
         // Parse initialize params
@@ -605,11 +608,13 @@ impl McpServerCore {
         info!(
             client = %params.client_info.name,
             protocol_version = %params.protocol_version,
+            already_running = (current_state == ServerState::Running),
             "Client connecting"
         );
 
-        // Update state
-        {
+        // Advance to Initializing only from Created state; already-running server
+        // stays Running so existing sessions are not disrupted.
+        if current_state == ServerState::Created {
             let mut state = self.state.write().await;
             *state = ServerState::Initializing;
         }
