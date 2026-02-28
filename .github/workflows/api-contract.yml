@@ -16,13 +16,13 @@ name: API Contract Validation
 
 on:
   push:
-    branches: [dev, test, prod]
+    branches: [master, main, dev, test, prod]
     paths:
       - 'openapi.yaml'
       - 'openapi.json'
       - 'api-spec/**'
   pull_request:
-    branches: [test, prod]
+    branches: [master, main, test, prod]
     paths:
       - 'openapi.yaml'
       - 'openapi.json'
@@ -52,12 +52,11 @@ jobs:
         image: neo4j:5
         env:
           NEO4J_AUTH: neo4j/testpassword
-          NEO4J_PLUGINS: '["apoc"]'
         ports:
           - 7687:7687
           - 7474:7474
         options: >-
-          --health-cmd "cypher-shell -u neo4j -p testpassword 'RETURN 1'"
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10

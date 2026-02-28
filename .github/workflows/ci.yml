@@ -2,16 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [dev, test, prod]
+    branches: [master, main, dev, test, prod]
   pull_request:
-    branches: [test, prod]
+    branches: [master, main, test, prod]
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Format check - runs on dev, test, prod
+  # -------------------------------------------------------------------------
+  # Format check — all branches
+  # -------------------------------------------------------------------------
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -22,7 +26,9 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Unit tests - runs on dev, test, prod
+  # -------------------------------------------------------------------------
+  # Unit tests — all branches
+  # -------------------------------------------------------------------------
   test-unit:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -32,11 +38,41 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --lib
 
-  # Clippy - runs only on test, prod
+  # -------------------------------------------------------------------------
+  # Frontend build & lint — all branches
+  # -------------------------------------------------------------------------
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hbi-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: hbi-frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  # -------------------------------------------------------------------------
+  # Clippy — test, prod, master, main
+  # -------------------------------------------------------------------------
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod' || github.base_ref == 'test' || github.base_ref == 'prod'
+    if: >
+      github.ref == 'refs/heads/test' ||
+      github.ref == 'refs/heads/prod' ||
+      github.ref == 'refs/heads/master' ||
+      github.ref == 'refs/heads/main' ||
+      github.base_ref == 'test' ||
+      github.base_ref == 'prod' ||
+      github.base_ref == 'master' ||
+      github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,11 +81,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features
 
-  # Integration tests - runs only on test, prod
+  # -------------------------------------------------------------------------
+  # Integration tests — test, prod only (needs Neo4j)
+  # -------------------------------------------------------------------------
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod' || github.base_ref == 'test' || github.base_ref == 'prod'
+    if: >
+      github.ref == 'refs/heads/test' ||
+      github.ref == 'refs/heads/prod' ||
+      github.base_ref == 'test' ||
+      github.base_ref == 'prod'
     services:
       neo4j:
         image: neo4j:5
@@ -84,30 +126,54 @@ jobs:
           NEO4J_USER: neo4j
           NEO4J_PASSWORD: testpassword
 
-  # Build check - runs on all branches
+  # -------------------------------------------------------------------------
+  # Release build — all branches, gated on fmt + unit tests
+  # -------------------------------------------------------------------------
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [fmt, test-unit]
+    needs: [fmt, test-unit, frontend]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
 
-  # Docker build - runs only on prod
+  # -------------------------------------------------------------------------
+  # Docker build + push to GHCR — prod only
+  # -------------------------------------------------------------------------
   docker:
-    name: Docker Build
+    name: Docker Build & Push
     runs-on: ubuntu-latest
     needs: [build, clippy, test-integration]
     if: github.ref == 'refs/heads/prod'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+      - name: Build and push
+        uses: docker/build-push-action@v5
         with:
           context: .
-          push: false
-          tags: agent-api:latest
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
