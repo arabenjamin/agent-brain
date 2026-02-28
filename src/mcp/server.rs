@@ -238,9 +238,6 @@ impl McpServerCore {
     /// Build the skills and initialize the tool handler.
     /// This should be called before running the server.
     pub async fn build_skills(&self) {
-        // Snapshot the LLM config for skills that take Option<LlmConfig> directly
-        let llm_snapshot: Option<LlmConfig> = self.llm_config.read().await.clone();
-
         // Build DynamicSkill first (before taking locks) so we can share the Arc.
         // Both the registry clone and the handler original share the same tools_map.
         let dynamic_skill = if let Some(neo4j) = &self.neo4j {
@@ -302,7 +299,7 @@ impl McpServerCore {
         // Register API Skill
         let api_skill = ApiSkill::new(
             self.neo4j.clone(),
-            llm_snapshot.clone(),
+            Arc::clone(&self.llm_config),
             context_store.clone(),
             self.credential_manager.clone(),
         );
@@ -379,7 +376,7 @@ impl McpServerCore {
 
         skills.push(Box::new(ApiSkill::new(
             self.neo4j.clone(),
-            llm_snapshot.clone(),
+            Arc::clone(&self.llm_config),
             if let Some(n) = &self.neo4j {
                 ContextStore::with_neo4j(n.clone())
             } else {

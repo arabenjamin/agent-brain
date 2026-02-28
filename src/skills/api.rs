@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
@@ -23,7 +24,7 @@ use crate::skills::Skill;
 /// API Expert Skill implementation.
 pub struct ApiSkill {
     neo4j: Option<Neo4jClient>,
-    llm_config: Option<LlmConfig>,
+    llm_config: Arc<RwLock<Option<LlmConfig>>>,
     context_store: ContextStore,
     credential_manager: Option<Arc<CredentialManager>>,
 }
@@ -32,7 +33,7 @@ impl ApiSkill {
     /// Create a new API skill.
     pub fn new(
         neo4j: Option<Neo4jClient>,
-        llm_config: Option<LlmConfig>,
+        llm_config: Arc<RwLock<Option<LlmConfig>>>,
         context_store: ContextStore,
         credential_manager: Option<Arc<CredentialManager>>,
     ) -> Self {
@@ -42,6 +43,12 @@ impl ApiSkill {
             context_store,
             credential_manager,
         }
+    }
+
+    /// Snapshot the current LLM config and build a client from it.
+    async fn make_llm(&self) -> Option<LlmClient> {
+        let config = self.llm_config.read().await.clone();
+        config.and_then(|c| LlmClient::with_config(c).ok())
     }
 
     // ========================================================================
@@ -464,10 +471,8 @@ impl ApiSkill {
         }
 
         let mut parser = OpenApiParser::new(neo4j.clone());
-        if let Some(llm_config) = &self.llm_config {
-            if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
-                parser = parser.with_llm(llm);
-            }
+        if let Some(llm) = self.make_llm().await {
+            parser = parser.with_llm(llm);
         }
 
         match parser.ingest(&input.source).await {
@@ -514,15 +519,13 @@ impl ApiSkill {
         let mut endpoints = Vec::new();
         let mut used_semantic = false;
 
-        if let Some(llm_config) = &self.llm_config {
-            if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
-                if let Ok(embedding) = llm.embeddings(&input.query).await {
-                    if let Ok(semantic_results) = neo4j.find_endpoints_semantic(embedding, 10).await {
-                        if !semantic_results.is_empty() {
-                            endpoints = semantic_results;
-                            used_semantic = true;
-                            debug!(count = endpoints.len(), "Found endpoints via semantic search");
-                        }
+        if let Some(llm) = self.make_llm().await {
+            if let Ok(embedding) = llm.embeddings(&input.query).await {
+                if let Ok(semantic_results) = neo4j.find_endpoints_semantic(embedding, 10).await {
+                    if !semantic_results.is_empty() {
+                        endpoints = semantic_results;
+                        used_semantic = true;
+                        debug!(count = endpoints.len(), "Found endpoints via semantic search");
                     }
                 }
             }
@@ -651,13 +654,9 @@ impl ApiSkill {
         };
 
         // If we found a matching endpoint and have LLM config, use the HealingOrchestrator
-        if let (Some(endpoint), Some(neo4j), Some(llm_config)) = (matching_endpoint, &self.neo4j, &self.llm_config) {
+        let llm_client = self.make_llm().await;
+        if let (Some(endpoint), Some(neo4j), Some(llm)) = (matching_endpoint, &self.neo4j, llm_client) {
             info!(endpoint_id = %endpoint.id, path = %endpoint.path, "Using self-healing execution");
-            
-            let llm = match LlmClient::with_config(llm_config.clone()) {
-                Ok(l) => l,
-                Err(e) => return ToolCallResult::error(format!("Failed to create LLM client: {}", e)),
-            };
 
             let orchestrator = HealingOrchestrator::with_all(http, llm, neo4j.clone());
             
@@ -917,15 +916,19 @@ impl ApiSkill {
             Err(e) => return ToolCallResult::error(format!("Failed to create discovery service: {}", e)),
         };
 
-        if input.use_llm
-            && let Some(llm_config) = &self.llm_config
-            && let Ok(llm) = LlmClient::with_config(llm_config.clone())
-        {
-            service = service.with_llm(llm);
+        // Snapshot LLM config once for this handler.
+        let llm_config_snapshot = self.llm_config.read().await.clone();
+
+        if input.use_llm {
+            if let Some(ref cfg) = llm_config_snapshot {
+                if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
+                    service = service.with_llm(llm);
+                }
+            }
         }
 
         let config = DiscoveryConfig {
-            use_llm: input.use_llm && self.llm_config.is_some(),
+            use_llm: input.use_llm && llm_config_snapshot.is_some(),
             ..Default::default()
         };
         service = service.with_config(config);
@@ -944,8 +947,8 @@ impl ApiSkill {
 
             for candidate in &result.candidates {
                 let mut parser = OpenApiParser::new(neo4j.clone());
-                if let Some(llm_config) = &self.llm_config {
-                    if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
+                if let Some(ref cfg) = llm_config_snapshot {
+                    if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
                         parser = parser.with_llm(llm);
                     }
                 }
@@ -1009,11 +1012,14 @@ impl ApiSkill {
             Err(e) => return e,
         };
 
-        let Some(llm_config) = &self.llm_config else {
+        // Snapshot LLM config once for this handler.
+        let llm_config_snapshot = self.llm_config.read().await.clone();
+
+        let Some(ref llm_cfg) = llm_config_snapshot else {
             return ToolCallResult::error("LLM configuration required for documentation analysis.");
         };
 
-        let llm = match LlmClient::with_config(llm_config.clone()) {
+        let llm = match LlmClient::with_config(llm_cfg.clone()) {
             Ok(l) => l,
             Err(e) => return ToolCallResult::error(format!("Failed to create LLM client: {}", e)),
         };
@@ -1051,8 +1057,8 @@ impl ApiSkill {
             let temp_path = format!("/tmp/generated_spec_{}.json", uuid::Uuid::new_v4());
             if let Ok(()) = std::fs::write(&temp_path, result.spec.to_json().unwrap_or_default()) {
                 let mut parser = OpenApiParser::new(neo4j.clone());
-                if let Some(llm_config) = &self.llm_config {
-                    if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
+                if let Some(ref cfg) = llm_config_snapshot {
+                    if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
                         parser = parser.with_llm(llm);
                     }
                 }
@@ -1101,11 +1107,14 @@ impl ApiSkill {
             Err(e) => return e,
         };
 
-        let Some(llm_config) = &self.llm_config else {
+        // Snapshot LLM config once for this handler.
+        let llm_config_snapshot = self.llm_config.read().await.clone();
+
+        let Some(ref llm_cfg) = llm_config_snapshot else {
             return ToolCallResult::error("LLM configuration required for code analysis.");
         };
 
-        let llm = match LlmClient::with_config(llm_config.clone()) {
+        let llm = match LlmClient::with_config(llm_cfg.clone()) {
             Ok(l) => l,
             Err(e) => return ToolCallResult::error(format!("Failed to create LLM client: {}", e)),
         };
@@ -1155,8 +1164,8 @@ impl ApiSkill {
             let temp_path = format!("/tmp/generated_spec_{}.json", uuid::Uuid::new_v4());
             if let Ok(()) = std::fs::write(&temp_path, result.spec.to_json().unwrap_or_default()) {
                 let mut parser = OpenApiParser::new(neo4j.clone());
-                if let Some(llm_config) = &self.llm_config {
-                    if let Ok(llm) = LlmClient::with_config(llm_config.clone()) {
+                if let Some(ref cfg) = llm_config_snapshot {
+                    if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
                         parser = parser.with_llm(llm);
                     }
                 }
