@@ -6,7 +6,7 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { API_KEY, MCP_URL } from "./config";
+import { getMcpUrl, getApiKey } from "./config";
 
 let _client: Client | null = null;
 let _connecting: Promise<Client> | null = null;
@@ -17,11 +17,12 @@ export async function getMcpClient(): Promise<Client> {
 
   _connecting = (async () => {
     // Resolve relative paths (e.g. "/mcp") against the current origin.
+    // Read URL and key fresh each connection so Settings changes take effect.
     const transport = new StreamableHTTPClientTransport(
-      new URL(MCP_URL, window.location.href),
+      new URL(getMcpUrl(), window.location.href),
       {
         requestInit: {
-          headers: { Authorization: `Bearer ${API_KEY}` },
+          headers: { Authorization: `Bearer ${getApiKey()}` },
         },
       }
     );
@@ -69,7 +70,7 @@ export async function callTool(
   }
 }
 
-/** Reset the singleton (called on disconnect). */
+/** Reset the singleton (called on disconnect or after settings change). */
 export function resetMcpClient() {
   _client = null;
   _connecting = null;

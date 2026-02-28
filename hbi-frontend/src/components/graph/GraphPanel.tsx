@@ -5,26 +5,31 @@ import { callTool } from "../../api/mcp";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface RawNote {
+interface RawGraphNode {
   id: string;
-  content: string;
+  label: string;
+  type: "note" | "entity" | "task";
   note_type?: string;
+  entity_type?: string;
+  status?: string;
 }
 
-interface RelatedNote {
-  note_id?: string;
-  id?: string;
-  content: string;
-  similarity?: number;
+interface RawGraphEdge {
+  source: string;
+  target: string;
+  type: string;
+  weight?: number;
 }
 
 interface GraphNode {
   id: string;
   label: string;
-  type: string;
+  nodeType: "note" | "entity" | "task";
+  noteType?: string;
+  entityType?: string;
+  taskStatus?: string;
   color: string;
   val: number;
-  // injected by force-graph at runtime
   x?: number;
   y?: number;
   __bckgDimensions?: [number, number];
@@ -33,7 +38,8 @@ interface GraphNode {
 interface GraphLink {
   source: string;
   target: string;
-  similarity?: number;
+  edgeType: string;
+  weight?: number;
 }
 
 interface GraphData {
@@ -41,9 +47,20 @@ interface GraphData {
   links: GraphLink[];
 }
 
-// ── Colour map ─────────────────────────────────────────────────────────────────
+interface SelectedNodeInfo {
+  id: string;
+  type: "note" | "entity" | "task";
+  label: string;
+  content?: string;
+  note_type?: string;
+  entity_type?: string;
+  status?: string;
+  access_count?: number;
+}
 
-const TYPE_COLORS: Record<string, string> = {
+// ── Colour maps ───────────────────────────────────────────────────────────────
+
+const NOTE_TYPE_COLORS: Record<string, string> = {
   semantic:     "#4f8ef7",
   episodic:     "#22d3ee",
   reflection:   "#a78bfa",
@@ -52,21 +69,66 @@ const TYPE_COLORS: Record<string, string> = {
   inference:    "#f87171",
 };
 
-function nodeColor(type: string) {
-  return TYPE_COLORS[type] ?? "#7a8099";
+const NODE_TYPE_COLORS: Record<string, string> = {
+  entity: "#fb923c",
+  task:   "#facc15",
+};
+
+const EDGE_COLORS: Record<string, string> = {
+  relates_to:    "rgba(79,142,247,0.3)",
+  mentions:      "rgba(251,146,60,0.4)",
+  part_of:       "rgba(100,100,200,0.25)",
+  summarized_by: "rgba(74,222,128,0.35)",
+  reflects_on:   "rgba(167,139,250,0.4)",
+  subtask_of:    "rgba(250,204,21,0.4)",
+  derived_from:  "rgba(248,113,113,0.35)",
+  depends_on:    "rgba(251,146,60,0.3)",
+};
+
+function nodeColorFor(raw: RawGraphNode): string {
+  if (raw.type === "note") {
+    return NOTE_TYPE_COLORS[raw.note_type ?? "semantic"] ?? "#7a8099";
+  }
+  return NODE_TYPE_COLORS[raw.type] ?? "#7a8099";
+}
+
+function nodeValFor(raw: RawGraphNode): number {
+  if (raw.type === "task")   return 5;
+  if (raw.type === "entity") return 2;
+  return 3;
+}
+
+function toGraphNode(raw: RawGraphNode): GraphNode {
+  return {
+    id:         raw.id,
+    label:      raw.label,
+    nodeType:   raw.type,
+    noteType:   raw.note_type,
+    entityType: raw.entity_type,
+    taskStatus: raw.status,
+    color:      nodeColorFor(raw),
+    val:        nodeValFor(raw),
+  };
+}
+
+function toGraphLink(raw: RawGraphEdge): GraphLink {
+  return { source: raw.source, target: raw.target, edgeType: raw.type, weight: raw.weight };
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function GraphPanel() {
+  const [allNodes, setAllNodes]   = useState<RawGraphNode[]>([]);
+  const [allEdges, setAllEdges]   = useState<RawGraphEdge[]>([]);
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [searchQ, setSearchQ] = useState("");
-  const fgRef = useRef<ForceGraphMethods<GraphNode, GraphLink>>(undefined);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState<string | null>(null);
+  const [searchQ, setSearchQ]     = useState("");
+  const [selectedNode, setSelectedNode] = useState<SelectedNodeInfo | null>(null);
+
+  const fgRef        = useRef<ForceGraphMethods<GraphNode, GraphLink>>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ w: 800, h: 600 });
-  const [selectedNote, setSelectedNote] = useState<RawNote | null>(null);
 
   useLayoutEffect(() => {
     if (!containerRef.current) return;
@@ -78,106 +140,91 @@ export default function GraphPanel() {
     return () => ro.disconnect();
   }, []);
 
+  // Client-side filter — no extra API calls when user types
+  const applyFilter = useCallback((nodes: RawGraphNode[], edges: RawGraphEdge[], query: string) => {
+    if (!query.trim()) {
+      setGraphData({ nodes: nodes.map(toGraphNode), links: edges.map(toGraphLink) });
+      return;
+    }
+    const q = query.toLowerCase();
+    const matchIds = new Set(nodes.filter(n => n.label.toLowerCase().includes(q)).map(n => n.id));
+    const filteredNodes = nodes.filter(n => matchIds.has(n.id));
+    const filteredEdges = edges.filter(e => matchIds.has(e.source) && matchIds.has(e.target));
+    setGraphData({ nodes: filteredNodes.map(toGraphNode), links: filteredEdges.map(toGraphLink) });
+  }, []);
+
+  // Single API call — brain returns Note + Entity + Task nodes and all edges
+  const loadGraph = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const json = await callTool("export_graph_visualization", { max_nodes: 200 });
+      const data = JSON.parse(json);
+      const nodes: RawGraphNode[] = data.nodes ?? [];
+      const edges: RawGraphEdge[] = data.edges ?? [];
+      setAllNodes(nodes);
+      setAllEdges(edges);
+      applyFilter(nodes, edges, searchQ);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [searchQ, applyFilter]);
+
+  useEffect(() => { loadGraph(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSearch = () => applyFilter(allNodes, allEdges, searchQ);
+  const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") handleSearch();
+  };
+
   const handleNodeClick = useCallback(async (node: GraphNode) => {
+    if (node.nodeType === "entity") {
+      setSelectedNode({ id: node.id, type: "entity", label: node.label, entity_type: node.entityType });
+      return;
+    }
+    if (node.nodeType === "task") {
+      setSelectedNode({ id: node.id, type: "task", label: node.label, status: node.taskStatus });
+      return;
+    }
+    // Note node: fetch full content via get_note
     try {
       const json = await callTool("get_note", { id: node.id });
       const data = JSON.parse(json);
       if (data) {
-        setSelectedNote(data);
+        setSelectedNode({
+          id:           data.id ?? node.id,
+          type:         "note",
+          label:        node.label,
+          content:      data.content,
+          note_type:    data.note_type,
+          access_count: data.access_count,
+        });
       }
     } catch (e) {
       console.error("Failed to fetch note:", e);
     }
   }, []);
 
-  const buildGraph = useCallback(async (query: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const json = await callTool("search_notes", { query: query || " ", limit: 40 });
-      const data = JSON.parse(json);
-      const notes: RawNote[] = data.notes ?? [];
-
-      const nodeMap = new Map<string, GraphNode>();
-      const links: GraphLink[] = [];
-
-      // Add seed nodes.
-      for (const n of notes) {
-        nodeMap.set(n.id, {
-          id: n.id,
-          label: (n.content || "").slice(0, 60) + ((n.content || "").length > 60 ? "…" : ""),
-          type: n.note_type ?? "semantic",
-          color: nodeColor(n.note_type ?? "semantic"),
-          val: 3,
-        });
-      }
-
-      // Fetch related edges for up to 20 seed nodes (to avoid rate-limiting).
-      const seeds = notes.slice(0, 20);
-      const relatedResults = await Promise.allSettled(
-        seeds.map((n) =>
-          callTool("find_related_notes", { note_id: n.id }).then((j) => ({
-            sourceId: n.id,
-            related: (JSON.parse(j).related_notes ?? []) as RelatedNote[],
-          }))
-        )
-      );
-
-      for (const result of relatedResults) {
-        if (result.status !== "fulfilled") continue;
-        const { sourceId, related } = result.value;
-        for (const r of related) {
-          const targetId = r.note_id ?? r.id;
-          if (!targetId) continue;
-
-          // Add target node if not already present.
-          if (!nodeMap.has(targetId)) {
-            nodeMap.set(targetId, {
-              id: targetId,
-              label: (r.content || "").slice(0, 60) + ((r.content || "").length > 60 ? "…" : ""),
-              type: "semantic",
-              color: nodeColor("semantic"),
-              val: 2,
-            });
-          }
-
-          // Avoid duplicate links.
-          const alreadyLinked = links.some(
-            (l) =>
-              (l.source === sourceId && l.target === targetId) ||
-              (l.source === targetId && l.target === sourceId)
-          );
-          if (!alreadyLinked) {
-            links.push({ source: sourceId, target: targetId, similarity: r.similarity });
-          }
-        }
-      }
-
-      setGraphData({ nodes: Array.from(nodeMap.values()), links });
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    buildGraph("");
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") buildGraph(searchQ);
-  };
-
-  // Custom canvas node rendering.
+  // Circle for notes, diamond for entities, square for tasks
   const paintNode = useCallback(
     (node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const fontSize = Math.max(8, 12 / globalScale);
-      const label = node.label;
       const r = Math.sqrt(node.val ?? 3) * 4;
 
       ctx.beginPath();
-      ctx.arc(node.x ?? 0, node.y ?? 0, r, 0, 2 * Math.PI, false);
+      if (node.nodeType === "entity") {
+        ctx.moveTo(node.x ?? 0, (node.y ?? 0) - r);
+        ctx.lineTo((node.x ?? 0) + r, node.y ?? 0);
+        ctx.lineTo(node.x ?? 0, (node.y ?? 0) + r);
+        ctx.lineTo((node.x ?? 0) - r, node.y ?? 0);
+        ctx.closePath();
+      } else if (node.nodeType === "task") {
+        ctx.rect((node.x ?? 0) - r, (node.y ?? 0) - r, r * 2, r * 2);
+      } else {
+        ctx.arc(node.x ?? 0, node.y ?? 0, r, 0, 2 * Math.PI, false);
+      }
       ctx.fillStyle = node.color;
       ctx.fill();
       ctx.strokeStyle = "rgba(255,255,255,0.15)";
@@ -188,23 +235,31 @@ export default function GraphPanel() {
         ctx.font = `${fontSize}px "JetBrains Mono", monospace`;
         ctx.fillStyle = "rgba(212,216,232,0.8)";
         ctx.textAlign = "center";
-        ctx.fillText((label || "").slice(0, 30), node.x ?? 0, (node.y ?? 0) + r + fontSize + 1);
+        ctx.fillText(node.label.slice(0, 30), node.x ?? 0, (node.y ?? 0) + r + fontSize + 1);
       }
     },
     []
   );
+
+  const legendEntries = [
+    ...Object.entries(NOTE_TYPE_COLORS).map(([type, color]) => ({ label: `note: ${type}`, color })),
+    { label: "entity ◇", color: NODE_TYPE_COLORS.entity },
+    { label: "task ▪",   color: NODE_TYPE_COLORS.task },
+  ];
 
   return (
     <div className="panel">
       <div className="panel-header">
         🕸 Knowledge Graph
         {graphData.nodes.length > 0 && (
-          <span className="badge">{graphData.nodes.length} nodes · {graphData.links.length} edges</span>
+          <span className="badge">
+            {graphData.nodes.length} nodes · {graphData.links.length} edges
+          </span>
         )}
         {loading && (
           <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 8 }}>loading…</span>
         )}
-        <button className="refresh-btn" onClick={() => buildGraph(searchQ)} title="Refresh">↻</button>
+        <button className="refresh-btn" onClick={loadGraph} title="Reload full graph from brain">↻</button>
       </div>
 
       {error && <div className="error-msg">{error}</div>}
@@ -212,23 +267,22 @@ export default function GraphPanel() {
       <div ref={containerRef} className="graph-container">
         <div className="graph-search-bar">
           <input
-            placeholder="Filter graph… (Enter)"
+            placeholder="Filter nodes… (Enter)"
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
             onKeyDown={handleKey}
           />
-          <button className="btn" onClick={() => buildGraph(searchQ)}>
-            Load
-          </button>
+          <button className="btn" onClick={handleSearch}>Filter</button>
+          <button className="btn" style={{ marginLeft: 4 }} onClick={loadGraph}>Reload</button>
         </div>
 
         <div className="graph-overlay">
           <div className="graph-legend">
             <div className="graph-legend-title">Node type</div>
-            {Object.entries(TYPE_COLORS).map(([type, color]) => (
-              <div key={type} className="legend-row">
+            {legendEntries.map(({ label, color }) => (
+              <div key={label} className="legend-row">
                 <span className="legend-dot" style={{ background: color }} />
-                {type}
+                {label}
               </div>
             ))}
           </div>
@@ -237,7 +291,7 @@ export default function GraphPanel() {
         {graphData.nodes.length === 0 && !loading && (
           <div className="empty-state" style={{ position: "absolute", inset: 0 }}>
             <span className="icon">🕸</span>
-            <span>No nodes — try refreshing once the brain has notes stored</span>
+            <span>No nodes — try reloading once the brain has notes stored</span>
           </div>
         )}
 
@@ -248,10 +302,10 @@ export default function GraphPanel() {
           nodeColor={(n) => (n as GraphNode).color}
           nodeVal={(n) => (n as GraphNode).val}
           nodeLabel={(n) => (n as GraphNode).label}
-          linkColor={() => "rgba(79,142,247,0.25)"}
+          linkColor={(l) => EDGE_COLORS[(l as GraphLink).edgeType] ?? "rgba(79,142,247,0.25)"}
           linkWidth={(l) => {
             const ll = l as GraphLink;
-            return ll.similarity ? ll.similarity * 2 : 0.5;
+            return ll.weight ? ll.weight * 2 : 0.5;
           }}
           backgroundColor="transparent"
           nodeCanvasObject={paintNode as Parameters<typeof ForceGraph2D>[0]["nodeCanvasObject"]}
@@ -260,19 +314,45 @@ export default function GraphPanel() {
           height={dims.h}
         />
 
-        {selectedNote && (
+        {selectedNode && (
           <div className="graph-detail-overlay">
             <div className="graph-detail-header">
-              <span className={`note-type-badge ${selectedNote.note_type ?? "semantic"}`}>
-                {selectedNote.note_type ?? "semantic"}
+              <span className={`note-type-badge ${selectedNode.note_type ?? selectedNode.type}`}>
+                {selectedNode.type === "note"
+                  ? (selectedNode.note_type ?? "note")
+                  : selectedNode.type}
               </span>
-              <button className="close-btn" onClick={() => setSelectedNote(null)}>×</button>
+              <button className="close-btn" onClick={() => setSelectedNode(null)}>×</button>
             </div>
             <div className="graph-detail-content scroll">
-              {selectedNote.content}
+              {selectedNode.type === "note" && selectedNode.content}
+              {selectedNode.type === "entity" && (
+                <div>
+                  <strong>{selectedNode.label}</strong>
+                  {selectedNode.entity_type && (
+                    <div style={{ color: "var(--text-muted)", marginTop: 6 }}>
+                      {selectedNode.entity_type}
+                    </div>
+                  )}
+                </div>
+              )}
+              {selectedNode.type === "task" && (
+                <div>
+                  <strong>{selectedNode.label}</strong>
+                  {selectedNode.status && (
+                    <div className={`task-status-badge ${selectedNode.status}`}
+                         style={{ marginTop: 8, display: "inline-block" }}>
+                      {selectedNode.status}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="graph-detail-footer">
-              ID: {selectedNote.id.slice(0, 8)}…
+              {selectedNode.access_count !== undefined && (
+                <span>Accessed {selectedNode.access_count}× · </span>
+              )}
+              ID: {selectedNode.id.slice(0, 8)}…
             </div>
           </div>
         )}

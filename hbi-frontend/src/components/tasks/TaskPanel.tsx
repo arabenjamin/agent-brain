@@ -56,10 +56,6 @@ export default function TaskPanel() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  const filtered = tasks.filter(
-    (t) => filter === "all" || t.status === filter
-  );
-
   const statusFilters: StatusFilter[] = [
     "all", "created", "in_progress", "completed", "failed", "blocked",
   ];

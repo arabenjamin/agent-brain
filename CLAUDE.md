@@ -309,9 +309,9 @@ The MCP server supports two transport mechanisms:
      └─────────────────────┬───────────────────────────┘
                            │
      ┌─────────────────────▼───────────────────────────┐
-     │    Skill Registry (64 static + N runtime)               │
+     │    Skill Registry (66 static + N runtime)               │
      │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)             │
-     │  KnowledgeSkill(11)  ProcedureSkill(2)  AgentSkill(8)  │
+     │  KnowledgeSkill(13)  ProcedureSkill(2)  AgentSkill(8)  │
      │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)         │
      │  AdminSkill(5)  ModelSkill(5)  SleepSkill(2)            │
      │  SchedulerSkill(5)                                      │
@@ -320,7 +320,7 @@ The MCP server supports two transport mechanisms:
 
 ### MCP Tools
 
-The server exposes sixty-six tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
+The server exposes sixty-eight tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -449,9 +449,10 @@ The server exposes sixty-six tools via JSON-RPC 2.0, organised across eleven ski
     - Returns: `{ "note_id": "...", "links_created": N, "success": true }`
 
 19. **`search_notes`** - Retrieve notes via hybrid BM25 + vector search with graph expansion
-    - Input: `{ "query": "...", "limit": 5, "graph_hops": 2 }` (limit, graph_hops optional)
-    - Merges vector and full-text BM25 results via Reciprocal Rank Fusion (RRF)
+    - Input: `{ "query": "...", "limit": 5, "graph_hops": 2, "entity_expansion": false }` (all except query optional)
+    - Merges vector and full-text BM25 results via Reciprocal Rank Fusion (RRF) with freshness boost
     - Expands results via up to `graph_hops` RELATES_TO traversals
+    - `entity_expansion: true` also bridges through Entity nodes (MENTIONS→Entity←MENTIONS) for related notes
     - Falls back to case-insensitive keyword `CONTAINS` query if indexes unavailable
     - Updates `access_count`, `last_accessed_at`, and doubles `review_interval_days` on hits
     - Returns: `{ "count": N, "notes": [...] }`
@@ -509,6 +510,16 @@ The server exposes sixty-six tools via JSON-RPC 2.0, organised across eleven ski
     - Input: `{ "request": "...", "context": "...", "available_tools": [...] }` (`context`, `available_tools` optional)
     - Uses LLM to identify underspecified or multi-interpretation requests
     - Returns: `{ "needs_clarification": bool, "ambiguities": [...], "clarifying_questions": [...], "assumptions": [...], "recommended_approach": "..." }`
+
+29. **`get_note`** - Fetch a single note by its UUID
+    - Input: `{ "id": "..." }`
+    - Updates `access_count` and `last_accessed_at` on retrieval
+    - Returns: `{ "id", "content", "note_type", "created_at", "access_count", "review_interval_days" }` or `{ "error": "not found" }`
+
+30. **`export_graph_visualization`** - Export the full knowledge graph as a JSON graph for visualization
+    - Input: `{ "max_nodes": 200 }` (`max_nodes` optional, default 200)
+    - Returns Note, Entity, and Task nodes plus all relationship edges (RELATES_TO, MENTIONS, PART_OF, SUMMARIZED_BY, REFLECTS_ON, SUBTASK_OF, DERIVED_FROM)
+    - Returns: `{ "nodes": [{ "id", "label", "type" }], "edges": [{ "source", "target", "type" }] }`
 
 **Task Management Tools (TaskSkill):**
 

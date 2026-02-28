@@ -6,8 +6,10 @@ const TaskPanel      = lazy(() => import("./components/tasks/TaskPanel"));
 const KnowledgePanel = lazy(() => import("./components/knowledge/KnowledgePanel"));
 const GraphPanel     = lazy(() => import("./components/graph/GraphPanel"));
 const ToolPanel      = lazy(() => import("./components/tools/ToolPanel"));
+const LogsPanel      = lazy(() => import("./components/logs/LogsPanel"));
+const SettingsModal  = lazy(() => import("./components/settings/SettingsModal"));
 
-type Tab = "chat" | "tasks" | "knowledge" | "graph" | "tools";
+type Tab = "chat" | "tasks" | "knowledge" | "graph" | "tools" | "logs";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "chat",      icon: "🧠", label: "Chat" },
@@ -15,6 +17,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "knowledge", icon: "🔍", label: "Knowledge" },
   { id: "graph",     icon: "🕸", label: "Graph" },
   { id: "tools",     icon: "🔧", label: "Tools" },
+  { id: "logs",      icon: "📊", label: "Logs" },
 ];
 
 function Fallback() {
@@ -23,6 +26,7 @@ function Fallback() {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
+  const [showSettings, setShowSettings] = useState(false);
 
   return (
     <div className="app">
@@ -38,6 +42,16 @@ export default function App() {
             {t.label}
           </button>
         ))}
+        <div style={{ marginTop: "auto" }}>
+          <button
+            className="sidebar-btn"
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+          >
+            <span className="icon">⚙</span>
+            Settings
+          </button>
+        </div>
       </nav>
 
       <main className="main-content">
@@ -54,8 +68,15 @@ export default function App() {
           {tab === "knowledge" && <KnowledgePanel />}
           {tab === "graph"     && <GraphPanel />}
           {tab === "tools"     && <ToolPanel />}
+          {tab === "logs"      && <LogsPanel />}
         </Suspense>
       </main>
+
+      {showSettings && (
+        <Suspense fallback={null}>
+          <SettingsModal onClose={() => setShowSettings(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }
