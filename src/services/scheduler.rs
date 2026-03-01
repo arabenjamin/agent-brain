@@ -508,8 +508,19 @@ impl SchedulerService {
             ]
         } else if g.contains("consolidat") {
             // Memory consolidation: run consolidate_memories then prune stale notes.
-            // Extract a topic hint from the goal (everything before "overdue" or use the full goal).
-            let topic = goal.split(" overdue").next().unwrap_or(goal).trim().to_string();
+            // Auto-generated goals (containing "overdue" or "episodic") use a broad topic;
+            // manually created consolidation goals extract the meaningful subject after the verb.
+            let topic = if g.contains("overdue") || g.contains("episodic") {
+                "recent experiences and knowledge".to_string()
+            } else {
+                // e.g. "Consolidate robotics knowledge" → "robotics knowledge"
+                goal.split_whitespace()
+                    .skip(1)  // skip "Consolidate"
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .trim()
+                    .to_string()
+            };
             vec![
                 ChainStep {
                     tool_name: "consolidate_memories".to_string(),

@@ -715,6 +715,39 @@ Respond with a JSON object only (no markdown, no explanation):
         }
     }
 
+    fn delete_note_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "delete_note".to_string(),
+            description: "Permanently delete a note and all its relationships by ID. \
+                          Use this to remove bad, duplicate, or unwanted notes from the graph."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "UUID of the note to delete" }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    async fn handle_delete_note(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input { id: String }
+        let input: Input = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let service = self.make_service().await;
+        match service.delete_note(&input.id).await {
+            Ok(true) => ToolCallResult::success_text(
+                serde_json::to_string(&json!({"deleted": true, "id": input.id})).unwrap()
+            ),
+            Ok(false) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
+            Err(e) => ToolCallResult::error(format!("Failed to delete note: {}", e)),
+        }
+    }
+
     async fn handle_search_by_entity(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: SearchByEntityInput = match parse_args(arguments) {
             Ok(v) => v,
@@ -753,6 +786,7 @@ impl Skill for KnowledgeSkill {
             Self::store_note_def(),
             Self::search_notes_def(),
             Self::get_note_def(),
+            Self::delete_note_def(),
             Self::find_related_notes_def(),
             Self::prune_old_notes_def(),
             Self::consolidate_memories_def(),
@@ -762,7 +796,6 @@ impl Skill for KnowledgeSkill {
             Self::audit_action_def(),
             Self::explain_reasoning_def(),
             Self::ask_clarification_def(),
-            Self::get_note_def(),
             Self::export_graph_visualization_def(),
         ]
     }
@@ -772,6 +805,7 @@ impl Skill for KnowledgeSkill {
             "store_note" => Some(self.handle_store_note(arguments).await),
             "search_notes" => Some(self.handle_search_notes(arguments).await),
             "get_note" => Some(self.handle_get_note(arguments).await),
+            "delete_note" => Some(self.handle_delete_note(arguments).await),
             "find_related_notes" => Some(self.handle_find_related_notes(arguments).await),
             "prune_old_notes" => Some(self.handle_prune_old_notes(arguments).await),
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),
@@ -781,7 +815,6 @@ impl Skill for KnowledgeSkill {
             "audit_action" => Some(self.handle_audit_action(arguments).await),
             "explain_reasoning" => Some(self.handle_explain_reasoning(arguments).await),
             "ask_clarification" => Some(self.handle_ask_clarification(arguments).await),
-            "get_note" => Some(self.handle_get_note(arguments).await),
             "export_graph_visualization" => Some(self.handle_export_graph_visualization(arguments).await),
             _ => None,
         }

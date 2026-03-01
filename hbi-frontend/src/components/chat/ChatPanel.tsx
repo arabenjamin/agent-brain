@@ -32,7 +32,11 @@ interface Session {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function uid() {
-  return crypto.randomUUID();
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback for non-secure contexts (e.g. accessing via IP on local network)
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 function toHistory(msgs: Msg[]): ChatHistoryMessage[] {

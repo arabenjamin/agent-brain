@@ -309,9 +309,9 @@ The MCP server supports two transport mechanisms:
      └─────────────────────┬───────────────────────────┘
                            │
      ┌─────────────────────▼───────────────────────────┐
-     │    Skill Registry (66 static + N runtime)               │
+     │    Skill Registry (67 static + N runtime)               │
      │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)             │
-     │  KnowledgeSkill(13)  ProcedureSkill(2)  AgentSkill(8)  │
+     │  KnowledgeSkill(14)  ProcedureSkill(2)  AgentSkill(8)  │
      │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)         │
      │  AdminSkill(5)  ModelSkill(5)  SleepSkill(2)            │
      │  SchedulerSkill(5)                                      │
@@ -320,7 +320,7 @@ The MCP server supports two transport mechanisms:
 
 ### MCP Tools
 
-The server exposes sixty-eight tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
+The server exposes sixty-nine tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -516,7 +516,12 @@ The server exposes sixty-eight tools via JSON-RPC 2.0, organised across eleven s
     - Updates `access_count` and `last_accessed_at` on retrieval
     - Returns: `{ "id", "content", "note_type", "created_at", "access_count", "review_interval_days" }` or `{ "error": "not found" }`
 
-30. **`export_graph_visualization`** - Export the full knowledge graph as a JSON graph for visualization
+30. **`delete_note`** - Permanently delete a note and all its relationships
+    - Input: `{ "id": "..." }`
+    - DETACH DELETE removes the node and all edges; use to clean up bad, duplicate, or unwanted notes
+    - Returns: `{ "deleted": true, "id": "..." }` or error if not found
+
+31. **`export_graph_visualization`** - Export the full knowledge graph as a JSON graph for visualization
     - Input: `{ "max_nodes": 200 }` (`max_nodes` optional, default 200)
     - Returns Note, Entity, and Task nodes plus all relationship edges (RELATES_TO, MENTIONS, PART_OF, SUMMARIZED_BY, REFLECTS_ON, SUBTASK_OF, DERIVED_FROM)
     - Returns: `{ "nodes": [{ "id", "label", "type" }], "edges": [{ "source", "target", "type" }] }`

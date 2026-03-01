@@ -549,6 +549,18 @@ impl KnowledgeService {
         }
     }
 
+    /// Delete a single note and all its relationships.
+    pub async fn delete_note(&self, note_id: &str) -> Result<bool> {
+        let cypher = "MATCH (n:Note {id: $id}) DETACH DELETE n RETURN count(n) AS deleted";
+        let rows = self.neo4j.execute(
+            neo4rs::query(cypher).param("id", note_id)
+        ).await?;
+        let deleted = rows.into_iter().next()
+            .and_then(|r| r.get::<i64>("deleted").ok())
+            .unwrap_or(0);
+        Ok(deleted > 0)
+    }
+
     /// Find notes related to a given note via RELATES_TO edges.
     pub async fn find_related_notes(&self, note_id: &str) -> Result<Vec<(String, f64)>> {
         let cypher = r#"
@@ -1379,14 +1391,16 @@ impl KnowledgeService {
         let notes_block = note_contents
             .iter()
             .enumerate()
-            .map(|(i, c)| format!("Note {}:\n{}", i + 1, c))
+            .map(|(i, c)| format!("[Memory {}]\n{}", i + 1, c))
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
         let prompt = format!(
-            "You are a memory consolidation system. Synthesize the following notes about '{}' \
-             into a single, structured summary that captures all key facts without redundancy:\n\n{}",
-            topic, notes_block
+            "You are a memory consolidation system. Synthesize the following {} memories about '{}' \
+             into a single, well-structured summary that captures all key facts, patterns, and insights \
+             without redundancy. Write in flowing prose with clear section headers where helpful. \
+             Do NOT echo or repeat the [Memory N] input labels in your output.\n\n{}",
+            source_count, topic, notes_block
         );
 
         // 4. Generate consolidated content
@@ -1407,10 +1421,21 @@ impl KnowledgeService {
             "#;
 
             let link_query = neo4rs::query(link_cypher)
-                .param("source_ids", source_ids)
+                .param("source_ids", source_ids.clone())
                 .param("consolidated_id", consolidated_id.clone());
 
             self.neo4j.run(link_query).await?;
+
+            // 7. Reset spaced-rep schedule on source notes so they no longer appear "overdue"
+            //    and don't trigger another consolidation cycle immediately.
+            let reset_cypher = "MATCH (n:Note) WHERE n.id IN $ids \
+                SET n.next_review_at = datetime() + duration({days: 30}), \
+                    n.review_interval_days = 30";
+            if let Err(e) = self.neo4j.run(
+                neo4rs::query(reset_cypher).param("ids", source_ids)
+            ).await {
+                tracing::warn!("Failed to reset next_review_at on consolidated source notes: {e}");
+            }
         }
 
         let preview: String = consolidated_content.chars().take(200).collect();
