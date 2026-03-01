@@ -561,6 +561,18 @@ impl KnowledgeService {
         Ok(deleted > 0)
     }
 
+    /// Update the content of an existing note in-place, preserving all graph edges and metadata.
+    pub async fn update_note(&self, note_id: &str, content: &str) -> Result<bool> {
+        let cypher = "MATCH (n:Note {id: $id}) SET n.content = $content RETURN count(n) AS updated";
+        let rows = self.neo4j.execute(
+            neo4rs::query(cypher).param("id", note_id).param("content", content)
+        ).await?;
+        let updated = rows.into_iter().next()
+            .and_then(|r| r.get::<i64>("updated").ok())
+            .unwrap_or(0);
+        Ok(updated > 0)
+    }
+
     /// Find notes related to a given note via RELATES_TO edges.
     pub async fn find_related_notes(&self, note_id: &str) -> Result<Vec<(String, f64)>> {
         let cypher = r#"

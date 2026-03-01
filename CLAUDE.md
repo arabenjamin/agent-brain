@@ -309,9 +309,9 @@ The MCP server supports two transport mechanisms:
      └─────────────────────┬───────────────────────────┘
                            │
      ┌─────────────────────▼───────────────────────────┐
-     │    Skill Registry (67 static + N runtime)               │
+     │    Skill Registry (68 static + N runtime)               │
      │  ApiSkill(14)  SearchSkill(1)  TaskSkill(6)             │
-     │  KnowledgeSkill(14)  ProcedureSkill(2)  AgentSkill(8)  │
+     │  KnowledgeSkill(15)  ProcedureSkill(2)  AgentSkill(8)  │
      │  WorkingMemorySkill(3)  DynamicSkill(4+runtime)         │
      │  AdminSkill(5)  ModelSkill(5)  SleepSkill(2)            │
      │  SchedulerSkill(5)                                      │
@@ -320,7 +320,7 @@ The MCP server supports two transport mechanisms:
 
 ### MCP Tools
 
-The server exposes sixty-nine tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
+The server exposes seventy tools via JSON-RPC 2.0, organised across eleven skills (plus runtime-defined tools from DynamicSkill):
 
 **Core Tools:**
 
@@ -520,6 +520,11 @@ The server exposes sixty-nine tools via JSON-RPC 2.0, organised across eleven sk
     - Input: `{ "id": "..." }`
     - DETACH DELETE removes the node and all edges; use to clean up bad, duplicate, or unwanted notes
     - Returns: `{ "deleted": true, "id": "..." }` or error if not found
+
+31. **`update_note`** - Update note content in-place, preserving all graph edges and metadata
+    - Input: `{ "id": "...", "content": "..." }`
+    - Overwrites only the `content` field; access_count, note_type, embeddings, edges all preserved
+    - Returns: `{ "updated": true, "id": "..." }` or error if not found
 
 31. **`export_graph_visualization`** - Export the full knowledge graph as a JSON graph for visualization
     - Input: `{ "max_nodes": 200 }` (`max_nodes` optional, default 200)

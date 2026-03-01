@@ -748,6 +748,45 @@ Respond with a JSON object only (no markdown, no explanation):
         }
     }
 
+    fn update_note_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "update_note".to_string(),
+            description: "Update the content of an existing note in-place, preserving all graph \
+                          edges (RELATES_TO, SUMMARIZED_BY, REFLECTS_ON, etc.) and metadata \
+                          (access_count, note_type, embeddings). Use this to correct or expand \
+                          a note without losing its connections."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id":      { "type": "string", "description": "UUID of the note to update" },
+                    "content": { "type": "string", "description": "New content for the note" }
+                },
+                "required": ["id", "content"]
+            }),
+        }
+    }
+
+    async fn handle_update_note(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input { id: String, content: String }
+        let input: Input = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        if input.content.trim().is_empty() {
+            return ToolCallResult::error("content must not be empty".to_string());
+        }
+        let service = self.make_service().await;
+        match service.update_note(&input.id, &input.content).await {
+            Ok(true) => ToolCallResult::success_text(
+                serde_json::to_string(&json!({"updated": true, "id": input.id})).unwrap()
+            ),
+            Ok(false) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
+            Err(e) => ToolCallResult::error(format!("Failed to update note: {}", e)),
+        }
+    }
+
     async fn handle_search_by_entity(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: SearchByEntityInput = match parse_args(arguments) {
             Ok(v) => v,
@@ -787,6 +826,7 @@ impl Skill for KnowledgeSkill {
             Self::search_notes_def(),
             Self::get_note_def(),
             Self::delete_note_def(),
+            Self::update_note_def(),
             Self::find_related_notes_def(),
             Self::prune_old_notes_def(),
             Self::consolidate_memories_def(),
@@ -806,6 +846,7 @@ impl Skill for KnowledgeSkill {
             "search_notes" => Some(self.handle_search_notes(arguments).await),
             "get_note" => Some(self.handle_get_note(arguments).await),
             "delete_note" => Some(self.handle_delete_note(arguments).await),
+            "update_note" => Some(self.handle_update_note(arguments).await),
             "find_related_notes" => Some(self.handle_find_related_notes(arguments).await),
             "prune_old_notes" => Some(self.handle_prune_old_notes(arguments).await),
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),

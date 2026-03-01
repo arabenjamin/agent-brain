@@ -673,12 +673,42 @@ html, body, #root {
 
 .note-detail {
   flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 14px;
+  gap: 10px;
 }
 
 .note-detail::-webkit-scrollbar { width: 5px; }
 .note-detail::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* topbar: type badge + id + action buttons */
+.note-detail-topbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* header used in compose / edit modes */
+.note-edit-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.note-type-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 11px;
+  font-family: var(--font);
+  padding: 2px 6px;
+  cursor: pointer;
+}
 
 .note-full-content {
   font-size: 12.5px;
@@ -686,7 +716,49 @@ html, body, #root {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  flex: 1;
+  overflow-y: auto;
 }
+
+.note-edit-area {
+  flex: 1;
+  min-height: 200px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12.5px;
+  line-height: 1.7;
+  padding: 10px;
+  resize: none;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.note-edit-area:focus { border-color: var(--accent); }
+
+/* row of Save / Cancel / Edit / Delete buttons */
+.note-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ghost button (no fill) */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.btn-ghost:hover { border-color: var(--accent); color: var(--text); }
+.btn-ghost.danger { color: var(--red); border-color: transparent; }
+.btn-ghost.danger:hover { border-color: var(--red); }
 
 .related-section { margin-top: 16px; }
 
