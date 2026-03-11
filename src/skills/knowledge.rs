@@ -9,25 +9,41 @@ use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
-use crate::services::{KnowledgeService, LlmClient, LlmConfig};
+use crate::services::{KnowledgeService, LlmClient, LlmConfig, SnapshotService};
 use crate::skills::Skill;
 
 /// Knowledge Skill implementation.
 pub struct KnowledgeSkill {
     neo4j: Neo4jClient,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    snapshot_svc: Option<Arc<SnapshotService>>,
+    auto_snapshot: bool,
+    auto_snapshot_prune: bool,
 }
 
 impl KnowledgeSkill {
     /// Create a new knowledge skill.
     pub fn new(neo4j: Neo4jClient, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
-        Self { neo4j, llm_config }
+        Self { neo4j, llm_config, snapshot_svc: None, auto_snapshot: false, auto_snapshot_prune: false }
+    }
+
+    /// Attach a snapshot service for auto-snapshotting before major operations.
+    pub fn with_snapshot(mut self, svc: Arc<SnapshotService>, auto_consolidate: bool, auto_prune: bool) -> Self {
+        self.snapshot_svc = Some(svc);
+        self.auto_snapshot = auto_consolidate;
+        self.auto_snapshot_prune = auto_prune;
+        self
     }
 
     async fn make_service(&self) -> KnowledgeService {
         let config = self.llm_config.read().await.clone();
         let llm = config.and_then(|c| LlmClient::with_config(c).ok());
-        KnowledgeService::new(self.neo4j.clone(), llm)
+        let svc = KnowledgeService::new(self.neo4j.clone(), llm);
+        if let Some(snap) = &self.snapshot_svc {
+            svc.with_snapshot(Arc::clone(snap), self.auto_snapshot, self.auto_snapshot_prune)
+        } else {
+            svc
+        }
     }
 
     // ========================================================================
@@ -199,6 +215,29 @@ impl KnowledgeSkill {
                     }
                 },
                 "required": ["topic"]
+            }),
+        }
+    }
+
+    fn list_notes_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_notes".to_string(),
+            description: "List recently created notes, optionally filtered by type. \
+                         Returns notes in reverse-chronological order. \
+                         Use for browsing or initial knowledge panel load."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of notes to return (default: 20)"
+                    },
+                    "note_type": {
+                        "type": "string",
+                        "description": "Optional filter: semantic, episodic, reflection, consolidated, outcome, inference"
+                    }
+                }
             }),
         }
     }
@@ -398,7 +437,7 @@ impl KnowledgeSkill {
             Ok((id, links_created)) => {
                 let response = json!({
                     "success": true,
-                    "note_id": id,
+                    "id": id,
                     "links_created": links_created,
                     "message": "Note stored successfully"
                 });
@@ -483,13 +522,13 @@ impl KnowledgeSkill {
             Ok(count) => {
                 let response = if input.dry_run {
                     json!({
-                        "would_delete": count,
+                        "count": count,
                         "dry_run": true,
                         "message": format!("Would delete {} stale note(s) (dry run)", count)
                     })
                 } else {
                     json!({
-                        "deleted": count,
+                        "count": count,
                         "message": format!("Deleted {} stale note(s)", count)
                     })
                 };
@@ -511,13 +550,39 @@ impl KnowledgeSkill {
         match service.consolidate_memories(&input.topic, input.limit).await {
             Ok((id, source_count, preview)) => {
                 let response = json!({
-                    "consolidated_note_id": id,
+                    "id": id,
                     "source_count": source_count,
                     "preview": preview
                 });
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
             }
             Err(e) => ToolCallResult::error(format!("Consolidation failed: {}", e)),
+        }
+    }
+
+    async fn handle_list_notes(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input {
+            #[serde(default = "default_list_limit")]
+            limit: usize,
+            #[serde(default)]
+            note_type: Option<String>,
+        }
+
+        let input: Input = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        info!(limit = input.limit, note_type = ?input.note_type, "Listing notes");
+
+        let service = self.make_service().await;
+        match service.list_notes(input.limit, input.note_type.as_deref()).await {
+            Ok(notes) => {
+                let response = json!({ "count": notes.len(), "notes": notes });
+                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to list notes: {}", e)),
         }
     }
 
@@ -560,7 +625,7 @@ impl KnowledgeSkill {
                     "gaps": gaps,
                 });
                 if let Some(nid) = note_id {
-                    response["inference_note_id"] = json!(nid);
+                    response["id"] = json!(nid);
                 }
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
             }
@@ -824,6 +889,7 @@ impl Skill for KnowledgeSkill {
         vec![
             Self::store_note_def(),
             Self::search_notes_def(),
+            Self::list_notes_def(),
             Self::get_note_def(),
             Self::delete_note_def(),
             Self::update_note_def(),
@@ -844,6 +910,7 @@ impl Skill for KnowledgeSkill {
         match tool_name {
             "store_note" => Some(self.handle_store_note(arguments).await),
             "search_notes" => Some(self.handle_search_notes(arguments).await),
+            "list_notes" => Some(self.handle_list_notes(arguments).await),
             "get_note" => Some(self.handle_get_note(arguments).await),
             "delete_note" => Some(self.handle_delete_note(arguments).await),
             "update_note" => Some(self.handle_update_note(arguments).await),
@@ -967,6 +1034,7 @@ struct AskClarificationInput {
 }
 
 fn default_limit() -> usize { 5 }
+fn default_list_limit() -> usize { 20 }
 fn default_graph_hops() -> usize { 2 }
 fn default_days_stale() -> i64 { 30 }
 fn default_min_accesses() -> i64 { 2 }

@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::env;
+use std::path::PathBuf;
 
 /// Application configuration loaded from environment variables.
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +51,24 @@ pub struct Config {
     pub gemini_api_key: Option<String>,
     /// Gemini model name
     pub gemini_model: Option<String>,
+    /// vLLM (or any OpenAI-compatible) server base URL (VLLM_URL)
+    pub vllm_url: String,
+    /// vLLM model name (VLLM_MODEL)
+    pub vllm_model: Option<String>,
+    /// vLLM API key for secured deployments (VLLM_API_KEY)
+    pub vllm_api_key: Option<String>,
+    /// Separate vLLM endpoint for embeddings, e.g. http://localhost:8001 (VLLM_EMBED_URL)
+    pub vllm_embed_url: Option<String>,
+    /// Model name for the vLLM embedding endpoint, e.g. BAAI/bge-m3 (VLLM_EMBED_MODEL)
+    pub vllm_embed_model: Option<String>,
+    /// Directory for knowledge graph snapshots (KNOWLEDGE_SNAPSHOT_DIR)
+    pub knowledge_snapshot_dir: PathBuf,
+    /// Whether to auto-snapshot before consolidate_memories (AUTO_SNAPSHOT_BEFORE_CONSOLIDATION)
+    pub auto_snapshot_before_consolidation: bool,
+    /// Whether to auto-snapshot before prune_old_notes (AUTO_SNAPSHOT_BEFORE_PRUNE)
+    pub auto_snapshot_before_prune: bool,
+    /// Directory containing context profile YAML files (CONTEXTS_DIR)
+    pub contexts_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -117,6 +136,7 @@ impl Config {
                 .map(|s| match s.to_lowercase().as_str() {
                     "anthropic" => crate::services::llm::LlmProviderType::Anthropic,
                     "gemini" => crate::services::llm::LlmProviderType::Gemini,
+                    "vllm" => crate::services::llm::LlmProviderType::VLlm,
                     _ => crate::services::llm::LlmProviderType::Ollama,
                 })
                 .unwrap_or_default(),
@@ -124,6 +144,24 @@ impl Config {
             anthropic_model: env::var("ANTHROPIC_MODEL").ok(),
             gemini_api_key: env::var("GEMINI_API_KEY").ok(),
             gemini_model: env::var("GEMINI_MODEL").ok(),
+            vllm_url: env::var("VLLM_URL")
+                .unwrap_or_else(|_| "http://localhost:8000".to_string()),
+            vllm_model: env::var("VLLM_MODEL").ok(),
+            vllm_api_key: env::var("VLLM_API_KEY").ok(),
+            vllm_embed_url: env::var("VLLM_EMBED_URL").ok(),
+            vllm_embed_model: env::var("VLLM_EMBED_MODEL").ok(),
+            knowledge_snapshot_dir: env::var("KNOWLEDGE_SNAPSHOT_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./snapshots")),
+            auto_snapshot_before_consolidation: env::var("AUTO_SNAPSHOT_BEFORE_CONSOLIDATION")
+                .map(|v| v.to_lowercase() != "false")
+                .unwrap_or(true),
+            auto_snapshot_before_prune: env::var("AUTO_SNAPSHOT_BEFORE_PRUNE")
+                .map(|v| v.to_lowercase() != "false")
+                .unwrap_or(false),
+            contexts_dir: env::var("CONTEXTS_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./contexts")),
         })
     }
 
@@ -154,6 +192,15 @@ impl Config {
             anthropic_model: None,
             gemini_api_key: None,
             gemini_model: None,
+            vllm_url: "http://localhost:8000".to_string(),
+            vllm_model: None,
+            vllm_api_key: None,
+            vllm_embed_url: None,
+            vllm_embed_model: None,
+            knowledge_snapshot_dir: PathBuf::from("./test_snapshots"),
+            auto_snapshot_before_consolidation: false,
+            auto_snapshot_before_prune: false,
+            contexts_dir: PathBuf::from("./contexts"),
         }
     }
 }

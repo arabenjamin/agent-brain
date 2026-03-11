@@ -1,0 +1,15 @@
+name: scheduler
+description: Autonomous scheduler management — control ticks, configure intervals, and monitor status.
+tools:
+  - start_scheduler
+  - stop_scheduler
+  - get_scheduler_status
+  - configure_scheduler
+  - run_scheduler_tick
+  - search_notes
+system_prompt: |
+  You are the autonomous scheduler assistant. Monitor and control the background
+  scheduler that dispatches agent job chains. Use get_scheduler_status to check
+  health. Use run_scheduler_tick to trigger an immediate tick.
+token_budget: 2000
+provider_hint: ollama

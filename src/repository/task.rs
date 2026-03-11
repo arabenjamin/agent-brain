@@ -231,6 +231,32 @@ impl Neo4jClient {
         Ok(())
     }
 
+    /// If all sub-tasks of a parent are now completed, mark the parent completed too.
+    ///
+    /// Returns `Some(parent_id)` if a parent was auto-completed, `None` otherwise.
+    pub async fn auto_complete_parent_if_done(
+        &self,
+        child_id: &str,
+    ) -> Result<Option<String>, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        // Find the parent and auto-complete it only when every sibling is completed.
+        let q = query(
+            "MATCH (child:Task {id: $child_id})-[:SUBTASK_OF]->(parent:Task) \
+             WHERE parent.status <> 'completed' \
+               AND NOT EXISTS { \
+                   MATCH (other:Task)-[:SUBTASK_OF]->(parent) \
+                   WHERE other.status <> 'completed' \
+               } \
+             SET parent.status = 'completed', parent.updated_at = $now \
+             RETURN parent.id AS parent_id",
+        )
+        .param("child_id", child_id)
+        .param("now", now);
+
+        let rows = self.execute(q).await?;
+        Ok(rows.into_iter().next().and_then(|r| r.get::<String>("parent_id").ok()))
+    }
+
     /// Return task IDs that `task_id` directly depends on (i.e., must complete first).
     pub async fn get_task_dependencies(
         &self,

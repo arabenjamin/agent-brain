@@ -12,7 +12,6 @@ pub struct Neo4jClient {
 impl Neo4jClient {
     /// Create a new Neo4j client connection.
     pub async fn new(uri: &str, username: &str, password: &str) -> Result<Self> {
-        // ... (existing code for connection)
         let config = ConfigBuilder::default()
             .uri(uri)
             .user(username)

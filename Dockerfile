@@ -48,6 +48,12 @@ RUN useradd -m -u 1000 agent
 # Copy binary from builder
 COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 
+# Copy context profiles (YAML files for ContextBuilderService)
+COPY --chown=agent:agent contexts /home/agent/contexts/
+
+# Pre-create snapshots directory with correct ownership so named volume inherits permissions
+RUN mkdir -p /home/agent/snapshots && chown agent:agent /home/agent/snapshots
+
 # Switch to non-root user
 USER agent
 WORKDIR /home/agent

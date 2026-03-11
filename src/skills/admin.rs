@@ -1,25 +1,35 @@
-//! AdminSkill — graph maintenance and cleanup tools.
+//! AdminSkill — graph maintenance, cleanup, snapshot, and integrity tools.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use crate::mcp::tools::ToolRegistry;
 use crate::repository::Neo4jClient;
-use crate::services::{ContextStore, LlmClient, LlmConfig};
+use crate::services::{ContextStore, LlmClient, LlmConfig, SnapshotService};
 use crate::skills::Skill;
 
 pub struct AdminSkill {
     neo4j: Neo4jClient,
     context_store: ContextStore,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    snapshot_svc: Option<Arc<SnapshotService>>,
+    tool_registry: Arc<RwLock<ToolRegistry>>,
 }
 
 impl AdminSkill {
-    pub fn new(neo4j: Neo4jClient, context_store: ContextStore, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
-        Self { neo4j, context_store, llm_config }
+    pub fn new(
+        neo4j: Neo4jClient,
+        context_store: ContextStore,
+        llm_config: Arc<RwLock<Option<LlmConfig>>>,
+        snapshot_svc: Option<Arc<SnapshotService>>,
+        tool_registry: Arc<RwLock<ToolRegistry>>,
+    ) -> Self {
+        Self { neo4j, context_store, llm_config, snapshot_svc, tool_registry }
     }
 
     // =========================================================================
@@ -135,6 +145,101 @@ impl AdminSkill {
         }
     }
 
+    fn snapshot_knowledge_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "snapshot_knowledge".to_string(),
+            description: "Take a compressed snapshot of the full knowledge graph (Notes, Tasks, \
+                Entities, Procedures, and their relationships). Saved as a .json.gz file in the \
+                snapshot directory. Embeddings are excluded — run backfill_endpoint_embeddings \
+                after restoring if needed."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Optional label to embed in the filename (e.g. 'before_prune'). Default: none."
+                    }
+                }
+            }),
+        }
+    }
+
+    fn restore_knowledge_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "restore_knowledge".to_string(),
+            description: "Restore knowledge graph data from a .json.gz snapshot file. \
+                Uses MERGE semantics — safe to run on a non-empty graph (existing nodes preserved). \
+                Use dry_run: true to preview counts without writing anything. \
+                After restore, run backfill_endpoint_embeddings to regenerate embeddings."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "description": "Path to the snapshot file (use list_snapshots to discover available files)."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, return restore counts without writing anything. Default: false."
+                    }
+                },
+                "required": ["file"]
+            }),
+        }
+    }
+
+    fn list_snapshots_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_snapshots".to_string(),
+            description: "List all available knowledge graph snapshot files, sorted newest-first. \
+                Returns file names, export timestamps, node counts, and file sizes."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    fn verify_knowledge_integrity_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "verify_knowledge_integrity".to_string(),
+            description: "Scan the knowledge graph for common integrity issues: \
+                empty or too-short notes, orphaned chunk notes (PART_OF pointing to missing parent), \
+                hallucinated consolidated notes (content starting with label prefixes like 'Note ' or '[Memory'), \
+                and exact-duplicate note content. Returns counts and IDs for each issue category."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "content_min_length": {
+                        "type": "integer",
+                        "description": "Minimum content length (chars) before a note is flagged as too short. Default: 10."
+                    }
+                }
+            }),
+        }
+    }
+
+    fn analyze_own_structure_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "analyze_own_structure".to_string(),
+            description: "Walk the src/ directory to count Rust source files per module \
+                (skills, services, repository, models, mcp), read the live tool registry to \
+                count registered tools, and return a JSON structure report. \
+                Optionally stores the report as a procedural knowledge note."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "store_as_note": {
+                        "type": "boolean",
+                        "description": "If true, store the analysis result as a semantic note. Default: false."
+                    }
+                }
+            }),
+        }
+    }
+
     // =========================================================================
     // Handlers
     // =========================================================================
@@ -180,14 +285,13 @@ impl AdminSkill {
 
         match self.neo4j.delete_api_cascade(&input.api_name).await {
             Ok(deleted) => {
-                // Evict from in-memory context so stale data isn't returned.
                 self.context_store.clear(Some(&input.api_name)).await;
 
                 ToolCallResult::success_text(
                     serde_json::to_string_pretty(&json!({
                         "deleted": true,
                         "api_name": input.api_name,
-                        "removed": deleted,
+                        "count": deleted,
                     }))
                     .unwrap(),
                 )
@@ -236,7 +340,7 @@ impl AdminSkill {
         match self.neo4j.purge_duplicate_endpoints().await {
             Ok(deleted) => ToolCallResult::success_text(
                 serde_json::to_string_pretty(&json!({
-                    "deleted": deleted,
+                    "count": deleted,
                     "message": format!("Removed {} duplicate endpoint(s).", deleted),
                 }))
                 .unwrap(),
@@ -273,7 +377,7 @@ impl AdminSkill {
         match self.neo4j.purge_orphaned_schemas().await {
             Ok(deleted) => ToolCallResult::success_text(
                 serde_json::to_string_pretty(&json!({
-                    "deleted": deleted,
+                    "count": deleted,
                     "message": format!("Removed {} orphaned schema(s).", deleted),
                 }))
                 .unwrap(),
@@ -393,13 +497,12 @@ impl AdminSkill {
 
         match self.neo4j.reset_api_graph().await {
             Ok(deleted) => {
-                // Clear all in-memory API contexts.
                 self.context_store.clear(None).await;
 
                 ToolCallResult::success_text(
                     serde_json::to_string_pretty(&json!({
                         "reset": true,
-                        "removed": deleted,
+                        "count": deleted,
                         "message": "All API graph data has been wiped. Knowledge data (Notes, Tasks, etc.) preserved.",
                     }))
                     .unwrap(),
@@ -407,6 +510,258 @@ impl AdminSkill {
             }
             Err(e) => ToolCallResult::error(format!("Reset failed: {}", e)),
         }
+    }
+
+    async fn handle_snapshot_knowledge(&self, args: Option<Value>) -> ToolCallResult {
+        let svc = match &self.snapshot_svc {
+            Some(s) => s,
+            None => return ToolCallResult::error("Snapshot service not available (Neo4j required).".to_string()),
+        };
+
+        #[derive(Deserialize, Default)]
+        struct Input {
+            label: Option<String>,
+        }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+
+        match svc.take_snapshot(input.label.as_deref()).await {
+            Ok((_, meta)) => ToolCallResult::success_text(
+                serde_json::to_string_pretty(&json!({
+                    "file": meta.file_name,
+                    "file_path": meta.file_path,
+                    "exported_at": meta.exported_at,
+                    "schema_version": meta.schema_version,
+                    "notes": meta.note_count,
+                    "tasks": meta.task_count,
+                    "entities": meta.entity_count,
+                    "procedures": meta.procedure_count,
+                    "relationships": meta.relationship_count,
+                    "size_bytes": meta.size_bytes,
+                }))
+                .unwrap(),
+            ),
+            Err(e) => ToolCallResult::error(format!("Snapshot failed: {}", e)),
+        }
+    }
+
+    async fn handle_restore_knowledge(&self, args: Option<Value>) -> ToolCallResult {
+        let svc = match &self.snapshot_svc {
+            Some(s) => s,
+            None => return ToolCallResult::error("Snapshot service not available (Neo4j required).".to_string()),
+        };
+
+        #[derive(Deserialize)]
+        struct Input {
+            file: String,
+            #[serde(default)]
+            dry_run: bool,
+        }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+
+        let path = Path::new(&input.file);
+        match svc.restore_snapshot(path, input.dry_run).await {
+            Ok(stats) => ToolCallResult::success_text(
+                serde_json::to_string_pretty(&json!({
+                    "notes_restored": stats.notes_restored,
+                    "tasks_restored": stats.tasks_restored,
+                    "entities_restored": stats.entities_restored,
+                    "procedures_restored": stats.procedures_restored,
+                    "relationships_restored": stats.relationships_restored,
+                    "dry_run": stats.dry_run,
+                    "message": if stats.dry_run {
+                        "Dry run complete — no data was written.".to_string()
+                    } else {
+                        "Restore complete. Run backfill_endpoint_embeddings to regenerate embeddings.".to_string()
+                    },
+                }))
+                .unwrap(),
+            ),
+            Err(e) => ToolCallResult::error(format!("Restore failed: {}", e)),
+        }
+    }
+
+    async fn handle_list_snapshots(&self, _args: Option<Value>) -> ToolCallResult {
+        let svc = match &self.snapshot_svc {
+            Some(s) => s,
+            None => return ToolCallResult::error("Snapshot service not available (Neo4j required).".to_string()),
+        };
+
+        match svc.list_snapshots().await {
+            Ok(snapshots) => {
+                let items: Vec<Value> = snapshots
+                    .iter()
+                    .map(|m| {
+                        json!({
+                            "file": m.file_name,
+                            "file_path": m.file_path,
+                            "exported_at": m.exported_at,
+                            "schema_version": m.schema_version,
+                            "notes": m.note_count,
+                            "tasks": m.task_count,
+                            "entities": m.entity_count,
+                            "procedures": m.procedure_count,
+                            "relationships": m.relationship_count,
+                            "size_bytes": m.size_bytes,
+                        })
+                    })
+                    .collect();
+
+                ToolCallResult::success_text(
+                    serde_json::to_string_pretty(&json!({
+                        "count": items.len(),
+                        "snapshots": items,
+                    }))
+                    .unwrap(),
+                )
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to list snapshots: {}", e)),
+        }
+    }
+
+    async fn handle_verify_knowledge_integrity(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Input {
+            content_min_length: Option<i64>,
+        }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+
+        let min_len = input.content_min_length.unwrap_or(10);
+
+        match self.neo4j.check_knowledge_integrity(min_len).await {
+            Ok(report) => ToolCallResult::success_text(
+                serde_json::to_string_pretty(&json!({
+                    "total_issues": report.total_issues,
+                    "checks": {
+                        "empty_notes": {
+                            "count": report.empty_notes.len(),
+                            "items": report.empty_notes,
+                        },
+                        "orphaned_chunks": {
+                            "count": report.orphaned_chunks.len(),
+                            "items": report.orphaned_chunks,
+                        },
+                        "suspicious_consolidated": {
+                            "count": report.suspicious_consolidated.len(),
+                            "items": report.suspicious_consolidated,
+                        },
+                        "duplicate_notes": {
+                            "count": report.duplicate_notes.len(),
+                            "items": report.duplicate_notes,
+                            "note": "Limited to 50 pairs to avoid timeout",
+                        },
+                    },
+                    "message": if report.total_issues == 0 {
+                        "Knowledge graph integrity check passed — no issues found.".to_string()
+                    } else {
+                        format!("Found {} issue(s). Use delete_note to remove corrupted entries.", report.total_issues)
+                    },
+                }))
+                .unwrap(),
+            ),
+            Err(e) => ToolCallResult::error(format!("Integrity check failed: {}", e)),
+        }
+    }
+    async fn handle_analyze_own_structure(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Input {
+            #[serde(default)]
+            store_as_note: bool,
+        }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {e}")),
+        };
+
+        // Walk src/ and count .rs files per top-level module dir.
+        let src_path = std::path::Path::new("src");
+        let mut module_counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+
+        fn count_rs(dir: &std::path::Path) -> usize {
+            let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+            let mut n = 0usize;
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    n += count_rs(&p);
+                } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    n += 1;
+                }
+            }
+            n
+        }
+
+        if let Ok(rd) = std::fs::read_dir(src_path) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    module_counts.insert(name, count_rs(&p));
+                }
+            }
+        }
+
+        // Count total .rs files in src/ root.
+        let root_rs = std::fs::read_dir(src_path)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.path().extension().and_then(|x| x.to_str()) == Some("rs")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+
+        // Count registered tools from in-memory registry.
+        let total_tools = {
+            let reg = self.tool_registry.read().await;
+            reg.list().len()
+        };
+
+        let report = json!({
+            "total_tools": total_tools,
+            "modules": module_counts,
+            "root_rs_files": root_rs,
+        });
+
+        if input.store_as_note {
+            let content = format!(
+                "Agent Brain structure analysis:\n- Total registered tools: {}\n- Source modules: {}\n- Root .rs files: {}",
+                total_tools,
+                module_counts.iter().map(|(k, v)| format!("{k}: {v} files")).collect::<Vec<_>>().join(", "),
+                root_rs,
+            );
+            // Store via neo4j directly (KnowledgeService would need the tool handler).
+            let _ = self.neo4j.execute(
+                neo4rs::query(
+                    "CREATE (n:Note {
+                        id: randomUUID(),
+                        content: $content,
+                        note_type: 'semantic',
+                        created_at: datetime(),
+                        updated_at: datetime(),
+                        access_count: 0,
+                        next_review_at: datetime() + duration({days: 30}),
+                        review_interval_days: 30
+                    })"
+                )
+                .param("content", content)
+            ).await;
+        }
+
+        ToolCallResult::success_text(serde_json::to_string_pretty(&report).unwrap())
     }
 }
 
@@ -423,6 +778,11 @@ impl Skill for AdminSkill {
             Self::purge_orphaned_schemas_def(),
             Self::reset_graph_def(),
             Self::backfill_endpoint_embeddings_def(),
+            Self::snapshot_knowledge_def(),
+            Self::restore_knowledge_def(),
+            Self::list_snapshots_def(),
+            Self::verify_knowledge_integrity_def(),
+            Self::analyze_own_structure_def(),
         ]
     }
 
@@ -433,6 +793,11 @@ impl Skill for AdminSkill {
             "purge_orphaned_schemas"           => Some(self.handle_purge_orphaned_schemas(args).await),
             "reset_graph"                      => Some(self.handle_reset_graph(args).await),
             "backfill_endpoint_embeddings"     => Some(self.handle_backfill_endpoint_embeddings(args).await),
+            "snapshot_knowledge"               => Some(self.handle_snapshot_knowledge(args).await),
+            "restore_knowledge"                => Some(self.handle_restore_knowledge(args).await),
+            "list_snapshots"                   => Some(self.handle_list_snapshots(args).await),
+            "verify_knowledge_integrity"       => Some(self.handle_verify_knowledge_integrity(args).await),
+            "analyze_own_structure"            => Some(self.handle_analyze_own_structure(args).await),
             _ => None,
         }
     }

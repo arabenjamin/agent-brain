@@ -177,7 +177,7 @@ impl WorkingMemorySkill {
                     .and_then(|r| r.get::<i64>("turn_index").ok())
                     .unwrap_or(0);
                 let response = json!({
-                    "entry_id": entry_id,
+                    "id": entry_id,
                     "turn_index": turn_index,
                     "session_id": input.session_id
                 });
@@ -346,7 +346,7 @@ impl WorkingMemorySkill {
         };
 
         let response = json!({
-            "note_id": note_id,
+            "id": note_id,
             "session_id": input.session_id,
             "entries_summarised": entries_summarised,
             "deleted": deleted

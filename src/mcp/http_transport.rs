@@ -353,17 +353,33 @@ async fn handle_post_mcp(
     // Get or create session
     let session_id = match headers.get(MCP_SESSION_ID_HEADER).and_then(|v| v.to_str().ok()) {
         Some(id) => {
-            // Validate existing session
             if !state.sessions.exists(id).await {
-                return Err(McpHttpError::SessionNotFound(id.to_string()));
+                // Session not found — server likely restarted. Resurrect the session
+                // under the same ID so the client can continue without reinitialising.
+                info!(session_id = %id, "Resurrecting stale session after server restart");
+                state.sessions.resurrect_session(id, SessionState::Running).await.map_err(|e| {
+                    McpHttpError::SessionError(e.to_string())
+                })?;
+                // Send synthetic notifications/initialized so the server core
+                // accepts tool calls on this resurrected session.
+                let synthetic = TransportMessage::Notification {
+                    session_id: Some(id.to_string()),
+                    notification: JsonRpcNotification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "notifications/initialized".to_string(),
+                        params: None,
+                    },
+                };
+                let _ = state.message_tx.send(synthetic).await;
+            } else {
+                state.sessions.get_session(id).await.map_err(|e| {
+                    McpHttpError::SessionError(e.to_string())
+                })?;
             }
-            state.sessions.get_session(id).await.map_err(|e| {
-                McpHttpError::SessionError(e.to_string())
-            })?;
             id.to_string()
         }
         None => {
-            // Create new session for initialize request
+            // No session ID — create a new session for this client.
             state.sessions.create_session().await.map_err(|e| {
                 McpHttpError::SessionError(e.to_string())
             })?
@@ -519,6 +535,7 @@ async fn handle_post_chat(
             ChatEvent::Thinking { .. }   => "thinking",
             ChatEvent::ToolCall { .. }   => "tool_call",
             ChatEvent::ToolResult { .. } => "tool_result",
+            ChatEvent::Token { .. }      => "token",
             ChatEvent::Message { .. }    => "message",
             ChatEvent::Error { .. }      => "error",
             ChatEvent::Done              => "done",

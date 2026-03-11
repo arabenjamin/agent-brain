@@ -1,5 +1,7 @@
 pub mod chat;
 pub mod context;
+pub mod context_builder;
+pub mod snapshot;
 pub mod discovery;
 pub mod queue;
 pub mod docgen;
@@ -34,7 +36,9 @@ pub use secrets::{
     VaultConfig, VaultSecretProvider
 };
 pub use chat::{ChatEvent, ChatRequest, ChatService};
+pub use context_builder::{ContextBuilderService, ContextProfile, ContextBundle};
 pub use model_selector::ModelSelector;
 pub use queue::{QueueService, WorkerConfig, ChainStep};
 pub use scheduler::{SchedulerService, SchedulerConfig};
 pub use sleep::SleepService;
+pub use snapshot::{SnapshotService, SnapshotMeta, RestoreStats};

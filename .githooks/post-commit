@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Post-commit hook: refresh agent-brain's self-knowledge after every commit.
+# Runs in the background so it never blocks the commit.
+# Set BRAIN_URL env var to override the default (http://localhost:3001).
+
+SCRIPT_DIR="$(git rev-parse --show-toplevel)/scripts"
+BRAIN_URL="${BRAIN_URL:-http://localhost:3001}"
+
+python3 "$SCRIPT_DIR/self_update.py" --base-url "$BRAIN_URL" &

@@ -135,6 +135,26 @@ fn build_llm_config(config: &Config) -> LlmConfig {
                 base = base.with_embed_model(embed_model);
             }
         }
+        LlmProviderType::VLlm => {
+            base = base.with_base_url(config.vllm_url.clone());
+            if let Some(model) = &config.vllm_model {
+                base = base.with_model(model);
+            }
+            if let Some(key) = &config.vllm_api_key {
+                base = base.with_api_key(key);
+            }
+            // Dedicated embedding endpoint (e.g. BAAI/bge-m3 on port 8001).
+            // VLLM_EMBED_MODEL is required; VLLM_EMBED_URL defaults to the primary URL if omitted.
+            if let Some(embed_model) = &config.vllm_embed_model {
+                base = base.with_embed_model(embed_model);
+                if let Some(embed_url) = &config.vllm_embed_url {
+                    base = base.with_embed_base_url(embed_url);
+                }
+            } else if let Some(embed_model) = &config.ollama_embed_model {
+                // Fallback: use an Ollama embed model if no vLLM embed model is set
+                base = base.with_embed_model(embed_model);
+            }
+        }
     }
     base
 }

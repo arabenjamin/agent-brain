@@ -57,3 +57,4 @@ pub trait LlmProvider: Send + Sync {
 pub mod ollama;
 pub mod anthropic;
 pub mod gemini;
+pub mod openai_compat;

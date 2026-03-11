@@ -1,6 +1,7 @@
 //! Knowledge Service - Manages Notes, Projects, and Embeddings.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::{debug, info, warn};
@@ -10,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::repository::Neo4jClient;
 use crate::services::LlmClient;
+use crate::services::snapshot::SnapshotService;
 
 /// Content length above which we attempt to chunk into sub-notes.
 const CHUNK_THRESHOLD_CHARS: usize = 1500;
@@ -18,12 +20,23 @@ const CHUNK_THRESHOLD_CHARS: usize = 1500;
 pub struct KnowledgeService {
     pub(crate) neo4j: Neo4jClient,
     pub(crate) llm: Option<LlmClient>,
+    pub(crate) snapshot_svc: Option<Arc<SnapshotService>>,
+    pub(crate) auto_snapshot: bool,
+    pub(crate) auto_snapshot_prune: bool,
 }
 
 impl KnowledgeService {
     /// Create a new knowledge service.
     pub fn new(neo4j: Neo4jClient, llm: Option<LlmClient>) -> Self {
-        Self { neo4j, llm }
+        Self { neo4j, llm, snapshot_svc: None, auto_snapshot: false, auto_snapshot_prune: false }
+    }
+
+    /// Attach a snapshot service for auto-snapshotting before major operations.
+    pub fn with_snapshot(mut self, svc: Arc<SnapshotService>, auto_consolidate: bool, auto_prune: bool) -> Self {
+        self.snapshot_svc = Some(svc);
+        self.auto_snapshot = auto_consolidate;
+        self.auto_snapshot_prune = auto_prune;
+        self
     }
 
     // =========================================================================
@@ -815,6 +828,50 @@ impl KnowledgeService {
     }
 
     /// Return notes whose spaced-repetition review is due.
+    pub async fn list_notes(&self, limit: usize, note_type: Option<&str>) -> Result<Vec<Value>> {
+        let query = if let Some(nt) = note_type {
+            neo4rs::query(r#"
+            MATCH (n:Note)
+            WHERE n.note_type = $note_type
+            RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
+                   n.access_count AS access_count, toString(n.created_at) AS created_at,
+                   n.source_context AS source_context
+            ORDER BY n.created_at DESC LIMIT $limit
+            "#)
+            .param("note_type", nt)
+            .param("limit", limit as i64)
+        } else {
+            neo4rs::query(r#"
+            MATCH (n:Note)
+            RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
+                   n.access_count AS access_count, toString(n.created_at) AS created_at,
+                   n.source_context AS source_context
+            ORDER BY n.created_at DESC LIMIT $limit
+            "#)
+            .param("limit", limit as i64)
+        };
+
+        let rows = self.neo4j.execute(query).await?;
+        let mut results = Vec::new();
+        for row in rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let content = row.get::<String>("content").unwrap_or_default();
+            let note_type = row.get::<String>("note_type").unwrap_or_else(|_| "semantic".to_string());
+            let access_count = row.get::<i64>("access_count").unwrap_or(0);
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            let source_context = row.get::<String>("source_context").unwrap_or_default();
+            results.push(serde_json::json!({
+                "id": id,
+                "content": content,
+                "note_type": note_type,
+                "access_count": access_count,
+                "created_at": created_at,
+                "source_context": source_context
+            }));
+        }
+        Ok(results)
+    }
+
     pub async fn review_due_notes(&self, limit: usize) -> Result<Vec<Value>> {
         let cypher = r#"
         MATCH (n:Note)
@@ -857,6 +914,15 @@ impl KnowledgeService {
         lambda: Option<f64>,
         dry_run: bool,
     ) -> Result<usize> {
+        if !dry_run && self.auto_snapshot_prune {
+            if let Some(svc) = &self.snapshot_svc {
+                match svc.take_snapshot(Some("pre_prune")).await {
+                    Ok((path, _)) => info!(path = %path.display(), "Pre-prune snapshot taken"),
+                    Err(e) => warn!("Pre-prune snapshot failed (continuing): {}", e),
+                }
+            }
+        }
+
         if score_threshold.is_some() || lambda.is_some() {
             let threshold = score_threshold.unwrap_or(0.1);
             let lam = lambda.unwrap_or(0.1);
@@ -1415,16 +1481,26 @@ impl KnowledgeService {
             source_count, topic, notes_block
         );
 
-        // 4. Generate consolidated content
+        // 4. Auto-snapshot before LLM call (best-effort, never fails the operation).
+        if self.auto_snapshot {
+            if let Some(svc) = &self.snapshot_svc {
+                match svc.take_snapshot(Some("pre_consolidate")).await {
+                    Ok((path, _)) => info!(path = %path.display(), "Pre-consolidation snapshot taken"),
+                    Err(e) => warn!("Pre-consolidation snapshot failed (continuing): {}", e),
+                }
+            }
+        }
+
+        // 5. Generate consolidated content
         let llm_response = llm.generate(&prompt).await
             .map_err(|e| anyhow::anyhow!("LLM generation failed: {}", e))?;
         let consolidated_content = llm_response.text;
 
-        // 5. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
+        // 6. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
         let (consolidated_id, _) =
             self.store_note_raw(&consolidated_content, Some("consolidated"), None, None).await?;
 
-        // 6. Create SUMMARIZED_BY relationships from source notes to consolidated note
+        // 7. Create SUMMARIZED_BY relationships from source notes to consolidated note
         if !source_ids.is_empty() {
             let link_cypher = r#"
             MATCH (src:Note) WHERE src.id IN $source_ids
@@ -1438,7 +1514,7 @@ impl KnowledgeService {
 
             self.neo4j.run(link_query).await?;
 
-            // 7. Reset spaced-rep schedule on source notes so they no longer appear "overdue"
+            // 8. Reset spaced-rep schedule on source notes so they no longer appear "overdue"
             //    and don't trigger another consolidation cycle immediately.
             let reset_cypher = "MATCH (n:Note) WHERE n.id IN $ids \
                 SET n.next_review_at = datetime() + duration({days: 30}), \

@@ -17,6 +17,7 @@ impl Neo4jClient {
         session_id: Option<&str>,
         parent_job_id: Option<&str>,
         provider_hint: Option<&str>,
+        context_profile: Option<&str>,
     ) -> Result<String, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -35,7 +36,8 @@ impl Neo4jClient {
                 max_attempts: $max_attempts,
                 session_id: $session_id,
                 parent_job_id: $parent_job_id,
-                provider_hint: $provider_hint
+                provider_hint: $provider_hint,
+                context_profile: $context_profile
             })",
         )
         .param("id", id.clone())
@@ -46,7 +48,8 @@ impl Neo4jClient {
         .param("max_attempts", max_attempts as i64)
         .param("session_id", session_id.unwrap_or(""))
         .param("parent_job_id", parent_job_id.unwrap_or(""))
-        .param("provider_hint", provider_hint.unwrap_or(""));
+        .param("provider_hint", provider_hint.unwrap_or(""))
+        .param("context_profile", context_profile.unwrap_or(""));
 
         self.run(q).await?;
         info!(id = %id, tool = %tool_name, "Created AgentJob");
@@ -239,6 +242,7 @@ impl Neo4jClient {
         session_id: Option<&str>,
         parent_job_id: &str,
         provider_hint: Option<&str>,
+        context_profile: Option<&str>,
     ) -> Result<String, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -257,7 +261,8 @@ impl Neo4jClient {
                 max_attempts: $max_attempts,
                 session_id: $session_id,
                 parent_job_id: $parent_job_id,
-                provider_hint: $provider_hint
+                provider_hint: $provider_hint,
+                context_profile: $context_profile
             })",
         )
         .param("id", id.clone())
@@ -268,7 +273,8 @@ impl Neo4jClient {
         .param("max_attempts", max_attempts as i64)
         .param("session_id", session_id.unwrap_or(""))
         .param("parent_job_id", parent_job_id)
-        .param("provider_hint", provider_hint.unwrap_or(""));
+        .param("provider_hint", provider_hint.unwrap_or(""))
+        .param("context_profile", context_profile.unwrap_or(""));
 
         self.run(q).await?;
         info!(id = %id, tool = %tool_name, parent = %parent_job_id, "Created parked AgentJob");
@@ -385,6 +391,7 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
     let session_id: String = node.get("session_id").unwrap_or_default();
     let parent_job_id: String = node.get("parent_job_id").unwrap_or_default();
     let provider_hint: String = node.get("provider_hint").unwrap_or_default();
+    let context_profile: String = node.get("context_profile").unwrap_or_default();
 
     AgentJob {
         id,
@@ -403,5 +410,6 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
         session_id: if session_id.is_empty() { None } else { Some(session_id) },
         parent_job_id: if parent_job_id.is_empty() { None } else { Some(parent_job_id) },
         provider_hint: if provider_hint.is_empty() { None } else { Some(provider_hint) },
+        context_profile: if context_profile.is_empty() { None } else { Some(context_profile) },
     }
 }

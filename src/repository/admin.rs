@@ -13,6 +13,23 @@ pub struct CleanupStats {
     pub schemas: u32,
 }
 
+/// A single integrity issue found in the knowledge graph.
+#[derive(Debug, serde::Serialize)]
+pub struct IntegrityItem {
+    pub id: String,
+    pub preview: String,
+}
+
+/// Result of a knowledge integrity check.
+#[derive(Debug, serde::Serialize)]
+pub struct IntegrityReport {
+    pub empty_notes: Vec<IntegrityItem>,
+    pub orphaned_chunks: Vec<IntegrityItem>,
+    pub suspicious_consolidated: Vec<IntegrityItem>,
+    pub duplicate_notes: Vec<IntegrityItem>,
+    pub total_issues: usize,
+}
+
 impl Neo4jClient {
     /// Count nodes that would be removed by `delete_api_cascade`.
     pub async fn count_api_nodes(&self, api_name: &str) -> Result<CleanupStats, RepositoryError> {
@@ -212,6 +229,93 @@ impl Neo4jClient {
         } else {
             Ok(CleanupStats { resources: 0, endpoints: 0, parameters: 0, healing_events: 0, schemas: 0 })
         }
+    }
+
+    // =========================================================================
+    // Knowledge integrity checks
+    // =========================================================================
+
+    /// Check the knowledge graph for common integrity issues.
+    /// Returns counts per issue category. Does not delete anything.
+    pub async fn check_knowledge_integrity(
+        &self,
+        content_min_length: i64,
+    ) -> Result<IntegrityReport, RepositoryError> {
+        // 1. Empty / too-short content
+        let empty_notes = {
+            let q = neo4rs::query(
+                "MATCH (n:Note) WHERE n.content IS NULL OR size(n.content) < $min \
+                 RETURN n.id AS id, left(coalesce(n.content,''), 50) AS preview",
+            )
+            .param("min", content_min_length);
+            let rows = self.execute(q).await?;
+            rows.into_iter()
+                .map(|r| IntegrityItem {
+                    id: r.get("id").unwrap_or_default(),
+                    preview: r.get("preview").unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // 2. Orphaned chunk notes (PART_OF edge pointing to non-existent parent)
+        let orphaned_chunks = {
+            let q = neo4rs::query(
+                "MATCH (n:Note)-[:PART_OF]->(p:Note) \
+                 WHERE NOT EXISTS { MATCH (p) } \
+                 RETURN n.id AS id, left(coalesce(n.content,''), 50) AS preview",
+            );
+            let rows = self.execute(q).await?;
+            rows.into_iter()
+                .map(|r| IntegrityItem {
+                    id: r.get("id").unwrap_or_default(),
+                    preview: r.get("preview").unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // 3. Hallucinated consolidated notes (content starts with label prefix)
+        let suspicious_consolidated = {
+            let q = neo4rs::query(
+                "MATCH (n:Note {note_type: 'consolidated'}) \
+                 WHERE n.content STARTS WITH 'Note ' OR n.content STARTS WITH '[Memory' \
+                 RETURN n.id AS id, left(n.content, 100) AS preview",
+            );
+            let rows = self.execute(q).await?;
+            rows.into_iter()
+                .map(|r| IntegrityItem {
+                    id: r.get("id").unwrap_or_default(),
+                    preview: r.get("preview").unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // 4. Duplicate content notes (exact match, limited to 50 pairs to avoid O(n²) timeout)
+        let duplicate_notes = {
+            let q = neo4rs::query(
+                "MATCH (a:Note), (b:Note) \
+                 WHERE id(a) < id(b) AND a.content = b.content \
+                 RETURN a.id AS id, left(a.content, 50) AS preview \
+                 LIMIT 50",
+            );
+            let rows = self.execute(q).await?;
+            rows.into_iter()
+                .map(|r| IntegrityItem {
+                    id: r.get("id").unwrap_or_default(),
+                    preview: r.get("preview").unwrap_or_default(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let total_issues =
+            empty_notes.len() + orphaned_chunks.len() + suspicious_consolidated.len() + duplicate_notes.len();
+
+        Ok(IntegrityReport {
+            empty_notes,
+            orphaned_chunks,
+            suspicious_consolidated,
+            duplicate_notes,
+            total_issues,
+        })
     }
 
     /// Wipe ALL API data (Resource, Endpoint, Schema, Parameter, HealingEvent).

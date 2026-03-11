@@ -216,6 +216,30 @@ impl SessionManager {
         Ok(id)
     }
 
+    /// Resurrect (or create) a session with a specific ID.
+    ///
+    /// Used to auto-heal stale sessions after a server restart: the client
+    /// already holds the session ID, so we recreate the server-side state
+    /// under that exact ID rather than rejecting the request.
+    pub async fn resurrect_session(&self, id: &str, state: SessionState) -> Result<(), SessionError> {
+        let mut sessions = self.sessions.write().await;
+
+        if sessions.len() >= self.config.max_sessions {
+            return Err(SessionError::MaxSessionsReached(self.config.max_sessions));
+        }
+
+        let (sse_tx, _) = tokio::sync::broadcast::channel(32);
+        let session = Session {
+            id: id.to_string(),
+            created_at: chrono::Utc::now(),
+            last_accessed: chrono::Utc::now(),
+            state,
+            sse_tx,
+        };
+        sessions.insert(id.to_string(), session);
+        Ok(())
+    }
+
     /// Get a session by ID, updating last accessed time.
     pub async fn get_session(&self, id: &str) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;

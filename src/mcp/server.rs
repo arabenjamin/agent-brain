@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
-use crate::services::{ChatService, ContextStore, CredentialManager, LlmConfig};
+use crate::services::{ChatService, ContextBuilderService, ContextStore, CredentialManager, LlmConfig, SnapshotService};
 use crate::services::queue::QueueService;
 use crate::services::SchedulerService;
 use crate::skills::{
@@ -17,6 +17,7 @@ use crate::skills::{
     admin::AdminSkill,
     agent::AgentSkill,
     api::ApiSkill,
+    context::ContextSkill,
     dynamic::DynamicSkill,
     knowledge::KnowledgeSkill,
     model::ModelSkill,
@@ -26,6 +27,7 @@ use crate::skills::{
     task::TaskSkill,
     search::SearchSkill,
     working_memory::WorkingMemorySkill,
+    ws::WsSkill,
 };
 
 use super::session::{SessionManager, SessionState};
@@ -127,6 +129,21 @@ pub struct McpServerCore {
 
     // Autonomous scheduler (created in build_skills after queue is ready)
     scheduler_service: Arc<RwLock<Option<Arc<SchedulerService>>>>,
+
+    // Knowledge graph snapshot directory
+    snapshot_dir: PathBuf,
+    // Whether to auto-snapshot before consolidate_memories
+    auto_snapshot_before_consolidation: bool,
+    // Whether to auto-snapshot before prune_old_notes
+    auto_snapshot_before_prune: bool,
+
+    // Context profiles directory
+    contexts_dir: PathBuf,
+    // Context builder service (created in build_skills)
+    context_builder_svc: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
+
+    // Optional profile name to filter tools/list responses (for smaller-model MCP clients)
+    mcp_tool_profile: Option<String>,
 }
 
 impl McpServerCore {
@@ -157,6 +174,20 @@ impl McpServerCore {
             context_store: Arc::new(RwLock::new(None)),
             queue_service: Arc::new(RwLock::new(None)),
             scheduler_service: Arc::new(RwLock::new(None)),
+            snapshot_dir: std::env::var("KNOWLEDGE_SNAPSHOT_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./snapshots")),
+            auto_snapshot_before_consolidation: std::env::var("AUTO_SNAPSHOT_BEFORE_CONSOLIDATION")
+                .map(|v| v.to_lowercase() != "false")
+                .unwrap_or(true),
+            auto_snapshot_before_prune: std::env::var("AUTO_SNAPSHOT_BEFORE_PRUNE")
+                .map(|v| v.to_lowercase() != "false")
+                .unwrap_or(false),
+            contexts_dir: std::env::var("CONTEXTS_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./contexts")),
+            context_builder_svc: Arc::new(RwLock::new(None)),
+            mcp_tool_profile: std::env::var("MCP_TOOL_PROFILE").ok(),
         }
     }
 
@@ -241,10 +272,11 @@ impl McpServerCore {
     /// Safe to call before or after [`build_skills`] — the `Arc` references
     /// will always see the most up-to-date state.
     pub fn chat_service(&self) -> Arc<ChatService> {
-        ChatService::new(
+        ChatService::with_context_builder(
             Arc::clone(&self.tool_handler),
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.llm_config),
+            Arc::clone(&self.context_builder_svc),
         )
     }
 
@@ -278,12 +310,34 @@ impl McpServerCore {
             None
         };
 
+        // Create SnapshotService when Neo4j is available.
+        let snapshot_svc: Option<Arc<SnapshotService>> = self.neo4j.as_ref().map(|db| {
+            Arc::new(SnapshotService::new(db.clone(), self.snapshot_dir.clone()))
+        });
+
+        // Create ContextBuilderService and load profiles (must be before scheduler).
+        let context_builder_arc: Option<Arc<ContextBuilderService>> = {
+            let svc = Arc::new(ContextBuilderService::new(
+                self.neo4j.clone(),
+                self.contexts_dir.clone(),
+                Arc::clone(&self.llm_config),
+            ));
+            let n = svc.load_profiles().await.unwrap_or(0);
+            info!(count = n, "Loaded context profiles");
+            *self.context_builder_svc.write().await = Some(Arc::clone(&svc));
+            Some(svc)
+        };
+
         // Create (or reuse) SchedulerService when Neo4j + Queue are available.
         let scheduler_arc: Option<Arc<SchedulerService>> =
             if let (Some(neo4j), Some(qs)) = (&self.neo4j, &queue_arc) {
                 let mut g = self.scheduler_service.write().await;
                 if g.is_none() {
-                    *g = Some(SchedulerService::new(neo4j.clone(), Arc::clone(qs)));
+                    *g = Some(SchedulerService::new_with_context(
+                        neo4j.clone(),
+                        Arc::clone(qs),
+                        context_builder_arc.clone(),
+                    ));
                 }
                 g.as_ref().map(Arc::clone)
             } else {
@@ -318,15 +372,24 @@ impl McpServerCore {
         );
         registry.register_skill(Box::new(api_skill));
 
-        // Register Admin Skill (graph cleanup — requires Neo4j)
+        // Register Admin Skill (graph cleanup + snapshots — requires Neo4j)
         if let Some(neo4j) = &self.neo4j {
-            let admin_skill = AdminSkill::new(neo4j.clone(), context_store.clone(), Arc::clone(&self.llm_config));
+            let admin_skill = AdminSkill::new(
+                neo4j.clone(),
+                context_store.clone(),
+                Arc::clone(&self.llm_config),
+                snapshot_svc.clone(),
+                Arc::clone(&self.tool_registry),
+            );
             registry.register_skill(Box::new(admin_skill));
         }
 
         // Register Knowledge Skill
         if let Some(neo4j) = &self.neo4j {
-            let knowledge_skill = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
+            let mut knowledge_skill = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
+            if let Some(ref snap) = snapshot_svc {
+                knowledge_skill = knowledge_skill.with_snapshot(Arc::clone(snap), self.auto_snapshot_before_consolidation, self.auto_snapshot_before_prune);
+            }
             registry.register_skill(Box::new(knowledge_skill));
         }
 
@@ -354,6 +417,9 @@ impl McpServerCore {
         );
         registry.register_skill(Box::new(search_skill));
 
+        // Register WebSocket Skill
+        registry.register_skill(Box::new(WsSkill::new()));
+
         // Register Model Skill (shares Arc<RwLock<>> so runtime provider changes propagate)
         let model_skill = ModelSkill::new(self.llm_config.clone(), self.neo4j.clone());
         registry.register_skill(Box::new(model_skill));
@@ -380,6 +446,11 @@ impl McpServerCore {
             registry.register_skill(Box::new(SchedulerSkill::new(Arc::clone(sched))));
         }
 
+        // Register Context Skill (profile management)
+        if let Some(ref cb) = context_builder_arc {
+            registry.register_skill(Box::new(ContextSkill::new(Arc::clone(cb))));
+        }
+
         // Register DynamicSkill in registry (shared-map clone — registry sees live updates)
         if let Some(ref d) = dynamic_skill {
             registry.register_skill(Box::new(d.clone_shared()));
@@ -403,10 +474,11 @@ impl McpServerCore {
         )));
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(KnowledgeSkill::new(
-                neo4j.clone(),
-                Arc::clone(&self.llm_config),
-            )));
+            let mut ks = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
+            if let Some(ref snap) = snapshot_svc {
+                ks = ks.with_snapshot(Arc::clone(snap), self.auto_snapshot_before_consolidation, self.auto_snapshot_before_prune);
+            }
+            skills.push(Box::new(ks));
         }
 
         skills.push(Box::new(TaskSkill::new(
@@ -427,6 +499,8 @@ impl McpServerCore {
             self.serpapi_key.clone(),
         )));
 
+        skills.push(Box::new(WsSkill::new()));
+
         skills.push(Box::new(ModelSkill::new(self.llm_config.clone(), self.neo4j.clone())));
 
         if let Some(ref telemetry) = self.telemetry {
@@ -438,7 +512,18 @@ impl McpServerCore {
         }
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(AdminSkill::new(neo4j.clone(), context_store.clone(), Arc::clone(&self.llm_config))));
+            skills.push(Box::new(AdminSkill::new(
+                neo4j.clone(),
+                context_store.clone(),
+                Arc::clone(&self.llm_config),
+                snapshot_svc.clone(),
+                Arc::clone(&self.tool_registry),
+            )));
+        }
+
+        // Context Skill (profile management)
+        if let Some(ref cb) = context_builder_arc {
+            skills.push(Box::new(ContextSkill::new(Arc::clone(cb))));
         }
 
         // Agent Skill (queue management)
@@ -482,6 +567,14 @@ impl McpServerCore {
     ) -> Result<(), McpServerError> {
         // Ensure skills are built
         self.build_skills().await;
+
+        // Run boot protocol (non-fatal — logs warnings on error).
+        if let Some(ref cb) = *self.context_builder_svc.read().await {
+            let handler = Arc::clone(&self.tool_handler);
+            if let Err(e) = cb.run_protocol("boot", handler, self.neo4j.as_ref()).await {
+                warn!(error = %e, "Boot protocol error (non-fatal)");
+            }
+        }
 
         info!(
             name = %self.config.name,
@@ -571,7 +664,9 @@ impl McpServerCore {
         match method {
             "notifications/initialized" => {
                 let mut state = self.state.write().await;
-                if *state == ServerState::Initializing {
+                // Accept from Initializing (normal flow) OR Created (resurrection
+                // after restart when the transport skips the initialize handshake).
+                if *state == ServerState::Initializing || *state == ServerState::Created {
                     *state = ServerState::Running;
                     info!("Server initialized and ready");
                 }
@@ -687,9 +782,26 @@ impl McpServerCore {
             ));
         }
 
-        let tools = {
+        let all_tools = {
             let registry = self.tool_registry.read().await;
             registry.list()
+        };
+
+        // If MCP_TOOL_PROFILE is set, filter to only that profile's allowed tools.
+        let tools = if let Some(profile_name) = &self.mcp_tool_profile {
+            let cb_opt = self.context_builder_svc.read().await.clone();
+            if let Some(cb) = cb_opt {
+                if let Some(profile) = cb.get_profile(profile_name).await {
+                    filter_tools_by_names(all_tools, &profile.tools)
+                } else {
+                    tracing::warn!(profile = %profile_name, "MCP_TOOL_PROFILE not found — returning all tools");
+                    all_tools
+                }
+            } else {
+                all_tools
+            }
+        } else {
+            all_tools
         };
 
         let result = ToolsListResult { tools };
@@ -756,6 +868,11 @@ impl McpServerCore {
 
         // Execute the tool (lock is released)
         let result = handler.execute(&params.name, params.arguments).await;
+
+        // Notify the scheduler that activity occurred — wakes sleep mode if active.
+        if let Some(sched) = self.scheduler_service.read().await.as_ref() {
+            sched.notify_activity().await;
+        }
 
         Ok(JsonRpcResponse::new(
             request.id.clone(),
@@ -882,6 +999,19 @@ impl Default for McpServer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Filter a tool list to only those whose names appear in `names`.
+/// Returns `all` unchanged if `names` is empty.
+fn filter_tools_by_names(
+    all: Vec<super::protocol::ToolDefinition>,
+    names: &[String],
+) -> Vec<super::protocol::ToolDefinition> {
+    if names.is_empty() {
+        return all;
+    }
+    let allowed: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    all.into_iter().filter(|t| allowed.contains(t.name.as_str())).collect()
 }
 
 #[cfg(test)]

@@ -124,7 +124,7 @@ impl ProcedureSkill {
             Ok(_) => {
                 let response = json!({
                     "success": true,
-                    "procedure_id": id,
+                    "id": id,
                     "name": input.name,
                     "steps_count": input.steps.len()
                 });

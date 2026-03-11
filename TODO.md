@@ -2,34 +2,85 @@
 
 ## Completed Phases
 
+- **Phase 1** — Core MCP server: Neo4j graph, OpenAPI ingestion, HTTP executor, self-healing ✓
 - **Phase 2** — Multi-Provider LLM Client (Anthropic + Gemini + Ollama via `LlmProvider` trait) ✓
 - **Phase 3** — Model Registry + Intelligent Selection (`ModelSpec`, `ModelSelector`, 5-tool `ModelSkill`, per-provider semaphores) ✓
 - **Phase 4** — Autonomous Scheduler (`SchedulerSkill`, 5 tools; background Tokio task with configurable tick interval, error budget, keyword-based goal-to-chain mapping, and runtime control via MCP tools) ✓
+- **Phase 5** — SnapshotService + AdminSkill expansion (10 tools: snapshot/restore/list/verify/analyze) ✓
+- **Phase 6** — CLAUDE.md condensation (~776→~130 lines) + project-docs/ reference split ✓
+- **Tier 1** — All 6 brain self-improvement capabilities: memory consolidation, semantic chunking, entity extraction, multi-hop graph RAG, get_note, procedural control flow ✓
+- **Tier 2** — All 8 HBI frontend items: graph sizing, MCP reconnect, knowledge panel load, graph node click, subtask tree, live graph data, auth settings, logs panel ✓
+- **Idle Sleep Mode** — Scheduler backs off after N idle ticks; runs bedtime consolidation chain; wakes on any tool call ✓
+- **Additional tools** — `list_notes`, `search_by_entity`, `delete_note`, `update_note` ✓ (KnowledgeSkill now 16 tools, total 81 static)
+- **Consolidation loop fix** — `[Memory N]` labels, `next_review_at` reset, `"recent experiences"` default topic ✓
+- **Chat features** — Expandable event bubbles (thinking/tool_call/tool_result), session history sidebar, research mode, context profile selector, export ✓
 
 ---
 
-## Bugs
+## P0 — Critical (fix before next deployment)
 
-- [x] **Context not reloaded on restart** — Fixed: `ContextStore::load_all()` is called in `build_skills()` at startup.
-
-- [ ] **`graph_query_endpoint` natural language matching** — `CONTAINS` queries fail on paraphrased queries. Fix: use embedding similarity search via the `note_embeddings` vector index pattern.
-
-- [ ] **DynamicSkill skips Neo4j load on legacy McpServer** — `McpServer::build_skills()` is sync so it can't call `load_from_neo4j().await`. Dynamic tools not available on stdio path after restart.
-
-- [ ] **Per-provider semaphores not resizable at runtime** — `set_worker_config` updates `WorkerConfig` but the underlying semaphores were fixed at startup.
+*(None currently)*
 
 ---
 
-## Enhancements
+## P1 — Open Bugs
 
-- [x] **Wire up SleepSkill** — registered in `build_skills()` when telemetry is available. `DATASET_DIR` env var added (default `./datasets`).
+- [ ] **Docker image needs rebuild** — The local Rust build and frontend are ahead of the running Docker container. The 4000-char SSE preview increase and expandable events won't be visible in the container until a rebuild:
+  ```bash
+  docker compose build agent-brain && docker compose up -d agent-brain
+  ```
 
-- [x] **Graph cleanup tools** — New `AdminSkill` (4 tools): `delete_api` (cascade), `purge_duplicate_endpoints`, `purge_orphaned_schemas`, `reset_graph` (confirm guard). All support `dry_run`.
+- [ ] **Stale dynamic tools in Neo4j** — `home_arm` and `safe_move_arm` dynamic tools were registered for testing and persist in the graph across restarts. Remove with `remove_dynamic_tool` via MCP or directly via Neo4j.
 
-- [x] **Job chaining** — `enqueue_chain` tool added to `AgentSkill` (now 8 tools). Takes an ordered list of steps; step 1 is queued immediately, steps 2..N are `parked`. On parent completion the coordinator auto-promotes children; on parent death/exhaustion children are cancelled.
+---
 
-- [ ] **SSE push for job results** — Callers must poll `get_job_result`. Push `notifications/jobs/completed` over the SSE stream when a job finishes instead.
+## P2 — Enhancements
 
-- [ ] **Rhai scripting in procedure steps** — Current template substitution is string-only (`{{input.field}}`). Embed Rhai for conditional logic in step args. Deferred v2.
+- [ ] **SSE push for job results on stdio transport** — stdio path has no session manager; callers must poll `get_job_result`. Consider a lightweight event bus or callback hook.
 
-- [ ] **`graph_query_endpoint` semantic search** — Replace `CONTAINS` with embedding similarity via the `endpoint_embeddings` vector index for better natural-language query matching.
+- [ ] **Rhai scripting in procedure steps** — current conditionals (`on_failure`, `{{context.steps.N}}`) cover basic flow. Full Rhai embed enables arbitrary conditional logic in step args. Still deferred.
+
+- [ ] **`graph_query_endpoint` semantic search** — CONTAINS fallback works; upgrade to vector similarity via `endpoint_embeddings` index for better paraphrased queries. Low priority — endpoint search is rarely used day-to-day.
+
+- [ ] **`configure_scheduler` tool should expose `idle_sleep_after_ticks` / `sleep_interval_secs`** — `update_config()` already accepts them; verify the MCP tool schema includes them.
+
+---
+
+## P2 — Frontend (hbi-frontend)
+
+- [ ] **Knowledge panel note search + filter by type** — Currently only search by query string. Add a `note_type` dropdown filter to search (semantic/episodic/reflection/consolidated/inference).
+
+- [ ] **Graph panel — entity node styling** — Entity nodes render as generic nodes; give them a distinct shape/color so the graph is easier to interpret visually.
+
+- [ ] **Graph panel — performance for large graphs** — `export_graph_visualization` with `max_nodes=200` is fine for now; consider virtualization or level-of-detail for graphs with thousands of nodes.
+
+- [ ] **Chat panel — code block syntax highlighting** — ReactMarkdown renders fenced code blocks as plain text. Add `react-syntax-highlighter` or `rehype-highlight` for colored code.
+
+- [ ] **Chat panel — streaming token display** — Currently shows the full message only after `done`. Display text incrementally as `message` events arrive.
+
+---
+
+## P3 — Infrastructure
+
+- [ ] **Create dev/test/prod branches** for CI pipeline (format + unit tests → integration tests → Docker build).
+  ```bash
+  git checkout -b dev && git push -u origin dev
+  git checkout -b test && git push -u origin test
+  git checkout -b prod && git push -u origin prod
+  ```
+
+- [ ] **Docker Compose — add `hbi-frontend` service** — multi-stage Dockerfile (node:22 build → nginx:alpine serve); add to `docker-compose.yml`; expose on port 5173.
+
+- [ ] **GHCR package visibility** — configure after first prod push.
+
+---
+
+## P3 — Documentation Debt
+
+- [ ] **Update ROADMAP.md** — Mark all Tier 1 and Tier 2 items complete; add Tier 3 items for next evolution (federated memory, plugin system, multimodal, etc.).
+
+- [ ] **Add schema_version policy** to `project-docs/schema.md` — document how snapshot schema versions are bumped.
+
+- [ ] **`project-docs/architecture.md`** — add sequence diagram for job chain lifecycle (enqueue → park → unpark → complete).
+
+- [ ] **`project-docs/tools.md`** — update tool count to 81; add `list_notes`, `search_by_entity`, `update_note` entries.

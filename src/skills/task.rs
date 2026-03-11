@@ -218,7 +218,7 @@ impl TaskSkill {
                 Ok(id) => {
                     info!(task_id = %id, goal = %input.goal, "Created new task in DB");
                     let response = json!({
-                        "task_id": id,
+                        "id": id,
                         "status": "created",
                         "message": "Task created successfully in database."
                     });
@@ -278,7 +278,7 @@ impl TaskSkill {
                     });
 
                     if let Some(note_id) = reflection_note_id {
-                        response_json["reflection_note_id"] = json!(note_id);
+                        response_json["id"] = json!(note_id);
                     }
 
                     ToolCallResult::success_text(serde_json::to_string_pretty(&response_json).unwrap())
@@ -398,7 +398,7 @@ impl TaskSkill {
         );
 
         let response = json!({
-            "parent_task_id": input.goal_task_id,
+            "parent_id": input.goal_task_id,
             "subtasks": created_subtasks
         });
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
@@ -429,6 +429,23 @@ impl TaskSkill {
 
         info!(task_id = %input.task_id, status = %input.status, "Updated task status");
 
+        // When a task completes, bubble up to parent if all siblings are now done.
+        let auto_completed_parent = if input.status == "completed" {
+            match neo4j.auto_complete_parent_if_done(&input.task_id).await {
+                Ok(Some(parent_id)) => {
+                    info!(parent_id = %parent_id, child_id = %input.task_id, "Auto-completed parent task (all subtasks done)");
+                    Some(parent_id)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    warn!(error = %e, "Failed to check parent auto-completion");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let note_id = if let Some(note_content) = &input.note {
             match neo4j.store_outcome_note(note_content, Some(&input.task_id)).await {
                 Ok(id) => {
@@ -445,12 +462,15 @@ impl TaskSkill {
         };
 
         let mut response = json!({
-            "task_id": input.task_id,
+            "id": input.task_id,
             "status": input.status,
         });
 
         if let Some(nid) = note_id {
             response["note_id"] = json!(nid);
+        }
+        if let Some(pid) = auto_completed_parent {
+            response["parent_completed"] = json!(pid);
         }
 
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
@@ -522,6 +542,7 @@ impl TaskSkill {
                                 priority: Some(1),
                                 max_attempts: Some(2),
                                 provider_hint: None,
+                                context_profile: None,
                             },
                             ChainStep {
                                 tool_name: "store_note".to_string(),
@@ -535,6 +556,7 @@ impl TaskSkill {
                                 priority: Some(1),
                                 max_attempts: Some(2),
                                 provider_hint: None,
+                                context_profile: None,
                             },
                         ];
                         match queue.enqueue_chain(&steps, None).await {
@@ -552,7 +574,7 @@ impl TaskSkill {
                 }
 
                 let mut response = json!({
-                    "outcome_id": outcome_id,
+                    "id": outcome_id,
                     "tool_name": input.tool_name,
                     "success": input.success,
                 });

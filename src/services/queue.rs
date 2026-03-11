@@ -77,6 +77,7 @@ pub struct ChainStep {
     /// Max execution attempts. Defaults to 3.
     pub max_attempts: Option<u32>,
     pub provider_hint: Option<String>,
+    pub context_profile: Option<String>,
 }
 
 /// Priority job queue with Neo4j-backed persistence and Tokio worker coordination.
@@ -85,10 +86,10 @@ pub struct QueueService {
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
     heap: Arc<Mutex<BinaryHeap<PrioritizedJob>>>,
     notify: Arc<Notify>,
-    /// Per-provider concurrency semaphores.
-    semaphore_ollama: Arc<Semaphore>,
-    semaphore_anthropic: Arc<Semaphore>,
-    semaphore_gemini: Arc<Semaphore>,
+    /// Per-provider concurrency semaphores, wrapped in RwLock to allow runtime resizing.
+    semaphore_ollama: Arc<RwLock<Arc<Semaphore>>>,
+    semaphore_anthropic: Arc<RwLock<Arc<Semaphore>>>,
+    semaphore_gemini: Arc<RwLock<Arc<Semaphore>>>,
     /// Publicly readable for `AgentSkill::handle_set_worker_config`.
     pub config: Arc<RwLock<WorkerConfig>>,
     /// Tombstone set — jobs cancelled while still in the heap (lazy deletion).
@@ -110,9 +111,9 @@ impl QueueService {
             tool_handler,
             heap: Arc::new(Mutex::new(BinaryHeap::new())),
             notify: Arc::new(Notify::new()),
-            semaphore_ollama: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_OLLAMA)),
-            semaphore_anthropic: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_ANTHROPIC)),
-            semaphore_gemini: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_GEMINI)),
+            semaphore_ollama: Arc::new(RwLock::new(Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_OLLAMA)))),
+            semaphore_anthropic: Arc::new(RwLock::new(Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_ANTHROPIC)))),
+            semaphore_gemini: Arc::new(RwLock::new(Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_GEMINI)))),
             config: Arc::new(RwLock::new(WorkerConfig::default())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
             session_manager,
@@ -169,7 +170,7 @@ impl QueueService {
     ) -> Result<String, String> {
         let id = self
             .neo4j
-            .create_agent_job(tool_name, arguments, priority, max_attempts, session_id, parent_job_id, provider_hint)
+            .create_agent_job(tool_name, arguments, priority, max_attempts, session_id, parent_job_id, provider_hint, None)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -221,6 +222,7 @@ impl QueueService {
                         session_id,
                         None,
                         step.provider_hint.as_deref(),
+                        step.context_profile.as_deref(),
                     )
                     .await
                     .map_err(|e| e.to_string())?
@@ -234,6 +236,7 @@ impl QueueService {
                         session_id,
                         prev_id.as_deref().unwrap(),
                         step.provider_hint.as_deref(),
+                        step.context_profile.as_deref(),
                     )
                     .await
                     .map_err(|e| e.to_string())?
@@ -341,17 +344,33 @@ impl QueueService {
 
     /// Update the runtime worker configuration.  Returns the new config.
     ///
-    /// Note: per-provider semaphore sizes are fixed at creation and cannot be
-    /// resized at runtime; only the `WorkerConfig` fields are updated here.
+    /// Per-provider semaphore sizes are updated by swapping in a new semaphore with
+    /// the requested capacity.  Jobs already holding a permit from the old semaphore
+    /// continue unaffected; new jobs pick up the replacement.
     pub async fn update_config(
         &self,
         max_concurrent: Option<usize>,
+        max_concurrent_ollama: Option<usize>,
+        max_concurrent_anthropic: Option<usize>,
+        max_concurrent_gemini: Option<usize>,
         enabled: Option<bool>,
         poll_interval_secs: Option<u64>,
     ) -> WorkerConfig {
         let mut cfg = self.config.write().await;
         if let Some(v) = max_concurrent {
             cfg.max_concurrent = v;
+        }
+        if let Some(v) = max_concurrent_ollama {
+            cfg.max_concurrent_ollama = v;
+            *self.semaphore_ollama.write().await = Arc::new(Semaphore::new(v));
+        }
+        if let Some(v) = max_concurrent_anthropic {
+            cfg.max_concurrent_anthropic = v;
+            *self.semaphore_anthropic.write().await = Arc::new(Semaphore::new(v));
+        }
+        if let Some(v) = max_concurrent_gemini {
+            cfg.max_concurrent_gemini = v;
+            *self.semaphore_gemini.write().await = Arc::new(Semaphore::new(v));
         }
         if let Some(v) = enabled {
             cfg.enabled = v;
@@ -376,9 +395,9 @@ impl QueueService {
         let heap_len = self.heap.lock().await.len();
         let cfg = self.config.read().await;
 
-        let avail_ollama = self.semaphore_ollama.available_permits();
-        let avail_anthropic = self.semaphore_anthropic.available_permits();
-        let avail_gemini = self.semaphore_gemini.available_permits();
+        let avail_ollama = self.semaphore_ollama.read().await.available_permits();
+        let avail_anthropic = self.semaphore_anthropic.read().await.available_permits();
+        let avail_gemini = self.semaphore_gemini.read().await.available_permits();
         let running_ollama = cfg.max_concurrent_ollama.saturating_sub(avail_ollama);
         let running_anthropic = cfg.max_concurrent_anthropic.saturating_sub(avail_anthropic);
         let running_gemini = cfg.max_concurrent_gemini.saturating_sub(avail_gemini);
@@ -442,10 +461,15 @@ impl QueueService {
                 }
 
                 // Pick the semaphore based on provider_hint.
-                let semaphore = match pjob.job.provider_hint.as_deref() {
-                    Some("anthropic") => Arc::clone(&self.semaphore_anthropic),
-                    Some("gemini") => Arc::clone(&self.semaphore_gemini),
-                    _ => Arc::clone(&self.semaphore_ollama),
+                // Read the current inner Arc so that runtime config changes
+                // (semaphore swaps) take effect on the next job dispatch.
+                let semaphore: Arc<Semaphore> = {
+                    let lock = match pjob.job.provider_hint.as_deref() {
+                        Some("anthropic") => self.semaphore_anthropic.read().await,
+                        Some("gemini") => self.semaphore_gemini.read().await,
+                        _ => self.semaphore_ollama.read().await,
+                    };
+                    Arc::clone(&*lock)
                 };
 
                 // Try to acquire a concurrency slot (non-blocking).

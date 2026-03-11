@@ -4,7 +4,9 @@
 //! server-side, streaming events back to the caller.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
@@ -12,6 +14,7 @@ use tracing::{debug, warn};
 
 use crate::mcp::protocol::Content;
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
+use crate::services::context_builder::ContextBuilderService;
 use crate::services::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
 
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
@@ -39,6 +42,8 @@ pub enum ChatEvent {
     ToolCall { tool: String, args: Value },
     /// Tool execution finished.
     ToolResult { tool: String, success: bool, preview: String },
+    /// Streaming token chunk from the LLM (Ollama only).
+    Token { content: String },
     /// Final assistant message (no more tool calls).
     Message { content: String },
     /// An error occurred.
@@ -67,6 +72,15 @@ pub struct ChatRequest {
     pub session_id: Option<String>,
     /// Optional allowlist of tool names. When empty or absent, all tools are available.
     pub tools: Option<Vec<String>>,
+    /// Optional context profile name. When set and `tools` is empty/absent, the
+    /// profile's tool allowlist and system prompt are applied automatically.
+    pub context_profile: Option<String>,
+    /// Research mode: after the tool-use loop, synthesize gathered findings with
+    /// a stronger model. Accepted values: "gemini", "anthropic".
+    pub synthesis_provider: Option<String>,
+    /// Optional model override for synthesis (e.g. "gemini-2.5-flash").
+    /// Falls back to the provider's default when absent.
+    pub synthesis_model: Option<String>,
 }
 
 // ============================================================================
@@ -82,6 +96,9 @@ pub struct ChatService {
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
     tool_registry: Arc<RwLock<ToolRegistry>>,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    /// Lazily-read: shares the same Arc as McpServerCore so profiles loaded after
+    /// ChatService creation are immediately visible (no restart needed).
+    context_builder: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
 }
 
 impl ChatService {
@@ -91,7 +108,23 @@ impl ChatService {
         tool_registry: Arc<RwLock<ToolRegistry>>,
         llm_config: Arc<RwLock<Option<LlmConfig>>>,
     ) -> Arc<Self> {
-        Arc::new(Self { tool_handler, tool_registry, llm_config })
+        Arc::new(Self {
+            tool_handler,
+            tool_registry,
+            llm_config,
+            context_builder: Arc::new(RwLock::new(None)),
+        })
+    }
+
+    /// Create a `ChatService` sharing the context-builder Arc from `McpServerCore`.
+    /// Profiles loaded by `build_skills()` are immediately visible without restart.
+    pub fn with_context_builder(
+        tool_handler: Arc<RwLock<Option<ToolHandler>>>,
+        tool_registry: Arc<RwLock<ToolRegistry>>,
+        llm_config: Arc<RwLock<Option<LlmConfig>>>,
+        context_builder: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
+    ) -> Arc<Self> {
+        Arc::new(Self { tool_handler, tool_registry, llm_config, context_builder })
     }
 
     /// Run the agentic loop for a chat request, emitting events on `tx`.
@@ -104,14 +137,28 @@ impl ChatService {
         let session_id = request.session_id.clone();
         let user_message = request.message.clone();
 
-        // Apply per-request tool allowlist if provided.
-        let tools = match &request.tools {
-            Some(names) if !names.is_empty() => {
-                let name_set: std::collections::HashSet<&str> =
-                    names.iter().map(|s| s.as_str()).collect();
-                all_tools.into_iter().filter(|t| name_set.contains(t.name.as_str())).collect()
+        // Apply context profile when set and no explicit tool allowlist is given.
+        let has_explicit_tools = request.tools.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+        let cb_opt = self.context_builder.read().await.clone();
+        let (tools, _profile_system_prompt, _profile_notes) = if has_explicit_tools {
+            let names = request.tools.as_deref().unwrap_or_default();
+            (filter_tools(all_tools, names), None, Vec::new())
+        } else if let (Some(profile_name), Some(cb)) = (&request.context_profile, cb_opt) {
+            if let Ok(bundle) = cb.build_bundle(profile_name).await {
+                let filtered = filter_tools(all_tools, &bundle.profile.tools);
+                let prompt = if bundle.profile.system_prompt.is_empty() {
+                    None
+                } else {
+                    Some(bundle.profile.system_prompt.clone())
+                };
+                let notes = bundle.pre_loaded_notes.clone();
+                (filtered, prompt, notes)
+            } else {
+                (all_tools, None, Vec::new())
             }
-            _ => all_tools,
+        } else {
+            let names = request.tools.as_deref().unwrap_or_default();
+            (filter_tools(all_tools, names), None, Vec::new())
         };
 
         let handler = self.tool_handler.read().await.clone();
@@ -142,6 +189,28 @@ impl ChatService {
             }
             let _ = result_tx.send(final_text).await;
         });
+
+        // Emit a diagnostic context event so the client can see what configuration
+        // was active for this turn (provider, profile, tool count, mode).
+        {
+            let provider_str = config.as_ref()
+                .map(|c| format!("{:?}", c.provider).to_lowercase())
+                .unwrap_or_else(|| "none".into());
+            let mode = if let Some(p) = &request.synthesis_provider {
+                format!("research → synthesize({})", p)
+            } else {
+                "direct".into()
+            };
+            let _ = inner_tx.send(ChatEvent::Thinking {
+                content: format!(
+                    "⚙ provider={} | profile={} | tools={} | mode={}",
+                    provider_str,
+                    request.context_profile.as_deref().unwrap_or("none"),
+                    tools.len(),
+                    mode,
+                ),
+            }).await;
+        }
 
         match config {
             Some(cfg) if cfg.provider == LlmProviderType::Anthropic => {
@@ -344,7 +413,7 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(200).collect();
+                let preview: String = result_text.chars().take(4000).collect();
                 let _ = tx.send(ChatEvent::ToolResult {
                     tool: tool_name.clone(),
                     success,
@@ -386,6 +455,7 @@ impl ChatService {
         request: ChatRequest,
         tx: mpsc::Sender<ChatEvent>,
     ) {
+        let do_synthesis = request.synthesis_provider.is_some();
         let base_url = config.base_url
             .as_deref()
             .unwrap_or("http://localhost:11434");
@@ -414,13 +484,14 @@ impl ChatService {
         messages.push(json!({ "role": "user", "content": request.message }));
 
         let client = reqwest::Client::new();
+        let mut weak_model_answer = String::new();
 
         for _iteration in 0..MAX_TOOL_ITERATIONS {
             let body = json!({
                 "model": model,
                 "messages": messages,
                 "tools": ollama_tools,
-                "stream": false,
+                "stream": true,
                 "options": {
                     "temperature": config.temperature,
                 }
@@ -444,35 +515,77 @@ impl ChatService {
                 }
             };
 
-            let resp_json: Value = match response.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = tx.send(ChatEvent::Error {
-                        message: format!("Failed to parse Ollama response: {e}"),
-                    }).await;
-                    let _ = tx.send(ChatEvent::Done).await;
-                    return;
-                }
-            };
+            // Parse NDJSON streaming response, emitting Token events per chunk.
+            let mut byte_stream = response.bytes_stream();
+            let mut line_buf = String::new();
+            let mut full_content = String::new();
+            let mut tool_calls: Vec<Value> = Vec::new();
 
-            // Surface Ollama-level errors (e.g. model not found).
-            if let Some(err) = resp_json.get("error").and_then(|v| v.as_str()) {
-                let _ = tx.send(ChatEvent::Error {
-                    message: format!("Ollama error: {err}"),
-                }).await;
-                let _ = tx.send(ChatEvent::Done).await;
-                return;
+            'stream: while let Some(chunk_result) = byte_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx.send(ChatEvent::Error {
+                            message: format!("Ollama stream read error: {e}"),
+                        }).await;
+                        let _ = tx.send(ChatEvent::Done).await;
+                        return;
+                    }
+                };
+                line_buf.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(nl) = line_buf.find('\n') {
+                    let line = line_buf[..nl].trim().to_string();
+                    line_buf = line_buf[nl + 1..].to_string();
+                    if line.is_empty() { continue; }
+
+                    let chunk_json: Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // Surface Ollama-level errors (e.g. model not found).
+                    if let Some(err) = chunk_json.get("error").and_then(|v| v.as_str()) {
+                        let _ = tx.send(ChatEvent::Error {
+                            message: format!("Ollama error: {err}"),
+                        }).await;
+                        let _ = tx.send(ChatEvent::Done).await;
+                        return;
+                    }
+
+                    // Accumulate token content and emit Token event.
+                    let token = chunk_json["message"]["content"].as_str().unwrap_or("").to_string();
+                    if !token.is_empty() {
+                        full_content.push_str(&token);
+                        let _ = tx.send(ChatEvent::Token { content: token }).await;
+                    }
+
+                    // Ollama sends tool_calls in a non-done chunk; accumulate from every chunk.
+                    if let Some(calls) = chunk_json["message"]["tool_calls"].as_array() {
+                        if !calls.is_empty() {
+                            tool_calls.extend(calls.iter().cloned());
+                        }
+                    }
+
+                    if chunk_json.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        break 'stream;
+                    }
+                }
             }
 
-            // Ollama wraps the assistant turn in `message`.
-            let msg = &resp_json["message"];
-            let content = msg["content"].as_str().unwrap_or("").to_string();
-            let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+            let content = full_content;
 
             if tool_calls.is_empty() {
-                // No tool calls — this is the final answer.
+                // No tool calls — weak model has a final answer.
                 if !content.is_empty() {
-                    let _ = tx.send(ChatEvent::Message { content }).await;
+                    if do_synthesis {
+                        // Surface weak model's answer as a thinking event so the
+                        // user can see what was researched before synthesis.
+                        weak_model_answer = content.clone();
+                        let _ = tx.send(ChatEvent::Thinking { content }).await;
+                    } else {
+                        let _ = tx.send(ChatEvent::Message { content }).await;
+                    }
                 }
                 break;
             }
@@ -521,7 +634,7 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(200).collect();
+                let preview: String = result_text.chars().take(4000).collect();
                 let _ = tx.send(ChatEvent::ToolResult {
                     tool: tool_name.clone(),
                     success,
@@ -536,7 +649,148 @@ impl ChatService {
             }
         }
 
+        // Research mode: synthesize gathered findings with a stronger model.
+        if do_synthesis {
+            self.run_synthesis(&request, &messages, &weak_model_answer, tx.clone()).await;
+        }
+
         let _ = tx.send(ChatEvent::Done).await;
+    }
+
+    // ========================================================================
+    // Synthesis step — called after the tool-use loop in research mode
+    // ========================================================================
+
+    async fn run_synthesis(
+        &self,
+        request: &ChatRequest,
+        conversation: &[Value],
+        weak_answer: &str,
+        tx: mpsc::Sender<ChatEvent>,
+    ) {
+        let provider_str = match &request.synthesis_provider {
+            Some(p) => p.to_lowercase(),
+            None => return,
+        };
+
+        // Read the current live config so we can fall back to its API key if the
+        // env var isn't set (e.g. key was supplied via use_model, not via env).
+        let live_config = self.llm_config.read().await.clone();
+
+        let (provider, default_model, api_key) = match provider_str.as_str() {
+            "gemini" => {
+                let key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty())
+                    .or_else(|| {
+                        live_config.as_ref().filter(|c| c.provider == LlmProviderType::Gemini)
+                            .and_then(|c| c.api_key.clone()).filter(|k| !k.is_empty())
+                    });
+                (
+                    LlmProviderType::Gemini,
+                    std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into()),
+                    key,
+                )
+            }
+            "anthropic" | "claude" => {
+                let key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty())
+                    .or_else(|| {
+                        live_config.as_ref().filter(|c| c.provider == LlmProviderType::Anthropic)
+                            .and_then(|c| c.api_key.clone()).filter(|k| !k.is_empty())
+                    });
+                (LlmProviderType::Anthropic, "claude-haiku-4-5-20251001".to_string(), key)
+            }
+            other => {
+                let _ = tx.send(ChatEvent::Error {
+                    message: format!("Unknown synthesis provider: {other}. Use 'gemini' or 'anthropic'."),
+                }).await;
+                return;
+            }
+        };
+
+        let model = request.synthesis_model.clone().unwrap_or(default_model);
+
+        let synth_config = LlmConfig {
+            provider,
+            model: model.clone(),
+            api_key,
+            base_url: None,
+            temperature: 0.7,
+            timeout: Duration::from_secs(120),
+            ..LlmConfig::default()
+        };
+
+        let llm = match LlmClient::with_config(synth_config) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(ChatEvent::Error {
+                    message: format!("Failed to initialize synthesis model ({model}): {e}"),
+                }).await;
+                return;
+            }
+        };
+
+        // Collect tool results from the conversation history.
+        let mut tool_results: Vec<String> = Vec::new();
+        for msg in conversation {
+            if msg["role"].as_str() == Some("tool") {
+                if let Some(content) = msg["content"].as_str() {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        tool_results.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+
+        let research_block = if tool_results.is_empty() {
+            let _ = tx.send(ChatEvent::Thinking {
+                content: format!(
+                    "⚠ Research phase called 0 tools — the local model did not invoke any \
+                     tool. Synthesis will proceed with the model's direct answer only \
+                     (weak_answer len={}).",
+                    weak_answer.len()
+                ),
+            }).await;
+            "(no tool results gathered)".to_string()
+        } else {
+            let _ = tx.send(ChatEvent::Thinking {
+                content: format!("Synthesizing {} tool result(s) with {model}…", tool_results.len()),
+            }).await;
+            tool_results.join("\n\n---\n\n")
+        };
+
+        let synthesis_prompt = format!(
+            "You are a research synthesizer. An AI research agent gathered the following \
+             information using multiple tools to answer a question. \
+             Your job is to synthesize all gathered material into a comprehensive, \
+             well-structured, and clearly written response.\n\n\
+             Original question: {question}\n\n\
+             Research gathered:\n{research}\n\n\
+             {analysis}\
+             Please synthesize the above into a clear, informative, and complete response \
+             to the original question.",
+            question = request.message,
+            research = research_block,
+            analysis = if !weak_answer.is_empty() {
+                format!("Initial analysis from research agent:\n{weak_answer}\n\n")
+            } else {
+                String::new()
+            },
+        );
+
+        // (synthesis-start thinking event already emitted in the research_block block above)
+
+        let messages = vec![ChatMessage::user(&synthesis_prompt)];
+        match llm.chat(&messages).await {
+            Ok(response) if !response.text.is_empty() => {
+                let _ = tx.send(ChatEvent::Message { content: response.text }).await;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let _ = tx.send(ChatEvent::Error {
+                    message: format!("Synthesis failed: {e}"),
+                }).await;
+            }
+        }
     }
 
     // ========================================================================
@@ -629,7 +883,7 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(200).collect();
+                let preview: String = result_text.chars().take(4000).collect();
                 let _ = tx.send(ChatEvent::ToolResult {
                     tool: tool_name.clone(),
                     success,
@@ -662,6 +916,19 @@ impl ChatService {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Filter a tool list to only those whose names appear in `names`.
+/// Returns `all` unchanged if `names` is empty.
+fn filter_tools(
+    all: Vec<crate::mcp::protocol::ToolDefinition>,
+    names: &[String],
+) -> Vec<crate::mcp::protocol::ToolDefinition> {
+    if names.is_empty() {
+        return all;
+    }
+    let allowed: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    all.into_iter().filter(|t| allowed.contains(t.name.as_str())).collect()
+}
 
 /// Extract the first `<tool_call>...</tool_call>` block from a text.
 ///
