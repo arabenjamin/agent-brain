@@ -149,9 +149,10 @@ fn test_parse_gitlab_url_with_ref() {
 
 #[test]
 fn test_parse_invalid_url() {
+    // Non-URL strings are treated as local paths (Ok), not errors.
+    // Only unsupported platforms (e.g. bitbucket) return Err.
     let result = RepoSource::parse("not-a-url");
-    assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), RepoError::InvalidUrl(_)));
+    assert!(result.is_ok());
 }
 
 #[test]
