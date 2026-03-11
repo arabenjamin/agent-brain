@@ -963,8 +963,9 @@ impl ApiSkill {
         };
 
         let mut ingested_apis = Vec::new();
-        if input.auto_ingest && self.neo4j.is_some() {
-            let neo4j = self.neo4j.as_ref().unwrap();
+        if input.auto_ingest
+            && let Some(neo4j) = self.neo4j.as_ref()
+        {
             if let Err(e) = neo4j.init_schema().await {
                 return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
             }
@@ -1082,8 +1083,9 @@ impl ApiSkill {
         };
 
         let mut ingested = false;
-        if input.auto_ingest && self.neo4j.is_some() {
-            let neo4j = self.neo4j.as_ref().unwrap();
+        if input.auto_ingest
+            && let Some(neo4j) = self.neo4j.as_ref()
+        {
             if let Err(e) = neo4j.init_schema().await {
                 return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
             }
@@ -1198,8 +1200,9 @@ impl ApiSkill {
         };
 
         let mut ingested = false;
-        if input.auto_ingest && self.neo4j.is_some() {
-            let neo4j = self.neo4j.as_ref().unwrap();
+        if input.auto_ingest
+            && let Some(neo4j) = self.neo4j.as_ref()
+        {
             if let Err(e) = neo4j.init_schema().await {
                 return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
             }
