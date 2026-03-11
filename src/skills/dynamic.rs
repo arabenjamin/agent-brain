@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -87,7 +87,9 @@ impl DynamicSkill {
         for row in rows {
             let name = row.get::<String>("name").unwrap_or_default();
             let description = row.get::<String>("description").unwrap_or_default();
-            let schema_str = row.get::<String>("input_schema").unwrap_or_else(|_| "{}".to_string());
+            let schema_str = row
+                .get::<String>("input_schema")
+                .unwrap_or_else(|_| "{}".to_string());
             let procedure_id = row.get::<String>("procedure_id").unwrap_or_default();
 
             if name.is_empty() || procedure_id.is_empty() {
@@ -96,10 +98,17 @@ impl DynamicSkill {
 
             let input_schema: Value = serde_json::from_str(&schema_str).unwrap_or(json!({}));
 
-            map.insert(name.clone(), DynamicToolEntry {
-                definition: ToolDefinition { name, description, input_schema },
-                procedure_id,
-            });
+            map.insert(
+                name.clone(),
+                DynamicToolEntry {
+                    definition: ToolDefinition {
+                        name,
+                        description,
+                        input_schema,
+                    },
+                    procedure_id,
+                },
+            );
             count += 1;
         }
 
@@ -266,9 +275,9 @@ impl DynamicSkill {
 
             let handler_guard = self.tool_handler_ref.read().await;
             if let Some(handler) = &*handler_guard {
-                let (results, _) = procedure_executor::execute_procedure(
-                    &input.steps, &test_map, handler, true
-                ).await;
+                let (results, _) =
+                    procedure_executor::execute_procedure(&input.steps, &test_map, handler, true)
+                        .await;
                 info!(steps = results.len(), "Dry-run passed for define_tool");
             }
             drop(handler_guard);
@@ -286,7 +295,9 @@ impl DynamicSkill {
 
         let schema_json = match serde_json::to_string(&input.input_schema) {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("Failed to serialize input_schema: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to serialize input_schema: {}", e));
+            }
         };
 
         let proc_cypher = r#"
@@ -299,14 +310,18 @@ impl DynamicSkill {
         })
         "#;
 
-        if let Err(e) = self.neo4j.run(
-            neo4rs::query(proc_cypher)
-                .param("proc_id", procedure_id.clone())
-                .param("name", input.name.clone())
-                .param("description", input.description.clone())
-                .param("steps", steps_json)
-                .param("ts", now.clone()),
-        ).await {
+        if let Err(e) = self
+            .neo4j
+            .run(
+                neo4rs::query(proc_cypher)
+                    .param("proc_id", procedure_id.clone())
+                    .param("name", input.name.clone())
+                    .param("description", input.description.clone())
+                    .param("steps", steps_json)
+                    .param("ts", now.clone()),
+            )
+            .await
+        {
             return ToolCallResult::error(format!("Failed to store Procedure: {}", e));
         }
 
@@ -322,29 +337,36 @@ impl DynamicSkill {
         })-[:USES]->(p)
         "#;
 
-        if let Err(e) = self.neo4j.run(
-            neo4rs::query(dt_cypher)
-                .param("proc_id", procedure_id.clone())
-                .param("tool_id", tool_id.clone())
-                .param("name", input.name.clone())
-                .param("description", input.description.clone())
-                .param("schema", schema_json)
-                .param("ts", now),
-        ).await {
+        if let Err(e) = self
+            .neo4j
+            .run(
+                neo4rs::query(dt_cypher)
+                    .param("proc_id", procedure_id.clone())
+                    .param("tool_id", tool_id.clone())
+                    .param("name", input.name.clone())
+                    .param("description", input.description.clone())
+                    .param("schema", schema_json)
+                    .param("ts", now),
+            )
+            .await
+        {
             return ToolCallResult::error(format!("Failed to store DynamicTool: {}", e));
         }
 
         // Register in memory (both registry and handler see this via shared Arc)
         {
             let mut map = self.tools_map.write().await;
-            map.insert(input.name.clone(), DynamicToolEntry {
-                definition: ToolDefinition {
-                    name: input.name.clone(),
-                    description: input.description.clone(),
-                    input_schema: input.input_schema.clone(),
+            map.insert(
+                input.name.clone(),
+                DynamicToolEntry {
+                    definition: ToolDefinition {
+                        name: input.name.clone(),
+                        description: input.description.clone(),
+                        input_schema: input.input_schema.clone(),
+                    },
+                    procedure_id: procedure_id.clone(),
                 },
-                procedure_id: procedure_id.clone(),
-            });
+            );
         }
 
         info!(tool_name = %input.name, tool_id = %tool_id, "Defined and registered dynamic tool");
@@ -370,24 +392,34 @@ impl DynamicSkill {
         RETURN p.steps AS steps
         "#;
 
-        let rows = match self.neo4j.execute(
-            neo4rs::query(cypher).param("id", input.procedure_id.clone())
-        ).await {
+        let rows = match self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("id", input.procedure_id.clone()))
+            .await
+        {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(format!("Failed to fetch procedure: {}", e)),
         };
 
         let steps_str = match rows.first().and_then(|r| r.get::<String>("steps").ok()) {
             Some(s) => s,
-            None => return ToolCallResult::error(format!("Procedure '{}' not found", input.procedure_id)),
+            None => {
+                return ToolCallResult::error(format!(
+                    "Procedure '{}' not found",
+                    input.procedure_id
+                ));
+            }
         };
 
         let steps: Vec<Value> = match serde_json::from_str(&steps_str) {
             Ok(v) => v,
-            Err(e) => return ToolCallResult::error(format!("Failed to parse procedure steps: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to parse procedure steps: {}", e));
+            }
         };
 
-        let input_map = input.input
+        let input_map = input
+            .input
             .as_ref()
             .and_then(|v| v.as_object())
             .cloned()
@@ -408,12 +440,14 @@ impl DynamicSkill {
 
         let step_results: Vec<Value> = results
             .iter()
-            .map(|r| json!({
-                "step_index": r.step_index,
-                "tool": r.tool,
-                "success": r.success,
-                "output_preview": r.output_preview,
-            }))
+            .map(|r| {
+                json!({
+                    "step_index": r.step_index,
+                    "tool": r.tool,
+                    "success": r.success,
+                    "output_preview": r.output_preview,
+                })
+            })
             .collect();
 
         let response = json!({
@@ -436,14 +470,17 @@ impl DynamicSkill {
 
         match self.neo4j.execute(neo4rs::query(cypher)).await {
             Ok(rows) => {
-                let tools: Vec<Value> = rows.iter().map(|row| {
-                    json!({
-                        "id": row.get::<String>("id").unwrap_or_default(),
-                        "name": row.get::<String>("name").unwrap_or_default(),
-                        "description": row.get::<String>("description").unwrap_or_default(),
-                        "created_at": row.get::<String>("created_at").unwrap_or_default(),
+                let tools: Vec<Value> = rows
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "id": row.get::<String>("id").unwrap_or_default(),
+                            "name": row.get::<String>("name").unwrap_or_default(),
+                            "description": row.get::<String>("description").unwrap_or_default(),
+                            "created_at": row.get::<String>("created_at").unwrap_or_default(),
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let response = json!({ "count": tools.len(), "tools": tools });
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
@@ -465,9 +502,11 @@ impl DynamicSkill {
         DETACH DELETE d, p
         "#;
 
-        if let Err(e) = self.neo4j.run(
-            neo4rs::query(cypher).param("name", input.name.clone())
-        ).await {
+        if let Err(e) = self
+            .neo4j
+            .run(neo4rs::query(cypher).param("name", input.name.clone()))
+            .await
+        {
             return ToolCallResult::error(format!("Failed to delete DynamicTool: {}", e));
         }
 
@@ -484,7 +523,11 @@ impl DynamicSkill {
     }
 
     /// Execute a dynamically-defined tool (dispatch to procedure executor).
-    async fn handle_dynamic_tool(&self, tool_name: &str, arguments: Option<Value>) -> ToolCallResult {
+    async fn handle_dynamic_tool(
+        &self,
+        tool_name: &str,
+        arguments: Option<Value>,
+    ) -> ToolCallResult {
         let entry = {
             let map = self.tools_map.read().await;
             map.get(tool_name).cloned()
@@ -492,7 +535,9 @@ impl DynamicSkill {
 
         let entry = match entry {
             Some(e) => e,
-            None => return ToolCallResult::error(format!("Dynamic tool '{}' not found", tool_name)),
+            None => {
+                return ToolCallResult::error(format!("Dynamic tool '{}' not found", tool_name));
+            }
         };
 
         // Fetch procedure steps
@@ -501,18 +546,23 @@ impl DynamicSkill {
         RETURN p.steps AS steps
         "#;
 
-        let rows = match self.neo4j.execute(
-            neo4rs::query(cypher).param("id", entry.procedure_id.clone())
-        ).await {
+        let rows = match self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("id", entry.procedure_id.clone()))
+            .await
+        {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(format!("Failed to fetch procedure: {}", e)),
         };
 
         let steps_str = match rows.first().and_then(|r| r.get::<String>("steps").ok()) {
             Some(s) => s,
-            None => return ToolCallResult::error(format!(
-                "Procedure '{}' not found for tool '{}'", entry.procedure_id, tool_name
-            )),
+            None => {
+                return ToolCallResult::error(format!(
+                    "Procedure '{}' not found for tool '{}'",
+                    entry.procedure_id, tool_name
+                ));
+            }
         };
 
         let steps: Vec<Value> = match serde_json::from_str(&steps_str) {
@@ -536,13 +586,21 @@ impl DynamicSkill {
         let (results, total_success) =
             procedure_executor::execute_procedure(&steps, &input_map, &handler, false).await;
 
-        let last_output = results.last().map(|r| r.output.clone()).unwrap_or(Value::Null);
-        let step_summaries: Vec<Value> = results.iter().map(|r| json!({
-            "step": r.step_index,
-            "tool": r.tool,
-            "success": r.success,
-            "output_preview": r.output_preview,
-        })).collect();
+        let last_output = results
+            .last()
+            .map(|r| r.output.clone())
+            .unwrap_or(Value::Null);
+        let step_summaries: Vec<Value> = results
+            .iter()
+            .map(|r| {
+                json!({
+                    "step": r.step_index,
+                    "tool": r.tool,
+                    "success": r.success,
+                    "output_preview": r.output_preview,
+                })
+            })
+            .collect();
 
         let response = json!({
             "tool": tool_name,
@@ -588,7 +646,9 @@ impl Skill for DynamicSkill {
             "remove_dynamic_tool" => Some(self.handle_remove_dynamic_tool(arguments).await),
             name => {
                 // Check if this is a dynamically-registered tool
-                let is_dynamic = self.tools_map.try_read()
+                let is_dynamic = self
+                    .tools_map
+                    .try_read()
                     .map(|map| map.contains_key(name))
                     .unwrap_or(false);
 
@@ -630,9 +690,7 @@ struct RemoveDynamicToolInput {
     name: String,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

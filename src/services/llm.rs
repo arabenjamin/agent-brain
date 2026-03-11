@@ -1,5 +1,5 @@
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,20 +40,11 @@ pub enum LlmError {
     Provider(#[from] crate::services::llm_providers::LlmProviderError),
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum LlmProviderType {
+    #[default]
     Ollama,
     Anthropic,
     Gemini,
@@ -64,12 +55,6 @@ pub enum LlmProviderType {
 impl std::fmt::Display for LlmProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
-    }
-}
-
-impl Default for LlmProviderType {
-    fn default() -> Self {
-        Self::Ollama
     }
 }
 
@@ -264,7 +249,10 @@ impl LlmClient {
 
     /// Create a new LLM client with custom configuration.
     pub fn with_config(config: LlmConfig) -> Result<Self, LlmError> {
-        use crate::services::llm_providers::{ProviderConfig, ollama::OllamaProvider, anthropic::AnthropicProvider, gemini::GeminiProvider};
+        use crate::services::llm_providers::{
+            ProviderConfig, anthropic::AnthropicProvider, gemini::GeminiProvider,
+            ollama::OllamaProvider,
+        };
 
         let provider_config = ProviderConfig {
             model: config.model.clone(),
@@ -301,15 +289,21 @@ impl LlmClient {
             match config.provider {
                 LlmProviderType::VLlm => {
                     use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
-                    Arc::new(OpenAiCompatProvider::new(embed_config)) as Arc<dyn crate::services::llm_providers::LlmProvider>
+                    Arc::new(OpenAiCompatProvider::new(embed_config))
+                        as Arc<dyn crate::services::llm_providers::LlmProvider>
                 }
-                _ => Arc::new(OllamaProvider::new(embed_config)) as Arc<dyn crate::services::llm_providers::LlmProvider>,
+                _ => Arc::new(OllamaProvider::new(embed_config))
+                    as Arc<dyn crate::services::llm_providers::LlmProvider>,
             }
         } else {
             provider.clone()
         };
 
-        Ok(Self { provider, embed_provider, config })
+        Ok(Self {
+            provider,
+            embed_provider,
+            config,
+        })
     }
 
     /// Get the current configuration.
@@ -333,12 +327,18 @@ impl LlmClient {
         prompt: &str,
         system: Option<&str>,
     ) -> Result<LlmResponse, LlmError> {
-        self.provider.generate(prompt, system).await.map_err(LlmError::from)
+        self.provider
+            .generate(prompt, system)
+            .await
+            .map_err(LlmError::from)
     }
 
     /// Generate embeddings for a text.
     pub async fn embeddings(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        self.embed_provider.embed(text).await.map_err(LlmError::from)
+        self.embed_provider
+            .embed(text)
+            .await
+            .map_err(LlmError::from)
     }
 
     /// Chat with the model using message history.
@@ -834,7 +834,10 @@ That's all."#;
         assert!(client.is_ok());
 
         let client = client.unwrap();
-        assert_eq!(client.config().base_url.as_deref(), Some("http://test:1234"));
+        assert_eq!(
+            client.config().base_url.as_deref(),
+            Some("http://test:1234")
+        );
         assert_eq!(client.config().model, "test-model");
     }
 }

@@ -5,7 +5,7 @@
 use axum::{
     body::Body,
     extract::Request,
-    http::{header::AUTHORIZATION, StatusCode},
+    http::{StatusCode, header::AUTHORIZATION},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -186,7 +186,10 @@ mod tests {
 
     #[test]
     fn test_auth_error_display() {
-        assert_eq!(AuthError::MissingHeader.to_string(), "Missing authorization header");
+        assert_eq!(
+            AuthError::MissingHeader.to_string(),
+            "Missing authorization header"
+        );
         assert_eq!(AuthError::InvalidKey.to_string(), "Invalid API key");
     }
 
@@ -297,10 +300,7 @@ mod tests {
     async fn test_authenticate_request_missing_header() {
         let auth = ApiKeyAuth::with_key("secret");
 
-        let request = Request::builder()
-            .uri("/mcp")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/mcp").body(Body::empty()).unwrap();
 
         let result = auth.authenticate(&request);
         assert!(matches!(result, Err(AuthError::MissingHeader)));
@@ -338,10 +338,7 @@ mod tests {
     async fn test_authenticate_disabled_auth() {
         let auth = ApiKeyAuth::disabled();
 
-        let request = Request::builder()
-            .uri("/mcp")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/mcp").body(Body::empty()).unwrap();
 
         // Should pass without any header when auth is disabled
         let result = auth.authenticate(&request);

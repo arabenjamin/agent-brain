@@ -3,18 +3,14 @@ use serde::{Deserialize, Serialize};
 /// Status of a task.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TaskStatus {
+    #[default]
     Created,
     InProgress,
     Completed,
     Failed,
     Blocked,
-}
-
-impl Default for TaskStatus {
-    fn default() -> Self {
-        Self::Created
-    }
 }
 
 /// A high-level task or goal.

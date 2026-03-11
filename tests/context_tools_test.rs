@@ -1,10 +1,13 @@
 //! Integration tests for context management tools.
 
+use std::sync::Arc;
+
 use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
 use agent_brain::repository::Neo4jClient;
 use agent_brain::services::ContextStore;
-use agent_brain::skills::{api::ApiSkill, Skill};
+use agent_brain::skills::api::ApiSkill;
 use serde_json::json;
+use tokio::sync::RwLock;
 
 async fn setup_handler() -> ToolHandler {
     let neo4j = Neo4jClient::new(
@@ -16,10 +19,15 @@ async fn setup_handler() -> ToolHandler {
     .expect("Failed to connect to Neo4j");
 
     neo4j.init_schema().await.expect("Failed to init schema");
-    
+
     let context_store = ContextStore::with_neo4j(neo4j.clone());
-    let api_skill = ApiSkill::new(Some(neo4j), None, context_store, None);
-    
+    let api_skill = ApiSkill::new(
+        Some(neo4j),
+        Arc::new(RwLock::new(None)),
+        context_store,
+        None,
+    );
+
     ToolHandler::new(vec![Box::new(api_skill)])
 }
 
@@ -27,18 +35,18 @@ async fn setup_handler() -> ToolHandler {
 async fn test_tool_registry_has_tools() {
     // This test is now slightly different as registry needs skills registered
     let mut registry = ToolRegistry::new();
-    // We can't easily register a dummy skill without more setup, 
+    // We can't easily register a dummy skill without more setup,
     // so let's just create an ApiSkill with dummy components for this test
     // or skip checking count since it's dynamic now.
-    
+
     // Instead, let's verify the handler exposes the tools we expect via the skill
     let context_store = ContextStore::new();
-    let api_skill = ApiSkill::new(None, None, context_store, None);
+    let api_skill = ApiSkill::new(None, Arc::new(RwLock::new(None)), context_store, None);
     registry.register_skill(Box::new(api_skill));
-    
+
     let tools = registry.list();
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    
+
     assert!(tool_names.contains(&"ingest_openapi"));
     assert!(tool_names.contains(&"graph_query_endpoint"));
     assert!(tool_names.contains(&"execute_http_request"));

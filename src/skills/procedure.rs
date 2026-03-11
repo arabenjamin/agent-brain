@@ -1,11 +1,11 @@
 //! Procedure Skill - Provides tools for storing and retrieving procedural memory.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::info;
 use uuid::Uuid;
-use chrono::Utc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
@@ -161,9 +161,10 @@ impl ProcedureSkill {
                     let id = row.get::<String>("id").unwrap_or_default();
                     let name = row.get::<String>("name").unwrap_or_default();
                     let description = row.get::<String>("description").unwrap_or_default();
-                    let steps_str = row.get::<String>("steps").unwrap_or_else(|_| "[]".to_string());
-                    let steps: Value = serde_json::from_str(&steps_str)
-                        .unwrap_or(json!([]));
+                    let steps_str = row
+                        .get::<String>("steps")
+                        .unwrap_or_else(|_| "[]".to_string());
+                    let steps: Value = serde_json::from_str(&steps_str).unwrap_or(json!([]));
 
                     procedures.push(json!({
                         "id": id,
@@ -191,10 +192,7 @@ impl Skill for ProcedureSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::store_procedure_def(),
-            Self::search_procedures_def(),
-        ]
+        vec![Self::store_procedure_def(), Self::search_procedures_def()]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
@@ -228,9 +226,7 @@ fn default_limit() -> usize {
     5
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

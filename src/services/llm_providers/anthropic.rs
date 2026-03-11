@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::warn;
 
-use crate::services::llm::{ChatMessage, LlmResponse};
 use super::{LlmProvider, LlmProviderError, ProviderConfig};
+use crate::services::llm::{ChatMessage, LlmResponse};
 
 pub struct AnthropicProvider {
     client: Client,
@@ -17,7 +17,7 @@ impl AnthropicProvider {
             .timeout(config.timeout)
             .build()
             .unwrap_or_else(|_| Client::new());
-        
+
         Self { client, config }
     }
 }
@@ -61,10 +61,19 @@ impl LlmProvider for AnthropicProvider {
         "anthropic"
     }
 
-    async fn generate(&self, prompt: &str, system: Option<&str>) -> Result<LlmResponse, LlmProviderError> {
-        let url = self.config.base_url.as_deref().unwrap_or("https://api.anthropic.com/v1/messages");
-        let api_key = self.config.api_key.as_ref()
-            .ok_or_else(|| LlmProviderError::InvalidConfig("Anthropic API key is missing".to_string()))?;
+    async fn generate(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+    ) -> Result<LlmResponse, LlmProviderError> {
+        let url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1/messages");
+        let api_key = self.config.api_key.as_ref().ok_or_else(|| {
+            LlmProviderError::InvalidConfig("Anthropic API key is missing".to_string())
+        })?;
 
         let messages = vec![AnthropicMessage {
             role: "user".to_string(),
@@ -79,7 +88,9 @@ impl LlmProvider for AnthropicProvider {
             temperature: self.config.temperature,
         };
 
-        let response = self.client.post(url)
+        let response = self
+            .client
+            .post(url)
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -97,25 +108,36 @@ impl LlmProvider for AnthropicProvider {
         }
 
         let anthropic_res: AnthropicResponse = response.json().await?;
-        let text = anthropic_res.content.first()
+        let text = anthropic_res
+            .content
+            .first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
         Ok(LlmResponse {
             text,
             duration_ns: None,
-            tokens_evaluated: Some(anthropic_res.usage.input_tokens + anthropic_res.usage.output_tokens),
+            tokens_evaluated: Some(
+                anthropic_res.usage.input_tokens + anthropic_res.usage.output_tokens,
+            ),
         })
     }
 
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmProviderError> {
-        Err(LlmProviderError::UnsupportedCapability("Anthropic does not currently offer a native embeddings API via Messages".to_string()))
+        Err(LlmProviderError::UnsupportedCapability(
+            "Anthropic does not currently offer a native embeddings API via Messages".to_string(),
+        ))
     }
 
     async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmProviderError> {
-        let url = self.config.base_url.as_deref().unwrap_or("https://api.anthropic.com/v1/messages");
-        let api_key = self.config.api_key.as_ref()
-            .ok_or_else(|| LlmProviderError::InvalidConfig("Anthropic API key is missing".to_string()))?;
+        let url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1/messages");
+        let api_key = self.config.api_key.as_ref().ok_or_else(|| {
+            LlmProviderError::InvalidConfig("Anthropic API key is missing".to_string())
+        })?;
 
         let mut anthropic_messages = Vec::new();
         let mut system_prompt = None;
@@ -139,7 +161,9 @@ impl LlmProvider for AnthropicProvider {
             temperature: self.config.temperature,
         };
 
-        let response = self.client.post(url)
+        let response = self
+            .client
+            .post(url)
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -157,19 +181,23 @@ impl LlmProvider for AnthropicProvider {
         }
 
         let anthropic_res: AnthropicResponse = response.json().await?;
-        let text = anthropic_res.content.first()
+        let text = anthropic_res
+            .content
+            .first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
         Ok(LlmResponse {
             text,
             duration_ns: None,
-            tokens_evaluated: Some(anthropic_res.usage.input_tokens + anthropic_res.usage.output_tokens),
+            tokens_evaluated: Some(
+                anthropic_res.usage.input_tokens + anthropic_res.usage.output_tokens,
+            ),
         })
     }
 
     async fn health_check(&self) -> bool {
-        // Anthropic doesn't have a simple health endpoint without auth, 
+        // Anthropic doesn't have a simple health endpoint without auth,
         // so we assume true if the config has an API key.
         self.config.api_key.is_some()
     }

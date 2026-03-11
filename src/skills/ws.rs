@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -25,9 +25,8 @@ use crate::skills::Skill;
 // Connection store
 // ============================================================================
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct WsConn {
     url: String,
@@ -40,6 +39,12 @@ struct WsConn {
 
 pub struct WsSkill {
     connections: Arc<RwLock<HashMap<String, Arc<WsConn>>>>,
+}
+
+impl Default for WsSkill {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WsSkill {
@@ -217,7 +222,7 @@ impl WsSkill {
                     return ToolCallResult::error(format!(
                         "No connection '{}'. Call ws_connect first.",
                         input.connection_id
-                    ))
+                    ));
                 }
             }
         };
@@ -228,7 +233,10 @@ impl WsSkill {
             None => return ToolCallResult::error("Connection is closed.".to_string()),
         };
 
-        match stream.send(Message::Text(input.message.clone().into())).await {
+        match stream
+            .send(Message::Text(input.message.clone().into()))
+            .await
+        {
             Ok(_) => {
                 info!(conn_id = %input.connection_id, bytes = input.message.len(), "WS message sent");
                 ToolCallResult::success_text(
@@ -264,7 +272,7 @@ impl WsSkill {
                     return ToolCallResult::error(format!(
                         "No connection '{}'. Call ws_connect first.",
                         input.connection_id
-                    ))
+                    ));
                 }
             }
         };
@@ -326,10 +334,7 @@ impl WsSkill {
 
         let conn = self.connections.write().await.remove(&input.connection_id);
         match conn {
-            None => ToolCallResult::error(format!(
-                "No connection '{}'.",
-                input.connection_id
-            )),
+            None => ToolCallResult::error(format!("No connection '{}'.", input.connection_id)),
             Some(c) => {
                 // Send a graceful close frame if stream is still open.
                 let mut guard = c.stream.lock().await;
@@ -410,9 +415,7 @@ impl Skill for WsSkill {
 // Helpers
 // ============================================================================
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

@@ -407,7 +407,10 @@ mod tests {
         let provider = LocalSecretProvider::new(config).unwrap();
 
         provider.set_secret("api/weather/key", "w1").await.unwrap();
-        provider.set_secret("api/weather/token", "w2").await.unwrap();
+        provider
+            .set_secret("api/weather/token", "w2")
+            .await
+            .unwrap();
         provider.set_secret("api/maps/key", "m1").await.unwrap();
         provider.set_secret("db/password", "p1").await.unwrap();
 

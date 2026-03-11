@@ -116,7 +116,10 @@ pub struct SnapshotService {
 
 impl SnapshotService {
     pub fn new(neo4j: Neo4jClient, snapshot_dir: PathBuf) -> Self {
-        Self { neo4j, snapshot_dir }
+        Self {
+            neo4j,
+            snapshot_dir,
+        }
     }
 
     /// Take a snapshot of the current knowledge graph.
@@ -164,7 +167,9 @@ impl SnapshotService {
 
         // Gzip compress and write.
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&json_bytes).context("Failed to compress snapshot")?;
+        encoder
+            .write_all(&json_bytes)
+            .context("Failed to compress snapshot")?;
         let compressed = encoder.finish().context("Failed to finalize gzip stream")?;
 
         let size_bytes = compressed.len() as u64;
@@ -210,7 +215,9 @@ impl SnapshotService {
 
         let mut decoder = GzDecoder::new(compressed.as_slice());
         let mut json_bytes = Vec::new();
-        decoder.read_to_end(&mut json_bytes).context("Failed to decompress snapshot")?;
+        decoder
+            .read_to_end(&mut json_bytes)
+            .context("Failed to decompress snapshot")?;
 
         let snapshot: KnowledgeSnapshot =
             serde_json::from_slice(&json_bytes).context("Failed to deserialize snapshot")?;
@@ -261,9 +268,17 @@ impl SnapshotService {
 
         let mut metas: Vec<SnapshotMeta> = Vec::new();
 
-        while let Some(entry) = dir.next_entry().await.context("Failed to read snapshot dir")? {
+        while let Some(entry) = dir
+            .next_entry()
+            .await
+            .context("Failed to read snapshot dir")?
+        {
             let path = entry.path();
-            let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let file_name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
 
             if !file_name.ends_with(".json.gz") {
                 continue;
@@ -328,11 +343,15 @@ impl SnapshotService {
         let mut notes = Vec::new();
         for row in rows {
             let id: String = row.get("id").unwrap_or_default();
-            if id.is_empty() { continue; }
+            if id.is_empty() {
+                continue;
+            }
             notes.push(NoteRecord {
                 id,
                 content: row.get("content").unwrap_or_default(),
-                note_type: row.get("note_type").unwrap_or_else(|_| "semantic".to_string()),
+                note_type: row
+                    .get("note_type")
+                    .unwrap_or_else(|_| "semantic".to_string()),
                 created_at: row.get("created_at").unwrap_or_default(),
                 last_accessed_at: row.get("last_accessed_at").unwrap_or_default(),
                 access_count: row.get::<i64>("access_count").unwrap_or(0),
@@ -355,7 +374,9 @@ impl SnapshotService {
         let mut tasks = Vec::new();
         for row in rows {
             let id: String = row.get("id").unwrap_or_default();
-            if id.is_empty() { continue; }
+            if id.is_empty() {
+                continue;
+            }
             tasks.push(TaskRecord {
                 id,
                 goal: row.get("goal").unwrap_or_default(),
@@ -377,11 +398,15 @@ impl SnapshotService {
         let mut entities = Vec::new();
         for row in rows {
             let id: String = row.get("id").unwrap_or_default();
-            if id.is_empty() { continue; }
+            if id.is_empty() {
+                continue;
+            }
             entities.push(EntityRecord {
                 id,
                 name: row.get("name").unwrap_or_default(),
-                entity_type: row.get("entity_type").unwrap_or_else(|_| "unknown".to_string()),
+                entity_type: row
+                    .get("entity_type")
+                    .unwrap_or_else(|_| "unknown".to_string()),
                 created_at: row.get("created_at").unwrap_or_default(),
             });
         }
@@ -398,7 +423,9 @@ impl SnapshotService {
         let mut procedures = Vec::new();
         for row in rows {
             let id: String = row.get("id").unwrap_or_default();
-            if id.is_empty() { continue; }
+            if id.is_empty() {
+                continue;
+            }
             procedures.push(ProcedureRecord {
                 id,
                 name: row.get("name").unwrap_or_default(),
@@ -423,8 +450,12 @@ impl SnapshotService {
         for row in rows {
             let from_id: String = row.get("from_id").unwrap_or_default();
             let to_id: String = row.get("to_id").unwrap_or_default();
-            if from_id.is_empty() || to_id.is_empty() { continue; }
-            let props: serde_json::Value = row.get("props").unwrap_or(serde_json::Value::Object(Default::default()));
+            if from_id.is_empty() || to_id.is_empty() {
+                continue;
+            }
+            let props: serde_json::Value = row
+                .get("props")
+                .unwrap_or(serde_json::Value::Object(Default::default()));
             rels.push(RelationshipRecord {
                 rel_type: row.get("rel_type").unwrap_or_default(),
                 from_id,
@@ -450,7 +481,10 @@ impl SnapshotService {
             .param("content", note.content.clone())
             .param("note_type", note.note_type.clone())
             .param("access_count", note.access_count)
-            .param("source_context", note.source_context.clone().unwrap_or_default())
+            .param(
+                "source_context",
+                note.source_context.clone().unwrap_or_default(),
+            )
             .param("review_interval_days", note.review_interval_days);
 
             if self.neo4j.run(q).await.is_ok() {

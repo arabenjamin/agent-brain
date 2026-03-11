@@ -253,8 +253,10 @@ impl SecretProvider for VaultSecretProvider {
             debug!(url = %url, "Listing secrets from Vault");
 
             // Vault uses the LIST HTTP method
-            let request = self
-                .add_headers(self.client.request(reqwest::Method::from_bytes(b"LIST").unwrap(), &url));
+            let request = self.add_headers(
+                self.client
+                    .request(reqwest::Method::from_bytes(b"LIST").unwrap(), &url),
+            );
             let response = request.send().await?;
 
             if response.status() == 404 {
@@ -363,8 +365,8 @@ mod tests {
 
     #[test]
     fn test_build_url_custom_mount() {
-        let config = VaultConfig::new("https://vault.example.com:8200", "token")
-            .with_mount_path("kv-v2");
+        let config =
+            VaultConfig::new("https://vault.example.com:8200", "token").with_mount_path("kv-v2");
         let provider = VaultSecretProvider::new(config).unwrap();
 
         assert_eq!(

@@ -1,7 +1,7 @@
-use neo4rs::{query, Node, BoltType, BoltNull};
 use chrono::Utc;
-use uuid::Uuid;
+use neo4rs::{BoltNull, BoltType, Node, query};
 use tracing::info;
+use uuid::Uuid;
 
 use crate::models::{Task, TaskStatus};
 use crate::repository::{Neo4jClient, RepositoryError};
@@ -15,7 +15,7 @@ impl Neo4jClient {
     ) -> Result<String, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        
+
         let mut q = query("CREATE (t:Task {id: $id, goal: $goal, status: 'created', created_at: $created_at, updated_at: $updated_at}) SET t.context = $context RETURN t.id")
             .param("id", id.clone())
             .param("goal", goal)
@@ -30,7 +30,7 @@ impl Neo4jClient {
         }
 
         self.execute(q).await?;
-        
+
         info!(id = %id, "Created task in Neo4j");
         Ok(id)
     }
@@ -38,10 +38,10 @@ impl Neo4jClient {
     /// Get a task by ID.
     pub async fn get_task(&self, id: &str) -> Result<Option<Task>, RepositoryError> {
         let q = query("MATCH (t:Task {id: $id}) RETURN t").param("id", id);
-        
+
         // Execute returns Vec<Row>
         let rows = self.execute(q).await?;
-        
+
         if let Some(row) = rows.into_iter().next() {
             // Neo4rs DeError is basically a deserialization error, so we map it to our Serialization variant
             // We use a closure to construct the error properly as RepositoryError::Serialization expects serde_json::Error
@@ -50,9 +50,11 @@ impl Neo4jClient {
             // Actually RepositoryError::Neo4j wraps neo4rs::Error, but DeError is different?
             // neo4rs::Error contains DeError.
             // Let's map it to Neo4j error variant if possible, or stringify it.
-            
-            let node: Node = row.get("t").map_err(|e| RepositoryError::InvalidData(format!("Deserialization error: {}", e)))?;
-            
+
+            let node: Node = row.get("t").map_err(|e| {
+                RepositoryError::InvalidData(format!("Deserialization error: {}", e))
+            })?;
+
             // Extract fields safely
             let id: String = node.get("id").unwrap_or_default();
             let goal: String = node.get("goal").unwrap_or_default();
@@ -60,7 +62,7 @@ impl Neo4jClient {
             let context: Option<String> = node.get("context").unwrap_or(None);
             let created_at: String = node.get("created_at").unwrap_or_default();
             let updated_at: String = node.get("updated_at").unwrap_or_default();
-            
+
             let status_str: String = node.get("status").unwrap_or("created".to_string());
             let status = match status_str.as_str() {
                 "in_progress" => TaskStatus::InProgress,
@@ -122,18 +124,23 @@ impl Neo4jClient {
     }
 
     /// Update task status.
-    pub async fn update_task_status(&self, id: &str, status: TaskStatus) -> Result<(), RepositoryError> {
-         let status_str = serde_json::to_string(&status)
+    pub async fn update_task_status(
+        &self,
+        id: &str,
+        status: TaskStatus,
+    ) -> Result<(), RepositoryError> {
+        let status_str = serde_json::to_string(&status)
             .unwrap_or_else(|_| "unknown".to_string())
             .trim_matches('"')
             .to_string();
 
         let now = Utc::now().to_rfc3339();
 
-        let q = query("MATCH (t:Task {id: $id}) SET t.status = $status, t.updated_at = $updated_at")
-            .param("id", id)
-            .param("status", status_str)
-            .param("updated_at", now);
+        let q =
+            query("MATCH (t:Task {id: $id}) SET t.status = $status, t.updated_at = $updated_at")
+                .param("id", id)
+                .param("status", status_str)
+                .param("updated_at", now);
 
         self.execute(q).await?;
         Ok(())
@@ -254,7 +261,10 @@ impl Neo4jClient {
         .param("now", now);
 
         let rows = self.execute(q).await?;
-        Ok(rows.into_iter().next().and_then(|r| r.get::<String>("parent_id").ok()))
+        Ok(rows
+            .into_iter()
+            .next()
+            .and_then(|r| r.get::<String>("parent_id").ok()))
     }
 
     /// Return task IDs that `task_id` directly depends on (i.e., must complete first).
@@ -262,13 +272,14 @@ impl Neo4jClient {
         &self,
         task_id: &str,
     ) -> Result<Vec<String>, RepositoryError> {
-        let q = query(
-            "MATCH (a:Task {id: $id})-[:DEPENDS_ON]->(b:Task) RETURN b.id AS dep_id",
-        )
-        .param("id", task_id);
+        let q = query("MATCH (a:Task {id: $id})-[:DEPENDS_ON]->(b:Task) RETURN b.id AS dep_id")
+            .param("id", task_id);
 
         let rows = self.execute(q).await?;
-        Ok(rows.iter().filter_map(|r| r.get::<String>("dep_id").ok()).collect())
+        Ok(rows
+            .iter()
+            .filter_map(|r| r.get::<String>("dep_id").ok())
+            .collect())
     }
 
     /// Store an outcome note (note_type='outcome'), optionally linked to a task.

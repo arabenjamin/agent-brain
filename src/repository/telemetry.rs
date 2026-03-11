@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use duckdb::{params, Connection};
+use chrono::Utc;
+use duckdb::{Connection, params};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -20,20 +20,23 @@ impl TelemetryClient {
     /// Create a new TelemetryClient backed by a file.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open DuckDB file")?;
-        
+
         let client = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
-        
+
         client.init_schema()?;
-        
+
         Ok(client)
     }
 
     /// Initialize the schema.
     fn init_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
         // Table: interactions
         // Logs every turn of conversation/action.
         conn.execute_batch(
@@ -60,9 +63,9 @@ impl TelemetryClient {
                 context TEXT,           -- What we were doing
                 gap_type TEXT           -- 'missing_tool', 'missing_info', 'api_error'
             );
-            "
+            ",
         )?;
-        
+
         info!("Telemetry (DuckDB) schema initialized");
         Ok(())
     }
@@ -75,9 +78,12 @@ impl TelemetryClient {
         tools_used: Option<&Value>,
         success: bool,
         latency_ms: u64,
-        model: &str
+        model: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4();
         let now = Utc::now();
 
@@ -104,22 +110,19 @@ impl TelemetryClient {
         &self,
         query: &str,
         context: Option<&str>,
-        gap_type: &str
+        gap_type: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4();
         let now = Utc::now();
 
         conn.execute(
             "INSERT INTO knowledge_gaps (id, timestamp, query, context, gap_type) 
              VALUES (?, ?, ?, ?, ?)",
-            params![
-                id.to_string(),
-                now.to_rfc3339(),
-                query,
-                context,
-                gap_type
-            ],
+            params![id.to_string(), now.to_rfc3339(), query, context, gap_type],
         )?;
 
         Ok(())
@@ -127,15 +130,18 @@ impl TelemetryClient {
 
     /// Retrieve recent knowledge gaps for analysis.
     pub fn get_recent_gaps(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
         let mut stmt = conn.prepare(
             "SELECT query, COALESCE(context, ''), gap_type 
              FROM knowledge_gaps 
              ORDER BY timestamp DESC 
-             LIMIT ?"
+             LIMIT ?",
         )?;
-        
+
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?;
@@ -151,20 +157,24 @@ impl TelemetryClient {
     /// Export successful interactions for fine-tuning.
     /// Returns a list of (prompt, response) tuples.
     pub fn get_training_examples(&self, min_score: Option<i32>) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
         let sql = if let Some(score) = min_score {
             // Get explicitly rated good responses
-            format!("SELECT prompt, response FROM interactions WHERE success = true AND feedback_score >= {}", score)
+            format!(
+                "SELECT prompt, response FROM interactions WHERE success = true AND feedback_score >= {}",
+                score
+            )
         } else {
             // Get all successful responses
             "SELECT prompt, response FROM interactions WHERE success = true".to_string()
         };
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
 
         let mut examples = Vec::new();
         for row in rows {

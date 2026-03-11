@@ -106,7 +106,8 @@ impl Config {
                 .map_err(|_| ConfigError::Missing("NEO4J_PASSWORD"))?,
             ollama_url: env::var("OLLAMA_URL")
                 .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            ollama_model: env::var("OLLAMA_MODEL").unwrap_or_else(|_| "granite4:latest".to_string()),
+            ollama_model: env::var("OLLAMA_MODEL")
+                .unwrap_or_else(|_| "granite4:latest".to_string()),
             ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             log_format: env::var("LOG_FORMAT")
@@ -144,8 +145,7 @@ impl Config {
             anthropic_model: env::var("ANTHROPIC_MODEL").ok(),
             gemini_api_key: env::var("GEMINI_API_KEY").ok(),
             gemini_model: env::var("GEMINI_MODEL").ok(),
-            vllm_url: env::var("VLLM_URL")
-                .unwrap_or_else(|_| "http://localhost:8000".to_string()),
+            vllm_url: env::var("VLLM_URL").unwrap_or_else(|_| "http://localhost:8000".to_string()),
             vllm_model: env::var("VLLM_MODEL").ok(),
             vllm_api_key: env::var("VLLM_API_KEY").ok(),
             vllm_embed_url: env::var("VLLM_EMBED_URL").ok(),

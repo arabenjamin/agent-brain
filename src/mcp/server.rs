@@ -9,33 +9,24 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
-use crate::services::{ChatService, ContextBuilderService, ContextStore, CredentialManager, LlmConfig, SnapshotService};
-use crate::services::queue::QueueService;
 use crate::services::SchedulerService;
+use crate::services::queue::QueueService;
+use crate::services::{
+    ChatService, ContextBuilderService, ContextStore, CredentialManager, LlmConfig, SnapshotService,
+};
 use crate::skills::{
-    Skill,
-    admin::AdminSkill,
-    agent::AgentSkill,
-    api::ApiSkill,
-    context::ContextSkill,
-    dynamic::DynamicSkill,
-    knowledge::KnowledgeSkill,
-    model::ModelSkill,
-    procedure::ProcedureSkill,
-    scheduler::SchedulerSkill,
-    sleep::SleepSkill,
-    task::TaskSkill,
-    search::SearchSkill,
-    working_memory::WorkingMemorySkill,
-    ws::WsSkill,
+    Skill, admin::AdminSkill, agent::AgentSkill, api::ApiSkill, context::ContextSkill,
+    dynamic::DynamicSkill, knowledge::KnowledgeSkill, model::ModelSkill, procedure::ProcedureSkill,
+    scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill, task::TaskSkill,
+    working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 
-use super::session::{SessionManager, SessionState};
 use super::protocol::{
     IncomingMessage, InitializeParams, InitializeResult, JsonRpcErrorResponse, JsonRpcRequest,
     JsonRpcResponse, MCP_PROTOCOL_VERSION, ServerCapabilities, ServerInfo, ToolCallParams,
     ToolsCapability, ToolsListResult, error_codes,
 };
+use super::session::{SessionManager, SessionState};
 use super::tools::{ToolHandler, ToolRegistry};
 use super::transport::{OutgoingMessage, StdioTransport};
 use super::transport_trait::{McpTransport, TransportMessage};
@@ -204,10 +195,10 @@ impl McpServerCore {
 
     /// Get the state for a specific session, falling back to global state.
     pub async fn get_session_state(&self, session_id: Option<&str>) -> ServerState {
-        if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
-            if let Ok(state) = manager.get_session_state(id).await {
-                return ServerState::from(state);
-            }
+        if let (Some(id), Some(manager)) = (session_id, &self.session_manager)
+            && let Ok(state) = manager.get_session_state(id).await
+        {
+            return ServerState::from(state);
         }
         *self.state.read().await
     }
@@ -215,7 +206,9 @@ impl McpServerCore {
     /// Update the state for a specific session and the global state.
     pub async fn update_session_state(&self, session_id: Option<&str>, new_state: ServerState) {
         if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
-            let _ = manager.set_session_state(id, SessionState::from(new_state)).await;
+            let _ = manager
+                .set_session_state(id, SessionState::from(new_state))
+                .await;
         }
 
         // Always update global state for backward compatibility with stdio
@@ -311,9 +304,10 @@ impl McpServerCore {
         };
 
         // Create SnapshotService when Neo4j is available.
-        let snapshot_svc: Option<Arc<SnapshotService>> = self.neo4j.as_ref().map(|db| {
-            Arc::new(SnapshotService::new(db.clone(), self.snapshot_dir.clone()))
-        });
+        let snapshot_svc: Option<Arc<SnapshotService>> = self
+            .neo4j
+            .as_ref()
+            .map(|db| Arc::new(SnapshotService::new(db.clone(), self.snapshot_dir.clone())));
 
         // Create ContextBuilderService and load profiles (must be before scheduler).
         let context_builder_arc: Option<Arc<ContextBuilderService>> = {
@@ -386,9 +380,14 @@ impl McpServerCore {
 
         // Register Knowledge Skill
         if let Some(neo4j) = &self.neo4j {
-            let mut knowledge_skill = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
+            let mut knowledge_skill =
+                KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
             if let Some(ref snap) = snapshot_svc {
-                knowledge_skill = knowledge_skill.with_snapshot(Arc::clone(snap), self.auto_snapshot_before_consolidation, self.auto_snapshot_before_prune);
+                knowledge_skill = knowledge_skill.with_snapshot(
+                    Arc::clone(snap),
+                    self.auto_snapshot_before_consolidation,
+                    self.auto_snapshot_before_prune,
+                );
             }
             registry.register_skill(Box::new(knowledge_skill));
         }
@@ -456,7 +455,6 @@ impl McpServerCore {
             registry.register_skill(Box::new(d.clone_shared()));
         }
 
-
         drop(registry);
 
         // Build handler skills list (re-creates non-dynamic skills; DynamicSkill original goes here)
@@ -476,7 +474,11 @@ impl McpServerCore {
         if let Some(neo4j) = &self.neo4j {
             let mut ks = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
             if let Some(ref snap) = snapshot_svc {
-                ks = ks.with_snapshot(Arc::clone(snap), self.auto_snapshot_before_consolidation, self.auto_snapshot_before_prune);
+                ks = ks.with_snapshot(
+                    Arc::clone(snap),
+                    self.auto_snapshot_before_consolidation,
+                    self.auto_snapshot_before_prune,
+                );
             }
             skills.push(Box::new(ks));
         }
@@ -501,14 +503,23 @@ impl McpServerCore {
 
         skills.push(Box::new(WsSkill::new()));
 
-        skills.push(Box::new(ModelSkill::new(self.llm_config.clone(), self.neo4j.clone())));
+        skills.push(Box::new(ModelSkill::new(
+            self.llm_config.clone(),
+            self.neo4j.clone(),
+        )));
 
         if let Some(ref telemetry) = self.telemetry {
-            skills.push(Box::new(SleepSkill::new(telemetry.clone(), self.dataset_dir.clone())));
+            skills.push(Box::new(SleepSkill::new(
+                telemetry.clone(),
+                self.dataset_dir.clone(),
+            )));
         }
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(WorkingMemorySkill::new(neo4j.clone(), Arc::clone(&self.llm_config))));
+            skills.push(Box::new(WorkingMemorySkill::new(
+                neo4j.clone(),
+                Arc::clone(&self.llm_config),
+            )));
         }
 
         if let Some(neo4j) = &self.neo4j {
@@ -540,7 +551,6 @@ impl McpServerCore {
         if let Some(d) = dynamic_skill {
             skills.push(Box::new(d));
         }
-
 
         let mut handler = self.tool_handler.write().await;
         let mut tool_handler = ToolHandler::new(skills);
@@ -957,11 +967,11 @@ impl McpServer {
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(message) => {
-                    if let Some(response) = self.handle_message(message).await {
-                        if transport.send(response).await.is_err() {
-                            error!("Failed to send response - transport closed");
-                            break;
-                        }
+                    if let Some(response) = self.handle_message(message).await
+                        && transport.send(response).await.is_err()
+                    {
+                        error!("Failed to send response - transport closed");
+                        break;
                     }
 
                     // Check if we should shut down
@@ -1011,7 +1021,9 @@ fn filter_tools_by_names(
         return all;
     }
     let allowed: std::collections::HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
-    all.into_iter().filter(|t| allowed.contains(t.name.as_str())).collect()
+    all.into_iter()
+        .filter(|t| allowed.contains(t.name.as_str()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1075,7 +1087,9 @@ mod tests {
         assert_eq!(server.get_state().await, ServerState::Initializing);
 
         // Simulate initialized notification
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
     }
 
@@ -1101,9 +1115,7 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..10 {
             let server_clone = Arc::clone(&server);
-            handles.push(tokio::spawn(async move {
-                server_clone.get_state().await
-            }));
+            handles.push(tokio::spawn(async move { server_clone.get_state().await }));
         }
 
         // All should return Created
@@ -1124,7 +1136,9 @@ mod tests {
         }
 
         // Handle notification should transition state
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
     }
 
@@ -1149,27 +1163,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_server_core_initialized_notification_only_from_initializing_state() {
+    async fn test_server_core_initialized_notification_transitions() {
         let server = McpServerCore::new();
 
-        // From Created state - should not transition
-        server.handle_notification("notifications/initialized").await;
-        assert_eq!(server.get_state().await, ServerState::Created);
-
-        // From Running state - should stay Running
-        {
-            let mut state = server.state.write().await;
-            *state = ServerState::Running;
-        }
-        server.handle_notification("notifications/initialized").await;
+        // From Created state - transitions to Running (session resurrection support)
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
 
-        // From Initializing state - should transition to Running
+        // From Running state - stays Running (idempotent)
+        server
+            .handle_notification("notifications/initialized")
+            .await;
+        assert_eq!(server.get_state().await, ServerState::Running);
+
+        // From Initializing state - transitions to Running (normal flow)
         {
             let mut state = server.state.write().await;
             *state = ServerState::Initializing;
         }
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
     }
 }

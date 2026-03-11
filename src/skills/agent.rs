@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
@@ -76,9 +76,8 @@ impl AgentSkill {
     fn queue_status_def() -> ToolDefinition {
         ToolDefinition {
             name: "queue_status".to_string(),
-            description:
-                "Show current queue statistics: pending, running, and per-status counts."
-                    .to_string(),
+            description: "Show current queue statistics: pending, running, and per-status counts."
+                .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -86,9 +85,8 @@ impl AgentSkill {
     fn get_job_result_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_job_result".to_string(),
-            description:
-                "Get the full details and result of a background job by its ID."
-                    .to_string(),
+            description: "Get the full details and result of a background job by its ID."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -184,13 +182,12 @@ impl AgentSkill {
     fn enqueue_chain_def() -> ToolDefinition {
         ToolDefinition {
             name: "enqueue_chain".to_string(),
-            description:
-                "Submit a sequential chain of background jobs. \
+            description: "Submit a sequential chain of background jobs. \
                  Step 1 is queued immediately; each subsequent step is held as 'parked' until \
                  its predecessor completes successfully. \
                  If any step exhausts all retries the remaining steps are automatically cancelled. \
                  Returns the list of job IDs in chain order."
-                    .to_string(),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -259,8 +256,12 @@ impl AgentSkill {
             #[serde(default)]
             provider_hint: Option<String>,
         }
-        fn default_priority() -> u8 { 1 }
-        fn default_max_attempts() -> u32 { 3 }
+        fn default_priority() -> u8 {
+            1
+        }
+        fn default_max_attempts() -> u32 {
+            3
+        }
 
         let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
             Some(i) => i,
@@ -312,9 +313,9 @@ impl AgentSkill {
         };
 
         match self.queue.get_job(&input.job_id).await {
-            Some(job) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&job).unwrap_or_default(),
-            ),
+            Some(job) => {
+                ToolCallResult::success_text(serde_json::to_string_pretty(&job).unwrap_or_default())
+            }
             None => ToolCallResult::error(format!("Job not found: {}", input.job_id)),
         }
     }
@@ -472,14 +473,14 @@ impl Skill for AgentSkill {
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
-            "enqueue_agent"  => Some(self.handle_enqueue_agent(arguments).await),
-            "queue_status"   => Some(self.handle_queue_status().await),
+            "enqueue_agent" => Some(self.handle_enqueue_agent(arguments).await),
+            "queue_status" => Some(self.handle_queue_status().await),
             "get_job_result" => Some(self.handle_get_job_result(arguments).await),
-            "cancel_job"     => Some(self.handle_cancel_job(arguments).await),
-            "retry_job"      => Some(self.handle_retry_job(arguments).await),
+            "cancel_job" => Some(self.handle_cancel_job(arguments).await),
+            "retry_job" => Some(self.handle_retry_job(arguments).await),
             "set_worker_config" => Some(self.handle_set_worker_config(arguments).await),
-            "drain_queue"    => Some(self.handle_drain_queue().await),
-            "enqueue_chain"  => Some(self.handle_enqueue_chain(arguments).await),
+            "drain_queue" => Some(self.handle_drain_queue().await),
+            "enqueue_chain" => Some(self.handle_enqueue_chain(arguments).await),
             _ => None,
         }
     }

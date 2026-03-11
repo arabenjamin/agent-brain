@@ -52,14 +52,20 @@ impl Neo4jClient {
         let rows = self.execute(q).await?;
         if let Some(row) = rows.into_iter().next() {
             Ok(CleanupStats {
-                resources:      row.get::<i64>("resources").unwrap_or(0)      as u32,
-                endpoints:      row.get::<i64>("endpoints").unwrap_or(0)      as u32,
-                parameters:     row.get::<i64>("parameters").unwrap_or(0)     as u32,
+                resources: row.get::<i64>("resources").unwrap_or(0) as u32,
+                endpoints: row.get::<i64>("endpoints").unwrap_or(0) as u32,
+                parameters: row.get::<i64>("parameters").unwrap_or(0) as u32,
                 healing_events: row.get::<i64>("healing_events").unwrap_or(0) as u32,
-                schemas:        row.get::<i64>("schemas").unwrap_or(0)        as u32,
+                schemas: row.get::<i64>("schemas").unwrap_or(0) as u32,
             })
         } else {
-            Ok(CleanupStats { resources: 0, endpoints: 0, parameters: 0, healing_events: 0, schemas: 0 })
+            Ok(CleanupStats {
+                resources: 0,
+                endpoints: 0,
+                parameters: 0,
+                healing_events: 0,
+                schemas: 0,
+            })
         }
     }
 
@@ -67,7 +73,10 @@ impl Neo4jClient {
     ///
     /// Deletes: Resource → Endpoints → Parameters → HealingEvents.
     /// Also deletes Schemas that are *exclusively* linked to this API's endpoints.
-    pub async fn delete_api_cascade(&self, api_name: &str) -> Result<CleanupStats, RepositoryError> {
+    pub async fn delete_api_cascade(
+        &self,
+        api_name: &str,
+    ) -> Result<CleanupStats, RepositoryError> {
         // First snapshot the counts so we can return them.
         let stats = self.count_api_nodes(api_name).await?;
 
@@ -136,9 +145,9 @@ impl Neo4jClient {
             .into_iter()
             .map(|row| {
                 let resource: String = row.get("resource").unwrap_or_default();
-                let path: String    = row.get("path").unwrap_or_default();
-                let method: String  = row.get("method").unwrap_or_default();
-                let cnt: i64        = row.get("cnt").unwrap_or(0);
+                let path: String = row.get("path").unwrap_or_default();
+                let method: String = row.get("method").unwrap_or_default();
+                let cnt: i64 = row.get("cnt").unwrap_or(0);
                 (resource, path, method, cnt as u32)
             })
             .collect())
@@ -220,14 +229,20 @@ impl Neo4jClient {
         let rows = self.execute(q).await?;
         if let Some(row) = rows.into_iter().next() {
             Ok(CleanupStats {
-                resources:      row.get::<i64>("resources").unwrap_or(0)      as u32,
-                endpoints:      row.get::<i64>("endpoints").unwrap_or(0)      as u32,
-                parameters:     row.get::<i64>("parameters").unwrap_or(0)     as u32,
+                resources: row.get::<i64>("resources").unwrap_or(0) as u32,
+                endpoints: row.get::<i64>("endpoints").unwrap_or(0) as u32,
+                parameters: row.get::<i64>("parameters").unwrap_or(0) as u32,
                 healing_events: row.get::<i64>("healing_events").unwrap_or(0) as u32,
-                schemas:        row.get::<i64>("schemas").unwrap_or(0)        as u32,
+                schemas: row.get::<i64>("schemas").unwrap_or(0) as u32,
             })
         } else {
-            Ok(CleanupStats { resources: 0, endpoints: 0, parameters: 0, healing_events: 0, schemas: 0 })
+            Ok(CleanupStats {
+                resources: 0,
+                endpoints: 0,
+                parameters: 0,
+                healing_events: 0,
+                schemas: 0,
+            })
         }
     }
 
@@ -306,8 +321,10 @@ impl Neo4jClient {
                 .collect::<Vec<_>>()
         };
 
-        let total_issues =
-            empty_notes.len() + orphaned_chunks.len() + suspicious_consolidated.len() + duplicate_notes.len();
+        let total_issues = empty_notes.len()
+            + orphaned_chunks.len()
+            + suspicious_consolidated.len()
+            + duplicate_notes.len();
 
         Ok(IntegrityReport {
             empty_notes,

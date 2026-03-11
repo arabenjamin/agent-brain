@@ -158,7 +158,9 @@ impl CredentialManager {
     ) -> Result<()> {
         // Store the secret value first
         if let Some(provider) = &self.secret_provider {
-            provider.set_secret(&credential.secret_ref, secret_value).await?;
+            provider
+                .set_secret(&credential.secret_ref, secret_value)
+                .await?;
         } else {
             return Err(SecretError::ProviderNotConfigured);
         }
@@ -180,13 +182,13 @@ impl CredentialManager {
         }
 
         // Try loading from Neo4j
-        if let Some(neo4j) = &self.neo4j {
-            if let Ok(cred) = neo4j.get_api_credential(api_name).await {
-                // Cache it
-                let mut creds = self.credentials.write().await;
-                creds.insert(key, cred.clone());
-                return Ok(cred);
-            }
+        if let Some(neo4j) = &self.neo4j
+            && let Ok(cred) = neo4j.get_api_credential(api_name).await
+        {
+            // Cache it
+            let mut creds = self.credentials.write().await;
+            creds.insert(key, cred.clone());
+            return Ok(cred);
         }
 
         Err(SecretError::CredentialNotFound(api_name.to_string()))
@@ -212,15 +214,15 @@ impl CredentialManager {
         let credential = self.get_credential(api_name).await?;
 
         // Delete the secret from provider
-        if let Some(provider) = &self.secret_provider {
-            if let Err(e) = provider.delete_secret(&credential.secret_ref).await {
-                warn!(
-                    api = %api_name,
-                    secret_ref = %credential.secret_ref,
-                    error = %e,
-                    "Failed to delete secret from provider"
-                );
-            }
+        if let Some(provider) = &self.secret_provider
+            && let Err(e) = provider.delete_secret(&credential.secret_ref).await
+        {
+            warn!(
+                api = %api_name,
+                secret_ref = %credential.secret_ref,
+                error = %e,
+                "Failed to delete secret from provider"
+            );
         }
 
         // Delete from Neo4j if available
@@ -520,9 +522,7 @@ mod tests {
             "test/basic",
         );
 
-        let formatted = manager
-            .format_credential_value(&cred, "user:pass")
-            .unwrap();
+        let formatted = manager.format_credential_value(&cred, "user:pass").unwrap();
         // "user:pass" base64 encoded
         assert_eq!(formatted, "Basic dXNlcjpwYXNz");
     }

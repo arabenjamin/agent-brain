@@ -111,9 +111,15 @@ impl QueueService {
             tool_handler,
             heap: Arc::new(Mutex::new(BinaryHeap::new())),
             notify: Arc::new(Notify::new()),
-            semaphore_ollama: Arc::new(RwLock::new(Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_OLLAMA)))),
-            semaphore_anthropic: Arc::new(RwLock::new(Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_ANTHROPIC)))),
-            semaphore_gemini: Arc::new(RwLock::new(Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_GEMINI)))),
+            semaphore_ollama: Arc::new(RwLock::new(Arc::new(Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_OLLAMA,
+            )))),
+            semaphore_anthropic: Arc::new(RwLock::new(Arc::new(Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_ANTHROPIC,
+            )))),
+            semaphore_gemini: Arc::new(RwLock::new(Arc::new(Semaphore::new(
+                DEFAULT_MAX_CONCURRENT_GEMINI,
+            )))),
             config: Arc::new(RwLock::new(WorkerConfig::default())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
             session_manager,
@@ -158,6 +164,7 @@ impl QueueService {
 
     /// Submit a new job.  Persists to Neo4j, pushes to in-memory heap, and
     /// notifies the coordinator.  Returns the new job ID.
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue(
         &self,
         tool_name: &str,
@@ -170,7 +177,16 @@ impl QueueService {
     ) -> Result<String, String> {
         let id = self
             .neo4j
-            .create_agent_job(tool_name, arguments, priority, max_attempts, session_id, parent_job_id, provider_hint, None)
+            .create_agent_job(
+                tool_name,
+                arguments,
+                priority,
+                max_attempts,
+                session_id,
+                parent_job_id,
+                provider_hint,
+                None,
+            )
             .await
             .map_err(|e| e.to_string())?;
 
@@ -540,7 +556,9 @@ impl QueueService {
             "params":  params,
         }))
         .unwrap_or_default();
-        let _ = sm.send_sse(sid, SseMessage::new(payload).with_event("agent_job")).await;
+        let _ = sm
+            .send_sse(sid, SseMessage::new(payload).with_event("agent_job"))
+            .await;
     }
 
     /// Promote any parked children of `parent_id` to queued and push them onto the heap.
@@ -573,7 +591,10 @@ impl QueueService {
         let handler_guard = self.tool_handler.read().await;
         let Some(ref handler) = *handler_guard else {
             warn!(job_id = %job.id, "No tool handler — job cannot execute");
-            let _ = self.neo4j.set_job_failed(&job.id, "Tool handler not available").await;
+            let _ = self
+                .neo4j
+                .set_job_failed(&job.id, "Tool handler not available")
+                .await;
             return;
         };
 
@@ -607,7 +628,8 @@ impl QueueService {
                 .unwrap_or_else(|| "Unknown error".to_string());
 
             // Re-fetch to get the updated attempt_count (set by set_job_started).
-            let (attempt, max) = if let Ok(Some(updated)) = self.neo4j.get_agent_job(&job.id).await {
+            let (attempt, max) = if let Ok(Some(updated)) = self.neo4j.get_agent_job(&job.id).await
+            {
                 (updated.attempt_count, updated.max_attempts)
             } else {
                 (job.attempt_count + 1, job.max_attempts)

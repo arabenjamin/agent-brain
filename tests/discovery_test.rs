@@ -1,13 +1,16 @@
 //! Integration tests for the discovery service.
 
+use std::sync::Arc;
+
 use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
-use agent_brain::services::{DiscoveryService, LlmConfig, ContextStore};
-use agent_brain::skills::{api::ApiSkill, Skill};
+use agent_brain::services::{ContextStore, DiscoveryService, LlmConfig};
+use agent_brain::skills::api::ApiSkill;
 use serde_json::json;
+use tokio::sync::RwLock;
 
 fn create_api_skill(llm_config: Option<LlmConfig>) -> ApiSkill {
     let context_store = ContextStore::new();
-    ApiSkill::new(None, llm_config, context_store, None)
+    ApiSkill::new(None, Arc::new(RwLock::new(llm_config)), context_store, None)
 }
 
 #[test]
@@ -15,7 +18,7 @@ fn test_discover_openapi_tool_exists() {
     let mut registry = ToolRegistry::new();
     let api_skill = create_api_skill(None);
     registry.register_skill(Box::new(api_skill));
-    
+
     let tool = registry.get("discover_openapi");
     assert!(tool.is_some());
 
@@ -109,12 +112,12 @@ async fn test_discovery_tool_handler() {
         "Tool should not return error for valid URL"
     );
 
-    if let Some(content) = result.content.first() {
-        if let agent_brain::mcp::protocol::Content::Text { text } = content {
-            println!("Tool output:\n{}", text);
-            assert!(text.contains("base_url"));
-            assert!(text.contains("candidates"));
-        }
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        println!("Tool output:\n{}", text);
+        assert!(text.contains("base_url"));
+        assert!(text.contains("candidates"));
     }
 }
 
@@ -157,9 +160,9 @@ async fn test_discovery_with_llm_config() {
         .await;
 
     // Should still work even if LLM is not available
-    if let Some(content) = result.content.first() {
-        if let agent_brain::mcp::protocol::Content::Text { text } = content {
-            println!("Tool output with LLM enabled:\n{}", text);
-        }
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        println!("Tool output with LLM enabled:\n{}", text);
     }
 }

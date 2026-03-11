@@ -1,5 +1,5 @@
 use chrono::Utc;
-use neo4rs::{query, Node};
+use neo4rs::{Node, query};
 use tracing::info;
 use uuid::Uuid;
 
@@ -8,6 +8,7 @@ use crate::repository::{Neo4jClient, RepositoryError};
 
 impl Neo4jClient {
     /// Create a new AgentJob node in Neo4j and return its ID.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_agent_job(
         &self,
         tool_name: &str,
@@ -103,10 +104,8 @@ impl Neo4jClient {
             .param("limit", limit as i64);
             self.execute(q).await?
         } else {
-            let q = query(
-                "MATCH (j:AgentJob) RETURN j ORDER BY j.created_at DESC LIMIT $limit",
-            )
-            .param("limit", limit as i64);
+            let q = query("MATCH (j:AgentJob) RETURN j ORDER BY j.created_at DESC LIMIT $limit")
+                .param("limit", limit as i64);
             self.execute(q).await?
         };
 
@@ -145,12 +144,10 @@ impl Neo4jClient {
         status: AgentJobStatus,
     ) -> Result<(), RepositoryError> {
         let now = Utc::now().to_rfc3339();
-        let q = query(
-            "MATCH (j:AgentJob {id: $id}) SET j.status = $status, j.updated_at = $now",
-        )
-        .param("id", id)
-        .param("status", status.to_string())
-        .param("now", now);
+        let q = query("MATCH (j:AgentJob {id: $id}) SET j.status = $status, j.updated_at = $now")
+            .param("id", id)
+            .param("status", status.to_string())
+            .param("now", now);
         self.run(q).await
     }
 
@@ -170,7 +167,11 @@ impl Neo4jClient {
     }
 
     /// Mark a job as completed and store the result JSON.
-    pub async fn set_job_completed(&self, id: &str, result_json: &str) -> Result<(), RepositoryError> {
+    pub async fn set_job_completed(
+        &self,
+        id: &str,
+        result_json: &str,
+    ) -> Result<(), RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (j:AgentJob {id: $id}) \
@@ -233,6 +234,7 @@ impl Neo4jClient {
     }
 
     /// Create a new AgentJob in Neo4j with status `parked` (waiting for parent to complete).
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_agent_job_parked(
         &self,
         tool_name: &str,
@@ -407,9 +409,25 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
         error,
         attempt_count: attempt_count as u32,
         max_attempts: max_attempts as u32,
-        session_id: if session_id.is_empty() { None } else { Some(session_id) },
-        parent_job_id: if parent_job_id.is_empty() { None } else { Some(parent_job_id) },
-        provider_hint: if provider_hint.is_empty() { None } else { Some(provider_hint) },
-        context_profile: if context_profile.is_empty() { None } else { Some(context_profile) },
+        session_id: if session_id.is_empty() {
+            None
+        } else {
+            Some(session_id)
+        },
+        parent_job_id: if parent_job_id.is_empty() {
+            None
+        } else {
+            Some(parent_job_id)
+        },
+        provider_hint: if provider_hint.is_empty() {
+            None
+        } else {
+            Some(provider_hint)
+        },
+        context_profile: if context_profile.is_empty() {
+            None
+        } else {
+            Some(context_profile)
+        },
     }
 }

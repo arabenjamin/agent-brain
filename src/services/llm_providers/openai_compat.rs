@@ -15,8 +15,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::services::llm::{ChatMessage, LlmResponse};
 use super::{LlmProvider, LlmProviderError, ProviderConfig};
+use crate::services::llm::{ChatMessage, LlmResponse};
 
 pub struct OpenAiCompatProvider {
     client: Client,
@@ -33,7 +33,10 @@ impl OpenAiCompatProvider {
     }
 
     fn base_url(&self) -> &str {
-        self.config.base_url.as_deref().unwrap_or("http://localhost:8000")
+        self.config
+            .base_url
+            .as_deref()
+            .unwrap_or("http://localhost:8000")
     }
 
     /// Add Authorization header if an API key is configured.
@@ -108,28 +111,45 @@ impl LlmProvider for OpenAiCompatProvider {
         "vllm"
     }
 
-    async fn generate(&self, prompt: &str, system: Option<&str>) -> Result<LlmResponse, LlmProviderError> {
+    async fn generate(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+    ) -> Result<LlmResponse, LlmProviderError> {
         let mut messages = Vec::new();
         if let Some(sys) = system {
-            messages.push(OaiMessage { role: "system".to_string(), content: sys.to_string() });
+            messages.push(OaiMessage {
+                role: "system".to_string(),
+                content: sys.to_string(),
+            });
         }
-        messages.push(OaiMessage { role: "user".to_string(), content: prompt.to_string() });
+        messages.push(OaiMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        });
         self.chat_inner(messages).await
     }
 
     async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmProviderError> {
-        let oai_messages = messages.iter().map(|m| OaiMessage {
-            role: m.role.clone(),
-            content: m.content.clone(),
-        }).collect();
+        let oai_messages = messages
+            .iter()
+            .map(|m| OaiMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            })
+            .collect();
         self.chat_inner(oai_messages).await
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
         let url = format!("{}/v1/embeddings", self.base_url());
-        let req = EmbedRequest { model: &self.config.model, input: text };
+        let req = EmbedRequest {
+            model: &self.config.model,
+            input: text,
+        };
 
-        let response = self.maybe_auth(self.client.post(&url))
+        let response = self
+            .maybe_auth(self.client.post(&url))
             .json(&req)
             .send()
             .await?;
@@ -144,9 +164,13 @@ impl LlmProvider for OpenAiCompatProvider {
         }
 
         let resp: EmbedResponse = response.json().await?;
-        resp.data.into_iter().next()
+        resp.data
+            .into_iter()
+            .next()
             .map(|d| d.embedding)
-            .ok_or_else(|| LlmProviderError::GenerationFailed("Empty embedding response".to_string()))
+            .ok_or_else(|| {
+                LlmProviderError::GenerationFailed("Empty embedding response".to_string())
+            })
     }
 
     async fn health_check(&self) -> bool {
@@ -182,7 +206,8 @@ impl OpenAiCompatProvider {
 
         debug!(url = %url, model = %self.config.model, "OpenAI-compat chat request");
 
-        let response = self.maybe_auth(self.client.post(&url))
+        let response = self
+            .maybe_auth(self.client.post(&url))
             .json(&req)
             .send()
             .await?;
@@ -197,11 +222,16 @@ impl OpenAiCompatProvider {
         }
 
         let chat_res: ChatResponse = response.json().await?;
-        let text = chat_res.choices.into_iter().next()
+        let text = chat_res
+            .choices
+            .into_iter()
+            .next()
             .map(|c| c.message.content)
             .unwrap_or_default();
 
-        let tokens = chat_res.usage.map(|u| u.prompt_tokens + u.completion_tokens);
+        let tokens = chat_res
+            .usage
+            .map(|u| u.prompt_tokens + u.completion_tokens);
 
         Ok(LlmResponse {
             text,

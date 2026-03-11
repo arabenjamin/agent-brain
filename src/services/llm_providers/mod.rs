@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -42,7 +41,11 @@ pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Generate text from a prompt.
-    async fn generate(&self, prompt: &str, system: Option<&str>) -> Result<LlmResponse, LlmProviderError>;
+    async fn generate(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+    ) -> Result<LlmResponse, LlmProviderError>;
 
     /// Generate embeddings for a text.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError>;
@@ -54,7 +57,7 @@ pub trait LlmProvider: Send + Sync {
     async fn health_check(&self) -> bool;
 }
 
-pub mod ollama;
 pub mod anthropic;
 pub mod gemini;
+pub mod ollama;
 pub mod openai_compat;

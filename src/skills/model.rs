@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::models::ModelSpec;
 use crate::repository::Neo4jClient;
-use crate::services::model_selector::ModelSelector;
 use crate::services::LlmConfig;
+use crate::services::model_selector::ModelSelector;
 use crate::skills::Skill;
 
 pub struct ModelSkill {
@@ -65,7 +65,9 @@ impl ModelSkill {
     fn register_model_def() -> ToolDefinition {
         ToolDefinition {
             name: "register_model".to_string(),
-            description: "Register a model specification in the knowledge graph for intelligent selection.".to_string(),
+            description:
+                "Register a model specification in the knowledge graph for intelligent selection."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -130,7 +132,8 @@ impl ModelSkill {
     fn get_model_stats_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_model_stats".to_string(),
-            description: "Get AgentJob usage statistics for a specific model or provider hint.".to_string(),
+            description: "Get AgentJob usage statistics for a specific model or provider hint."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -156,10 +159,7 @@ impl ModelSkill {
             .as_ref()
             .map(|c| c.provider.to_string())
             .unwrap_or_else(|| "None".to_string());
-        let active_model = config
-            .as_ref()
-            .map(|c| c.model.clone())
-            .unwrap_or_default();
+        let active_model = config.as_ref().map(|c| c.model.clone()).unwrap_or_default();
         drop(config);
 
         let providers = vec![
@@ -211,7 +211,11 @@ impl ModelSkill {
             "Anthropic" => base.with_provider(LlmProviderType::Anthropic),
             "Gemini" => base.with_provider(LlmProviderType::Gemini),
             "VLlm" | "vllm" | "vLLM" => base.with_provider(LlmProviderType::VLlm),
-            _ => return ToolCallResult::error("Invalid provider. Use Ollama, Anthropic, Gemini, or VLlm.".to_string()),
+            _ => {
+                return ToolCallResult::error(
+                    "Invalid provider. Use Ollama, Anthropic, Gemini, or VLlm.".to_string(),
+                );
+            }
         };
 
         if let Some(model) = input.model {
@@ -225,8 +229,12 @@ impl ModelSkill {
         // and no key was provided explicitly.
         if new_config.api_key.as_deref().unwrap_or("").is_empty() {
             let env_key = match new_config.provider {
-                LlmProviderType::Gemini    => std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty()),
-                LlmProviderType::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty()),
+                LlmProviderType::Gemini => std::env::var("GEMINI_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty()),
+                LlmProviderType::Anthropic => std::env::var("ANTHROPIC_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty()),
                 _ => None,
             };
             if let Some(key) = env_key {
@@ -235,10 +243,7 @@ impl ModelSkill {
         }
 
         *config = Some(new_config);
-        ToolCallResult::success_text(format!(
-            "Switched to provider: {}",
-            input.provider
-        ))
+        ToolCallResult::success_text(format!("Switched to provider: {}", input.provider))
     }
 
     async fn handle_register_model(&self, args: Option<Value>) -> ToolCallResult {

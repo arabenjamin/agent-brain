@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
@@ -123,7 +123,9 @@ impl ContextSkill {
 
     async fn handle_get_context_profile(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { name: String }
+        struct Input {
+            name: String,
+        }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
@@ -150,7 +152,9 @@ impl ContextSkill {
 
     async fn handle_auto_assign_context(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { goal: String }
+        struct Input {
+            goal: String,
+        }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
@@ -158,7 +162,11 @@ impl ContextSkill {
         };
 
         let profile = self.builder.auto_assign(&input.goal).await;
-        let method = if profile == "general" { "fallback" } else { "keyword" };
+        let method = if profile == "general" {
+            "fallback"
+        } else {
+            "keyword"
+        };
 
         ToolCallResult::success_text(
             serde_json::to_string_pretty(&json!({
@@ -172,7 +180,9 @@ impl ContextSkill {
 
     async fn handle_build_agent_context(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { profile: String }
+        struct Input {
+            profile: String,
+        }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
@@ -216,10 +226,10 @@ impl Skill for ContextSkill {
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
-            "list_context_profiles"  => Some(self.handle_list_context_profiles().await),
-            "get_context_profile"    => Some(self.handle_get_context_profile(args).await),
-            "auto_assign_context"    => Some(self.handle_auto_assign_context(args).await),
-            "build_agent_context"    => Some(self.handle_build_agent_context(args).await),
+            "list_context_profiles" => Some(self.handle_list_context_profiles().await),
+            "get_context_profile" => Some(self.handle_get_context_profile(args).await),
+            "auto_assign_context" => Some(self.handle_auto_assign_context(args).await),
+            "build_agent_context" => Some(self.handle_build_agent_context(args).await),
             _ => None,
         }
     }

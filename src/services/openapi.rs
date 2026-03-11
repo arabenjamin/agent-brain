@@ -157,14 +157,21 @@ impl OpenApiParser {
             for ewp in &result.endpoints {
                 let e = &ewp.endpoint;
                 let text = format!("{} {} - {}", e.method, e.path, e.summary);
-                if let Ok(emb) = llm.embeddings(&text).await {
-                    if self.client.update_endpoint_embedding(e.id, emb).await.is_ok() {
-                        embedded += 1;
-                    }
+                if let Ok(emb) = llm.embeddings(&text).await
+                    && self
+                        .client
+                        .update_endpoint_embedding(e.id, emb)
+                        .await
+                        .is_ok()
+                {
+                    embedded += 1;
                 }
             }
             if embedded > 0 {
-                info!(embedded = embedded, "Generated embeddings for ingested endpoints");
+                info!(
+                    embedded = embedded,
+                    "Generated embeddings for ingested endpoints"
+                );
             }
         }
 

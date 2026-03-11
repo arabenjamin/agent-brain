@@ -118,9 +118,9 @@ impl Neo4jClient {
             .await?;
 
         if let Some(row) = result.next().await? {
-            let exists: bool = row
-                .get("exists")
-                .map_err(|e| RepositoryError::InvalidData(format!("Failed to get exists: {}", e)))?;
+            let exists: bool = row.get("exists").map_err(|e| {
+                RepositoryError::InvalidData(format!("Failed to get exists: {}", e))
+            })?;
             Ok(exists)
         } else {
             Ok(false)

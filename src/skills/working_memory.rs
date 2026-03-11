@@ -1,13 +1,13 @@
 //! Working Memory Skill - Session-scoped scratchpad for agent context.
 
 use async_trait::async_trait;
-use serde::Deserialize;
-use serde_json::{json, Value};
-use tracing::info;
-use uuid::Uuid;
 use chrono::Utc;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::info;
+use uuid::Uuid;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
@@ -173,7 +173,8 @@ impl WorkingMemorySkill {
 
         match self.neo4j.execute(q).await {
             Ok(rows) => {
-                let turn_index = rows.first()
+                let turn_index = rows
+                    .first()
                     .and_then(|r| r.get::<i64>("turn_index").ok())
                     .unwrap_or(0);
                 let response = json!({
@@ -207,13 +208,16 @@ impl WorkingMemorySkill {
 
         match self.neo4j.execute(q).await {
             Ok(rows) => {
-                let entries: Vec<Value> = rows.iter().map(|row| {
-                    json!({
-                        "turn": row.get::<i64>("turn").unwrap_or(0),
-                        "role": row.get::<String>("role").unwrap_or_default(),
-                        "content": row.get::<String>("content").unwrap_or_default()
+                let entries: Vec<Value> = rows
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "turn": row.get::<i64>("turn").unwrap_or(0),
+                            "role": row.get::<String>("role").unwrap_or_default(),
+                            "content": row.get::<String>("content").unwrap_or_default()
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let response = json!({
                     "session_id": input.session_id,
@@ -251,14 +255,17 @@ impl WorkingMemorySkill {
 
         match self.neo4j.execute(q).await {
             Ok(rows) => {
-                let sessions: Vec<Value> = rows.iter().map(|row| {
-                    json!({
-                        "session_id": row.get::<String>("session_id").unwrap_or_default(),
-                        "started_at": row.get::<String>("started_at").unwrap_or_default(),
-                        "msg_count":  row.get::<i64>("msg_count").unwrap_or(0),
-                        "title":      row.get::<String>("title").unwrap_or_default()
+                let sessions: Vec<Value> = rows
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "session_id": row.get::<String>("session_id").unwrap_or_default(),
+                            "started_at": row.get::<String>("started_at").unwrap_or_default(),
+                            "msg_count":  row.get::<i64>("msg_count").unwrap_or(0),
+                            "title":      row.get::<String>("title").unwrap_or_default()
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 let response = json!({
                     "count": sessions.len(),
@@ -278,7 +285,11 @@ impl WorkingMemorySkill {
 
         let llm = match self.make_llm().await {
             Some(l) => l,
-            None => return ToolCallResult::error("LLM not configured for session summarisation".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "LLM not configured for session summarisation".to_string(),
+                );
+            }
         };
 
         info!(session_id = %input.session_id, "Summarising session into long-term memory");
@@ -290,23 +301,34 @@ impl WorkingMemorySkill {
         ORDER BY w.turn_index ASC
         "#;
 
-        let rows = match self.neo4j.execute(
-            neo4rs::query(cypher).param("session_id", input.session_id.clone()),
-        ).await {
+        let rows = match self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("session_id", input.session_id.clone()))
+            .await
+        {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("Failed to fetch session entries: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to fetch session entries: {}", e));
+            }
         };
 
         if rows.is_empty() {
-            return ToolCallResult::error(format!("No entries found for session '{}'", input.session_id));
+            return ToolCallResult::error(format!(
+                "No entries found for session '{}'",
+                input.session_id
+            ));
         }
 
-        let entries_text: String = rows.iter().map(|row| {
-            let turn = row.get::<i64>("turn").unwrap_or(0);
-            let role = row.get::<String>("role").unwrap_or_default();
-            let content = row.get::<String>("content").unwrap_or_default();
-            format!("[Turn {turn} | {role}] {content}")
-        }).collect::<Vec<_>>().join("\n");
+        let entries_text: String = rows
+            .iter()
+            .map(|row| {
+                let turn = row.get::<i64>("turn").unwrap_or(0);
+                let role = row.get::<String>("role").unwrap_or_default();
+                let content = row.get::<String>("content").unwrap_or_default();
+                format!("[Turn {turn} | {role}] {content}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let entries_summarised = rows.len();
 
@@ -323,22 +345,24 @@ impl WorkingMemorySkill {
 
         // 3. Store in long-term memory as a consolidated note
         let knowledge = self.make_knowledge_service().await;
-        let note_id = match knowledge.store_note(
-            &summary,
-            Some("consolidated"),
-            Some(&input.session_id),
-            None,
-        ).await {
+        let note_id = match knowledge
+            .store_note(
+                &summary,
+                Some("consolidated"),
+                Some(&input.session_id),
+                None,
+            )
+            .await
+        {
             Ok((id, _)) => id,
             Err(e) => return ToolCallResult::error(format!("Failed to store summary note: {}", e)),
         };
 
         // 4. Optionally delete session entries
         let deleted = if input.delete_after_summarise {
-            let delete_q = neo4rs::query(
-                "MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w",
-            )
-            .param("session_id", input.session_id.clone());
+            let delete_q =
+                neo4rs::query("MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w")
+                    .param("session_id", input.session_id.clone());
             let _ = self.neo4j.run(delete_q).await;
             true
         } else {
@@ -372,10 +396,10 @@ impl Skill for WorkingMemorySkill {
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
-            "push_context"      => Some(self.handle_push_context(arguments).await),
-            "get_context"       => Some(self.handle_get_context(arguments).await),
+            "push_context" => Some(self.handle_push_context(arguments).await),
+            "get_context" => Some(self.handle_get_context(arguments).await),
             "summarise_session" => Some(self.handle_summarise_session(arguments).await),
-            "list_sessions"     => Some(self.handle_list_sessions(arguments).await),
+            "list_sessions" => Some(self.handle_list_sessions(arguments).await),
             _ => None,
         }
     }
@@ -407,11 +431,11 @@ struct SummariseSessionInput {
     delete_after_summarise: bool,
 }
 
-fn default_get_limit() -> usize { 20 }
+fn default_get_limit() -> usize {
+    20
+}
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

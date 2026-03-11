@@ -1,18 +1,21 @@
 //! Integration tests for the task skill with Neo4j persistence.
 //! These tests require a running Neo4j instance.
 
+use std::sync::Arc;
+
 use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
-use agent_brain::skills::{task::TaskSkill, Skill};
 use agent_brain::repository::Neo4jClient;
+use agent_brain::skills::task::TaskSkill;
 use serde_json::json;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 #[test]
 fn test_create_task_tool_exists() {
     let mut registry = ToolRegistry::new();
-    let task_skill = TaskSkill::new(None, None);
+    let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), None, None);
     registry.register_skill(Box::new(task_skill));
-    
+
     let tool = registry.get("create_task");
     assert!(tool.is_some());
 
@@ -29,7 +32,7 @@ fn test_create_task_tool_exists() {
 
 #[tokio::test]
 async fn test_create_task_without_db() {
-    let task_skill = TaskSkill::new(None, None);
+    let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), None, None);
     let handler = ToolHandler::new(vec![Box::new(task_skill)]);
 
     let result = handler
@@ -44,12 +47,12 @@ async fn test_create_task_without_db() {
 
     // Should fail because DB is missing
     assert!(result.is_error.unwrap_or(false));
-    
-    if let Some(content) = result.content.first() {
-        if let agent_brain::mcp::protocol::Content::Text { text } = content {
-            println!("Tool output: {}", text);
-            assert!(text.contains("Persistence layer (Neo4j) not available"));
-        }
+
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        println!("Tool output: {}", text);
+        assert!(text.contains("Persistence layer (Neo4j) not available"));
     }
 }
 
@@ -61,18 +64,18 @@ async fn test_create_task_with_live_db() {
     let uri = "bolt://localhost:7688";
     let user = "neo4j";
     let pass = "password";
-    
+
     let client_result = Neo4jClient::new(uri, user, pass).await;
-    
+
     if let Ok(client) = client_result {
         // Initialize schema if needed (might already be initialized)
         let _ = client.init_schema().await;
 
-        let task_skill = TaskSkill::new(None, Some(client.clone()));
+        let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), Some(client.clone()), None);
         let handler = ToolHandler::new(vec![Box::new(task_skill)]);
 
         let goal = format!("Integration Test Task {}", Uuid::new_v4());
-        
+
         let result = handler
             .execute(
                 "create_task",
@@ -84,24 +87,27 @@ async fn test_create_task_with_live_db() {
             .await;
 
         assert!(result.is_error.is_none() || !result.is_error.unwrap());
-        
+
         // Verify it exists in DB
         // Parse ID from output
-        if let Some(content) = result.content.first() {
-            if let agent_brain::mcp::protocol::Content::Text { text } = content {
-                let json: serde_json::Value = serde_json::from_str(text).unwrap();
-                let id = json["task_id"].as_str().unwrap();
-                
-                let task = client.get_task(id).await.unwrap();
-                assert!(task.is_some());
-                let t = task.unwrap();
-                assert_eq!(t.goal, goal);
-                assert_eq!(t.context, Some("Integration test context".to_string()));
-                
-                println!("Successfully created and verified task: {}", id);
-            }
+        if let Some(content) = result.content.first()
+            && let agent_brain::mcp::protocol::Content::Text { text } = content
+        {
+            let json: serde_json::Value = serde_json::from_str(text).unwrap();
+            let id = json["id"].as_str().unwrap();
+
+            let task = client.get_task(id).await.unwrap();
+            assert!(task.is_some());
+            let t = task.unwrap();
+            assert_eq!(t.goal, goal);
+            assert_eq!(t.context, Some("Integration test context".to_string()));
+
+            println!("Successfully created and verified task: {}", id);
         }
     } else {
-        println!("Skipping live DB test: Could not connect to Neo4j at {}", uri);
+        println!(
+            "Skipping live DB test: Could not connect to Neo4j at {}",
+            uri
+        );
     }
 }

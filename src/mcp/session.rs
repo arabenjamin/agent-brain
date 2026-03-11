@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use uuid::Uuid;
 
 /// Error type for session operations.
@@ -29,9 +29,10 @@ pub enum SessionError {
 use super::server::ServerState;
 
 /// Server state for a session (mirrors McpServer state machine).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionState {
     /// Session created, waiting for initialize request.
+    #[default]
     Created,
     /// Initialize received, waiting for initialized notification.
     Initializing,
@@ -60,12 +61,6 @@ impl From<SessionState> for ServerState {
             SessionState::Running => ServerState::Running,
             SessionState::ShuttingDown => ServerState::ShuttingDown,
         }
-    }
-}
-
-impl Default for SessionState {
-    fn default() -> Self {
-        Self::Created
     }
 }
 
@@ -145,7 +140,10 @@ impl Session {
     }
 
     /// Send an SSE message to this session's subscribers.
-    pub fn send_sse(&self, message: SseMessage) -> Result<usize, broadcast::error::SendError<SseMessage>> {
+    pub fn send_sse(
+        &self,
+        message: SseMessage,
+    ) -> Result<usize, broadcast::error::SendError<SseMessage>> {
         self.sse_tx.send(message)
     }
 }
@@ -221,7 +219,11 @@ impl SessionManager {
     /// Used to auto-heal stale sessions after a server restart: the client
     /// already holds the session ID, so we recreate the server-side state
     /// under that exact ID rather than rejecting the request.
-    pub async fn resurrect_session(&self, id: &str, state: SessionState) -> Result<(), SessionError> {
+    pub async fn resurrect_session(
+        &self,
+        id: &str,
+        state: SessionState,
+    ) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
 
         if sessions.len() >= self.config.max_sessions {
@@ -267,7 +269,11 @@ impl SessionManager {
     }
 
     /// Update the state of a session.
-    pub async fn set_session_state(&self, id: &str, state: SessionState) -> Result<(), SessionError> {
+    pub async fn set_session_state(
+        &self,
+        id: &str,
+        state: SessionState,
+    ) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
         let session = sessions
             .get_mut(id)
@@ -278,7 +284,10 @@ impl SessionManager {
     }
 
     /// Subscribe to SSE messages for a session.
-    pub async fn subscribe(&self, id: &str) -> Result<broadcast::Receiver<SseMessage>, SessionError> {
+    pub async fn subscribe(
+        &self,
+        id: &str,
+    ) -> Result<broadcast::Receiver<SseMessage>, SessionError> {
         let sessions = self.sessions.read().await;
         let session = sessions
             .get(id)
@@ -292,7 +301,9 @@ impl SessionManager {
         let session = sessions
             .get(id)
             .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
-        session.send_sse(message).map_err(|_| SessionError::NotFound(id.to_string()))
+        session
+            .send_sse(message)
+            .map_err(|_| SessionError::NotFound(id.to_string()))
     }
 
     /// Terminate a session.
@@ -414,7 +425,10 @@ mod tests {
     async fn test_session_manager_create_session() {
         let manager = SessionManager::new();
 
-        let id = manager.create_session().await.expect("Failed to create session");
+        let id = manager
+            .create_session()
+            .await
+            .expect("Failed to create session");
         assert!(Uuid::parse_str(&id).is_ok());
         assert_eq!(manager.count().await, 1);
     }
@@ -431,7 +445,10 @@ mod tests {
     async fn test_session_manager_get_session() {
         let manager = SessionManager::new();
 
-        let id = manager.create_session().await.expect("Failed to create session");
+        let id = manager
+            .create_session()
+            .await
+            .expect("Failed to create session");
         let result = manager.get_session(&id).await;
         assert!(result.is_ok());
     }
@@ -440,7 +457,10 @@ mod tests {
     async fn test_session_manager_terminate() {
         let manager = SessionManager::new();
 
-        let id = manager.create_session().await.expect("Failed to create session");
+        let id = manager
+            .create_session()
+            .await
+            .expect("Failed to create session");
         assert!(manager.exists(&id).await);
 
         manager.terminate(&id).await.expect("Failed to terminate");
@@ -459,10 +479,16 @@ mod tests {
     async fn test_session_manager_state_transitions() {
         let manager = SessionManager::new();
 
-        let id = manager.create_session().await.expect("Failed to create session");
+        let id = manager
+            .create_session()
+            .await
+            .expect("Failed to create session");
 
         // Initial state
-        let state = manager.get_session_state(&id).await.expect("Failed to get state");
+        let state = manager
+            .get_session_state(&id)
+            .await
+            .expect("Failed to get state");
         assert_eq!(state, SessionState::Created);
 
         // Transition to Initializing
@@ -470,7 +496,10 @@ mod tests {
             .set_session_state(&id, SessionState::Initializing)
             .await
             .expect("Failed to set state");
-        let state = manager.get_session_state(&id).await.expect("Failed to get state");
+        let state = manager
+            .get_session_state(&id)
+            .await
+            .expect("Failed to get state");
         assert_eq!(state, SessionState::Initializing);
 
         // Transition to Running
@@ -478,7 +507,10 @@ mod tests {
             .set_session_state(&id, SessionState::Running)
             .await
             .expect("Failed to set state");
-        let state = manager.get_session_state(&id).await.expect("Failed to get state");
+        let state = manager
+            .get_session_state(&id)
+            .await
+            .expect("Failed to get state");
         assert_eq!(state, SessionState::Running);
     }
 
@@ -550,9 +582,9 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..10 {
             let manager_clone = Arc::clone(&manager);
-            handles.push(tokio::spawn(async move {
-                manager_clone.create_session().await
-            }));
+            handles.push(tokio::spawn(
+                async move { manager_clone.create_session().await },
+            ));
         }
 
         // Wait for all to complete

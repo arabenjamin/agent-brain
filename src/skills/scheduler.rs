@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
@@ -72,9 +72,10 @@ impl SchedulerSkill {
     fn configure_scheduler_def() -> ToolDefinition {
         ToolDefinition {
             name: "configure_scheduler".to_string(),
-            description: "Update one or more scheduler settings at runtime. All fields are optional; \
+            description:
+                "Update one or more scheduler settings at runtime. All fields are optional; \
                           only supplied fields are changed."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -250,9 +251,7 @@ impl SchedulerSkill {
 // Custom deserializer: handles absent, null, and string values for session_id
 // ---------------------------------------------------------------------------
 
-fn deserialize_optional_session<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
+fn deserialize_optional_session<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

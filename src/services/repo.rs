@@ -81,8 +81,11 @@ impl RepoSource {
 
         // Check if it's a URL
         if url.starts_with("http://") || url.starts_with("https://") {
-            let parsed = url::Url::parse(url).map_err(|_| RepoError::InvalidUrl(url.to_string()))?;
-            let host = parsed.host_str().ok_or_else(|| RepoError::InvalidUrl(url.to_string()))?;
+            let parsed =
+                url::Url::parse(url).map_err(|_| RepoError::InvalidUrl(url.to_string()))?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| RepoError::InvalidUrl(url.to_string()))?;
 
             // Detect platform
             let platform = if host.contains("github") {
@@ -136,7 +139,8 @@ impl RepoSource {
         } else {
             // Assume local path
             let path = Path::new(url);
-            let repo_name = path.file_name()
+            let repo_name = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("local-repo")
                 .to_string();
@@ -283,7 +287,7 @@ pub enum MergeStrategy {
 }
 
 impl MergeStrategy {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "replace" => Self::Replace,
             "ignore" => Self::Ignore,
@@ -334,7 +338,9 @@ pub enum RepoError {
     #[error("Repository not found: {0}")]
     RepoNotFound(String),
 
-    #[error("Access denied to repository. Configure credentials for '{0}' API using configure_api_credential tool.")]
+    #[error(
+        "Access denied to repository. Configure credentials for '{0}' API using configure_api_credential tool."
+    )]
     AccessDenied(String),
 
     #[error("Rate limited by {0}. Please wait and try again.")]
@@ -504,6 +510,7 @@ impl RepoAnalyzerService {
     }
 
     /// Analyze a repository and generate an OpenAPI specification.
+    #[allow(clippy::too_many_arguments)]
     pub async fn analyze(
         &self,
         repo_url: &str,
@@ -575,7 +582,7 @@ impl RepoAnalyzerService {
             )
             .await;
 
-        let endpoints_found = spec.paths.values().map(|p| count_operations(p)).sum();
+        let endpoints_found = spec.paths.values().map(count_operations).sum();
         let schemas_found = spec
             .components
             .as_ref()
@@ -642,7 +649,9 @@ impl RepoAnalyzerService {
                 threshold = self.config.clone_threshold_bytes,
                 "Repository exceeds API threshold, using clone method"
             );
-            let files = self.clone_and_read_files(source, token, subdirectory).await?;
+            let files = self
+                .clone_and_read_files(source, token, subdirectory)
+                .await?;
             Ok((RepoAccessMethod::Clone, files))
         } else {
             debug!(
@@ -653,7 +662,9 @@ impl RepoAnalyzerService {
                 Ok(files) => Ok((RepoAccessMethod::Api, files)),
                 Err(RepoError::RateLimited(_)) => {
                     warn!("Rate limited, falling back to clone method");
-                    let files = self.clone_and_read_files(source, token, subdirectory).await?;
+                    let files = self
+                        .clone_and_read_files(source, token, subdirectory)
+                        .await?;
                     Ok((RepoAccessMethod::Clone, files))
                 }
                 Err(e) => Err(e),
@@ -662,7 +673,11 @@ impl RepoAnalyzerService {
     }
 
     /// Get repository size in bytes.
-    async fn get_repo_size(&self, source: &RepoSource, token: Option<&str>) -> Result<u64, RepoError> {
+    async fn get_repo_size(
+        &self,
+        source: &RepoSource,
+        token: Option<&str>,
+    ) -> Result<u64, RepoError> {
         let url = source.repo_api_url();
         let mut request = self.client.get(&url);
 
@@ -677,11 +692,17 @@ impl RepoAnalyzerService {
 
         request = request.header("Accept", "application/json");
 
-        let response = request.send().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
 
         match response.status().as_u16() {
             200 => {
-                let body: Value = response.json().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+                let body: Value = response
+                    .json()
+                    .await
+                    .map_err(|e| RepoError::HttpError(e.to_string()))?;
                 // GitHub returns "size" in KB, GitLab returns in bytes
                 let size = match source.platform {
                     RepoPlatform::GitHub => body["size"].as_u64().unwrap_or(0) * 1024,
@@ -738,7 +759,10 @@ impl RepoAnalyzerService {
         }
         request = request.header("Accept", "application/vnd.github+json");
 
-        let response = request.send().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
 
         match response.status().as_u16() {
             200 => {}
@@ -748,13 +772,18 @@ impl RepoAnalyzerService {
             status => return Err(RepoError::HttpError(format!("HTTP {}", status))),
         }
 
-        let body: Value = response.json().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
-        let tree = body["tree"].as_array().ok_or_else(|| {
-            RepoError::HttpError("Invalid tree response".to_string())
-        })?;
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let tree = body["tree"]
+            .as_array()
+            .ok_or_else(|| RepoError::HttpError("Invalid tree response".to_string()))?;
 
         // Filter files
-        let prefix = subdirectory.map(|s| format!("{}/", s.trim_matches('/'))).unwrap_or_default();
+        let prefix = subdirectory
+            .map(|s| format!("{}/", s.trim_matches('/')))
+            .unwrap_or_default();
 
         let relevant_files: Vec<&Value> = tree
             .iter()
@@ -811,10 +840,16 @@ impl RepoAnalyzerService {
         }
         request = request.header("Accept", "application/vnd.github.raw");
 
-        let response = request.send().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
 
         if response.status().is_success() {
-            response.text().await.map_err(|e| RepoError::HttpError(e.to_string()))
+            response
+                .text()
+                .await
+                .map_err(|e| RepoError::HttpError(e.to_string()))
         } else {
             Err(RepoError::HttpError(format!(
                 "Failed to fetch {}: HTTP {}",
@@ -849,7 +884,10 @@ impl RepoAnalyzerService {
             request = request.header("PRIVATE-TOKEN", t);
         }
 
-        let response = request.send().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
 
         match response.status().as_u16() {
             200 => {}
@@ -859,9 +897,14 @@ impl RepoAnalyzerService {
             status => return Err(RepoError::HttpError(format!("HTTP {}", status))),
         }
 
-        let tree: Vec<Value> = response.json().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let tree: Vec<Value> = response
+            .json()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
 
-        let prefix = subdirectory.map(|s| format!("{}/", s.trim_matches('/'))).unwrap_or_default();
+        let prefix = subdirectory
+            .map(|s| format!("{}/", s.trim_matches('/')))
+            .unwrap_or_default();
 
         let relevant_files: Vec<&Value> = tree
             .iter()
@@ -913,10 +956,16 @@ impl RepoAnalyzerService {
             request = request.header("PRIVATE-TOKEN", t);
         }
 
-        let response = request.send().await.map_err(|e| RepoError::HttpError(e.to_string()))?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| RepoError::HttpError(e.to_string()))?;
 
         if response.status().is_success() {
-            response.text().await.map_err(|e| RepoError::HttpError(e.to_string()))
+            response
+                .text()
+                .await
+                .map_err(|e| RepoError::HttpError(e.to_string()))
         } else {
             Err(RepoError::HttpError(format!(
                 "Failed to fetch {}: HTTP {}",
@@ -943,9 +992,7 @@ impl RepoAnalyzerService {
 
         // Build git clone command
         let mut cmd = Command::new("git");
-        cmd.arg("clone")
-            .arg("--depth=1")
-            .arg("--single-branch");
+        cmd.arg("clone").arg("--depth=1").arg("--single-branch");
 
         if let Some(branch) = ref_name {
             cmd.arg("--branch").arg(branch);
@@ -1005,10 +1052,10 @@ impl RepoAnalyzerService {
                     && !self.is_excluded(&relative_path)
                 {
                     let metadata = fs::metadata(&path).await?;
-                    if metadata.len() <= self.config.max_file_size as u64 {
-                        if let Ok(content) = fs::read_to_string(&path).await {
-                            files.push((relative_path, content));
-                        }
+                    if metadata.len() <= self.config.max_file_size as u64
+                        && let Ok(content) = fs::read_to_string(&path).await
+                    {
+                        files.push((relative_path, content));
                     }
                 }
             }
@@ -1063,9 +1110,9 @@ impl RepoAnalyzerService {
         files
             .iter()
             .filter(|(path, _)| {
-                // If include_patterns is specified, we already filtered in fetch step, 
+                // If include_patterns is specified, we already filtered in fetch step,
                 // but let's be safe and check again or just accept all if they passed is_relevant_file.
-                
+
                 // Prioritize files matching API patterns or include patterns
                 if !self.config.include_patterns.is_empty() {
                     return self.config.include_patterns.iter().any(|pattern| {
@@ -1091,9 +1138,9 @@ impl RepoAnalyzerService {
             let lower_path = path.to_lowercase();
 
             // Check if this looks like an OpenAPI spec file
-            let is_spec_file = OPENAPI_SPEC_PATTERNS.iter().any(|pattern| {
-                lower_path.ends_with(pattern) || lower_path == *pattern
-            });
+            let is_spec_file = OPENAPI_SPEC_PATTERNS
+                .iter()
+                .any(|pattern| lower_path.ends_with(pattern) || lower_path == *pattern);
 
             if !is_spec_file {
                 continue;
@@ -1118,10 +1165,7 @@ impl RepoAnalyzerService {
                 if spec.get("openapi").is_some() || spec.get("swagger").is_some() {
                     let api_title = spec["info"]["title"].as_str().map(String::from);
                     let api_version = spec["info"]["version"].as_str().map(String::from);
-                    let endpoints_count = spec["paths"]
-                        .as_object()
-                        .map(|p| p.len())
-                        .unwrap_or(0);
+                    let endpoints_count = spec["paths"].as_object().map(|p| p.len()).unwrap_or(0);
 
                     return Some(ExistingSpecInfo {
                         path: path.clone(),
@@ -1167,7 +1211,11 @@ impl RepoAnalyzerService {
             batches.push(current_batch);
         }
 
-        info!(batches = batches.len(), files = files.len(), "Analyzing code in batches");
+        info!(
+            batches = batches.len(),
+            files = files.len(),
+            "Analyzing code in batches"
+        );
 
         // Process each batch
         for (i, batch) in batches.iter().enumerate() {
@@ -1223,14 +1271,17 @@ impl RepoAnalyzerService {
     /// Build the LLM prompt for code analysis.
     fn build_analysis_prompt(&self, files: &[(&String, &String)]) -> String {
         let mut prompt = String::from(
-            "Analyze the following source code files and extract all API endpoints.\n\n"
+            "Analyze the following source code files and extract all API endpoints.\n\n",
         );
 
         for (path, content) in files {
             let language = detect_language(path);
             prompt.push_str(&format!(
                 "--- File: {} (Language: {}) ---\n```{}\n{}\n```\n\n",
-                path, language, language.to_lowercase(), content
+                path,
+                language,
+                language.to_lowercase(),
+                content
             ));
         }
 
@@ -1240,7 +1291,7 @@ impl RepoAnalyzerService {
              - HTTP handler functions\n\
              - Path parameters, query parameters, request bodies\n\
              - Response types and schemas\n\n\
-             Return ONLY the JSON object, no explanations."
+             Return ONLY the JSON object, no explanations.",
         );
 
         prompt
@@ -1279,8 +1330,8 @@ impl RepoAnalyzerService {
             return Ok(Vec::new());
         };
 
-        let endpoints: Vec<ExtractedEndpoint> = serde_json::from_value(endpoints_value)
-            .unwrap_or_default();
+        let endpoints: Vec<ExtractedEndpoint> =
+            serde_json::from_value(endpoints_value).unwrap_or_default();
 
         Ok(endpoints)
     }
@@ -1381,13 +1432,27 @@ fn detect_language(path: &str) -> &'static str {
 /// Count operations in a path item.
 fn count_operations(path_item: &super::docgen::PathItem) -> usize {
     let mut count = 0;
-    if path_item.get.is_some() { count += 1; }
-    if path_item.post.is_some() { count += 1; }
-    if path_item.put.is_some() { count += 1; }
-    if path_item.patch.is_some() { count += 1; }
-    if path_item.delete.is_some() { count += 1; }
-    if path_item.head.is_some() { count += 1; }
-    if path_item.options.is_some() { count += 1; }
+    if path_item.get.is_some() {
+        count += 1;
+    }
+    if path_item.post.is_some() {
+        count += 1;
+    }
+    if path_item.put.is_some() {
+        count += 1;
+    }
+    if path_item.patch.is_some() {
+        count += 1;
+    }
+    if path_item.delete.is_some() {
+        count += 1;
+    }
+    if path_item.head.is_some() {
+        count += 1;
+    }
+    if path_item.options.is_some() {
+        count += 1;
+    }
     count
 }
 
@@ -1440,9 +1505,10 @@ fn build_operation_from_extracted(endpoint: &ExtractedEndpoint) -> Operation {
         content.insert(
             body.content_type.clone(),
             MediaType {
-                schema: body.schema.as_ref().map(|s| {
-                    SchemaRef::Inline(value_to_schema_object(s))
-                }),
+                schema: body
+                    .schema
+                    .as_ref()
+                    .map(|s| SchemaRef::Inline(value_to_schema_object(s))),
             },
         );
 
@@ -1461,9 +1527,10 @@ fn build_operation_from_extracted(endpoint: &ExtractedEndpoint) -> Operation {
             content.insert(
                 ct.clone(),
                 MediaType {
-                    schema: resp.schema.as_ref().map(|s| {
-                        SchemaRef::Inline(value_to_schema_object(s))
-                    }),
+                    schema: resp
+                        .schema
+                        .as_ref()
+                        .map(|s| SchemaRef::Inline(value_to_schema_object(s))),
                 },
             );
             response_content = Some(content);
@@ -1472,7 +1539,10 @@ fn build_operation_from_extracted(endpoint: &ExtractedEndpoint) -> Operation {
         operation.responses.insert(
             resp.status_code.clone(),
             Response {
-                description: resp.description.clone().unwrap_or_else(|| "Success".to_string()),
+                description: resp
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| "Success".to_string()),
                 content: response_content,
             },
         );
@@ -1487,16 +1557,24 @@ fn value_to_schema_object(value: &Value) -> SchemaObject {
         Value::Object(obj) => {
             let schema_type = obj.get("type").and_then(|v| v.as_str()).map(String::from);
             let format = obj.get("format").and_then(|v| v.as_str()).map(String::from);
-            let description = obj.get("description").and_then(|v| v.as_str()).map(String::from);
+            let description = obj
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
-            let properties = obj.get("properties").and_then(|v| v.as_object()).map(|props| {
-                props
-                    .iter()
-                    .map(|(k, v)| (k.clone(), value_to_schema_object(v)))
-                    .collect()
-            });
+            let properties = obj
+                .get("properties")
+                .and_then(|v| v.as_object())
+                .map(|props| {
+                    props
+                        .iter()
+                        .map(|(k, v)| (k.clone(), value_to_schema_object(v)))
+                        .collect()
+                });
 
-            let items = obj.get("items").map(|v| Box::new(value_to_schema_object(v)));
+            let items = obj
+                .get("items")
+                .map(|v| Box::new(value_to_schema_object(v)));
 
             let required = obj
                 .get("required")
@@ -1541,26 +1619,26 @@ fn json_type_to_schema_type(value: &Value) -> String {
 }
 
 /// Collect unique schemas from extracted endpoints.
-fn collect_schemas_from_endpoints(endpoints: &[ExtractedEndpoint]) -> HashMap<String, SchemaObject> {
+fn collect_schemas_from_endpoints(
+    endpoints: &[ExtractedEndpoint],
+) -> HashMap<String, SchemaObject> {
     let mut schemas = HashMap::new();
 
     for endpoint in endpoints {
         // Extract schemas from request bodies
-        if let Some(body) = &endpoint.request_body {
-            if let Some(schema) = &body.schema {
-                if let Some(name) = extract_schema_name(schema) {
-                    schemas.insert(name, value_to_schema_object(schema));
-                }
-            }
+        if let Some(body) = &endpoint.request_body
+            && let Some(schema) = &body.schema
+            && let Some(name) = extract_schema_name(schema)
+        {
+            schemas.insert(name, value_to_schema_object(schema));
         }
 
         // Extract schemas from responses
-        if let Some(resp) = &endpoint.response {
-            if let Some(schema) = &resp.schema {
-                if let Some(name) = extract_schema_name(schema) {
-                    schemas.insert(name, value_to_schema_object(schema));
-                }
-            }
+        if let Some(resp) = &endpoint.response
+            && let Some(schema) = &resp.schema
+            && let Some(name) = extract_schema_name(schema)
+        {
+            schemas.insert(name, value_to_schema_object(schema));
         }
     }
 
@@ -1613,7 +1691,8 @@ mod tests {
 
     #[test]
     fn test_parse_github_url_with_nested_branch() {
-        let source = RepoSource::parse("https://github.com/owner/repo/tree/feature/my-branch").unwrap();
+        let source =
+            RepoSource::parse("https://github.com/owner/repo/tree/feature/my-branch").unwrap();
         assert_eq!(source.ref_name, Some("feature/my-branch".to_string()));
     }
 
@@ -1650,7 +1729,10 @@ mod tests {
         );
 
         let gitlab_source = RepoSource::parse("https://gitlab.com/owner/repo").unwrap();
-        assert_eq!(gitlab_source.clone_url(None), "https://gitlab.com/owner/repo.git");
+        assert_eq!(
+            gitlab_source.clone_url(None),
+            "https://gitlab.com/owner/repo.git"
+        );
         assert_eq!(
             gitlab_source.clone_url(Some("token123")),
             "https://oauth2:token123@gitlab.com/owner/repo.git"
@@ -1678,11 +1760,11 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_strategy_from_str() {
-        assert_eq!(MergeStrategy::from_str("enhance"), MergeStrategy::Enhance);
-        assert_eq!(MergeStrategy::from_str("replace"), MergeStrategy::Replace);
-        assert_eq!(MergeStrategy::from_str("ignore"), MergeStrategy::Ignore);
-        assert_eq!(MergeStrategy::from_str("unknown"), MergeStrategy::Enhance);
+    fn test_merge_strategy_parse_str() {
+        assert_eq!(MergeStrategy::parse_str("enhance"), MergeStrategy::Enhance);
+        assert_eq!(MergeStrategy::parse_str("replace"), MergeStrategy::Replace);
+        assert_eq!(MergeStrategy::parse_str("ignore"), MergeStrategy::Ignore);
+        assert_eq!(MergeStrategy::parse_str("unknown"), MergeStrategy::Enhance);
     }
 
     #[test]

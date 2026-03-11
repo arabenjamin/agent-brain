@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -29,7 +29,13 @@ impl AdminSkill {
         snapshot_svc: Option<Arc<SnapshotService>>,
         tool_registry: Arc<RwLock<ToolRegistry>>,
     ) -> Self {
-        Self { neo4j, context_store, llm_config, snapshot_svc, tool_registry }
+        Self {
+            neo4j,
+            context_store,
+            llm_config,
+            snapshot_svc,
+            tool_registry,
+        }
     }
 
     // =========================================================================
@@ -123,11 +129,12 @@ impl AdminSkill {
     fn reset_graph_def() -> ToolDefinition {
         ToolDefinition {
             name: "reset_graph".to_string(),
-            description: "Wipe ALL API data from the graph: Resource, Endpoint, Schema, Parameter, \
+            description:
+                "Wipe ALL API data from the graph: Resource, Endpoint, Schema, Parameter, \
                 and HealingEvent nodes. Knowledge data (Notes, Tasks, Procedures, WorkingMemory, \
                 AgentJobs) is preserved. Also clears the in-memory context cache. \
                 REQUIRES confirm: true — this cannot be undone."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -418,7 +425,10 @@ impl AdminSkill {
         };
 
         let total = endpoints.len();
-        let needs_embedding: Vec<_> = endpoints.into_iter().filter(|e| e.embedding.is_none()).collect();
+        let needs_embedding: Vec<_> = endpoints
+            .into_iter()
+            .filter(|e| e.embedding.is_none())
+            .collect();
         let needs_count = needs_embedding.len();
 
         if input.dry_run {
@@ -437,10 +447,18 @@ impl AdminSkill {
         let mut failed = 0u64;
 
         for endpoint in needs_embedding {
-            let text = format!("{} {} - {}", endpoint.method, endpoint.path, endpoint.summary);
+            let text = format!(
+                "{} {} - {}",
+                endpoint.method, endpoint.path, endpoint.summary
+            );
             match llm.embeddings(&text).await {
                 Ok(emb) => {
-                    if self.neo4j.update_endpoint_embedding(endpoint.id, emb).await.is_ok() {
+                    if self
+                        .neo4j
+                        .update_endpoint_embedding(endpoint.id, emb)
+                        .await
+                        .is_ok()
+                    {
                         updated += 1;
                     } else {
                         failed += 1;
@@ -515,7 +533,11 @@ impl AdminSkill {
     async fn handle_snapshot_knowledge(&self, args: Option<Value>) -> ToolCallResult {
         let svc = match &self.snapshot_svc {
             Some(s) => s,
-            None => return ToolCallResult::error("Snapshot service not available (Neo4j required).".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "Snapshot service not available (Neo4j required).".to_string(),
+                );
+            }
         };
 
         #[derive(Deserialize, Default)]
@@ -551,7 +573,11 @@ impl AdminSkill {
     async fn handle_restore_knowledge(&self, args: Option<Value>) -> ToolCallResult {
         let svc = match &self.snapshot_svc {
             Some(s) => s,
-            None => return ToolCallResult::error("Snapshot service not available (Neo4j required).".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "Snapshot service not available (Neo4j required).".to_string(),
+                );
+            }
         };
 
         #[derive(Deserialize)]
@@ -591,7 +617,11 @@ impl AdminSkill {
     async fn handle_list_snapshots(&self, _args: Option<Value>) -> ToolCallResult {
         let svc = match &self.snapshot_svc {
             Some(s) => s,
-            None => return ToolCallResult::error("Snapshot service not available (Neo4j required).".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "Snapshot service not available (Neo4j required).".to_string(),
+                );
+            }
         };
 
         match svc.list_snapshots().await {
@@ -687,10 +717,13 @@ impl AdminSkill {
 
         // Walk src/ and count .rs files per top-level module dir.
         let src_path = std::path::Path::new("src");
-        let mut module_counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut module_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
 
         fn count_rs(dir: &std::path::Path) -> usize {
-            let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return 0;
+            };
             let mut n = 0usize;
             for entry in rd.flatten() {
                 let p = entry.path();
@@ -707,7 +740,11 @@ impl AdminSkill {
             for entry in rd.flatten() {
                 let p = entry.path();
                 if p.is_dir() {
-                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    let name = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
                     module_counts.insert(name, count_rs(&p));
                 }
             }
@@ -717,9 +754,7 @@ impl AdminSkill {
         let root_rs = std::fs::read_dir(src_path)
             .map(|rd| {
                 rd.flatten()
-                    .filter(|e| {
-                        e.path().extension().and_then(|x| x.to_str()) == Some("rs")
-                    })
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rs"))
                     .count()
             })
             .unwrap_or(0);
@@ -740,13 +775,19 @@ impl AdminSkill {
             let content = format!(
                 "Agent Brain structure analysis:\n- Total registered tools: {}\n- Source modules: {}\n- Root .rs files: {}",
                 total_tools,
-                module_counts.iter().map(|(k, v)| format!("{k}: {v} files")).collect::<Vec<_>>().join(", "),
+                module_counts
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v} files"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 root_rs,
             );
             // Store via neo4j directly (KnowledgeService would need the tool handler).
-            let _ = self.neo4j.execute(
-                neo4rs::query(
-                    "CREATE (n:Note {
+            let _ = self
+                .neo4j
+                .execute(
+                    neo4rs::query(
+                        "CREATE (n:Note {
                         id: randomUUID(),
                         content: $content,
                         note_type: 'semantic',
@@ -755,10 +796,11 @@ impl AdminSkill {
                         access_count: 0,
                         next_review_at: datetime() + duration({days: 30}),
                         review_interval_days: 30
-                    })"
+                    })",
+                    )
+                    .param("content", content),
                 )
-                .param("content", content)
-            ).await;
+                .await;
         }
 
         ToolCallResult::success_text(serde_json::to_string_pretty(&report).unwrap())
@@ -788,16 +830,20 @@ impl Skill for AdminSkill {
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
-            "delete_api"                       => Some(self.handle_delete_api(args).await),
-            "purge_duplicate_endpoints"        => Some(self.handle_purge_duplicate_endpoints(args).await),
-            "purge_orphaned_schemas"           => Some(self.handle_purge_orphaned_schemas(args).await),
-            "reset_graph"                      => Some(self.handle_reset_graph(args).await),
-            "backfill_endpoint_embeddings"     => Some(self.handle_backfill_endpoint_embeddings(args).await),
-            "snapshot_knowledge"               => Some(self.handle_snapshot_knowledge(args).await),
-            "restore_knowledge"                => Some(self.handle_restore_knowledge(args).await),
-            "list_snapshots"                   => Some(self.handle_list_snapshots(args).await),
-            "verify_knowledge_integrity"       => Some(self.handle_verify_knowledge_integrity(args).await),
-            "analyze_own_structure"            => Some(self.handle_analyze_own_structure(args).await),
+            "delete_api" => Some(self.handle_delete_api(args).await),
+            "purge_duplicate_endpoints" => Some(self.handle_purge_duplicate_endpoints(args).await),
+            "purge_orphaned_schemas" => Some(self.handle_purge_orphaned_schemas(args).await),
+            "reset_graph" => Some(self.handle_reset_graph(args).await),
+            "backfill_endpoint_embeddings" => {
+                Some(self.handle_backfill_endpoint_embeddings(args).await)
+            }
+            "snapshot_knowledge" => Some(self.handle_snapshot_knowledge(args).await),
+            "restore_knowledge" => Some(self.handle_restore_knowledge(args).await),
+            "list_snapshots" => Some(self.handle_list_snapshots(args).await),
+            "verify_knowledge_integrity" => {
+                Some(self.handle_verify_knowledge_integrity(args).await)
+            }
+            "analyze_own_structure" => Some(self.handle_analyze_own_structure(args).await),
             _ => None,
         }
     }

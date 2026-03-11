@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tracing::info;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
@@ -24,11 +24,22 @@ pub struct KnowledgeSkill {
 impl KnowledgeSkill {
     /// Create a new knowledge skill.
     pub fn new(neo4j: Neo4jClient, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
-        Self { neo4j, llm_config, snapshot_svc: None, auto_snapshot: false, auto_snapshot_prune: false }
+        Self {
+            neo4j,
+            llm_config,
+            snapshot_svc: None,
+            auto_snapshot: false,
+            auto_snapshot_prune: false,
+        }
     }
 
     /// Attach a snapshot service for auto-snapshotting before major operations.
-    pub fn with_snapshot(mut self, svc: Arc<SnapshotService>, auto_consolidate: bool, auto_prune: bool) -> Self {
+    pub fn with_snapshot(
+        mut self,
+        svc: Arc<SnapshotService>,
+        auto_consolidate: bool,
+        auto_prune: bool,
+    ) -> Self {
         self.snapshot_svc = Some(svc);
         self.auto_snapshot = auto_consolidate;
         self.auto_snapshot_prune = auto_prune;
@@ -40,7 +51,11 @@ impl KnowledgeSkill {
         let llm = config.and_then(|c| LlmClient::with_config(c).ok());
         let svc = KnowledgeService::new(self.neo4j.clone(), llm);
         if let Some(snap) = &self.snapshot_svc {
-            svc.with_snapshot(Arc::clone(snap), self.auto_snapshot, self.auto_snapshot_prune)
+            svc.with_snapshot(
+                Arc::clone(snap),
+                self.auto_snapshot,
+                self.auto_snapshot_prune,
+            )
         } else {
             svc
         }
@@ -163,10 +178,11 @@ impl KnowledgeSkill {
     fn prune_old_notes_def() -> ToolDefinition {
         ToolDefinition {
             name: "prune_old_notes".to_string(),
-            description: "Delete stale notes. Use score_threshold/lambda for adaptive decay scoring \
+            description:
+                "Delete stale notes. Use score_threshold/lambda for adaptive decay scoring \
                          (recommended), or days_stale/min_accesses for simple time-based pruning. \
                          Protected types (consolidated, reflection) are never deleted."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -313,9 +329,10 @@ impl KnowledgeSkill {
     fn explain_reasoning_def() -> ToolDefinition {
         ToolDefinition {
             name: "explain_reasoning".to_string(),
-            description: "Narrate a human-readable explanation of why a decision or action occurred, \
+            description:
+                "Narrate a human-readable explanation of why a decision or action occurred, \
                          citing the knowledge sources that drove it."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -428,12 +445,15 @@ impl KnowledgeSkill {
         info!(content_len = input.content.len(), "Storing note");
 
         let service = self.make_service().await;
-        match service.store_note(
-            &input.content,
-            input.note_type.as_deref(),
-            input.source_context.as_deref(),
-            input.event_at.as_deref(),
-        ).await {
+        match service
+            .store_note(
+                &input.content,
+                input.note_type.as_deref(),
+                input.source_context.as_deref(),
+                input.event_at.as_deref(),
+            )
+            .await
+        {
             Ok((id, links_created)) => {
                 let response = json!({
                     "success": true,
@@ -457,9 +477,13 @@ impl KnowledgeSkill {
 
         let service = self.make_service().await;
         let results = if input.entity_expansion {
-            service.search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops).await
+            service
+                .search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops)
+                .await
         } else {
-            service.search_notes(&input.query, input.limit, input.graph_hops).await
+            service
+                .search_notes(&input.query, input.limit, input.graph_hops)
+                .await
         };
         match results {
             Ok(results) => {
@@ -512,13 +536,16 @@ impl KnowledgeSkill {
         );
 
         let service = self.make_service().await;
-        match service.prune_old_notes(
-            input.days_stale,
-            input.min_accesses,
-            input.score_threshold,
-            input.lambda,
-            input.dry_run,
-        ).await {
+        match service
+            .prune_old_notes(
+                input.days_stale,
+                input.min_accesses,
+                input.score_threshold,
+                input.lambda,
+                input.dry_run,
+            )
+            .await
+        {
             Ok(count) => {
                 let response = if input.dry_run {
                     json!({
@@ -547,7 +574,10 @@ impl KnowledgeSkill {
         info!(topic = %input.topic, limit = input.limit, "Consolidating memories");
 
         let service = self.make_service().await;
-        match service.consolidate_memories(&input.topic, input.limit).await {
+        match service
+            .consolidate_memories(&input.topic, input.limit)
+            .await
+        {
             Ok((id, source_count, preview)) => {
                 let response = json!({
                     "id": id,
@@ -577,7 +607,10 @@ impl KnowledgeSkill {
         info!(limit = input.limit, note_type = ?input.note_type, "Listing notes");
 
         let service = self.make_service().await;
-        match service.list_notes(input.limit, input.note_type.as_deref()).await {
+        match service
+            .list_notes(input.limit, input.note_type.as_deref())
+            .await
+        {
             Ok(notes) => {
                 let response = json!({ "count": notes.len(), "notes": notes });
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
@@ -616,7 +649,10 @@ impl KnowledgeSkill {
         info!(question = %input.question, limit = input.limit, "Reasoning");
 
         let service = self.make_service().await;
-        match service.reason(&input.question, input.limit, input.store_inference).await {
+        match service
+            .reason(&input.question, input.limit, input.store_inference)
+            .await
+        {
             Ok((answer, inferences, confidence, gaps, note_id)) => {
                 let mut response = json!({
                     "answer": answer,
@@ -642,7 +678,10 @@ impl KnowledgeSkill {
         info!(action = %input.action, "Auditing action");
 
         let service = self.make_service().await;
-        match service.audit_action(&input.action, input.context.as_deref()).await {
+        match service
+            .audit_action(&input.action, input.context.as_deref())
+            .await
+        {
             Ok((aligned, confidence, concerns, suggestions, reasoning)) => {
                 let response = json!({
                     "aligned": aligned,
@@ -666,7 +705,10 @@ impl KnowledgeSkill {
         info!(decision = %input.decision, "Explaining reasoning");
 
         let service = self.make_service().await;
-        match service.explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit).await {
+        match service
+            .explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit)
+            .await
+        {
             Ok((explanation, sources)) => {
                 let response = json!({
                     "explanation": explanation,
@@ -689,7 +731,11 @@ impl KnowledgeSkill {
         let config = self.llm_config.read().await.clone();
         let llm = match config.and_then(|c| LlmClient::with_config(c).ok()) {
             Some(l) => l,
-            None => return ToolCallResult::error("LLM not configured for clarification analysis".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "LLM not configured for clarification analysis".to_string(),
+                );
+            }
         };
 
         let mut prompt = format!(
@@ -699,10 +745,10 @@ impl KnowledgeSkill {
         if let Some(ctx) = &input.context {
             prompt.push_str(&format!("\nCONTEXT: {}\n", ctx));
         }
-        if let Some(tools) = &input.available_tools {
-            if !tools.is_empty() {
-                prompt.push_str(&format!("\nAVAILABLE TOOLS: {}\n", tools.join(", ")));
-            }
+        if let Some(tools) = &input.available_tools
+            && !tools.is_empty()
+        {
+            prompt.push_str(&format!("\nAVAILABLE TOOLS: {}\n", tools.join(", ")));
         }
         prompt.push_str(
             r#"
@@ -713,7 +759,7 @@ Respond with a JSON object only (no markdown, no explanation):
   "clarifying_questions": ["question to ask 1", "..."],
   "assumptions": ["assumption that would be made if proceeding 1", "..."],
   "recommended_approach": "brief description of how to proceed"
-}"#
+}"#,
         );
 
         match llm.generate(&prompt).await {
@@ -722,13 +768,15 @@ Respond with a JSON object only (no markdown, no explanation):
                 let json_start = text.find('{').unwrap_or(0);
                 let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
                 let parsed: Value = serde_json::from_str(&text[json_start..json_end])
-                    .unwrap_or_else(|_| json!({
-                        "needs_clarification": true,
-                        "ambiguities": [],
-                        "clarifying_questions": [text],
-                        "assumptions": [],
-                        "recommended_approach": "Seek clarification before proceeding"
-                    }));
+                    .unwrap_or_else(|_| {
+                        json!({
+                            "needs_clarification": true,
+                            "ambiguities": [],
+                            "clarifying_questions": [text],
+                            "assumptions": [],
+                            "recommended_approach": "Seek clarification before proceeding"
+                        })
+                    });
                 ToolCallResult::success_text(serde_json::to_string_pretty(&parsed).unwrap())
             }
             Err(e) => ToolCallResult::error(format!("Clarification analysis failed: {}", e)),
@@ -741,7 +789,9 @@ Respond with a JSON object only (no markdown, no explanation):
             #[serde(default = "default_max_nodes")]
             max_nodes: usize,
         }
-        fn default_max_nodes() -> usize { 200 }
+        fn default_max_nodes() -> usize {
+            200
+        }
 
         let input: Input = arguments
             .and_then(|v| serde_json::from_value(v).ok())
@@ -764,7 +814,9 @@ Respond with a JSON object only (no markdown, no explanation):
 
     async fn handle_get_note(&self, arguments: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { id: String }
+        struct Input {
+            id: String,
+        }
         let input: Input = match parse_args(arguments) {
             Ok(v) => v,
             Err(e) => return e,
@@ -772,9 +824,9 @@ Respond with a JSON object only (no markdown, no explanation):
 
         let service = self.make_service().await;
         match service.get_note(&input.id).await {
-            Ok(Some(note)) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&note).unwrap()
-            ),
+            Ok(Some(note)) => {
+                ToolCallResult::success_text(serde_json::to_string_pretty(&note).unwrap())
+            }
             Ok(None) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
             Err(e) => ToolCallResult::error(format!("Failed to get note: {}", e)),
         }
@@ -798,7 +850,9 @@ Respond with a JSON object only (no markdown, no explanation):
 
     async fn handle_delete_note(&self, arguments: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { id: String }
+        struct Input {
+            id: String,
+        }
         let input: Input = match parse_args(arguments) {
             Ok(v) => v,
             Err(e) => return e,
@@ -806,7 +860,7 @@ Respond with a JSON object only (no markdown, no explanation):
         let service = self.make_service().await;
         match service.delete_note(&input.id).await {
             Ok(true) => ToolCallResult::success_text(
-                serde_json::to_string(&json!({"deleted": true, "id": input.id})).unwrap()
+                serde_json::to_string(&json!({"deleted": true, "id": input.id})).unwrap(),
             ),
             Ok(false) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
             Err(e) => ToolCallResult::error(format!("Failed to delete note: {}", e)),
@@ -834,7 +888,10 @@ Respond with a JSON object only (no markdown, no explanation):
 
     async fn handle_update_note(&self, arguments: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { id: String, content: String }
+        struct Input {
+            id: String,
+            content: String,
+        }
         let input: Input = match parse_args(arguments) {
             Ok(v) => v,
             Err(e) => return e,
@@ -845,7 +902,7 @@ Respond with a JSON object only (no markdown, no explanation):
         let service = self.make_service().await;
         match service.update_note(&input.id, &input.content).await {
             Ok(true) => ToolCallResult::success_text(
-                serde_json::to_string(&json!({"updated": true, "id": input.id})).unwrap()
+                serde_json::to_string(&json!({"updated": true, "id": input.id})).unwrap(),
             ),
             Ok(false) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
             Err(e) => ToolCallResult::error(format!("Failed to update note: {}", e)),
@@ -861,11 +918,14 @@ Respond with a JSON object only (no markdown, no explanation):
         info!(entity = %input.entity_name, "Searching by entity");
 
         let service = self.make_service().await;
-        match service.search_by_entity(
-            &input.entity_name,
-            input.entity_type.as_deref(),
-            input.limit,
-        ).await {
+        match service
+            .search_by_entity(
+                &input.entity_name,
+                input.entity_type.as_deref(),
+                input.limit,
+            )
+            .await
+        {
             Ok(notes) => {
                 let response = json!({
                     "entity_name": input.entity_name,
@@ -923,7 +983,9 @@ impl Skill for KnowledgeSkill {
             "audit_action" => Some(self.handle_audit_action(arguments).await),
             "explain_reasoning" => Some(self.handle_explain_reasoning(arguments).await),
             "ask_clarification" => Some(self.handle_ask_clarification(arguments).await),
-            "export_graph_visualization" => Some(self.handle_export_graph_visualization(arguments).await),
+            "export_graph_visualization" => {
+                Some(self.handle_export_graph_visualization(arguments).await)
+            }
             _ => None,
         }
     }
@@ -1033,20 +1095,38 @@ struct AskClarificationInput {
     available_tools: Option<Vec<String>>,
 }
 
-fn default_limit() -> usize { 5 }
-fn default_list_limit() -> usize { 20 }
-fn default_graph_hops() -> usize { 2 }
-fn default_days_stale() -> i64 { 30 }
-fn default_min_accesses() -> i64 { 2 }
-fn default_consolidate_limit() -> usize { 10 }
-fn default_review_limit() -> usize { 10 }
-fn default_reason_limit() -> usize { 8 }
-fn default_store_inference() -> bool { true }
-fn default_explain_limit() -> usize { 10 }
+fn default_limit() -> usize {
+    5
+}
+fn default_list_limit() -> usize {
+    20
+}
+fn default_graph_hops() -> usize {
+    2
+}
+fn default_days_stale() -> i64 {
+    30
+}
+fn default_min_accesses() -> i64 {
+    2
+}
+fn default_consolidate_limit() -> usize {
+    10
+}
+fn default_review_limit() -> usize {
+    10
+}
+fn default_reason_limit() -> usize {
+    8
+}
+fn default_store_inference() -> bool {
+    true
+}
+fn default_explain_limit() -> usize {
+    10
+}
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

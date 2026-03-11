@@ -74,7 +74,7 @@ pub async fn execute_procedure(
         // Determine if this is a loop
         let is_loop = step.get("loop").and_then(|v| v.as_bool()).unwrap_or(false);
         let loop_condition = step.get("loop_until").and_then(|v| v.as_str());
-        
+
         let mut loop_count = 0;
         let max_loop = 10; // Safety cap
 
@@ -96,7 +96,10 @@ pub async fn execute_procedure(
             }
 
             // Resolve args with template substitution
-            let raw_args = step.get("args").cloned().unwrap_or(Value::Object(Map::new()));
+            let raw_args = step
+                .get("args")
+                .cloned()
+                .unwrap_or(Value::Object(Map::new()));
             let resolved_args = substitute_value(&raw_args, input, &context);
 
             debug!(step = idx, tool = %tool_name, "Executing step");
@@ -114,8 +117,12 @@ pub async fn execute_procedure(
 
             // Retry logic
             let retry_policy = step.get("retry_policy").and_then(|v| v.as_object());
-            let max_retries = retry_policy.and_then(|p| p.get("max_attempts").and_then(|v| v.as_u64())).unwrap_or(1) as usize;
-            let retry_delay = retry_policy.and_then(|p| p.get("delay_ms").and_then(|v| v.as_u64())).unwrap_or(0);
+            let max_retries = retry_policy
+                .and_then(|p| p.get("max_attempts").and_then(|v| v.as_u64()))
+                .unwrap_or(1) as usize;
+            let retry_delay = retry_policy
+                .and_then(|p| p.get("delay_ms").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
 
             let mut step_success = false;
             let mut last_call_result = None;
@@ -128,9 +135,11 @@ pub async fn execute_procedure(
                     }
                 }
 
-                let call_result = handler.execute(&tool_name, Some(resolved_args.clone())).await;
+                let call_result = handler
+                    .execute(&tool_name, Some(resolved_args.clone()))
+                    .await;
                 let success = !call_result.is_error.unwrap_or(false);
-                
+
                 last_call_result = Some(call_result);
                 if success {
                     step_success = true;
@@ -145,13 +154,18 @@ pub async fn execute_procedure(
                 .content
                 .first()
                 .and_then(|c| {
-                    if let Content::Text { text } = c { Some(text.as_str()) } else { None }
+                    if let Content::Text { text } = c {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
                 })
                 .unwrap_or("")
                 .to_string();
 
             let preview: String = output_text.chars().take(200).collect();
-            let parsed_output = serde_json::from_str(&output_text).unwrap_or(Value::String(output_text.clone()));
+            let parsed_output =
+                serde_json::from_str(&output_text).unwrap_or(Value::String(output_text.clone()));
 
             // Store output in context if output_var is defined
             if let Some(var) = step.get("output_var").and_then(|v| v.as_str()) {
@@ -171,7 +185,10 @@ pub async fn execute_procedure(
             // Handle failure according to on_failure policy
             if !step_success {
                 all_success = false;
-                let on_failure = step.get("on_failure").and_then(|v| v.as_str()).unwrap_or("continue");
+                let on_failure = step
+                    .get("on_failure")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("continue");
                 match on_failure {
                     "abort" => {
                         debug!(step = idx, tool = %tool_name, "Step failed — aborting procedure (on_failure=abort)");
@@ -221,17 +238,21 @@ pub async fn execute_procedure(
 
 /// Substitute `{{input.path}}` and `{{context.path}}` placeholders in a string.
 /// Supports deep paths like `{{context.status.device_status.Arm.IsOperational}}`.
-fn substitute_str(template: &str, input: &Map<String, Value>, context: &HashMap<String, Value>) -> String {
+fn substitute_str(
+    template: &str,
+    input: &Map<String, Value>,
+    context: &HashMap<String, Value>,
+) -> String {
     let mut result = template.to_string();
-    
+
     // Find all occurrences of {{...}}
     let re = regex::Regex::new(r"\{\{([^}]+)\}\}").expect("Invalid regex");
-    
+
     let mut substitutions = Vec::new();
     for cap in re.captures_iter(template) {
         let full_match = &cap[0];
         let path = cap[1].trim();
-        
+
         let value = if let Some(stripped) = path.strip_prefix("input.") {
             resolve_path(&Value::Object(input.clone()), stripped)
         } else if let Some(stripped) = path.strip_prefix("context.") {
@@ -249,12 +270,12 @@ fn substitute_str(template: &str, input: &Map<String, Value>, context: &HashMap<
         } else {
             None
         };
-        
+
         if let Some(val) = value {
             substitutions.push((full_match.to_string(), value_to_string(&val)));
         }
     }
-    
+
     // Apply substitutions
     for (placeholder, replacement) in substitutions {
         result = result.replace(&placeholder, &replacement);
@@ -282,7 +303,11 @@ fn resolve_path(val: &Value, path: &str) -> Option<Value> {
 }
 
 /// Recursively apply template substitution to a JSON Value.
-pub fn substitute_value(val: &Value, input: &Map<String, Value>, context: &HashMap<String, Value>) -> Value {
+pub fn substitute_value(
+    val: &Value,
+    input: &Map<String, Value>,
+    context: &HashMap<String, Value>,
+) -> Value {
     match val {
         Value::String(s) => Value::String(substitute_str(s, input, context)),
         Value::Object(obj) => Value::Object(
@@ -290,9 +315,11 @@ pub fn substitute_value(val: &Value, input: &Map<String, Value>, context: &HashM
                 .map(|(k, v)| (k.clone(), substitute_value(v, input, context)))
                 .collect(),
         ),
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(|v| substitute_value(v, input, context)).collect())
-        }
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| substitute_value(v, input, context))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }

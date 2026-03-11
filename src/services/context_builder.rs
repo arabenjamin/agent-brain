@@ -47,11 +47,26 @@ pub struct ContextBundle {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProtocolStep {
-    Log { message: String },
-    ToolCall { tool: String, #[serde(default)] args: serde_json::Value },
-    StoreNote { content: String, note_type: Option<String> },
-    Conditional { condition: String, #[serde(default)] then: Vec<ProtocolStep> },
-    RunProtocol { protocol: String },
+    Log {
+        message: String,
+    },
+    ToolCall {
+        tool: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+    StoreNote {
+        content: String,
+        note_type: Option<String>,
+    },
+    Conditional {
+        condition: String,
+        #[serde(default)]
+        then: Vec<ProtocolStep>,
+    },
+    RunProtocol {
+        protocol: String,
+    },
 }
 
 /// A boot/init protocol file.
@@ -119,9 +134,13 @@ impl ContextBuilderService {
                         map.insert(profile.name.clone(), profile);
                         count += 1;
                     }
-                    Err(e) => warn!(path = %path.display(), error = %e, "Failed to parse context profile"),
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "Failed to parse context profile")
+                    }
                 },
-                Err(e) => warn!(path = %path.display(), error = %e, "Failed to read context profile"),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "Failed to read context profile")
+                }
             }
         }
         Ok(count)
@@ -166,7 +185,10 @@ impl ContextBuilderService {
             }
         }
 
-        Ok(ContextBundle { profile, pre_loaded_notes })
+        Ok(ContextBundle {
+            profile,
+            pre_loaded_notes,
+        })
     }
 
     /// Keyword-match `goal` to a profile name. Returns the best match or `"general"`.
@@ -176,7 +198,15 @@ impl ContextBuilderService {
         let keyword_map: &[(&str, &[&str])] = &[
             (
                 "knowledge-worker",
-                &["note", "memory", "search", "store", "knowledge", "learn", "remember"],
+                &[
+                    "note",
+                    "memory",
+                    "search",
+                    "store",
+                    "knowledge",
+                    "learn",
+                    "remember",
+                ],
             ),
             (
                 "task-manager",
@@ -184,7 +214,14 @@ impl ContextBuilderService {
             ),
             (
                 "code-analyst",
-                &["code", "analyze", "refactor", "source", "architect", "function"],
+                &[
+                    "code",
+                    "analyze",
+                    "refactor",
+                    "source",
+                    "architect",
+                    "function",
+                ],
             ),
             (
                 "api-builder",
@@ -214,7 +251,11 @@ impl ContextBuilderService {
         }
 
         let exists = self.profiles.read().await.contains_key(&best_name);
-        if exists { best_name } else { "general".to_string() }
+        if exists {
+            best_name
+        } else {
+            "general".to_string()
+        }
     }
 
     /// Execute a named protocol (boot.yaml / init.yaml) file.
@@ -293,15 +334,18 @@ impl ContextBuilderService {
                 if sub_path.exists() {
                     match std::fs::read_to_string(&sub_path)
                         .map_err(|e| e.to_string())
-                        .and_then(|t| serde_yaml::from_str::<Protocol>(&t).map_err(|e| e.to_string()))
-                    {
+                        .and_then(|t| {
+                            serde_yaml::from_str::<Protocol>(&t).map_err(|e| e.to_string())
+                        }) {
                         Ok(sub_proto) => {
                             info!(protocol = %sub_name, steps = sub_proto.steps.len(), "Running sub-protocol");
                             for sub_step in &sub_proto.steps {
                                 self.exec_leaf_step(sub_step, tool_handler, neo4j).await;
                             }
                         }
-                        Err(e) => warn!(protocol = %sub_name, error = %e, "Failed to load sub-protocol"),
+                        Err(e) => {
+                            warn!(protocol = %sub_name, error = %e, "Failed to load sub-protocol")
+                        }
                     }
                 } else {
                     debug!(protocol = %sub_name, "Sub-protocol file not found — skipping");
