@@ -56,58 +56,62 @@ async fn test_create_task_without_db() {
     }
 }
 
-// NOTE: This test requires a running Neo4j instance on localhost:7688
+// NOTE: This test requires a running Neo4j instance.
+// Uses NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD env vars (CI) or
+// falls back to localhost:7687 / neo4j / password (local dev).
 #[tokio::test]
-// #[ignore] // Remove ignore to run against live DB
 async fn test_create_task_with_live_db() {
-    // Check if we can connect to the DB first, otherwise skip gracefully
-    let uri = "bolt://localhost:7688";
-    let user = "neo4j";
-    let pass = "password";
+    let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+    let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+    let pass = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string());
 
-    let client_result = Neo4jClient::new(uri, user, pass).await;
-
-    if let Ok(client) = client_result {
-        // Initialize schema if needed (might already be initialized)
-        let _ = client.init_schema().await;
-
-        let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), Some(client.clone()), None);
-        let handler = ToolHandler::new(vec![Box::new(task_skill)]);
-
-        let goal = format!("Integration Test Task {}", Uuid::new_v4());
-
-        let result = handler
-            .execute(
-                "create_task",
-                Some(json!({
-                    "goal": goal,
-                    "context": "Integration test context"
-                })),
-            )
-            .await;
-
-        assert!(result.is_error.is_none() || !result.is_error.unwrap());
-
-        // Verify it exists in DB
-        // Parse ID from output
-        if let Some(content) = result.content.first()
-            && let agent_brain::mcp::protocol::Content::Text { text } = content
-        {
-            let json: serde_json::Value = serde_json::from_str(text).unwrap();
-            let id = json["id"].as_str().unwrap();
-
-            let task = client.get_task(id).await.unwrap();
-            assert!(task.is_some());
-            let t = task.unwrap();
-            assert_eq!(t.goal, goal);
-            assert_eq!(t.context, Some("Integration test context".to_string()));
-
-            println!("Successfully created and verified task: {}", id);
+    let client = match Neo4jClient::new(&uri, &user, &pass).await {
+        Ok(c) => c,
+        Err(e) => {
+            println!("Skipping live DB test: Could not connect to Neo4j at {uri}: {e}");
+            return;
         }
-    } else {
-        println!(
-            "Skipping live DB test: Could not connect to Neo4j at {}",
-            uri
-        );
+    };
+
+    // Verify connectivity with init_schema; skip if we can't reach Neo4j.
+    if let Err(e) = client.init_schema().await {
+        println!("Skipping live DB test: init_schema failed (Neo4j unreachable?): {e}");
+        return;
+    }
+
+    let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), Some(client.clone()), None);
+    let handler = ToolHandler::new(vec![Box::new(task_skill)]);
+
+    let goal = format!("Integration Test Task {}", Uuid::new_v4());
+
+    let result = handler
+        .execute(
+            "create_task",
+            Some(json!({
+                "goal": goal,
+                "context": "Integration test context"
+            })),
+        )
+        .await;
+
+    assert!(
+        result.is_error.is_none() || !result.is_error.unwrap(),
+        "create_task returned an error"
+    );
+
+    // Verify it exists in DB
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+        let id = json["id"].as_str().unwrap();
+
+        let task = client.get_task(id).await.unwrap();
+        assert!(task.is_some());
+        let t = task.unwrap();
+        assert_eq!(t.goal, goal);
+        assert_eq!(t.context, Some("Integration test context".to_string()));
+
+        println!("Successfully created and verified task: {id}");
     }
 }
