@@ -392,7 +392,7 @@ impl ContextStore {
 
         let mut count = 0;
         for resource in resources {
-            if let Some(ctx) = self.get_or_load(&resource.name).await {
+            if let Some(_ctx) = self.get_or_load(&resource.name).await {
                 debug!(api = %resource.name, "Pre-loaded API context");
                 count += 1;
             }

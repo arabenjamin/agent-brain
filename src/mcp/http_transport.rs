@@ -6,25 +6,24 @@
 //! - DELETE /mcp for session termination
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use axum::response::sse::{Event, KeepAlive};
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::State,
-    http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, Sse},
     routing::{delete, get, post},
-    Json,
 };
-use axum::response::sse::{Event, KeepAlive};
 use futures_util::stream::{Stream, StreamExt};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info};
@@ -33,7 +32,7 @@ use crate::services::{ChatEvent, ChatRequest, ChatService};
 
 use super::auth::{ApiKeyAuth, AuthError};
 use super::protocol::{IncomingMessage, JsonRpcErrorResponse, JsonRpcNotification};
-use super::session::{SessionManager, SessionState, SessionConfig};
+use super::session::{SessionConfig, SessionManager, SessionState};
 use super::transport::OutgoingMessage;
 use super::transport_trait::{McpTransport, TransportError, TransportMessage};
 
@@ -347,33 +346,59 @@ async fn handle_post_mcp(
         .and_then(|v| v.to_str().ok());
 
     if protocol_version.is_none() {
-        debug!("Request missing {}, assuming {}", MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION);
+        debug!(
+            "Request missing {}, assuming {}",
+            MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION
+        );
     }
 
     // Get or create session
-    let session_id = match headers.get(MCP_SESSION_ID_HEADER).and_then(|v| v.to_str().ok()) {
+    let session_id = match headers
+        .get(MCP_SESSION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
         Some(id) => {
-            // Validate existing session
             if !state.sessions.exists(id).await {
-                return Err(McpHttpError::SessionNotFound(id.to_string()));
+                // Session not found — server likely restarted. Resurrect the session
+                // under the same ID so the client can continue without reinitialising.
+                info!(session_id = %id, "Resurrecting stale session after server restart");
+                state
+                    .sessions
+                    .resurrect_session(id, SessionState::Running)
+                    .await
+                    .map_err(|e| McpHttpError::SessionError(e.to_string()))?;
+                // Send synthetic notifications/initialized so the server core
+                // accepts tool calls on this resurrected session.
+                let synthetic = TransportMessage::Notification {
+                    session_id: Some(id.to_string()),
+                    notification: JsonRpcNotification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "notifications/initialized".to_string(),
+                        params: None,
+                    },
+                };
+                let _ = state.message_tx.send(synthetic).await;
+            } else {
+                state
+                    .sessions
+                    .get_session(id)
+                    .await
+                    .map_err(|e| McpHttpError::SessionError(e.to_string()))?;
             }
-            state.sessions.get_session(id).await.map_err(|e| {
-                McpHttpError::SessionError(e.to_string())
-            })?;
             id.to_string()
         }
         None => {
-            // Create new session for initialize request
-            state.sessions.create_session().await.map_err(|e| {
-                McpHttpError::SessionError(e.to_string())
-            })?
+            // No session ID — create a new session for this client.
+            state
+                .sessions
+                .create_session()
+                .await
+                .map_err(|e| McpHttpError::SessionError(e.to_string()))?
         }
     };
 
     // Parse the JSON-RPC message
-    let incoming = IncomingMessage::parse(&body.to_string()).map_err(|e| {
-        McpHttpError::JsonRpcError(e)
-    })?;
+    let incoming = IncomingMessage::parse(&body.to_string()).map_err(McpHttpError::JsonRpcError)?;
 
     // Process the message
     match incoming {
@@ -390,14 +415,16 @@ async fn handle_post_mcp(
                 response_tx,
             };
 
-            state.message_tx.send(msg).await.map_err(|_| {
-                McpHttpError::InternalError("Server unavailable".to_string())
-            })?;
+            state
+                .message_tx
+                .send(msg)
+                .await
+                .map_err(|_| McpHttpError::InternalError("Server unavailable".to_string()))?;
 
             // Wait for response
-            let response = response_rx.await.map_err(|_| {
-                McpHttpError::InternalError("No response from server".to_string())
-            })?;
+            let response = response_rx
+                .await
+                .map_err(|_| McpHttpError::InternalError("No response from server".to_string()))?;
 
             // On initialize, advance the session straight to Running and also
             // send a synthetic notifications/initialized to the server core so
@@ -440,9 +467,11 @@ async fn handle_post_mcp(
                 notification,
             };
 
-            state.message_tx.send(msg).await.map_err(|_| {
-                McpHttpError::InternalError("Server unavailable".to_string())
-            })?;
+            state
+                .message_tx
+                .send(msg)
+                .await
+                .map_err(|_| McpHttpError::InternalError("Server unavailable".to_string()))?;
 
             // Notifications don't get responses
             Ok((HeaderMap::new(), Json(serde_json::json!(null))))
@@ -467,9 +496,11 @@ async fn handle_get_mcp(
     }
 
     // Subscribe to session's SSE messages
-    let rx = state.sessions.subscribe(session_id).await.map_err(|e| {
-        McpHttpError::SessionError(e.to_string())
-    })?;
+    let rx = state
+        .sessions
+        .subscribe(session_id)
+        .await
+        .map_err(|e| McpHttpError::SessionError(e.to_string()))?;
 
     // Convert broadcast receiver to stream
     let stream = BroadcastStream::new(rx).filter_map(|result| async move {
@@ -516,12 +547,13 @@ async fn handle_post_chat(
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(|event| {
         let evt_type = match &event {
-            ChatEvent::Thinking { .. }   => "thinking",
-            ChatEvent::ToolCall { .. }   => "tool_call",
+            ChatEvent::Thinking { .. } => "thinking",
+            ChatEvent::ToolCall { .. } => "tool_call",
             ChatEvent::ToolResult { .. } => "tool_result",
-            ChatEvent::Message { .. }    => "message",
-            ChatEvent::Error { .. }      => "error",
-            ChatEvent::Done              => "done",
+            ChatEvent::Token { .. } => "token",
+            ChatEvent::Message { .. } => "message",
+            ChatEvent::Error { .. } => "error",
+            ChatEvent::Done => "done",
         };
         let data = serde_json::to_string(&event).unwrap_or_default();
         Ok(Event::default().event(evt_type).data(data))
@@ -542,9 +574,11 @@ async fn handle_delete_mcp(
         .ok_or(McpHttpError::MissingSessionId)?;
 
     // Terminate session
-    state.sessions.terminate(session_id).await.map_err(|e| {
-        McpHttpError::SessionError(e.to_string())
-    })?;
+    state
+        .sessions
+        .terminate(session_id)
+        .await
+        .map_err(|e| McpHttpError::SessionError(e.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -637,8 +671,7 @@ mod tests {
 
     #[test]
     fn test_http_transport_with_config() {
-        let config = HttpTransportConfig::default()
-            .with_bind_addr(([0, 0, 0, 0], 9000).into());
+        let config = HttpTransportConfig::default().with_bind_addr(([0, 0, 0, 0], 9000).into());
         let transport = HttpTransport::with_config(config);
         assert_eq!(transport.config.bind_addr, ([0, 0, 0, 0], 9000).into());
     }
@@ -657,12 +690,15 @@ mod tests {
     #[tokio::test]
     async fn test_http_transport_not_started() {
         let transport = HttpTransport::new();
-        let result = transport.send(None, OutgoingMessage::Response(
-            super::super::protocol::JsonRpcResponse::new(
-                super::super::protocol::RequestId::Number(1),
-                serde_json::json!({}),
+        let result = transport
+            .send(
+                None,
+                OutgoingMessage::Response(super::super::protocol::JsonRpcResponse::new(
+                    super::super::protocol::RequestId::Number(1),
+                    serde_json::json!({}),
+                )),
             )
-        )).await;
+            .await;
         assert!(matches!(result, Err(TransportError::NotStarted)));
     }
 }

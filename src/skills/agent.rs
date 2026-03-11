@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
@@ -76,9 +76,8 @@ impl AgentSkill {
     fn queue_status_def() -> ToolDefinition {
         ToolDefinition {
             name: "queue_status".to_string(),
-            description:
-                "Show current queue statistics: pending, running, and per-status counts."
-                    .to_string(),
+            description: "Show current queue statistics: pending, running, and per-status counts."
+                .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -86,9 +85,8 @@ impl AgentSkill {
     fn get_job_result_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_job_result".to_string(),
-            description:
-                "Get the full details and result of a background job by its ID."
-                    .to_string(),
+            description: "Get the full details and result of a background job by its ID."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -142,7 +140,22 @@ impl AgentSkill {
                     "max_concurrent": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Maximum simultaneous job executions (informational — effective limit is set at startup)"
+                        "description": "Global max simultaneous job executions (informational)"
+                    },
+                    "max_concurrent_ollama": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Concurrency limit for Ollama (local) jobs — takes effect immediately"
+                    },
+                    "max_concurrent_anthropic": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Concurrency limit for Anthropic API jobs — takes effect immediately"
+                    },
+                    "max_concurrent_gemini": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Concurrency limit for Gemini API jobs — takes effect immediately"
                     },
                     "enabled": {
                         "type": "boolean",
@@ -169,13 +182,12 @@ impl AgentSkill {
     fn enqueue_chain_def() -> ToolDefinition {
         ToolDefinition {
             name: "enqueue_chain".to_string(),
-            description:
-                "Submit a sequential chain of background jobs. \
+            description: "Submit a sequential chain of background jobs. \
                  Step 1 is queued immediately; each subsequent step is held as 'parked' until \
                  its predecessor completes successfully. \
                  If any step exhausts all retries the remaining steps are automatically cancelled. \
                  Returns the list of job IDs in chain order."
-                    .to_string(),
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -244,8 +256,12 @@ impl AgentSkill {
             #[serde(default)]
             provider_hint: Option<String>,
         }
-        fn default_priority() -> u8 { 1 }
-        fn default_max_attempts() -> u32 { 3 }
+        fn default_priority() -> u8 {
+            1
+        }
+        fn default_max_attempts() -> u32 {
+            3
+        }
 
         let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
             Some(i) => i,
@@ -267,7 +283,7 @@ impl AgentSkill {
         {
             Ok(job_id) => ToolCallResult::success_text(
                 json!({
-                    "job_id": job_id,
+                    "id": job_id,
                     "status": "queued",
                     "tool_name": input.tool_name,
                     "priority": input.priority,
@@ -281,7 +297,9 @@ impl AgentSkill {
     }
 
     async fn handle_queue_status(&self) -> ToolCallResult {
-        ToolCallResult::success_text(self.queue.stats().await.to_string())
+        ToolCallResult::success_text(
+            serde_json::to_string_pretty(&self.queue.stats().await).unwrap(),
+        )
     }
 
     async fn handle_get_job_result(&self, args: Option<Value>) -> ToolCallResult {
@@ -295,9 +313,9 @@ impl AgentSkill {
         };
 
         match self.queue.get_job(&input.job_id).await {
-            Some(job) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&job).unwrap_or_default(),
-            ),
+            Some(job) => {
+                ToolCallResult::success_text(serde_json::to_string_pretty(&job).unwrap_or_default())
+            }
             None => ToolCallResult::error(format!("Job not found: {}", input.job_id)),
         }
     }
@@ -314,7 +332,7 @@ impl AgentSkill {
 
         match self.queue.cancel(&input.job_id).await {
             Ok(true) => ToolCallResult::success_text(
-                json!({ "cancelled": true, "job_id": input.job_id }).to_string(),
+                json!({ "cancelled": true, "id": input.job_id }).to_string(),
             ),
             Ok(false) => ToolCallResult::error(format!(
                 "Job {} not found or already in a terminal state",
@@ -336,7 +354,7 @@ impl AgentSkill {
 
         match self.queue.retry(&input.job_id).await {
             Ok(true) => ToolCallResult::success_text(
-                json!({ "requeued": true, "job_id": input.job_id, "status": "queued" }).to_string(),
+                json!({ "requeued": true, "id": input.job_id, "status": "queued" }).to_string(),
             ),
             Ok(false) => ToolCallResult::error(format!(
                 "Job {} not found or not in a retryable state (must be failed/dead/cancelled)",
@@ -347,24 +365,29 @@ impl AgentSkill {
     }
 
     async fn handle_set_worker_config(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Default)]
         struct Input {
             max_concurrent: Option<usize>,
+            max_concurrent_ollama: Option<usize>,
+            max_concurrent_anthropic: Option<usize>,
+            max_concurrent_gemini: Option<usize>,
             enabled: Option<bool>,
             poll_interval_secs: Option<u64>,
         }
-        let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
-            Some(i) => i,
-            None => Input {
-                max_concurrent: None,
-                enabled: None,
-                poll_interval_secs: None,
-            },
-        };
+        let input: Input = args
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
 
         let cfg = self
             .queue
-            .update_config(input.max_concurrent, input.enabled, input.poll_interval_secs)
+            .update_config(
+                input.max_concurrent,
+                input.max_concurrent_ollama,
+                input.max_concurrent_anthropic,
+                input.max_concurrent_gemini,
+                input.enabled,
+                input.poll_interval_secs,
+            )
             .await;
 
         ToolCallResult::success_text(
@@ -381,7 +404,7 @@ impl AgentSkill {
         match self.queue.drain().await {
             Ok(count) => ToolCallResult::success_text(
                 json!({
-                    "cancelled": count,
+                    "count": count,
                     "message": format!("Drained {count} queued jobs"),
                 })
                 .to_string(),
@@ -415,7 +438,7 @@ impl AgentSkill {
             Ok(ids) => ToolCallResult::success_text(
                 json!({
                     "chain_length": ids.len(),
-                    "job_ids": ids,
+                    "ids": ids,
                     "message": format!(
                         "Chain of {} jobs enqueued. First job is queued; {} are parked.",
                         ids.len(),
@@ -450,14 +473,14 @@ impl Skill for AgentSkill {
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
-            "enqueue_agent"  => Some(self.handle_enqueue_agent(arguments).await),
-            "queue_status"   => Some(self.handle_queue_status().await),
+            "enqueue_agent" => Some(self.handle_enqueue_agent(arguments).await),
+            "queue_status" => Some(self.handle_queue_status().await),
             "get_job_result" => Some(self.handle_get_job_result(arguments).await),
-            "cancel_job"     => Some(self.handle_cancel_job(arguments).await),
-            "retry_job"      => Some(self.handle_retry_job(arguments).await),
+            "cancel_job" => Some(self.handle_cancel_job(arguments).await),
+            "retry_job" => Some(self.handle_retry_job(arguments).await),
             "set_worker_config" => Some(self.handle_set_worker_config(arguments).await),
-            "drain_queue"    => Some(self.handle_drain_queue().await),
-            "enqueue_chain"  => Some(self.handle_enqueue_chain(arguments).await),
+            "drain_queue" => Some(self.handle_drain_queue().await),
+            "enqueue_chain" => Some(self.handle_enqueue_chain(arguments).await),
             _ => None,
         }
     }

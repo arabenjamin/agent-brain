@@ -1,0 +1,28 @@
+name: init
+steps:
+  - type: log
+    message: "First-run init protocol — seeding self-knowledge"
+  - type: store_note
+    content: |
+      Agent Brain is an autonomous MCP server backed by a Neo4j knowledge graph.
+      It manages 74+ tools across 12 skills: ApiSkill, KnowledgeSkill, TaskSkill,
+      AgentSkill, ModelSkill, DynamicSkill, AdminSkill, WorkingMemorySkill,
+      SleepSkill, ProcedureSkill, SearchSkill, SchedulerSkill, ContextSkill.
+      Core capabilities: hybrid vector+BM25 RAG, background job queue with
+      chaining, autonomous scheduler, self-healing HTTP requests, and snapshot
+      backup/restore for the knowledge graph.
+    note_type: semantic
+  - type: store_note
+    content: |
+      Context profiles are YAML files in the contexts/ directory. Each profile
+      specifies a tool allowlist, system prompt, token budget, and optional
+      pre-load query. The ContextBuilderService loads profiles at startup and
+      auto-assigns them to goals via keyword matching. Profiles: general,
+      knowledge-worker, task-manager, code-analyst, api-builder, scheduler.
+    note_type: semantic
+  - type: tool_call
+    tool: analyze_own_structure
+    args:
+      store_as_note: true
+  - type: log
+    message: "Init protocol complete — self-knowledge seeded"

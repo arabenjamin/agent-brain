@@ -1,18 +1,18 @@
 # Agent Brain — Roadmap
 
-Status as of 2026-02-28. Ordered by priority within each tier.
+Status as of 2026-03-05. Ordered by priority within each tier.
 Pick up any section independently — each item is self-contained.
 
 ---
 
-## Tier 1 — Brain Core (backend capabilities)
+## Tier 1 — Brain Core (backend capabilities) ✅ Complete
 
 These are the gaps the brain identified in its own self-assessment
 and the items needed to close the loop on human-like cognition.
 
 ---
 
-### 1.1 Memory Consolidation ("Sleep Cycle")  ⭐ High priority
+### 1.1 Memory Consolidation ("Sleep Cycle") ✅
 
 **What:** Transform episodic notes into distilled semantic knowledge on a schedule,
 mimicking human slow-wave sleep consolidation.
@@ -32,7 +32,7 @@ but it is only called on demand, never automatically.
 
 ---
 
-### 1.2 Semantic Chunking for Large Notes
+### 1.2 Semantic Chunking for Large Notes ✅
 
 **What:** Notes longer than ~1500 chars are currently split into raw character chunks
 (already implemented). Upgrade to sentence/paragraph-aware chunking so each chunk
@@ -49,7 +49,7 @@ sentence boundaries makes every sub-note independently searchable.
 
 ---
 
-### 1.3 Richer Entity Extraction
+### 1.3 Richer Entity Extraction ✅
 
 **What:** The brain extracts named entities when LLM is available, but uses a
 simple one-shot prompt. Upgrade to structured extraction with entity types
@@ -69,7 +69,7 @@ powers visualisation of which concepts are central to the knowledge base.
 
 ---
 
-### 1.4 Multi-Hop Reasoning (Hierarchical Lexical Graph)
+### 1.4 Multi-Hop Reasoning (Hierarchical Lexical Graph) ✅
 
 **What:** `search_notes` does up to `graph_hops` RELATES_TO traversals. Extend
 this to also traverse `MENTIONS` → `Entity` → `MENTIONS` paths so a query about
@@ -90,7 +90,7 @@ through shared concepts, not just vector proximity.
 
 ---
 
-### 1.5 `get_note` Tool (by ID)
+### 1.5 `get_note` Tool (by ID) ✅
 
 **What:** A simple `get_note(id)` tool that fetches a single note by its UUID.
 
@@ -107,7 +107,7 @@ with the node label as query is a fragile workaround.
 
 ---
 
-### 1.6 Procedural Memory — Control Flow
+### 1.6 Procedural Memory — Control Flow ✅
 
 **What:** Dynamic Tools / Procedures support `{{input.field}}` substitution but
 have no branching or looping. Add simple conditional steps (`if` / `unless`) and
@@ -125,13 +125,13 @@ Dynamic Tools are brittle for anything non-linear.
 
 ---
 
-## Tier 2 — HBI Frontend Polish
+## Tier 2 — HBI Frontend Polish ✅ Complete
 
 Items from `NEXTSTEP.md`. Ordered by user-impact.
 
 ---
 
-### 2.1 Graph Container Sizing
+### 2.1 Graph Container Sizing ✅
 
 **File:** `hbi-frontend/src/components/graph/GraphPanel.tsx`
 **Fix:** `ResizeObserver` + `useLayoutEffect` to pass measured `width`/`height` to `ForceGraph2D`.
@@ -139,7 +139,7 @@ See `NEXTSTEP.md §1` for the exact code snippet.
 
 ---
 
-### 2.2 MCP Reconnect on Transport Error
+### 2.2 MCP Reconnect on Transport Error ✅
 
 **File:** `hbi-frontend/src/api/mcp.ts`
 **Fix:** Wrap `callTool()` to catch transport errors, call `resetMcpClient()`, retry once.
@@ -147,7 +147,7 @@ See `NEXTSTEP.md §3` for the exact code snippet.
 
 ---
 
-### 2.3 Knowledge Panel — Meaningful Initial Load
+### 2.3 Knowledge Panel — Meaningful Initial Load ✅
 
 **File:** `hbi-frontend/src/components/knowledge/KnowledgePanel.tsx`
 **Fix:** Replace the `query: " "` hack. On mount call `review_due_notes` (spaced-rep overdue
@@ -155,7 +155,7 @@ notes) for a meaningful default, or render an empty state and only query on user
 
 ---
 
-### 2.4 Graph Node Click → Open Note
+### 2.4 Graph Node Click → Open Note ✅
 
 **File:** `hbi-frontend/src/components/graph/GraphPanel.tsx`
 **Requires:** Brain item 1.5 (`get_note` tool) for a clean implementation.
@@ -164,7 +164,7 @@ See `NEXTSTEP.md §2` for the workaround using `search_notes` if 1.5 is not yet 
 
 ---
 
-### 2.5 Task Panel — Subtask Tree View
+### 2.5 Task Panel — Subtask Tree View ✅
 
 **File:** `hbi-frontend/src/components/tasks/TaskPanel.tsx`
 **Fix:** Group by `parent_id`, render subtasks indented under their parent.
@@ -172,7 +172,7 @@ See `NEXTSTEP.md §5` for the grouping snippet.
 
 ---
 
-### 2.6 Graph Panel — Render from `export_graph_visualization`
+### 2.6 Graph Panel — Render from `export_graph_visualization` ✅
 
 **Requires:** Brain item 1.4 (`export_graph_visualization` tool).
 **Fix:** Replace the current ad-hoc note → edge construction in `GraphPanel.tsx` with
@@ -182,14 +182,14 @@ not just `Note` nodes.
 
 ---
 
-### 2.7 Auth UI — Settings Screen
+### 2.7 Auth UI — Settings Screen ✅
 
 **Fix:** Read API key from `localStorage`, add a gear-icon modal to edit Brain URL + API key.
 See `NEXTSTEP.md §6` for the `config.ts` snippet.
 
 ---
 
-### 2.8 Logs Panel
+### 2.8 Logs Panel ✅
 
 **What:** Expose the agent-brain's structured log output (or job history) in a panel.
 **Options:**
@@ -220,7 +220,7 @@ run, `test` for integration tests, `prod` to publish the Docker image to GHCR.
 
 ---
 
-### 3.2 Docker Compose — HBI Frontend Service
+### 3.2 Docker Compose — HBI Frontend Service ✅
 
 Add an `hbi-frontend` service to `docker-compose.yml` that builds and serves the
 React app alongside the brain:

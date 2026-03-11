@@ -83,6 +83,8 @@ pub struct AgentJob {
     pub parent_job_id: Option<String>,
     /// Optional hint for choosing a specific LLM provider.
     pub provider_hint: Option<String>,
+    /// Optional context profile name for observability and routing hints.
+    pub context_profile: Option<String>,
 }
 
 /// Wrapper for `BinaryHeap` ordering.

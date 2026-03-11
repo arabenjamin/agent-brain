@@ -1,5 +1,5 @@
 use chrono::Utc;
-use neo4rs::{query, Node};
+use neo4rs::{Node, query};
 use tracing::info;
 use uuid::Uuid;
 

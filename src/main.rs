@@ -13,9 +13,9 @@ use agent_brain::models::HttpMethod;
 use agent_brain::repository::Neo4jClient;
 use agent_brain::services::{
     AwsSecretConfig, AwsSecretProvider, CredentialManager, ExportFormat, ExportOptions,
-    HttpExecutor, LlmClient, LlmConfig, LocalSecretConfig, LocalSecretProvider, MarkdownReportGenerator,
-    OpenApiExporter, OpenApiParser, RequestBuilder, SpecDiffer, VaultConfig, VaultSecretProvider,
-    parse_headers, llm::LlmProviderType,
+    HttpExecutor, LlmClient, LlmConfig, LocalSecretConfig, LocalSecretProvider,
+    MarkdownReportGenerator, OpenApiExporter, OpenApiParser, RequestBuilder, SpecDiffer,
+    VaultConfig, VaultSecretProvider, llm::LlmProviderType, parse_headers,
 };
 
 #[tokio::main]
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 
     // Build config from environment and override with CLI args
     let mut config = Config::from_env()?;
-    
+
     config.neo4j_uri = cli.neo4j_uri.clone();
     config.neo4j_user = cli.neo4j_user.clone();
     if let Some(pw) = &cli.neo4j_password {
@@ -51,9 +51,11 @@ async fn main() -> Result<()> {
     // Execute command
     let result = match cli.command {
         Some(Command::InitDb) => run_init_db(&config).await,
-        Some(Command::Serve { transport, bind, api_key }) => {
-            run_serve(&config, transport, &bind, api_key).await
-        }
+        Some(Command::Serve {
+            transport,
+            bind,
+            api_key,
+        }) => run_serve(&config, transport, &bind, api_key).await,
         None => {
             // Default to stdio transport when no command specified
             run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None).await
@@ -135,6 +137,26 @@ fn build_llm_config(config: &Config) -> LlmConfig {
                 base = base.with_embed_model(embed_model);
             }
         }
+        LlmProviderType::VLlm => {
+            base = base.with_base_url(config.vllm_url.clone());
+            if let Some(model) = &config.vllm_model {
+                base = base.with_model(model);
+            }
+            if let Some(key) = &config.vllm_api_key {
+                base = base.with_api_key(key);
+            }
+            // Dedicated embedding endpoint (e.g. BAAI/bge-m3 on port 8001).
+            // VLLM_EMBED_MODEL is required; VLLM_EMBED_URL defaults to the primary URL if omitted.
+            if let Some(embed_model) = &config.vllm_embed_model {
+                base = base.with_embed_model(embed_model);
+                if let Some(embed_url) = &config.vllm_embed_url {
+                    base = base.with_embed_base_url(embed_url);
+                }
+            } else if let Some(embed_model) = &config.ollama_embed_model {
+                // Fallback: use an Ollama embed model if no vLLM embed model is set
+                base = base.with_embed_model(embed_model);
+            }
+        }
     }
     base
 }
@@ -186,14 +208,14 @@ async fn run_serve(
                 .with_neo4j(client)
                 .with_llm_config(llm_config);
 
-            // Note: McpServer (legacy) doesn't support telemetry yet in this patch set, 
-            // but we focus on McpServerCore mostly. 
+            // Note: McpServer (legacy) doesn't support telemetry yet in this patch set,
+            // but we focus on McpServerCore mostly.
             // Actually I didn't update McpServer struct to hold telemetry, only McpServerCore.
             // Wait, I did verify I should update both? I only updated McpServerCore.
             // The user instruction was "scaffold". I updated McpServerCore.
             // I should update McpServer too if I want stdio to work with logging.
             // But let's check McpServer definition again.
-            
+
             if let Some(cred_manager) = credential_manager {
                 server = server.with_credential_manager(cred_manager);
             }
@@ -202,14 +224,17 @@ async fn run_serve(
         }
         TransportType::Http => {
             // Parse bind address
-            let bind_addr: SocketAddr = bind.parse()
+            let bind_addr: SocketAddr = bind
+                .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", bind, e))?;
 
             info!(addr = %bind_addr, "Starting MCP server on HTTP...");
 
             // Create shared session manager
             let session_config = agent_brain::mcp::SessionConfig::default();
-            let session_manager = Arc::new(agent_brain::mcp::SessionManager::with_config(session_config));
+            let session_manager = Arc::new(agent_brain::mcp::SessionManager::with_config(
+                session_config,
+            ));
 
             // Create thread-safe server core
             let mut server = McpServerCore::new()
@@ -266,9 +291,7 @@ async fn create_credential_manager(
             let local_config = if let Some(key) = encryption_key {
                 local_config.with_encryption_key(key)
             } else {
-                warn!(
-                    "No SECRETS_ENCRYPTION_KEY set, using default key (insecure for production)"
-                );
+                warn!("No SECRETS_ENCRYPTION_KEY set, using default key (insecure for production)");
                 local_config
             };
 
@@ -309,13 +332,12 @@ async fn create_credential_manager(
                 }
             };
 
-            let vault_config = VaultConfig::new(vault_address, vault_token)
-                .with_mount_path(
-                    config
-                        .vault_mount_path
-                        .clone()
-                        .unwrap_or_else(|| "secret".to_string()),
-                );
+            let vault_config = VaultConfig::new(vault_address, vault_token).with_mount_path(
+                config
+                    .vault_mount_path
+                    .clone()
+                    .unwrap_or_else(|| "secret".to_string()),
+            );
 
             let vault_config = if let Some(ns) = &config.vault_namespace {
                 vault_config.with_namespace(ns)
@@ -372,7 +394,7 @@ async fn run_ingest(config: &Config, spec: &str) -> Result<()> {
 
     // Parse and ingest the OpenAPI spec
     let mut parser = OpenApiParser::new(client);
-    
+
     // Configure LLM for embeddings if configured
     let llm_config = build_llm_config(config);
 
@@ -615,7 +637,10 @@ async fn run_embed(config: &Config) -> Result<()> {
 
     for endpoint in endpoints {
         if endpoint.embedding.is_none() {
-            let text = format!("{} {} - {}", endpoint.method, endpoint.path, endpoint.summary);
+            let text = format!(
+                "{} {} - {}",
+                endpoint.method, endpoint.path, endpoint.summary
+            );
             debug!(endpoint_id = %endpoint.id, "Generating embedding for {}", text);
 
             match llm.embeddings(&text).await {

@@ -1,6 +1,6 @@
 # Agent Brain — Deployment and Usage Guide
 
-An autonomous AI agent brain exposed via the Model Context Protocol (MCP). Backed by Neo4j for persistent memory, Tokio for async job execution, and any Ollama/Anthropic/Gemini LLM for reasoning.
+An autonomous AI agent brain exposed via the Model Context Protocol (MCP). Backed by Neo4j for persistent memory, Tokio for async job execution, and any Ollama/Anthropic/Gemini/vLLM LLM for reasoning.
 
 ## Quick Deployment (Docker)
 
@@ -29,12 +29,14 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=your-password
 
 # LLM (choose one provider)
-LLM_PROVIDER=ollama            # or: anthropic, gemini
+LLM_PROVIDER=ollama            # or: anthropic, gemini, vllm
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=granite4:latest
 OLLAMA_EMBED_MODEL=bge-m3:latest
 # ANTHROPIC_API_KEY=sk-ant-...
 # GEMINI_API_KEY=...
+# VLLM_URL=http://localhost:8000
+# VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 
 # MCP Transport
 MCP_TRANSPORT=http             # or: stdio
@@ -87,7 +89,7 @@ curl -s -X POST http://localhost:3000/mcp \
   }'
 ```
 
-## Skill Capabilities (64 tools across 12 skills)
+## Skill Capabilities (78 tools across 13 skills)
 
 ### 1. API Knowledge (`ApiSkill` — 14 tools)
 
@@ -110,21 +112,26 @@ list_api_credentials    — List stored credentials (secrets masked)
 delete_api_credential   — Remove a credential
 ```
 
-### 2. Knowledge & Memory (`KnowledgeSkill` — 10 tools)
+### 2. Knowledge & Memory (`KnowledgeSkill` — 15 tools)
 
 Persistent long-term memory with hybrid BM25 + vector RAG.
 
 ```
-store_note          — Persist a note with embeddings, entity extraction, and auto-linking
-search_notes        — Hybrid BM25+vector RRF search with multi-hop graph expansion
-find_related_notes  — Find notes linked by similarity edges
-prune_old_notes     — Delete stale notes via adaptive decay scoring
-consolidate_memories — LLM-synthesise multiple notes into a summary
-review_due_notes    — Spaced-repetition: return notes due for review
-search_by_entity    — Find notes mentioning a named entity
-reason              — RAG + LLM inference; stores DERIVED_FROM edges
-audit_action        — Check a proposed action against stored principles
-explain_reasoning   — Narrate why a decision was made, citing sources
+store_note              — Persist a note with embeddings, entity extraction, and auto-linking
+search_notes            — Hybrid BM25+vector RRF search with multi-hop graph expansion
+find_related_notes      — Find notes linked by similarity edges
+list_notes              — List recent notes, optionally filtered by type
+get_note                — Fetch a single note by UUID (updates access stats)
+delete_note             — Permanently delete a note and all its relationships
+update_note             — Update note content in-place (preserves all graph edges)
+prune_old_notes         — Delete stale notes via adaptive decay scoring
+consolidate_memories    — LLM-synthesise multiple notes into a summary
+review_due_notes        — Spaced-repetition: return notes due for review
+search_by_entity        — Find notes mentioning a named entity
+reason                  — RAG + LLM inference; stores DERIVED_FROM edges
+audit_action            — Check a proposed action against stored principles
+explain_reasoning       — Narrate why a decision was made, citing sources
+export_graph_visualization — Full knowledge graph JSON (nodes + 7 edge types)
 ```
 
 ### 3. Task Management (`TaskSkill` — 6 tools)
@@ -176,7 +183,18 @@ store_procedure    — Persist a named workflow with ordered steps
 search_procedures  — Search procedures by name or description
 ```
 
-### 7. Working Memory (`WorkingMemorySkill` — 3 tools)
+### 7. Context Profiles (`ContextSkill` — 4 tools)
+
+Load YAML profiles that define tool allowlists, system prompts, and pre-loaded notes for focused sub-agent contexts.
+
+```
+list_context_profiles — List all loaded YAML profiles from CONTEXTS_DIR
+get_context_profile   — Full profile details (tools, system prompt, token budget)
+auto_assign_context   — Keyword-match a goal string to the best profile
+build_agent_context   — Build a runtime bundle (notes + tools) for a named profile
+```
+
+### 8. Working Memory (`WorkingMemorySkill` — 4 tools)
 
 Session-scoped scratchpad with LLM summarisation into long-term memory.
 
@@ -184,50 +202,57 @@ Session-scoped scratchpad with LLM summarisation into long-term memory.
 push_context       — Append an entry to the session scratchpad
 get_context        — Retrieve entries in turn order
 summarise_session  — LLM-summarise the session into a long-term Note
+list_sessions      — List all active working memory session IDs
 ```
 
-### 8. Dynamic Tool Builder (`DynamicSkill` — 4 + runtime tools)
+### 9. Dynamic Tool Builder (`DynamicSkill` — 4 + runtime tools)
 
 Define new MCP tools at runtime backed by stored procedure pipelines.
 
 ```
-define_tool       — Create a new tool with JSON schema + procedure steps; hot-registered immediately
-execute_procedure — Run a stored procedure with {{input.field}} template substitution
-list_dynamic_tools — List all runtime-defined tools
+define_tool         — Create a new tool with JSON schema + procedure steps; hot-registered immediately
+execute_procedure   — Run a stored procedure with {{input.field}} template substitution
+list_dynamic_tools  — List all runtime-defined tools
 remove_dynamic_tool — Delete and unregister a dynamic tool live
 ```
 
-### 9. Graph Admin (`AdminSkill` — 4 tools)
+### 10. Graph Admin (`AdminSkill` — 10 tools)
 
-Maintenance tools for the Neo4j knowledge graph.
-
-```
-delete_api                — Cascade-delete all nodes for one ingested API
-purge_duplicate_endpoints — Remove duplicate Endpoint nodes
-purge_orphaned_schemas    — Delete Schema nodes with no Endpoint relationships
-reset_graph               — Wipe all API data (knowledge data preserved; requires confirm: true)
-```
-
-### 10. Model Registry (`ModelSkill` — 5 tools)
-
-LLM provider management and intelligent model selection.
+Maintenance, snapshots, and integrity checks for the Neo4j knowledge graph.
 
 ```
-list_models    — List all providers and registered model specs
-use_model      — Switch the active LLM provider and model at runtime
-register_model — Register a model spec (capabilities, cost, context window)
-select_model   — Auto-select the cheapest capable model for given requirements
+delete_api                   — Cascade-delete all nodes for one ingested API
+purge_duplicate_endpoints    — Remove duplicate Endpoint nodes
+purge_orphaned_schemas       — Delete Schema nodes with no Endpoint relationships
+reset_graph                  — Wipe all API data (knowledge data preserved; requires confirm: true)
+backfill_endpoint_embeddings — Generate embeddings for Endpoint nodes missing them
+snapshot_knowledge           — Compressed gzip snapshot of the full knowledge graph
+restore_knowledge            — MERGE-based restore from a snapshot file
+list_snapshots               — List available snapshots newest-first
+verify_knowledge_integrity   — Detect empty/orphaned/duplicate notes (LIMIT 50)
+analyze_own_structure        — Structural health report: source files + registered tool counts
+```
+
+### 11. Model Registry (`ModelSkill` — 5 tools)
+
+LLM provider management and intelligent model selection. Supports Ollama, Anthropic, Gemini, and vLLM/OpenAI-compat.
+
+```
+list_models     — List all providers and registered model specs
+use_model       — Switch the active LLM provider and model at runtime (Ollama/Anthropic/Gemini/VLlm)
+register_model  — Register a model spec (capabilities, cost, context window)
+select_model    — Auto-select the cheapest capable model for given requirements
 get_model_stats — Usage statistics for a model from AgentJob history
 ```
 
-### 11. Web Search (`SearchSkill` — 1 tool)
+### 12. Web Search (`SearchSkill` — 1 tool)
 
 ```
 search_web — Search the web (SerpApi / Brave / Google Custom Search)
              Input: { "query": "...", "engine": "serpapi", "count": 5 }
 ```
 
-### 12. Sleep / Telemetry (`SleepSkill` — 2 tools)
+### 13. Sleep / Telemetry (`SleepSkill` — 2 tools)
 
 Export experience data and identify knowledge gaps from DuckDB telemetry.
 

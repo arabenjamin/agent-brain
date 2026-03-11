@@ -44,7 +44,7 @@ impl SleepService {
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         let filename = format!("instruction_tuning_{}.jsonl", timestamp);
         let file_path = self.dataset_dir.join(&filename);
-        
+
         let mut file = File::create(&file_path)?;
 
         // Convert to ChatML/Instruction format and write to JSONL
@@ -77,15 +77,18 @@ impl SleepService {
     /// Report on recent knowledge gaps (where the agent failed).
     pub fn analyze_gaps(&self, limit: usize) -> Result<Vec<serde_json::Value>> {
         let gaps = self.telemetry.get_recent_gaps(limit)?;
-        
+
         // Transform into structured objects
-        let result = gaps.into_iter().map(|(query, context, gap_type)| {
-            json!({
-                "query": query,
-                "context": if context.is_empty() { None } else { Some(context) },
-                "gap_type": gap_type
+        let result = gaps
+            .into_iter()
+            .map(|(query, context, gap_type)| {
+                json!({
+                    "query": query,
+                    "context": if context.is_empty() { None } else { Some(context) },
+                    "gap_type": gap_type
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(result)
     }

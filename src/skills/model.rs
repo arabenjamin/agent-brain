@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::models::ModelSpec;
 use crate::repository::Neo4jClient;
-use crate::services::model_selector::ModelSelector;
 use crate::services::LlmConfig;
+use crate::services::model_selector::ModelSelector;
 use crate::skills::Skill;
 
 pub struct ModelSkill {
@@ -45,7 +45,7 @@ impl ModelSkill {
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "enum": ["Ollama", "Anthropic", "Gemini"],
+                        "enum": ["Ollama", "Anthropic", "Gemini", "VLlm"],
                         "description": "Provider to switch to."
                     },
                     "model": {
@@ -65,7 +65,9 @@ impl ModelSkill {
     fn register_model_def() -> ToolDefinition {
         ToolDefinition {
             name: "register_model".to_string(),
-            description: "Register a model specification in the knowledge graph for intelligent selection.".to_string(),
+            description:
+                "Register a model specification in the knowledge graph for intelligent selection."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -75,7 +77,7 @@ impl ModelSkill {
                     },
                     "provider": {
                         "type": "string",
-                        "enum": ["ollama", "anthropic", "gemini"],
+                        "enum": ["ollama", "anthropic", "gemini", "vllm"],
                         "description": "Provider name."
                     },
                     "cost_per_1k_tokens_input": {
@@ -115,7 +117,7 @@ impl ModelSkill {
                     },
                     "provider_hint": {
                         "type": "string",
-                        "description": "Restrict selection to a specific provider ('ollama', 'anthropic', or 'gemini')."
+                        "description": "Restrict selection to a specific provider ('ollama', 'anthropic', 'gemini', or 'vllm')."
                     },
                     "max_cost_per_1k": {
                         "type": "number",
@@ -130,7 +132,8 @@ impl ModelSkill {
     fn get_model_stats_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_model_stats".to_string(),
-            description: "Get AgentJob usage statistics for a specific model or provider hint.".to_string(),
+            description: "Get AgentJob usage statistics for a specific model or provider hint."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -156,16 +159,14 @@ impl ModelSkill {
             .as_ref()
             .map(|c| c.provider.to_string())
             .unwrap_or_else(|| "None".to_string());
-        let active_model = config
-            .as_ref()
-            .map(|c| c.model.clone())
-            .unwrap_or_default();
+        let active_model = config.as_ref().map(|c| c.model.clone()).unwrap_or_default();
         drop(config);
 
         let providers = vec![
             json!({ "name": "Ollama", "type": LlmProviderType::Ollama.to_string(), "cost": "free (local)" }),
             json!({ "name": "Anthropic", "type": LlmProviderType::Anthropic.to_string(), "cost": "paid" }),
             json!({ "name": "Gemini", "type": LlmProviderType::Gemini.to_string(), "cost": "paid" }),
+            json!({ "name": "vLLM / OpenAI-compat", "type": LlmProviderType::VLlm.to_string(), "cost": "self-hosted" }),
         ];
 
         // Include registered model specs if Neo4j is available.
@@ -209,7 +210,12 @@ impl ModelSkill {
             "Ollama" => base.with_provider(LlmProviderType::Ollama),
             "Anthropic" => base.with_provider(LlmProviderType::Anthropic),
             "Gemini" => base.with_provider(LlmProviderType::Gemini),
-            _ => return ToolCallResult::error("Invalid provider. Use Ollama, Anthropic, or Gemini.".to_string()),
+            "VLlm" | "vllm" | "vLLM" => base.with_provider(LlmProviderType::VLlm),
+            _ => {
+                return ToolCallResult::error(
+                    "Invalid provider. Use Ollama, Anthropic, Gemini, or VLlm.".to_string(),
+                );
+            }
         };
 
         if let Some(model) = input.model {
@@ -219,11 +225,25 @@ impl ModelSkill {
             new_config = new_config.with_api_key(api_key);
         }
 
+        // Auto-populate API key from env when switching to a provider that requires one
+        // and no key was provided explicitly.
+        if new_config.api_key.as_deref().unwrap_or("").is_empty() {
+            let env_key = match new_config.provider {
+                LlmProviderType::Gemini => std::env::var("GEMINI_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty()),
+                LlmProviderType::Anthropic => std::env::var("ANTHROPIC_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty()),
+                _ => None,
+            };
+            if let Some(key) = env_key {
+                new_config = new_config.with_api_key(key);
+            }
+        }
+
         *config = Some(new_config);
-        ToolCallResult::success_text(format!(
-            "Switched to provider: {}",
-            input.provider
-        ))
+        ToolCallResult::success_text(format!("Switched to provider: {}", input.provider))
     }
 
     async fn handle_register_model(&self, args: Option<Value>) -> ToolCallResult {
@@ -242,10 +262,10 @@ impl ModelSkill {
             Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
         };
 
-        let valid_providers = ["ollama", "anthropic", "gemini"];
+        let valid_providers = ["ollama", "anthropic", "gemini", "vllm"];
         if !valid_providers.contains(&input.provider.as_str()) {
             return ToolCallResult::error(format!(
-                "Invalid provider '{}'. Must be one of: ollama, anthropic, gemini",
+                "Invalid provider '{}'. Must be one of: ollama, anthropic, gemini, vllm",
                 input.provider
             ));
         }

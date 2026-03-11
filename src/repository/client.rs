@@ -12,7 +12,6 @@ pub struct Neo4jClient {
 impl Neo4jClient {
     /// Create a new Neo4j client connection.
     pub async fn new(uri: &str, username: &str, password: &str) -> Result<Self> {
-        // ... (existing code for connection)
         let config = ConfigBuilder::default()
             .uri(uri)
             .user(username)
@@ -75,12 +74,15 @@ impl Neo4jClient {
             "CREATE INDEX model_spec_provider IF NOT EXISTS FOR (m:ModelSpec) ON (m.provider)",
         ];
 
-        for constraint in constraints {
-            self.graph.run(neo4rs::query(constraint)).await?;
-        }
-
-        for index in indexes {
-            self.graph.run(neo4rs::query(index)).await?;
+        for statement in constraints.iter().chain(indexes.iter()) {
+            if let Err(e) = self.graph.run(neo4rs::query(statement)).await {
+                // Ignore "equivalent schema already exists" — happens when a
+                // matching index/constraint was created with a different name.
+                // IF NOT EXISTS only guards by name, not by schema definition.
+                if !is_schema_already_exists_error(&e) {
+                    return Err(e.into());
+                }
+            }
         }
 
         Ok(())
@@ -101,4 +103,17 @@ impl Neo4jClient {
         self.graph.run(query).await?;
         Ok(())
     }
+}
+
+/// Returns true if the neo4rs error is a "schema already exists" error.
+/// Neo4j raises `EquivalentSchemaRuleAlreadyExists` when an index or constraint
+/// with the same schema (label + property) exists under a *different* name,
+/// even though the Cypher statement used `IF NOT EXISTS`.
+fn is_schema_already_exists_error(e: &neo4rs::Error) -> bool {
+    if let neo4rs::Error::Neo4j(neo4j_err) = e {
+        return neo4j_err
+            .code()
+            .contains("EquivalentSchemaRuleAlreadyExists");
+    }
+    false
 }

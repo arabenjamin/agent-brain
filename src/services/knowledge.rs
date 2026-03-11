@@ -1,15 +1,17 @@
 //! Knowledge Service - Manages Notes, Projects, and Embeddings.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
+use chrono::Utc;
+use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use chrono::Utc;
-use serde_json::{json, Value};
 
 use crate::repository::Neo4jClient;
 use crate::services::LlmClient;
+use crate::services::snapshot::SnapshotService;
 
 /// Content length above which we attempt to chunk into sub-notes.
 const CHUNK_THRESHOLD_CHARS: usize = 1500;
@@ -18,12 +20,34 @@ const CHUNK_THRESHOLD_CHARS: usize = 1500;
 pub struct KnowledgeService {
     pub(crate) neo4j: Neo4jClient,
     pub(crate) llm: Option<LlmClient>,
+    pub(crate) snapshot_svc: Option<Arc<SnapshotService>>,
+    pub(crate) auto_snapshot: bool,
+    pub(crate) auto_snapshot_prune: bool,
 }
 
 impl KnowledgeService {
     /// Create a new knowledge service.
     pub fn new(neo4j: Neo4jClient, llm: Option<LlmClient>) -> Self {
-        Self { neo4j, llm }
+        Self {
+            neo4j,
+            llm,
+            snapshot_svc: None,
+            auto_snapshot: false,
+            auto_snapshot_prune: false,
+        }
+    }
+
+    /// Attach a snapshot service for auto-snapshotting before major operations.
+    pub fn with_snapshot(
+        mut self,
+        svc: Arc<SnapshotService>,
+        auto_consolidate: bool,
+        auto_prune: bool,
+    ) -> Self {
+        self.snapshot_svc = Some(svc);
+        self.auto_snapshot = auto_consolidate;
+        self.auto_snapshot_prune = auto_prune;
+        self
     }
 
     // =========================================================================
@@ -99,20 +123,16 @@ impl KnowledgeService {
 
         // Optional fields written in separate SET queries to keep the CREATE clean.
         if let Some(sc) = source_context {
-            let q = neo4rs::query(
-                "MATCH (n:Note {id: $id}) SET n.source_context = $sc",
-            )
-            .param("id", note_id.clone())
-            .param("sc", sc);
+            let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.source_context = $sc")
+                .param("id", note_id.clone())
+                .param("sc", sc);
             let _ = self.neo4j.run(q).await;
         }
 
         if let Some(ea) = event_at {
-            let q = neo4rs::query(
-                "MATCH (n:Note {id: $id}) SET n.event_at = $ea",
-            )
-            .param("id", note_id.clone())
-            .param("ea", ea);
+            let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.event_at = $ea")
+                .param("id", note_id.clone())
+                .param("ea", ea);
             let _ = self.neo4j.run(q).await;
         }
 
@@ -153,7 +173,11 @@ impl KnowledgeService {
         const MAX_CHUNK: usize = CHUNK_THRESHOLD_CHARS;
 
         // First pass: split by blank lines (paragraph boundaries)
-        let paragraphs: Vec<&str> = content.split("\n\n").map(str::trim).filter(|s| !s.is_empty()).collect();
+        let paragraphs: Vec<&str> = content
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
 
         let mut chunks: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -266,7 +290,8 @@ impl KnowledgeService {
                ) AS days_since_access
         "#;
 
-        let freshness: HashMap<String, (i64, i64)> = self.neo4j
+        let freshness: HashMap<String, (i64, i64)> = self
+            .neo4j
             .execute(neo4rs::query(cypher).param("ids", ids))
             .await
             .unwrap_or_default()
@@ -280,19 +305,29 @@ impl KnowledgeService {
             .collect();
 
         // Normalise RRF scores to [0,1].
-        let max_rrf = hits.iter().map(|(_, _, s)| *s).fold(0.0_f64, f64::max).max(1e-9);
+        let max_rrf = hits
+            .iter()
+            .map(|(_, _, s)| *s)
+            .fold(0.0_f64, f64::max)
+            .max(1e-9);
 
-        let mut boosted: Vec<(String, String, f64)> = hits.into_iter().map(|(id, content, rrf)| {
-            let (ac, days) = freshness.get(&id).copied().unwrap_or((0, 30));
-            let access_score = ((ac as f64 + 1.0).ln() / (10.0_f64).ln()).min(1.0);
-            let recency_score = (-days as f64 / 30.0).exp();
-            let freshness_score = (access_score * 0.5 + recency_score * 0.5).min(1.0);
-            let final_score = (rrf / max_rrf) * 0.7 + freshness_score * 0.3;
-            (id, content, final_score)
-        }).collect();
+        let mut boosted: Vec<(String, String, f64)> = hits
+            .into_iter()
+            .map(|(id, content, rrf)| {
+                let (ac, days) = freshness.get(&id).copied().unwrap_or((0, 30));
+                let access_score = ((ac as f64 + 1.0).ln() / (10.0_f64).ln()).min(1.0);
+                let recency_score = (-days as f64 / 30.0).exp();
+                let freshness_score = (access_score * 0.5 + recency_score * 0.5).min(1.0);
+                let final_score = (rrf / max_rrf) * 0.7 + freshness_score * 0.3;
+                (id, content, final_score)
+            })
+            .collect();
 
         boosted.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        boosted.into_iter().map(|(id, content, _)| (id, content)).collect()
+        boosted
+            .into_iter()
+            .map(|(id, content, _)| (id, content))
+            .collect()
     }
 
     /// Traverse RELATES_TO edges up to `hop_limit` hops from `primary_ids`,
@@ -340,7 +375,12 @@ impl KnowledgeService {
     }
 
     /// Extract named entities from note content and persist them to the graph.
-    async fn extract_entities(&self, note_id: &str, content: &str, llm: &LlmClient) -> Result<usize> {
+    async fn extract_entities(
+        &self,
+        note_id: &str,
+        content: &str,
+        llm: &LlmClient,
+    ) -> Result<usize> {
         let prompt = format!(
             "Extract named entities from the text. Classify each into one of: \
              person, tool, technology, concept, organisation, url, date.\n\
@@ -378,9 +418,8 @@ impl KnowledgeService {
 
         // Stopwords that produce useless entity nodes
         const STOPWORDS: &[&str] = &[
-            "system", "data", "task", "note", "user", "tool", "value", "result",
-            "process", "item", "object", "type", "name", "list", "set", "get",
-            "this", "that", "the", "a", "an",
+            "system", "data", "task", "note", "user", "tool", "value", "result", "process", "item",
+            "object", "type", "name", "list", "set", "get", "this", "that", "the", "a", "an",
         ];
 
         let mut count = 0usize;
@@ -412,14 +451,18 @@ impl KnowledgeService {
             ON MATCH SET r.count = r.count + 1
             "#;
 
-            match self.neo4j.run(
-                neo4rs::query(cypher)
-                    .param("name", name.clone())
-                    .param("entity_id", entity_id)
-                    .param("entity_type", entity_type)
-                    .param("ts", timestamp.clone())
-                    .param("note_id", note_id),
-            ).await {
+            match self
+                .neo4j
+                .run(
+                    neo4rs::query(cypher)
+                        .param("name", name.clone())
+                        .param("entity_id", entity_id)
+                        .param("entity_type", entity_type)
+                        .param("ts", timestamp.clone())
+                        .param("note_id", note_id),
+                )
+                .await
+            {
                 Ok(_) => count += 1,
                 Err(e) => warn!("Failed to store entity '{}': {}", name, e),
             }
@@ -443,60 +486,64 @@ impl KnowledgeService {
         // Attempt semantic chunking for long content (skip for consolidated/reflection types).
         let skip_chunk = matches!(note_type, Some("consolidated") | Some("reflection"));
 
-        if !skip_chunk && content.len() > CHUNK_THRESHOLD_CHARS {
-            if let Some(chunks) = Self::chunk_by_boundaries(content) {
-                if chunks.len() > 1 {
-                        info!(chunks = chunks.len(), "Chunking long note into sub-notes");
+        if !skip_chunk
+            && content.len() > CHUNK_THRESHOLD_CHARS
+            && let Some(chunks) = Self::chunk_by_boundaries(content)
+            && chunks.len() > 1
+        {
+            info!(chunks = chunks.len(), "Chunking long note into sub-notes");
 
-                        // Create parent note
-                        let (parent_id, parent_emb) =
-                            self.store_note_raw(content, note_type, source_context, event_at).await?;
+            // Create parent note
+            let (parent_id, parent_emb) = self
+                .store_note_raw(content, note_type, source_context, event_at)
+                .await?;
 
-                        let mut total_links = if let Some(ref emb) = parent_emb {
-                            self.link_similar_notes(&parent_id, emb).await.unwrap_or(0)
-                        } else {
-                            0
-                        };
+            let mut total_links = if let Some(ref emb) = parent_emb {
+                self.link_similar_notes(&parent_id, emb).await.unwrap_or(0)
+            } else {
+                0
+            };
 
-                        // Create child chunk notes
-                        for chunk in &chunks {
-                            let (child_id, child_emb) =
-                                self.store_note_raw(chunk, note_type, source_context, event_at).await?;
+            // Create child chunk notes
+            for chunk in &chunks {
+                let (child_id, child_emb) = self
+                    .store_note_raw(chunk, note_type, source_context, event_at)
+                    .await?;
 
-                            // Link child to parent
-                            let link_q = neo4rs::query(
-                                "MATCH (child:Note {id: $child_id}), (parent:Note {id: $parent_id}) \
+                // Link child to parent
+                let link_q = neo4rs::query(
+                    "MATCH (child:Note {id: $child_id}), (parent:Note {id: $parent_id}) \
                                  MERGE (child)-[:PART_OF]->(parent)",
-                            )
-                            .param("child_id", child_id.clone())
-                            .param("parent_id", parent_id.clone());
-                            let _ = self.neo4j.run(link_q).await;
+                )
+                .param("child_id", child_id.clone())
+                .param("parent_id", parent_id.clone());
+                let _ = self.neo4j.run(link_q).await;
 
-                            if let Some(ref emb) = child_emb {
-                                total_links +=
-                                    self.link_similar_notes(&child_id, emb).await.unwrap_or(0);
-                            }
-                        }
-
-                        // Entity extraction on the full parent content
-                        if let Some(llm) = &self.llm {
-                            let _ = self.extract_entities(&parent_id, content, llm).await;
-                        }
-
-                        return Ok((parent_id, total_links));
+                if let Some(ref emb) = child_emb {
+                    total_links += self.link_similar_notes(&child_id, emb).await.unwrap_or(0);
                 }
             }
+
+            // Entity extraction on the full parent content
+            if let Some(llm) = &self.llm {
+                let _ = self.extract_entities(&parent_id, content, llm).await;
+            }
+
+            return Ok((parent_id, total_links));
         }
 
         // Normal (non-chunked) path
-        let (note_id, embedding) =
-            self.store_note_raw(content, note_type, source_context, event_at).await?;
+        let (note_id, embedding) = self
+            .store_note_raw(content, note_type, source_context, event_at)
+            .await?;
 
         let links_created = if let Some(ref emb) = embedding {
-            self.link_similar_notes(&note_id, emb).await.unwrap_or_else(|e| {
-                warn!("Failed to link similar notes: {}", e);
-                0
-            })
+            self.link_similar_notes(&note_id, emb)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Failed to link similar notes: {}", e);
+                    0
+                })
         } else {
             0
         };
@@ -522,9 +569,10 @@ impl KnowledgeService {
                n.review_interval_days AS review_interval_days
         "#;
 
-        let rows = self.neo4j.execute(
-            neo4rs::query(cypher).param("id", note_id)
-        ).await?;
+        let rows = self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("id", note_id))
+            .await?;
 
         if let Some(row) = rows.into_iter().next() {
             let id = row.get::<String>("id").unwrap_or_default();
@@ -552,10 +600,13 @@ impl KnowledgeService {
     /// Delete a single note and all its relationships.
     pub async fn delete_note(&self, note_id: &str) -> Result<bool> {
         let cypher = "MATCH (n:Note {id: $id}) DETACH DELETE n RETURN count(n) AS deleted";
-        let rows = self.neo4j.execute(
-            neo4rs::query(cypher).param("id", note_id)
-        ).await?;
-        let deleted = rows.into_iter().next()
+        let rows = self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("id", note_id))
+            .await?;
+        let deleted = rows
+            .into_iter()
+            .next()
             .and_then(|r| r.get::<i64>("deleted").ok())
             .unwrap_or(0);
         Ok(deleted > 0)
@@ -564,10 +615,17 @@ impl KnowledgeService {
     /// Update the content of an existing note in-place, preserving all graph edges and metadata.
     pub async fn update_note(&self, note_id: &str, content: &str) -> Result<bool> {
         let cypher = "MATCH (n:Note {id: $id}) SET n.content = $content RETURN count(n) AS updated";
-        let rows = self.neo4j.execute(
-            neo4rs::query(cypher).param("id", note_id).param("content", content)
-        ).await?;
-        let updated = rows.into_iter().next()
+        let rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(cypher)
+                    .param("id", note_id)
+                    .param("content", content),
+            )
+            .await?;
+        let updated = rows
+            .into_iter()
+            .next()
             .and_then(|r| r.get::<i64>("updated").ok())
             .unwrap_or(0);
         Ok(updated > 0)
@@ -605,7 +663,8 @@ impl KnowledgeService {
         limit: usize,
         graph_hops: usize,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, false).await
+        self.search_notes_inner(query_text, limit, graph_hops, false)
+            .await
     }
 
     /// Like `search_notes` but with entity-bridging enabled.
@@ -615,7 +674,8 @@ impl KnowledgeService {
         limit: usize,
         graph_hops: usize,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, true).await
+        self.search_notes_inner(query_text, limit, graph_hops, true)
+            .await
     }
 
     async fn search_notes_inner(
@@ -629,26 +689,25 @@ impl KnowledgeService {
 
         // 1. Vector search (if LLM available)
         let mut vec_hits: Vec<(String, String)> = Vec::new();
-        if let Some(llm) = &self.llm {
-            if let Ok(query_embedding) = llm.embeddings(query_text).await {
-                let cypher = r#"
+        if let Some(llm) = &self.llm
+            && let Ok(query_embedding) = llm.embeddings(query_text).await
+        {
+            let cypher = r#"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
                 YIELD node, score
                 RETURN node.id AS id, node.content AS content
                 "#;
 
-                let q = neo4rs::query(cypher)
-                    .param("embedding", query_embedding)
-                    .param("limit", fetch_limit as i64);
+            let q = neo4rs::query(cypher)
+                .param("embedding", query_embedding)
+                .param("limit", fetch_limit as i64);
 
-                if let Ok(rows) = self.neo4j.execute(q).await {
-                    for row in rows {
-                        if let (Ok(id), Ok(content)) = (
-                            row.get::<String>("id"),
-                            row.get::<String>("content"),
-                        ) {
-                            vec_hits.push((id, content));
-                        }
+            if let Ok(rows) = self.neo4j.execute(q).await {
+                for row in rows {
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                    {
+                        vec_hits.push((id, content));
                     }
                 }
             }
@@ -669,10 +728,9 @@ impl KnowledgeService {
 
             if let Ok(rows) = self.neo4j.execute(q).await {
                 for row in rows {
-                    if let (Ok(id), Ok(content)) = (
-                        row.get::<String>("id"),
-                        row.get::<String>("content"),
-                    ) {
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                    {
                         bm25_hits.push((id, content));
                     }
                 }
@@ -693,13 +751,14 @@ impl KnowledgeService {
                 .param("query", query_text)
                 .param("limit", limit as i64);
 
-            self.neo4j.execute(q).await?
+            self.neo4j
+                .execute(q)
+                .await?
                 .into_iter()
                 .filter_map(|row| {
-                    if let (Ok(id), Ok(content)) = (
-                        row.get::<String>("id"),
-                        row.get::<String>("content"),
-                    ) {
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                    {
                         Some((id, content))
                     } else {
                         None
@@ -720,24 +779,30 @@ impl KnowledgeService {
             RETURN n.id AS hit_id, n.content AS hit_content, p.id AS parent_id, p.content AS parent_content
             "#;
 
-            if let Ok(rows) = self.neo4j.execute(neo4rs::query(parent_cypher).param("hit_ids", hit_ids)).await {
+            if let Ok(rows) = self
+                .neo4j
+                .execute(neo4rs::query(parent_cypher).param("hit_ids", hit_ids))
+                .await
+            {
                 let mut resolved = Vec::new();
                 let mut seen_ids = std::collections::HashSet::new();
 
                 for row in rows {
                     let parent_id = row.get::<String>("parent_id").ok();
                     let parent_content = row.get::<String>("parent_content").ok();
-                    
+
                     if let (Some(pid), Some(pcontent)) = (parent_id, parent_content) {
                         if !seen_ids.contains(&pid) {
                             resolved.push((pid.clone(), pcontent));
                             seen_ids.insert(pid);
                         }
-                    } else if let (Ok(hid), Ok(hcontent)) = (row.get::<String>("hit_id"), row.get::<String>("hit_content")) {
-                        if !seen_ids.contains(&hid) {
-                            resolved.push((hid.clone(), hcontent));
-                            seen_ids.insert(hid);
-                        }
+                    } else if let (Ok(hid), Ok(hcontent)) = (
+                        row.get::<String>("hit_id"),
+                        row.get::<String>("hit_content"),
+                    ) && !seen_ids.contains(&hid)
+                    {
+                        resolved.push((hid.clone(), hcontent));
+                        seen_ids.insert(hid);
                     }
                 }
                 merged = resolved;
@@ -748,7 +813,10 @@ impl KnowledgeService {
         // 4. Graph expansion
         if graph_hops > 0 && !merged.is_empty() {
             let primary_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
-            match self.expand_with_graph_context(&primary_ids, graph_hops, 5).await {
+            match self
+                .expand_with_graph_context(&primary_ids, graph_hops, 5)
+                .await
+            {
                 Ok(neighbours) => {
                     let existing_ids: std::collections::HashSet<String> =
                         primary_ids.iter().cloned().collect();
@@ -773,17 +841,22 @@ impl KnowledgeService {
             LIMIT $limit
             "#;
             let extra_limit = (limit / 2).max(3) as i64;
-            if let Ok(rows) = self.neo4j.execute(
-                neo4rs::query(entity_cypher)
-                    .param("primary_ids", primary_ids.clone())
-                    .param("limit", extra_limit),
-            ).await {
+            if let Ok(rows) = self
+                .neo4j
+                .execute(
+                    neo4rs::query(entity_cypher)
+                        .param("primary_ids", primary_ids.clone())
+                        .param("limit", extra_limit),
+                )
+                .await
+            {
                 let existing: std::collections::HashSet<String> = primary_ids.into_iter().collect();
                 for row in rows {
-                    if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
-                        if !existing.contains(&id) {
-                            merged.push((id, content));
-                        }
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                        && !existing.contains(&id)
+                    {
+                        merged.push((id, content));
                     }
                 }
                 merged.truncate(limit);
@@ -804,17 +877,73 @@ impl KnowledgeService {
                 n.review_interval_days = new_interval,
                 n.next_review_at = datetime($now) + duration({days: new_interval})
             "#;
-            let _ = self.neo4j.run(
-                neo4rs::query(update_cypher)
-                    .param("ids", hit_ids)
-                    .param("now", now),
-            ).await;
+            let _ = self
+                .neo4j
+                .run(
+                    neo4rs::query(update_cypher)
+                        .param("ids", hit_ids)
+                        .param("now", now),
+                )
+                .await;
         }
 
-        Ok(merged.into_iter().map(|(id, content)| serde_json::json!({ "id": id, "content": content })).collect())
+        Ok(merged
+            .into_iter()
+            .map(|(id, content)| serde_json::json!({ "id": id, "content": content }))
+            .collect())
     }
 
     /// Return notes whose spaced-repetition review is due.
+    pub async fn list_notes(&self, limit: usize, note_type: Option<&str>) -> Result<Vec<Value>> {
+        let query = if let Some(nt) = note_type {
+            neo4rs::query(
+                r#"
+            MATCH (n:Note)
+            WHERE n.note_type = $note_type
+            RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
+                   n.access_count AS access_count, toString(n.created_at) AS created_at,
+                   n.source_context AS source_context
+            ORDER BY n.created_at DESC LIMIT $limit
+            "#,
+            )
+            .param("note_type", nt)
+            .param("limit", limit as i64)
+        } else {
+            neo4rs::query(
+                r#"
+            MATCH (n:Note)
+            RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
+                   n.access_count AS access_count, toString(n.created_at) AS created_at,
+                   n.source_context AS source_context
+            ORDER BY n.created_at DESC LIMIT $limit
+            "#,
+            )
+            .param("limit", limit as i64)
+        };
+
+        let rows = self.neo4j.execute(query).await?;
+        let mut results = Vec::new();
+        for row in rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let content = row.get::<String>("content").unwrap_or_default();
+            let note_type = row
+                .get::<String>("note_type")
+                .unwrap_or_else(|_| "semantic".to_string());
+            let access_count = row.get::<i64>("access_count").unwrap_or(0);
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            let source_context = row.get::<String>("source_context").unwrap_or_default();
+            results.push(serde_json::json!({
+                "id": id,
+                "content": content,
+                "note_type": note_type,
+                "access_count": access_count,
+                "created_at": created_at,
+                "source_context": source_context
+            }));
+        }
+        Ok(results)
+    }
+
     pub async fn review_due_notes(&self, limit: usize) -> Result<Vec<Value>> {
         let cypher = r#"
         MATCH (n:Note)
@@ -832,7 +961,9 @@ impl KnowledgeService {
         for row in rows {
             let id = row.get::<String>("id").unwrap_or_default();
             let content = row.get::<String>("content").unwrap_or_default();
-            let note_type = row.get::<String>("note_type").unwrap_or_else(|_| "semantic".to_string());
+            let note_type = row
+                .get::<String>("note_type")
+                .unwrap_or_else(|_| "semantic".to_string());
             let next_review = row.get::<String>("next_review_at").unwrap_or_default();
             let access_count = row.get::<i64>("access_count").unwrap_or(0);
             results.push(serde_json::json!({
@@ -857,6 +988,16 @@ impl KnowledgeService {
         lambda: Option<f64>,
         dry_run: bool,
     ) -> Result<usize> {
+        if !dry_run
+            && self.auto_snapshot_prune
+            && let Some(svc) = &self.snapshot_svc
+        {
+            match svc.take_snapshot(Some("pre_prune")).await {
+                Ok((path, _)) => info!(path = %path.display(), "Pre-prune snapshot taken"),
+                Err(e) => warn!("Pre-prune snapshot failed (continuing): {}", e),
+            }
+        }
+
         if score_threshold.is_some() || lambda.is_some() {
             let threshold = score_threshold.unwrap_or(0.1);
             let lam = lambda.unwrap_or(0.1);
@@ -875,13 +1016,17 @@ impl KnowledgeService {
                 RETURN count(n) AS total
                 "#;
 
-                let rows = self.neo4j.execute(
-                    neo4rs::query(cypher)
-                        .param("lambda", lam)
-                        .param("threshold", threshold),
-                ).await?;
+                let rows = self
+                    .neo4j
+                    .execute(
+                        neo4rs::query(cypher)
+                            .param("lambda", lam)
+                            .param("threshold", threshold),
+                    )
+                    .await?;
 
-                let total = rows.first()
+                let total = rows
+                    .first()
                     .and_then(|r| r.get::<i64>("total").ok())
                     .unwrap_or(0) as usize;
                 return Ok(total);
@@ -902,13 +1047,17 @@ impl KnowledgeService {
             RETURN size(stale) AS total
             "#;
 
-            let rows = self.neo4j.execute(
-                neo4rs::query(cypher)
-                    .param("lambda", lam)
-                    .param("threshold", threshold),
-            ).await?;
+            let rows = self
+                .neo4j
+                .execute(
+                    neo4rs::query(cypher)
+                        .param("lambda", lam)
+                        .param("threshold", threshold),
+                )
+                .await?;
 
-            let total = rows.first()
+            let total = rows
+                .first()
                 .and_then(|r| r.get::<i64>("total").ok())
                 .unwrap_or(0) as usize;
             return Ok(total);
@@ -922,12 +1071,16 @@ impl KnowledgeService {
               AND n.access_count < $min_accesses
             RETURN count(n) AS total
             "#;
-            let rows = self.neo4j.execute(
-                neo4rs::query(cypher)
-                    .param("days", days_stale)
-                    .param("min_accesses", min_accesses),
-            ).await?;
-            let total = rows.first()
+            let rows = self
+                .neo4j
+                .execute(
+                    neo4rs::query(cypher)
+                        .param("days", days_stale)
+                        .param("min_accesses", min_accesses),
+                )
+                .await?;
+            let total = rows
+                .first()
                 .and_then(|r| r.get::<i64>("total").ok())
                 .unwrap_or(0) as usize;
             return Ok(total);
@@ -942,13 +1095,17 @@ impl KnowledgeService {
         RETURN size(stale) AS total
         "#;
 
-        let rows = self.neo4j.execute(
-            neo4rs::query(cypher)
-                .param("days", days_stale)
-                .param("min_accesses", min_accesses),
-        ).await?;
+        let rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(cypher)
+                    .param("days", days_stale)
+                    .param("min_accesses", min_accesses),
+            )
+            .await?;
 
-        let total = rows.first()
+        let total = rows
+            .first()
             .and_then(|r| r.get::<i64>("total").ok())
             .unwrap_or(0) as usize;
 
@@ -974,12 +1131,14 @@ impl KnowledgeService {
 
         // neo4rs doesn't support passing Optional NULL cleanly; handle it via separate queries.
         let rows = if let Some(et) = entity_type {
-            self.neo4j.execute(
-                neo4rs::query(cypher)
-                    .param("entity_name", entity_name)
-                    .param("entity_type", et)
-                    .param("limit", limit as i64),
-            ).await?
+            self.neo4j
+                .execute(
+                    neo4rs::query(cypher)
+                        .param("entity_name", entity_name)
+                        .param("entity_type", et)
+                        .param("limit", limit as i64),
+                )
+                .await?
         } else {
             // Use a variant without the entity_type filter
             let cypher_no_type = r#"
@@ -990,11 +1149,13 @@ impl KnowledgeService {
                    e.name AS entity, e.entity_type AS entity_type, r.count AS mention_count
             ORDER BY r.count DESC LIMIT $limit
             "#;
-            self.neo4j.execute(
-                neo4rs::query(cypher_no_type)
-                    .param("entity_name", entity_name)
-                    .param("limit", limit as i64),
-            ).await?
+            self.neo4j
+                .execute(
+                    neo4rs::query(cypher_no_type)
+                        .param("entity_name", entity_name)
+                        .param("limit", limit as i64),
+                )
+                .await?
         };
 
         let mut results = Vec::new();
@@ -1021,21 +1182,23 @@ impl KnowledgeService {
         let fetch_limit = (limit * 3).max(10);
 
         let mut vec_hits: Vec<(String, String)> = Vec::new();
-        if let Some(llm) = &self.llm {
-            if let Ok(query_embedding) = llm.embeddings(query_text).await {
-                let cypher = r#"
+        if let Some(llm) = &self.llm
+            && let Ok(query_embedding) = llm.embeddings(query_text).await
+        {
+            let cypher = r#"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
                 YIELD node, score
                 RETURN node.id AS id, node.content AS content
                 "#;
-                let q = neo4rs::query(cypher)
-                    .param("embedding", query_embedding)
-                    .param("limit", fetch_limit as i64);
-                if let Ok(rows) = self.neo4j.execute(q).await {
-                    for row in rows {
-                        if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
-                            vec_hits.push((id, content));
-                        }
+            let q = neo4rs::query(cypher)
+                .param("embedding", query_embedding)
+                .param("limit", fetch_limit as i64);
+            if let Ok(rows) = self.neo4j.execute(q).await {
+                for row in rows {
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                    {
+                        vec_hits.push((id, content));
                     }
                 }
             }
@@ -1053,7 +1216,9 @@ impl KnowledgeService {
                 .param("limit", fetch_limit as i64);
             if let Ok(rows) = self.neo4j.execute(q).await {
                 for row in rows {
-                    if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                    {
                         bm25_hits.push((id, content));
                     }
                 }
@@ -1070,10 +1235,14 @@ impl KnowledgeService {
             let q = neo4rs::query(cypher)
                 .param("query", query_text)
                 .param("limit", limit as i64);
-            self.neo4j.execute(q).await?
+            self.neo4j
+                .execute(q)
+                .await?
                 .into_iter()
                 .filter_map(|row| {
-                    if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
+                    if let (Ok(id), Ok(content)) =
+                        (row.get::<String>("id"), row.get::<String>("content"))
+                    {
                         Some((id, content))
                     } else {
                         None
@@ -1089,8 +1258,12 @@ impl KnowledgeService {
 
         if graph_hops > 0 && !merged.is_empty() {
             let primary_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
-            if let Ok(neighbours) = self.expand_with_graph_context(&primary_ids, graph_hops, 5).await {
-                let existing_ids: std::collections::HashSet<String> = primary_ids.iter().cloned().collect();
+            if let Ok(neighbours) = self
+                .expand_with_graph_context(&primary_ids, graph_hops, 5)
+                .await
+            {
+                let existing_ids: std::collections::HashSet<String> =
+                    primary_ids.iter().cloned().collect();
                 for (nb_id, nb_content, _score) in neighbours {
                     if !existing_ids.contains(&nb_id) {
                         merged.push((nb_id, nb_content));
@@ -1119,7 +1292,10 @@ impl KnowledgeService {
             anyhow::anyhow!("LLM is required for reasoning but is not configured")
         })?;
 
-        let notes = self.search_notes_with_ids(question, limit, 1).await.unwrap_or_default();
+        let notes = self
+            .search_notes_with_ids(question, limit, 1)
+            .await
+            .unwrap_or_default();
 
         let notes_block = notes
             .iter()
@@ -1138,7 +1314,9 @@ impl KnowledgeService {
             question, notes_block
         );
 
-        let response = llm.generate(&prompt).await
+        let response = llm
+            .generate(&prompt)
+            .await
             .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?;
 
         let text = response.text.trim();
@@ -1155,25 +1333,51 @@ impl KnowledgeService {
             })
         });
 
-        let answer = parsed.get("answer").and_then(|v| v.as_str()).unwrap_or(text).to_string();
-        let inferences: Vec<String> = parsed.get("inferences")
+        let answer = parsed
+            .get("answer")
+            .and_then(|v| v.as_str())
+            .unwrap_or(text)
+            .to_string();
+        let inferences: Vec<String> = parsed
+            .get("inferences")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let confidence = parsed.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5);
-        let gaps: Vec<String> = parsed.get("gaps")
+        let confidence = parsed
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5);
+        let gaps: Vec<String> = parsed
+            .get("gaps")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Store inference note and create DERIVED_FROM edges
         let inference_note_id = if store_inference && !inferences.is_empty() {
             let inference_content = format!(
                 "Q: {}\n\nAnswer: {}\n\nInferences:\n{}",
-                question, answer,
-                inferences.iter().enumerate().map(|(i, inf)| format!("{}. {}", i + 1, inf)).collect::<Vec<_>>().join("\n")
+                question,
+                answer,
+                inferences
+                    .iter()
+                    .enumerate()
+                    .map(|(i, inf)| format!("{}. {}", i + 1, inf))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
-            match self.store_note_raw(&inference_content, Some("inference"), Some(question), None).await {
+            match self
+                .store_note_raw(&inference_content, Some("inference"), Some(question), None)
+                .await
+            {
                 Ok((inf_id, _)) => {
                     // Create DERIVED_FROM edges to source notes
                     let source_ids: Vec<String> = notes.iter().map(|(id, _)| id.clone()).collect();
@@ -1183,11 +1387,14 @@ impl KnowledgeService {
                         MATCH (src:Note) WHERE src.id IN $source_ids
                         MERGE (inf)-[:DERIVED_FROM]->(src)
                         "#;
-                        let _ = self.neo4j.run(
-                            neo4rs::query(link_cypher)
-                                .param("inf_id", inf_id.clone())
-                                .param("source_ids", source_ids),
-                        ).await;
+                        let _ = self
+                            .neo4j
+                            .run(
+                                neo4rs::query(link_cypher)
+                                    .param("inf_id", inf_id.clone())
+                                    .param("source_ids", source_ids),
+                            )
+                            .await;
                     }
                     Some(inf_id)
                 }
@@ -1210,12 +1417,17 @@ impl KnowledgeService {
         action: &str,
         context: Option<&str>,
     ) -> Result<(bool, f64, Vec<String>, Vec<String>, String)> {
-        let llm = self.llm.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("LLM is required for audit but is not configured")
-        })?;
+        let llm = self
+            .llm
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LLM is required for audit but is not configured"))?;
 
         let principles_notes = self
-            .search_notes_with_ids("ethical principles values guidelines safety alignment", 5, 0)
+            .search_notes_with_ids(
+                "ethical principles values guidelines safety alignment",
+                5,
+                0,
+            )
             .await
             .unwrap_or_default();
 
@@ -1248,11 +1460,21 @@ impl KnowledgeService {
              ACTION CONTEXT:\n{}",
             action,
             context.unwrap_or("(none)"),
-            if principles_block.is_empty() { "(no stored principles found)" } else { &principles_block },
-            if action_notes_block.is_empty() { "(no relevant context found)" } else { &action_notes_block }
+            if principles_block.is_empty() {
+                "(no stored principles found)"
+            } else {
+                &principles_block
+            },
+            if action_notes_block.is_empty() {
+                "(no relevant context found)"
+            } else {
+                &action_notes_block
+            }
         );
 
-        let response = llm.generate(&prompt).await
+        let response = llm
+            .generate(&prompt)
+            .await
             .map_err(|e| anyhow::anyhow!("LLM audit failed: {}", e))?;
 
         let text = response.text.trim();
@@ -1270,17 +1492,37 @@ impl KnowledgeService {
             })
         });
 
-        let aligned = parsed.get("aligned").and_then(|v| v.as_bool()).unwrap_or(true);
-        let confidence = parsed.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5);
-        let concerns: Vec<String> = parsed.get("concerns")
+        let aligned = parsed
+            .get("aligned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let confidence = parsed
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5);
+        let concerns: Vec<String> = parsed
+            .get("concerns")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let suggestions: Vec<String> = parsed.get("suggestions")
+        let suggestions: Vec<String> = parsed
+            .get("suggestions")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let reasoning = parsed.get("reasoning").and_then(|v| v.as_str()).unwrap_or(text).to_string();
+        let reasoning = parsed
+            .get("reasoning")
+            .and_then(|v| v.as_str())
+            .unwrap_or(text)
+            .to_string();
 
         Ok((aligned, confidence, concerns, suggestions, reasoning))
     }
@@ -1315,7 +1557,9 @@ impl KnowledgeService {
                 Ok(rows) => rows
                     .into_iter()
                     .filter_map(|row| {
-                        if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
+                        if let (Ok(id), Ok(content)) =
+                            (row.get::<String>("id"), row.get::<String>("content"))
+                        {
                             Some(format!("[Task Note {}]: {}", id, content))
                         } else {
                             None
@@ -1343,11 +1587,21 @@ impl KnowledgeService {
              TASK CONTEXT:\n{}\n\
              RELEVANT KNOWLEDGE:\n{}",
             decision,
-            if task_context.is_empty() { "(none)" } else { &task_context },
-            if notes_block.is_empty() { "(no stored knowledge found)" } else { &notes_block }
+            if task_context.is_empty() {
+                "(none)"
+            } else {
+                &task_context
+            },
+            if notes_block.is_empty() {
+                "(no stored knowledge found)"
+            } else {
+                &notes_block
+            }
         );
 
-        let response = llm.generate(&prompt).await
+        let response = llm
+            .generate(&prompt)
+            .await
             .map_err(|e| anyhow::anyhow!("LLM explanation failed: {}", e))?;
 
         let sources: Vec<serde_json::Value> = knowledge_notes
@@ -1362,13 +1616,19 @@ impl KnowledgeService {
     }
 
     /// Consolidate a set of notes on a topic into a single summary note via LLM.
-    pub async fn consolidate_memories(&self, topic: &str, limit: usize) -> Result<(String, usize, String)> {
+    pub async fn consolidate_memories(
+        &self,
+        topic: &str,
+        limit: usize,
+    ) -> Result<(String, usize, String)> {
         let llm = self.llm.as_ref().ok_or_else(|| {
             anyhow::anyhow!("LLM is required for memory consolidation but is not configured")
         })?;
 
         // 1. Get embedding for the topic
-        let topic_embedding = llm.embeddings(topic).await
+        let topic_embedding = llm
+            .embeddings(topic)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to embed topic: {}", e))?;
 
         // 2. Find top-N similar notes
@@ -1394,7 +1654,10 @@ impl KnowledgeService {
         }
 
         if note_contents.is_empty() {
-            return Err(anyhow::anyhow!("No notes found related to topic '{}'", topic));
+            return Err(anyhow::anyhow!(
+                "No notes found related to topic '{}'",
+                topic
+            ));
         }
 
         let source_count = note_contents.len();
@@ -1415,16 +1678,31 @@ impl KnowledgeService {
             source_count, topic, notes_block
         );
 
-        // 4. Generate consolidated content
-        let llm_response = llm.generate(&prompt).await
+        // 4. Auto-snapshot before LLM call (best-effort, never fails the operation).
+        if self.auto_snapshot
+            && let Some(svc) = &self.snapshot_svc
+        {
+            match svc.take_snapshot(Some("pre_consolidate")).await {
+                Ok((path, _)) => {
+                    info!(path = %path.display(), "Pre-consolidation snapshot taken")
+                }
+                Err(e) => warn!("Pre-consolidation snapshot failed (continuing): {}", e),
+            }
+        }
+
+        // 5. Generate consolidated content
+        let llm_response = llm
+            .generate(&prompt)
+            .await
             .map_err(|e| anyhow::anyhow!("LLM generation failed: {}", e))?;
         let consolidated_content = llm_response.text;
 
-        // 5. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
-        let (consolidated_id, _) =
-            self.store_note_raw(&consolidated_content, Some("consolidated"), None, None).await?;
+        // 6. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
+        let (consolidated_id, _) = self
+            .store_note_raw(&consolidated_content, Some("consolidated"), None, None)
+            .await?;
 
-        // 6. Create SUMMARIZED_BY relationships from source notes to consolidated note
+        // 7. Create SUMMARIZED_BY relationships from source notes to consolidated note
         if !source_ids.is_empty() {
             let link_cypher = r#"
             MATCH (src:Note) WHERE src.id IN $source_ids
@@ -1438,14 +1716,16 @@ impl KnowledgeService {
 
             self.neo4j.run(link_query).await?;
 
-            // 7. Reset spaced-rep schedule on source notes so they no longer appear "overdue"
+            // 8. Reset spaced-rep schedule on source notes so they no longer appear "overdue"
             //    and don't trigger another consolidation cycle immediately.
             let reset_cypher = "MATCH (n:Note) WHERE n.id IN $ids \
                 SET n.next_review_at = datetime() + duration({days: 30}), \
                     n.review_interval_days = 30";
-            if let Err(e) = self.neo4j.run(
-                neo4rs::query(reset_cypher).param("ids", source_ids)
-            ).await {
+            if let Err(e) = self
+                .neo4j
+                .run(neo4rs::query(reset_cypher).param("ids", source_ids))
+                .await
+            {
                 tracing::warn!("Failed to reset next_review_at on consolidated source notes: {e}");
             }
         }
@@ -1475,14 +1755,17 @@ impl KnowledgeService {
             "MATCH (n:Note) \
              RETURN n.id AS id, n.content AS content, n.note_type AS note_type \
              ORDER BY n.last_accessed_at DESC LIMIT $limit",
-        ).param("limit", limit);
+        )
+        .param("limit", limit);
 
         let mut nodes: Vec<Value> = Vec::new();
         let note_rows = self.neo4j.execute(note_q).await.unwrap_or_default();
         for row in note_rows {
             let id = row.get::<String>("id").unwrap_or_default();
             let content = row.get::<String>("content").unwrap_or_default();
-            let note_type = row.get::<String>("note_type").unwrap_or_else(|_| "semantic".to_string());
+            let note_type = row
+                .get::<String>("note_type")
+                .unwrap_or_else(|_| "semantic".to_string());
             let label: String = content.chars().take(60).collect();
             nodes.push(json!({
                 "id": id,
@@ -1499,13 +1782,16 @@ impl KnowledgeService {
              RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, \
                     count(r) AS mentions \
              ORDER BY mentions DESC LIMIT $limit",
-        ).param("limit", entity_limit);
+        )
+        .param("limit", entity_limit);
 
         let entity_rows = self.neo4j.execute(entity_q).await.unwrap_or_default();
         for row in entity_rows {
             let id = row.get::<String>("id").unwrap_or_default();
             let name = row.get::<String>("name").unwrap_or_default();
-            let entity_type = row.get::<String>("entity_type").unwrap_or_else(|_| "unknown".to_string());
+            let entity_type = row
+                .get::<String>("entity_type")
+                .unwrap_or_else(|_| "unknown".to_string());
             nodes.push(json!({
                 "id": id,
                 "label": name,
@@ -1520,7 +1806,8 @@ impl KnowledgeService {
             "MATCH (t:Task) \
              RETURN t.id AS id, t.goal AS goal, t.status AS status \
              ORDER BY t.created_at DESC LIMIT $limit",
-        ).param("limit", task_limit);
+        )
+        .param("limit", task_limit);
 
         let task_rows = self.neo4j.execute(task_q).await.unwrap_or_default();
         for row in task_rows {
@@ -1537,7 +1824,8 @@ impl KnowledgeService {
         }
 
         // Build the set of node IDs so we only emit edges between included nodes
-        let node_ids: std::collections::HashSet<String> = nodes.iter()
+        let node_ids: std::collections::HashSet<String> = nodes
+            .iter()
             .filter_map(|n| n["id"].as_str().map(str::to_string))
             .collect();
 
@@ -1549,51 +1837,60 @@ impl KnowledgeService {
                 "MATCH (a:Note)-[r:RELATES_TO]->(b:Note) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, r.similarity AS weight",
-                "relates_to", 1.0,
+                "relates_to",
+                1.0,
             ),
             (
                 "MATCH (a:Note)-[:MENTIONS]->(b:Entity) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
-                "mentions", 1.0,
+                "mentions",
+                1.0,
             ),
             (
                 "MATCH (a:Note)-[:PART_OF]->(b:Note) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
-                "part_of", 0.5,
+                "part_of",
+                0.5,
             ),
             (
                 "MATCH (a:Note)-[:SUMMARIZED_BY]->(b:Note) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
-                "summarized_by", 0.5,
+                "summarized_by",
+                0.5,
             ),
             (
                 "MATCH (a:Note)-[:REFLECTS_ON]->(b:Task) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
-                "reflects_on", 0.8,
+                "reflects_on",
+                0.8,
             ),
             (
                 "MATCH (a:Task)-[:SUBTASK_OF]->(b:Task) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
-                "subtask_of", 0.7,
+                "subtask_of",
+                0.7,
             ),
             (
                 "MATCH (a:Note)-[:DERIVED_FROM]->(b:Note) \
                  WHERE a.id IN $ids AND b.id IN $ids \
                  RETURN a.id AS src, b.id AS tgt, 1.0 AS weight",
-                "derived_from", 0.6,
+                "derived_from",
+                0.6,
             ),
         ];
 
         let ids_vec: Vec<String> = node_ids.iter().cloned().collect();
         for (cypher, edge_type, default_weight) in edge_queries {
-            if let Ok(rows) = self.neo4j.execute(
-                neo4rs::query(cypher).param("ids", ids_vec.clone())
-            ).await {
+            if let Ok(rows) = self
+                .neo4j
+                .execute(neo4rs::query(cypher).param("ids", ids_vec.clone()))
+                .await
+            {
                 for row in rows {
                     let src = row.get::<String>("src").unwrap_or_default();
                     let tgt = row.get::<String>("tgt").unwrap_or_default();

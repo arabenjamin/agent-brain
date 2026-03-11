@@ -6,14 +6,12 @@
 //! - DELETE /mcp for session termination
 //! - Authentication and header validation
 
-use agent_brain::mcp::{
-    AuthConfig, ApiKeyAuth, SessionManager, SessionConfig,
-};
+use agent_brain::mcp::{ApiKeyAuth, AuthConfig, SessionManager};
 use axum::{
     body::Body,
-    http::{header, Request, StatusCode},
+    http::{Request, header},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Helper to create an initialize request.
 fn create_initialize_request() -> Value {
@@ -33,6 +31,7 @@ fn create_initialize_request() -> Value {
 }
 
 /// Helper to create a tools/list request.
+#[allow(dead_code)]
 fn create_tools_list_request(id: i64) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -43,6 +42,7 @@ fn create_tools_list_request(id: i64) -> Value {
 }
 
 /// Helper to create a ping request.
+#[allow(dead_code)]
 fn create_ping_request(id: i64) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -80,7 +80,10 @@ async fn test_session_manager_integration() {
     manager.get_session(&session_id).await.expect("Get session");
 
     // Terminate session
-    manager.terminate(&session_id).await.expect("Terminate session");
+    manager
+        .terminate(&session_id)
+        .await
+        .expect("Terminate session");
 
     // Verify session no longer exists
     assert!(!manager.exists(&session_id).await);
@@ -94,16 +97,31 @@ async fn test_session_state_transitions() {
     let session_id = manager.create_session().await.expect("Create session");
 
     // Initial state should be Created
-    let state = manager.get_session_state(&session_id).await.expect("Get state");
+    let state = manager
+        .get_session_state(&session_id)
+        .await
+        .expect("Get state");
     assert_eq!(state, SessionState::Created);
 
     // Transition through states
-    manager.set_session_state(&session_id, SessionState::Initializing).await.expect("Set state");
-    let state = manager.get_session_state(&session_id).await.expect("Get state");
+    manager
+        .set_session_state(&session_id, SessionState::Initializing)
+        .await
+        .expect("Set state");
+    let state = manager
+        .get_session_state(&session_id)
+        .await
+        .expect("Get state");
     assert_eq!(state, SessionState::Initializing);
 
-    manager.set_session_state(&session_id, SessionState::Running).await.expect("Set state");
-    let state = manager.get_session_state(&session_id).await.expect("Get state");
+    manager
+        .set_session_state(&session_id, SessionState::Running)
+        .await
+        .expect("Set state");
+    let state = manager
+        .get_session_state(&session_id)
+        .await
+        .expect("Get state");
     assert_eq!(state, SessionState::Running);
 }
 
@@ -136,7 +154,10 @@ async fn test_auth_with_invalid_api_key() {
         .unwrap();
 
     let result = auth.authenticate(&request);
-    assert!(result.is_err(), "Invalid API key should fail authentication");
+    assert!(
+        result.is_err(),
+        "Invalid API key should fail authentication"
+    );
 }
 
 #[tokio::test]
@@ -201,7 +222,12 @@ async fn test_mcp_protocol_headers() {
             .header(name, value)
             .body(Body::empty());
 
-        assert!(request.is_ok(), "Header {}: {} should be valid", name, value);
+        assert!(
+            request.is_ok(),
+            "Header {}: {} should be valid",
+            name,
+            value
+        );
     }
 }
 

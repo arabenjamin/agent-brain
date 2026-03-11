@@ -12,21 +12,12 @@ use super::error::{Result, SecretError};
 use super::provider::SecretProvider;
 
 /// Configuration for AWS Secrets Manager.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AwsSecretConfig {
     /// AWS region (e.g., "us-east-1").
     pub region: Option<String>,
     /// Prefix for all secret names (e.g., "/agent-api/").
     pub prefix: String,
-}
-
-impl Default for AwsSecretConfig {
-    fn default() -> Self {
-        Self {
-            region: None,
-            prefix: String::new(),
-        }
-    }
 }
 
 impl AwsSecretConfig {
@@ -79,8 +70,7 @@ impl AwsSecretProvider {
                 let mut config_loader = aws_config::from_env();
 
                 if let Some(region) = &self.config.region {
-                    config_loader =
-                        config_loader.region(aws_config::Region::new(region.clone()));
+                    config_loader = config_loader.region(aws_config::Region::new(region.clone()));
                 }
 
                 config_loader.load().await
@@ -117,9 +107,7 @@ impl AwsSecretProvider {
             name.to_string()
         } else {
             let prefix = format!("{}/", self.config.prefix.trim_end_matches('/'));
-            name.strip_prefix(&prefix)
-                .unwrap_or(name)
-                .to_string()
+            name.strip_prefix(&prefix).unwrap_or(name).to_string()
         }
     }
 
@@ -266,9 +254,10 @@ impl SecretProvider for AwsSecretProvider {
                     request = request.next_token(token);
                 }
 
-                let response = request.send().await.map_err(|e| {
-                    SecretError::Aws(e.to_string())
-                })?;
+                let response = request
+                    .send()
+                    .await
+                    .map_err(|e| SecretError::Aws(e.to_string()))?;
 
                 for secret in response.secret_list() {
                     if let Some(name) = secret.name() {

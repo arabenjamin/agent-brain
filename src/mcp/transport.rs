@@ -1,12 +1,12 @@
 //! Stdio transport for MCP server.
 
 use std::io::{self, BufRead, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, trace};
 
 use super::protocol::{IncomingMessage, JsonRpcErrorResponse, JsonRpcResponse};

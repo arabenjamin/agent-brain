@@ -11,6 +11,17 @@ import { getMcpUrl, getApiKey } from "./config";
 let _client: Client | null = null;
 let _connecting: Promise<Client> | null = null;
 
+// ── Push notification bus ──────────────────────────────────────────────────────
+type NotificationMsg = { method: string; params?: unknown };
+type NotificationHandler = (n: NotificationMsg) => void;
+const _notifHandlers = new Set<NotificationHandler>();
+
+/** Subscribe to MCP server-push notifications. Returns an unsubscribe fn. */
+export function onNotification(handler: NotificationHandler): () => void {
+  _notifHandlers.add(handler);
+  return () => _notifHandlers.delete(handler);
+}
+
 export async function getMcpClient(): Promise<Client> {
   if (_client) return _client;
   if (_connecting) return _connecting;
@@ -33,6 +44,12 @@ export async function getMcpClient(): Promise<Client> {
     );
 
     await client.connect(transport);
+
+    // Fan-out any server-pushed notification to all subscribers.
+    client.fallbackNotificationHandler = async (notification) => {
+      for (const h of _notifHandlers) h(notification as NotificationMsg);
+    };
+
     _client = client;
     _connecting = null;
     return client;
@@ -74,4 +91,5 @@ export async function callTool(
 export function resetMcpClient() {
   _client = null;
   _connecting = null;
+  _notifHandlers.clear();
 }
