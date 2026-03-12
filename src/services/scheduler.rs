@@ -15,12 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::models::TaskStatus;
 use crate::repository::Neo4jClient;
+use crate::services::context_builder::ContextBuilderService;
 use crate::services::queue::{ChainStep, QueueService};
 
 /// Runtime configuration for the scheduler.
@@ -36,6 +37,10 @@ pub struct SchedulerConfig {
     pub error_budget: u32,
     /// Optional session ID to attach to enqueued jobs.
     pub session_id: Option<String>,
+    /// Number of consecutive idle ticks before entering sleep mode. Default: 3.
+    pub idle_sleep_after_ticks: u32,
+    /// Scheduler tick interval while in sleep mode (seconds). Default: 1800.
+    pub sleep_interval_secs: u64,
 }
 
 impl Default for SchedulerConfig {
@@ -51,6 +56,14 @@ impl Default for SchedulerConfig {
             max_tasks_per_run: 3,
             error_budget: 5,
             session_id: None,
+            idle_sleep_after_ticks: std::env::var("IDLE_SLEEP_AFTER_TICKS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
+            sleep_interval_secs: std::env::var("SLEEP_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1800),
         }
     }
 }
@@ -63,6 +76,12 @@ pub struct SchedulerState {
     pub last_run_at: Option<String>,
     pub last_error: Option<String>,
     pub is_running: bool,
+    /// Consecutive idle ticks since last activity (tasks_dispatched + new_tasks_created == 0).
+    pub idle_ticks: u32,
+    /// Whether the scheduler is in sleep mode (longer tick interval, bedtime routine queued).
+    pub is_sleeping: bool,
+    /// RFC3339 timestamp of the last `notify_activity()` call (i.e. last incoming tool call).
+    pub last_activity_at: Option<String>,
 }
 
 /// Result returned from a single scheduler tick.
@@ -86,6 +105,7 @@ pub struct SchedulerService {
     pub state: Arc<RwLock<SchedulerState>>,
     shutdown: Arc<AtomicBool>,
     wakeup: Arc<Notify>,
+    context_builder: Option<Arc<ContextBuilderService>>,
 }
 
 impl SchedulerService {
@@ -94,6 +114,15 @@ impl SchedulerService {
     /// Reads `SCHEDULER_INTERVAL_SECS` and `SCHEDULER_ENABLED` from the environment,
     /// then spawns the background loop immediately.
     pub fn new(neo4j: Neo4jClient, queue: Arc<QueueService>) -> Arc<Self> {
+        Self::new_with_context(neo4j, queue, None)
+    }
+
+    /// Create and start the scheduler with an optional context builder for profile auto-assignment.
+    pub fn new_with_context(
+        neo4j: Neo4jClient,
+        queue: Arc<QueueService>,
+        context_builder: Option<Arc<ContextBuilderService>>,
+    ) -> Arc<Self> {
         let svc = Arc::new(Self {
             neo4j,
             queue,
@@ -101,6 +130,7 @@ impl SchedulerService {
             state: Arc::new(RwLock::new(SchedulerState::default())),
             shutdown: Arc::new(AtomicBool::new(false)),
             wakeup: Arc::new(Notify::new()),
+            context_builder,
         });
 
         let svc_clone = Arc::clone(&svc);
@@ -115,7 +145,11 @@ impl SchedulerService {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(300);
-        info!(interval_secs = interval, enabled = enabled, "SchedulerService started");
+        info!(
+            interval_secs = interval,
+            enabled = enabled,
+            "SchedulerService started"
+        );
         svc
     }
 
@@ -125,8 +159,17 @@ impl SchedulerService {
 
     async fn run_loop(self: Arc<Self>) {
         loop {
-            // Snapshot interval before sleeping to avoid holding guard across await.
-            let interval_secs = self.config.read().await.interval_secs;
+            // Snapshot the effective interval before sleeping.
+            // When in sleep mode use the longer sleep_interval_secs; otherwise interval_secs.
+            let interval_secs = {
+                let s = self.state.read().await;
+                let c = self.config.read().await;
+                if s.is_sleeping {
+                    c.sleep_interval_secs
+                } else {
+                    c.interval_secs
+                }
+            };
 
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {}
@@ -222,9 +265,23 @@ impl SchedulerService {
                 continue;
             }
 
-            let steps = Self::goal_to_steps(&goal, &task_id);
+            let mut steps = Self::goal_to_steps(&goal, &task_id);
 
-            match self.queue.enqueue_chain(&steps, session_id.as_deref()).await {
+            // Auto-assign a context profile to all steps if context_builder is available.
+            if let Some(cb) = &self.context_builder {
+                let profile = cb.auto_assign(&goal).await;
+                for step in &mut steps {
+                    if step.context_profile.is_none() {
+                        step.context_profile = Some(profile.clone());
+                    }
+                }
+            }
+
+            match self
+                .queue
+                .enqueue_chain(&steps, session_id.as_deref())
+                .await
+            {
                 Ok(ids) => {
                     // Mark in_progress immediately to prevent double-dispatch on next tick.
                     if let Err(e) = self
@@ -256,12 +313,94 @@ impl SchedulerService {
             0
         });
 
+        // Idle detection: if nothing happened this tick, increment the idle counter.
+        let was_idle = tasks_dispatched == 0 && new_tasks_created == 0;
+        if was_idle {
+            let threshold = self.config.read().await.idle_sleep_after_ticks;
+            let mut st = self.state.write().await;
+            st.idle_ticks += 1;
+            let should_enter_sleep = st.idle_ticks >= threshold && !st.is_sleeping;
+            if should_enter_sleep {
+                st.is_sleeping = true;
+                drop(st);
+                self.enter_sleep().await;
+            }
+        } else {
+            let mut st = self.state.write().await;
+            st.idle_ticks = 0;
+            st.is_sleeping = false;
+        }
+
         Ok(TickResult {
             tasks_found,
             tasks_dispatched,
             skipped,
             new_tasks_created,
         })
+    }
+
+    /// Enqueue a low-priority bedtime chain: consolidate → prune → snapshot → store note.
+    ///
+    /// Called once when the scheduler transitions into sleep mode after `idle_sleep_after_ticks`
+    /// consecutive idle ticks.
+    async fn enter_sleep(&self) {
+        let (session_id, timestamp) = {
+            let cfg = self.config.read().await;
+            (cfg.session_id.clone(), chrono::Utc::now().to_rfc3339())
+        };
+
+        let steps = vec![
+            ChainStep {
+                tool_name: "consolidate_memories".to_string(),
+                arguments: Some(json!({
+                    "topic": "recent experiences and knowledge",
+                    "limit": 10
+                })),
+                priority: Some(0),
+                max_attempts: Some(2),
+                provider_hint: None,
+                context_profile: None,
+            },
+            ChainStep {
+                tool_name: "prune_old_notes".to_string(),
+                arguments: Some(json!({ "dry_run": false })),
+                priority: Some(0),
+                max_attempts: Some(2),
+                provider_hint: None,
+                context_profile: None,
+            },
+            ChainStep {
+                tool_name: "snapshot_knowledge".to_string(),
+                arguments: Some(json!({ "label": "sleep" })),
+                priority: Some(0),
+                max_attempts: Some(2),
+                provider_hint: None,
+                context_profile: None,
+            },
+            ChainStep {
+                tool_name: "store_note".to_string(),
+                arguments: Some(json!({
+                    "content": format!(
+                        "Brain entering sleep mode at {timestamp}. Idle cleanup complete."
+                    ),
+                    "note_type": "outcome"
+                })),
+                priority: Some(0),
+                max_attempts: Some(2),
+                provider_hint: None,
+                context_profile: None,
+            },
+        ];
+
+        if let Err(e) = self
+            .queue
+            .enqueue_chain(&steps, session_id.as_deref())
+            .await
+        {
+            warn!(error = %e, "Failed to enqueue bedtime chain on sleep entry");
+        } else {
+            info!("Brain entering sleep mode after idle ticks; bedtime chain enqueued");
+        }
     }
 
     /// Scan recent outcome notes for repeated failure patterns and auto-create analysis tasks.
@@ -275,7 +414,8 @@ impl SchedulerService {
         RETURN n.content AS content
         "#;
 
-        let rows = self.neo4j
+        let rows = self
+            .neo4j
             .execute(neo4rs::query(cypher))
             .await
             .map_err(|e| e.to_string())?;
@@ -283,12 +423,13 @@ impl SchedulerService {
         // Count failures per tool name (content format: "Tool: <name> | Success: false\n...")
         let mut tool_failures: HashMap<String, u32> = HashMap::new();
         for row in &rows {
-            if let Ok(content) = row.get::<String>("content") {
-                if let Some(rest) = content.strip_prefix("Tool: ") {
-                    if let Some(tool_name) = rest.split(" | ").next() {
-                        *tool_failures.entry(tool_name.trim().to_string()).or_insert(0) += 1;
-                    }
-                }
+            if let Ok(content) = row.get::<String>("content")
+                && let Some(rest) = content.strip_prefix("Tool: ")
+                && let Some(tool_name) = rest.split(" | ").next()
+            {
+                *tool_failures
+                    .entry(tool_name.trim().to_string())
+                    .or_insert(0) += 1;
             }
         }
 
@@ -306,7 +447,8 @@ impl SchedulerService {
             )
             .param("tool", tool.as_str());
 
-            let existing: i64 = self.neo4j
+            let existing: i64 = self
+                .neo4j
                 .execute(check)
                 .await
                 .ok()
@@ -318,10 +460,11 @@ impl SchedulerService {
                     "Analyze repeated failures for '{}' and identify root cause or documentation gap",
                     tool
                 );
-                match self.neo4j.create_task(
-                    &goal,
-                    Some("Auto-generated by proactive perception scan"),
-                ).await {
+                match self
+                    .neo4j
+                    .create_task(&goal, Some("Auto-generated by proactive perception scan"))
+                    .await
+                {
                     Ok(_) => {
                         created += 1;
                         info!(tool = %tool, failures = count, "Perception scan created failure analysis task");
@@ -344,7 +487,8 @@ impl SchedulerService {
                 .await
                 .ok()
                 .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(0) > 0
+                .unwrap_or(0)
+                > 0
         };
 
         // Trigger 1: many overdue spaced-repetition notes.
@@ -354,7 +498,8 @@ impl SchedulerService {
                AND n.note_type <> 'consolidated' \
              RETURN count(n) AS cnt",
         );
-        let due_count: i64 = self.neo4j
+        let due_count: i64 = self
+            .neo4j
             .execute(due_check)
             .await
             .ok()
@@ -366,10 +511,15 @@ impl SchedulerService {
                 "Consolidate {} overdue spaced-repetition notes into long-term memory",
                 due_count
             );
-            if self.neo4j.create_task(
-                &goal,
-                Some("Auto-generated by proactive perception scan (spaced-repetition backlog)"),
-            ).await.is_ok() {
+            if self
+                .neo4j
+                .create_task(
+                    &goal,
+                    Some("Auto-generated by proactive perception scan (spaced-repetition backlog)"),
+                )
+                .await
+                .is_ok()
+            {
                 created += 1;
 
                 // Immediately advance next_review_at on ALL currently-overdue notes so that
@@ -387,18 +537,23 @@ impl SchedulerService {
                          END",
                 );
                 if let Err(e) = self.neo4j.run(bump).await {
-                    warn!("Failed to advance overdue note dates after scheduling consolidation: {e}");
+                    warn!(
+                        "Failed to advance overdue note dates after scheduling consolidation: {e}"
+                    );
                 }
 
-                info!(due_count = due_count, "Perception scan created consolidation task (overdue notes)");
+                info!(
+                    due_count = due_count,
+                    "Perception scan created consolidation task (overdue notes)"
+                );
             }
         }
 
         // Trigger 2: high episodic note volume (sleep-cycle analogue).
-        let episodic_check = neo4rs::query(
-            "MATCH (n:Note) WHERE n.note_type = 'episodic' RETURN count(n) AS cnt",
-        );
-        let episodic_count: i64 = self.neo4j
+        let episodic_check =
+            neo4rs::query("MATCH (n:Note) WHERE n.note_type = 'episodic' RETURN count(n) AS cnt");
+        let episodic_count: i64 = self
+            .neo4j
             .execute(episodic_check)
             .await
             .ok()
@@ -438,6 +593,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "consolidate_memories".to_string(),
@@ -445,6 +601,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
             ]
         } else if g.contains("prioriti") || g.contains("roadmap") || g.contains("plan") {
@@ -456,6 +613,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "reason".to_string(),
@@ -463,6 +621,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "store_note".to_string(),
@@ -473,6 +632,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
             ]
         } else if g.contains("improve") || g.contains("execute") {
@@ -484,6 +644,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "reason".to_string(),
@@ -491,6 +652,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "reflect_on_work".to_string(),
@@ -502,6 +664,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
             ]
         } else if g.contains("identify") || g.contains("opportunit") {
@@ -513,6 +676,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "store_note".to_string(),
@@ -523,6 +687,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
             ]
         } else if g.contains("consolidat") {
@@ -534,7 +699,7 @@ impl SchedulerService {
             } else {
                 // e.g. "Consolidate robotics knowledge" → "robotics knowledge"
                 goal.split_whitespace()
-                    .skip(1)  // skip "Consolidate"
+                    .skip(1) // skip "Consolidate"
                     .collect::<Vec<_>>()
                     .join(" ")
                     .trim()
@@ -547,6 +712,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(2),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "prune_old_notes".to_string(),
@@ -558,6 +724,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(2),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 // Mark the parent task completed so open_consolidation_exists() stays accurate.
                 ChainStep {
@@ -566,6 +733,117 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(1),
                     provider_hint: None,
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("failure")
+            || g.contains("root cause")
+            || g.contains("debug")
+            || g.contains("error pattern")
+        {
+            // Failure analysis: search for error context, diagnose, document findings.
+            // Matches goals auto-generated by perception_scan: "Analyze repeated failures for 'X'...".
+            vec![
+                ChainStep {
+                    tool_name: "search_notes".to_string(),
+                    arguments: Some(json!({ "query": goal, "limit": 15 })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({ "question": goal, "store_inference": true })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": format!("Failure analysis outcome: {goal}"),
+                        "note_type": "semantic"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reflect_on_work".to_string(),
+                    arguments: Some(json!({
+                        "goal": goal,
+                        "current_state": "Completed failure analysis and root-cause reasoning",
+                        "task_id": task_id
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("search web")
+            || g.contains("web search")
+            || g.contains("look up")
+            || (g.contains("find") && g.contains("recent"))
+        {
+            // Web research: fetch live information and store findings.
+            vec![
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({ "query": goal, "count": 5 })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": format!("Web research finding for: {goal}"),
+                        "note_type": "semantic"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("learn")
+            || g.contains("research")
+            || g.contains("study")
+            || g.contains("understand")
+        {
+            // Learning / research: search existing knowledge, reason, persist new knowledge.
+            vec![
+                ChainStep {
+                    tool_name: "search_notes".to_string(),
+                    arguments: Some(json!({ "query": goal, "limit": 10 })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({ "question": goal, "store_inference": true })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": format!("Learning outcome: {goal}"),
+                        "note_type": "semantic"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
                 },
             ]
         } else if g.contains("review") || g.contains("analyz") || g.contains("source") {
@@ -577,6 +855,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "reason".to_string(),
@@ -584,10 +863,11 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
             ]
         } else {
-            // Default: search context + reason
+            // Default: search context, reason, and reflect on the outcome.
             vec![
                 ChainStep {
                     tool_name: "search_notes".to_string(),
@@ -595,6 +875,7 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
                 },
                 ChainStep {
                     tool_name: "reason".to_string(),
@@ -602,6 +883,19 @@ impl SchedulerService {
                     priority: Some(1),
                     max_attempts: Some(3),
                     provider_hint: None,
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reflect_on_work".to_string(),
+                    arguments: Some(json!({
+                        "goal": goal,
+                        "current_state": "Completed autonomous reasoning pass",
+                        "task_id": task_id
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: None,
+                    context_profile: None,
                 },
             ]
         };
@@ -612,11 +906,12 @@ impl SchedulerService {
             arguments: Some(json!({
                 "task_id": task_id,
                 "status": "completed",
-                "note": "Task completed autonomously by scheduler job chain."
+                "note": format!("Task completed: {}", goal)
             })),
             priority: Some(1),
             max_attempts: Some(3),
             provider_hint: None,
+            context_profile: None,
         });
 
         steps
@@ -626,12 +921,33 @@ impl SchedulerService {
     // Public control API
     // =========================================================================
 
+    /// Notify the scheduler that a tool call just arrived from a client.
+    ///
+    /// Resets the idle counter and sleep flag. If the scheduler was sleeping,
+    /// interrupts the long sleep immediately so the next tick runs at `interval_secs`.
+    pub async fn notify_activity(&self) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let was_sleeping = {
+            let mut st = self.state.write().await;
+            let was = st.is_sleeping;
+            st.idle_ticks = 0;
+            st.is_sleeping = false;
+            st.last_activity_at = Some(now);
+            was
+        };
+        if was_sleeping {
+            self.wakeup.notify_one();
+            info!("Brain waking from sleep mode due to incoming tool call");
+        }
+    }
+
     /// Update scheduler configuration fields (all optional).
     ///
     /// If `interval_secs` is changed the background loop's current sleep is
     /// interrupted via the wakeup `Notify` so the new interval takes effect
     /// on the very next iteration (not after the old sleep expires).
     /// If `enabled` is set to `true` the consecutive-error counter is reset.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_config(
         &self,
         interval_secs: Option<u64>,
@@ -639,12 +955,14 @@ impl SchedulerService {
         max_tasks_per_run: Option<usize>,
         error_budget: Option<u32>,
         session_id: Option<Option<String>>,
+        idle_sleep_after_ticks: Option<u32>,
+        sleep_interval_secs: Option<u64>,
     ) -> SchedulerConfig {
         let interval_changed;
         let re_enabling;
         let result = {
             let mut cfg = self.config.write().await;
-            interval_changed = interval_secs.map_or(false, |v| v != cfg.interval_secs);
+            interval_changed = interval_secs.is_some_and(|v| v != cfg.interval_secs);
             if let Some(v) = interval_secs {
                 cfg.interval_secs = v;
             }
@@ -660,6 +978,12 @@ impl SchedulerService {
             }
             if let Some(v) = session_id {
                 cfg.session_id = v;
+            }
+            if let Some(v) = idle_sleep_after_ticks {
+                cfg.idle_sleep_after_ticks = v;
+            }
+            if let Some(v) = sleep_interval_secs {
+                cfg.sleep_interval_secs = v;
             }
             cfg.clone()
         };
@@ -688,6 +1012,8 @@ impl SchedulerService {
                 "max_tasks_per_run": cfg.max_tasks_per_run,
                 "error_budget": cfg.error_budget,
                 "session_id": cfg.session_id,
+                "idle_sleep_after_ticks": cfg.idle_sleep_after_ticks,
+                "sleep_interval_secs": cfg.sleep_interval_secs,
             },
             "state": {
                 "tasks_dispatched": st.tasks_dispatched,
@@ -695,6 +1021,9 @@ impl SchedulerService {
                 "last_run_at": st.last_run_at,
                 "last_error": st.last_error,
                 "is_running": st.is_running,
+                "idle_ticks": st.idle_ticks,
+                "is_sleeping": st.is_sleeping,
+                "last_activity_at": st.last_activity_at,
             }
         })
     }

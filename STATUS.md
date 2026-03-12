@@ -1,8 +1,9 @@
 # Brain Status
 
-**Build:** passing — 214 unit tests, 0 failures
-**Tool count:** 64 static registered + N runtime (DynamicSkill)
-**Last updated:** 2026-02-27
+**Build:** passing
+**Tool count:** 81 static registered + N runtime (DynamicSkill)
+**LLM Providers:** Ollama, Anthropic, Gemini, vLLM/OpenAI-compat
+**Last updated:** 2026-03-05
 
 ---
 
@@ -15,148 +16,122 @@
 | Vector search | Ollama embeddings (bge-m3, 1024-dim) + BM25 hybrid RRF | Live |
 | LLM | Ollama (local) | Live |
 | Cloud LLM | Anthropic / Gemini | Live |
+| High-perf LLM | vLLM / OpenAI-compat | Live |
 | Job queue | Priority BinaryHeap + Neo4j persistence + Tokio coordinator | Live |
 | Secret store | Local AES-256-GCM / HashiCorp Vault / AWS Secrets Manager | Live |
 | Telemetry | DuckDB (`brain_logs.db`) | Live |
+| Chat API | Server-side `/chat` SSE endpoint (Axum) | Live |
+| Context profiles | YAML-defined tool allowlists + system prompts (9 profiles) | Live |
+| Idle sleep mode | Auto-sleep after N idle ticks; bedtime consolidation chain | Live |
 
 ---
 
-## Skill Registry (65 tools static + N runtime)
+## Skill Registry (81 tools static + N runtime)
 
 | Skill | File | Tools | Notes |
 |-------|------|-------|-------|
-| ApiSkill | `src/skills/api.rs` | 14 | Core OpenAPI ingestion, query, execute, heal, export |
-| KnowledgeSkill | `src/skills/knowledge.rs` | 10 | RAG, reasoning, audit, explain, spaced-repetition |
+| ApiSkill | `src/skills/api.rs` | 14 | OpenAPI ingestion, query, execute, heal, export, discovery, docgen |
+| KnowledgeSkill | `src/skills/knowledge.rs` | 16 | RAG, reasoning, audit, explain, spaced-rep, note CRUD, entity search, graph viz |
 | TaskSkill | `src/skills/task.rs` | 6 | Goal tracking, decomposition, outcomes, reflection |
 | AgentSkill | `src/skills/agent.rs` | 8 | Background job queue + sequential chaining |
-| AdminSkill | `src/skills/admin.rs` | 5 | Graph cleanup: delete API, purge duplicates/orphans, reset, backfill embeddings |
+| AdminSkill | `src/skills/admin.rs` | 10 | Graph cleanup, backfill embeddings, snapshots, integrity check, analyze structure |
 | ModelSkill | `src/skills/model.rs` | 5 | Model registry + intelligent selection |
-| SchedulerSkill | `src/skills/scheduler.rs` | 5 | Autonomous background scheduler with configurable tick interval |
+| SchedulerSkill | `src/skills/scheduler.rs` | 5 | Autonomous background scheduler; idle sleep mode; runtime control |
+| ContextSkill | `src/skills/context.rs` | 4 | Context profile management and bundle building |
 | DynamicSkill | `src/skills/dynamic.rs` | 4 + N | Runtime tool definition, hot-registration |
-| WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad, LLM summarisation |
+| WorkingMemorySkill | `src/skills/working_memory.rs` | 4 | Session scratchpad, LLM summarisation, session listing |
 | ProcedureSkill | `src/skills/procedure.rs` | 2 | Stored multi-step workflows |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Training data export (`digest_experiences`), knowledge gap analysis |
 | SearchSkill | `src/skills/search.rs` | 1 | Web search (SerpApi / Brave / Google) |
 
----
-
-## What Was Built (Recent Sessions)
-
-### Phase 1 — Brain Self-Improvement Roadmap (29 → 40 tools)
-
-**Phase 1 — Task Lifecycle (+4)**
-- `decompose_goal` — LLM breaks a task into ordered sub-tasks, creates `SUBTASK_OF` edges
-- `update_task` — sets task status + optional progress note
-- `list_tasks` — filtered task list with parent_id
-- `record_outcome` — episodic outcome note linked to a task
-
-**Phase 2 — Cognitive Layer (+3)**
-- `reason` — RAG + LLM inference; stores `(:Note {note_type:'inference'})-[:DERIVED_FROM]->(:Note)`
-- `audit_action` — checks a proposed action against stored principles via LLM
-- `explain_reasoning` — narrates why a decision was made, citing source notes
-
-**Phase 3 — Dynamic Tool Builder (+4)**
-- `define_tool` — define a new MCP tool backed by a procedure pipeline; hot-registered
-- `execute_procedure` — run a stored procedure with `{{input.field}}` template substitution
-- `list_dynamic_tools` — list all runtime-defined tools
-- `remove_dynamic_tool` — delete a dynamic tool and unregister it live
-
-New infrastructure:
-- `src/services/procedure_executor.rs` — template substitution engine for procedure steps
-- `src/skills/dynamic.rs` — `DynamicSkill` with shared `Arc<RwLock<HashMap>>` between registry and handler instances
-- `src/repository/task.rs` — `link_subtask`, `list_tasks`, `store_outcome_note`
-- `src/repository/client.rs` — DynamicTool constraints + index
-
-### Queue + Worker Infrastructure (40 → 47 tools)
-
-Background job execution system — submit any MCP tool call as a durable, prioritised background job.
-
-New files:
-- `src/models/agent_job.rs` — `AgentJob`, `AgentJobStatus` (queued/running/completed/failed/dead/parked/cancelled), `PrioritizedJob` (BinaryHeap ordering)
-- `src/repository/agent_job.rs` — Neo4j CRUD: create, get, list, started/completed/failed/dead, retry, stats
-- `src/services/queue.rs` — `QueueService` + `WorkerConfig`
-  - `BinaryHeap<PrioritizedJob>` — max-heap, priority 0-3, FIFO within same priority
-  - `Arc<Semaphore>` — concurrency limit (default: 5 concurrent jobs)
-  - `Arc<Notify>` — immediate wakeup on enqueue
-  - 30-second periodic Neo4j poll for missed jobs
-  - Startup recovery: resets crashed `running` → `queued`
-  - Lazy cancellation via tombstone `HashSet`
-  - Retry: resets `attempt_count`, re-enqueues; after `max_attempts` → Dead
-- `src/skills/agent.rs` — `AgentSkill` (7 tools)
-
-New tools:
-- `enqueue_agent` — submit a tool call as a background job
-- `queue_status` — stats: pending, running, per-status counts
-- `get_job_result` — poll a job for status/result
-- `cancel_job` — cancel a queued or running job
-- `retry_job` — requeue a failed/dead/cancelled job
-- `set_worker_config` — change concurrency, enable/pause, poll interval
-- `drain_queue` — cancel all pending jobs
-
-### Graph Cleanup + Job Chaining (54 → 59 tools)
-
-**AdminSkill (+4 tools, `src/skills/admin.rs`)**
-- `delete_api` — cascade-delete all graph nodes for one API (dry_run supported); evicts context cache
-- `purge_duplicate_endpoints` — remove duplicate Endpoint nodes (same resource + path + method)
-- `purge_orphaned_schemas` — delete Schema nodes with no Endpoint relationships
-- `reset_graph` — wipe all API data (requires `confirm: true`); knowledge data preserved
-
-New files:
-- `src/repository/admin.rs` — `CleanupStats` struct + 6 methods on `Neo4jClient` (count/delete/purge/reset)
-- `src/skills/admin.rs` — `AdminSkill` (Neo4j + ContextStore)
-
-**Job Chaining — `enqueue_chain` (+1 tool in `AgentSkill`, now 8 tools)**
-- Sequential chain: step 1 is queued immediately; steps 2..N stored as `parked` (waiting for predecessor)
-- On job completion: coordinator auto-promotes parked children to `queued` and pushes onto heap
-- On job death (exhausted retries): parked children are cancelled
-- On retryable failure: children stay parked — they run if the job is retried and succeeds
-
-New repository methods in `agent_job.rs`:
-- `create_agent_job_parked` — creates job with `status: 'parked'`
-- `unpark_children(parent_id)` — promotes parked children to queued, returns `Vec<AgentJob>`
-- `cancel_parked_children(parent_id)` — cancels parked children, returns count
-
-New service:
-- `ChainStep` struct in `queue.rs` (tool_name, arguments, priority, max_attempts, provider_hint)
-- `QueueService::enqueue_chain(steps, session_id)` — creates chain, pushes head onto heap
-- `QueueService::unpark_and_enqueue_children(parent_id)` — helper called inside `execute_job`
+**KnowledgeSkill tools (16):** `store_note`, `search_notes`, `export_graph_visualization`, `find_related_notes`, `prune_old_notes`, `consolidate_memories`, `list_notes`, `review_due_notes`, `reason`, `audit_action`, `explain_reasoning`, `ask_clarification`, `get_note`, `search_by_entity`, `delete_note`, `update_note`
 
 ---
 
-## Where We Left Off
+## Context Profiles (9 files in `contexts/`)
 
-The queue is the **first phase of a larger subagent orchestration system**. The next two phases are:
+| Profile | Purpose |
+|---------|---------|
+| `general` | Full tool access, no restrictions |
+| `knowledge-worker` | Notes, search, memory tools only |
+| `task-manager` | Task lifecycle tools |
+| `code-analyst` | Code + API tools |
+| `api-builder` | API ingestion, query, execution |
+| `scheduler` | Scheduler + queue management |
+| `researcher` | Search + knowledge synthesis |
+| `boot.yaml` | Startup protocol (runs every start) |
+| `init.yaml` | Init protocol (runs on empty graph) |
 
-### Phase 2 — Multi-Provider LLM Client ✓
+---
 
-Anthropic, Gemini, and Ollama providers implemented via `LlmProvider` trait.
+## HBI Frontend Panels
 
-- `src/services/llm_providers/mod.rs` — `LlmProvider` trait + `ProviderConfig`
-- `src/services/llm_providers/ollama.rs` — Ollama HTTP client
-- `src/services/llm_providers/anthropic.rs` — Anthropic Messages API client
-- `src/services/llm_providers/gemini.rs` — Gemini generativeLanguage client
-- `LlmClient` refactored as thin wrapper over `Arc<dyn LlmProvider>`
-- `ModelSkill` (`list_models`, `use_model`) added for runtime provider switching
+| Panel | File | Status |
+|-------|------|--------|
+| Chat | `chat/ChatPanel.tsx` | Session history sidebar, research mode, context profile selector, export, expandable event bubbles |
+| Knowledge | `knowledge/KnowledgePanel.tsx` | Search, note CRUD (create/edit/delete), spaced-rep initial load |
+| Tasks | `tasks/TaskPanel.tsx` | Subtask tree view, status filtering |
+| Graph | `graph/GraphPanel.tsx` | Live `export_graph_visualization` data, node click → note detail, ResizeObserver sizing |
+| Logs | `logs/LogsPanel.tsx` | AgentJob history timeline |
+| Architecture | `architecture/ArchitecturePanel.tsx` | Static architecture diagram |
+| Settings | `settings/SettingsModal.tsx` | Brain URL + API key (localStorage) |
 
-### Phase 3 — Model Registry + Intelligent Selection ✓
+---
 
-The brain now stores knowledge about each model's capabilities and cost, and selects the cheapest capable model automatically.
+## What Was Built
 
-New files:
-- `src/models/model_spec.rs` — `ModelSpec { id, name, provider, cost_per_1k_tokens_input, cost_per_1k_tokens_output, context_window, capabilities }`
-- `src/repository/model_spec.rs` — Neo4j CRUD (upsert by name, usage stats from AgentJob)
-- `src/services/model_selector.rs` — capability-match → cheapest-first selection algorithm
-- `src/skills/model.rs` — 5 tools: `list_models`, `use_model`, `register_model`, `select_model`, `get_model_stats`
+### Tier 1 Brain Capabilities (all complete)
 
-QueueService updated:
-- Replaced single `semaphore` with three per-provider semaphores: `ollama` (3), `anthropic` (2), `gemini` (5)
-- Coordinator picks semaphore from `job.provider_hint` field
-- `queue_status` response includes `per_provider` breakdown
+- **1.1 Memory Consolidation** — `perception_scan()` auto-triggers `consolidate_memories + prune` chain when ≥10 overdue notes or ≥50 episodic notes
+- **1.2 Semantic Chunking** — sentence/paragraph-aware splitter (min 200 chars, max 1500 chars); each chunk embedded independently
+- **1.3 Richer Entity Extraction** — 7 entity types (person/tool/technology/concept/organisation/url/date); 16-word stopword filter
+- **1.4 Multi-Hop Reasoning + Graph Viz** — `entity_expansion` bridges MENTIONS→Entity←MENTIONS; `export_graph_visualization` returns full graph JSON
+- **1.5 `get_note` Tool** — direct fetch by UUID, updates access stats
+- **1.6 Procedural Control Flow** — `{{context.steps.N}}` positional references; `on_failure: abort|skip|continue` per step
+
+### Idle Sleep Mode
+
+- After `idle_sleep_after_ticks` consecutive idle ticks (default 3 ≈ 15 min), `is_sleeping = true`
+- Enqueues low-priority bedtime chain: `consolidate_memories → prune_old_notes → snapshot_knowledge(label="sleep") → store_note`
+- Sleep tick interval: `sleep_interval_secs` (default 1800s)
+- Wakes immediately on any incoming tool call via `notify_activity()`
+- Configurable via `IDLE_SLEEP_AFTER_TICKS` and `SLEEP_INTERVAL_SECS` env vars; runtime via `configure_scheduler`
+
+### Additional Tools Added
+
+- `list_notes` — ordered note listing with optional type filter; used by KnowledgePanel initial load
+- `search_by_entity` — find notes by named entity (partial name match, optional type filter)
+- `delete_note` — permanent note deletion
+- `update_note` — in-place note content update preserving all graph edges
+
+### Tier 2 HBI Frontend (all complete)
+
+- **2.1 Graph container sizing** — ResizeObserver + `useLayoutEffect` in GraphPanel
+- **2.2 MCP reconnect** — `callTool` wraps transport errors with `resetMcpClient()` + one retry
+- **2.3 Knowledge panel initial load** — `review_due_notes` on mount for meaningful default
+- **2.4 Graph node click → note** — `onNodeClick` → `get_note({ id })` → side panel detail view
+- **2.5 Task subtask tree view** — `childrenMap` groups by `parent_id`; subtasks indented
+- **2.6 Graph from `export_graph_visualization`** — live MCP data; Note + Entity + Task nodes
+- **2.7 Auth settings screen** — gear icon modal; Brain URL + API key stored in localStorage
+- **2.8 Logs panel** — AgentJob history from `queue_status` + per-job detail polling
 
 ---
 
 ## Known Issues / Backlog
 
-- **`graph_query_endpoint` natural language matching** — `CONTAINS` queries fail on paraphrased queries; should use `endpoint_embeddings` vector index for semantic matching
-- **DynamicSkill load on legacy McpServer** — sync `build_skills()` can't call `load_from_neo4j().await`; dynamic tools unavailable on stdio path after restart
-- **Per-provider semaphores not resizable** — sizes fixed at startup; `set_worker_config` updates `WorkerConfig` fields only
+### Open
+
+- **SSE push for job results on stdio transport** — stdio path has no session manager; callers must poll `get_job_result`. No lightweight fix without adding an event bus.
+- **Rhai scripting in procedure steps** — basic `on_failure` and `{{context.steps.N}}` conditionals added; full Rhai embed for dynamic logic still deferred.
+
+### Fixed (recent)
+
+- ~~`graph_query_endpoint` CONTAINS fallback~~ — embeddings auto-generated at ingest time
+- ~~Parent task stuck `in_progress` after subtasks complete~~ — `update_task` auto-completes parent when all subtasks done
+- ~~DynamicSkill load on stdio~~ — `build_skills()` is async; `load_from_neo4j().await` called at startup
+- ~~Per-provider semaphores not resizable~~ — `Arc<RwLock<Arc<Semaphore>>>` wrapper; `set_worker_config` swaps inner semaphore atomically
+- ~~Auto-snapshot before `prune_old_notes`~~ — `AUTO_SNAPSHOT_BEFORE_PRUNE` env var; hook fires before deletion queries (default false)
+- ~~`verify_knowledge_integrity` O(n²) duplicate check~~ — `LIMIT 50` applied in Cypher, truncation warning in response
+- ~~`goal_to_steps()` missing failure/web/learn branches~~ — added failure analysis, web research, learn/study, improved default
+- ~~Infinite consolidation loop~~ — fixed with `[Memory N]` labels (not `Note N:`), `"recent experiences and knowledge"` topic for auto-tasks, and `next_review_at = now + 30 days` reset after consolidation
+- ~~`contexts/` baked into Docker image~~ — `CONTEXTS_DIR=/home/agent/agent-brain/contexts` env var now points to volume-mounted path

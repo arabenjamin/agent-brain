@@ -1,4 +1,22 @@
 services:
+  neo4j:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+    ports:
+      - "7689:7687"    # Bolt (7689 to avoid conflict with agent-api on 7688)
+      - "7476:7474"    # Browser UI (7476 to avoid conflict with agent-api on 7475)
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - brain-internal
+
   # MCP Server with HTTP transport
   agent-brain:
     build:
@@ -7,35 +25,57 @@ services:
     ports:
       - "3001:3000"    # MCP HTTP endpoint (Use 3001 to avoid conflict if agent-api runs on 3000)
     environment:
-      - NEO4J_URI=bolt://agent-api-neo4j-1:7687
+      - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=password
       - LLM_PROVIDER=ollama
       - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=granite4:latest
+      - OLLAMA_MODEL=qwen3:8b
       - OLLAMA_EMBED_MODEL=bge-m3:latest
+      - MCP_TOOL_PROFILE=general    # Limit tools/list to this profile for smaller MCP clients (e.g. Open WebUI)
+      - CONTEXTS_DIR=/home/agent/agent-brain/contexts  # Use volume-mounted contexts so profile changes take effect without rebuild
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - MCP_TRANSPORT=http
       - MCP_HTTP_BIND=0.0.0.0:3000
       # - MCP_API_KEY=${MCP_API_KEY:-}
       - SERPAPI_KEY=${SERPAPI_KEY:-}
       - LOG_LEVEL=info
       - LOG_FORMAT=json
+      - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
       - /home/ara/agent-brain:/home/agent/agent-brain:ro
+      - brain_snapshots:/home/agent/snapshots
+    depends_on:
+      neo4j:
+        condition: service_healthy
     networks:
-      - agent-api_default
+      - brain-internal
+      - ai-network
+    restart: unless-stopped
+
+  hbi-frontend:
+    build:
+      context: ./hbi-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:80"
+    depends_on:
+      - agent-brain
+    networks:
       - ai-network
     restart: unless-stopped
 
 networks:
-  agent-api_default:
-    external: true
+  brain-internal:
   ai-network:
     external: true
 
 volumes:
   neo4j_data:
   neo4j_logs:
+  brain_snapshots:

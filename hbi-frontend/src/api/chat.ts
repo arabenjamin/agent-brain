@@ -7,6 +7,7 @@ export type ChatEventType =
   | "thinking"
   | "tool_call"
   | "tool_result"
+  | "token"
   | "message"
   | "error"
   | "done";
@@ -31,6 +32,9 @@ export interface StreamChatOptions {
   history?: ChatHistoryMessage[];
   sessionId?: string;
   tools?: string[];
+  contextProfile?: string;
+  synthesisProvider?: string;
+  synthesisModel?: string;
   onEvent: (event: ChatEvent) => void;
   signal?: AbortSignal;
 }
@@ -50,6 +54,9 @@ export async function streamChat(opts: StreamChatOptions): Promise<void> {
       history: opts.history ?? [],
       session_id: opts.sessionId,
       tools: opts.tools,
+      context_profile: opts.contextProfile,
+      synthesis_provider: opts.synthesisProvider,
+      synthesis_model: opts.synthesisModel || undefined,
     }),
     signal: opts.signal,
   });

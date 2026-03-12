@@ -2,16 +2,16 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tracing::{info, warn};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::{info, warn};
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::models::TaskStatus;
 use crate::repository::Neo4jClient;
-use crate::services::{LlmClient, LlmConfig};
 use crate::services::queue::{ChainStep, QueueService};
+use crate::services::{LlmClient, LlmConfig};
 use crate::skills::Skill;
 
 /// Task Skill implementation.
@@ -28,7 +28,11 @@ impl TaskSkill {
         neo4j: Option<Neo4jClient>,
         queue: Option<Arc<QueueService>>,
     ) -> Self {
-        Self { llm_config, neo4j, queue }
+        Self {
+            llm_config,
+            neo4j,
+            queue,
+        }
     }
 
     async fn make_llm(&self) -> Option<LlmClient> {
@@ -43,7 +47,8 @@ impl TaskSkill {
     fn create_task_def() -> ToolDefinition {
         ToolDefinition {
             name: "create_task".to_string(),
-            description: "Create a new high-level task or goal to track execution against.".to_string(),
+            description: "Create a new high-level task or goal to track execution against."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -64,10 +69,11 @@ impl TaskSkill {
     fn reflect_def() -> ToolDefinition {
         ToolDefinition {
             name: "reflect_on_work".to_string(),
-            description: "Analyze the current output or state against the original goal to determine \
+            description:
+                "Analyze the current output or state against the original goal to determine \
                          next steps or corrections. Persists a reflection Note linked to the task \
                          when task_id is provided."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -97,9 +103,10 @@ impl TaskSkill {
     fn decompose_goal_def() -> ToolDefinition {
         ToolDefinition {
             name: "decompose_goal".to_string(),
-            description: "Break a high-level task into an ordered list of concrete sub-tasks using LLM. \
+            description:
+                "Break a high-level task into an ordered list of concrete sub-tasks using LLM. \
                          Creates SUBTASK_OF edges in the graph linking each sub-task to the parent."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -214,21 +221,24 @@ impl TaskSkill {
         };
 
         if let Some(neo4j) = &self.neo4j {
-             match neo4j.create_task(&input.goal, input.context.as_deref()).await {
+            match neo4j
+                .create_task(&input.goal, input.context.as_deref())
+                .await
+            {
                 Ok(id) => {
                     info!(task_id = %id, goal = %input.goal, "Created new task in DB");
                     let response = json!({
-                        "task_id": id,
+                        "id": id,
                         "status": "created",
                         "message": "Task created successfully in database."
                     });
                     ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-                },
-                Err(e) => ToolCallResult::error(format!("Failed to create task in DB: {}", e))
-             }
+                }
+                Err(e) => ToolCallResult::error(format!("Failed to create task in DB: {}", e)),
+            }
         } else {
-             info!(goal = %input.goal, "Neo4j not available, skipping persistence");
-             ToolCallResult::error("Persistence layer (Neo4j) not available.".to_string())
+            info!(goal = %input.goal, "Neo4j not available, skipping persistence");
+            ToolCallResult::error("Persistence layer (Neo4j) not available.".to_string())
         }
     }
 
@@ -255,10 +265,10 @@ impl TaskSkill {
             match llm.generate(&prompt).await {
                 Ok(response) => {
                     let reflection_note_id = if let Some(neo4j) = &self.neo4j {
-                        match neo4j.store_reflection_note(
-                            &response.text,
-                            input.task_id.as_deref(),
-                        ).await {
+                        match neo4j
+                            .store_reflection_note(&response.text, input.task_id.as_deref())
+                            .await
+                        {
                             Ok(id) => {
                                 info!(note_id = %id, "Stored reflection note");
                                 Some(id)
@@ -278,12 +288,14 @@ impl TaskSkill {
                     });
 
                     if let Some(note_id) = reflection_note_id {
-                        response_json["reflection_note_id"] = json!(note_id);
+                        response_json["id"] = json!(note_id);
                     }
 
-                    ToolCallResult::success_text(serde_json::to_string_pretty(&response_json).unwrap())
-                },
-                Err(e) => ToolCallResult::error(format!("LLM reflection failed: {}", e))
+                    ToolCallResult::success_text(
+                        serde_json::to_string_pretty(&response_json).unwrap(),
+                    )
+                }
+                Err(e) => ToolCallResult::error(format!("LLM reflection failed: {}", e)),
             }
         } else {
             ToolCallResult::error("LLM not configured for reflection".to_string())
@@ -303,13 +315,19 @@ impl TaskSkill {
 
         let llm = match self.make_llm().await {
             Some(l) => l,
-            None => return ToolCallResult::error("LLM not configured for goal decomposition".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "LLM not configured for goal decomposition".to_string(),
+                );
+            }
         };
 
         // Fetch the parent task to get its goal
         let parent_task = match neo4j.get_task(&input.goal_task_id).await {
             Ok(Some(t)) => t,
-            Ok(None) => return ToolCallResult::error(format!("Task {} not found", input.goal_task_id)),
+            Ok(None) => {
+                return ToolCallResult::error(format!("Task {} not found", input.goal_task_id));
+            }
             Err(e) => return ToolCallResult::error(format!("Failed to fetch task: {}", e)),
         };
 
@@ -340,14 +358,22 @@ impl TaskSkill {
 
         let subtask_specs: Vec<Value> = match serde_json::from_str(json_str) {
             Ok(v) => v,
-            Err(e) => return ToolCallResult::error(format!("Failed to parse LLM subtask JSON: {} — raw: {}", e, text)),
+            Err(e) => {
+                return ToolCallResult::error(format!(
+                    "Failed to parse LLM subtask JSON: {} — raw: {}",
+                    e, text
+                ));
+            }
         };
 
         // First pass: create all subtask nodes and collect their IDs.
         let mut created_subtasks: Vec<(String, &Value)> = Vec::new();
 
         for spec in &subtask_specs {
-            let title = spec.get("title").and_then(|v| v.as_str()).unwrap_or("Unnamed subtask");
+            let title = spec
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unnamed subtask");
             let purpose = spec.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
 
             match neo4j.create_task(title, Some(purpose)).await {
@@ -370,26 +396,32 @@ impl TaskSkill {
                 if dep_idx < created_subtasks.len() && dep_idx != idx {
                     let dep_id = &created_subtasks[dep_idx].0;
                     if let Err(e) = neo4j.link_task_dependency(child_id, dep_id).await {
-                        warn!("Failed to link dependency {} -> {}: {}", child_id, dep_id, e);
+                        warn!(
+                            "Failed to link dependency {} -> {}: {}",
+                            child_id, dep_id, e
+                        );
                     }
                 }
             }
         }
 
         // Build response list.
-        let created_subtasks: Vec<Value> = created_subtasks.into_iter().map(|(child_id, spec)| {
-            let title = spec.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let purpose = spec.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
-            let tool_hint = spec.get("tool_hint").and_then(|v| v.as_str()).unwrap_or("");
-            let depends_on_step = spec.get("depends_on_step").cloned().unwrap_or(Value::Null);
-            json!({
-                "id": child_id,
-                "title": title,
-                "purpose": purpose,
-                "tool_hint": tool_hint,
-                "depends_on_step": depends_on_step,
+        let created_subtasks: Vec<Value> = created_subtasks
+            .into_iter()
+            .map(|(child_id, spec)| {
+                let title = spec.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let purpose = spec.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
+                let tool_hint = spec.get("tool_hint").and_then(|v| v.as_str()).unwrap_or("");
+                let depends_on_step = spec.get("depends_on_step").cloned().unwrap_or(Value::Null);
+                json!({
+                    "id": child_id,
+                    "title": title,
+                    "purpose": purpose,
+                    "tool_hint": tool_hint,
+                    "depends_on_step": depends_on_step,
+                })
             })
-        }).collect();
+            .collect();
 
         info!(
             parent_id = %input.goal_task_id,
@@ -398,7 +430,7 @@ impl TaskSkill {
         );
 
         let response = json!({
-            "parent_task_id": input.goal_task_id,
+            "parent_id": input.goal_task_id,
             "subtasks": created_subtasks
         });
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
@@ -420,7 +452,12 @@ impl TaskSkill {
             "completed" => TaskStatus::Completed,
             "failed" => TaskStatus::Failed,
             "blocked" => TaskStatus::Blocked,
-            other => return ToolCallResult::error(format!("Unknown status '{}'. Use: in_progress, completed, failed, blocked", other)),
+            other => {
+                return ToolCallResult::error(format!(
+                    "Unknown status '{}'. Use: in_progress, completed, failed, blocked",
+                    other
+                ));
+            }
         };
 
         if let Err(e) = neo4j.update_task_status(&input.task_id, status).await {
@@ -429,8 +466,28 @@ impl TaskSkill {
 
         info!(task_id = %input.task_id, status = %input.status, "Updated task status");
 
+        // When a task completes, bubble up to parent if all siblings are now done.
+        let auto_completed_parent = if input.status == "completed" {
+            match neo4j.auto_complete_parent_if_done(&input.task_id).await {
+                Ok(Some(parent_id)) => {
+                    info!(parent_id = %parent_id, child_id = %input.task_id, "Auto-completed parent task (all subtasks done)");
+                    Some(parent_id)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    warn!(error = %e, "Failed to check parent auto-completion");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let note_id = if let Some(note_content) = &input.note {
-            match neo4j.store_outcome_note(note_content, Some(&input.task_id)).await {
+            match neo4j
+                .store_outcome_note(note_content, Some(&input.task_id))
+                .await
+            {
                 Ok(id) => {
                     info!(note_id = %id, "Stored progress note");
                     Some(id)
@@ -445,12 +502,15 @@ impl TaskSkill {
         };
 
         let mut response = json!({
-            "task_id": input.task_id,
+            "id": input.task_id,
             "status": input.status,
         });
 
         if let Some(nid) = note_id {
             response["note_id"] = json!(nid);
+        }
+        if let Some(pid) = auto_completed_parent {
+            response["parent_completed"] = json!(pid);
         }
 
         ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
@@ -497,7 +557,10 @@ impl TaskSkill {
             input.tool_name, input.success, input.summary
         );
 
-        match neo4j.store_outcome_note(&content, input.task_id.as_deref()).await {
+        match neo4j
+            .store_outcome_note(&content, input.task_id.as_deref())
+            .await
+        {
             Ok(outcome_id) => {
                 info!(
                     outcome_id = %outcome_id,
@@ -509,50 +572,54 @@ impl TaskSkill {
                 // Meta-learning: when a failure is recorded with a task_id, enqueue a
                 // reflect_on_work job so the agent automatically learns from the failure.
                 let mut reflection_job_id: Option<String> = None;
-                if !input.success {
-                    if let (Some(queue), Some(task_id)) = (&self.queue, &input.task_id) {
-                        let steps = vec![
-                            ChainStep {
-                                tool_name: "reflect_on_work".to_string(),
-                                arguments: Some(json!({
-                                    "goal": format!("Understand why '{}' failed", input.tool_name),
-                                    "current_state": input.summary,
-                                    "task_id": task_id
-                                })),
-                                priority: Some(1),
-                                max_attempts: Some(2),
-                                provider_hint: None,
-                            },
-                            ChainStep {
-                                tool_name: "store_note".to_string(),
-                                arguments: Some(json!({
-                                    "content": format!(
-                                        "Failure pattern for '{}': {}",
-                                        input.tool_name, input.summary
-                                    ),
-                                    "note_type": "reflection"
-                                })),
-                                priority: Some(1),
-                                max_attempts: Some(2),
-                                provider_hint: None,
-                            },
-                        ];
-                        match queue.enqueue_chain(&steps, None).await {
-                            Ok(ids) => {
-                                info!(
-                                    tool = %input.tool_name,
-                                    job_id = ?ids.first(),
-                                    "Enqueued meta-learning reflection for failure"
-                                );
-                                reflection_job_id = ids.into_iter().next();
-                            }
-                            Err(e) => warn!(error = %e, "Failed to enqueue meta-learning reflection"),
+                if !input.success
+                    && let (Some(queue), Some(task_id)) = (&self.queue, &input.task_id)
+                {
+                    let steps = vec![
+                        ChainStep {
+                            tool_name: "reflect_on_work".to_string(),
+                            arguments: Some(json!({
+                                "goal": format!("Understand why '{}' failed", input.tool_name),
+                                "current_state": input.summary,
+                                "task_id": task_id
+                            })),
+                            priority: Some(1),
+                            max_attempts: Some(2),
+                            provider_hint: None,
+                            context_profile: None,
+                        },
+                        ChainStep {
+                            tool_name: "store_note".to_string(),
+                            arguments: Some(json!({
+                                "content": format!(
+                                    "Failure pattern for '{}': {}",
+                                    input.tool_name, input.summary
+                                ),
+                                "note_type": "reflection"
+                            })),
+                            priority: Some(1),
+                            max_attempts: Some(2),
+                            provider_hint: None,
+                            context_profile: None,
+                        },
+                    ];
+                    match queue.enqueue_chain(&steps, None).await {
+                        Ok(ids) => {
+                            info!(
+                                tool = %input.tool_name,
+                                job_id = ?ids.first(),
+                                "Enqueued meta-learning reflection for failure"
+                            );
+                            reflection_job_id = ids.into_iter().next();
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to enqueue meta-learning reflection")
                         }
                     }
                 }
 
                 let mut response = json!({
-                    "outcome_id": outcome_id,
+                    "id": outcome_id,
                     "tool_name": input.tool_name,
                     "success": input.success,
                 });
@@ -651,9 +718,7 @@ struct RecordOutcomeInput {
     task_id: Option<String>,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

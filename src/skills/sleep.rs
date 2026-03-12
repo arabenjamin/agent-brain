@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -49,9 +49,10 @@ impl SleepSkill {
     fn analyze_gaps_def() -> ToolDefinition {
         ToolDefinition {
             name: "analyze_gaps".to_string(),
-            description: "Analyze recent knowledge gaps (where the agent failed to answer or lacked tools). \
+            description:
+                "Analyze recent knowledge gaps (where the agent failed to answer or lacked tools). \
                          Use this to identify learning opportunities or missing capabilities."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -77,7 +78,7 @@ impl SleepSkill {
         info!("Starting sleep cycle (digest_experiences)");
 
         // Blocking call (file I/O + DB query) within async context
-        // For heavy workloads, this should be offloaded to spawn_blocking, 
+        // For heavy workloads, this should be offloaded to spawn_blocking,
         // but for <10k rows it's negligible.
         let result = self.service.digest_experiences(input.min_score);
 
@@ -125,10 +126,7 @@ impl Skill for SleepSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::digest_experiences_def(),
-            Self::analyze_gaps_def(),
-        ]
+        vec![Self::digest_experiences_def(), Self::analyze_gaps_def()]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
@@ -153,9 +151,7 @@ struct AnalyzeGapsInput {
     limit: Option<usize>,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

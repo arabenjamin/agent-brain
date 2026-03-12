@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import "highlight.js/styles/github-dark.css";
 import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
@@ -18,6 +20,8 @@ interface AssistantMsg {
   id: string;
   events: ChatEvent[];
   done: boolean;
+  reflecting?: boolean;
+  reflection?: string;
 }
 
 type Msg = UserMsg | AssistantMsg;
@@ -68,40 +72,68 @@ function truncate(s: string, n: number): string {
 // ── Event bubble ─────────────────────────────────────────────────────────────
 
 function EventBubble({ evt }: { evt: ChatEvent }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (evt.type === "thinking") {
+    const text = evt.content ?? "";
+    const collapsible = text.length > 160;
     return (
-      <div className="chat-event thinking">
+      <div
+        className={`chat-event thinking${collapsible ? " collapsible" : ""}${expanded ? " expanded" : ""}`}
+        onClick={collapsible ? () => setExpanded((v) => !v) : undefined}
+      >
         <span className="chat-event-label">◌</span>
-        {evt.content}
-      </div>
-    );
-  }
-  if (evt.type === "tool_call") {
-    const argsStr =
-      evt.args ? " " + JSON.stringify(evt.args).slice(0, 80) : "";
-    return (
-      <div className="chat-event tool_call">
-        <span className="chat-event-label">⚙</span>
-        {evt.tool}
-        <span style={{ color: "var(--text-muted)", marginLeft: 4 }}>
-          {argsStr}
+        <span className="event-body">
+          {expanded || !collapsible ? text : text.slice(0, 160) + "…"}
         </span>
+        {collapsible && <span className="event-chevron">{expanded ? "▲" : "▼"}</span>}
       </div>
     );
   }
-  if (evt.type === "tool_result") {
+
+  if (evt.type === "tool_call") {
+    const fullArgs = evt.args ? JSON.stringify(evt.args, null, 2) : "";
+    const summaryArgs = evt.args ? JSON.stringify(evt.args) : "";
+    const collapsible = summaryArgs.length > 0;
     return (
-      <div className={`chat-event tool_result ${evt.success ? "ok" : "err"}`}>
-        <span className="chat-event-label">{evt.success ? "✓" : "✗"}</span>
-        {evt.tool}
-        {evt.preview && (
-          <span style={{ color: "var(--text-muted)", marginLeft: 4 }}>
-            — {evt.preview.slice(0, 100)}
-          </span>
+      <div
+        className={`chat-event tool_call${collapsible ? " collapsible" : ""}${expanded ? " expanded" : ""}`}
+        onClick={collapsible ? () => setExpanded((v) => !v) : undefined}
+      >
+        <span className="chat-event-label">⚙</span>
+        <span>{evt.tool}</span>
+        {!expanded && summaryArgs && (
+          <span className="event-muted"> {summaryArgs.slice(0, 60)}{summaryArgs.length > 60 ? "…" : ""}</span>
         )}
+        {expanded && fullArgs && (
+          <pre className="event-pre">{fullArgs}</pre>
+        )}
+        {collapsible && <span className="event-chevron">{expanded ? "▲" : "▼"}</span>}
       </div>
     );
   }
+
+  if (evt.type === "tool_result") {
+    const preview = evt.preview ?? "";
+    const collapsible = preview.length > 80;
+    return (
+      <div
+        className={`chat-event tool_result ${evt.success ? "ok" : "err"}${collapsible ? " collapsible" : ""}${expanded ? " expanded" : ""}`}
+        onClick={collapsible ? () => setExpanded((v) => !v) : undefined}
+      >
+        <span className="chat-event-label">{evt.success ? "✓" : "✗"}</span>
+        <span>{evt.tool}</span>
+        {preview && !expanded && (
+          <span className="event-muted"> — {preview.slice(0, 80)}{collapsible ? "…" : ""}</span>
+        )}
+        {preview && expanded && (
+          <pre className="event-pre">{preview}</pre>
+        )}
+        {collapsible && <span className="event-chevron">{expanded ? "▲" : "▼"}</span>}
+      </div>
+    );
+  }
+
   if (evt.type === "error") {
     return (
       <div className="chat-event error">
@@ -122,6 +154,10 @@ export default function ChatPanel() {
   const [sessionId, setSessionId] = useState<string>(() => uid());
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [contextProfile, setContextProfile] = useState("general");
+  // null = research mode off; string = research mode on with that provider
+  const [researchProvider, setResearchProvider] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -147,6 +183,17 @@ export default function ChatPanel() {
 
   useEffect(() => {
     loadSessions();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load context profiles for the selector.
+  useEffect(() => {
+    callTool("list_context_profiles", {})
+      .then((raw) => {
+        const parsed = JSON.parse(raw) as { profiles?: Array<{ name: string }> };
+        const names = (parsed.profiles ?? []).map((p) => p.name).sort();
+        if (names.length > 0) setProfiles(names);
+      })
+      .catch(() => {/* ignore — brain may not be connected yet */});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Switch to an existing session — restore its messages from the server.
@@ -205,6 +252,8 @@ export default function ChatPanel() {
       message: text,
       history,
       sessionId,
+      contextProfile,
+      synthesisProvider: researchProvider ?? undefined,
       signal: abort.signal,
       onEvent: (evt) => {
         setMsgs((prev) =>
@@ -226,7 +275,7 @@ export default function ChatPanel() {
 
     // Refresh the session list so this session appears / updates.
     loadSessions();
-  }, [input, msgs, streaming, sessionId, loadSessions]);
+  }, [input, msgs, streaming, sessionId, loadSessions, contextProfile, researchProvider]);
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -240,6 +289,45 @@ export default function ChatPanel() {
     setStreaming(false);
   };
 
+  // Find the last user message before a given assistant message id.
+  const getPriorUserMsg = (asstId: string): string => {
+    const idx = msgs.findIndex((m) => m.id === asstId);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (msgs[i].kind === "user") return (msgs[i] as UserMsg).text;
+    }
+    return "";
+  };
+
+  const handleReflect = useCallback(async (msgId: string, responseText: string) => {
+    const userQuery = getPriorUserMsg(msgId);
+    setMsgs((prev) => prev.map((m) =>
+      m.kind === "assistant" && m.id === msgId ? { ...m, reflecting: true } : m
+    ));
+    try {
+      const raw = await callTool("reflect_on_work", {
+        goal: userQuery || "chat response quality",
+        current_state: responseText.slice(0, 2000),
+      });
+      const data = JSON.parse(raw);
+      const reflectionText: string = data.reflection ?? data.analysis ?? raw;
+      await callTool("store_note", {
+        content: `Chat reflection\nQ: ${userQuery}\n\nResponse summary: ${responseText.slice(0, 400)}\n\nReflection: ${reflectionText}`,
+        note_type: "reflection",
+      });
+      setMsgs((prev) => prev.map((m) =>
+        m.kind === "assistant" && m.id === msgId
+          ? { ...m, reflecting: false, reflection: reflectionText }
+          : m
+      ));
+    } catch (e) {
+      setMsgs((prev) => prev.map((m) =>
+        m.kind === "assistant" && m.id === msgId
+          ? { ...m, reflecting: false, reflection: `Error: ${e}` }
+          : m
+      ));
+    }
+  }, [msgs]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const exportChat = () => {
     if (msgs.length === 0) return;
 
@@ -249,8 +337,9 @@ export default function ChatPanel() {
       if (m.kind === "user") {
         markdown += `## User\n${m.text}\n\n`;
       } else {
-        const finalText = m.events.find((e) => e.type === "message")?.content ?? "";
-        markdown += `## Agent Brain\n${finalText}\n\n`;
+        const text = m.events.find((e) => e.type === "message")?.content
+          ?? m.events.filter((e) => e.type === "token").map((e) => e.content ?? "").join("");
+        markdown += `## Agent Brain\n${text}\n\n`;
       }
     }
 
@@ -278,8 +367,13 @@ export default function ChatPanel() {
 
     const nonDoneEvents = m.events.filter((e) => e.type !== "done");
     const finalText = m.events.find((e) => e.type === "message")?.content ?? "";
-    const streamEvents = nonDoneEvents.filter((e) => e.type !== "message");
-    const showTyping = !m.done && streaming && m.events.length === 0;
+    const tokenText = m.events
+      .filter((e) => e.type === "token")
+      .map((e) => e.content ?? "")
+      .join("");
+    const displayText = finalText || tokenText;
+    const streamEvents = nonDoneEvents.filter((e) => e.type !== "message" && e.type !== "token");
+    const showTyping = !m.done && streaming && displayText.length === 0 && streamEvents.length === 0;
 
     return (
       <div key={m.id} className="chat-msg assistant">
@@ -291,11 +385,11 @@ export default function ChatPanel() {
             <span /><span /><span />
           </div>
         )}
-        {finalText && (
+        {displayText && (
           <div className="chat-msg-bubble markdown-body" style={{ position: "relative", paddingRight: "36px" }}>
             <button
               className="copy-btn"
-              onClick={() => navigator.clipboard.writeText(finalText)}
+              onClick={() => navigator.clipboard.writeText(displayText)}
               title="Copy text"
               aria-label="Copy text"
             >
@@ -304,7 +398,29 @@ export default function ChatPanel() {
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
               </svg>
             </button>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalText}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{displayText}</ReactMarkdown>
+          </div>
+        )}
+        {m.done && displayText && (
+          <div className="chat-msg-meta">
+            {m.reflecting ? (
+              <span className="event-muted" style={{ fontSize: 10 }}>Reflecting…</span>
+            ) : !m.reflection ? (
+              <button
+                className="btn-ghost"
+                style={{ fontSize: 10, padding: "1px 6px" }}
+                onClick={() => handleReflect(m.id, displayText)}
+                title="Reflect on this response and store as a note"
+              >
+                ↺ Reflect
+              </button>
+            ) : null}
+          </div>
+        )}
+        {m.reflection && (
+          <div className="chat-event thinking" style={{ marginTop: 4, fontSize: 11 }}>
+            <span className="chat-event-label">↺</span>
+            <span className="event-body">{m.reflection}</span>
           </div>
         )}
       </div>
@@ -404,9 +520,44 @@ export default function ChatPanel() {
               disabled={streaming}
               style={{ resize: "none" }}
             />
-            <button className="btn" onClick={send} disabled={streaming || !input.trim()}>
-              Send
-            </button>
+            <div className="input-row-actions">
+              <div className="input-row-selectors">
+                <select
+                  className="profile-select"
+                  value={contextProfile}
+                  onChange={(e) => setContextProfile(e.target.value)}
+                  disabled={streaming}
+                  title="Context profile — limits tools sent to the model"
+                >
+                  {(profiles.length > 0 ? profiles : ["general"]).map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+                <button
+                  className={`research-toggle${researchProvider !== null ? " active" : ""}`}
+                  onClick={() => setResearchProvider((v) => v === null ? "gemini" : null)}
+                  disabled={streaming}
+                  title="Research mode: local model gathers data, strong model synthesizes"
+                >
+                  ⚗ Research
+                </button>
+                {researchProvider !== null && (
+                  <select
+                    className="profile-select"
+                    value={researchProvider}
+                    onChange={(e) => setResearchProvider(e.target.value)}
+                    disabled={streaming}
+                    title="Model used to synthesize research findings"
+                  >
+                    <option value="gemini">Synthesize: Gemini</option>
+                    <option value="anthropic">Synthesize: Claude</option>
+                  </select>
+                )}
+              </div>
+              <button className="btn" onClick={send} disabled={streaming || !input.trim()}>
+                Send
+              </button>
+            </div>
           </div>
         </div>
       </div>

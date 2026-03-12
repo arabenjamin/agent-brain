@@ -1,23 +1,22 @@
 //! API Expert Skill - Provides OpenAPI ingestion, discovery, and execution tools.
 
-use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
-use crate::models::{ApiCredential, CredentialType, InjectLocation, ParameterLocation, Endpoint};
+use crate::models::{ApiCredential, CredentialType, Endpoint, InjectLocation, ParameterLocation};
 use crate::repository::Neo4jClient;
 use crate::services::{
     ApiContext, ContextStore, CredentialManager, DiscoveryConfig, DiscoveryService, DocGenService,
-    EndpointSummary, EndpointWithParams, ExportFormat, ExportOptions, HttpExecutor, LlmClient,
-    LlmConfig, MarkdownReportGenerator, MergeStrategy, OpenApiExporter, OpenApiParser,
-    ParameterSummary, RepoAnalyzerService, RequestBuilder, SpecDiffer,
-    HealingOrchestrator, HealingConfig, RequestContext,
+    EndpointSummary, EndpointWithParams, ExportFormat, ExportOptions, HealingOrchestrator,
+    HttpExecutor, LlmClient, LlmConfig, MarkdownReportGenerator, MergeStrategy, OpenApiExporter,
+    OpenApiParser, ParameterSummary, RepoAnalyzerService, RequestBuilder, RequestContext,
+    SpecDiffer,
 };
 use crate::skills::Skill;
 
@@ -261,11 +260,12 @@ impl ApiSkill {
     fn build_openapi_from_repo_def() -> ToolDefinition {
         ToolDefinition {
             name: "build_openapi_from_repo".to_string(),
-            description: "Generate an OpenAPI specification by analyzing source code in a Git repository. \
+            description:
+                "Generate an OpenAPI specification by analyzing source code in a Git repository. \
                          Supports GitHub and GitLab repositories (public and private). \
                          Uses LLM to extract API endpoints from code in any language/framework. \
                          Can merge with existing OpenAPI specs found in the repository."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -519,16 +519,17 @@ impl ApiSkill {
         let mut endpoints = Vec::new();
         let mut used_semantic = false;
 
-        if let Some(llm) = self.make_llm().await {
-            if let Ok(embedding) = llm.embeddings(&input.query).await {
-                if let Ok(semantic_results) = neo4j.find_endpoints_semantic(embedding, 10).await {
-                    if !semantic_results.is_empty() {
-                        endpoints = semantic_results;
-                        used_semantic = true;
-                        debug!(count = endpoints.len(), "Found endpoints via semantic search");
-                    }
-                }
-            }
+        if let Some(llm) = self.make_llm().await
+            && let Ok(embedding) = llm.embeddings(&input.query).await
+            && let Ok(semantic_results) = neo4j.find_endpoints_semantic(embedding, 10).await
+            && !semantic_results.is_empty()
+        {
+            endpoints = semantic_results;
+            used_semantic = true;
+            debug!(
+                count = endpoints.len(),
+                "Found endpoints via semantic search"
+            );
         }
 
         // Fallback to keyword search if semantic failed or wasn't available
@@ -536,7 +537,10 @@ impl ApiSkill {
             match neo4j.find_endpoints_by_path(&input.query).await {
                 Ok(results) => {
                     endpoints = results;
-                    debug!(count = endpoints.len(), "Found endpoints via keyword search");
+                    debug!(
+                        count = endpoints.len(),
+                        "Found endpoints via keyword search"
+                    );
                 }
                 Err(e) => return ToolCallResult::error(format!("Query failed: {}", e)),
             }
@@ -633,8 +637,7 @@ impl ApiSkill {
                 Ok(updated_builder) => (updated_builder, api_detected),
                 Err(e) => {
                     debug!(error = %e, "Failed to inject credentials, rebuilding request");
-                    let mut new_builder =
-                        RequestBuilder::new().base_url(&input.url).method(method);
+                    let mut new_builder = RequestBuilder::new().base_url(&input.url).method(method);
                     if let Some(headers) = input.headers.clone() {
                         new_builder = new_builder.headers(headers);
                     }
@@ -655,11 +658,13 @@ impl ApiSkill {
 
         // If we found a matching endpoint and have LLM config, use the HealingOrchestrator
         let llm_client = self.make_llm().await;
-        if let (Some(endpoint), Some(neo4j), Some(llm)) = (matching_endpoint, &self.neo4j, llm_client) {
+        if let (Some(endpoint), Some(neo4j), Some(llm)) =
+            (matching_endpoint, &self.neo4j, llm_client)
+        {
             info!(endpoint_id = %endpoint.id, path = %endpoint.path, "Using self-healing execution");
 
             let orchestrator = HealingOrchestrator::with_all(http, llm, neo4j.clone());
-            
+
             // Extract path params if possible (naive matching for now)
             let mut context = RequestContext::new(&input.url);
             if let Some(body) = &input.body {
@@ -694,7 +699,9 @@ impl ApiSkill {
                         response_json["credentials_auto_injected"] = json!(true);
                     }
 
-                    ToolCallResult::success_text(serde_json::to_string_pretty(&response_json).unwrap())
+                    ToolCallResult::success_text(
+                        serde_json::to_string_pretty(&response_json).unwrap(),
+                    )
                 }
                 Err(e) => ToolCallResult::error(format!("Healing execution failed: {}", e)),
             }
@@ -722,19 +729,24 @@ impl ApiSkill {
     }
 
     /// Find a matching endpoint in Neo4j based on URL and method.
-    async fn find_matching_endpoint(&self, neo4j: &Neo4jClient, url_str: &str, method: crate::models::HttpMethod) -> Option<Endpoint> {
+    async fn find_matching_endpoint(
+        &self,
+        neo4j: &Neo4jClient,
+        url_str: &str,
+        method: crate::models::HttpMethod,
+    ) -> Option<Endpoint> {
         let parsed_url = match url::Url::parse(url_str) {
             Ok(u) => u,
             Err(_) => return None,
         };
-        
+
         let path = parsed_url.path();
-        
+
         // Try exact match first
         if let Ok(Some(endpoint)) = neo4j.get_endpoint_by_path_method(path, method).await {
             return Some(endpoint);
         }
-        
+
         // Try template match
         if let Ok(endpoints) = neo4j.list_endpoints().await {
             for endpoint in endpoints {
@@ -743,7 +755,7 @@ impl ApiSkill {
                 }
             }
         }
-        
+
         None
     }
 
@@ -751,11 +763,11 @@ impl ApiSkill {
     fn path_matches_template(&self, path: &str, template: &str) -> bool {
         let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let temp_parts: Vec<&str> = template.split('/').filter(|s| !s.is_empty()).collect();
-        
+
         if path_parts.len() != temp_parts.len() {
             return false;
         }
-        
+
         for (p, t) in path_parts.iter().zip(temp_parts.iter()) {
             if t.starts_with('{') && t.ends_with('}') {
                 continue; // Match any value for template parameter
@@ -764,28 +776,34 @@ impl ApiSkill {
                 return false;
             }
         }
-        
+
         true
     }
 
     /// Prune an ApiContext to only include endpoints/schemas relevant to a query.
     fn filter_context(&self, mut ctx: ApiContext, query: &str) -> ApiContext {
         let query_lower = query.to_lowercase();
-        
+
         // Filter endpoints
         ctx.endpoints.retain(|ep| {
-            ep.path.to_lowercase().contains(&query_lower) ||
-            ep.summary.to_lowercase().contains(&query_lower) ||
-            ep.operation_id.as_ref().map(|id| id.to_lowercase().contains(&query_lower)).unwrap_or(false)
+            ep.path.to_lowercase().contains(&query_lower)
+                || ep.summary.to_lowercase().contains(&query_lower)
+                || ep
+                    .operation_id
+                    .as_ref()
+                    .map(|id| id.to_lowercase().contains(&query_lower))
+                    .unwrap_or(false)
         });
-        
+
         // Filter schemas - simple inclusion if mentioned in remaining endpoints
         // (For now, just keep schemas that match the query text)
         ctx.schemas.retain(|s| {
-            s.name.to_lowercase().contains(&query_lower) ||
-            s.fields.iter().any(|f| f.to_lowercase().contains(&query_lower))
+            s.name.to_lowercase().contains(&query_lower)
+                || s.fields
+                    .iter()
+                    .any(|f| f.to_lowercase().contains(&query_lower))
         });
-        
+
         ctx.endpoint_count = ctx.endpoints.len();
         ctx.schema_count = ctx.schemas.len();
         ctx
@@ -819,14 +837,17 @@ impl ApiSkill {
                 }
 
                 if let Some(query) = &input.query {
-                    contexts = contexts.into_iter()
+                    contexts = contexts
+                        .into_iter()
                         .map(|ctx| self.filter_context(ctx, query))
                         .filter(|ctx| !ctx.endpoints.is_empty())
                         .collect();
                 }
 
                 if contexts.is_empty() {
-                    return ToolCallResult::success_text("No matching endpoints found in loaded APIs.");
+                    return ToolCallResult::success_text(
+                        "No matching endpoints found in loaded APIs.",
+                    );
                 }
 
                 match format {
@@ -847,7 +868,9 @@ impl ApiSkill {
                             "count": summaries.len(),
                             "apis": summaries
                         });
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                        ToolCallResult::success_text(
+                            serde_json::to_string_pretty(&response).unwrap(),
+                        )
                     }
                 }
             }
@@ -913,18 +936,19 @@ impl ApiSkill {
 
         let mut service = match DiscoveryService::new() {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("Failed to create discovery service: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to create discovery service: {}", e));
+            }
         };
 
         // Snapshot LLM config once for this handler.
         let llm_config_snapshot = self.llm_config.read().await.clone();
 
-        if input.use_llm {
-            if let Some(ref cfg) = llm_config_snapshot {
-                if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
-                    service = service.with_llm(llm);
-                }
-            }
+        if input.use_llm
+            && let Some(ref cfg) = llm_config_snapshot
+            && let Ok(llm) = LlmClient::with_config(cfg.clone())
+        {
+            service = service.with_llm(llm);
         }
 
         let config = DiscoveryConfig {
@@ -939,18 +963,19 @@ impl ApiSkill {
         };
 
         let mut ingested_apis = Vec::new();
-        if input.auto_ingest && self.neo4j.is_some() {
-            let neo4j = self.neo4j.as_ref().unwrap();
+        if input.auto_ingest
+            && let Some(neo4j) = self.neo4j.as_ref()
+        {
             if let Err(e) = neo4j.init_schema().await {
                 return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
             }
 
             for candidate in &result.candidates {
                 let mut parser = OpenApiParser::new(neo4j.clone());
-                if let Some(ref cfg) = llm_config_snapshot {
-                    if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
-                        parser = parser.with_llm(llm);
-                    }
+                if let Some(ref cfg) = llm_config_snapshot
+                    && let Ok(llm) = LlmClient::with_config(cfg.clone())
+                {
+                    parser = parser.with_llm(llm);
                 }
 
                 if let Ok(ingest_result) = parser.ingest(&candidate.url).await {
@@ -1026,7 +1051,9 @@ impl ApiSkill {
 
         let service = match DocGenService::new(llm) {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("Failed to create doc generator: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to create doc generator: {}", e));
+            }
         };
 
         let result = match service
@@ -1039,17 +1066,26 @@ impl ApiSkill {
             .await
         {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("Documentation analysis failed: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Documentation analysis failed: {}", e));
+            }
         };
 
         let spec_output = match input.output_format.as_str() {
-            "yaml" => result.spec.to_yaml().unwrap_or_else(|e| format!("YAML error: {}", e)),
-            _ => result.spec.to_json().unwrap_or_else(|e| format!("JSON error: {}", e)),
+            "yaml" => result
+                .spec
+                .to_yaml()
+                .unwrap_or_else(|e| format!("YAML error: {}", e)),
+            _ => result
+                .spec
+                .to_json()
+                .unwrap_or_else(|e| format!("JSON error: {}", e)),
         };
 
         let mut ingested = false;
-        if input.auto_ingest && self.neo4j.is_some() {
-            let neo4j = self.neo4j.as_ref().unwrap();
+        if input.auto_ingest
+            && let Some(neo4j) = self.neo4j.as_ref()
+        {
             if let Err(e) = neo4j.init_schema().await {
                 return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
             }
@@ -1057,10 +1093,10 @@ impl ApiSkill {
             let temp_path = format!("/tmp/generated_spec_{}.json", uuid::Uuid::new_v4());
             if let Ok(()) = std::fs::write(&temp_path, result.spec.to_json().unwrap_or_default()) {
                 let mut parser = OpenApiParser::new(neo4j.clone());
-                if let Some(ref cfg) = llm_config_snapshot {
-                    if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
-                        parser = parser.with_llm(llm);
-                    }
+                if let Some(ref cfg) = llm_config_snapshot
+                    && let Ok(llm) = LlmClient::with_config(cfg.clone())
+                {
+                    parser = parser.with_llm(llm);
                 }
 
                 if let Ok(ingest_result) = parser.ingest(&temp_path).await {
@@ -1121,17 +1157,20 @@ impl ApiSkill {
 
         let mut service = match RepoAnalyzerService::new(llm) {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("Failed to create repo analyzer: {}", e)),
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to create repo analyzer: {}", e));
+            }
         };
 
         if let Some(patterns) = &input.include_patterns {
-            let mut config = crate::services::RepoAnalysisConfig::default();
-            config.include_patterns = patterns.clone();
-            service = service.with_config(config);
+            service = service.with_config(crate::services::RepoAnalysisConfig {
+                include_patterns: patterns.clone(),
+                ..Default::default()
+            });
         }
 
         let token = self.get_repo_token(&input.repo_url).await;
-        let merge_strategy = MergeStrategy::from_str(&input.merge_strategy);
+        let merge_strategy = MergeStrategy::parse_str(&input.merge_strategy);
 
         let result = match service
             .analyze(
@@ -1150,13 +1189,20 @@ impl ApiSkill {
         };
 
         let spec_output = match input.output_format.as_str() {
-            "yaml" => result.spec.to_yaml().unwrap_or_else(|e| format!("YAML error: {}", e)),
-            _ => result.spec.to_json().unwrap_or_else(|e| format!("JSON error: {}", e)),
+            "yaml" => result
+                .spec
+                .to_yaml()
+                .unwrap_or_else(|e| format!("YAML error: {}", e)),
+            _ => result
+                .spec
+                .to_json()
+                .unwrap_or_else(|e| format!("JSON error: {}", e)),
         };
 
         let mut ingested = false;
-        if input.auto_ingest && self.neo4j.is_some() {
-            let neo4j = self.neo4j.as_ref().unwrap();
+        if input.auto_ingest
+            && let Some(neo4j) = self.neo4j.as_ref()
+        {
             if let Err(e) = neo4j.init_schema().await {
                 return ToolCallResult::error(format!("Failed to initialize schema: {}", e));
             }
@@ -1164,10 +1210,10 @@ impl ApiSkill {
             let temp_path = format!("/tmp/generated_spec_{}.json", uuid::Uuid::new_v4());
             if let Ok(()) = std::fs::write(&temp_path, result.spec.to_json().unwrap_or_default()) {
                 let mut parser = OpenApiParser::new(neo4j.clone());
-                if let Some(ref cfg) = llm_config_snapshot {
-                    if let Ok(llm) = LlmClient::with_config(cfg.clone()) {
-                        parser = parser.with_llm(llm);
-                    }
+                if let Some(ref cfg) = llm_config_snapshot
+                    && let Ok(llm) = LlmClient::with_config(cfg.clone())
+                {
+                    parser = parser.with_llm(llm);
                 }
 
                 if let Ok(ingest_result) = parser.ingest(&temp_path).await {
@@ -1273,7 +1319,9 @@ impl ApiSkill {
                 let output = match input.format.as_str() {
                     "json" => match MarkdownReportGenerator::generate_json(&report) {
                         Ok(json) => json,
-                        Err(e) => return ToolCallResult::error(format!("JSON generation failed: {}", e)),
+                        Err(e) => {
+                            return ToolCallResult::error(format!("JSON generation failed: {}", e));
+                        }
                     },
                     "changelog" => MarkdownReportGenerator::generate_changelog(&report),
                     _ => MarkdownReportGenerator::generate(&report),
@@ -1309,13 +1357,23 @@ impl ApiSkill {
             "bearer" => CredentialType::Bearer,
             "basic" => CredentialType::Basic,
             "oauth2_client_credentials" => CredentialType::OAuth2ClientCredentials,
-            _ => return ToolCallResult::error(format!("Invalid credential type: {}", input.credential_type)),
+            _ => {
+                return ToolCallResult::error(format!(
+                    "Invalid credential type: {}",
+                    input.credential_type
+                ));
+            }
         };
 
         let inject_location = match input.inject_location.to_lowercase().as_str() {
             "header" => InjectLocation::Header,
             "query" => InjectLocation::Query,
-            _ => return ToolCallResult::error(format!("Invalid inject location: {}", input.inject_location)),
+            _ => {
+                return ToolCallResult::error(format!(
+                    "Invalid inject location: {}",
+                    input.inject_location
+                ));
+            }
         };
 
         let secret_ref = format!(
@@ -1411,7 +1469,10 @@ impl ApiSkill {
             Err(e) => return ToolCallResult::error(format!("Credential not found: {}", e)),
         };
 
-        if let Err(e) = credential_manager.delete_secret(&credential.secret_ref).await {
+        if let Err(e) = credential_manager
+            .delete_secret(&credential.secret_ref)
+            .await
+        {
             debug!(error = %e, "Failed to delete secret, continuing with metadata deletion");
         }
 
@@ -1580,7 +1641,7 @@ impl ApiSkill {
         match credential_manager.get_credential(platform).await {
             Ok(_cred) => {
                 debug!(platform = %platform, "Found credential for repository access");
-                None 
+                None
             }
             Err(_) => {
                 debug!(platform = %platform, "No credential configured for repository");
@@ -1628,7 +1689,9 @@ impl Skill for ApiSkill {
             "build_openapi_from_repo" => Some(self.handle_build_openapi_from_repo(arguments).await),
             "export_openapi" => Some(self.handle_export_openapi(arguments).await),
             "diff_api_spec" => Some(self.handle_diff_api_spec(arguments).await),
-            "configure_api_credential" => Some(self.handle_configure_api_credential(arguments).await),
+            "configure_api_credential" => {
+                Some(self.handle_configure_api_credential(arguments).await)
+            }
             "list_api_credentials" => Some(self.handle_list_api_credentials().await),
             "delete_api_credential" => Some(self.handle_delete_api_credential(arguments).await),
             _ => None,
@@ -1770,9 +1833,7 @@ pub struct DeleteApiCredentialInput {
     pub api_name: String,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

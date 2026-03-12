@@ -1,13 +1,16 @@
 //! Integration tests for the documentation-to-OpenAPI generation service.
 
+use std::sync::Arc;
+
 use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
 use agent_brain::services::{ContextStore, DocGenConfig, LlmConfig};
-use agent_brain::skills::{api::ApiSkill, Skill};
+use agent_brain::skills::api::ApiSkill;
 use serde_json::json;
+use tokio::sync::RwLock;
 
 fn create_api_skill(llm_config: Option<LlmConfig>) -> ApiSkill {
     let context_store = ContextStore::new();
-    ApiSkill::new(None, llm_config, context_store, None)
+    ApiSkill::new(None, Arc::new(RwLock::new(llm_config)), context_store, None)
 }
 
 #[test]
@@ -15,7 +18,7 @@ fn test_build_openapi_from_docs_tool_exists() {
     let mut registry = ToolRegistry::new();
     let api_skill = create_api_skill(None);
     registry.register_skill(Box::new(api_skill));
-    
+
     let tool = registry.get("build_openapi_from_docs");
     assert!(tool.is_some());
 
@@ -42,7 +45,7 @@ fn test_build_openapi_from_docs_tool_schema() {
     let mut registry = ToolRegistry::new();
     let api_skill = create_api_skill(None);
     registry.register_skill(Box::new(api_skill));
-    
+
     let tool = registry.get("build_openapi_from_docs").unwrap();
 
     let props = &tool.input_schema["properties"];
@@ -70,7 +73,7 @@ fn test_build_openapi_from_docs_tool_schema() {
 async fn test_build_openapi_from_docs_requires_llm() {
     // No LLM config
     let api_skill = create_api_skill(None);
-    let handler = ToolHandler::new(vec![Box::new(api_skill)]); 
+    let handler = ToolHandler::new(vec![Box::new(api_skill)]);
 
     let result = handler
         .execute(
@@ -88,10 +91,10 @@ async fn test_build_openapi_from_docs_requires_llm() {
         "Should error without LLM config"
     );
 
-    if let Some(content) = result.content.first() {
-        if let agent_brain::mcp::protocol::Content::Text { text } = content {
-            assert!(text.contains("LLM") || text.contains("configuration"));
-        }
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        assert!(text.contains("LLM") || text.contains("configuration"));
     }
 }
 

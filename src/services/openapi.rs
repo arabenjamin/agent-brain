@@ -149,6 +149,32 @@ impl OpenApiParser {
 
         result.resources_created = self.resource_cache.len();
 
+        // Generate embeddings for all newly created endpoints so that
+        // graph_query_endpoint can use vector search immediately without
+        // requiring a manual backfill_endpoint_embeddings call.
+        if let Some(llm) = &self.llm {
+            let mut embedded = 0usize;
+            for ewp in &result.endpoints {
+                let e = &ewp.endpoint;
+                let text = format!("{} {} - {}", e.method, e.path, e.summary);
+                if let Ok(emb) = llm.embeddings(&text).await
+                    && self
+                        .client
+                        .update_endpoint_embedding(e.id, emb)
+                        .await
+                        .is_ok()
+                {
+                    embedded += 1;
+                }
+            }
+            if embedded > 0 {
+                info!(
+                    embedded = embedded,
+                    "Generated embeddings for ingested endpoints"
+                );
+            }
+        }
+
         info!(
             resources = result.resources_created,
             endpoints = result.endpoints_created,

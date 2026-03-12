@@ -1,16 +1,19 @@
 //! Integration tests for the repository-to-OpenAPI generation service.
 
+use std::sync::Arc;
+
 use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
 use agent_brain::services::{
-    LlmConfig, MergeStrategy, RepoAccessMethod, RepoAnalysisConfig, RepoError, RepoPlatform,
-    RepoSource, ContextStore
+    ContextStore, LlmConfig, MergeStrategy, RepoAccessMethod, RepoAnalysisConfig, RepoError,
+    RepoPlatform, RepoSource,
 };
-use agent_brain::skills::{api::ApiSkill, Skill};
+use agent_brain::skills::api::ApiSkill;
 use serde_json::json;
+use tokio::sync::RwLock;
 
 fn create_api_skill(llm_config: Option<LlmConfig>) -> ApiSkill {
     let context_store = ContextStore::new();
-    ApiSkill::new(None, llm_config, context_store, None)
+    ApiSkill::new(None, Arc::new(RwLock::new(llm_config)), context_store, None)
 }
 
 // ============================================================================
@@ -22,7 +25,7 @@ fn test_build_openapi_from_repo_tool_exists() {
     let mut registry = ToolRegistry::new();
     let api_skill = create_api_skill(None);
     registry.register_skill(Box::new(api_skill));
-    
+
     let tool = registry.get("build_openapi_from_repo");
     assert!(tool.is_some());
 
@@ -49,7 +52,7 @@ fn test_build_openapi_from_repo_tool_schema() {
     let mut registry = ToolRegistry::new();
     let api_skill = create_api_skill(None);
     registry.register_skill(Box::new(api_skill));
-    
+
     let tool = registry.get("build_openapi_from_repo").unwrap();
 
     let props = &tool.input_schema["properties"];
@@ -146,9 +149,10 @@ fn test_parse_gitlab_url_with_ref() {
 
 #[test]
 fn test_parse_invalid_url() {
+    // Non-URL strings are treated as local paths (Ok), not errors.
+    // Only unsupported platforms (e.g. bitbucket) return Err.
     let result = RepoSource::parse("not-a-url");
-    assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), RepoError::InvalidUrl(_)));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -172,13 +176,13 @@ fn test_parse_url_missing_repo() {
 // ============================================================================
 
 #[test]
-fn test_merge_strategy_from_str() {
-    // MergeStrategy::from_str returns the strategy or defaults to Enhance
-    assert_eq!(MergeStrategy::from_str("enhance"), MergeStrategy::Enhance);
-    assert_eq!(MergeStrategy::from_str("replace"), MergeStrategy::Replace);
-    assert_eq!(MergeStrategy::from_str("ignore"), MergeStrategy::Ignore);
+fn test_merge_strategy_parse_str() {
+    // MergeStrategy::parse_str returns the strategy or defaults to Enhance
+    assert_eq!(MergeStrategy::parse_str("enhance"), MergeStrategy::Enhance);
+    assert_eq!(MergeStrategy::parse_str("replace"), MergeStrategy::Replace);
+    assert_eq!(MergeStrategy::parse_str("ignore"), MergeStrategy::Ignore);
     // Unknown strings default to Enhance
-    assert_eq!(MergeStrategy::from_str("unknown"), MergeStrategy::Enhance);
+    assert_eq!(MergeStrategy::parse_str("unknown"), MergeStrategy::Enhance);
 }
 
 #[test]
@@ -270,16 +274,10 @@ fn test_repo_source_repo_api_url() {
 #[test]
 fn test_repo_source_clone_url_without_token() {
     let github = RepoSource::parse("https://github.com/owner/repo").unwrap();
-    assert_eq!(
-        github.clone_url(None),
-        "https://github.com/owner/repo.git"
-    );
+    assert_eq!(github.clone_url(None), "https://github.com/owner/repo.git");
 
     let gitlab = RepoSource::parse("https://gitlab.com/owner/repo").unwrap();
-    assert_eq!(
-        gitlab.clone_url(None),
-        "https://gitlab.com/owner/repo.git"
-    );
+    assert_eq!(gitlab.clone_url(None), "https://gitlab.com/owner/repo.git");
 }
 
 #[test]
@@ -323,10 +321,10 @@ async fn test_build_openapi_from_repo_requires_llm() {
         "Should error without LLM config"
     );
 
-    if let Some(content) = result.content.first() {
-        if let agent_brain::mcp::protocol::Content::Text { text } = content {
-            assert!(text.contains("LLM") || text.contains("configuration"));
-        }
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        assert!(text.contains("LLM") || text.contains("configuration"));
     }
 }
 
@@ -396,10 +394,10 @@ async fn test_build_openapi_from_public_repo() {
         )
         .await;
 
-    if let Some(content) = result.content.first() {
-        if let agent_brain::mcp::protocol::Content::Text { text } = content {
-            println!("Tool output:\n{}", text);
-        }
+    if let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        println!("Tool output:\n{}", text);
     }
 }
 
@@ -422,11 +420,10 @@ async fn test_github_api_rate_limit_handling() {
         .await;
 
     // Should either succeed, fail gracefully, or clone instead
-    if result.is_error.unwrap_or(false) {
-        if let Some(content) = result.content.first() {
-            if let agent_brain::mcp::protocol::Content::Text { text } = content {
-                println!("Expected error for large repo: {}", text);
-            }
-        }
+    if result.is_error.unwrap_or(false)
+        && let Some(content) = result.content.first()
+        && let agent_brain::mcp::protocol::Content::Text { text } = content
+    {
+        println!("Expected error for large repo: {}", text);
     }
 }

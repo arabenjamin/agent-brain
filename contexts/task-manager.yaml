@@ -1,0 +1,16 @@
+name: task-manager
+description: Task lifecycle management — create, decompose, prioritize, and track goals.
+tools:
+  - create_task
+  - list_tasks
+  - update_task
+  - decompose_goal
+  - record_outcome
+  - reflect_on_work
+system_prompt: |
+  You are a focused task management assistant. Break complex goals into
+  actionable subtasks. Track progress and record outcomes. Use decompose_goal
+  for multi-step work and update_task to reflect status changes.
+token_budget: 4000
+model_preference: sonnet
+provider_hint: anthropic

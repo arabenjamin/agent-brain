@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""Drive the brain through a self-analysis session.
+"""
+self_reflect.py — Drive the brain through a self-analysis session.
 
 Steps:
   1. Search what it currently believes about itself
-  2. Store a fresh ground-truth note covering the actual 64-tool/12-skill state
-  3. Use reason() to have it compare old vs new understanding
+  2. Store a fresh ground-truth note covering the actual 78-tool/13-skill state
+  3. reason() to compare old vs new understanding
   4. Consolidate all self-knowledge notes into a single summary
-  5. Ask for its roadmap assessment
+  5. Derive a development roadmap prioritized by autonomy impact
+
+Usage:
+    python3 scripts/self_reflect.py [--base-url http://localhost:3001]
 """
 
 import json
 import sys
 import textwrap
-import requests
+import argparse
+import urllib.request
+import urllib.error
+import time
 
-BASE = "http://localhost:3001/mcp"
-
-HEADERS_BASE = {
-    "Content-Type": "application/json",
-    "mcp-protocol-version": "2024-11-05",
-}
+BASE_URL = "http://localhost:3001"
 
 _req_id = 0
 
@@ -30,36 +32,52 @@ def _id():
     return _req_id
 
 
-def init_session():
-    r = requests.post(BASE, headers=HEADERS_BASE, json={
+def mcp_post(url, session_id, body):
+    headers = {
+        "Content-Type": "application/json",
+        "mcp-protocol-version": "2024-11-05",
+    }
+    if session_id:
+        headers["mcp-session-id"] = session_id
+    payload = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            returned_session = resp.headers.get("mcp-session-id")
+            raw = resp.read()
+            result = json.loads(raw) if raw.strip() else {}
+            return result, returned_session
+    except urllib.error.HTTPError as exc:
+        body_err = json.loads(exc.read()) if exc.fp else {}
+        return body_err, None
+
+
+def init_session(base_url):
+    body, session_id = mcp_post(f"{base_url}/mcp", None, {
         "jsonrpc": "2.0", "id": _id(), "method": "initialize",
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "self_reflect", "version": "1.0"},
+            "clientInfo": {"name": "self_reflect", "version": "2.0"},
         },
     })
-    r.raise_for_status()
-    session_id = r.headers.get("mcp-session-id", "")
     if not session_id:
         print("ERROR: no session id returned")
+        print("Response:", json.dumps(body, indent=2))
         sys.exit(1)
 
-    headers = {**HEADERS_BASE, "mcp-session-id": session_id}
-    requests.post(BASE, headers=headers, json={
+    mcp_post(f"{base_url}/mcp", session_id, {
         "jsonrpc": "2.0", "method": "notifications/initialized",
     })
     print(f"Session: {session_id}\n")
-    return headers
+    return session_id
 
 
-def call(headers, tool, args):
-    r = requests.post(BASE, headers=headers, json={
+def call(base_url, session_id, tool, args):
+    body, _ = mcp_post(f"{base_url}/mcp", session_id, {
         "jsonrpc": "2.0", "id": _id(), "method": "tools/call",
         "params": {"name": tool, "arguments": args},
     })
-    r.raise_for_status()
-    body = r.json()
     if "error" in body:
         return f"[ERROR] {body['error']}"
     result = body.get("result", {})
@@ -87,146 +105,201 @@ def show(label, text, width=100):
         print(textwrap.fill(line, width=width) if len(line) > width else line)
 
 
-# ─── Main ──────────────────────────────────────────────────────────────────────
+# ─── Ground-truth note (accurate as of 2026-03-03) ──────────────────────────
 
-headers = init_session()
+GROUND_TRUTH = """
+Agent Brain — Current Capability State (as of 2026-03-03)
 
-# ── Step 1: what does the brain currently think it is? ──────────────────────
-section("Step 1 — Current self-knowledge (searching existing notes)")
+I am an autonomous MCP server implemented in Rust (Tokio async, Edition 2024). I run
+as a persistent background process backed by Neo4j for long-term memory and DuckDB
+for telemetry. MCP-compatible clients connect via stdio or HTTP/SSE transport.
 
-result = call(headers, "search_notes", {"query": "capabilities tools skills agent brain", "limit": 5})
-show("search_notes: capabilities/tools/skills", result)
-
-result2 = call(headers, "search_notes", {"query": "self knowledge understanding what I can do", "limit": 5})
-show("search_notes: self-knowledge/understanding", result2)
-
-# ── Step 2: store fresh ground-truth note ───────────────────────────────────
-section("Step 2 — Storing updated ground-truth self-knowledge note")
-
-ground_truth = """
-Agent Brain — Current Capability State (as of 2026-02-27)
-
-I am an autonomous MCP server implemented in Rust. I run as a persistent background
-process backed by Neo4j for long-term memory and DuckDB for telemetry. Any
-MCP-compatible client can connect to me via stdio or HTTP/SSE transport.
-
-SKILLS AND TOOL COUNT: 64 static tools across 12 skills, plus N runtime-defined
-tools via DynamicSkill.
+SKILLS AND TOOL COUNT: 78 static tools across 13 skills, plus N runtime-defined tools
+via DynamicSkill.
 
 1. ApiSkill (14 tools): ingest_openapi, graph_query_endpoint, execute_http_request,
    get_api_context, list_loaded_apis, clear_api_context, discover_openapi,
    build_openapi_from_docs, build_openapi_from_repo, export_openapi, diff_api_spec,
    configure_api_credential, list_api_credentials, delete_api_credential.
-   Capable of self-healing API documentation when requests fail.
+   Self-healing: 4xx/5xx → LLM analyzes → retry with correction → HealingEvent node.
 
-2. KnowledgeSkill (10 tools): store_note, search_notes, find_related_notes,
+2. KnowledgeSkill (15 tools): store_note, search_notes, find_related_notes,
    prune_old_notes, consolidate_memories, review_due_notes, search_by_entity,
-   reason, audit_action, explain_reasoning.
-   Uses hybrid BM25+vector RRF search with spaced-repetition scheduling.
+   reason, audit_action, explain_reasoning, ask_clarification, get_note,
+   delete_note, update_note, export_graph_visualization.
+   Hybrid BM25+vector RRF search with freshness boost (0.7*rrf + 0.3*freshness).
+   Entity extraction: 7 types (person/tool/technology/concept/organisation/url/date).
+   Long notes auto-chunked (>1500 chars via PART_OF edges).
+   Multi-hop graph traversal via entity_expansion parameter.
+   Auto-snapshot before consolidate_memories.
 
 3. TaskSkill (6 tools): create_task, reflect_on_work, decompose_goal, update_task,
    list_tasks, record_outcome.
+   Dependency tracking: DEPENDS_ON edges from decompose_goal.
+   Meta-learning: record_outcome(failure) auto-enqueues reflect→store chain.
 
 4. AgentSkill (8 tools): enqueue_agent, enqueue_chain, queue_status, get_job_result,
    cancel_job, retry_job, set_worker_config, drain_queue.
-   Priority job queue (0-3) backed by Neo4j; per-provider semaphores
-   (Ollama:3, Anthropic:2, Gemini:5); parked/chaining job lifecycle.
+   Priority job queue (0-3) backed by Neo4j. Per-provider semaphores:
+   Ollama:3, Anthropic:2, Gemini:5. Parked/chaining lifecycle.
 
-5. AdminSkill (4 tools): delete_api, purge_duplicate_endpoints,
-   purge_orphaned_schemas, reset_graph.
+5. AdminSkill (10 tools): delete_api, purge_duplicate_endpoints,
+   purge_orphaned_schemas, reset_graph, backfill_endpoint_embeddings,
+   snapshot_knowledge, restore_knowledge, list_snapshots,
+   verify_knowledge_integrity, analyze_own_structure.
+   SnapshotService: gzip JSON (.json.gz), MERGE-based restore (idempotent).
 
 6. ModelSkill (5 tools): list_models, use_model, register_model, select_model,
    get_model_stats.
-   Supports runtime switching between Ollama, Anthropic, and Gemini providers.
+   Runtime switching between Ollama (default granite4), Anthropic, Gemini.
 
 7. SchedulerSkill (5 tools): start_scheduler, stop_scheduler, get_scheduler_status,
    configure_scheduler, run_scheduler_tick.
-   Background Tokio task that autonomously dispatches created tasks as job chains
-   every N seconds (default 300). Keyword-based goal→chain mapping. Error budget
-   auto-pauses on repeated failures.
+   Background Tokio task (default 300s interval). goal_to_steps() with
+   context profile auto-assignment. perception_scan() after each tick:
+   creates "Analyze repeated failures" tasks (≥3 failures/tool/7 days),
+   triggers consolidation (≥10 overdue or ≥50 episodic notes).
+   Auto-pauses after error_budget (default 5) consecutive errors.
 
-8. DynamicSkill (4 + runtime tools): define_tool, execute_procedure,
+8. DynamicSkill (4+N tools): define_tool, execute_procedure,
    list_dynamic_tools, remove_dynamic_tool.
-   New MCP tools can be defined at runtime backed by stored procedure pipelines;
-   they persist across restarts via Neo4j.
+   Runtime tool hot-registration backed by stored procedure pipelines.
+   Template substitution: {{input.field}}, {{context.var}}, {{context.steps.N}}.
+   Per-step: output_var, condition, on_failure (abort|skip|continue).
 
-9. WorkingMemorySkill (3 tools): push_context, get_context, summarise_session.
+9. WorkingMemorySkill (4 tools): push_context, get_context, summarise_session,
+   list_sessions. Roles: observation, plan, result, error.
 
 10. ProcedureSkill (2 tools): store_procedure, search_procedures.
 
 11. SleepSkill (2 tools): digest_experiences, analyze_gaps.
-    Reads DuckDB telemetry (interactions + knowledge_gaps tables) to export
-    training data and identify capability gaps. Requires TELEMETRY_DB_PATH env var.
+    Reads DuckDB telemetry (interactions + knowledge_gaps tables).
 
 12. SearchSkill (1 tool): search_web (SerpApi / Brave / Google Custom Search).
 
-MEMORY ARCHITECTURE:
-- Neo4j stores: Notes (with embeddings), Tasks (with SUBTASK_OF edges), AgentJobs,
-  Procedures, DynamicTools, WorkingMemory, ModelSpecs, ApiCredentials,
-  Resources/Endpoints/Schemas/HealingEvents.
-- Notes support: chunking (>1500 chars), entity extraction, RELATES_TO similarity
-  edges (cosine >= 0.75), DERIVED_FROM for inferences, SUMMARIZED_BY for
-  consolidations, spaced-repetition review scheduling.
-- DuckDB stores: interactions (every tool call), knowledge_gaps (failed searches).
+13. ContextSkill (4 tools): list_context_profiles, get_context_profile,
+    auto_assign_context, build_agent_context.
+    YAML profiles in contexts/ (CONTEXTS_DIR env). 6 profiles:
+    general, knowledge-worker, task-manager, code-analyst, api-builder, scheduler.
+    boot.yaml runs every startup. init.yaml runs on empty graph.
 
-DEPLOYMENT: Docker Compose stack (Neo4j + MCP server). HTTP transport on :3000.
-Supports Bearer token auth (MCP_API_KEY). Session lifecycle: initialize →
-notifications/initialized → tool calls.
+TRANSPORT: HTTP/SSE on :3001, stdio for local. POST /chat → SSE ChatService
+(Anthropic native tool-use loop, max 10 iterations). Bearer token auth (MCP_API_KEY).
+Session: initialize → notifications/initialized → tool calls.
 
-KNOWN GAPS:
-- graph_query_endpoint uses CONTAINS matching; semantic/vector search not yet wired
+KNOWN GAPS (P1):
+- graph_query_endpoint uses CONTAINS; semantic/vector search not wired
 - DynamicSkill tools unavailable on stdio path after restart (async load issue)
 - Per-provider semaphores not resizable at runtime via set_worker_config
-- No SSE push notifications for completed job results (callers must poll)
-- No CI/CD pipeline yet; no self-hosted runner for autonomous redeployment
-- No git hook to trigger self-knowledge update on code changes
+- No SSE push for job results on stdio path (callers must poll)
+
+NEO4J SCHEMA ADDITIONS (2026-03):
+- DEPENDS_ON edges between Tasks (from decompose_goal)
+- KNOWLEDGE_SNAPSHOT_DIR: ./snapshots (auto-created, gitignored)
+- endpoint_embeddings vector index (backfill_endpoint_embeddings tool)
 """.strip()
 
-store_result = call(headers, "store_note", {
-    "content": ground_truth,
-    "note_type": "semantic",
-    "source_context": "self_reflect.py ground-truth update 2026-02-27",
-})
-show("store_note result", store_result)
+# ─── Main ────────────────────────────────────────────────────────────────────
 
-# ── Step 3: reason — compare old vs new understanding ────────────────────────
-section("Step 3 — Reasoning: compare current understanding vs ground truth")
 
-reason_result = call(headers, "reason", {
-    "question": (
-        "Based on the stored notes about my capabilities, what is my current "
-        "accurate self-understanding? What gaps exist between what I previously "
-        "believed about myself and what I actually am? What has changed most "
-        "significantly?"
-    ),
-    "limit": 8,
-    "store_inference": True,
-})
-show("reason: self-comparison", reason_result)
+def main():
+    parser = argparse.ArgumentParser(description="Agent-brain self-reflection session")
+    parser.add_argument("--base-url", default=BASE_URL)
+    args = parser.parse_args()
+    base_url = args.base_url.rstrip("/")
 
-# ── Step 4: consolidate self-knowledge ───────────────────────────────────────
-section("Step 4 — Consolidating all self-knowledge notes")
+    def c(tool, args_dict, timeout=180):
+        return call(base_url, session_id, tool, args_dict)
 
-consolidate_result = call(headers, "consolidate_memories", {
-    "topic": "agent brain capabilities skills tools self-knowledge",
-    "limit": 10,
-})
-show("consolidate_memories result", consolidate_result)
+    session_id = init_session(base_url)
 
-# ── Step 5: roadmap ───────────────────────────────────────────────────────────
-section("Step 5 — Roadmap: what should I build next?")
+    # ── Step 1: Current self-knowledge ───────────────────────────────────────
+    section("Step 1 — Current self-knowledge (searching existing notes)")
 
-roadmap_result = call(headers, "reason", {
-    "question": (
-        "Given my current capabilities, known gaps, and the goal of becoming a "
-        "fully autonomous self-improving agent, what should my development roadmap "
-        "look like? What are the highest-leverage capabilities I am missing? "
-        "Prioritise by impact on autonomy and self-improvement ability."
-    ),
-    "limit": 10,
-    "store_inference": True,
-})
-show("reason: roadmap", roadmap_result)
+    r1 = c("search_notes", {"query": "capabilities tools skills agent brain", "limit": 5})
+    show("search: capabilities/tools/skills", r1)
 
-section("Done")
-print("\nAll notes persisted in Neo4j.\n")
+    r2 = c("search_notes", {"query": "self knowledge architecture design goals mission", "limit": 5})
+    show("search: architecture/mission", r2)
+
+    r3 = c("search_notes", {"query": "known issues bugs improvement backlog", "limit": 5})
+    show("search: bugs/backlog", r3)
+
+    # ── Step 2: Store fresh ground-truth note ────────────────────────────────
+    section("Step 2 — Storing updated ground-truth self-knowledge note (2026-03-03)")
+
+    store_result = c("store_note", {
+        "content": GROUND_TRUTH,
+        "note_type": "semantic",
+        "source_context": "self_reflect.py ground-truth 2026-03-03",
+    })
+    show("store_note result", store_result)
+    time.sleep(1)
+
+    # ── Step 3: Reason — compare and assess ──────────────────────────────────
+    section("Step 3 — Reasoning: current accurate self-understanding")
+
+    reason_result = c("reason", {
+        "question": (
+            "Based on all stored notes about my capabilities: what is my current "
+            "accurate self-understanding as of 2026-03-03? What has changed most "
+            "significantly since earlier self-knowledge notes? What do I now know "
+            "about myself that I previously did not? Specifically address: the new "
+            "ContextSkill, the SnapshotService, the perception_scan in the scheduler, "
+            "the meta-learning on failed outcomes, and the freshness-boosted search."
+        ),
+        "limit": 10,
+        "store_inference": True,
+    })
+    show("reason: self-assessment", reason_result)
+
+    # ── Step 4: Consolidate self-knowledge ────────────────────────────────────
+    section("Step 4 — Consolidating all self-knowledge notes")
+
+    consolidate_result = c("consolidate_memories", {
+        "topic": "agent brain capabilities skills tools architecture self-knowledge mission",
+        "limit": 12,
+    })
+    show("consolidate_memories result", consolidate_result)
+
+    # ── Step 5: Autonomy roadmap ──────────────────────────────────────────────
+    section("Step 5 — Roadmap: highest-leverage capabilities for full autonomy")
+
+    roadmap_result = c("reason", {
+        "question": (
+            "Given my current 78-tool capabilities, known P1 gaps, and the design goal of "
+            "becoming a fully autonomous self-improving agent: what is my development "
+            "roadmap for the next 90 days? What are the highest-leverage capabilities I "
+            "am missing? Prioritize by impact on autonomous operation. Consider: "
+            "(1) fixing semantic search for endpoint queries, "
+            "(2) making the scheduler's goal→chain mapping smarter, "
+            "(3) streaming tool results for long-running operations, "
+            "(4) agent-to-agent delegation / parallel fan-out, "
+            "(5) knowledge versioning and conflict detection."
+        ),
+        "limit": 12,
+        "store_inference": True,
+    })
+    show("reason: 90-day autonomy roadmap", roadmap_result)
+
+    # ── Step 6: Audit core values alignment ──────────────────────────────────
+    section("Step 6 — Auditing: are my stored values guiding my behavior?")
+
+    audit_result = c("audit_action", {
+        "action": (
+            "Store all reasoning and reflection outputs as notes, even when they reveal "
+            "weaknesses or knowledge gaps, and make them retrievable via search_notes."
+        ),
+        "context": (
+            "Core values include: accuracy over confident errors, transparency in reasoning, "
+            "self-awareness of limits, and incrementalism over large uncertain leaps."
+        ),
+    })
+    show("audit_action: transparency of self-knowledge", audit_result)
+
+    section("Done — all notes persisted in Neo4j")
+    print("\nRun search_notes with query='agent-brain' to review consolidated knowledge.\n")
+
+
+if __name__ == "__main__":
+    main()

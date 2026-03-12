@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
 
-use crate::services::llm::{ChatMessage, LlmResponse};
 use super::{LlmProvider, LlmProviderError, ProviderConfig};
+use crate::services::llm::{ChatMessage, LlmResponse};
 
 pub struct OllamaProvider {
     client: Client,
@@ -17,7 +16,7 @@ impl OllamaProvider {
             .timeout(config.timeout)
             .build()
             .unwrap_or_else(|_| Client::new());
-        
+
         Self { client, config }
     }
 }
@@ -82,8 +81,16 @@ impl LlmProvider for OllamaProvider {
         "ollama"
     }
 
-    async fn generate(&self, prompt: &str, system: Option<&str>) -> Result<LlmResponse, LlmProviderError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("http://localhost:11434");
+    async fn generate(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+    ) -> Result<LlmResponse, LlmProviderError> {
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
         let url = format!("{}/api/generate", base_url);
 
         let request = GenerateRequest {
@@ -118,7 +125,11 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("http://localhost:11434");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
         let url = format!("{}/api/embeddings", base_url);
 
         let request = EmbeddingsRequest {
@@ -142,7 +153,11 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmProviderError> {
-        let base_url = self.config.base_url.as_deref().unwrap_or("http://localhost:11434");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
         let url = format!("{}/api/chat", base_url);
 
         let request = ChatRequest {
@@ -176,7 +191,11 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn health_check(&self) -> bool {
-        let base_url = self.config.base_url.as_deref().unwrap_or("http://localhost:11434");
+        let base_url = self
+            .config
+            .base_url
+            .as_deref()
+            .unwrap_or("http://localhost:11434");
         let url = format!("{}/api/tags", base_url);
 
         match self.client.get(&url).send().await {

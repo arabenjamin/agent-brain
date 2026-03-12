@@ -34,10 +34,10 @@ impl ModelSelector {
             .into_iter()
             .filter(|spec| {
                 // Provider filter.
-                if let Some(hint) = provider_hint {
-                    if spec.provider != hint {
-                        return false;
-                    }
+                if let Some(hint) = provider_hint
+                    && spec.provider != hint
+                {
+                    return false;
                 }
 
                 // All required capabilities must be present.
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn test_model_spec_cost_sort() {
-        let mut specs = vec![
+        let mut specs = [
             ModelSpec {
                 id: "1".into(),
                 name: "gemini-flash".into(),

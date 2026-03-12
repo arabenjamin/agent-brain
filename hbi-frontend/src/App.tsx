@@ -1,23 +1,25 @@
 import { lazy, Suspense, useState } from "react";
 import "./styles/main.css";
 
-const ChatPanel      = lazy(() => import("./components/chat/ChatPanel"));
-const TaskPanel      = lazy(() => import("./components/tasks/TaskPanel"));
-const KnowledgePanel = lazy(() => import("./components/knowledge/KnowledgePanel"));
-const GraphPanel     = lazy(() => import("./components/graph/GraphPanel"));
-const ToolPanel      = lazy(() => import("./components/tools/ToolPanel"));
-const LogsPanel      = lazy(() => import("./components/logs/LogsPanel"));
-const SettingsModal  = lazy(() => import("./components/settings/SettingsModal"));
+const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
+const TaskPanel          = lazy(() => import("./components/tasks/TaskPanel"));
+const KnowledgePanel     = lazy(() => import("./components/knowledge/KnowledgePanel"));
+const GraphPanel         = lazy(() => import("./components/graph/GraphPanel"));
+const ToolPanel          = lazy(() => import("./components/tools/ToolPanel"));
+const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
+const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
+const SettingsModal      = lazy(() => import("./components/settings/SettingsModal"));
 
-type Tab = "chat" | "tasks" | "knowledge" | "graph" | "tools" | "logs";
+type Tab = "chat" | "tasks" | "knowledge" | "graph" | "tools" | "logs" | "architecture";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "chat",      icon: "🧠", label: "Chat" },
   { id: "tasks",     icon: "📋", label: "Tasks" },
   { id: "knowledge", icon: "🔍", label: "Knowledge" },
   { id: "graph",     icon: "🕸", label: "Graph" },
-  { id: "tools",     icon: "🔧", label: "Tools" },
-  { id: "logs",      icon: "📊", label: "Logs" },
+  { id: "tools",        icon: "🔧", label: "Tools" },
+  { id: "logs",         icon: "📊", label: "Logs" },
+  { id: "architecture", icon: "🏗", label: "Architecture" },
 ];
 
 function Fallback() {
@@ -67,8 +69,9 @@ export default function App() {
           {tab === "tasks"     && <TaskPanel />}
           {tab === "knowledge" && <KnowledgePanel />}
           {tab === "graph"     && <GraphPanel />}
-          {tab === "tools"     && <ToolPanel />}
-          {tab === "logs"      && <LogsPanel />}
+          {tab === "tools"        && <ToolPanel />}
+          {tab === "logs"         && <LogsPanel />}
+          {tab === "architecture" && <ArchitecturePanel />}
         </Suspense>
       </main>
 

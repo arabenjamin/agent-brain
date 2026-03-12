@@ -1,10 +1,10 @@
 //! Search Skill - Provides tools for web searching.
 
 use async_trait::async_trait;
-use serde::Deserialize;
-use serde_json::{json, Value};
-use tracing::{info, warn};
 use reqwest::Client;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tracing::info;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::TelemetryClient;
@@ -46,7 +46,9 @@ impl SearchSkill {
     fn search_web_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_web".to_string(),
-            description: "Search the web for information using a search engine (SerpApi, Brave, or Google).".to_string(),
+            description:
+                "Search the web for information using a search engine (SerpApi, Brave, or Google)."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -98,20 +100,26 @@ impl SearchSkill {
             None => {
                 // Log gap: Missing configuration
                 if let Some(telemetry) = &self.telemetry {
-                    let _ = telemetry.log_knowledge_gap(query, Some("search_web:serpapi"), "missing_tool_config");
+                    let _ = telemetry.log_knowledge_gap(
+                        query,
+                        Some("search_web:serpapi"),
+                        "missing_tool_config",
+                    );
                 }
                 return ToolCallResult::error("SerpApi key not configured".to_string());
-            },
+            }
         };
 
         let url = "https://serpapi.com/search.json";
 
-        let response = self.client.get(url)
+        let response = self
+            .client
+            .get(url)
             .query(&[
                 ("api_key", api_key.as_str()),
                 ("q", query),
                 ("num", &count.to_string()),
-                ("engine", "google") // Default to Google engine via SerpApi
+                ("engine", "google"), // Default to Google engine via SerpApi
             ])
             .send()
             .await;
@@ -123,37 +131,60 @@ impl SearchSkill {
                     let text = resp.text().await.unwrap_or_default();
                     // Log gap: API failure
                     if let Some(telemetry) = &self.telemetry {
-                        let _ = telemetry.log_knowledge_gap(query, Some("search_web:serpapi"), "api_error");
+                        let _ = telemetry.log_knowledge_gap(
+                            query,
+                            Some("search_web:serpapi"),
+                            "api_error",
+                        );
                     }
                     return ToolCallResult::error(format!("SerpApi failed: {} - {}", status, text));
                 }
 
                 match resp.json::<Value>().await {
                     Ok(json) => {
-                        let organic_results = json.get("organic_results").unwrap_or(&json!([])).as_array().unwrap_or(&vec![]).iter().map(|item| {
-                             json!({
-                                 "title": item.get("title"),
-                                 "link": item.get("link"),
-                                 "snippet": item.get("snippet")
-                             })
-                         }).collect::<Vec<_>>();
+                        let organic_results = json
+                            .get("organic_results")
+                            .unwrap_or(&json!([]))
+                            .as_array()
+                            .unwrap_or(&vec![])
+                            .iter()
+                            .map(|item| {
+                                json!({
+                                    "title": item.get("title"),
+                                    "link": item.get("link"),
+                                    "snippet": item.get("snippet")
+                                })
+                            })
+                            .collect::<Vec<_>>();
 
                         if organic_results.is_empty() {
-                             // Log gap: No results found
-                             if let Some(telemetry) = &self.telemetry {
-                                let _ = telemetry.log_knowledge_gap(query, Some("search_web:serpapi"), "missing_info");
+                            // Log gap: No results found
+                            if let Some(telemetry) = &self.telemetry {
+                                let _ = telemetry.log_knowledge_gap(
+                                    query,
+                                    Some("search_web:serpapi"),
+                                    "missing_info",
+                                );
                             }
                         }
 
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&organic_results).unwrap())
-                    },
-                    Err(e) => ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e))
+                        ToolCallResult::success_text(
+                            serde_json::to_string_pretty(&organic_results).unwrap(),
+                        )
+                    }
+                    Err(e) => {
+                        ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e))
+                    }
                 }
-            },
+            }
             Err(e) => {
                 // Log gap: Network failure
                 if let Some(telemetry) = &self.telemetry {
-                    let _ = telemetry.log_knowledge_gap(query, Some("search_web:serpapi"), "network_error");
+                    let _ = telemetry.log_knowledge_gap(
+                        query,
+                        Some("search_web:serpapi"),
+                        "network_error",
+                    );
                 }
                 ToolCallResult::error(format!("Request failed: {}", e))
             }
@@ -167,8 +198,10 @@ impl SearchSkill {
         };
 
         let url = "https://api.search.brave.com/res/v1/web/search";
-        
-        let response = self.client.get(url)
+
+        let response = self
+            .client
+            .get(url)
             .header("X-Subscription-Token", api_key)
             .query(&[("q", query), ("count", &count.to_string())])
             .send()
@@ -179,34 +212,48 @@ impl SearchSkill {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!("Brave Search failed: {} - {}", status, text));
+                    return ToolCallResult::error(format!(
+                        "Brave Search failed: {} - {}",
+                        status, text
+                    ));
                 }
 
                 match resp.json::<Value>().await {
                     Ok(json) => {
                         // Extract relevant results
-                        let results = if let Some(web) = json.get("web").and_then(|w| w.get("results")) {
-                            web
-                        } else {
-                            &json!([])
-                        };
-                        
-                        // Simplify output to save tokens
-                        let simplified: Vec<Value> = results.as_array().unwrap_or(&vec![]).iter().take(count as usize).map(|r| {
-                            json!({
-                                "title": r.get("title"),
-                                "url": r.get("url"),
-                                "description": r.get("description"),
-                                "age": r.get("age")
-                            })
-                        }).collect();
+                        let results =
+                            if let Some(web) = json.get("web").and_then(|w| w.get("results")) {
+                                web
+                            } else {
+                                &json!([])
+                            };
 
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&simplified).unwrap())
-                    },
-                    Err(e) => ToolCallResult::error(format!("Failed to parse Brave response: {}", e))
+                        // Simplify output to save tokens
+                        let simplified: Vec<Value> = results
+                            .as_array()
+                            .unwrap_or(&vec![])
+                            .iter()
+                            .take(count as usize)
+                            .map(|r| {
+                                json!({
+                                    "title": r.get("title"),
+                                    "url": r.get("url"),
+                                    "description": r.get("description"),
+                                    "age": r.get("age")
+                                })
+                            })
+                            .collect();
+
+                        ToolCallResult::success_text(
+                            serde_json::to_string_pretty(&simplified).unwrap(),
+                        )
+                    }
+                    Err(e) => {
+                        ToolCallResult::error(format!("Failed to parse Brave response: {}", e))
+                    }
                 }
-            },
-            Err(e) => ToolCallResult::error(format!("Request failed: {}", e))
+            }
+            Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
         }
     }
 
@@ -217,45 +264,63 @@ impl SearchSkill {
         };
         let cx = match &self.google_cx {
             Some(cx) => cx,
-            None => return ToolCallResult::error("Google Custom Search Engine ID (CX) not configured".to_string()),
+            None => {
+                return ToolCallResult::error(
+                    "Google Custom Search Engine ID (CX) not configured".to_string(),
+                );
+            }
         };
 
         let url = "https://www.googleapis.com/customsearch/v1";
 
-        let response = self.client.get(url)
+        let response = self
+            .client
+            .get(url)
             .query(&[
                 ("key", api_key.as_str()),
                 ("cx", cx.as_str()),
                 ("q", query),
-                ("num", &count.to_string())
+                ("num", &count.to_string()),
             ])
             .send()
             .await;
 
         match response {
             Ok(resp) => {
-                 if !resp.status().is_success() {
+                if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!("Google Search failed: {} - {}", status, text));
+                    return ToolCallResult::error(format!(
+                        "Google Search failed: {} - {}",
+                        status, text
+                    ));
                 }
 
                 match resp.json::<Value>().await {
                     Ok(json) => {
-                         let items = json.get("items").unwrap_or(&json!([])).as_array().unwrap_or(&vec![]).iter().map(|item| {
-                             json!({
-                                 "title": item.get("title"),
-                                 "link": item.get("link"),
-                                 "snippet": item.get("snippet")
-                             })
-                         }).collect::<Vec<_>>();
+                        let items = json
+                            .get("items")
+                            .unwrap_or(&json!([]))
+                            .as_array()
+                            .unwrap_or(&vec![])
+                            .iter()
+                            .map(|item| {
+                                json!({
+                                    "title": item.get("title"),
+                                    "link": item.get("link"),
+                                    "snippet": item.get("snippet")
+                                })
+                            })
+                            .collect::<Vec<_>>();
 
                         ToolCallResult::success_text(serde_json::to_string_pretty(&items).unwrap())
-                    },
-                     Err(e) => ToolCallResult::error(format!("Failed to parse Google response: {}", e))
+                    }
+                    Err(e) => {
+                        ToolCallResult::error(format!("Failed to parse Google response: {}", e))
+                    }
                 }
-            },
-            Err(e) => ToolCallResult::error(format!("Request failed: {}", e))
+            }
+            Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
         }
     }
 }
@@ -267,9 +332,7 @@ impl Skill for SearchSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::search_web_def(),
-        ]
+        vec![Self::search_web_def()]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
@@ -290,9 +353,7 @@ struct SearchInput {
     count: Option<u8>,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
     let args = arguments.unwrap_or(Value::Object(Default::default()));
     serde_json::from_value(args)
         .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))

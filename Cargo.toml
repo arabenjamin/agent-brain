@@ -20,7 +20,7 @@ tokio = { version = "1", features = ["full"] }
 neo4rs = "0.8"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # URL parsing
 url = "2"
@@ -93,6 +93,9 @@ futures-util = "0.3"
 
 # WebSocket support
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+
+# Gzip compression for snapshot files
+flate2 = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"

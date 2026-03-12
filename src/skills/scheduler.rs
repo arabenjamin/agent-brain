@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
@@ -72,9 +72,10 @@ impl SchedulerSkill {
     fn configure_scheduler_def() -> ToolDefinition {
         ToolDefinition {
             name: "configure_scheduler".to_string(),
-            description: "Update one or more scheduler settings at runtime. All fields are optional; \
+            description:
+                "Update one or more scheduler settings at runtime. All fields are optional; \
                           only supplied fields are changed."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -101,6 +102,16 @@ impl SchedulerSkill {
                     "session_id": {
                         "type": "string",
                         "description": "Session ID attached to enqueued jobs (null to clear)"
+                    },
+                    "idle_sleep_after_ticks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Consecutive idle ticks before entering sleep mode (default 3)"
+                    },
+                    "sleep_interval_secs": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "description": "Tick interval while in sleep mode in seconds (default 1800)"
                     }
                 }
             }),
@@ -141,6 +152,8 @@ impl SchedulerSkill {
                 None,
                 None,
                 input.session_id.map(Some),
+                None,
+                None,
             )
             .await;
 
@@ -156,7 +169,7 @@ impl SchedulerSkill {
 
     async fn handle_stop_scheduler(&self) -> ToolCallResult {
         self.service
-            .update_config(None, Some(false), None, None, None)
+            .update_config(None, Some(false), None, None, None, None, None)
             .await;
 
         ToolCallResult::success_text(
@@ -179,6 +192,8 @@ impl SchedulerSkill {
             // Use Value so we can distinguish null (clear) from absent
             #[serde(default, deserialize_with = "deserialize_optional_session")]
             session_id: Option<Option<String>>,
+            idle_sleep_after_ticks: Option<u32>,
+            sleep_interval_secs: Option<u64>,
         }
 
         let input: Input = args
@@ -193,6 +208,8 @@ impl SchedulerSkill {
                 input.max_tasks_per_run,
                 input.error_budget,
                 input.session_id,
+                input.idle_sleep_after_ticks,
+                input.sleep_interval_secs,
             )
             .await;
 
@@ -205,6 +222,8 @@ impl SchedulerSkill {
                     "max_tasks_per_run": cfg.max_tasks_per_run,
                     "error_budget": cfg.error_budget,
                     "session_id": cfg.session_id,
+                    "idle_sleep_after_ticks": cfg.idle_sleep_after_ticks,
+                    "sleep_interval_secs": cfg.sleep_interval_secs,
                 }
             })
             .to_string(),
@@ -232,9 +251,7 @@ impl SchedulerSkill {
 // Custom deserializer: handles absent, null, and string values for session_id
 // ---------------------------------------------------------------------------
 
-fn deserialize_optional_session<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
+fn deserialize_optional_session<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

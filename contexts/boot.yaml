@@ -1,0 +1,14 @@
+name: boot
+steps:
+  - type: log
+    message: "Agent Brain starting up — running boot protocol"
+  - type: tool_call
+    tool: get_scheduler_status
+    args: {}
+  - type: conditional
+    condition: graph_empty
+    then:
+      - type: run_protocol
+        protocol: init
+  - type: log
+    message: "Boot protocol complete"

@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod agent;
 pub mod api;
+pub mod context;
 pub mod dynamic;
 pub mod knowledge;
 pub mod model;
@@ -10,6 +11,7 @@ pub mod search;
 pub mod sleep;
 pub mod task;
 pub mod working_memory;
+pub mod ws;
 
 pub use admin::AdminSkill;
 pub use agent::AgentSkill;
@@ -21,6 +23,7 @@ pub use search::SearchSkill;
 pub use sleep::SleepSkill;
 pub use task::TaskSkill;
 pub use working_memory::WorkingMemorySkill;
+pub use ws::WsSkill;
 
 use async_trait::async_trait;
 use serde_json::Value;

@@ -1,8 +1,8 @@
 //! MCP tool definitions and handlers.
 
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use serde_json::Value;
 use tracing::debug;
 
 use crate::mcp::protocol::{Content, ToolCallResult, ToolDefinition};
@@ -17,9 +17,7 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new tool registry.
     pub fn new() -> Self {
-        Self {
-            skills: Vec::new(),
-        }
+        Self { skills: Vec::new() }
     }
 
     /// Add a skill to the registry.
@@ -88,10 +86,21 @@ impl ToolHandler {
                     let prompt = format!(
                         "{}: {}",
                         name,
-                        arguments.as_ref().map(|a| a.to_string()).unwrap_or_default()
+                        arguments
+                            .as_ref()
+                            .map(|a| a.to_string())
+                            .unwrap_or_default()
                     );
-                    let response = result.content.first()
-                        .and_then(|c| if let Content::Text { text } = c { Some(text.as_str()) } else { None })
+                    let response = result
+                        .content
+                        .first()
+                        .and_then(|c| {
+                            if let Content::Text { text } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or("");
                     let success = result.is_error.is_none();
                     let latency_ms = start.elapsed().as_millis() as u64;
