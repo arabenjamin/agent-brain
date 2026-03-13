@@ -14,6 +14,7 @@ pub mod openapi;
 pub mod procedure_executor;
 pub mod queue;
 pub mod repo;
+pub mod resource_registry;
 pub mod scheduler;
 pub mod secrets;
 pub mod sleep;
@@ -34,6 +35,7 @@ pub use llm::{LlmClient, LlmConfig, LlmProviderType};
 pub use model_selector::ModelSelector;
 pub use openapi::{EndpointWithParams, OpenApiParser};
 pub use queue::{ChainStep, QueueService, WorkerConfig};
+pub use resource_registry::{ResourceEntry, ResourceRegistry};
 pub use repo::{
     MergeStrategy, RepoAccessMethod, RepoAnalysisConfig, RepoAnalyzerService, RepoError,
     RepoPlatform, RepoSource,

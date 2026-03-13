@@ -11,14 +11,15 @@ use tracing::{debug, error, info, warn};
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::SchedulerService;
 use crate::services::queue::QueueService;
+use crate::services::resource_registry::ResourceRegistry;
 use crate::services::{
     ChatService, ContextBuilderService, ContextStore, CredentialManager, LlmConfig, SnapshotService,
 };
 use crate::skills::{
     Skill, admin::AdminSkill, agent::AgentSkill, api::ApiSkill, context::ContextSkill,
     dynamic::DynamicSkill, knowledge::KnowledgeSkill, model::ModelSkill, procedure::ProcedureSkill,
-    scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill, task::TaskSkill,
-    working_memory::WorkingMemorySkill, ws::WsSkill,
+    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
+    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 
 use super::protocol::{
@@ -419,6 +420,10 @@ impl McpServerCore {
         // Register WebSocket Skill
         registry.register_skill(Box::new(WsSkill::new()));
 
+        // Register Resource Skill (shared Arc so all callers see the same registry)
+        let resource_registry = Arc::new(ResourceRegistry::new());
+        registry.register_skill(Box::new(ResourceSkill::new(Arc::clone(&resource_registry))));
+
         // Register Model Skill (shares Arc<RwLock<>> so runtime provider changes propagate)
         let model_skill = ModelSkill::new(self.llm_config.clone(), self.neo4j.clone());
         registry.register_skill(Box::new(model_skill));
@@ -502,6 +507,8 @@ impl McpServerCore {
         )));
 
         skills.push(Box::new(WsSkill::new()));
+
+        skills.push(Box::new(ResourceSkill::new(Arc::clone(&resource_registry))));
 
         skills.push(Box::new(ModelSkill::new(
             self.llm_config.clone(),

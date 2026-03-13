@@ -703,6 +703,7 @@ impl AdminSkill {
             Err(e) => ToolCallResult::error(format!("Integrity check failed: {}", e)),
         }
     }
+    
     async fn handle_analyze_own_structure(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize, Default)]
         struct Input {

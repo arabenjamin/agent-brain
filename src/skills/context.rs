@@ -57,7 +57,8 @@ impl ContextSkill {
     fn auto_assign_context_def() -> ToolDefinition {
         ToolDefinition {
             name: "auto_assign_context".to_string(),
-            description: "Auto-assign a context profile to a goal string using keyword matching. \
+            description: "Auto-assign a context profile to a goal string. Uses description-based \
+                text overlap as a fast path, falling back to an LLM classifier for ambiguous goals. \
                 Returns the best-matching profile name and the assignment method."
                 .to_string(),
             input_schema: json!({
@@ -165,7 +166,7 @@ impl ContextSkill {
         let method = if profile == "general" {
             "fallback"
         } else {
-            "keyword"
+            "semantic"
         };
 
         ToolCallResult::success_text(

@@ -4,7 +4,7 @@
 //! via keyword matching, and builds `ContextBundle` objects that include a
 //! filtered tool list plus any pre-loaded notes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::mcp::tools::ToolHandler;
 use crate::repository::Neo4jClient;
-use crate::services::llm::LlmConfig;
+use crate::services::llm::{LlmClient, LlmConfig};
 
 // ============================================================================
 // Types
@@ -85,7 +85,6 @@ pub struct ContextBuilderService {
     neo4j: Option<Neo4jClient>,
     pub contexts_dir: PathBuf,
     profiles: Arc<RwLock<HashMap<String, ContextProfile>>>,
-    #[allow(dead_code)]
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
 
@@ -191,71 +190,97 @@ impl ContextBuilderService {
         })
     }
 
-    /// Keyword-match `goal` to a profile name. Returns the best match or `"general"`.
+    /// Assign a context profile to a goal using description-based text overlap
+    /// (fast path) with an LLM classifier fallback for ambiguous goals.
+    /// Returns the best profile name, or `"general"` as the default.
     pub async fn auto_assign(&self, goal: &str) -> String {
-        let g = goal.to_lowercase();
-
-        let keyword_map: &[(&str, &[&str])] = &[
-            (
-                "knowledge-worker",
-                &[
-                    "note",
-                    "memory",
-                    "search",
-                    "store",
-                    "knowledge",
-                    "learn",
-                    "remember",
-                ],
-            ),
-            (
-                "task-manager",
-                &["task", "goal", "decompose", "plan", "priorit", "roadmap"],
-            ),
-            (
-                "code-analyst",
-                &[
-                    "code",
-                    "analyze",
-                    "refactor",
-                    "source",
-                    "architect",
-                    "function",
-                ],
-            ),
-            (
-                "api-builder",
-                &["api", "endpoint", "request", "http", "openapi"],
-            ),
-            (
-                "scheduler",
-                &["schedule", "tick", "perceive", "autonom", "background"],
-            ),
-        ];
-
-        // Score each profile by keyword hit count.
-        let mut best_name = "general".to_string();
-        let mut best_score = 0usize;
-
-        for (profile_name, keywords) in keyword_map {
-            let score = keywords.iter().filter(|kw| g.contains(**kw)).count();
-            if score > best_score {
-                best_score = score;
-                best_name = profile_name.to_string();
-            }
-        }
-
-        // Fallback to "general" if the chosen profile isn't loaded (it's optional).
-        if best_score == 0 {
+        let profiles = self.profiles.read().await.clone();
+        if profiles.is_empty() {
             return "general".to_string();
         }
 
-        let exists = self.profiles.read().await.contains_key(&best_name);
-        if exists {
-            best_name
-        } else {
-            "general".to_string()
+        let goal_tokens = Self::tokenize(goal);
+
+        // Score each non-general profile by token overlap with name + description.
+        let mut scores: Vec<(usize, String)> = profiles
+            .iter()
+            .filter(|(n, _)| *n != "general")
+            .map(|(name, profile)| {
+                let profile_tokens = Self::tokenize(&format!(
+                    "{} {}",
+                    name.replace('-', " "),
+                    profile.description
+                ));
+                let score = goal_tokens
+                    .iter()
+                    .filter(|tok| tok.len() > 2 && profile_tokens.contains(*tok))
+                    .count();
+                (score, name.clone())
+            })
+            .collect();
+
+        scores.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Clear winner: top score > 0 and strictly better than second-best.
+        if let (Some((best_score, best_name)), second_score) = (
+            scores.first().cloned(),
+            scores.get(1).map(|(s, _)| *s).unwrap_or(0),
+        ) {
+            if best_score > 0 && best_score > second_score {
+                debug!(
+                    profile = %best_name,
+                    score = best_score,
+                    "auto_assign: text-overlap match"
+                );
+                return best_name;
+            }
         }
+
+        // LLM fallback: classify ambiguous or novel goals against profile descriptions.
+        if let Some(llm) = self.make_llm().await {
+            let profile_list: String = profiles
+                .iter()
+                .filter(|(n, _)| *n != "general")
+                .map(|(name, p)| format!("- {}: {}", name, p.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let prompt = format!(
+                "You are a goal router. Given a goal, pick the single most relevant context profile.\n\
+                 Profiles:\n{}\n\n\
+                 Goal: {}\n\n\
+                 Reply with ONLY the profile name exactly as shown (e.g. \"task-manager\"). \
+                 If none fit well, reply with \"general\".",
+                profile_list, goal
+            );
+
+            if let Ok(response) = llm.generate(&prompt).await {
+                let chosen = response.text.trim().to_lowercase();
+                let chosen = chosen.trim_matches('"').trim_matches('\'').trim();
+                if profiles.contains_key(chosen) {
+                    debug!(profile = %chosen, "auto_assign: LLM match");
+                    return chosen.to_string();
+                }
+            }
+        }
+
+        debug!(goal = %goal, "auto_assign: fallback to general");
+        "general".to_string()
+    }
+
+    /// Tokenize text into a set of lowercase alphanumeric tokens.
+    fn tokenize(text: &str) -> HashSet<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Build an LLM client from the live config, returning None if unavailable.
+    async fn make_llm(&self) -> Option<LlmClient> {
+        let config = self.llm_config.read().await.clone();
+        config.and_then(|c| LlmClient::with_config(c).ok())
     }
 
     /// Execute a named protocol (boot.yaml / init.yaml) file.

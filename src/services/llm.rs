@@ -14,7 +14,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 /// Default model to use.
-const DEFAULT_MODEL: &str = "granite4:latest";
+const DEFAULT_MODEL: &str = "qwen3.5:4b";
 
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -633,7 +633,7 @@ mod tests {
     fn test_llm_config_default() {
         let config = LlmConfig::default();
         assert_eq!(config.base_url.as_deref(), Some("http://localhost:11434"));
-        assert_eq!(config.model, "granite4:latest");
+        assert_eq!(config.model, "qwen3.5:4b");
         assert_eq!(config.temperature, 0.7);
     }
 
