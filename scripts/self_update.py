@@ -97,6 +97,7 @@ def main():
             data = json.loads(structure["result"][0]["text"])
             total_tools = data.get("total_tools", 0)
         except (KeyError, IndexError, json.JSONDecodeError):
+            
             pass
     print(f"[self_update] tools at runtime: {total_tools}")
 

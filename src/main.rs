@@ -5,11 +5,12 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::{debug, error, info, warn};
 
-use agent_brain::cli::{Cli, Command, TransportType};
+use agent_brain::cli::{ApiCommand, Cli, Command, TransportType};
 use agent_brain::config::{Config, LogFormat, SecretProviderType};
 use agent_brain::logging;
 use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServer, McpServerCore};
 use agent_brain::models::HttpMethod;
+use agent_brain::repl;
 use agent_brain::repository::Neo4jClient;
 use agent_brain::services::{
     AwsSecretConfig, AwsSecretProvider, CredentialManager, ExportFormat, ExportOptions,
@@ -45,41 +46,41 @@ async fn main() -> Result<()> {
 
     info!(
         neo4j_uri = %config.neo4j_uri,
-        "Starting agent-api"
+        "Starting agent-brain"
     );
 
     // Execute command
     let result = match cli.command {
+        None => run_repl(&config, None, None).await,
+        Some(Command::Repl { profile, session }) => run_repl(&config, profile, session).await,
+        Some(Command::Status) => run_status(&config).await,
         Some(Command::InitDb) => run_init_db(&config).await,
         Some(Command::Serve {
             transport,
             bind,
             api_key,
         }) => run_serve(&config, transport, &bind, api_key).await,
-        None => {
-            // Default to stdio transport when no command specified
-            run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None).await
-        }
-        Some(Command::Ingest { spec }) => run_ingest(&config, &spec).await,
-        Some(Command::Query { query }) => run_query(&config, &query).await,
-        Some(Command::Execute {
-            method,
-            url,
-            body,
-            headers,
-        }) => run_execute(&config, &method, &url, body, headers).await,
-        Some(Command::Stats) => run_stats(&config).await,
-        Some(Command::Export {
-            output,
-            format,
-            annotations,
-            include_broken,
-        }) => run_export(&config, output, &format, annotations, include_broken).await,
-        Some(Command::Diff {
-            format,
-            breaking_only,
-        }) => run_diff(&config, &format, breaking_only).await,
-        Some(Command::Embed) => run_embed(&config).await,
+        Some(Command::Api { command }) => match command {
+            ApiCommand::Ingest { spec } => run_ingest(&config, &spec).await,
+            ApiCommand::Query { query } => run_query(&config, &query).await,
+            ApiCommand::Execute {
+                method,
+                url,
+                body,
+                headers,
+            } => run_execute(&config, &method, &url, body, headers).await,
+            ApiCommand::Export {
+                output,
+                format,
+                annotations,
+                include_broken,
+            } => run_export(&config, output, &format, annotations, include_broken).await,
+            ApiCommand::Diff {
+                format,
+                breaking_only,
+            } => run_diff(&config, &format, breaking_only).await,
+            ApiCommand::Embed => run_embed(&config).await,
+        },
     };
 
     if let Err(e) = &result {
@@ -159,6 +160,71 @@ fn build_llm_config(config: &Config) -> LlmConfig {
         }
     }
     base
+}
+
+async fn run_repl(config: &Config, profile: Option<String>, session: Option<String>) -> Result<()> {
+    let client = connect_neo4j(config).await?;
+    let llm_config = build_llm_config(config);
+
+    let llm_desc = format!("{:?} ({})", config.llm_provider, llm_config.model);
+    let neo4j_uri = config.neo4j_uri.clone();
+
+    let credential_manager = create_credential_manager(config, client.clone()).await;
+
+    let telemetry = if let Some(path) = &config.telemetry_db_path {
+        match agent_brain::repository::TelemetryClient::new(path) {
+            Ok(t) => {
+                info!("Telemetry enabled at {}", path);
+                Some(t)
+            }
+            Err(e) => {
+                warn!("Failed to initialize telemetry: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut server = McpServerCore::new()
+        .with_neo4j(client)
+        .with_llm_config(llm_config);
+
+    if let Some(t) = telemetry {
+        server = server.with_telemetry(t);
+    }
+    if let Some(cm) = credential_manager {
+        server = server.with_credential_manager(cm);
+    }
+
+    server.initialize().await;
+    let chat = server.chat_service();
+
+    repl::run(chat, &llm_desc, &neo4j_uri, profile, session).await
+}
+
+async fn run_status(config: &Config) -> Result<()> {
+    let client = connect_neo4j(config).await?;
+
+    let resources = client.list_resources().await?;
+    let endpoints = client.list_endpoints().await?;
+    let schemas = client.list_schemas().await?;
+    let healing_stats = client.get_healing_stats().await?;
+
+    // Note counts and task counts require knowledge/task repos; use what's available
+    println!("Agent Brain Status");
+    println!("==================");
+    println!("API Resources:  {}", resources.len());
+    println!("API Endpoints:  {}", endpoints.len());
+    println!("API Schemas:    {}", schemas.len());
+    println!();
+    println!("Healing Events");
+    println!("--------------");
+    println!("Total:          {}", healing_stats.total);
+    println!("Verified:       {}", healing_stats.verified);
+    println!("Unverified:     {}", healing_stats.unverified);
+
+    Ok(())
 }
 
 async fn run_init_db(config: &Config) -> Result<()> {
@@ -515,31 +581,6 @@ async fn run_execute(
     } else {
         println!("{}", response.body);
     }
-
-    Ok(())
-}
-
-async fn run_stats(config: &Config) -> Result<()> {
-    let client = connect_neo4j(config).await?;
-
-    info!("Fetching database statistics...");
-
-    let resources = client.list_resources().await?;
-    let endpoints = client.list_endpoints().await?;
-    let schemas = client.list_schemas().await?;
-    let healing_stats = client.get_healing_stats().await?;
-
-    println!("Database Statistics");
-    println!("===================");
-    println!("Resources:      {}", resources.len());
-    println!("Endpoints:      {}", endpoints.len());
-    println!("Schemas:        {}", schemas.len());
-    println!();
-    println!("Healing Events");
-    println!("--------------");
-    println!("Total:          {}", healing_stats.total);
-    println!("Verified:       {}", healing_stats.verified);
-    println!("Unverified:     {}", healing_stats.unverified);
 
     Ok(())
 }

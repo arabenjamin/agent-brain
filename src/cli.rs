@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Autonomous API Knowledge Graph - MCP Server
+/// Agent Brain — Autonomous AI agent with persistent knowledge graph
 #[derive(Debug, Parser)]
-#[command(name = "agent-api")]
+#[command(name = "agent-brain")]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
@@ -56,9 +56,32 @@ pub enum Command {
         api_key: Option<String>,
     },
 
+    /// Start an interactive chat REPL backed by the full tool set
+    Repl {
+        /// Context profile to activate (e.g. knowledge-worker, task-manager)
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Session ID for working-memory continuity
+        #[arg(long)]
+        session: Option<String>,
+    },
+
+    /// Show brain status: note/task/endpoint counts and scheduler state
+    Status,
+
     /// Initialize the Neo4j database schema
     InitDb,
 
+    /// OpenAPI spec management (ingest, query, execute, export, diff, embed)
+    Api {
+        #[command(subcommand)]
+        command: ApiCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ApiCommand {
     /// Ingest an OpenAPI specification
     Ingest {
         /// Path or URL to OpenAPI spec (JSON or YAML)
@@ -91,9 +114,6 @@ pub enum Command {
         #[arg(short = 'H', long = "header")]
         headers: Vec<String>,
     },
-
-    /// Show database statistics
-    Stats,
 
     /// Export the knowledge graph to an OpenAPI specification
     Export {

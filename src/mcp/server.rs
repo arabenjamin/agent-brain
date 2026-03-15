@@ -274,6 +274,20 @@ impl McpServerCore {
         )
     }
 
+    /// Initialize skills and run the boot protocol.
+    ///
+    /// Call this before using [`chat_service`] or other capabilities outside
+    /// of [`run_with_transport`] (which calls this automatically).
+    pub async fn initialize(&self) {
+        self.build_skills().await;
+        if let Some(ref cb) = *self.context_builder_svc.read().await {
+            let handler = Arc::clone(&self.tool_handler);
+            if let Err(e) = cb.run_protocol("boot", handler, self.neo4j.as_ref()).await {
+                warn!(error = %e, "Boot protocol error (non-fatal)");
+            }
+        }
+    }
+
     /// Build the skills and initialize the tool handler.
     /// This should be called before running the server.
     pub async fn build_skills(&self) {
@@ -582,16 +596,8 @@ impl McpServerCore {
         &self,
         transport: &T,
     ) -> Result<(), McpServerError> {
-        // Ensure skills are built
-        self.build_skills().await;
-
-        // Run boot protocol (non-fatal — logs warnings on error).
-        if let Some(ref cb) = *self.context_builder_svc.read().await {
-            let handler = Arc::clone(&self.tool_handler);
-            if let Err(e) = cb.run_protocol("boot", handler, self.neo4j.as_ref()).await {
-                warn!(error = %e, "Boot protocol error (non-fatal)");
-            }
-        }
+        // Ensure skills are built and boot protocol has run.
+        self.initialize().await;
 
         info!(
             name = %self.config.name,

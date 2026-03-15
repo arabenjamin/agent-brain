@@ -106,8 +106,7 @@ impl Config {
                 .map_err(|_| ConfigError::Missing("NEO4J_PASSWORD"))?,
             ollama_url: env::var("OLLAMA_URL")
                 .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            ollama_model: env::var("OLLAMA_MODEL")
-                .unwrap_or_else(|_| "qwen3.5:4b".to_string()),
+            ollama_model: env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3.5:4b".to_string()),
             ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             log_format: env::var("LOG_FORMAT")

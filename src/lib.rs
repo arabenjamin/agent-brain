@@ -3,6 +3,7 @@ pub mod config;
 pub mod logging;
 pub mod mcp;
 pub mod models;
+pub mod repl;
 pub mod repository;
 pub mod services;
 pub mod skills;

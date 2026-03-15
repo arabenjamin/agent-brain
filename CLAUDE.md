@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 Guidance for working with the Agent Brain codebase.
+This repository is forked from the original [Agent Api]("https://github.com/arabenjamin/agent-api") and has diverged significantly in architecture, design, and implementation. Though there are still some leftovers from the original codebase, the majority of the code has been rewritten to support a persistent, self-improving autonomous agent brain with a Neo4j knowledge graph and a pluggable LLM backend.
 
 ## Project Overview
 
@@ -81,7 +82,7 @@ snapshots/                  # Knowledge graph snapshots (auto-created, gitignore
 
 ## TODO / Planned Features
 
-See `TODO.md` for the full tiered backlog (P0 critical → P3 infrastructure).
+See `project-docs/TODO.md` for the full tiered backlog (P0 critical → P3 infrastructure).
 
 ## Branch Strategy
 

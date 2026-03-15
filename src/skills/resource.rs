@@ -173,9 +173,9 @@ impl ResourceSkill {
         };
 
         match self.registry.get(&input.key).await {
-            Some(entry) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&entry).unwrap(),
-            ),
+            Some(entry) => {
+                ToolCallResult::success_text(serde_json::to_string_pretty(&entry).unwrap())
+            }
             None => ToolCallResult::success_text(
                 serde_json::to_string_pretty(&json!({
                     "key": input.key,

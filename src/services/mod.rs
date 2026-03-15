@@ -35,11 +35,11 @@ pub use llm::{LlmClient, LlmConfig, LlmProviderType};
 pub use model_selector::ModelSelector;
 pub use openapi::{EndpointWithParams, OpenApiParser};
 pub use queue::{ChainStep, QueueService, WorkerConfig};
-pub use resource_registry::{ResourceEntry, ResourceRegistry};
 pub use repo::{
     MergeStrategy, RepoAccessMethod, RepoAnalysisConfig, RepoAnalyzerService, RepoError,
     RepoPlatform, RepoSource,
 };
+pub use resource_registry::{ResourceEntry, ResourceRegistry};
 pub use scheduler::{SchedulerConfig, SchedulerService};
 pub use secrets::{
     AwsSecretConfig, AwsSecretProvider, CredentialManager, LocalSecretConfig, LocalSecretProvider,

@@ -38,10 +38,7 @@ impl ResourceEntry {
         let Some(ttl) = self.ttl_secs else {
             return true;
         };
-        let created: chrono::DateTime<Utc> = self
-            .created_at
-            .parse()
-            .unwrap_or_else(|_| Utc::now());
+        let created: chrono::DateTime<Utc> = self.created_at.parse().unwrap_or_else(|_| Utc::now());
         Utc::now().signed_duration_since(created).num_seconds() < ttl as i64
     }
 }
