@@ -95,7 +95,7 @@ Never write attribution to LLMs or coding agents or assistants.
 
 ## Critical Dev Notes
 
-**LlmConfig:** `base_url` is `Option<String>`. Default model: `"granite4:latest"`. Tests: `config.base_url.as_deref()`.
+**LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.
 
 **Skill registration:** Register to BOTH `tool_registry` (for `tools/list`) AND `skills` vec (for `tools/call`). Forgetting either causes invisible tools or dispatch failures.
 

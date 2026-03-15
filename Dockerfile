@@ -62,7 +62,7 @@ WORKDIR /home/agent
 ENV NEO4J_URI=bolt://neo4j:7687 \
     NEO4J_USER=neo4j \
     OLLAMA_URL=http://ollama:11434 \
-    OLLAMA_MODEL=granite4:latest \
+    OLLAMA_MODEL=qwen3.5:4b \
     LOG_LEVEL=info \
     LOG_FORMAT=json \
     RUST_BACKTRACE=1 \

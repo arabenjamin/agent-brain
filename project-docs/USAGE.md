@@ -31,7 +31,7 @@ NEO4J_PASSWORD=your-password
 # LLM (choose one provider)
 LLM_PROVIDER=ollama            # or: anthropic, gemini, vllm
 OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=granite4:latest
+OLLAMA_MODEL=qwen3.5:4b
 OLLAMA_EMBED_MODEL=bge-m3:latest
 # ANTHROPIC_API_KEY=sk-ant-...
 # GEMINI_API_KEY=...

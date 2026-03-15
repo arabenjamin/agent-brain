@@ -111,7 +111,7 @@ cargo run --release -- init-db
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | `password` | Neo4j password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `granite4:latest` | LLM model for text generation / self-healing |
+| `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model for text generation / self-healing |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `MCP_TRANSPORT` | `stdio` | MCP transport (stdio/http) |
@@ -236,7 +236,7 @@ Example `mcpServers` configuration entry:
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password",
         "OLLAMA_URL": "http://localhost:11434",
-        "OLLAMA_MODEL": "granite4:latest",
+        "OLLAMA_MODEL": "qwen3.5:4b",
         "SERPAPI_KEY": "your-serpapi-key"
       }
     }

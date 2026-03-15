@@ -113,7 +113,7 @@ Switch at runtime with `use_model` tool (`provider`: `"VLlm"`).
 ## LlmConfig Key Details
 
 - `base_url` field is `Option<String>`, not `String`
-- Default Ollama model: `"granite4:latest"` (not `"llama3"`)
+- Default Ollama model: `"qwen3.5:4b"` (not `"llama3"`)
 - Tests: `assert_eq!(config.base_url.as_deref(), Some("http://..."))`
 
 ## SnapshotService
