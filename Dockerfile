@@ -51,6 +51,9 @@ COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 # Copy context profiles (YAML files for ContextBuilderService)
 COPY --chown=agent:agent contexts /home/agent/contexts/
 
+# Copy source tree so analyze_own_structure can walk src/ at runtime
+COPY --chown=agent:agent src /home/agent/src/
+
 # Pre-create snapshots directory with correct ownership so named volume inherits permissions
 RUN mkdir -p /home/agent/snapshots && chown agent:agent /home/agent/snapshots
 
