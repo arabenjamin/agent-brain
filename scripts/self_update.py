@@ -39,9 +39,9 @@ def mcp_request(method, params, session_id=None, base_url="http://localhost:3001
     except urllib.error.URLError as e:
         return None, None
 
-def tool_call(name, arguments, session_id, base_url="http://localhost:3001"):
+def tool_call(name, arguments, session_id, base_url="http://localhost:3001", timeout=120):
     result, _ = mcp_request("tools/call", {"name": name, "arguments": arguments},
-                            session_id=session_id, base_url=base_url)
+                            session_id=session_id, base_url=base_url, timeout=timeout)
     return result
 
 # ---------------------------------------------------------------------------
