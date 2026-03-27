@@ -5,6 +5,8 @@ in the codebase. It is independent of feature work tracked in `ROADMAP.md`.
 
 **Decision: Incremental refactor, not a rewrite.**
 
+**Progress: Phase 0 ✅ complete (2026-03-27) | Phase 1 ✅ complete (2026-03-27)**
+
 The codebase is ~30K LOC of working, tested Rust. The problems are structural
 (god objects, tight coupling, shared mutable state) — not fundamental design
 flaws. Every phase below preserves existing functionality and tests.
@@ -29,10 +31,11 @@ flaws. Every phase below preserves existing functionality and tests.
 
 ---
 
-## Phase 0: Shed the Agent-API Identity
+## Phase 0: Shed the Agent-API Identity ✅ COMPLETE
 
 **Risk:** Low-Medium — large deletion, but cleanly bounded code
 **Estimated scope:** ~11,161 LOC removed, ~200 LOC changed
+**Actual:** ~15K LOC removed across 49 files, 107 unit tests passing
 
 This project was forked from `agent-api`, an OpenAPI management tool. Agent-brain
 has since grown into an autonomous knowledge-graph agent, but 40% of the codebase
@@ -216,10 +219,11 @@ Every subsequent refactoring phase operates on a smaller, more coherent codebase
 
 ---
 
-## Phase 1: Cargo Workspace + Extract Pure Crates
+## Phase 1: Cargo Workspace + Extract Pure Crates ✅ COMPLETE
 
 **Risk:** Low — mechanical extraction, no logic changes
 **Estimated scope:** ~200 LOC of `Cargo.toml` / `mod.rs` changes, zero logic changes
+**Actual:** 3-crate workspace (agent-brain-models, agent-brain-repository, agent-brain app), 107 unit tests passing
 
 ### 1.1 Convert to Cargo Workspace
 
