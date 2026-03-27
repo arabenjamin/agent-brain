@@ -311,10 +311,11 @@ Steps:
 
 ---
 
-## Phase 2: Break the MCP/Services Circular Dependency
+## Phase 2: Break the MCP/Services Circular Dependency ✅ COMPLETE
 
 **Risk:** Medium — requires moving types between modules
 **Estimated scope:** ~300 LOC moved/changed
+**Actual:** 483 LOC added to new crates/protocol/, 350 LOC changed in app; 107 tests passing
 
 ### 2.1 Extract `agent-brain-protocol` Crate
 

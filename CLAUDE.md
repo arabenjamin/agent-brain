@@ -121,12 +121,19 @@ curl http://localhost:3000/health
 
 ## Project Structure
 
-This is a Cargo workspace with three crates:
+This is a Cargo workspace with four crates:
 
 ```
 agent-brain/
 ├── Cargo.toml                    # [workspace] root
 ├── crates/
+│   ├── protocol/                 # agent-brain-protocol: shared MCP types + traits
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── types.rs          # Content, ToolDefinition, ToolCallResult, JSON-RPC types
+│   │       ├── skill.rs          # Skill trait
+│   │       ├── sse_notifier.rs   # SseNotifier trait (SessionManager implements it)
+│   │       └── tool_handler.rs   # ToolHandlerTrait (ToolHandler implements it)
 │   ├── models/                   # agent-brain-models: pure data types
 │   │   └── src/
 │   │       ├── lib.rs
@@ -176,7 +183,7 @@ agent-brain/
 │       │   │   ├── task.rs       # Task Manager skill (6 tools)
 │       │   │   └── working_memory.rs  # Working Memory skill (4 tools)
 │       │   └── mcp/              # MCP server implementation
-│       │       ├── protocol.rs   # JSON-RPC 2.0 message types
+│       │       ├── protocol.rs   # Re-export facade (pub use agent_brain_protocol::*)
 │       │       ├── transport.rs  # Async stdio transport
 │       │       ├── transport_trait.rs  # McpTransport trait abstraction
 │       │       ├── http_transport.rs   # Axum-based HTTP+SSE transport
@@ -274,7 +281,7 @@ YAML profiles in `contexts/` (default `./contexts`) define tool allowlists and s
 
 See `docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 
-- [ ] Phase 2: Break MCP/Services circular dependency (extract `agent-brain-protocol` crate)
+- [x] Phase 2: Break MCP/Services circular dependency (extract `agent-brain-protocol` crate)
 - [ ] Phase 3: Decompose McpServerCore god object
 - [ ] Phase 4: Declarative model context config (replace Neo4j ModelSpec with YAML)
 
