@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 agent-brain-models = { path = "../models" }
 agent-brain-repository = { path = "../repository" }
+agent-brain-protocol = { path = "../protocol" }
 
 # Async runtime
 tokio = { workspace = true }

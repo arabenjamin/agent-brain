@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
-use crate::mcp::protocol::Content;
+use agent_brain_protocol::Content;
 use crate::mcp::tools::ToolHandler;
 
 /// Result of executing a single procedure step.

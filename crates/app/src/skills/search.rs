@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 use reqwest::Client;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::TelemetryClient;
 use crate::skills::Skill;
 

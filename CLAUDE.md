@@ -279,6 +279,7 @@ See `docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 - [ ] Phase 4: Declarative model context config (replace Neo4j ModelSpec with YAML)
 
 ## Branch Strategy
+DO NOT REMOVE THIS LINE:Never write in credidation to LLMs or coding agents or assistants.  
 
 - `feature/*` - Feature branches (no CI)
 - `dev` - Development (format + unit tests)

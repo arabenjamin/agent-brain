@@ -5,7 +5,8 @@ use std::time::Instant;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::mcp::protocol::{Content, ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, ToolHandlerTrait};
+use async_trait::async_trait;
 use crate::repository::TelemetryClient;
 use crate::skills::Skill;
 
@@ -109,5 +110,13 @@ impl ToolHandler {
         }
 
         ToolCallResult::error(format!("Unknown tool: {}", name))
+    }
+}
+
+#[async_trait]
+impl ToolHandlerTrait for ToolHandler {
+    async fn execute(&self, name: &str, arguments: Option<Value>) -> ToolCallResult {
+        // Delegate to the inherent method.
+        ToolHandler::execute(self, name, arguments).await
     }
 }

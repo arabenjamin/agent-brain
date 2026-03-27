@@ -24,8 +24,7 @@ use serde::Deserialize;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
-use crate::mcp::protocol::Content;
-use crate::mcp::session::{SessionManager, SseMessage};
+use agent_brain_protocol::{Content, SseNotifier};
 use crate::mcp::tools::ToolHandler;
 use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
 use crate::repository::Neo4jClient;
@@ -93,8 +92,8 @@ pub struct QueueService {
     pub config: Arc<RwLock<WorkerConfig>>,
     /// Tombstone set — jobs cancelled while still in the heap (lazy deletion).
     cancelled_ids: Arc<Mutex<HashSet<String>>>,
-    /// Optional session manager for pushing SSE notifications on job completion.
-    session_manager: Option<Arc<SessionManager>>,
+    /// Optional SSE notifier for pushing notifications on job completion.
+    session_manager: Option<Arc<dyn SseNotifier>>,
 }
 
 impl QueueService {
@@ -103,7 +102,7 @@ impl QueueService {
     pub fn new(
         neo4j: Neo4jClient,
         tool_handler: Arc<RwLock<Option<ToolHandler>>>,
-        session_manager: Option<Arc<SessionManager>>,
+        session_manager: Option<Arc<dyn SseNotifier>>,
     ) -> Self {
         Self {
             neo4j,
@@ -510,13 +509,12 @@ impl QueueService {
         if let Some(e) = error {
             params["error"] = serde_json::Value::String(e.to_string());
         }
-        let payload = serde_json::to_string(&serde_json::json!({
+        let data = serde_json::json!({
             "jsonrpc": "2.0",
             "method":  "notifications/agent_job",
             "params":  params,
-        }))
-        .unwrap_or_default();
-        let _ = sm.send_sse(sid, SseMessage::new(payload).with_event("agent_job")).await;
+        });
+        sm.notify(sid, "agent_job", data).await;
     }
 
     /// Promote any parked children of `parent_id` to queued and push them onto the heap.

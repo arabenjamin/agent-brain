@@ -7,7 +7,7 @@ use tracing::info;
 use uuid::Uuid;
 use chrono::Utc;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
 use crate::skills::Skill;
 

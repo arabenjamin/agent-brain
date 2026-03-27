@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::models::TaskStatus;
 use crate::repository::Neo4jClient;
 use crate::services::{LlmClient, LlmConfig};

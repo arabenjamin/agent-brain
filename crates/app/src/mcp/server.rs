@@ -250,10 +250,12 @@ impl McpServerCore {
         let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.neo4j {
             let mut qs_guard = self.queue_service.write().await;
             if qs_guard.is_none() {
+                let sse_notifier: Option<Arc<dyn agent_brain_protocol::SseNotifier>> =
+                    self.session_manager.as_ref().map(|sm| Arc::clone(sm) as Arc<dyn agent_brain_protocol::SseNotifier>);
                 let qs = Arc::new(QueueService::new(
                     neo4j.clone(),
                     self.tool_handler.clone(),
-                    self.session_manager.clone(),
+                    sse_notifier,
                 ));
                 qs.recover().await;
                 *qs_guard = Some(Arc::clone(&qs));

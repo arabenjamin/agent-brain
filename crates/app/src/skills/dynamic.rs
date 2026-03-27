@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::mcp::tools::ToolHandler;
 use crate::repository::Neo4jClient;
 use crate::services::procedure_executor;

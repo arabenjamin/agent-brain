@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::models::ModelSpec;
 use crate::repository::Neo4jClient;
 use crate::services::model_selector::ModelSelector;

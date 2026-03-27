@@ -9,7 +9,7 @@ use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::Neo4jClient;
 use crate::services::{KnowledgeService, LlmClient, LlmConfig};
 use crate::skills::Skill;

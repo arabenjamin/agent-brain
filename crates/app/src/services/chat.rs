@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, warn};
 
-use crate::mcp::protocol::Content;
+use agent_brain_protocol::Content;
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
 
@@ -185,7 +185,7 @@ impl ChatService {
     async fn run_anthropic_loop(
         &self,
         config: LlmConfig,
-        tools: Vec<crate::mcp::protocol::ToolDefinition>,
+        tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
         tx: mpsc::Sender<ChatEvent>,
@@ -381,7 +381,7 @@ impl ChatService {
     async fn run_ollama_tool_loop(
         &self,
         config: LlmConfig,
-        tools: Vec<crate::mcp::protocol::ToolDefinition>,
+        tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
         tx: mpsc::Sender<ChatEvent>,
@@ -546,7 +546,7 @@ impl ChatService {
     async fn run_text_loop(
         &self,
         config: LlmConfig,
-        tools: Vec<crate::mcp::protocol::ToolDefinition>,
+        tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
         tx: mpsc::Sender<ChatEvent>,

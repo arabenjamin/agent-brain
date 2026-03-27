@@ -10,6 +10,9 @@ use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
+use agent_brain_protocol::SseNotifier;
+use async_trait::async_trait;
+
 /// Error type for session operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -310,6 +313,16 @@ impl SessionManager {
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl SseNotifier for SessionManager {
+    async fn notify(&self, session_id: &str, event: &str, data: serde_json::Value) {
+        let payload = serde_json::to_string(&data).unwrap_or_default();
+        let message = SseMessage::new(payload).with_event(event.to_string());
+        // Best-effort: ignore send errors (e.g. no subscriber).
+        let _ = self.send_sse(session_id, message).await;
     }
 }
 
