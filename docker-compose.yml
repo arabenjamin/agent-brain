@@ -7,7 +7,7 @@ services:
     ports:
       - "3001:3000"    # MCP HTTP endpoint (Use 3001 to avoid conflict if agent-api runs on 3000)
     environment:
-      - NEO4J_URI=bolt://agent-api-neo4j-1:7687
+      - NEO4J_URI=bolt://agent-brain-neo4j-1:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=password
       - LLM_PROVIDER=ollama
@@ -26,12 +26,12 @@ services:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
       - /home/ara/agent-brain:/home/agent/agent-brain:ro
     networks:
-      - agent-api_default
+      - agent-brain_default
       - ai-network
     restart: unless-stopped
 
 networks:
-  agent-api_default:
+  agent-brain_default:
     external: true
   ai-network:
     external: true

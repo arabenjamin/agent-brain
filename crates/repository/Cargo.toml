@@ -1,0 +1,17 @@
+[package]
+name = "agent-brain-repository"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+neo4rs = { workspace = true }
+anyhow = { workspace = true }
+duckdb = { workspace = true }

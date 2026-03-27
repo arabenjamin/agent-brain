@@ -1,0 +1,93 @@
+[package]
+name = "agent-brain"
+version.workspace = true
+edition.workspace = true
+description = "Autonomous AI agent brain — persistent memory, background jobs, reasoning, and self-improvement via MCP"
+
+[lib]
+name = "agent_brain"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-brain"
+path = "src/main.rs"
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+agent-brain-repository = { path = "../repository" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Neo4j graph database
+neo4rs = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# URL parsing
+url = "2"
+urlencoding = "2"
+
+# Regular expressions
+regex = "1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Schema generation for MCP tools
+schemars = { workspace = true }
+
+# Date/time and UUIDs
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Configuration
+dotenvy = "0.15"
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Encryption for local secret provider
+aes-gcm = "0.10"
+rand = "0.8"
+
+# AWS Secrets Manager
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-secretsmanager = "1.54"
+
+# Base64 encoding for Basic auth
+base64 = "0.22"
+
+# Local Analytics & Logging (The Hippocampus)
+duckdb = { workspace = true }
+
+# HTTP transport (Axum-based MCP server)
+axum = { version = "0.8", features = ["http2"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-stream = "0.3"
+async-trait = "0.1"
+futures-util = "0.3"
+
+# WebSocket support
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["neo4j"] }
+temp-env = "0.3"
+tempfile = "3"
