@@ -6,20 +6,21 @@ use serde_json::{json, Value};
 use tracing::info;
 use uuid::Uuid;
 use chrono::Utc;
+use std::sync::Arc;
 
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use crate::repository::Neo4jClient;
+use crate::services::traits::ProcedureStore;
 use crate::skills::Skill;
 
 /// Procedure Skill implementation.
 pub struct ProcedureSkill {
-    neo4j: Neo4jClient,
+    store: Arc<dyn ProcedureStore>,
 }
 
 impl ProcedureSkill {
     /// Create a new procedure skill.
-    pub fn new(neo4j: Neo4jClient) -> Self {
-        Self { neo4j }
+    pub fn new(store: Arc<dyn ProcedureStore>) -> Self {
+        Self { store }
     }
 
     // ========================================================================
@@ -103,24 +104,7 @@ impl ProcedureSkill {
             Err(e) => return ToolCallResult::error(format!("Failed to serialize steps: {}", e)),
         };
 
-        let cypher = r#"
-        CREATE (p:Procedure {
-            id: $id,
-            name: $name,
-            description: $description,
-            steps: $steps,
-            created_at: datetime($timestamp)
-        })
-        "#;
-
-        let query = neo4rs::query(cypher)
-            .param("id", id.clone())
-            .param("name", input.name.clone())
-            .param("description", input.description.clone())
-            .param("steps", steps_json)
-            .param("timestamp", timestamp);
-
-        match self.neo4j.run(query).await {
+        match self.store.store_procedure(&id, &input.name, &input.description, &steps_json, &timestamp).await {
             Ok(_) => {
                 let response = json!({
                     "success": true,
@@ -142,37 +126,8 @@ impl ProcedureSkill {
 
         info!(query = %input.query, "Searching procedures");
 
-        let cypher = r#"
-        MATCH (p:Procedure)
-        WHERE toLower(p.name) CONTAINS toLower($query)
-           OR toLower(p.description) CONTAINS toLower($query)
-        RETURN p.id AS id, p.name AS name, p.description AS description, p.steps AS steps
-        LIMIT $limit
-        "#;
-
-        let query = neo4rs::query(cypher)
-            .param("query", input.query.clone())
-            .param("limit", input.limit as i64);
-
-        match self.neo4j.execute(query).await {
-            Ok(rows) => {
-                let mut procedures = Vec::new();
-                for row in rows {
-                    let id = row.get::<String>("id").unwrap_or_default();
-                    let name = row.get::<String>("name").unwrap_or_default();
-                    let description = row.get::<String>("description").unwrap_or_default();
-                    let steps_str = row.get::<String>("steps").unwrap_or_else(|_| "[]".to_string());
-                    let steps: Value = serde_json::from_str(&steps_str)
-                        .unwrap_or(json!([]));
-
-                    procedures.push(json!({
-                        "id": id,
-                        "name": name,
-                        "description": description,
-                        "steps": steps
-                    }));
-                }
-
+        match self.store.search_procedures(&input.query, input.limit).await {
+            Ok(procedures) => {
                 let response = json!({
                     "count": procedures.len(),
                     "procedures": procedures

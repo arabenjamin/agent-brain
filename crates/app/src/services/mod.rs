@@ -7,7 +7,10 @@ pub mod model_selector;
 pub mod procedure_executor;
 pub mod scheduler;
 pub mod secrets;
+pub mod shared_llm;
 pub mod sleep;
+pub mod store_impls;
+pub mod traits;
 
 pub use knowledge::KnowledgeService;
 pub use llm::{LlmClient, LlmConfig, LlmProviderType};
@@ -21,4 +24,6 @@ pub use chat::{ChatEvent, ChatRequest, ChatService};
 pub use model_selector::ModelSelector;
 pub use queue::{QueueService, WorkerConfig, ChainStep};
 pub use scheduler::{SchedulerService, SchedulerConfig};
+pub use shared_llm::SharedLlm;
 pub use sleep::SleepService;
+pub use traits::{KnowledgeStore, LlmProvider, ProcedureStore, TaskStore, WorkingMemoryStore};

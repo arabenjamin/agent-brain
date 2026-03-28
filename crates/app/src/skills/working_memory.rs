@@ -7,33 +7,25 @@ use tracing::info;
 use uuid::Uuid;
 use chrono::Utc;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use crate::repository::Neo4jClient;
-use crate::services::{KnowledgeService, LlmClient, LlmConfig};
+use crate::services::traits::{KnowledgeStore, LlmProvider, WorkingMemoryStore};
 use crate::skills::Skill;
 
 /// Working Memory Skill — push/retrieve session context and summarise into long-term memory.
 pub struct WorkingMemorySkill {
-    neo4j: Neo4jClient,
-    llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    store: Arc<dyn WorkingMemoryStore>,
+    knowledge: Arc<dyn KnowledgeStore>,
+    llm: Arc<dyn LlmProvider>,
 }
 
 impl WorkingMemorySkill {
-    pub fn new(neo4j: Neo4jClient, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
-        Self { neo4j, llm_config }
-    }
-
-    async fn make_llm(&self) -> Option<LlmClient> {
-        let config = self.llm_config.read().await.clone();
-        config.and_then(|c| LlmClient::with_config(c).ok())
-    }
-
-    async fn make_knowledge_service(&self) -> KnowledgeService {
-        let config = self.llm_config.read().await.clone();
-        let llm = config.and_then(|c| LlmClient::with_config(c).ok());
-        KnowledgeService::new(self.neo4j.clone(), llm)
+    pub fn new(
+        store: Arc<dyn WorkingMemoryStore>,
+        knowledge: Arc<dyn KnowledgeStore>,
+        llm: Arc<dyn LlmProvider>,
+    ) -> Self {
+        Self { store, knowledge, llm }
     }
 
     // ========================================================================
@@ -149,33 +141,8 @@ impl WorkingMemorySkill {
 
         info!(session_id = %input.session_id, role = %role, "Pushing working-memory entry");
 
-        // Compute next turn_index atomically via Cypher
-        let cypher = r#"
-        OPTIONAL MATCH (w:WorkingMemory {session_id: $session_id})
-        WITH COALESCE(max(w.turn_index), -1) + 1 AS next_turn
-        CREATE (wm:WorkingMemory {
-            id: $id,
-            session_id: $session_id,
-            content: $content,
-            role: $role,
-            turn_index: next_turn,
-            created_at: datetime($ts)
-        })
-        RETURN wm.turn_index AS turn_index
-        "#;
-
-        let q = neo4rs::query(cypher)
-            .param("id", entry_id.clone())
-            .param("session_id", input.session_id.clone())
-            .param("content", input.content)
-            .param("role", role)
-            .param("ts", ts);
-
-        match self.neo4j.execute(q).await {
-            Ok(rows) => {
-                let turn_index = rows.first()
-                    .and_then(|r| r.get::<i64>("turn_index").ok())
-                    .unwrap_or(0);
+        match self.store.push_entry(&entry_id, &input.session_id, &input.content, role, &ts).await {
+            Ok(turn_index) => {
                 let response = json!({
                     "entry_id": entry_id,
                     "turn_index": turn_index,
@@ -195,26 +162,8 @@ impl WorkingMemorySkill {
 
         info!(session_id = %input.session_id, "Retrieving working-memory context");
 
-        let cypher = r#"
-        MATCH (w:WorkingMemory {session_id: $session_id})
-        RETURN w.turn_index AS turn, w.role AS role, w.content AS content
-        ORDER BY w.turn_index ASC LIMIT $limit
-        "#;
-
-        let q = neo4rs::query(cypher)
-            .param("session_id", input.session_id.clone())
-            .param("limit", input.limit as i64);
-
-        match self.neo4j.execute(q).await {
-            Ok(rows) => {
-                let entries: Vec<Value> = rows.iter().map(|row| {
-                    json!({
-                        "turn": row.get::<i64>("turn").unwrap_or(0),
-                        "role": row.get::<String>("role").unwrap_or_default(),
-                        "content": row.get::<String>("content").unwrap_or_default()
-                    })
-                }).collect();
-
+        match self.store.get_entries(&input.session_id, input.limit).await {
+            Ok(entries) => {
                 let response = json!({
                     "session_id": input.session_id,
                     "count": entries.len(),
@@ -235,31 +184,8 @@ impl WorkingMemorySkill {
 
         info!("Listing working-memory sessions");
 
-        let cypher = r#"
-        MATCH (w:WorkingMemory)
-        WITH w.session_id AS sid,
-             toString(min(w.created_at)) AS started_at,
-             count(w) AS msg_count
-        OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0})
-        RETURN sid AS session_id, started_at, msg_count,
-               COALESCE(first.content, sid) AS title
-        ORDER BY started_at DESC
-        LIMIT $limit
-        "#;
-
-        let q = neo4rs::query(cypher).param("limit", limit);
-
-        match self.neo4j.execute(q).await {
-            Ok(rows) => {
-                let sessions: Vec<Value> = rows.iter().map(|row| {
-                    json!({
-                        "session_id": row.get::<String>("session_id").unwrap_or_default(),
-                        "started_at": row.get::<String>("started_at").unwrap_or_default(),
-                        "msg_count":  row.get::<i64>("msg_count").unwrap_or(0),
-                        "title":      row.get::<String>("title").unwrap_or_default()
-                    })
-                }).collect();
-
+        match self.store.list_sessions(limit).await {
+            Ok(sessions) => {
                 let response = json!({
                     "count": sessions.len(),
                     "sessions": sessions
@@ -276,23 +202,10 @@ impl WorkingMemorySkill {
             Err(e) => return e,
         };
 
-        let llm = match self.make_llm().await {
-            Some(l) => l,
-            None => return ToolCallResult::error("LLM not configured for session summarisation".to_string()),
-        };
-
         info!(session_id = %input.session_id, "Summarising session into long-term memory");
 
-        // 1. Fetch all entries
-        let cypher = r#"
-        MATCH (w:WorkingMemory {session_id: $session_id})
-        RETURN w.turn_index AS turn, w.role AS role, w.content AS content
-        ORDER BY w.turn_index ASC
-        "#;
-
-        let rows = match self.neo4j.execute(
-            neo4rs::query(cypher).param("session_id", input.session_id.clone()),
-        ).await {
+        // 1. Fetch all entries via the store trait
+        let rows = match self.store.get_all_entries(&input.session_id).await {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(format!("Failed to fetch session entries: {}", e)),
         };
@@ -301,11 +214,10 @@ impl WorkingMemorySkill {
             return ToolCallResult::error(format!("No entries found for session '{}'", input.session_id));
         }
 
-        let entries_text: String = rows.iter().map(|row| {
-            let turn = row.get::<i64>("turn").unwrap_or(0);
-            let role = row.get::<String>("role").unwrap_or_default();
-            let content = row.get::<String>("content").unwrap_or_default();
-            format!("[Turn {turn} | {role}] {content}")
+        let entries_text: String = rows.iter().enumerate().map(|(i, entry)| {
+            let role = entry.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            format!("[Turn {i} | {role}] {content}")
         }).collect::<Vec<_>>().join("\n");
 
         let entries_summarised = rows.len();
@@ -316,14 +228,13 @@ impl WorkingMemorySkill {
             entries_text
         );
 
-        let summary = match llm.generate(&prompt).await {
-            Ok(r) => r.text,
+        let summary = match self.llm.generate(&prompt, None).await {
+            Ok(s) => s,
             Err(e) => return ToolCallResult::error(format!("LLM summarisation failed: {}", e)),
         };
 
         // 3. Store in long-term memory as a consolidated note
-        let knowledge = self.make_knowledge_service().await;
-        let note_id = match knowledge.store_note(
+        let note_id = match self.knowledge.store_note(
             &summary,
             Some("consolidated"),
             Some(&input.session_id),
@@ -335,11 +246,7 @@ impl WorkingMemorySkill {
 
         // 4. Optionally delete session entries
         let deleted = if input.delete_after_summarise {
-            let delete_q = neo4rs::query(
-                "MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w",
-            )
-            .param("session_id", input.session_id.clone());
-            let _ = self.neo4j.run(delete_q).await;
+            let _ = self.store.delete_session(&input.session_id).await;
             true
         } else {
             false

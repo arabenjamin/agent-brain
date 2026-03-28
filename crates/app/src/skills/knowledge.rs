@@ -5,29 +5,21 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
-use crate::repository::Neo4jClient;
-use crate::services::{KnowledgeService, LlmClient, LlmConfig};
+use crate::services::traits::{KnowledgeStore, LlmProvider};
 use crate::skills::Skill;
 
 /// Knowledge Skill implementation.
 pub struct KnowledgeSkill {
-    neo4j: Neo4jClient,
-    llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    svc: Arc<dyn KnowledgeStore>,
+    llm: Arc<dyn LlmProvider>,
 }
 
 impl KnowledgeSkill {
     /// Create a new knowledge skill.
-    pub fn new(neo4j: Neo4jClient, llm_config: Arc<RwLock<Option<LlmConfig>>>) -> Self {
-        Self { neo4j, llm_config }
-    }
-
-    async fn make_service(&self) -> KnowledgeService {
-        let config = self.llm_config.read().await.clone();
-        let llm = config.and_then(|c| LlmClient::with_config(c).ok());
-        KnowledgeService::new(self.neo4j.clone(), llm)
+    pub fn new(svc: Arc<dyn KnowledgeStore>, llm: Arc<dyn LlmProvider>) -> Self {
+        Self { svc, llm }
     }
 
     // ========================================================================
@@ -388,8 +380,7 @@ impl KnowledgeSkill {
 
         info!(content_len = input.content.len(), "Storing note");
 
-        let service = self.make_service().await;
-        match service.store_note(
+        match self.svc.store_note(
             &input.content,
             input.note_type.as_deref(),
             input.source_context.as_deref(),
@@ -416,11 +407,10 @@ impl KnowledgeSkill {
 
         info!(query = %input.query, "Searching notes");
 
-        let service = self.make_service().await;
         let results = if input.entity_expansion {
-            service.search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops).await
+            self.svc.search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops).await
         } else {
-            service.search_notes(&input.query, input.limit, input.graph_hops).await
+            self.svc.search_notes(&input.query, input.limit, input.graph_hops).await
         };
         match results {
             Ok(results) => {
@@ -442,8 +432,7 @@ impl KnowledgeSkill {
 
         info!(note_id = %input.note_id, "Finding related notes");
 
-        let service = self.make_service().await;
-        match service.find_related_notes(&input.note_id).await {
+        match self.svc.find_related_notes(&input.note_id).await {
             Ok(related) => {
                 let notes: Vec<Value> = related
                     .into_iter()
@@ -472,8 +461,7 @@ impl KnowledgeSkill {
             "Pruning stale notes"
         );
 
-        let service = self.make_service().await;
-        match service.prune_old_notes(
+        match self.svc.prune_old_notes(
             input.days_stale,
             input.min_accesses,
             input.score_threshold,
@@ -507,8 +495,7 @@ impl KnowledgeSkill {
 
         info!(topic = %input.topic, limit = input.limit, "Consolidating memories");
 
-        let service = self.make_service().await;
-        match service.consolidate_memories(&input.topic, input.limit).await {
+        match self.svc.consolidate_memories(&input.topic, input.limit).await {
             Ok((id, source_count, preview)) => {
                 let response = json!({
                     "consolidated_note_id": id,
@@ -529,8 +516,7 @@ impl KnowledgeSkill {
 
         info!(limit = input.limit, "Fetching due notes for review");
 
-        let service = self.make_service().await;
-        match service.review_due_notes(input.limit).await {
+        match self.svc.review_due_notes(input.limit).await {
             Ok(notes) => {
                 let response = json!({
                     "count": notes.len(),
@@ -550,8 +536,7 @@ impl KnowledgeSkill {
 
         info!(question = %input.question, limit = input.limit, "Reasoning");
 
-        let service = self.make_service().await;
-        match service.reason(&input.question, input.limit, input.store_inference).await {
+        match self.svc.reason(&input.question, input.limit, input.store_inference).await {
             Ok((answer, inferences, confidence, gaps, note_id)) => {
                 let mut response = json!({
                     "answer": answer,
@@ -576,8 +561,7 @@ impl KnowledgeSkill {
 
         info!(action = %input.action, "Auditing action");
 
-        let service = self.make_service().await;
-        match service.audit_action(&input.action, input.context.as_deref()).await {
+        match self.svc.audit_action(&input.action, input.context.as_deref()).await {
             Ok((aligned, confidence, concerns, suggestions, reasoning)) => {
                 let response = json!({
                     "aligned": aligned,
@@ -600,8 +584,7 @@ impl KnowledgeSkill {
 
         info!(decision = %input.decision, "Explaining reasoning");
 
-        let service = self.make_service().await;
-        match service.explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit).await {
+        match self.svc.explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit).await {
             Ok((explanation, sources)) => {
                 let response = json!({
                     "explanation": explanation,
@@ -620,12 +603,6 @@ impl KnowledgeSkill {
         };
 
         info!(request = %input.request, "Analyzing request for clarification");
-
-        let config = self.llm_config.read().await.clone();
-        let llm = match config.and_then(|c| LlmClient::with_config(c).ok()) {
-            Some(l) => l,
-            None => return ToolCallResult::error("LLM not configured for clarification analysis".to_string()),
-        };
 
         let mut prompt = format!(
             "Analyze the following request for ambiguity. Determine if clarification is needed before acting.\n\nREQUEST: {}\n",
@@ -651,9 +628,9 @@ Respond with a JSON object only (no markdown, no explanation):
 }"#
         );
 
-        match llm.generate(&prompt).await {
-            Ok(resp) => {
-                let text = resp.text.trim();
+        match self.llm.generate(&prompt, None).await {
+            Ok(text_resp) => {
+                let text = text_resp.trim();
                 let json_start = text.find('{').unwrap_or(0);
                 let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
                 let parsed: Value = serde_json::from_str(&text[json_start..json_end])
@@ -682,8 +659,7 @@ Respond with a JSON object only (no markdown, no explanation):
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
-        let service = self.make_service().await;
-        match service.export_graph_visualization(input.max_nodes).await {
+        match self.svc.export_graph_visualization(input.max_nodes).await {
             Ok((nodes, edges)) => {
                 let response = json!({
                     "node_count": nodes.len(),
@@ -705,8 +681,7 @@ Respond with a JSON object only (no markdown, no explanation):
             Err(e) => return e,
         };
 
-        let service = self.make_service().await;
-        match service.get_note(&input.id).await {
+        match self.svc.get_note(&input.id).await {
             Ok(Some(note)) => ToolCallResult::success_text(
                 serde_json::to_string_pretty(&note).unwrap()
             ),
@@ -723,8 +698,7 @@ Respond with a JSON object only (no markdown, no explanation):
 
         info!(entity = %input.entity_name, "Searching by entity");
 
-        let service = self.make_service().await;
-        match service.search_by_entity(
+        match self.svc.search_by_entity(
             &input.entity_name,
             input.entity_type.as_deref(),
             input.limit,

@@ -5,35 +5,28 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::models::TaskStatus;
-use crate::repository::Neo4jClient;
-use crate::services::{LlmClient, LlmConfig};
+use crate::services::traits::{LlmProvider, TaskStore};
 use crate::services::queue::{ChainStep, QueueService};
 use crate::skills::Skill;
 
 /// Task Skill implementation.
 pub struct TaskSkill {
-    llm_config: Arc<RwLock<Option<LlmConfig>>>,
-    neo4j: Option<Neo4jClient>,
+    llm: Arc<dyn LlmProvider>,
+    neo4j: Option<Arc<dyn TaskStore>>,
     queue: Option<Arc<QueueService>>,
 }
 
 impl TaskSkill {
     /// Create a new task skill.
     pub fn new(
-        llm_config: Arc<RwLock<Option<LlmConfig>>>,
-        neo4j: Option<Neo4jClient>,
+        llm: Arc<dyn LlmProvider>,
+        neo4j: Option<Arc<dyn TaskStore>>,
         queue: Option<Arc<QueueService>>,
     ) -> Self {
-        Self { llm_config, neo4j, queue }
-    }
-
-    async fn make_llm(&self) -> Option<LlmClient> {
-        let config = self.llm_config.read().await.clone();
-        config.and_then(|c| LlmClient::with_config(c).ok())
+        Self { llm, neo4j, queue }
     }
 
     // ========================================================================
@@ -240,7 +233,7 @@ impl TaskSkill {
 
         info!(goal = %input.goal, "Reflecting on work");
 
-        if let Some(llm) = self.make_llm().await {
+        {
             let prompt = format!(
                 "You are a critical reviewer. Analyze the following work against the goal.\n\n\
                 GOAL: {}\n\n\
@@ -252,11 +245,11 @@ impl TaskSkill {
                 input.plan.as_deref().unwrap_or("")
             );
 
-            match llm.generate(&prompt).await {
-                Ok(response) => {
+            match self.llm.generate(&prompt, None).await {
+                Ok(reflection_text) => {
                     let reflection_note_id = if let Some(neo4j) = &self.neo4j {
                         match neo4j.store_reflection_note(
-                            &response.text,
+                            &reflection_text,
                             input.task_id.as_deref(),
                         ).await {
                             Ok(id) => {
@@ -273,7 +266,7 @@ impl TaskSkill {
                     };
 
                     let mut response_json = json!({
-                        "critique": response.text,
+                        "critique": reflection_text,
                         "status": "reflection_complete"
                     });
 
@@ -285,8 +278,6 @@ impl TaskSkill {
                 },
                 Err(e) => ToolCallResult::error(format!("LLM reflection failed: {}", e))
             }
-        } else {
-            ToolCallResult::error("LLM not configured for reflection".to_string())
         }
     }
 
@@ -299,11 +290,6 @@ impl TaskSkill {
         let neo4j = match &self.neo4j {
             Some(n) => n,
             None => return ToolCallResult::error("Neo4j not available".to_string()),
-        };
-
-        let llm = match self.make_llm().await {
-            Some(l) => l,
-            None => return ToolCallResult::error("LLM not configured for goal decomposition".to_string()),
         };
 
         // Fetch the parent task to get its goal
@@ -327,13 +313,13 @@ impl TaskSkill {
             max_steps, parent_task.goal, context
         );
 
-        let llm_response = match llm.generate(&prompt).await {
+        let llm_text = match self.llm.generate(&prompt, None).await {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(format!("LLM decomposition failed: {}", e)),
         };
 
         // Parse JSON from LLM response
-        let text = llm_response.text.trim();
+        let text = llm_text.trim();
         let json_start = text.find('[').unwrap_or(0);
         let json_end = text.rfind(']').map(|i| i + 1).unwrap_or(text.len());
         let json_str = &text[json_start..json_end];

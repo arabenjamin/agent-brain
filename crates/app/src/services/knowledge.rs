@@ -1576,3 +1576,114 @@ impl KnowledgeService {
         Ok((nodes, edges))
     }
 }
+
+// ============================================================================
+// KnowledgeStore trait impl — allows KnowledgeSkill to hold Arc<dyn KnowledgeStore>
+// ============================================================================
+
+#[async_trait::async_trait]
+impl crate::services::traits::KnowledgeStore for KnowledgeService {
+    async fn store_note(
+        &self,
+        content: &str,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+        event_at: Option<&str>,
+    ) -> anyhow::Result<(String, usize)> {
+        KnowledgeService::store_note(self, content, note_type, source_context, event_at).await
+    }
+
+    async fn search_notes(
+        &self,
+        query: &str,
+        limit: usize,
+        graph_hops: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        KnowledgeService::search_notes(self, query, limit, graph_hops).await
+    }
+
+    async fn search_notes_with_entity_expansion(
+        &self,
+        query: &str,
+        limit: usize,
+        graph_hops: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        KnowledgeService::search_notes_with_entity_expansion(self, query, limit, graph_hops).await
+    }
+
+    async fn find_related_notes(
+        &self,
+        note_id: &str,
+    ) -> anyhow::Result<Vec<(String, f64)>> {
+        KnowledgeService::find_related_notes(self, note_id).await
+    }
+
+    async fn prune_old_notes(
+        &self,
+        days_stale: i64,
+        min_accesses: i64,
+        score_threshold: Option<f64>,
+        lambda: Option<f64>,
+        dry_run: bool,
+    ) -> anyhow::Result<usize> {
+        KnowledgeService::prune_old_notes(self, days_stale, min_accesses, score_threshold, lambda, dry_run).await
+    }
+
+    async fn consolidate_memories(
+        &self,
+        topic: &str,
+        limit: usize,
+    ) -> anyhow::Result<(String, usize, String)> {
+        KnowledgeService::consolidate_memories(self, topic, limit).await
+    }
+
+    async fn review_due_notes(&self, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        KnowledgeService::review_due_notes(self, limit).await
+    }
+
+    async fn reason(
+        &self,
+        question: &str,
+        limit: usize,
+        store_inference: bool,
+    ) -> anyhow::Result<(String, Vec<String>, f64, Vec<String>, Option<String>)> {
+        KnowledgeService::reason(self, question, limit, store_inference).await
+    }
+
+    async fn audit_action(
+        &self,
+        action: &str,
+        context: Option<&str>,
+    ) -> anyhow::Result<(bool, f64, Vec<String>, Vec<String>, String)> {
+        KnowledgeService::audit_action(self, action, context).await
+    }
+
+    async fn explain_reasoning(
+        &self,
+        decision: &str,
+        task_id: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<(String, Vec<serde_json::Value>)> {
+        KnowledgeService::explain_reasoning(self, decision, task_id, limit).await
+    }
+
+    async fn export_graph_visualization(
+        &self,
+        max_nodes: usize,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+        KnowledgeService::export_graph_visualization(self, max_nodes).await
+    }
+
+    async fn get_note(&self, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+        KnowledgeService::get_note(self, id).await
+    }
+
+    async fn search_by_entity(
+        &self,
+        entity_name: &str,
+        entity_type: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        KnowledgeService::search_by_entity(self, entity_name, entity_type, limit).await
+    }
+}

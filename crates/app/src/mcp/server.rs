@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
-use crate::services::{ChatService, LlmConfig};
+use crate::services::{ChatService, KnowledgeService, LlmConfig, SharedLlm};
 use crate::services::queue::QueueService;
 use crate::services::SchedulerService;
 use crate::skills::{
@@ -277,6 +277,9 @@ impl McpServerCore {
                 None
             };
 
+        // Shared LLM provider (wraps live Arc<RwLock<Option<LlmConfig>>>)
+        let shared_llm = SharedLlm::new(Arc::clone(&self.llm_config));
+
         let mut registry = self.tool_registry.write().await;
 
         // Clear registry to allow safe re-registration on reload.
@@ -284,21 +287,28 @@ impl McpServerCore {
 
         // Register Knowledge Skill
         if let Some(neo4j) = &self.neo4j {
-            let knowledge_skill = KnowledgeSkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
+            let config = self.llm_config.read().await.clone();
+            let llm_client = config.and_then(|c| crate::services::LlmClient::with_config(c).ok());
+            let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> =
+                Arc::new(KnowledgeService::new(neo4j.clone(), llm_client));
+            let knowledge_skill = KnowledgeSkill::new(knowledge_svc, Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>);
             registry.register_skill(Box::new(knowledge_skill));
         }
 
         // Register Task Skill
+        let task_store: Option<Arc<dyn crate::services::TaskStore>> =
+            self.neo4j.as_ref().map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
         let task_skill = TaskSkill::new(
-            Arc::clone(&self.llm_config),
-            self.neo4j.clone(),
+            Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            task_store.clone(),
             queue_arc.as_ref().map(Arc::clone),
         );
         registry.register_skill(Box::new(task_skill));
 
         // Register Procedure Skill
         if let Some(neo4j) = &self.neo4j {
-            let procedure_skill = ProcedureSkill::new(neo4j.clone());
+            let proc_store: Arc<dyn crate::services::ProcedureStore> = Arc::new(neo4j.clone());
+            let procedure_skill = ProcedureSkill::new(proc_store);
             registry.register_skill(Box::new(procedure_skill));
         }
 
@@ -324,7 +334,16 @@ impl McpServerCore {
 
         // Register Working Memory Skill
         if let Some(neo4j) = &self.neo4j {
-            let wm_skill = WorkingMemorySkill::new(neo4j.clone(), Arc::clone(&self.llm_config));
+            let config2 = self.llm_config.read().await.clone();
+            let llm_client2 = config2.and_then(|c| crate::services::LlmClient::with_config(c).ok());
+            let knowledge_svc2: Arc<dyn crate::services::KnowledgeStore> =
+                Arc::new(KnowledgeService::new(neo4j.clone(), llm_client2));
+            let wm_store: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
+            let wm_skill = WorkingMemorySkill::new(
+                wm_store,
+                knowledge_svc2,
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            );
             registry.register_skill(Box::new(wm_skill));
         }
 
@@ -350,20 +369,25 @@ impl McpServerCore {
         let mut skills: Vec<Box<dyn Skill>> = Vec::new();
 
         if let Some(neo4j) = &self.neo4j {
+            let config3 = self.llm_config.read().await.clone();
+            let llm_client3 = config3.and_then(|c| crate::services::LlmClient::with_config(c).ok());
+            let knowledge_svc3: Arc<dyn crate::services::KnowledgeStore> =
+                Arc::new(KnowledgeService::new(neo4j.clone(), llm_client3));
             skills.push(Box::new(KnowledgeSkill::new(
-                neo4j.clone(),
-                Arc::clone(&self.llm_config),
+                knowledge_svc3,
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
             )));
         }
 
         skills.push(Box::new(TaskSkill::new(
-            Arc::clone(&self.llm_config),
-            self.neo4j.clone(),
+            Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            task_store,
             queue_arc.as_ref().map(Arc::clone),
         )));
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(ProcedureSkill::new(neo4j.clone())));
+            let proc_store2: Arc<dyn crate::services::ProcedureStore> = Arc::new(neo4j.clone());
+            skills.push(Box::new(ProcedureSkill::new(proc_store2)));
         }
 
         skills.push(Box::new(SearchSkill::new(
@@ -381,7 +405,16 @@ impl McpServerCore {
         }
 
         if let Some(neo4j) = &self.neo4j {
-            skills.push(Box::new(WorkingMemorySkill::new(neo4j.clone(), Arc::clone(&self.llm_config))));
+            let config4 = self.llm_config.read().await.clone();
+            let llm_client4 = config4.and_then(|c| crate::services::LlmClient::with_config(c).ok());
+            let knowledge_svc4: Arc<dyn crate::services::KnowledgeStore> =
+                Arc::new(KnowledgeService::new(neo4j.clone(), llm_client4));
+            let wm_store2: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
+            skills.push(Box::new(WorkingMemorySkill::new(
+                wm_store2,
+                knowledge_svc4,
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            )));
         }
 
         // Agent Skill (queue management)
