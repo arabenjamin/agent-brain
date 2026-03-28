@@ -1,47 +1,21 @@
-[package]
-name = "agent-brain"
+[workspace]
+members = ["crates/app", "crates/models", "crates/repository", "crates/protocol"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Autonomous AI agent brain — persistent memory, background jobs, reasoning, and self-improvement via MCP"
 
-[lib]
-name = "agent_brain"
-path = "src/lib.rs"
-
-[[bin]]
-name = "agent-brain"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # Neo4j graph database
 neo4rs = "0.8"
 
-# HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
-
-# URL parsing
-url = "2"
-urlencoding = "2"
-
-# HTML parsing for discovery
-scraper = "0.21"
-
-# Glob pattern matching for file discovery
-glob = "0.3"
-
-# Temp directory handling
-tempfile = "3"
-
-# Regular expressions
-regex = "1"
-
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 
 # Schema generation for MCP tools
 schemars = "0.8"
@@ -54,53 +28,18 @@ uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
 anyhow = "1"
 
-# Configuration
-dotenvy = "0.15"
-
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# CLI
-clap = { version = "4", features = ["derive", "env"] }
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
-# OpenAPI parsing
-openapiv3 = "2"
+# Async traits
+async-trait = "0.1"
 
-# Encryption for local secret provider
-aes-gcm = "0.10"
-rand = "0.8"
-
-# AWS Secrets Manager
-aws-config = { version = "1.5", features = ["behavior-version-latest"] }
-aws-sdk-secretsmanager = "1.54"
-
-# Base64 encoding for Basic auth
-base64 = "0.22"
+# YAML parsing (model catalog)
+serde_yaml = "0.9"
 
 # Local Analytics & Logging (The Hippocampus)
 duckdb = { version = "1.0", features = ["bundled"] }
-
-# HTTP transport (Axum-based MCP server)
-axum = { version = "0.8", features = ["http2"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-async-stream = "0.3"
-async-trait = "0.1"
-futures-util = "0.3"
-
-# WebSocket support
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
-
-# Gzip compression for snapshot files
-flate2 = "1"
-
-[dev-dependencies]
-tokio-test = "0.4"
-wiremock = "0.6"
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["neo4j"] }
-temp-env = "0.3"
-tempfile = "3"

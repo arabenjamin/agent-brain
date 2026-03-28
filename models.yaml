@@ -1,0 +1,85 @@
+# models.yaml — Model catalog and context configuration
+# This file is the single source of truth for model definitions.
+# Loaded into DuckDB at startup for fast runtime queries.
+# Add a model here and restart (or call reload_models) to make it available.
+
+defaults:
+  temperature: 0.7
+  max_tokens: 4096
+  timeout_secs: 120
+
+models:
+  qwen3.5:4b:
+    provider: ollama
+    model: "qwen3.5:4b"
+    context_window: 32768
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  granite4:latest:
+    provider: ollama
+    model: "granite4:latest"
+    context_window: 128000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  claude-sonnet-4-6:
+    provider: anthropic
+    model: "claude-sonnet-4-6"
+    context_window: 200000
+    cost_per_1k_input: 0.003
+    cost_per_1k_output: 0.015
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    temperature: 0.5
+    system_prompt: |
+      You are agent-brain running on Claude Sonnet. Prioritize efficiency
+      and tool use. Be concise.
+
+  claude-haiku-4-5:
+    provider: anthropic
+    model: "claude-haiku-4-5-20251001"
+    context_window: 200000
+    cost_per_1k_input: 0.0008
+    cost_per_1k_output: 0.004
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain. Use tools efficiently and be concise.
+
+  gemini-2.0-flash:
+    provider: gemini
+    model: "gemini-2.0-flash"
+    context_window: 1048576
+    cost_per_1k_input: 0.0001
+    cost_per_1k_output: 0.0004
+    capabilities:
+      - reasoning
+      - code
+      - fast
+
+# Default system prompt used when a model doesn't define its own.
+default_system_prompt: |
+  You are agent-brain, an autonomous AI agent backed by a persistent
+  knowledge graph. Think step-by-step and use available tools.
