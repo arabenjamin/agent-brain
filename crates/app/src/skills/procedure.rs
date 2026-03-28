@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::services::traits::ProcedureStore;
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 /// Procedure Skill implementation.
 pub struct ProcedureSkill {
@@ -104,7 +104,17 @@ impl ProcedureSkill {
             Err(e) => return ToolCallResult::error(format!("Failed to serialize steps: {}", e)),
         };
 
-        match self.store.store_procedure(&id, &input.name, &input.description, &steps_json, &timestamp).await {
+        match self
+            .store
+            .store_procedure(
+                &id,
+                &input.name,
+                &input.description,
+                &steps_json,
+                &timestamp,
+            )
+            .await
+        {
             Ok(_) => {
                 let response = json!({
                     "success": true,
@@ -126,7 +136,11 @@ impl ProcedureSkill {
 
         info!(query = %input.query, "Searching procedures");
 
-        match self.store.search_procedures(&input.query, input.limit).await {
+        match self
+            .store
+            .search_procedures(&input.query, input.limit)
+            .await
+        {
             Ok(procedures) => {
                 let response = json!({
                     "count": procedures.len(),

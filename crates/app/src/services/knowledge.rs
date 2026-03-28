@@ -1945,10 +1945,7 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         KnowledgeService::search_notes_with_entity_expansion(self, query, limit, graph_hops).await
     }
 
-    async fn find_related_notes(
-        &self,
-        note_id: &str,
-    ) -> anyhow::Result<Vec<(String, f64)>> {
+    async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>> {
         KnowledgeService::find_related_notes(self, note_id).await
     }
 
@@ -1960,7 +1957,15 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         lambda: Option<f64>,
         dry_run: bool,
     ) -> anyhow::Result<usize> {
-        KnowledgeService::prune_old_notes(self, days_stale, min_accesses, score_threshold, lambda, dry_run).await
+        KnowledgeService::prune_old_notes(
+            self,
+            days_stale,
+            min_accesses,
+            score_threshold,
+            lambda,
+            dry_run,
+        )
+        .await
     }
 
     async fn consolidate_memories(

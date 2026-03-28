@@ -12,10 +12,10 @@ use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, warn};
 
-use agent_brain_protocol::Content;
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
+use agent_brain_protocol::Content;
 
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;

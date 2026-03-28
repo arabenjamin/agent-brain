@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use duckdb::{params, Connection};
+use duckdb::{Connection, params};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -20,20 +20,23 @@ impl TelemetryClient {
     /// Create a new TelemetryClient backed by a file.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open DuckDB file")?;
-        
+
         let client = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
-        
+
         client.init_schema()?;
-        
+
         Ok(client)
     }
 
     /// Initialize the schema.
     fn init_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
         // Table: interactions
         // Logs every turn of conversation/action.
         conn.execute_batch(
@@ -85,9 +88,9 @@ impl TelemetryClient {
                 cost           DOUBLE,
                 created_at     TIMESTAMPTZ DEFAULT current_timestamp
             );
-            "
+            ",
         )?;
-        
+
         info!("Telemetry (DuckDB) schema initialized");
         Ok(())
     }
@@ -100,9 +103,12 @@ impl TelemetryClient {
         tools_used: Option<&Value>,
         success: bool,
         latency_ms: u64,
-        model: &str
+        model: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4();
         let now = Utc::now();
 
@@ -129,22 +135,19 @@ impl TelemetryClient {
         &self,
         query: &str,
         context: Option<&str>,
-        gap_type: &str
+        gap_type: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4();
         let now = Utc::now();
 
         conn.execute(
             "INSERT INTO knowledge_gaps (id, timestamp, query, context, gap_type) 
              VALUES (?, ?, ?, ?, ?)",
-            params![
-                id.to_string(),
-                now.to_rfc3339(),
-                query,
-                context,
-                gap_type
-            ],
+            params![id.to_string(), now.to_rfc3339(), query, context, gap_type],
         )?;
 
         Ok(())
@@ -152,15 +155,18 @@ impl TelemetryClient {
 
     /// Retrieve recent knowledge gaps for analysis.
     pub fn get_recent_gaps(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
         let mut stmt = conn.prepare(
             "SELECT query, COALESCE(context, ''), gap_type 
              FROM knowledge_gaps 
              ORDER BY timestamp DESC 
-             LIMIT ?"
+             LIMIT ?",
         )?;
-        
+
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?;
@@ -195,15 +201,27 @@ impl TelemetryClient {
         max_tokens: Option<i64>,
         timeout_secs: Option<i64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         conn.execute(
             "INSERT OR REPLACE INTO model_registry
              (name, provider, model, context_window, cost_input, cost_output,
               capabilities, system_prompt, temperature, max_tokens, timeout_secs, loaded_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
             params![
-                name, provider, model, context_window, cost_input, cost_output,
-                capabilities, system_prompt, temperature, max_tokens, timeout_secs
+                name,
+                provider,
+                model,
+                context_window,
+                cost_input,
+                cost_output,
+                capabilities,
+                system_prompt,
+                temperature,
+                max_tokens,
+                timeout_secs
             ],
         )?;
         Ok(())
@@ -211,14 +229,20 @@ impl TelemetryClient {
 
     /// Delete all rows from model_registry (used before a fresh sync).
     pub fn clear_model_registry(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         conn.execute("DELETE FROM model_registry", [])?;
         Ok(())
     }
 
     /// List all models, ordered by provider then name.
     pub fn list_models(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let mut stmt = conn.prepare(
             "SELECT name, provider, model, context_window, cost_input, cost_output,
                     capabilities, system_prompt, temperature, max_tokens, timeout_secs
@@ -241,16 +265,19 @@ impl TelemetryClient {
             }))
         })?;
         let mut out = Vec::new();
-        for r in rows { out.push(r?); }
+        for r in rows {
+            out.push(r?);
+        }
         Ok(out)
     }
 
     /// Return the system_prompt for a given model name, or None if not found.
     pub fn get_model_system_prompt(&self, name: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        let mut stmt = conn.prepare(
-            "SELECT system_prompt FROM model_registry WHERE name = ?",
-        )?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let mut stmt = conn.prepare("SELECT system_prompt FROM model_registry WHERE name = ?")?;
         let mut rows = stmt.query(params![name])?;
         if let Some(row) = rows.next()? {
             Ok(row.get(0)?)
@@ -270,7 +297,10 @@ impl TelemetryClient {
     ) -> Result<Vec<serde_json::Value>> {
         // We filter capabilities in Rust after fetching candidates because
         // capabilities is stored as a JSON array string.
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let max_cost = max_cost_per_1k.unwrap_or(f64::MAX);
         let provider_filter = provider_hint.unwrap_or("%");
 
@@ -298,7 +328,8 @@ impl TelemetryClient {
                     row.get::<_, f64>(5)?,
                     row.get::<_, String>(6)?,
                 ))
-            })?.collect::<std::result::Result<Vec<_>, _>>()?
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
         } else {
             stmt.query_map(params![max_cost], |row| {
                 Ok((
@@ -310,7 +341,8 @@ impl TelemetryClient {
                     row.get::<_, f64>(5)?,
                     row.get::<_, String>(6)?,
                 ))
-            })?.collect::<std::result::Result<Vec<_>, _>>()?
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
         };
 
         let mut out = Vec::new();
@@ -346,7 +378,10 @@ impl TelemetryClient {
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4().to_string();
         // Compute cost from registry rates if available.
         let cost: Option<f64> = None; // populated by a separate query if needed
@@ -354,14 +389,26 @@ impl TelemetryClient {
             "INSERT INTO model_usage
              (id, model_name, tool_name, success, duration_ms, tokens_in, tokens_out, cost)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            params![id, model_name, tool_name, success, duration_ms, tokens_in, tokens_out, cost],
+            params![
+                id,
+                model_name,
+                tool_name,
+                success,
+                duration_ms,
+                tokens_in,
+                tokens_out,
+                cost
+            ],
         )?;
         Ok(())
     }
 
     /// Get aggregated usage statistics for a model.
     pub fn get_model_stats(&self, model_name: &str) -> Result<serde_json::Value> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let mut stmt = conn.prepare(
             "SELECT
                COUNT(*) AS total,
@@ -381,7 +428,11 @@ impl TelemetryClient {
             let avg_ms: Option<f64> = row.get(3)?;
             let tokens_in: Option<i64> = row.get(4)?;
             let tokens_out: Option<i64> = row.get(5)?;
-            let success_rate = if total > 0 { successes as f64 / total as f64 } else { 0.0 };
+            let success_rate = if total > 0 {
+                successes as f64 / total as f64
+            } else {
+                0.0
+            };
             Ok(serde_json::json!({
                 "model":             model_name,
                 "total_calls":       total,
@@ -408,20 +459,24 @@ impl TelemetryClient {
     /// Export successful interactions for fine-tuning.
     /// Returns a list of (prompt, response) tuples.
     pub fn get_training_examples(&self, min_score: Option<i32>) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
         let sql = if let Some(score) = min_score {
             // Get explicitly rated good responses
-            format!("SELECT prompt, response FROM interactions WHERE success = true AND feedback_score >= {}", score)
+            format!(
+                "SELECT prompt, response FROM interactions WHERE success = true AND feedback_score >= {}",
+                score
+            )
         } else {
             // Get all successful responses
             "SELECT prompt, response FROM interactions WHERE success = true".to_string()
         };
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
 
         let mut examples = Vec::new();
         for row in rows {

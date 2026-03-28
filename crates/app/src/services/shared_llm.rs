@@ -9,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::services::{LlmClient, LlmConfig};
 use crate::services::traits::LlmProvider;
+use crate::services::{LlmClient, LlmConfig};
 
 /// Thin wrapper that reads the live `LlmConfig` on every call.
 pub struct SharedLlm {
@@ -28,22 +28,24 @@ impl SharedLlm {
 impl LlmProvider for SharedLlm {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String> {
         let config = self.config.read().await.clone();
-        let llm = config
-            .ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
-        let client = LlmClient::with_config(llm)
-            .map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
-        let resp = client.generate_with_system(prompt, system).await
+        let llm = config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
+        let client =
+            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
+        let resp = client
+            .generate_with_system(prompt, system)
+            .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(resp.text)
     }
 
     async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         let config = self.config.read().await.clone();
-        let llm = config
-            .ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
-        let client = LlmClient::with_config(llm)
-            .map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
-        client.embeddings(text).await
+        let llm = config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
+        let client =
+            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
+        client
+            .embeddings(text)
+            .await
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 

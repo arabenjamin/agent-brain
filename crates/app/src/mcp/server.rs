@@ -9,33 +9,25 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
-use crate::services::{ChatService, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService};
+use crate::services::SchedulerService;
 use crate::services::queue::QueueService;
 use crate::services::resource_registry::ResourceRegistry;
-use crate::services::SchedulerService;
+use crate::services::{
+    ChatService, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService,
+};
 use crate::skills::{
-    Skill,
-    agent::AgentSkill,
-    context::ContextSkill,
-    dynamic::DynamicSkill,
-    knowledge::KnowledgeSkill,
-    model::ModelSkill,
-    procedure::ProcedureSkill,
-    resource::ResourceSkill,
-    scheduler::SchedulerSkill,
-    search::SearchSkill,
-    sleep::SleepSkill,
-    task::TaskSkill,
-    working_memory::WorkingMemorySkill,
-    ws::WsSkill,
+    Skill, agent::AgentSkill, context::ContextSkill, dynamic::DynamicSkill,
+    knowledge::KnowledgeSkill, model::ModelSkill, procedure::ProcedureSkill,
+    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
+    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 
-use super::session::{SessionManager, SessionState};
 use super::protocol::{
     IncomingMessage, InitializeParams, InitializeResult, JsonRpcErrorResponse, JsonRpcRequest,
     JsonRpcResponse, MCP_PROTOCOL_VERSION, ServerCapabilities, ServerInfo, ToolCallParams,
     ToolsCapability, ToolsListResult, error_codes,
 };
+use super::session::{SessionManager, SessionState};
 use super::tools::{ToolHandler, ToolRegistry};
 use super::transport::{OutgoingMessage, StdioTransport};
 use super::transport_trait::{McpTransport, TransportMessage};
@@ -234,7 +226,9 @@ impl McpServerCore {
     /// Update the state for a specific session and the global state.
     pub async fn update_session_state(&self, session_id: Option<&str>, new_state: ServerState) {
         if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
-            let _ = manager.set_session_state(id, SessionState::from(new_state)).await;
+            let _ = manager
+                .set_session_state(id, SessionState::from(new_state))
+                .await;
         }
 
         // Always update global state for backward compatibility with stdio
@@ -322,8 +316,10 @@ impl McpServerCore {
         let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.storage.neo4j {
             let mut qs_guard = self.jobs.queue.write().await;
             if qs_guard.is_none() {
-                let sse_notifier: Option<Arc<dyn agent_brain_protocol::SseNotifier>> =
-                    self.session_manager.as_ref().map(|sm| Arc::clone(sm) as Arc<dyn agent_brain_protocol::SseNotifier>);
+                let sse_notifier: Option<Arc<dyn agent_brain_protocol::SseNotifier>> = self
+                    .session_manager
+                    .as_ref()
+                    .map(|sm| Arc::clone(sm) as Arc<dyn agent_brain_protocol::SseNotifier>);
                 let qs = Arc::new(QueueService::new(
                     neo4j.clone(),
                     self.tool_handler.clone(),
@@ -338,9 +334,12 @@ impl McpServerCore {
         };
 
         // Create SnapshotService when Neo4j is available.
-        let _snapshot_svc: Option<Arc<SnapshotService>> = self.storage.neo4j
-            .as_ref()
-            .map(|db| Arc::new(SnapshotService::new(db.clone(), self.storage.snapshot_dir.clone())));
+        let _snapshot_svc: Option<Arc<SnapshotService>> = self.storage.neo4j.as_ref().map(|db| {
+            Arc::new(SnapshotService::new(
+                db.clone(),
+                self.storage.snapshot_dir.clone(),
+            ))
+        });
 
         // Create ContextBuilderService and load profiles (must be before scheduler).
         let context_builder_arc: Option<Arc<ContextBuilderService>> = {
@@ -385,13 +384,19 @@ impl McpServerCore {
             let llm_client = config.and_then(|c| crate::services::LlmClient::with_config(c).ok());
             let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> =
                 Arc::new(KnowledgeService::new(neo4j.clone(), llm_client));
-            let knowledge_skill = KnowledgeSkill::new(knowledge_svc, Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>);
+            let knowledge_skill = KnowledgeSkill::new(
+                knowledge_svc,
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            );
             registry.register_skill(Box::new(knowledge_skill));
         }
 
         // Register Task Skill
-        let task_store: Option<Arc<dyn crate::services::TaskStore>> =
-            self.storage.neo4j.as_ref().map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
+        let task_store: Option<Arc<dyn crate::services::TaskStore>> = self
+            .storage
+            .neo4j
+            .as_ref()
+            .map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
         let task_skill = TaskSkill::new(
             Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
             task_store.clone(),
@@ -514,7 +519,10 @@ impl McpServerCore {
         )));
 
         if let Some(ref telemetry) = self.storage.telemetry {
-            skills.push(Box::new(SleepSkill::new(telemetry.clone(), self.storage.dataset_dir.clone())));
+            skills.push(Box::new(SleepSkill::new(
+                telemetry.clone(),
+                self.storage.dataset_dir.clone(),
+            )));
         }
 
         if let Some(neo4j) = &self.storage.neo4j {
@@ -556,7 +564,6 @@ impl McpServerCore {
             skills.push(Box::new(d));
         }
 
-
         let mut handler = self.tool_handler.write().await;
         let mut tool_handler = ToolHandler::new(skills);
         if let Some(ref tel) = self.storage.telemetry {
@@ -579,7 +586,10 @@ impl McpServerCore {
         let cb_opt = self.context_builder_svc.read().await.clone();
         if let Some(ref cb) = cb_opt {
             let handler = Arc::clone(&self.tool_handler);
-            if let Err(e) = cb.run_protocol("boot", handler, self.storage.neo4j.as_ref()).await {
+            if let Err(e) = cb
+                .run_protocol("boot", handler, self.storage.neo4j.as_ref())
+                .await
+            {
                 warn!(error = %e, "Boot protocol error (non-fatal)");
             }
         }
@@ -1093,7 +1103,9 @@ mod tests {
         assert_eq!(server.get_state().await, ServerState::Initializing);
 
         // Simulate initialized notification
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
     }
 
@@ -1119,9 +1131,7 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..10 {
             let server_clone = Arc::clone(&server);
-            handles.push(tokio::spawn(async move {
-                server_clone.get_state().await
-            }));
+            handles.push(tokio::spawn(async move { server_clone.get_state().await }));
         }
 
         // All should return Created
@@ -1142,7 +1152,9 @@ mod tests {
         }
 
         // Handle notification should transition state
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
     }
 
@@ -1171,7 +1183,9 @@ mod tests {
         let server = McpServerCore::new();
 
         // From Created state - transitions to Running (session resurrection support)
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
 
         // From Running state - should stay Running
@@ -1179,7 +1193,9 @@ mod tests {
             let mut state = server.state.write().await;
             *state = ServerState::Running;
         }
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
 
         // From Initializing state - should transition to Running
@@ -1187,7 +1203,9 @@ mod tests {
             let mut state = server.state.write().await;
             *state = ServerState::Initializing;
         }
-        server.handle_notification("notifications/initialized").await;
+        server
+            .handle_notification("notifications/initialized")
+            .await;
         assert_eq!(server.get_state().await, ServerState::Running);
     }
 }

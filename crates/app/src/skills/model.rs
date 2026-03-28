@@ -8,11 +8,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::TelemetryClient;
-use crate::services::model_config::ModelCatalog;
 use crate::services::LlmConfig;
+use crate::services::model_config::ModelCatalog;
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 pub struct ModelSkill {
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
@@ -27,7 +27,11 @@ impl ModelSkill {
         telemetry: Option<TelemetryClient>,
         catalog_path: PathBuf,
     ) -> Self {
-        Self { llm_config, telemetry, catalog_path }
+        Self {
+            llm_config,
+            telemetry,
+            catalog_path,
+        }
     }
 
     // =========================================================================
@@ -37,7 +41,8 @@ impl ModelSkill {
     fn list_models_def() -> ToolDefinition {
         ToolDefinition {
             name: "list_models".to_string(),
-            description: "List all models in the catalog with their capabilities and cost.".to_string(),
+            description: "List all models in the catalog with their capabilities and cost."
+                .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -114,7 +119,8 @@ impl ModelSkill {
     fn reload_models_def() -> ToolDefinition {
         ToolDefinition {
             name: "reload_models".to_string(),
-            description: "Re-read models.yaml and sync into DuckDB without restarting the server.".to_string(),
+            description: "Re-read models.yaml and sync into DuckDB without restarting the server."
+                .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -178,9 +184,11 @@ impl ModelSkill {
             "Ollama" | "ollama" => base.with_provider(LlmProviderType::Ollama),
             "Anthropic" | "anthropic" => base.with_provider(LlmProviderType::Anthropic),
             "Gemini" | "gemini" => base.with_provider(LlmProviderType::Gemini),
-            _ => return ToolCallResult::error(
-                "Invalid provider. Use Ollama, Anthropic, or Gemini.".to_string()
-            ),
+            _ => {
+                return ToolCallResult::error(
+                    "Invalid provider. Use Ollama, Anthropic, or Gemini.".to_string(),
+                );
+            }
         };
 
         if let Some(model) = input.model {
@@ -220,7 +228,8 @@ impl ModelSkill {
                     "selected": true,
                     "model": models[0],
                     "candidates": models.len(),
-                })).unwrap(),
+                }))
+                .unwrap(),
             ),
             Ok(_) => ToolCallResult::success_text(
                 serde_json::to_string_pretty(&json!({
@@ -229,7 +238,8 @@ impl ModelSkill {
                     "required_capabilities": input.required_capabilities,
                     "provider_hint":         input.provider_hint,
                     "max_cost_per_1k":       input.max_cost_per_1k,
-                })).unwrap(),
+                }))
+                .unwrap(),
             ),
             Err(e) => ToolCallResult::error(format!("select_models failed: {}", e)),
         }
@@ -237,7 +247,9 @@ impl ModelSkill {
 
     async fn handle_get_model_stats(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
-        struct Input { model: String }
+        struct Input {
+            model: String,
+        }
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
             Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
@@ -248,7 +260,9 @@ impl ModelSkill {
         };
 
         match db.get_model_stats(&input.model) {
-            Ok(stats) => ToolCallResult::success_text(serde_json::to_string_pretty(&stats).unwrap()),
+            Ok(stats) => {
+                ToolCallResult::success_text(serde_json::to_string_pretty(&stats).unwrap())
+            }
             Err(e) => ToolCallResult::error(format!("Failed to get stats: {}", e)),
         }
     }
@@ -265,7 +279,8 @@ impl ModelSkill {
                     "reloaded": true,
                     "models_loaded": count,
                     "path": self.catalog_path.display().to_string(),
-                })).unwrap(),
+                }))
+                .unwrap(),
             ),
             Err(e) => ToolCallResult::error(format!("reload_models failed: {}", e)),
         }
@@ -290,11 +305,11 @@ impl Skill for ModelSkill {
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
-            "list_models"     => Some(self.handle_list_models().await),
-            "use_model"       => Some(self.handle_use_model(args).await),
-            "select_model"    => Some(self.handle_select_model(args).await),
+            "list_models" => Some(self.handle_list_models().await),
+            "use_model" => Some(self.handle_use_model(args).await),
+            "select_model" => Some(self.handle_select_model(args).await),
             "get_model_stats" => Some(self.handle_get_model_stats(args).await),
-            "reload_models"   => Some(self.handle_reload_models().await),
+            "reload_models" => Some(self.handle_reload_models().await),
             _ => None,
         }
     }

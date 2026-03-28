@@ -60,10 +60,7 @@ pub trait KnowledgeStore: Send + Sync {
         graph_hops: usize,
     ) -> anyhow::Result<Vec<Value>>;
 
-    async fn find_related_notes(
-        &self,
-        note_id: &str,
-    ) -> anyhow::Result<Vec<(String, f64)>>;
+    async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>>;
 
     async fn prune_old_notes(
         &self,
@@ -116,11 +113,8 @@ pub trait KnowledgeStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<Vec<Value>>;
 
-    async fn list_notes(
-        &self,
-        limit: usize,
-        note_type: Option<&str>,
-    ) -> anyhow::Result<Vec<Value>>;
+    async fn list_notes(&self, limit: usize, note_type: Option<&str>)
+    -> anyhow::Result<Vec<Value>>;
 
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool>;
 
@@ -134,31 +128,15 @@ pub trait KnowledgeStore: Send + Sync {
 /// Methods on `Neo4jClient` (task repository) used by `TaskSkill`.
 #[async_trait]
 pub trait TaskStore: Send + Sync {
-    async fn create_task(
-        &self,
-        goal: &str,
-        context: Option<&str>,
-    ) -> anyhow::Result<String>;
+    async fn create_task(&self, goal: &str, context: Option<&str>) -> anyhow::Result<String>;
 
     async fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>>;
 
-    async fn link_subtask(
-        &self,
-        parent_id: &str,
-        child_id: &str,
-    ) -> anyhow::Result<()>;
+    async fn link_subtask(&self, parent_id: &str, child_id: &str) -> anyhow::Result<()>;
 
-    async fn link_task_dependency(
-        &self,
-        from_id: &str,
-        to_id: &str,
-    ) -> anyhow::Result<()>;
+    async fn link_task_dependency(&self, from_id: &str, to_id: &str) -> anyhow::Result<()>;
 
-    async fn update_task_status(
-        &self,
-        id: &str,
-        status: TaskStatus,
-    ) -> anyhow::Result<()>;
+    async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()>;
 
     async fn store_reflection_note(
         &self,
@@ -172,18 +150,11 @@ pub trait TaskStore: Send + Sync {
         task_id: Option<&str>,
     ) -> anyhow::Result<String>;
 
-    async fn list_tasks(
-        &self,
-        status: Option<&str>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<Value>>;
+    async fn list_tasks(&self, status: Option<&str>, limit: usize) -> anyhow::Result<Vec<Value>>;
 
     /// If all subtasks of the parent are completed, auto-complete the parent too.
     /// Returns `Some(parent_id)` if the parent was auto-completed, `None` otherwise.
-    async fn auto_complete_parent_if_done(
-        &self,
-        task_id: &str,
-    ) -> anyhow::Result<Option<String>>;
+    async fn auto_complete_parent_if_done(&self, task_id: &str) -> anyhow::Result<Option<String>>;
 }
 
 // ============================================================================
@@ -206,11 +177,7 @@ pub trait WorkingMemoryStore: Send + Sync {
     ) -> anyhow::Result<i64>;
 
     /// Return entries for `session_id` ordered by turn, capped at `limit`.
-    async fn get_entries(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<Value>>;
+    async fn get_entries(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Value>>;
 
     /// Return session summaries (session_id, started_at, msg_count, title).
     async fn list_sessions(&self, limit: i64) -> anyhow::Result<Vec<Value>>;
@@ -240,9 +207,5 @@ pub trait ProcedureStore: Send + Sync {
     ) -> anyhow::Result<()>;
 
     /// Return procedures matching `query` (case-insensitive keyword), up to `limit`.
-    async fn search_procedures(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<Value>>;
+    async fn search_procedures(&self, query: &str, limit: usize) -> anyhow::Result<Vec<Value>>;
 }

@@ -16,11 +16,11 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::mcp::tools::ToolHandler;
 use crate::repository::Neo4jClient;
 use crate::services::procedure_executor;
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 // ============================================================================
 // Internal types

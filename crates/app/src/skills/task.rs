@@ -6,12 +6,12 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::models::TaskStatus;
-use crate::services::traits::{LlmProvider, TaskStore};
 use crate::services::queue::{ChainStep, QueueService};
+use crate::services::traits::{LlmProvider, TaskStore};
 use crate::services::{LlmClient, LlmConfig};
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 /// Task Skill implementation.
 pub struct TaskSkill {
@@ -255,10 +255,10 @@ impl TaskSkill {
             match self.llm.generate(&prompt, None).await {
                 Ok(reflection_text) => {
                     let reflection_note_id = if let Some(neo4j) = &self.neo4j {
-                        match neo4j.store_reflection_note(
-                            &reflection_text,
-                            input.task_id.as_deref(),
-                        ).await {
+                        match neo4j
+                            .store_reflection_note(&reflection_text, input.task_id.as_deref())
+                            .await
+                        {
                             Ok(id) => {
                                 info!(note_id = %id, "Stored reflection note");
                                 Some(id)

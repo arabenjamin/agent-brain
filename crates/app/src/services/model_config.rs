@@ -28,9 +28,15 @@ pub struct ModelDefaults {
     pub timeout_secs: i64,
 }
 
-fn default_temperature() -> f64 { 0.7 }
-fn default_max_tokens() -> i64 { 4096 }
-fn default_timeout_secs() -> i64 { 120 }
+fn default_temperature() -> f64 {
+    0.7
+}
+fn default_max_tokens() -> i64 {
+    4096
+}
+fn default_timeout_secs() -> i64 {
+    120
+}
 
 /// A single model definition in the catalog.
 #[derive(Debug, Deserialize)]

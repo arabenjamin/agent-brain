@@ -8,9 +8,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::services::queue::{ChainStep, QueueService};
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 pub struct AgentSkill {
     queue: Arc<QueueService>,

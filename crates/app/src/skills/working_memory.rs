@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::services::traits::{KnowledgeStore, LlmProvider, WorkingMemoryStore};
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 /// Working Memory Skill — push/retrieve session context and summarise into long-term memory.
 pub struct WorkingMemorySkill {
@@ -25,7 +25,11 @@ impl WorkingMemorySkill {
         knowledge: Arc<dyn KnowledgeStore>,
         llm: Arc<dyn LlmProvider>,
     ) -> Self {
-        Self { store, knowledge, llm }
+        Self {
+            store,
+            knowledge,
+            llm,
+        }
     }
 
     // ========================================================================
@@ -141,7 +145,11 @@ impl WorkingMemorySkill {
 
         info!(session_id = %input.session_id, role = %role, "Pushing working-memory entry");
 
-        match self.store.push_entry(&entry_id, &input.session_id, &input.content, role, &ts).await {
+        match self
+            .store
+            .push_entry(&entry_id, &input.session_id, &input.content, role, &ts)
+            .await
+        {
             Ok(turn_index) => {
                 let response = json!({
                     "id": entry_id,
@@ -219,11 +227,19 @@ impl WorkingMemorySkill {
             ));
         }
 
-        let entries_text: String = rows.iter().enumerate().map(|(i, entry)| {
-            let role = entry.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            format!("[Turn {i} | {role}] {content}")
-        }).collect::<Vec<_>>().join("\n");
+        let entries_text: String = rows
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let role = entry
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                format!("[Turn {i} | {role}] {content}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let entries_summarised = rows.len();
 
@@ -239,12 +255,16 @@ impl WorkingMemorySkill {
         };
 
         // 3. Store in long-term memory as a consolidated note
-        let note_id = match self.knowledge.store_note(
-            &summary,
-            Some("consolidated"),
-            Some(&input.session_id),
-            None,
-        ).await {
+        let note_id = match self
+            .knowledge
+            .store_note(
+                &summary,
+                Some("consolidated"),
+                Some(&input.session_id),
+                None,
+            )
+            .await
+        {
             Ok((id, _)) => id,
             Err(e) => return ToolCallResult::error(format!("Failed to store summary note: {}", e)),
         };

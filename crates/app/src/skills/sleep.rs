@@ -6,10 +6,10 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use tracing::info;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::TelemetryClient;
 use crate::services::SleepService;
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 /// Sleep Skill implementation.
 pub struct SleepSkill {

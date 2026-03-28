@@ -1,6 +1,6 @@
 //! WorkingMemoryStore and ProcedureStore implementations on Neo4jClient.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::models::{Task, TaskStatus};
 use crate::repository::Neo4jClient;
@@ -41,7 +41,10 @@ impl WorkingMemoryStore for Neo4jClient {
             .param("role", role)
             .param("ts", ts);
 
-        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self
+            .execute(q)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let turn_index = rows
             .first()
             .and_then(|r| r.get::<i64>("turn_index").ok())
@@ -60,7 +63,10 @@ impl WorkingMemoryStore for Neo4jClient {
             .param("session_id", session_id)
             .param("limit", limit as i64);
 
-        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self
+            .execute(q)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(rows
             .iter()
             .map(|row| {
@@ -87,7 +93,10 @@ impl WorkingMemoryStore for Neo4jClient {
         "#;
 
         let q = neo4rs::query(cypher).param("limit", limit);
-        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self
+            .execute(q)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(rows
             .iter()
             .map(|row| {
@@ -109,7 +118,10 @@ impl WorkingMemoryStore for Neo4jClient {
         "#;
 
         let q = neo4rs::query(cypher).param("session_id", session_id);
-        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self
+            .execute(q)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(rows
             .iter()
             .map(|row| {
@@ -123,10 +135,8 @@ impl WorkingMemoryStore for Neo4jClient {
     }
 
     async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        let q = neo4rs::query(
-            "MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w",
-        )
-        .param("session_id", session_id);
+        let q = neo4rs::query("MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w")
+            .param("session_id", session_id);
         self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
@@ -178,7 +188,10 @@ impl ProcedureStore for Neo4jClient {
             .param("query", query_str)
             .param("limit", limit as i64);
 
-        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self
+            .execute(q)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut procedures = Vec::new();
         for row in rows {
             let id = row.get::<String>("id").unwrap_or_default();
@@ -235,13 +248,21 @@ impl TaskStore for Neo4jClient {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn store_reflection_note(&self, content: &str, task_id: Option<&str>) -> anyhow::Result<String> {
+    async fn store_reflection_note(
+        &self,
+        content: &str,
+        task_id: Option<&str>,
+    ) -> anyhow::Result<String> {
         Neo4jClient::store_reflection_note(self, content, task_id)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn store_outcome_note(&self, content: &str, task_id: Option<&str>) -> anyhow::Result<String> {
+    async fn store_outcome_note(
+        &self,
+        content: &str,
+        task_id: Option<&str>,
+    ) -> anyhow::Result<String> {
         Neo4jClient::store_outcome_note(self, content, task_id)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))
@@ -253,10 +274,7 @@ impl TaskStore for Neo4jClient {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn auto_complete_parent_if_done(
-        &self,
-        task_id: &str,
-    ) -> anyhow::Result<Option<String>> {
+    async fn auto_complete_parent_if_done(&self, task_id: &str) -> anyhow::Result<Option<String>> {
         // Find parent task; if all subtasks are completed, complete the parent too.
         let cypher = r#"
         MATCH (child:Task {id: $task_id})<-[:SUBTASK_OF]-(parent:Task)
@@ -270,7 +288,10 @@ impl TaskStore for Neo4jClient {
         "#;
 
         let q = neo4rs::query(cypher).param("task_id", task_id);
-        let rows = self.execute(q).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let rows = self
+            .execute(q)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(rows.first().and_then(|r| r.get::<String>("parent_id").ok()))
     }
 }

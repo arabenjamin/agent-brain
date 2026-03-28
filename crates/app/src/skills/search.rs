@@ -6,9 +6,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::repository::TelemetryClient;
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 /// Search Skill implementation.
 pub struct SearchSkill {

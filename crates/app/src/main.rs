@@ -13,10 +13,7 @@ use agent_brain::mcp::McpServer;
 #[cfg(feature = "http-transport")]
 use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServerCore};
 use agent_brain::repository::Neo4jClient;
-use agent_brain::services::{
-    LlmConfig, ModelCatalog,
-    llm::LlmProviderType,
-};
+use agent_brain::services::{LlmConfig, ModelCatalog, llm::LlmProviderType};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -54,9 +51,11 @@ async fn main() -> Result<()> {
     // Execute command
     let result = match cli.command {
         Some(Command::InitDb) => run_init_db(&config).await,
-        Some(Command::Serve { transport, bind, api_key }) => {
-            run_serve(&config, transport, &bind, api_key).await
-        }
+        Some(Command::Serve {
+            transport,
+            bind,
+            api_key,
+        }) => run_serve(&config, transport, &bind, api_key).await,
         None => {
             // Default to stdio transport when no command specified
             run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None).await
@@ -157,10 +156,14 @@ async fn run_serve(
     let catalog_path = PathBuf::from(&config.telemetry.model_catalog_path);
     let catalog = ModelCatalog::load_or_default(&catalog_path);
     let active_model = match config.llm.provider {
-        LlmProviderType::Anthropic => config.llm.anthropic_model
+        LlmProviderType::Anthropic => config
+            .llm
+            .anthropic_model
             .clone()
             .unwrap_or_else(|| config.llm.ollama_model.clone()),
-        LlmProviderType::Gemini => config.llm.gemini_model
+        LlmProviderType::Gemini => config
+            .llm
+            .gemini_model
             .clone()
             .unwrap_or_else(|| config.llm.ollama_model.clone()),
         _ => config.llm.ollama_model.clone(),
@@ -201,14 +204,17 @@ async fn run_serve(
         #[cfg(feature = "http-transport")]
         TransportType::Http => {
             // Parse bind address
-            let bind_addr: SocketAddr = bind.parse()
+            let bind_addr: SocketAddr = bind
+                .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bind address '{}': {}", bind, e))?;
 
             info!(addr = %bind_addr, "Starting MCP server on HTTP...");
 
             // Create shared session manager
             let session_config = agent_brain::mcp::SessionConfig::default();
-            let session_manager = Arc::new(agent_brain::mcp::SessionManager::with_config(session_config));
+            let session_manager = Arc::new(agent_brain::mcp::SessionManager::with_config(
+                session_config,
+            ));
 
             // Create thread-safe server core
             let mut server = McpServerCore::new()

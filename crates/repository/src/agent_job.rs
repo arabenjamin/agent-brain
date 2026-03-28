@@ -3,8 +3,8 @@ use neo4rs::{Node, query};
 use tracing::info;
 use uuid::Uuid;
 
-use agent_brain_models::{AgentJob, AgentJobStatus};
 use crate::{Neo4jClient, RepositoryError};
+use agent_brain_models::{AgentJob, AgentJobStatus};
 
 impl Neo4jClient {
     /// Create a new AgentJob node in Neo4j and return its ID.

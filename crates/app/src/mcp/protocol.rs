@@ -5,31 +5,31 @@
 //! use `crate::mcp::protocol::Content` etc.
 
 pub use agent_brain_protocol::{
+    ClientCapabilities,
+    // MCP types
+    ClientInfo,
+    Content,
+    IncomingMessage,
+    InitializeParams,
+    InitializeResult,
     // Constants
     JSONRPC_VERSION,
+    JsonRpcError,
+    JsonRpcErrorResponse,
+    JsonRpcNotification,
+    JsonRpcRequest,
+    JsonRpcResponse,
     MCP_PROTOCOL_VERSION,
     // JSON-RPC base types
     RequestId,
-    JsonRpcRequest,
-    JsonRpcNotification,
-    JsonRpcResponse,
-    JsonRpcErrorResponse,
-    JsonRpcError,
-    error_codes,
-    IncomingMessage,
-    // MCP types
-    ClientInfo,
-    ServerInfo,
-    ClientCapabilities,
     ServerCapabilities,
-    ToolsCapability,
-    InitializeParams,
-    InitializeResult,
-    ToolDefinition,
-    ToolsListResult,
+    ServerInfo,
     ToolCallParams,
-    Content,
     ToolCallResult,
+    ToolDefinition,
+    ToolsCapability,
+    ToolsListResult,
+    error_codes,
 };
 
 #[cfg(test)]

@@ -6,9 +6,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::info;
 
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use crate::services::traits::{KnowledgeStore, LlmProvider};
 use crate::skills::Skill;
+use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 /// Knowledge Skill implementation.
 pub struct KnowledgeSkill {
@@ -405,12 +405,16 @@ impl KnowledgeSkill {
 
         info!(content_len = input.content.len(), "Storing note");
 
-        match self.svc.store_note(
-            &input.content,
-            input.note_type.as_deref(),
-            input.source_context.as_deref(),
-            input.event_at.as_deref(),
-        ).await {
+        match self
+            .svc
+            .store_note(
+                &input.content,
+                input.note_type.as_deref(),
+                input.source_context.as_deref(),
+                input.event_at.as_deref(),
+            )
+            .await
+        {
             Ok((id, links_created)) => {
                 let response = json!({
                     "success": true,
@@ -433,9 +437,13 @@ impl KnowledgeSkill {
         info!(query = %input.query, "Searching notes");
 
         let results = if input.entity_expansion {
-            self.svc.search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops).await
+            self.svc
+                .search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops)
+                .await
         } else {
-            self.svc.search_notes(&input.query, input.limit, input.graph_hops).await
+            self.svc
+                .search_notes(&input.query, input.limit, input.graph_hops)
+                .await
         };
         match results {
             Ok(results) => {
@@ -486,13 +494,17 @@ impl KnowledgeSkill {
             "Pruning stale notes"
         );
 
-        match self.svc.prune_old_notes(
-            input.days_stale,
-            input.min_accesses,
-            input.score_threshold,
-            input.lambda,
-            input.dry_run,
-        ).await {
+        match self
+            .svc
+            .prune_old_notes(
+                input.days_stale,
+                input.min_accesses,
+                input.score_threshold,
+                input.lambda,
+                input.dry_run,
+            )
+            .await
+        {
             Ok(count) => {
                 let response = if input.dry_run {
                     json!({
@@ -520,7 +532,11 @@ impl KnowledgeSkill {
 
         info!(topic = %input.topic, limit = input.limit, "Consolidating memories");
 
-        match self.svc.consolidate_memories(&input.topic, input.limit).await {
+        match self
+            .svc
+            .consolidate_memories(&input.topic, input.limit)
+            .await
+        {
             Ok((id, source_count, preview)) => {
                 let response = json!({
                     "id": id,
@@ -590,7 +606,11 @@ impl KnowledgeSkill {
 
         info!(question = %input.question, limit = input.limit, "Reasoning");
 
-        match self.svc.reason(&input.question, input.limit, input.store_inference).await {
+        match self
+            .svc
+            .reason(&input.question, input.limit, input.store_inference)
+            .await
+        {
             Ok((answer, inferences, confidence, gaps, note_id)) => {
                 let mut response = json!({
                     "answer": answer,
@@ -615,7 +635,11 @@ impl KnowledgeSkill {
 
         info!(action = %input.action, "Auditing action");
 
-        match self.svc.audit_action(&input.action, input.context.as_deref()).await {
+        match self
+            .svc
+            .audit_action(&input.action, input.context.as_deref())
+            .await
+        {
             Ok((aligned, confidence, concerns, suggestions, reasoning)) => {
                 let response = json!({
                     "aligned": aligned,
@@ -638,7 +662,11 @@ impl KnowledgeSkill {
 
         info!(decision = %input.decision, "Explaining reasoning");
 
-        match self.svc.explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit).await {
+        match self
+            .svc
+            .explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit)
+            .await
+        {
             Ok((explanation, sources)) => {
                 let response = json!({
                     "explanation": explanation,
@@ -742,9 +770,9 @@ Respond with a JSON object only (no markdown, no explanation):
         };
 
         match self.svc.get_note(&input.id).await {
-            Ok(Some(note)) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&note).unwrap()
-            ),
+            Ok(Some(note)) => {
+                ToolCallResult::success_text(serde_json::to_string_pretty(&note).unwrap())
+            }
             Ok(None) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
             Err(e) => ToolCallResult::error(format!("Failed to get note: {}", e)),
         }
@@ -835,11 +863,15 @@ Respond with a JSON object only (no markdown, no explanation):
 
         info!(entity = %input.entity_name, "Searching by entity");
 
-        match self.svc.search_by_entity(
-            &input.entity_name,
-            input.entity_type.as_deref(),
-            input.limit,
-        ).await {
+        match self
+            .svc
+            .search_by_entity(
+                &input.entity_name,
+                input.entity_type.as_deref(),
+                input.limit,
+            )
+            .await
+        {
             Ok(notes) => {
                 let response = json!({
                     "entity_name": input.entity_name,

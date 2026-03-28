@@ -99,8 +99,7 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         Ok(Self {
             database: DatabaseConfig {
-                uri: env::var("NEO4J_URI")
-                    .unwrap_or_else(|_| "bolt://localhost:7687".to_string()),
+                uri: env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string()),
                 user: env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string()),
                 password: env::var("NEO4J_PASSWORD")
                     .map_err(|_| ConfigError::Missing("NEO4J_PASSWORD"))?,

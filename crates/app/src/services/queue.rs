@@ -24,10 +24,10 @@ use serde::Deserialize;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
-use agent_brain_protocol::{Content, SseNotifier};
 use crate::mcp::tools::ToolHandler;
 use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
 use crate::repository::Neo4jClient;
+use agent_brain_protocol::{Content, SseNotifier};
 
 const DEFAULT_MAX_CONCURRENT: usize = 5;
 const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 3;

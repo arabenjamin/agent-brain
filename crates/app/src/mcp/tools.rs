@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
 
-use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, ToolHandlerTrait};
-use async_trait::async_trait;
 use crate::repository::TelemetryClient;
 use crate::skills::Skill;
+use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, ToolHandlerTrait};
+use async_trait::async_trait;
 
 /// Tool registry containing all available tools.
 pub struct ToolRegistry {

@@ -322,7 +322,6 @@ impl LlmClient {
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmError> {
         self.provider.chat(messages).await.map_err(LlmError::from)
     }
-
 }
 
 impl Default for LlmClient {

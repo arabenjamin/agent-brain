@@ -3,8 +3,8 @@ use neo4rs::{BoltNull, BoltType, Node, query};
 use tracing::info;
 use uuid::Uuid;
 
-use agent_brain_models::{Task, TaskStatus};
 use crate::{Neo4jClient, RepositoryError};
+use agent_brain_models::{Task, TaskStatus};
 
 impl Neo4jClient {
     /// Create a new task in the database.
