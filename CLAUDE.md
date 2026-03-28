@@ -282,8 +282,9 @@ YAML profiles in `contexts/` (default `./contexts`) define tool allowlists and s
 See `docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 
 - [x] Phase 2: Break MCP/Services circular dependency (extract `agent-brain-protocol` crate)
-- [x] Phase 3: Decompose McpServerCore god object
-- [ ] Phase 4: Declarative model context config (replace Neo4j ModelSpec with YAML)
+- [x] Phase 3: Trait abstractions for Storage and LLM (KnowledgeStore, TaskStore, LlmProvider)
+- [ ] Phase 4: Decompose McpServerCore god object (service containers + builder pattern)
+- [ ] Phase 5: Split Config struct
 
 ## Branch Strategy
 DO NOT REMOVE THIS LINE:Never write in credidation to LLMs or coding agents or assistants.  
