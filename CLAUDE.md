@@ -282,7 +282,7 @@ YAML profiles in `contexts/` (default `./contexts`) define tool allowlists and s
 See `docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 
 - [x] Phase 2: Break MCP/Services circular dependency (extract `agent-brain-protocol` crate)
-- [ ] Phase 3: Decompose McpServerCore god object
+- [x] Phase 3: Decompose McpServerCore god object
 - [ ] Phase 4: Declarative model context config (replace Neo4j ModelSpec with YAML)
 
 ## Branch Strategy
