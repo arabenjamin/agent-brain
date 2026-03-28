@@ -5,7 +5,7 @@ in the codebase. It is independent of feature work tracked in `ROADMAP.md`.
 
 **Decision: Incremental refactor, not a rewrite.**
 
-**Progress: Phase 0 ✅ | Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | Phase 5 ✅ | Phase 6 ✅ complete (2026-03-28)**
+**Progress: Phase 0 ✅ | Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | Phase 5 ✅ | Phase 6 ✅ | Phase 7 (7.4) ✅ complete (2026-03-28)**
 
 The codebase is ~30K LOC of working, tested Rust. The problems are structural
 (god objects, tight coupling, shared mutable state) — not fundamental design

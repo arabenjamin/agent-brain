@@ -1,3 +1,4 @@
+#![cfg(feature = "http-transport")]
 //! Authentication middleware for HTTP transport.
 //!
 //! This module provides API key authentication using Bearer tokens.

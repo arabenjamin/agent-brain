@@ -11,7 +11,9 @@
 //! - `StdioTransport`: Standard input/output (default, for local CLI usage)
 //! - `HttpTransport`: Streamable HTTP with SSE (for remote/cloud deployment)
 
+#[cfg(feature = "http-transport")]
 pub mod auth;
+#[cfg(feature = "http-transport")]
 pub mod http_transport;
 pub mod protocol;
 pub mod server;
@@ -20,7 +22,9 @@ pub mod tools;
 pub mod transport;
 pub mod transport_trait;
 
+#[cfg(feature = "http-transport")]
 pub use auth::{ApiKeyAuth, AuthConfig, AuthError};
+#[cfg(feature = "http-transport")]
 pub use http_transport::{HttpTransport, HttpTransportConfig};
 pub use protocol::{
     Content, InitializeResult, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,

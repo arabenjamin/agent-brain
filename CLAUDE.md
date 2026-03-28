@@ -286,6 +286,7 @@ See `docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 - [x] Phase 4: Decompose McpServerCore god object (service containers + builder pattern)
 - [x] Phase 5: Split Config struct (DatabaseConfig, LlmProviderConfig, SecretsConfig, etc.)
 - [x] Phase 6: DuckDB + YAML model catalog (`models.yaml` → DuckDB sync, ModelSpec removed from Neo4j)
+- [x] Phase 7 (7.4): Feature flags — `aws`, `http-transport`, `telemetry`, `websocket` (all on by default)
 
 ## Branch Strategy
 DO NOT REMOVE THIS LINE:Never write in credidation to LLMs or coding agents or assistants.  

@@ -1,3 +1,4 @@
+#[cfg(feature = "http-transport")]
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -8,7 +9,9 @@ use tracing::{error, info, warn};
 use agent_brain::cli::{Cli, Command, TransportType};
 use agent_brain::config::{Config, LogFormat, LoggingConfig};
 use agent_brain::logging;
-use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServer, McpServerCore};
+use agent_brain::mcp::McpServer;
+#[cfg(feature = "http-transport")]
+use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServerCore};
 use agent_brain::repository::Neo4jClient;
 use agent_brain::services::{
     LlmConfig, ModelCatalog,
@@ -151,13 +154,11 @@ async fn run_serve(
             .unwrap_or_else(|| config.llm.ollama_model.clone()),
         _ => config.llm.ollama_model.clone(),
     };
-    let system_prompt = catalog.resolve_system_prompt(&active_model);
-
-    // Initialize Telemetry
+    // Initialize Telemetry (always attempted; stub returns Err when feature disabled)
+    #[allow(unused_variables)]
     let telemetry = if let Some(path) = &config.telemetry.db_path {
         match agent_brain::repository::TelemetryClient::new(path) {
             Ok(tc) => {
-                // Sync model catalog into DuckDB
                 if let Err(e) = catalog.sync_to_duckdb(&tc) {
                     warn!("Could not sync model catalog to DuckDB: {}", e);
                 }
@@ -173,6 +174,9 @@ async fn run_serve(
         None
     };
 
+    #[allow(unused_variables)]
+    let system_prompt = catalog.resolve_system_prompt(&active_model);
+
     match transport_type {
         TransportType::Stdio => {
             info!("Starting MCP server on stdio...");
@@ -183,6 +187,7 @@ async fn run_serve(
 
             server.run().await?;
         }
+        #[cfg(feature = "http-transport")]
         TransportType::Http => {
             // Parse bind address
             let bind_addr: SocketAddr = bind.parse()
@@ -220,6 +225,13 @@ async fn run_serve(
             let transport = HttpTransport::with_config(http_config);
 
             server.run_with_transport(&transport).await?;
+        }
+        #[cfg(not(feature = "http-transport"))]
+        TransportType::Http => {
+            anyhow::bail!(
+                "HTTP transport is not compiled in. \
+                 Rebuild with the 'http-transport' feature enabled."
+            );
         }
     }
 

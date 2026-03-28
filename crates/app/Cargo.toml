@@ -62,9 +62,9 @@ clap = { version = "4", features = ["derive", "env"] }
 aes-gcm = "0.10"
 rand = "0.8"
 
-# AWS Secrets Manager
-aws-config = { version = "1.5", features = ["behavior-version-latest"] }
-aws-sdk-secretsmanager = "1.54"
+# AWS Secrets Manager (optional — enable with 'aws' feature)
+aws-config = { version = "1.5", features = ["behavior-version-latest"], optional = true }
+aws-sdk-secretsmanager = { version = "1.54", optional = true }
 
 # Base64 encoding for Basic auth
 base64 = "0.22"
@@ -72,21 +72,26 @@ base64 = "0.22"
 # YAML parsing (model catalog)
 serde_yaml = { workspace = true }
 
-# Local Analytics & Logging (The Hippocampus)
-duckdb = { workspace = true }
-
-# HTTP transport (Axum-based MCP server)
-axum = { version = "0.8", features = ["http2"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-async-stream = "0.3"
+# HTTP transport — Axum-based MCP server (optional — enable with 'http-transport' feature)
+axum = { version = "0.8", features = ["http2"], optional = true }
+axum-extra = { version = "0.10", features = ["typed-header"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+async-stream = { version = "0.3", optional = true }
 async-trait = "0.1"
 futures-util = "0.3"
 
-# WebSocket support
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+# WebSocket support (optional — enable with 'websocket' feature)
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"], optional = true }
+
+[features]
+aws            = ["dep:aws-config", "dep:aws-sdk-secretsmanager"]
+http-transport = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:tower-http",
+                  "dep:tokio-stream", "dep:async-stream"]
+telemetry      = ["agent-brain-repository/telemetry"]
+websocket      = ["dep:tokio-tungstenite"]
+default        = ["aws", "http-transport", "telemetry", "websocket"]
 
 [dev-dependencies]
 tokio-test = "0.4"

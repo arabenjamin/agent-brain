@@ -14,4 +14,8 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 neo4rs = { workspace = true }
 anyhow = { workspace = true }
-duckdb = { workspace = true }
+duckdb = { workspace = true, optional = true }
+
+[features]
+telemetry = ["dep:duckdb"]
+default = ["telemetry"]

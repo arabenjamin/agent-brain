@@ -14,12 +14,9 @@ pub mod traits;
 
 pub use knowledge::KnowledgeService;
 pub use llm::{LlmClient, LlmConfig, LlmProviderType};
-pub use secrets::{
-    SecretProvider,
-    AwsSecretConfig, AwsSecretProvider,
-    LocalSecretConfig, LocalSecretProvider,
-    VaultConfig, VaultSecretProvider
-};
+pub use secrets::{SecretProvider, LocalSecretConfig, LocalSecretProvider, VaultConfig, VaultSecretProvider};
+#[cfg(feature = "aws")]
+pub use secrets::{AwsSecretConfig, AwsSecretProvider};
 pub use chat::{ChatEvent, ChatRequest, ChatService};
 pub use model_config::ModelCatalog;
 pub use queue::{QueueService, WorkerConfig, ChainStep};
