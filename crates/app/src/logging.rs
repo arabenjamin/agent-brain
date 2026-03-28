@@ -16,11 +16,11 @@ use crate::config::{Config, LogFormat};
 /// for JSON-RPC protocol messages.
 pub fn init(config: &Config) {
     let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     let subscriber = tracing_subscriber::registry().with(env_filter);
 
-    match config.log_format {
+    match config.logging.format {
         LogFormat::Json => {
             subscriber
                 .with(

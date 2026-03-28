@@ -5,7 +5,7 @@ in the codebase. It is independent of feature work tracked in `ROADMAP.md`.
 
 **Decision: Incremental refactor, not a rewrite.**
 
-**Progress: Phase 0 ✅ complete (2026-03-27) | Phase 1 ✅ complete (2026-03-27)**
+**Progress: Phase 0 ✅ | Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | Phase 5 ✅ complete (2026-03-27)**
 
 The codebase is ~30K LOC of working, tested Rust. The problems are structural
 (god objects, tight coupling, shared mutable state) — not fundamental design
@@ -616,10 +616,11 @@ impl McpServerBuilder {
 
 ---
 
-## Phase 5: Split Config
+## Phase 5: Split Config ✅ COMPLETE
 
 **Risk:** Low — straightforward struct decomposition
 **Estimated scope:** ~200 LOC
+**Actual:** ~180 LOC changed across config.rs, logging.rs, main.rs
 
 ### 5.1 Decompose Config Struct
 
@@ -671,9 +672,9 @@ pub struct LlmConfig {
 
 ### 5.2 Verify
 
-- [ ] Each sub-config is independently validatable
-- [ ] `Config::from_env()` still works
-- [ ] All tests pass
+- [x] Each sub-config is independently validatable
+- [x] `Config::from_env()` still works
+- [x] All tests pass (107/107)
 
 ---
 

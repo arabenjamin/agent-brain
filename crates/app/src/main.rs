@@ -6,7 +6,7 @@ use clap::Parser;
 use tracing::{error, info, warn};
 
 use agent_brain::cli::{Cli, Command, TransportType};
-use agent_brain::config::{Config, LogFormat};
+use agent_brain::config::{Config, LogFormat, LoggingConfig};
 use agent_brain::logging;
 use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServer, McpServerCore};
 use agent_brain::repository::Neo4jClient;
@@ -26,22 +26,24 @@ async fn main() -> Result<()> {
     // Build config from environment and override with CLI args
     let mut config = Config::from_env()?;
 
-    config.neo4j_uri = cli.neo4j_uri.clone();
-    config.neo4j_user = cli.neo4j_user.clone();
+    config.database.uri = cli.neo4j_uri.clone();
+    config.database.user = cli.neo4j_user.clone();
     if let Some(pw) = &cli.neo4j_password {
-        config.neo4j_password = pw.clone();
+        config.database.password = pw.clone();
     }
-    config.log_level = cli.log_level.clone();
-    config.log_format = match cli.log_format.to_lowercase().as_str() {
-        "json" => LogFormat::Json,
-        _ => LogFormat::Pretty,
+    config.logging = LoggingConfig {
+        level: cli.log_level.clone(),
+        format: match cli.log_format.to_lowercase().as_str() {
+            "json" => LogFormat::Json,
+            _ => LogFormat::Pretty,
+        },
     };
 
     // Initialize logging
     logging::init(&config);
 
     info!(
-        neo4j_uri = %config.neo4j_uri,
+        neo4j_uri = %config.database.uri,
         "Starting agent-brain"
     );
 
@@ -67,9 +69,9 @@ async fn main() -> Result<()> {
 async fn connect_neo4j(config: &Config) -> Result<Neo4jClient> {
     info!("Connecting to Neo4j...");
     let client = Neo4jClient::new(
-        &config.neo4j_uri,
-        &config.neo4j_user,
-        &config.neo4j_password,
+        &config.database.uri,
+        &config.database.user,
+        &config.database.password,
     )
     .await?;
     info!("Connected to Neo4j");
@@ -77,38 +79,39 @@ async fn connect_neo4j(config: &Config) -> Result<Neo4jClient> {
 }
 
 fn build_llm_config(config: &Config) -> LlmConfig {
-    let mut base = LlmConfig::default().with_provider(config.llm_provider);
+    let llm = &config.llm;
+    let mut base = LlmConfig::default().with_provider(llm.provider);
 
-    match config.llm_provider {
+    match llm.provider {
         LlmProviderType::Ollama => {
             base = base
-                .with_base_url(config.ollama_url.clone())
-                .with_model(config.ollama_model.clone());
-            if let Some(embed_model) = &config.ollama_embed_model {
+                .with_base_url(llm.ollama_url.clone())
+                .with_model(llm.ollama_model.clone());
+            if let Some(embed_model) = &llm.ollama_embed_model {
                 base = base.with_embed_model(embed_model);
             }
         }
         LlmProviderType::Anthropic => {
-            if let Some(key) = &config.anthropic_api_key {
+            if let Some(key) = &llm.anthropic_api_key {
                 base = base.with_api_key(key);
             }
-            if let Some(model) = &config.anthropic_model {
+            if let Some(model) = &llm.anthropic_model {
                 base = base.with_model(model);
             }
             // Use local embedding model even for cloud generation
-            if let Some(embed_model) = &config.ollama_embed_model {
+            if let Some(embed_model) = &llm.ollama_embed_model {
                 base = base.with_embed_model(embed_model);
             }
         }
         LlmProviderType::Gemini => {
-            if let Some(key) = &config.gemini_api_key {
+            if let Some(key) = &llm.gemini_api_key {
                 base = base.with_api_key(key);
             }
-            if let Some(model) = &config.gemini_model {
+            if let Some(model) = &llm.gemini_model {
                 base = base.with_model(model);
             }
             // Use local embedding model even for cloud generation
-            if let Some(embed_model) = &config.ollama_embed_model {
+            if let Some(embed_model) = &llm.ollama_embed_model {
                 base = base.with_embed_model(embed_model);
             }
         }
@@ -136,7 +139,7 @@ async fn run_serve(
     let llm_config = build_llm_config(config);
 
     // Initialize Telemetry
-    let telemetry = if let Some(path) = &config.telemetry_db_path {
+    let telemetry = if let Some(path) = &config.telemetry.db_path {
         match agent_brain::repository::TelemetryClient::new(path) {
             Ok(tc) => {
                 info!("Telemetry enabled at {}", path);
