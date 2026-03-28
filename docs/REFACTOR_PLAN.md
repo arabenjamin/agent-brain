@@ -5,7 +5,7 @@ in the codebase. It is independent of feature work tracked in `ROADMAP.md`.
 
 **Decision: Incremental refactor, not a rewrite.**
 
-**Progress: Phase 0 ✅ | Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | Phase 5 ✅ complete (2026-03-27)**
+**Progress: Phase 0 ✅ | Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ | Phase 5 ✅ | Phase 6 ✅ complete (2026-03-28)**
 
 The codebase is ~30K LOC of working, tested Rust. The problems are structural
 (god objects, tight coupling, shared mutable state) — not fundamental design
@@ -678,10 +678,11 @@ pub struct LlmConfig {
 
 ---
 
-## Phase 6: DuckDB + YAML for Lean Model Context
+## Phase 6: DuckDB + YAML for Lean Model Context ✅ COMPLETE
 
 **Risk:** Medium — migrates model management from Neo4j to DuckDB + flat files
 **Estimated scope:** ~600-800 LOC changed/added
+**Actual:** ~700 LOC across telemetry.rs, model_config.rs, skills/model.rs, config.rs, main.rs
 **Prerequisite:** Phase 0 complete (cleaner codebase to work with)
 
 ### Problem

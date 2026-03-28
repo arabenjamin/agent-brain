@@ -3,7 +3,7 @@ pub mod queue;
 pub mod knowledge;
 pub mod llm;
 pub mod llm_providers;
-pub mod model_selector;
+pub mod model_config;
 pub mod procedure_executor;
 pub mod scheduler;
 pub mod secrets;
@@ -21,7 +21,7 @@ pub use secrets::{
     VaultConfig, VaultSecretProvider
 };
 pub use chat::{ChatEvent, ChatRequest, ChatService};
-pub use model_selector::ModelSelector;
+pub use model_config::ModelCatalog;
 pub use queue::{QueueService, WorkerConfig, ChainStep};
 pub use scheduler::{SchedulerService, SchedulerConfig};
 pub use shared_llm::SharedLlm;

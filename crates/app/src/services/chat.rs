@@ -17,13 +17,11 @@ use crate::services::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;
 
-/// System prompt injected into every chat session.
-const CHAT_SYSTEM_PROMPT: &str = "\
+const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are agent-brain, an autonomous AI assistant backed by a persistent Neo4j \
-knowledge graph. You can search notes, manage tasks, execute HTTP requests, \
-reason over stored knowledge, and use many other tools. \
-Always think step-by-step before acting and use the available tools to give \
-the most accurate, grounded answer possible.";
+knowledge graph. You can search notes, manage tasks, reason over stored \
+knowledge, and use many other tools. Always think step-by-step before acting \
+and use the available tools to give the most accurate, grounded answer possible.";
 
 // ============================================================================
 // Public types
@@ -82,6 +80,7 @@ pub struct ChatService {
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
     tool_registry: Arc<RwLock<ToolRegistry>>,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    system_prompt: String,
 }
 
 impl ChatService {
@@ -91,7 +90,22 @@ impl ChatService {
         tool_registry: Arc<RwLock<ToolRegistry>>,
         llm_config: Arc<RwLock<Option<LlmConfig>>>,
     ) -> Arc<Self> {
-        Arc::new(Self { tool_handler, tool_registry, llm_config })
+        Arc::new(Self {
+            tool_handler,
+            tool_registry,
+            llm_config,
+            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+        })
+    }
+
+    /// Create a `ChatService` with a custom system prompt from the model catalog.
+    pub fn with_system_prompt(
+        tool_handler: Arc<RwLock<Option<ToolHandler>>>,
+        tool_registry: Arc<RwLock<ToolRegistry>>,
+        llm_config: Arc<RwLock<Option<LlmConfig>>>,
+        system_prompt: String,
+    ) -> Arc<Self> {
+        Arc::new(Self { tool_handler, tool_registry, llm_config, system_prompt })
     }
 
     /// Run the agentic loop for a chat request, emitting events on `tx`.
@@ -230,7 +244,7 @@ impl ChatService {
             let body = json!({
                 "model": model,
                 "max_tokens": 4096,
-                "system": CHAT_SYSTEM_PROMPT,
+                "system": self.system_prompt.as_str(),
                 "tools": anthropic_tools,
                 "messages": messages,
             });
@@ -406,7 +420,7 @@ impl ChatService {
 
         // Build the initial messages list.
         let mut messages: Vec<Value> = vec![
-            json!({ "role": "system", "content": CHAT_SYSTEM_PROMPT }),
+            json!({ "role": "system", "content": self.system_prompt.as_str() }),
         ];
         for h in &request.history {
             messages.push(json!({ "role": h.role, "content": h.content }));
@@ -574,7 +588,7 @@ impl ChatService {
              Use the key \"tool\" (not \"name\"). \
              You may call multiple tools in sequence — one <tool_call> block at a time. \
              When you have a final answer write it as plain text with no <tool_call> tag.",
-            CHAT_SYSTEM_PROMPT, tools_str
+            self.system_prompt.as_str(), tools_str
         );
 
         // Build initial chat message list.

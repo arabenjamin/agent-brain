@@ -40,7 +40,7 @@ impl Neo4jClient {
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
-            "CREATE CONSTRAINT model_spec_name IF NOT EXISTS FOR (m:ModelSpec) REQUIRE m.name IS UNIQUE",
+            // Note: ModelSpec nodes removed — model registry now lives in DuckDB model_registry table
         ];
 
         let indexes = [
@@ -60,7 +60,7 @@ impl Neo4jClient {
             "CREATE INDEX agent_job_status IF NOT EXISTS FOR (j:AgentJob) ON (j.status)",
             "CREATE INDEX agent_job_priority IF NOT EXISTS FOR (j:AgentJob) ON (j.priority)",
             "CREATE INDEX agent_job_created IF NOT EXISTS FOR (j:AgentJob) ON (j.created_at)",
-            "CREATE INDEX model_spec_provider IF NOT EXISTS FOR (m:ModelSpec) ON (m.provider)",
+            // Note: model_spec_provider index removed — model registry lives in DuckDB
         ];
 
         for constraint in constraints {

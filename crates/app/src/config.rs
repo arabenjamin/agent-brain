@@ -61,11 +61,13 @@ pub struct LoggingConfig {
     pub format: LogFormat,
 }
 
-/// Optional DuckDB telemetry sink.
+/// Optional DuckDB telemetry sink and model catalog.
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
     /// Path to the DuckDB file. `None` disables telemetry.
     pub db_path: Option<String>,
+    /// Path to the YAML model catalog (default: `models.yaml`).
+    pub model_catalog_path: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -150,6 +152,8 @@ impl Config {
             },
             telemetry: TelemetryConfig {
                 db_path: env::var("TELEMETRY_DB_PATH").ok(),
+                model_catalog_path: env::var("MODEL_CATALOG_PATH")
+                    .unwrap_or_else(|_| "models.yaml".to_string()),
             },
         })
     }
@@ -190,6 +194,7 @@ impl Config {
             },
             telemetry: TelemetryConfig {
                 db_path: Some("test_telemetry.db".to_string()),
+                model_catalog_path: "models.yaml".to_string(),
             },
         }
     }

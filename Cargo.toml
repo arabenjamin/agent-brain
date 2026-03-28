@@ -38,5 +38,8 @@ reqwest = { version = "0.12", features = ["json"] }
 # Async traits
 async-trait = "0.1"
 
+# YAML parsing (model catalog)
+serde_yaml = "0.9"
+
 # Local Analytics & Logging (The Hippocampus)
 duckdb = { version = "1.0", features = ["bundled"] }

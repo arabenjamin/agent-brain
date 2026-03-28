@@ -11,9 +11,10 @@ use agent_brain::logging;
 use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServer, McpServerCore};
 use agent_brain::repository::Neo4jClient;
 use agent_brain::services::{
-    LlmConfig,
+    LlmConfig, ModelCatalog,
     llm::LlmProviderType,
 };
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -138,10 +139,28 @@ async fn run_serve(
     // Configure LLM
     let llm_config = build_llm_config(config);
 
+    // Load model catalog and determine active system prompt
+    let catalog_path = PathBuf::from(&config.telemetry.model_catalog_path);
+    let catalog = ModelCatalog::load_or_default(&catalog_path);
+    let active_model = match config.llm.provider {
+        LlmProviderType::Anthropic => config.llm.anthropic_model
+            .clone()
+            .unwrap_or_else(|| config.llm.ollama_model.clone()),
+        LlmProviderType::Gemini => config.llm.gemini_model
+            .clone()
+            .unwrap_or_else(|| config.llm.ollama_model.clone()),
+        _ => config.llm.ollama_model.clone(),
+    };
+    let system_prompt = catalog.resolve_system_prompt(&active_model);
+
     // Initialize Telemetry
     let telemetry = if let Some(path) = &config.telemetry.db_path {
         match agent_brain::repository::TelemetryClient::new(path) {
             Ok(tc) => {
+                // Sync model catalog into DuckDB
+                if let Err(e) = catalog.sync_to_duckdb(&tc) {
+                    warn!("Could not sync model catalog to DuckDB: {}", e);
+                }
                 info!("Telemetry enabled at {}", path);
                 Some(tc)
             }
@@ -179,7 +198,9 @@ async fn run_serve(
             let mut server = McpServerCore::new()
                 .with_neo4j(client)
                 .with_llm_config(llm_config)
-                .with_session_manager(session_manager.clone());
+                .with_session_manager(session_manager.clone())
+                .with_system_prompt(system_prompt)
+                .with_catalog_path(catalog_path);
 
             if let Some(t) = telemetry {
                 server = server.with_telemetry(t);

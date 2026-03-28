@@ -69,6 +69,9 @@ aws-sdk-secretsmanager = "1.54"
 # Base64 encoding for Basic auth
 base64 = "0.22"
 
+# YAML parsing (model catalog)
+serde_yaml = { workspace = true }
+
 # Local Analytics & Logging (The Hippocampus)
 duckdb = { workspace = true }
 

@@ -159,6 +159,10 @@ pub struct McpServerCore {
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
     search: SearchConfig,
     jobs: JobServices,
+    /// System prompt loaded from the model catalog at startup.
+    system_prompt: String,
+    /// Path to models.yaml, forwarded to ModelSkill for hot-reload.
+    catalog_path: PathBuf,
 }
 
 impl McpServerCore {
@@ -179,6 +183,10 @@ impl McpServerCore {
             llm_config: Arc::new(RwLock::new(None)),
             search: SearchConfig::default(),
             jobs: JobServices::default(),
+            system_prompt: String::new(),
+            catalog_path: std::env::var("MODEL_CATALOG_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("models.yaml")),
         }
     }
 
@@ -251,17 +259,38 @@ impl McpServerCore {
         self
     }
 
+    /// Set the active system prompt (from model catalog).
+    pub fn with_system_prompt(mut self, prompt: String) -> Self {
+        self.system_prompt = prompt;
+        self
+    }
+
+    /// Set the path to models.yaml (forwarded to ModelSkill for hot-reload).
+    pub fn with_catalog_path(mut self, path: PathBuf) -> Self {
+        self.catalog_path = path;
+        self
+    }
+
     /// Create a [`ChatService`] backed by this server's live tool handler,
     /// registry, and LLM config.
     ///
     /// Safe to call before or after [`build_skills`] — the `Arc` references
     /// will always see the most up-to-date state.
     pub fn chat_service(&self) -> Arc<ChatService> {
-        ChatService::new(
-            Arc::clone(&self.tool_handler),
-            Arc::clone(&self.tool_registry),
-            Arc::clone(&self.llm_config),
-        )
+        if self.system_prompt.is_empty() {
+            ChatService::new(
+                Arc::clone(&self.tool_handler),
+                Arc::clone(&self.tool_registry),
+                Arc::clone(&self.llm_config),
+            )
+        } else {
+            ChatService::with_system_prompt(
+                Arc::clone(&self.tool_handler),
+                Arc::clone(&self.tool_registry),
+                Arc::clone(&self.llm_config),
+                self.system_prompt.clone(),
+            )
+        }
     }
 
     /// Build the skills and initialize the tool handler.
@@ -353,8 +382,12 @@ impl McpServerCore {
         );
         registry.register_skill(Box::new(search_skill));
 
-        // Register Model Skill (shares Arc<RwLock<>> so runtime provider changes propagate)
-        let model_skill = ModelSkill::new(self.llm_config.clone(), self.storage.neo4j.clone());
+        // Register Model Skill (DuckDB-backed catalog, shares live LLM config Arc)
+        let model_skill = ModelSkill::new(
+            self.llm_config.clone(),
+            self.storage.telemetry.clone(),
+            self.catalog_path.clone(),
+        );
         registry.register_skill(Box::new(model_skill));
 
         // Register Sleep Skill (requires telemetry / DuckDB)
@@ -429,7 +462,11 @@ impl McpServerCore {
             self.search.serpapi_key.clone(),
         )));
 
-        skills.push(Box::new(ModelSkill::new(self.llm_config.clone(), self.storage.neo4j.clone())));
+        skills.push(Box::new(ModelSkill::new(
+            self.llm_config.clone(),
+            self.storage.telemetry.clone(),
+            self.catalog_path.clone(),
+        )));
 
         if let Some(ref telemetry) = self.storage.telemetry {
             skills.push(Box::new(SleepSkill::new(telemetry.clone(), self.storage.dataset_dir.clone())));
