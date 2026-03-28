@@ -283,7 +283,7 @@ See `docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 
 - [x] Phase 2: Break MCP/Services circular dependency (extract `agent-brain-protocol` crate)
 - [x] Phase 3: Trait abstractions for Storage and LLM (KnowledgeStore, TaskStore, LlmProvider)
-- [ ] Phase 4: Decompose McpServerCore god object (service containers + builder pattern)
+- [x] Phase 4: Decompose McpServerCore god object (service containers + builder pattern)
 - [ ] Phase 5: Split Config struct
 
 ## Branch Strategy

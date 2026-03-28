@@ -499,10 +499,11 @@ pub struct KnowledgeSkill {
 
 ---
 
-## Phase 4: Decompose McpServerCore
+## Phase 4: Decompose McpServerCore ✅ COMPLETE
 
 **Risk:** Medium-High — the core wiring changes
 **Estimated scope:** ~400-600 LOC refactored in `mcp/server.rs`
+**Actual:** 99 LOC added / 68 removed; 15 fields → 9; 107 tests passing
 
 ### 4.1 Identify Responsibility Groups
 
