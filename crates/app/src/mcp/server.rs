@@ -36,6 +36,59 @@ use super::tools::{ToolHandler, ToolRegistry};
 use super::transport::{OutgoingMessage, StdioTransport};
 use super::transport_trait::{McpTransport, TransportMessage};
 
+/// Storage-related services (database, telemetry, credentials, data directory).
+pub struct StorageConfig {
+    pub neo4j: Option<Neo4jClient>,
+    pub telemetry: Option<TelemetryClient>,
+    pub dataset_dir: PathBuf,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            neo4j: None,
+            telemetry: None,
+            dataset_dir: std::env::var("DATASET_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./datasets")),
+        }
+    }
+}
+
+/// Web search API keys.
+pub struct SearchConfig {
+    pub brave_key: Option<String>,
+    pub google_key: Option<String>,
+    pub google_cx: Option<String>,
+    pub serpapi_key: Option<String>,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            brave_key: std::env::var("BRAVE_API_KEY").ok(),
+            google_key: std::env::var("GOOGLE_API_KEY").ok(),
+            google_cx: std::env::var("GOOGLE_CX").ok(),
+            serpapi_key: std::env::var("SERPAPI_KEY").ok(),
+        }
+    }
+}
+
+/// Background job services (queue + scheduler).
+pub struct JobServices {
+    pub queue: Arc<RwLock<Option<Arc<QueueService>>>>,
+    pub scheduler: Arc<RwLock<Option<Arc<SchedulerService>>>>,
+}
+
+impl Default for JobServices {
+    fn default() -> Self {
+        Self {
+            queue: Arc::new(RwLock::new(None)),
+            scheduler: Arc::new(RwLock::new(None)),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum McpServerError {
     #[error("Transport error: {0}")]
@@ -91,35 +144,21 @@ impl Default for McpServerConfig {
 
 /// Thread-safe MCP server core that works with any transport.
 ///
-/// This struct contains the shared state that can be safely accessed
-/// from multiple async tasks concurrently.
+/// Fields are grouped into focused service containers:
+/// - `storage`  — database, telemetry, dataset directory
+/// - `llm_config` — live-swappable LLM config (Arc<RwLock<>> for `use_model`)
+/// - `search`   — web search API keys
+/// - `jobs`     — background queue + scheduler
 pub struct McpServerCore {
     config: McpServerConfig,
     pub(crate) state: Arc<RwLock<ServerState>>,
     tool_registry: Arc<RwLock<ToolRegistry>>,
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
-
-    // Session management for HTTP
     session_manager: Option<Arc<SessionManager>>,
-
-    // Configuration state needed to build skills
-    neo4j: Option<Neo4jClient>,
-    telemetry: Option<TelemetryClient>,
+    storage: StorageConfig,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
-    // Search Config
-    brave_api_key: Option<String>,
-    google_api_key: Option<String>,
-    google_cx: Option<String>,
-    serpapi_key: Option<String>,
-
-    // Sleep / training-data export directory
-    dataset_dir: PathBuf,
-
-    // Background job queue (created in build_skills when neo4j is available)
-    queue_service: Arc<RwLock<Option<Arc<QueueService>>>>,
-
-    // Autonomous scheduler (created in build_skills after queue is ready)
-    scheduler_service: Arc<RwLock<Option<Arc<SchedulerService>>>>,
+    search: SearchConfig,
+    jobs: JobServices,
 }
 
 impl McpServerCore {
@@ -136,18 +175,10 @@ impl McpServerCore {
             tool_registry: Arc::new(RwLock::new(ToolRegistry::new())),
             tool_handler: Arc::new(RwLock::new(None)),
             session_manager: None,
-            neo4j: None,
-            telemetry: None,
+            storage: StorageConfig::default(),
             llm_config: Arc::new(RwLock::new(None)),
-            brave_api_key: std::env::var("BRAVE_API_KEY").ok(),
-            google_api_key: std::env::var("GOOGLE_API_KEY").ok(),
-            google_cx: std::env::var("GOOGLE_CX").ok(),
-            serpapi_key: std::env::var("SERPAPI_KEY").ok(),
-            dataset_dir: std::env::var("DATASET_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./datasets")),
-            queue_service: Arc::new(RwLock::new(None)),
-            scheduler_service: Arc::new(RwLock::new(None)),
+            search: SearchConfig::default(),
+            jobs: JobServices::default(),
         }
     }
 
@@ -185,13 +216,13 @@ impl McpServerCore {
 
     /// Set the Neo4j client for database operations.
     pub fn with_neo4j(mut self, neo4j: Neo4jClient) -> Self {
-        self.neo4j = Some(neo4j);
+        self.storage.neo4j = Some(neo4j);
         self
     }
 
     /// Set the Telemetry client for logging.
     pub fn with_telemetry(mut self, telemetry: TelemetryClient) -> Self {
-        self.telemetry = Some(telemetry);
+        self.storage.telemetry = Some(telemetry);
         self
     }
 
@@ -203,20 +234,20 @@ impl McpServerCore {
 
     /// Set the Brave API Key for searching.
     pub fn with_brave_api_key(mut self, key: impl Into<String>) -> Self {
-        self.brave_api_key = Some(key.into());
+        self.search.brave_key = Some(key.into());
         self
     }
 
     /// Set the Google API Key and CX for searching.
     pub fn with_google_config(mut self, key: impl Into<String>, cx: impl Into<String>) -> Self {
-        self.google_api_key = Some(key.into());
-        self.google_cx = Some(cx.into());
+        self.search.google_key = Some(key.into());
+        self.search.google_cx = Some(cx.into());
         self
     }
 
     /// Set the SerpApi Key for searching.
     pub fn with_serpapi_key(mut self, key: impl Into<String>) -> Self {
-        self.serpapi_key = Some(key.into());
+        self.search.serpapi_key = Some(key.into());
         self
     }
 
@@ -238,7 +269,7 @@ impl McpServerCore {
     pub async fn build_skills(&self) {
         // Build DynamicSkill first (before taking locks) so we can share the Arc.
         // Both the registry clone and the handler original share the same tools_map.
-        let dynamic_skill = if let Some(neo4j) = &self.neo4j {
+        let dynamic_skill = if let Some(neo4j) = &self.storage.neo4j {
             let d = DynamicSkill::new(neo4j.clone(), self.tool_handler.clone());
             d.load_from_neo4j().await;
             Some(d)
@@ -247,8 +278,8 @@ impl McpServerCore {
         };
 
         // Create (or reuse) QueueService when Neo4j is available.
-        let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.neo4j {
-            let mut qs_guard = self.queue_service.write().await;
+        let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.storage.neo4j {
+            let mut qs_guard = self.jobs.queue.write().await;
             if qs_guard.is_none() {
                 let sse_notifier: Option<Arc<dyn agent_brain_protocol::SseNotifier>> =
                     self.session_manager.as_ref().map(|sm| Arc::clone(sm) as Arc<dyn agent_brain_protocol::SseNotifier>);
@@ -267,8 +298,8 @@ impl McpServerCore {
 
         // Create (or reuse) SchedulerService when Neo4j + Queue are available.
         let scheduler_arc: Option<Arc<SchedulerService>> =
-            if let (Some(neo4j), Some(qs)) = (&self.neo4j, &queue_arc) {
-                let mut g = self.scheduler_service.write().await;
+            if let (Some(neo4j), Some(qs)) = (&self.storage.neo4j, &queue_arc) {
+                let mut g = self.jobs.scheduler.write().await;
                 if g.is_none() {
                     *g = Some(SchedulerService::new(neo4j.clone(), Arc::clone(qs)));
                 }
@@ -286,7 +317,7 @@ impl McpServerCore {
         registry.clear();
 
         // Register Knowledge Skill
-        if let Some(neo4j) = &self.neo4j {
+        if let Some(neo4j) = &self.storage.neo4j {
             let config = self.llm_config.read().await.clone();
             let llm_client = config.and_then(|c| crate::services::LlmClient::with_config(c).ok());
             let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> =
@@ -297,7 +328,7 @@ impl McpServerCore {
 
         // Register Task Skill
         let task_store: Option<Arc<dyn crate::services::TaskStore>> =
-            self.neo4j.as_ref().map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
+            self.storage.neo4j.as_ref().map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
         let task_skill = TaskSkill::new(
             Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
             task_store.clone(),
@@ -306,7 +337,7 @@ impl McpServerCore {
         registry.register_skill(Box::new(task_skill));
 
         // Register Procedure Skill
-        if let Some(neo4j) = &self.neo4j {
+        if let Some(neo4j) = &self.storage.neo4j {
             let proc_store: Arc<dyn crate::services::ProcedureStore> = Arc::new(neo4j.clone());
             let procedure_skill = ProcedureSkill::new(proc_store);
             registry.register_skill(Box::new(procedure_skill));
@@ -314,26 +345,26 @@ impl McpServerCore {
 
         // Register Search Skill
         let search_skill = SearchSkill::new(
-            self.telemetry.clone(),
-            self.brave_api_key.clone(),
-            self.google_api_key.clone(),
-            self.google_cx.clone(),
-            self.serpapi_key.clone(),
+            self.storage.telemetry.clone(),
+            self.search.brave_key.clone(),
+            self.search.google_key.clone(),
+            self.search.google_cx.clone(),
+            self.search.serpapi_key.clone(),
         );
         registry.register_skill(Box::new(search_skill));
 
         // Register Model Skill (shares Arc<RwLock<>> so runtime provider changes propagate)
-        let model_skill = ModelSkill::new(self.llm_config.clone(), self.neo4j.clone());
+        let model_skill = ModelSkill::new(self.llm_config.clone(), self.storage.neo4j.clone());
         registry.register_skill(Box::new(model_skill));
 
         // Register Sleep Skill (requires telemetry / DuckDB)
-        if let Some(ref telemetry) = self.telemetry {
-            let sleep_skill = SleepSkill::new(telemetry.clone(), self.dataset_dir.clone());
+        if let Some(ref telemetry) = self.storage.telemetry {
+            let sleep_skill = SleepSkill::new(telemetry.clone(), self.storage.dataset_dir.clone());
             registry.register_skill(Box::new(sleep_skill));
         }
 
         // Register Working Memory Skill
-        if let Some(neo4j) = &self.neo4j {
+        if let Some(neo4j) = &self.storage.neo4j {
             let config2 = self.llm_config.read().await.clone();
             let llm_client2 = config2.and_then(|c| crate::services::LlmClient::with_config(c).ok());
             let knowledge_svc2: Arc<dyn crate::services::KnowledgeStore> =
@@ -368,7 +399,7 @@ impl McpServerCore {
         // Build handler skills list (re-creates non-dynamic skills; DynamicSkill original goes here)
         let mut skills: Vec<Box<dyn Skill>> = Vec::new();
 
-        if let Some(neo4j) = &self.neo4j {
+        if let Some(neo4j) = &self.storage.neo4j {
             let config3 = self.llm_config.read().await.clone();
             let llm_client3 = config3.and_then(|c| crate::services::LlmClient::with_config(c).ok());
             let knowledge_svc3: Arc<dyn crate::services::KnowledgeStore> =
@@ -385,26 +416,26 @@ impl McpServerCore {
             queue_arc.as_ref().map(Arc::clone),
         )));
 
-        if let Some(neo4j) = &self.neo4j {
+        if let Some(neo4j) = &self.storage.neo4j {
             let proc_store2: Arc<dyn crate::services::ProcedureStore> = Arc::new(neo4j.clone());
             skills.push(Box::new(ProcedureSkill::new(proc_store2)));
         }
 
         skills.push(Box::new(SearchSkill::new(
-            self.telemetry.clone(),
-            self.brave_api_key.clone(),
-            self.google_api_key.clone(),
-            self.google_cx.clone(),
-            self.serpapi_key.clone(),
+            self.storage.telemetry.clone(),
+            self.search.brave_key.clone(),
+            self.search.google_key.clone(),
+            self.search.google_cx.clone(),
+            self.search.serpapi_key.clone(),
         )));
 
-        skills.push(Box::new(ModelSkill::new(self.llm_config.clone(), self.neo4j.clone())));
+        skills.push(Box::new(ModelSkill::new(self.llm_config.clone(), self.storage.neo4j.clone())));
 
-        if let Some(ref telemetry) = self.telemetry {
-            skills.push(Box::new(SleepSkill::new(telemetry.clone(), self.dataset_dir.clone())));
+        if let Some(ref telemetry) = self.storage.telemetry {
+            skills.push(Box::new(SleepSkill::new(telemetry.clone(), self.storage.dataset_dir.clone())));
         }
 
-        if let Some(neo4j) = &self.neo4j {
+        if let Some(neo4j) = &self.storage.neo4j {
             let config4 = self.llm_config.read().await.clone();
             let llm_client4 = config4.and_then(|c| crate::services::LlmClient::with_config(c).ok());
             let knowledge_svc4: Arc<dyn crate::services::KnowledgeStore> =
@@ -435,7 +466,7 @@ impl McpServerCore {
 
         let mut handler = self.tool_handler.write().await;
         let mut tool_handler = ToolHandler::new(skills);
-        if let Some(ref tel) = self.telemetry {
+        if let Some(ref tel) = self.storage.telemetry {
             tool_handler = tool_handler.with_telemetry(tel.clone());
         }
         *handler = Some(tool_handler);
