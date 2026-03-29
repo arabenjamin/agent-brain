@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use agent_brain::mcp::tools::{ToolHandler, ToolRegistry};
 use agent_brain::repository::Neo4jClient;
+use agent_brain::services::{LlmConfig, SharedLlm};
 use agent_brain::skills::task::TaskSkill;
 use serde_json::json;
 use tokio::sync::RwLock;
@@ -13,7 +14,11 @@ use uuid::Uuid;
 #[test]
 fn test_create_task_tool_exists() {
     let mut registry = ToolRegistry::new();
-    let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), None, None);
+    let task_skill = TaskSkill::new(
+        SharedLlm::new(Arc::new(RwLock::new(None::<LlmConfig>))),
+        None,
+        None,
+    );
     registry.register_skill(Box::new(task_skill));
 
     let tool = registry.get("create_task");
@@ -32,7 +37,11 @@ fn test_create_task_tool_exists() {
 
 #[tokio::test]
 async fn test_create_task_without_db() {
-    let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), None, None);
+    let task_skill = TaskSkill::new(
+        SharedLlm::new(Arc::new(RwLock::new(None::<LlmConfig>))),
+        None,
+        None,
+    );
     let handler = ToolHandler::new(vec![Box::new(task_skill)]);
 
     let result = handler
@@ -79,7 +88,11 @@ async fn test_create_task_with_live_db() {
         return;
     }
 
-    let task_skill = TaskSkill::new(Arc::new(RwLock::new(None)), Some(client.clone()), None);
+    let task_skill = TaskSkill::new(
+        SharedLlm::new(Arc::new(RwLock::new(None::<LlmConfig>))),
+        Some(Arc::new(client.clone())),
+        None,
+    );
     let handler = ToolHandler::new(vec![Box::new(task_skill)]);
 
     let goal = format!("Integration Test Task {}", Uuid::new_v4());

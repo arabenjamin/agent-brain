@@ -119,13 +119,13 @@ fn build_llm_config(config: &Config) -> LlmConfig {
             }
         }
         LlmProviderType::VLlm => {
-            if let Some(url) = std::env::var("VLLM_URL").ok() {
+            if let Ok(url) = std::env::var("VLLM_URL") {
                 base = base.with_base_url(url);
             }
-            if let Some(model) = std::env::var("VLLM_MODEL").ok() {
+            if let Ok(model) = std::env::var("VLLM_MODEL") {
                 base = base.with_model(model);
             }
-            if let Some(key) = std::env::var("VLLM_API_KEY").ok() {
+            if let Ok(key) = std::env::var("VLLM_API_KEY") {
                 base = base.with_api_key(key);
             }
         }

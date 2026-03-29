@@ -117,7 +117,7 @@ impl ResourceRegistry {
         map.retain(|_, e| e.is_alive());
         let mut entries: Vec<ResourceEntry> = map
             .values()
-            .filter(|e| resource_type.map_or(true, |t| e.resource_type == t))
+            .filter(|e| resource_type.is_none_or(|t| e.resource_type == t))
             .cloned()
             .collect();
         entries.sort_by(|a, b| a.key.cmp(&b.key));

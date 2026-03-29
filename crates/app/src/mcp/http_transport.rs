@@ -1,4 +1,3 @@
-#![cfg(feature = "http-transport")]
 //! HTTP transport for MCP server using Axum.
 //!
 //! This module provides an HTTP transport implementation following the MCP spec:

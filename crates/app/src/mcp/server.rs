@@ -215,10 +215,10 @@ impl McpServerCore {
 
     /// Get the state for a specific session, falling back to global state.
     pub async fn get_session_state(&self, session_id: Option<&str>) -> ServerState {
-        if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
-            if let Ok(state) = manager.get_session_state(id).await {
-                return ServerState::from(state);
-            }
+        if let (Some(id), Some(manager)) = (session_id, &self.session_manager)
+            && let Ok(state) = manager.get_session_state(id).await
+        {
+            return ServerState::from(state);
         }
         *self.state.read().await
     }
@@ -983,11 +983,11 @@ impl McpServer {
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(message) => {
-                    if let Some(response) = self.handle_message(message).await {
-                        if transport.send(response).await.is_err() {
-                            error!("Failed to send response - transport closed");
-                            break;
-                        }
+                    if let Some(response) = self.handle_message(message).await
+                        && transport.send(response).await.is_err()
+                    {
+                        error!("Failed to send response - transport closed");
+                        break;
                     }
 
                     // Check if we should shut down

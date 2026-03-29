@@ -94,10 +94,10 @@ impl ModelCatalog {
     ///
     /// Falls back to `default_system_prompt`, then to a hard-coded fallback.
     pub fn resolve_system_prompt(&self, model_name: &str) -> String {
-        if let Some(entry) = self.models.get(model_name) {
-            if let Some(ref p) = entry.system_prompt {
-                return p.trim().to_string();
-            }
+        if let Some(entry) = self.models.get(model_name)
+            && let Some(ref p) = entry.system_prompt
+        {
+            return p.trim().to_string();
         }
         self.default_system_prompt
             .as_deref()

@@ -225,15 +225,15 @@ impl ContextBuilderService {
         if let (Some((best_score, best_name)), second_score) = (
             scores.first().cloned(),
             scores.get(1).map(|(s, _)| *s).unwrap_or(0),
-        ) {
-            if best_score > 0 && best_score > second_score {
-                debug!(
-                    profile = %best_name,
-                    score = best_score,
-                    "auto_assign: text-overlap match"
-                );
-                return best_name;
-            }
+        ) && best_score > 0
+            && best_score > second_score
+        {
+            debug!(
+                profile = %best_name,
+                score = best_score,
+                "auto_assign: text-overlap match"
+            );
+            return best_name;
         }
 
         // LLM fallback: classify ambiguous or novel goals against profile descriptions.

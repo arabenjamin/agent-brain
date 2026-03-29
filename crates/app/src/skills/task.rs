@@ -9,7 +9,6 @@ use tracing::{info, warn};
 use crate::models::TaskStatus;
 use crate::services::queue::{ChainStep, QueueService};
 use crate::services::traits::{LlmProvider, TaskStore};
-use crate::services::{LlmClient, LlmConfig};
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
