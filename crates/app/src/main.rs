@@ -90,6 +90,9 @@ fn build_llm_config(config: &Config) -> LlmConfig {
             base = base
                 .with_base_url(llm.ollama_url.clone())
                 .with_model(llm.ollama_model.clone());
+            if let Some(key) = &llm.ollama_api_key {
+                base = base.with_api_key(key);
+            }
             if let Some(embed_model) = &llm.ollama_embed_model {
                 base = base.with_embed_model(embed_model);
             }

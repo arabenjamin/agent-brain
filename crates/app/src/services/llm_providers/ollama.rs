@@ -19,6 +19,29 @@ impl OllamaProvider {
 
         Self { client, config }
     }
+
+    fn base_url(&self) -> &str {
+        self.config
+            .base_url
+            .as_deref()
+            .unwrap_or("http://localhost:11434")
+    }
+
+    fn post(&self, url: &str) -> reqwest::RequestBuilder {
+        let req = self.client.post(url);
+        match &self.config.api_key {
+            Some(key) => req.bearer_auth(key),
+            None => req,
+        }
+    }
+
+    fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        let req = self.client.get(url);
+        match &self.config.api_key {
+            Some(key) => req.bearer_auth(key),
+            None => req,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -86,12 +109,7 @@ impl LlmProvider for OllamaProvider {
         prompt: &str,
         system: Option<&str>,
     ) -> Result<LlmResponse, LlmProviderError> {
-        let base_url = self
-            .config
-            .base_url
-            .as_deref()
-            .unwrap_or("http://localhost:11434");
-        let url = format!("{}/api/generate", base_url);
+        let url = format!("{}/api/generate", self.base_url());
 
         let request = GenerateRequest {
             model: &self.config.model,
@@ -104,7 +122,7 @@ impl LlmProvider for OllamaProvider {
             },
         };
 
-        let response = self.client.post(&url).json(&request).send().await?;
+        let response = self.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -125,19 +143,14 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
-        let base_url = self
-            .config
-            .base_url
-            .as_deref()
-            .unwrap_or("http://localhost:11434");
-        let url = format!("{}/api/embeddings", base_url);
+        let url = format!("{}/api/embeddings", self.base_url());
 
         let request = EmbeddingsRequest {
             model: &self.config.model,
             prompt: text,
         };
 
-        let response = self.client.post(&url).json(&request).send().await?;
+        let response = self.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -153,12 +166,7 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmProviderError> {
-        let base_url = self
-            .config
-            .base_url
-            .as_deref()
-            .unwrap_or("http://localhost:11434");
-        let url = format!("{}/api/chat", base_url);
+        let url = format!("{}/api/chat", self.base_url());
 
         let request = ChatRequest {
             model: &self.config.model,
@@ -170,7 +178,7 @@ impl LlmProvider for OllamaProvider {
             },
         };
 
-        let response = self.client.post(&url).json(&request).send().await?;
+        let response = self.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -191,14 +199,8 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn health_check(&self) -> bool {
-        let base_url = self
-            .config
-            .base_url
-            .as_deref()
-            .unwrap_or("http://localhost:11434");
-        let url = format!("{}/api/tags", base_url);
-
-        match self.client.get(&url).send().await {
+        let url = format!("{}/api/tags", self.base_url());
+        match self.get(&url).send().await {
             Ok(response) => response.status().is_success(),
             Err(_) => false,
         }

@@ -26,6 +26,7 @@ pub struct LlmProviderConfig {
     pub ollama_url: String,
     pub ollama_model: String,
     pub ollama_embed_model: Option<String>,
+    pub ollama_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: Option<String>,
     pub gemini_api_key: Option<String>,
@@ -117,6 +118,7 @@ impl Config {
                 ollama_model: env::var("OLLAMA_MODEL")
                     .unwrap_or_else(|_| "granite4:latest".to_string()),
                 ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
+                ollama_api_key: env::var("OLLAMA_API_KEY").ok(),
                 anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
                 anthropic_model: env::var("ANTHROPIC_MODEL").ok(),
                 gemini_api_key: env::var("GEMINI_API_KEY").ok(),
@@ -171,6 +173,7 @@ impl Config {
                 ollama_url: "http://localhost:11434".to_string(),
                 ollama_model: "granite4:latest".to_string(),
                 ollama_embed_model: None,
+                ollama_api_key: None,
                 anthropic_api_key: None,
                 anthropic_model: None,
                 gemini_api_key: None,

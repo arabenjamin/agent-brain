@@ -58,9 +58,10 @@ Copy `.env.example` to `.env` and configure:
 | `NEO4J_URI` | `bolt://localhost:7688` | Neo4j connection URI |
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | *required* | Neo4j password |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint. Set to `https://ollama.com` for Ollama Cloud |
 | `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model to use for text generation |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
+| `OLLAMA_API_KEY` | - | API key for Ollama Cloud authentication. Get one at `ollama.com/settings/keys` |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
 | `MCP_TRANSPORT` | `stdio` | MCP transport type (stdio/http) |
