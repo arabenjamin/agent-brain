@@ -11,22 +11,33 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy manifests first for dependency caching
+# Copy workspace manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
+COPY crates/protocol/Cargo.toml ./crates/protocol/
+COPY crates/models/Cargo.toml    ./crates/models/
+COPY crates/repository/Cargo.toml ./crates/repository/
+COPY crates/app/Cargo.toml       ./crates/app/
 
-# Create dummy src to build dependencies only
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "" > src/lib.rs && \
-    cargo build --release --lib 2>/dev/null || true && \
-    rm -rf src && \
-    rm -rf target/release/.fingerprint/agent* \
+# Create dummy source files matching the workspace structure so that
+# cargo can resolve and compile all dependencies without the real source.
+RUN mkdir -p crates/protocol/src \
+             crates/models/src \
+             crates/repository/src \
+             crates/app/src && \
+    echo "" > crates/protocol/src/lib.rs && \
+    echo "" > crates/models/src/lib.rs && \
+    echo "" > crates/repository/src/lib.rs && \
+    echo "" > crates/app/src/lib.rs && \
+    echo "fn main() {}" > crates/app/src/main.rs && \
+    cargo build --release 2>/dev/null || true && \
+    rm -rf crates/*/src \
+           target/release/.fingerprint/agent* \
            target/release/deps/agent* \
            target/release/deps/libagent* \
            target/release/agent*
 
 # Copy actual source code
-COPY src ./src
+COPY crates ./crates
 
 # Build the application
 RUN cargo build --release
@@ -50,9 +61,6 @@ COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 
 # Copy context profiles (YAML files for ContextBuilderService)
 COPY --chown=agent:agent contexts /home/agent/contexts/
-
-# Copy source tree so analyze_own_structure can walk src/ at runtime
-COPY --chown=agent:agent src /home/agent/src/
 
 # Pre-create snapshots directory with correct ownership so named volume inherits permissions
 RUN mkdir -p /home/agent/snapshots && chown agent:agent /home/agent/snapshots
