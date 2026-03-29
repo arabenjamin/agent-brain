@@ -1,0 +1,11 @@
+[package]
+name = "agent-brain-models"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+schemars = { workspace = true }

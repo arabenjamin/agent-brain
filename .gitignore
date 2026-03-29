@@ -1,8 +1,16 @@
+#rust
 /target
 /snapshots
+Cargo.lock
+
+# Node stuff
 hbi-frontend/node_modules
 hbi-frontend/dist
-Cargo.lock
+
+# LLMs
+.claude/
+.gemini/
+.continue/
 
 # Environment files
 .env

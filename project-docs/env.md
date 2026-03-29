@@ -18,7 +18,7 @@ Copy `.env.example` to `.env` and configure.
 |----------|---------|-------------|
 | `LLM_PROVIDER` | `ollama` | `ollama`/`anthropic`/`gemini`/`vllm` |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `granite4:latest` | Model for text generation |
+| `OLLAMA_MODEL` | `qwen3.5:4b` | Model for text generation |
 | `OLLAMA_EMBED_MODEL` | — | Embeddings model (falls back to `OLLAMA_MODEL`) |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `ANTHROPIC_MODEL` | — | Anthropic model name |

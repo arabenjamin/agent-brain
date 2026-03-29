@@ -1,0 +1,105 @@
+[package]
+name = "agent-brain"
+version.workspace = true
+edition.workspace = true
+description = "Autonomous AI agent brain — persistent memory, background jobs, reasoning, and self-improvement via MCP"
+
+[lib]
+name = "agent_brain"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-brain"
+path = "src/main.rs"
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+agent-brain-repository = { path = "../repository" }
+agent-brain-protocol = { path = "../protocol" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Neo4j graph database
+neo4rs = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# URL parsing
+url = "2"
+urlencoding = "2"
+
+# Regular expressions
+regex = "1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Schema generation for MCP tools
+schemars = { workspace = true }
+
+# Date/time and UUIDs
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Configuration
+dotenvy = "0.15"
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Encryption for local secret provider
+aes-gcm = "0.10"
+rand = "0.8"
+
+# AWS Secrets Manager (optional — enable with 'aws' feature)
+aws-config = { version = "1.5", features = ["behavior-version-latest"], optional = true }
+aws-sdk-secretsmanager = { version = "1.54", optional = true }
+
+# Base64 encoding for Basic auth
+base64 = "0.22"
+
+# YAML parsing (model catalog)
+serde_yaml = { workspace = true }
+
+# HTTP transport — Axum-based MCP server (optional — enable with 'http-transport' feature)
+axum = { version = "0.8", features = ["http2"], optional = true }
+axum-extra = { version = "0.10", features = ["typed-header"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+async-stream = { version = "0.3", optional = true }
+async-trait = "0.1"
+futures-util = "0.3"
+
+# WebSocket support (optional — enable with 'websocket' feature)
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"], optional = true }
+
+# Gzip compression for snapshot files
+flate2 = "1"
+
+[features]
+aws            = ["dep:aws-config", "dep:aws-sdk-secretsmanager"]
+http-transport = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:tower-http",
+                  "dep:tokio-stream", "dep:async-stream"]
+telemetry      = ["agent-brain-repository/telemetry"]
+websocket      = ["dep:tokio-tungstenite"]
+default        = ["aws", "http-transport", "telemetry", "websocket"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["neo4j"] }
+temp-env = "0.3"
+tempfile = "3"
