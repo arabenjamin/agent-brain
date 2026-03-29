@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master, main, test, prod]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
@@ -14,16 +18,41 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------
+  # Detect which paths changed — gates downstream jobs
+  # -------------------------------------------------------------------------
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            frontend:
+              - 'hbi-frontend/**'
+
+  # -------------------------------------------------------------------------
   # Format check — all branches
   # -------------------------------------------------------------------------
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
 
   # -------------------------------------------------------------------------
@@ -32,6 +61,8 @@ jobs:
   test-unit:
     name: Unit Tests
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,6 +75,8 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     defaults:
       run:
         working-directory: hbi-frontend
@@ -64,15 +97,18 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    needs: changes
     if: >
-      github.ref == 'refs/heads/test' ||
-      github.ref == 'refs/heads/prod' ||
-      github.ref == 'refs/heads/master' ||
-      github.ref == 'refs/heads/main' ||
-      github.base_ref == 'test' ||
-      github.base_ref == 'prod' ||
-      github.base_ref == 'master' ||
-      github.base_ref == 'main'
+      needs.changes.outputs.rust == 'true' && (
+        github.ref == 'refs/heads/test' ||
+        github.ref == 'refs/heads/prod' ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/main' ||
+        github.base_ref == 'test' ||
+        github.base_ref == 'prod' ||
+        github.base_ref == 'master' ||
+        github.base_ref == 'main'
+      )
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -87,11 +123,14 @@ jobs:
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    needs: changes
     if: >
-      github.ref == 'refs/heads/test' ||
-      github.ref == 'refs/heads/prod' ||
-      github.base_ref == 'test' ||
-      github.base_ref == 'prod'
+      needs.changes.outputs.rust == 'true' && (
+        github.ref == 'refs/heads/test' ||
+        github.ref == 'refs/heads/prod' ||
+        github.base_ref == 'test' ||
+        github.base_ref == 'prod'
+      )
     services:
       neo4j:
         image: neo4j:5
@@ -133,6 +172,21 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     needs: [fmt, test-unit, frontend]
+    if: >
+      always() &&
+      (needs.fmt.result == 'success' || needs.fmt.result == 'skipped') &&
+      (needs.test-unit.result == 'success' || needs.test-unit.result == 'skipped') &&
+      (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') &&
+      (
+        github.ref == 'refs/heads/test' ||
+        github.ref == 'refs/heads/prod' ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/main' ||
+        github.base_ref == 'test' ||
+        github.base_ref == 'prod' ||
+        github.base_ref == 'master' ||
+        github.base_ref == 'main'
+      )
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
