@@ -20,6 +20,15 @@ use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+tokio::task_local! {
+    /// Set to `true` inside a background job task when `provider_hint == "ollama"`.
+    ///
+    /// `SharedLlm` reads this flag to route generation calls to the local Ollama
+    /// endpoint instead of the active (possibly cloud) model, preventing background
+    /// maintenance jobs from consuming cloud quota.
+    pub static USE_LOCAL_LLM: bool;
+}
+
 use serde::Deserialize;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -27,7 +36,7 @@ use tracing::{debug, error, info, warn};
 use crate::mcp::tools::ToolHandler;
 use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
 use crate::repository::Neo4jClient;
-use agent_brain_protocol::{Content, SseNotifier};
+use agent_brain_protocol::{Content, SseNotifier, ToolCallResult};
 
 const DEFAULT_MAX_CONCURRENT: usize = 5;
 const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 3;
@@ -558,8 +567,10 @@ impl QueueService {
     }
 
     /// Promote any parked children of `parent_id` to queued and push them onto the heap.
-    async fn unpark_and_enqueue_children(self: &Arc<Self>, parent_id: &str) {
-        match self.neo4j.unpark_children(parent_id).await {
+    /// `prev_result_text` is the plain-text output of the completing job; it is stamped
+    /// onto each child so `{{_prev}}` can be resolved when the child executes.
+    async fn unpark_and_enqueue_children(self: &Arc<Self>, parent_id: &str, prev_result_text: &str) {
+        match self.neo4j.unpark_children(parent_id, prev_result_text).await {
             Ok(children) if !children.is_empty() => {
                 let mut heap = self.heap.lock().await;
                 for child in children {
@@ -594,20 +605,43 @@ impl QueueService {
             return;
         };
 
-        let result = handler.execute(&job.tool_name, job.arguments.clone()).await;
+        // Resolve {{_prev}} in arguments if the job carries a prior step result.
+        let resolved_args = match &job.prev_result {
+            Some(prev_text)
+                if job
+                    .arguments
+                    .as_ref()
+                    .map_or(false, |a| a.to_string().contains("{{_prev}}")) =>
+            {
+                job.arguments
+                    .as_ref()
+                    .map(|a| substitute_prev(a, prev_text))
+            }
+            _ => job.arguments.clone(),
+        };
+
+        // Run the tool call inside a task-local scope so `SharedLlm` can detect
+        // background jobs and route to the local Ollama endpoint when appropriate.
+        let use_local = job.provider_hint.as_deref() == Some("ollama");
+        let result = USE_LOCAL_LLM
+            .scope(use_local, handler.execute(&job.tool_name, resolved_args))
+            .await;
         // Drop the read lock before any awaits below.
         drop(handler_guard);
 
         let is_error = result.is_error.unwrap_or(false);
         let result_json = serde_json::to_string(&result).unwrap_or_default();
 
+        // Extract plain text from the result to pass to child steps via {{_prev}}.
+        let result_text = extract_result_text(&result);
+
         if !is_error {
             if let Err(e) = self.neo4j.set_job_completed(&job.id, &result_json).await {
                 error!(job_id = %job.id, "Failed to store completed result: {}", e);
             } else {
                 info!(job_id = %job.id, "AgentJob completed");
-                // Promote any chained children waiting on this job.
-                self.unpark_and_enqueue_children(&job.id).await;
+                // Promote any chained children waiting on this job, passing the result text.
+                self.unpark_and_enqueue_children(&job.id, &result_text).await;
                 self.notify_session(&job, "completed", None).await;
             }
         } else {
@@ -638,11 +672,62 @@ impl QueueService {
                 let _ = self.neo4j.cancel_parked_children(&job.id).await;
                 self.notify_session(&job, "dead", Some(&error_text)).await;
             } else {
-                let _ = self.neo4j.set_job_failed(&job.id, &error_text).await;
-                warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed (retryable)");
-                // Children remain parked — they will run if the job is retried and succeeds.
+                // Re-queue for automatic retry: set status back to 'queued' so the
+                // coordinator picks it up again.  Children remain parked and will be
+                // unparked when the retry eventually succeeds.
+                let _ = self.neo4j.requeue_for_retry(&job.id, &error_text).await;
+                warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed — re-queued for retry");
+                self.notify.notify_one(); // wake coordinator immediately
                 self.notify_session(&job, "failed", Some(&error_text)).await;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// {{_prev}} template substitution helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the plain-text content from a ToolCallResult for use as {{_prev}}.
+/// Tries `content[0].text` first (standard ToolCallResult shape). Falls back
+/// to serialising the entire result so `{{_prev}}` is never left unreplaced when
+/// a tool returns structured data rather than a bare text string (e.g. `duckdb_query`).
+fn extract_result_text(result: &ToolCallResult) -> String {
+    let text = result
+        .content
+        .first()
+        .and_then(|c| {
+            if let Content::Text { text } = c {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
+
+    if !text.is_empty() {
+        text.to_string()
+    } else {
+        // Fallback: serialise the whole result so downstream steps always receive data.
+        serde_json::to_string(result).unwrap_or_default()
+    }
+}
+
+/// Recursively replace `{{_prev}}` in all string values of a JSON Value tree.
+/// Operates at the Value level so there is no risk of JSON injection.
+fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Value {
+    match val {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(s.replace("{{_prev}}", prev_text))
+        }
+        serde_json::Value::Object(obj) => serde_json::Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), substitute_prev(v, prev_text)))
+                .collect(),
+        ),
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter().map(|v| substitute_prev(v, prev_text)).collect(),
+        ),
+        other => other.clone(),
     }
 }

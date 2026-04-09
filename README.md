@@ -232,18 +232,17 @@ docker compose up -d --build
 | `decompose_goal` | Break a task into ordered sub-tasks |
 | `record_outcome` | Store an episodic outcome note linked to a task |
 
-### Agent Job Queue (8)
+### Agent Job Queue (6 + 1 dynamic)
 
 | Tool | Description |
 |------|-------------|
-| `enqueue_agent` | Submit any tool as a background job (priority 0-3) |
-| `enqueue_chain` | Submit an ordered job chain; steps auto-promote on success |
+| `enqueue_jobs` | Submit one tool call or an ordered chain; steps 2..N park until predecessors complete |
 | `queue_status` | Pending/running counts, worker config |
-| `get_job_result` | Poll a job for status and result |
 | `cancel_job` | Cancel a queued or running job |
 | `retry_job` | Requeue a failed or dead job |
 | `set_worker_config` | Change concurrency limits, enable/pause processing |
 | `drain_queue` | Cancel all pending jobs |
+| `get_job_result` | (dynamic tool, seeded from Neo4j) Poll a job for status and result |
 
 ### Autonomous Scheduler (5)
 
@@ -274,15 +273,16 @@ docker compose up -d --build
 | `list_api_credentials` | List all configured credentials |
 | `delete_api_credential` | Remove a credential |
 
-### Model Registry (5)
+### Model Registry (4)
 
 | Tool | Description |
 |------|-------------|
 | `list_models` | List providers and registered model specs |
 | `use_model` | Switch provider and model at runtime |
-| `register_model` | Register a model spec (capabilities, cost, context window) |
 | `select_model` | Auto-select cheapest capable model |
-| `get_model_stats` | Usage stats from job history |
+| `reload_models` | Re-read `models.yaml` and sync into DuckDB |
+
+> For model usage analytics (previously `get_model_stats` / `get_cloud_usage`), use the generic `duckdb_query` tool against the `model_usage` table.
 
 ### Context Profiles (4)
 

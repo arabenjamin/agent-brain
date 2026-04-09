@@ -187,6 +187,23 @@ html, body, #root {
 .profile-select:focus { border-color: var(--accent-dim); }
 .profile-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.model-select { min-width: 160px; }
+
+.reload-models-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 0 7px;
+  height: 28px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.reload-models-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+.reload-models-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .input-row-selectors {
   display: flex;
   gap: 6px;
@@ -514,6 +531,23 @@ html, body, #root {
 @keyframes blink {
   0%, 80%, 100% { opacity: 0.2; }
   40% { opacity: 1; }
+}
+
+.spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(167,139,250,0.3);
+  border-top-color: #a78bfa;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ── Task Panel ── */

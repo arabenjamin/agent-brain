@@ -1,4 +1,10 @@
-//! Search Skill - Provides tools for web searching.
+//! Search Skill — web search with credentials loaded from ApiContext nodes.
+//!
+//! API keys are no longer stored as skill fields. Instead each engine's
+//! `ApiContext` node in Neo4j holds the env var name; credentials are
+//! resolved at call time via `std::env::var`.  Falls back to the legacy
+//! env vars (`SERPAPI_KEY`, `BRAVE_API_KEY`, etc.) when no context is found
+//! so existing deployments keep working without a schema migration.
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -6,37 +12,68 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-use crate::repository::TelemetryClient;
+use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
-/// Search Skill implementation.
 pub struct SearchSkill {
     client: Client,
     telemetry: Option<TelemetryClient>,
-    brave_api_key: Option<String>,
-    google_api_key: Option<String>,
-    google_cx: Option<String>,
-    serpapi_key: Option<String>,
+    neo4j: Option<Neo4jClient>,
 }
 
 impl SearchSkill {
-    /// Create a new search skill.
     pub fn new(
         telemetry: Option<TelemetryClient>,
-        brave_api_key: Option<String>,
-        google_api_key: Option<String>,
-        google_cx: Option<String>,
-        serpapi_key: Option<String>,
+        neo4j: Option<Neo4jClient>,
     ) -> Self {
         Self {
             client: Client::new(),
             telemetry,
-            brave_api_key,
-            google_api_key,
-            google_cx,
-            serpapi_key,
+            neo4j,
         }
+    }
+
+    // =========================================================================
+    // Credential resolution
+    // =========================================================================
+
+    /// Load the API key for a named ApiContext.
+    /// Queries Neo4j for `auth_env_var`, then resolves from environment.
+    /// Falls back to `fallback_env_var` when no context is found or the env
+    /// var named by the context is unset.
+    async fn resolve_key(&self, context_name: &str, fallback_env_var: &str) -> Option<String> {
+        // Try ApiContext first
+        if let Some(ref neo4j) = self.neo4j {
+            let cypher = "MATCH (c:ApiContext {name: $name}) \
+                          RETURN c.auth_env_var AS auth_env_var LIMIT 1";
+            if let Ok(rows) = neo4j.execute(neo4rs::query(cypher).param("name", context_name)).await {
+                if let Some(env_var) = rows.first().and_then(|r| r.get::<String>("auth_env_var").ok()) {
+                    if let Ok(val) = std::env::var(&env_var) {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+        // Direct env var fallback
+        std::env::var(fallback_env_var).ok()
+    }
+
+    /// Load a non-auth config value from ApiContext (e.g. Google CX).
+    async fn resolve_context_field(&self, context_name: &str, field: &str, fallback_env_var: &str) -> Option<String> {
+        if let Some(ref neo4j) = self.neo4j {
+            let cypher = format!(
+                "MATCH (c:ApiContext {{name: $name}}) RETURN c.{field} AS val LIMIT 1"
+            );
+            if let Ok(rows) = neo4j.execute(neo4rs::query(&cypher).param("name", context_name)).await {
+                if let Some(val) = rows.first().and_then(|r| r.get::<String>("val").ok()) {
+                    if !val.is_empty() {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+        std::env::var(fallback_env_var).ok()
     }
 
     // ========================================================================
@@ -88,38 +125,31 @@ impl SearchSkill {
 
         match engine.as_str() {
             "serpapi" => self.search_serpapi(&input.query, count).await,
-            "brave" => self.search_brave(&input.query, count).await,
-            "google" => self.search_google(&input.query, count).await,
-            _ => ToolCallResult::error(format!("Unsupported search engine: {}", engine)),
+            "brave"   => self.search_brave(&input.query, count).await,
+            "google"  => self.search_google(&input.query, count).await,
+            _         => ToolCallResult::error(format!("Unsupported search engine: {}", engine)),
         }
     }
 
     async fn search_serpapi(&self, query: &str, count: u8) -> ToolCallResult {
-        let api_key = match &self.serpapi_key {
-            Some(key) => key,
+        let api_key = match self.resolve_key("serpapi", "SERPAPI_KEY").await {
+            Some(k) => k,
             None => {
-                // Log gap: Missing configuration
-                if let Some(telemetry) = &self.telemetry {
-                    let _ = telemetry.log_knowledge_gap(
-                        query,
-                        Some("search_web:serpapi"),
-                        "missing_tool_config",
-                    );
+                if let Some(ref t) = self.telemetry {
+                    let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "missing_tool_config");
                 }
-                return ToolCallResult::error("SerpApi key not configured".to_string());
+                return ToolCallResult::error("SerpApi key not configured (set SERPAPI_KEY or define serpapi ApiContext)".to_string());
             }
         };
 
-        let url = "https://serpapi.com/search.json";
-
         let response = self
             .client
-            .get(url)
+            .get("https://serpapi.com/search.json")
             .query(&[
                 ("api_key", api_key.as_str()),
                 ("q", query),
                 ("num", &count.to_string()),
-                ("engine", "google"), // Default to Google engine via SerpApi
+                ("engine", "google"),
             ])
             .send()
             .await;
@@ -129,62 +159,38 @@ impl SearchSkill {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    // Log gap: API failure
-                    if let Some(telemetry) = &self.telemetry {
-                        let _ = telemetry.log_knowledge_gap(
-                            query,
-                            Some("search_web:serpapi"),
-                            "api_error",
-                        );
+                    if let Some(ref t) = self.telemetry {
+                        let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "api_error");
                     }
                     return ToolCallResult::error(format!("SerpApi failed: {} - {}", status, text));
                 }
-
                 match resp.json::<Value>().await {
                     Ok(json) => {
-                        let organic_results = json
+                        let results = json
                             .get("organic_results")
                             .unwrap_or(&json!([]))
                             .as_array()
                             .unwrap_or(&vec![])
                             .iter()
-                            .map(|item| {
-                                json!({
-                                    "title": item.get("title"),
-                                    "link": item.get("link"),
-                                    "snippet": item.get("snippet")
-                                })
-                            })
+                            .map(|item| json!({
+                                "title":   item.get("title"),
+                                "link":    item.get("link"),
+                                "snippet": item.get("snippet"),
+                            }))
                             .collect::<Vec<_>>();
-
-                        if organic_results.is_empty() {
-                            // Log gap: No results found
-                            if let Some(telemetry) = &self.telemetry {
-                                let _ = telemetry.log_knowledge_gap(
-                                    query,
-                                    Some("search_web:serpapi"),
-                                    "missing_info",
-                                );
+                        if results.is_empty() {
+                            if let Some(ref t) = self.telemetry {
+                                let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "missing_info");
                             }
                         }
-
-                        ToolCallResult::success_text(
-                            serde_json::to_string_pretty(&organic_results).unwrap(),
-                        )
+                        ToolCallResult::success_text(serde_json::to_string_pretty(&results).unwrap())
                     }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e))
-                    }
+                    Err(e) => ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e)),
                 }
             }
             Err(e) => {
-                // Log gap: Network failure
-                if let Some(telemetry) = &self.telemetry {
-                    let _ = telemetry.log_knowledge_gap(
-                        query,
-                        Some("search_web:serpapi"),
-                        "network_error",
-                    );
+                if let Some(ref t) = self.telemetry {
+                    let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "network_error");
                 }
                 ToolCallResult::error(format!("Request failed: {}", e))
             }
@@ -192,17 +198,17 @@ impl SearchSkill {
     }
 
     async fn search_brave(&self, query: &str, count: u8) -> ToolCallResult {
-        let api_key = match &self.brave_api_key {
-            Some(key) => key,
-            None => return ToolCallResult::error("Brave API key not configured".to_string()),
+        let api_key = match self.resolve_key("brave", "BRAVE_API_KEY").await {
+            Some(k) => k,
+            None => return ToolCallResult::error(
+                "Brave API key not configured (set BRAVE_API_KEY or define brave ApiContext)".to_string()
+            ),
         };
-
-        let url = "https://api.search.brave.com/res/v1/web/search";
 
         let response = self
             .client
-            .get(url)
-            .header("X-Subscription-Token", api_key)
+            .get("https://api.search.brave.com/res/v1/web/search")
+            .header("X-Subscription-Token", &api_key)
             .query(&[("q", query), ("count", &count.to_string())])
             .send()
             .await;
@@ -212,45 +218,30 @@ impl SearchSkill {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!(
-                        "Brave Search failed: {} - {}",
-                        status, text
-                    ));
+                    return ToolCallResult::error(format!("Brave Search failed: {} - {}", status, text));
                 }
-
                 match resp.json::<Value>().await {
                     Ok(json) => {
-                        // Extract relevant results
-                        let results =
-                            if let Some(web) = json.get("web").and_then(|w| w.get("results")) {
-                                web
-                            } else {
-                                &json!([])
-                            };
-
-                        // Simplify output to save tokens
+                        let empty = json!([]);
+                        let results = json
+                            .get("web")
+                            .and_then(|w| w.get("results"))
+                            .unwrap_or(&empty);
                         let simplified: Vec<Value> = results
                             .as_array()
                             .unwrap_or(&vec![])
                             .iter()
                             .take(count as usize)
-                            .map(|r| {
-                                json!({
-                                    "title": r.get("title"),
-                                    "url": r.get("url"),
-                                    "description": r.get("description"),
-                                    "age": r.get("age")
-                                })
-                            })
+                            .map(|r| json!({
+                                "title":       r.get("title"),
+                                "url":         r.get("url"),
+                                "description": r.get("description"),
+                                "age":         r.get("age"),
+                            }))
                             .collect();
-
-                        ToolCallResult::success_text(
-                            serde_json::to_string_pretty(&simplified).unwrap(),
-                        )
+                        ToolCallResult::success_text(serde_json::to_string_pretty(&simplified).unwrap())
                     }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse Brave response: {}", e))
-                    }
+                    Err(e) => ToolCallResult::error(format!("Failed to parse Brave response: {}", e)),
                 }
             }
             Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
@@ -258,24 +249,23 @@ impl SearchSkill {
     }
 
     async fn search_google(&self, query: &str, count: u8) -> ToolCallResult {
-        let api_key = match &self.google_api_key {
-            Some(key) => key,
-            None => return ToolCallResult::error("Google API key not configured".to_string()),
+        let api_key = match self.resolve_key("google_cse", "GOOGLE_API_KEY").await {
+            Some(k) => k,
+            None => return ToolCallResult::error(
+                "Google API key not configured (set GOOGLE_API_KEY or define google_cse ApiContext)".to_string()
+            ),
         };
-        let cx = match &self.google_cx {
-            Some(cx) => cx,
-            None => {
-                return ToolCallResult::error(
-                    "Google Custom Search Engine ID (CX) not configured".to_string(),
-                );
-            }
+        // Google CX is stored as a custom field on the context, not auth
+        let cx = match self.resolve_context_field("google_cse", "google_cx", "GOOGLE_CX").await {
+            Some(c) => c,
+            None => return ToolCallResult::error(
+                "Google CX not configured (set GOOGLE_CX or add google_cx field to google_cse ApiContext)".to_string()
+            ),
         };
-
-        let url = "https://www.googleapis.com/customsearch/v1";
 
         let response = self
             .client
-            .get(url)
+            .get("https://www.googleapis.com/customsearch/v1")
             .query(&[
                 ("key", api_key.as_str()),
                 ("cx", cx.as_str()),
@@ -290,12 +280,8 @@ impl SearchSkill {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!(
-                        "Google Search failed: {} - {}",
-                        status, text
-                    ));
+                    return ToolCallResult::error(format!("Google Search failed: {} - {}", status, text));
                 }
-
                 match resp.json::<Value>().await {
                     Ok(json) => {
                         let items = json
@@ -304,20 +290,15 @@ impl SearchSkill {
                             .as_array()
                             .unwrap_or(&vec![])
                             .iter()
-                            .map(|item| {
-                                json!({
-                                    "title": item.get("title"),
-                                    "link": item.get("link"),
-                                    "snippet": item.get("snippet")
-                                })
-                            })
+                            .map(|item| json!({
+                                "title":   item.get("title"),
+                                "link":    item.get("link"),
+                                "snippet": item.get("snippet"),
+                            }))
                             .collect::<Vec<_>>();
-
                         ToolCallResult::success_text(serde_json::to_string_pretty(&items).unwrap())
                     }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse Google response: {}", e))
-                    }
+                    Err(e) => ToolCallResult::error(format!("Failed to parse Google response: {}", e)),
                 }
             }
             Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
@@ -343,7 +324,6 @@ impl Skill for SearchSkill {
     }
 }
 
-// Input structs
 #[derive(Debug, Deserialize)]
 struct SearchInput {
     query: String,

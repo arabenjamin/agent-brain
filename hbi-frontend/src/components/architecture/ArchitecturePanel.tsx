@@ -817,7 +817,7 @@ const DETAILS: Record<string, Detail> = {
     color: C.purple,
     body:  "Background job execution and autonomous self-improvement. The scheduler wakes every 5 minutes, perceives failures and stale memory, and dispatches LLM job chains without human input.",
     items: [
-      "AgentSkill (8): enqueue_agent, enqueue_chain, queue_status, get_job_result, cancel_job, retry_job, set_worker_config, drain_queue",
+      "AgentSkill (6): enqueue_jobs, queue_status, cancel_job, retry_job, set_worker_config, drain_queue (+ get_job_result as dynamic tool)",
       "SchedulerSkill (5): start_scheduler, stop_scheduler, get_scheduler_status, configure_scheduler, run_scheduler_tick",
       "DynamicSkill (4+N): define_tool, execute_procedure, list_dynamic_tools, remove_dynamic_tool",
       "Job queue: BinaryHeap priority 0–3, per-provider semaphores (Ollama×3, Anthropic×2, Gemini×5)",
@@ -845,7 +845,7 @@ const DETAILS: Record<string, Detail> = {
     body:  "Integrations with external APIs, LLM model management, web search, and telemetry export. ApiSkill includes LLM-powered self-healing: on 4xx/5xx it corrects the request and persists a HealingEvent.",
     items: [
       "ApiSkill (14): ingest_openapi, graph_query_endpoint, execute_http_request, get_api_context, list_loaded_apis, clear_api_context, discover_openapi, build_openapi_from_docs, build_openapi_from_repo, export_openapi, diff_api_spec, configure_api_credential, list_api_credentials, delete_api_credential",
-      "ModelSkill (5): list_models, use_model, register_model, select_model, get_model_stats",
+      "ModelSkill (4): list_models, use_model, select_model, reload_models",
       "SearchSkill (1): search_web (SerpApi / Brave / Google Custom Search)",
       "SleepSkill (2): digest_experiences (→ JSONL training data), analyze_gaps (DuckDB)",
       "Self-healing: 4xx/5xx → LLM corrects payload → retry → HealingEvent node on success",

@@ -16,10 +16,11 @@ use crate::services::{
     ChatService, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, context::ContextSkill, dynamic::DynamicSkill,
-    knowledge::KnowledgeSkill, model::ModelSkill, procedure::ProcedureSkill,
-    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
-    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
+    Skill, agent::AgentSkill, codebase::CodebaseSkill, context::ContextSkill,
+    dynamic::DynamicSkill, http::HttpSkill, knowledge::KnowledgeSkill, model::ModelSkill,
+    procedure::ProcedureSkill, query::QuerySkill, resource::ResourceSkill,
+    scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill, task::TaskSkill,
+    working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 
 use super::protocol::{
@@ -77,6 +78,26 @@ impl Default for SearchConfig {
             google_cx: std::env::var("GOOGLE_CX").ok(),
             serpapi_key: std::env::var("SERPAPI_KEY").ok(),
         }
+    }
+}
+
+/// Codebase self-analysis config (read-only access to the agent's own source).
+///
+/// GitHub API access no longer lives here — use the generic `http_request` tool
+/// with `context_name="github"`. The `github` ApiContext is seeded at boot and
+/// reads `GITHUB_TOKEN` from the environment automatically.
+pub struct CodebaseConfig {
+    /// Root directory of the codebase. Auto-detected from `Cargo.toml` walk-up if unset.
+    pub codebase_dir: Option<std::path::PathBuf>,
+}
+
+impl Default for CodebaseConfig {
+    fn default() -> Self {
+        let codebase_dir = std::env::var("CODEBASE_DIR")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .or_else(crate::skills::codebase::detect_repo_root);
+        Self { codebase_dir }
     }
 }
 
@@ -164,6 +185,7 @@ pub struct McpServerCore {
     storage: StorageConfig,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
     search: SearchConfig,
+    codebase: CodebaseConfig,
     jobs: JobServices,
     /// System prompt loaded from the model catalog at startup.
     system_prompt: String,
@@ -192,6 +214,7 @@ impl McpServerCore {
             storage: StorageConfig::default(),
             llm_config: Arc::new(RwLock::new(None)),
             search: SearchConfig::default(),
+            codebase: CodebaseConfig::default(),
             jobs: JobServices::default(),
             system_prompt: String::new(),
             catalog_path: std::env::var("MODEL_CATALOG_PATH")
@@ -302,10 +325,15 @@ impl McpServerCore {
     /// Build the skills and initialize the tool handler.
     /// This should be called before running the server.
     pub async fn build_skills(&self) {
-        // Build DynamicSkill first (before taking locks) so we can share the Arc.
+        // Seed built-in Neo4j nodes FIRST so DynamicSkill::load_from_neo4j picks them up.
+        if let Some(ref neo4j) = self.storage.neo4j {
+            Self::seed_built_ins(neo4j).await;
+        }
+
+        // Build DynamicSkill (before taking locks) so we can share the Arc.
         // Both the registry clone and the handler original share the same tools_map.
         let dynamic_skill = if let Some(neo4j) = &self.storage.neo4j {
-            let d = DynamicSkill::new(neo4j.clone(), self.tool_handler.clone());
+            let d = DynamicSkill::new(neo4j.clone(), self.tool_handler.clone(), Arc::clone(&self.tool_registry));
             d.load_from_neo4j().await;
             Some(d)
         } else {
@@ -370,8 +398,29 @@ impl McpServerCore {
                 None
             };
 
+        // Local-Ollama config for background jobs — always points to localhost,
+        // so maintenance tasks (consolidation, health monitor, etc.) never touch
+        // cloud quota even when the active provider is ollama-cloud or anthropic.
+        let local_llm_config = {
+            use crate::services::LlmProviderType;
+            let local_url = std::env::var("OLLAMA_LOCAL_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let model = std::env::var("OLLAMA_MODEL")
+                .unwrap_or_else(|_| "qwen3.5:4b".to_string());
+            LlmConfig::default()
+                .with_provider(LlmProviderType::Ollama)
+                .with_base_url(local_url.clone())
+                .with_model(model)
+                .with_embed_base_url(local_url)
+        };
+        let local_config_arc = Arc::new(RwLock::new(Some(local_llm_config)));
+
         // Shared LLM provider (wraps live Arc<RwLock<Option<LlmConfig>>>)
-        let shared_llm = SharedLlm::new(Arc::clone(&self.llm_config));
+        let shared_llm = SharedLlm::new_with_local(
+            Arc::clone(&self.llm_config),
+            local_config_arc,
+            self.storage.telemetry.clone(),
+        );
 
         let mut registry = self.tool_registry.write().await;
 
@@ -412,14 +461,37 @@ impl McpServerCore {
         }
 
         // Register Search Skill
-        let search_skill = SearchSkill::new(
+        registry.register_skill(Box::new(SearchSkill::new(
             self.storage.telemetry.clone(),
-            self.search.brave_key.clone(),
-            self.search.google_key.clone(),
-            self.search.google_cx.clone(),
-            self.search.serpapi_key.clone(),
-        );
-        registry.register_skill(Box::new(search_skill));
+            self.storage.neo4j.clone(),
+        )));
+
+        // Register Query Skill (generic Neo4j + DuckDB primitives)
+        registry.register_skill(Box::new(QuerySkill::new(
+            self.storage.neo4j.clone(),
+            self.storage.telemetry.clone(),
+        )));
+
+        // Register HTTP Skill (generic http_request + ApiContext management)
+        registry.register_skill(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+
+        // Register Codebase Skill (read-only filesystem + GitHub API)
+        {
+            let knowledge_store: Option<Arc<dyn crate::services::KnowledgeStore>> =
+                if let Some(neo4j) = &self.storage.neo4j {
+                    let cfg_cb = self.llm_config.read().await.clone();
+                    let llm_cb = cfg_cb.and_then(|c| crate::services::LlmClient::with_config(c).ok());
+                    Some(Arc::new(KnowledgeService::new(neo4j.clone(), llm_cb))
+                        as Arc<dyn crate::services::KnowledgeStore>)
+                } else {
+                    None
+                };
+            let codebase_skill = CodebaseSkill::new(
+                self.codebase.codebase_dir.clone(),
+                knowledge_store,
+            );
+            registry.register_skill(Box::new(codebase_skill));
+        }
 
         // Register Model Skill (DuckDB-backed catalog, shares live LLM config Arc)
         let model_skill = ModelSkill::new(
@@ -457,7 +529,7 @@ impl McpServerCore {
 
         // Register Scheduler Skill
         if let Some(ref sched) = scheduler_arc {
-            registry.register_skill(Box::new(SchedulerSkill::new(Arc::clone(sched))));
+            registry.register_skill(Box::new(SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())));
         }
 
         // Register Context Skill (profile management)
@@ -506,11 +578,34 @@ impl McpServerCore {
 
         skills.push(Box::new(SearchSkill::new(
             self.storage.telemetry.clone(),
-            self.search.brave_key.clone(),
-            self.search.google_key.clone(),
-            self.search.google_cx.clone(),
-            self.search.serpapi_key.clone(),
+            self.storage.neo4j.clone(),
         )));
+
+        // Query Skill (handler copy)
+        skills.push(Box::new(QuerySkill::new(
+            self.storage.neo4j.clone(),
+            self.storage.telemetry.clone(),
+        )));
+
+        // HTTP Skill (handler copy)
+        skills.push(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+
+        // Codebase Skill (handler copy)
+        {
+            let knowledge_store2: Option<Arc<dyn crate::services::KnowledgeStore>> =
+                if let Some(neo4j) = &self.storage.neo4j {
+                    let cfg_cb2 = self.llm_config.read().await.clone();
+                    let llm_cb2 = cfg_cb2.and_then(|c| crate::services::LlmClient::with_config(c).ok());
+                    Some(Arc::new(KnowledgeService::new(neo4j.clone(), llm_cb2))
+                        as Arc<dyn crate::services::KnowledgeStore>)
+                } else {
+                    None
+                };
+            skills.push(Box::new(CodebaseSkill::new(
+                self.codebase.codebase_dir.clone(),
+                knowledge_store2,
+            )));
+        }
 
         skills.push(Box::new(ModelSkill::new(
             self.llm_config.clone(),
@@ -545,7 +640,7 @@ impl McpServerCore {
 
         // Scheduler Skill (autonomous self-improvement loop)
         if let Some(ref sched) = scheduler_arc {
-            skills.push(Box::new(SchedulerSkill::new(Arc::clone(sched))));
+            skills.push(Box::new(SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())));
         }
 
         // Context Skill (profile management)
@@ -574,6 +669,177 @@ impl McpServerCore {
         // Spawn the queue coordinator now that the tool handler is populated.
         if let Some(qs) = queue_arc {
             QueueService::spawn_coordinator(qs);
+        }
+    }
+
+    /// Seed all built-in Neo4j nodes idempotently at every startup.
+    ///
+    /// Called at the TOP of `build_skills()` — before `DynamicSkill::load_from_neo4j()`
+    /// — so every seeded `DynamicTool` is available in the tool registry on the
+    /// very first boot.
+    ///
+    /// All writes use `MERGE … ON CREATE SET` so user-edited nodes survive restarts.
+    async fn seed_built_ins(neo4j: &Neo4jClient) {
+        let ts = chrono::Utc::now().to_rfc3339();
+
+        // ── ApiContext nodes ──────────────────────────────────────────────────
+        // GitHub — always update so the standard headers stay current.
+        let default_hdrs = r#"{"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}"#;
+        let cypher = "MERGE (c:ApiContext {name: 'github'}) \
+                      SET c.base_url        = 'https://api.github.com', \
+                          c.auth_scheme     = 'bearer', \
+                          c.auth_param      = 'Authorization', \
+                          c.auth_env_var    = 'GITHUB_TOKEN', \
+                          c.default_headers = $hdrs, \
+                          c.description     = 'GitHub REST API v3'";
+        if let Err(e) = neo4j.run(neo4rs::query(cypher).param("hdrs", default_hdrs)).await {
+            warn!(error = %e, "Failed to seed github ApiContext (non-fatal)");
+        }
+
+        // Search engines — ON CREATE only so user overrides survive.
+        for (name, base_url, scheme, param, env_var, desc) in [
+            ("serpapi",    "https://serpapi.com",                        "query_param", "api_key",              "SERPAPI_KEY",    "SerpApi search engine"),
+            ("brave",      "https://api.search.brave.com",               "header",      "X-Subscription-Token", "BRAVE_API_KEY",  "Brave Search API"),
+            ("google_cse", "https://www.googleapis.com/customsearch/v1", "query_param", "key",                  "GOOGLE_API_KEY", "Google Custom Search Engine"),
+        ] {
+            let q = "MERGE (c:ApiContext {name: $name}) \
+                     ON CREATE SET c.base_url     = $base_url, \
+                                   c.auth_scheme  = $scheme, \
+                                   c.auth_param   = $param, \
+                                   c.auth_env_var = $env_var, \
+                                   c.description  = $desc";
+            if let Err(e) = neo4j.run(neo4rs::query(q)
+                .param("name", name).param("base_url", base_url)
+                .param("scheme", scheme).param("param", param)
+                .param("env_var", env_var).param("desc", desc)).await
+            {
+                warn!(name = name, error = %e, "Failed to seed search ApiContext (non-fatal)");
+            }
+        }
+        if let Ok(cx) = std::env::var("GOOGLE_CX") {
+            let _ = neo4j.run(neo4rs::query(
+                "MATCH (c:ApiContext {name: 'google_cse'}) SET c.google_cx = $cx"
+            ).param("cx", cx)).await;
+        }
+
+        // ── Procedure + DynamicTool pairs ─────────────────────────────────────
+        // Each entry replaces a thin Rust wrapper with a data-driven equivalent.
+        // Seeding both nodes together means load_from_neo4j() picks them up immediately.
+        //
+        // (tool_name, tool_description, input_schema_json, cypher_query, step_purpose)
+        let tools: &[(&str, &str, &str, &str, &str)] = &[
+            (
+                "list_sessions",
+                "List working-memory sessions ordered by most recent first. \
+                 Returns session_id, started_at, message count, and title.",
+                r#"{"type":"object","properties":{}}"#,
+                "MATCH (w:WorkingMemory) \
+                 WITH w.session_id AS sid, toString(min(w.created_at)) AS started_at, count(w) AS msg_count \
+                 OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0}) \
+                 RETURN sid AS session_id, started_at, msg_count, COALESCE(first.content, sid) AS title \
+                 ORDER BY started_at DESC LIMIT 50",
+                "List all working-memory sessions with metadata",
+            ),
+            (
+                "get_job_result",
+                "Get the full details and result of a background job by its ID.",
+                r#"{"type":"object","properties":{"job_id":{"type":"string","description":"Job ID returned by enqueue_jobs"}},"required":["job_id"]}"#,
+                "MATCH (j:AgentJob {id: '{{input.job_id}}'}) \
+                 RETURN j.id AS id, j.tool_name AS tool_name, j.status AS status, \
+                        j.result_json AS result_json, j.error AS error, \
+                        j.priority AS priority, j.attempt_count AS attempt_count, \
+                        toString(j.created_at) AS created_at",
+                "Fetch agent job by ID",
+            ),
+            (
+                "search_procedures",
+                "Search stored procedures by name or description using keyword matching.",
+                r#"{"type":"object","properties":{"query":{"type":"string","description":"Keyword to search in procedure names and descriptions"}},"required":["query"]}"#,
+                "MATCH (p:Procedure) \
+                 WHERE toLower(p.name) CONTAINS toLower('{{input.query}}') \
+                    OR toLower(p.description) CONTAINS toLower('{{input.query}}') \
+                 RETURN p.id AS id, p.name AS name, p.description AS description, \
+                        toString(p.created_at) AS created_at \
+                 ORDER BY p.name LIMIT 10",
+                "Search procedures by keyword",
+            ),
+            (
+                "list_tasks",
+                "List tasks from the graph ordered by creation date, including parent_id for sub-tasks. \
+                 For status filtering use neo4j_query directly.",
+                r#"{"type":"object","properties":{}}"#,
+                "MATCH (t:Task) \
+                 OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
+                 RETURN t.id AS id, t.goal AS goal, t.status AS status, \
+                        t.context AS context, toString(t.created_at) AS created_at, \
+                        parent.id AS parent_id \
+                 ORDER BY t.created_at DESC LIMIT 20",
+                "List all tasks ordered by creation date",
+            ),
+            (
+                "list_notes",
+                "List recently created notes in reverse-chronological order. \
+                 Returns a 200-char content preview. For type filtering use neo4j_query.",
+                r#"{"type":"object","properties":{}}"#,
+                "MATCH (n:Note) \
+                 RETURN n.id AS id, n.note_type AS note_type, \
+                        left(n.content, 200) AS content_preview, \
+                        toString(n.created_at) AS created_at \
+                 ORDER BY n.created_at DESC LIMIT 20",
+                "List recent notes ordered by creation date",
+            ),
+        ];
+
+        // Three simple queries per tool — easier to debug than one combined chain.
+        // steps and schema are always SET (not ON CREATE) so fixes land on restart.
+        // id and created_at are ON CREATE only so they're stable once set.
+        for (name, description, schema, query, purpose) in tools {
+            // Use serde_json to build steps — no manual JSON string formatting.
+            let steps = serde_json::to_string(&json!([{
+                "tool":    "neo4j_query",
+                "args":    { "cypher": query },
+                "purpose": purpose,
+            }]))
+            .unwrap();
+
+            // 1 — Upsert Procedure node (steps always updated).
+            let q1 = "MERGE (p:Procedure {name: $name}) \
+                      ON CREATE SET p.id = $id, p.created_at = datetime($ts) \
+                      SET p.description = $description, p.steps = $steps";
+            if let Err(e) = neo4j.run(neo4rs::query(q1)
+                .param("name",        *name)
+                .param("id",          uuid::Uuid::new_v4().to_string())
+                .param("ts",          ts.as_str())
+                .param("description", *description)
+                .param("steps",       steps)).await
+            {
+                warn!(name = *name, error = %e, "seed_built_ins: failed to upsert Procedure");
+                continue;
+            }
+
+            // 2 — Upsert DynamicTool node (schema always updated).
+            let q2 = "MERGE (d:DynamicTool {name: $name}) \
+                      ON CREATE SET d.id = $id, d.created_at = datetime($ts) \
+                      SET d.description = $description, d.input_schema = $schema";
+            if let Err(e) = neo4j.run(neo4rs::query(q2)
+                .param("name",        *name)
+                .param("id",          uuid::Uuid::new_v4().to_string())
+                .param("ts",          ts.as_str())
+                .param("description", *description)
+                .param("schema",      *schema)).await
+            {
+                warn!(name = *name, error = %e, "seed_built_ins: failed to upsert DynamicTool");
+                continue;
+            }
+
+            // 3 — Ensure [:USES] relationship exists.
+            let q3 = "MATCH (d:DynamicTool {name: $name}), (p:Procedure {name: $name}) \
+                      MERGE (d)-[:USES]->(p)";
+            if let Err(e) = neo4j.run(neo4rs::query(q3).param("name", *name)).await {
+                warn!(name = *name, error = %e, "seed_built_ins: failed to create [:USES] edge");
+            } else {
+                debug!(name = *name, "seed_built_ins: upserted DynamicTool+Procedure pair");
+            }
         }
     }
 

@@ -188,20 +188,18 @@ Store an episodic outcome note for a tool call or task attempt.
 
 ---
 
-## AgentSkill (8 tools)
+## AgentSkill (6 tools)
 
-### `enqueue_agent`
-Submit an MCP tool call as a background job.
-- Input: `{ "tool_name": "...", "arguments": {}, "priority": 1, "max_attempts": 3, "session_id": "...", "parent_job_id": "..." }`
-- Priority: 0=low, 1=normal, 2=high, 3=critical
+### `enqueue_jobs`
+Submit one or more background jobs. Pass a single step to queue one job, or multiple
+steps for a sequential chain. Priority: 0=low, 1=normal, 2=high, 3=critical.
+- Input: `{ "steps": [{ "tool_name": "...", "arguments": {}, "priority": 1, "max_attempts": 3, "provider_hint": "ollama" }], "session_id": "..." }`
+- Step 1 queued immediately; steps 2..N stored as `parked` until predecessor completes
+- Returns: `{ "count": N, "ids": ["..."], "message": "..." }`
 
 ### `queue_status`
 Get current queue statistics.
 - Input: `{}` — returns `{ "in_memory_pending", "running_now", "max_concurrent", "enabled", "by_status" }`
-
-### `get_job_result`
-Get the status and result of a specific job.
-- Input: `{ "job_id": "..." }` — returns full AgentJob JSON
 
 ### `cancel_job`
 Cancel a queued or running job.
@@ -220,10 +218,10 @@ Update queue worker settings at runtime.
 Cancel all currently pending (queued) jobs.
 - Input: `{}`
 
-### `enqueue_chain`
-Submit a sequential chain of background jobs.
-- Input: `{ "steps": [{ "tool_name": "...", "arguments": {}, "priority": 1 }], "session_id": "..." }`
-- Step 1 queued immediately; steps 2..N stored as `parked`
+### `get_job_result` (dynamic tool)
+Get the status and result of a specific job. Seeded at boot as a raw-Cypher dynamic
+tool (not a native AgentSkill tool).
+- Input: `{ "job_id": "..." }` — returns full AgentJob JSON
 
 ---
 
@@ -277,7 +275,7 @@ Walk source files and live tool registry to produce a structural health report.
 
 ---
 
-## ModelSkill (5 tools)
+## ModelSkill (4 tools)
 
 ### `list_models`
 List available LLM providers and all registered model specs.
@@ -287,17 +285,17 @@ List available LLM providers and all registered model specs.
 Switch the active LLM provider and model at runtime.
 - Input: `{ "provider": "Ollama"|"Anthropic"|"Gemini"|"VLlm", "model": "...", "api_key": "..." }`
 
-### `register_model`
-Register a model spec in the knowledge graph.
-- Input: `{ "name": "...", "provider": "...", "cost_per_1k_input": N, "context_window": N, "capabilities": [...] }`
-
 ### `select_model`
 Auto-select the cheapest capable model for given requirements.
 - Input: `{ "required_capabilities": [...], "max_cost_per_1k": N }`
 
-### `get_model_stats`
-Get usage statistics for a model from AgentJob history.
-- Input: `{ "model_name": "..." }`
+### `reload_models`
+Re-read `models.yaml` and sync into DuckDB without restarting the server.
+- Input: `{}`
+
+> **Note:** For model usage analytics (previously `get_model_stats` / `get_cloud_usage`),
+> use the generic `duckdb_query` tool against the `model_usage` table. Example:
+> `duckdb_query(sql="SELECT model_name, COUNT(*) AS total, AVG(duration_ms) AS avg_ms FROM model_usage GROUP BY model_name")`.
 
 ---
 

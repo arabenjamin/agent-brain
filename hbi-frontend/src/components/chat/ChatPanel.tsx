@@ -33,6 +33,12 @@ interface Session {
   title: string;
 }
 
+interface CatalogModel {
+  name: string;
+  provider: string; // lowercase, e.g. "ollama"
+  model: string;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function uid() {
@@ -71,12 +77,13 @@ function truncate(s: string, n: number): string {
 
 // ── Event bubble ─────────────────────────────────────────────────────────────
 
-function EventBubble({ evt }: { evt: ChatEvent }) {
+function EventBubble({ evt, isActive }: { evt: ChatEvent; isActive?: boolean }) {
   const [expanded, setExpanded] = useState(false);
 
   if (evt.type === "thinking") {
     const text = evt.content ?? "";
-    const collapsible = text.length > 160;
+    const isDiagnostic = text.startsWith("⚙ provider=");
+    const collapsible = !isDiagnostic && text.length > 160;
     return (
       <div
         className={`chat-event thinking${collapsible ? " collapsible" : ""}${expanded ? " expanded" : ""}`}
@@ -86,6 +93,7 @@ function EventBubble({ evt }: { evt: ChatEvent }) {
         <span className="event-body">
           {expanded || !collapsible ? text : text.slice(0, 160) + "…"}
         </span>
+        {isDiagnostic && isActive && <span className="spinner" title="In progress" />}
         {collapsible && <span className="event-chevron">{expanded ? "▲" : "▼"}</span>}
       </div>
     );
@@ -158,6 +166,10 @@ export default function ChatPanel() {
   const [contextProfile, setContextProfile] = useState("general");
   // null = research mode off; string = research mode on with that provider
   const [researchProvider, setResearchProvider] = useState<string | null>(null);
+  // Model selector: "provider::name" composite key, e.g. "ollama::qwen3.5:4b"
+  const [activeModelKey, setActiveModelKey] = useState("");
+  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
+  const [switchingModel, setSwitchingModel] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -172,8 +184,8 @@ export default function ChatPanel() {
     setLoadingSessions(true);
     try {
       const raw = await callTool("list_sessions", { limit: 50 });
-      const parsed = JSON.parse(raw) as { sessions?: Session[] };
-      setSessions(parsed.sessions ?? []);
+      const parsed = JSON.parse(raw) as { sessions?: Session[]; rows?: Session[] };
+      setSessions(parsed.sessions ?? parsed.rows ?? []);
     } catch {
       // ignore — brain may not be connected yet
     } finally {
@@ -195,6 +207,54 @@ export default function ChatPanel() {
       })
       .catch(() => {/* ignore — brain may not be connected yet */});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load active model + catalog from the backend.
+  const loadModels = useCallback(async () => {
+    try {
+      const raw = await callTool("list_models", {});
+      const data = JSON.parse(raw) as {
+        active_provider?: string;
+        active_model?: string;
+        catalog_models?: CatalogModel[];
+      };
+      const provider = (data.active_provider ?? "").toLowerCase();
+      const model = data.active_model ?? "";
+      if (provider && model) setActiveModelKey(`${provider}::${model}`);
+      setCatalogModels(data.catalog_models ?? []);
+    } catch {
+      // ignore — brain may not be connected yet
+    }
+  }, []);
+
+  useEffect(() => { loadModels(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const reloadModels = useCallback(async () => {
+    setSwitchingModel(true);
+    try {
+      await callTool("reload_models", {});
+      await loadModels();
+    } catch {
+      // ignore
+    } finally {
+      setSwitchingModel(false);
+    }
+  }, [loadModels]);
+
+  const handleModelChange = useCallback(async (value: string) => {
+    const sep = value.indexOf("::");
+    if (sep === -1) return;
+    const provider = value.slice(0, sep);
+    const model = value.slice(sep + 2);
+    setActiveModelKey(value);
+    setSwitchingModel(true);
+    try {
+      await callTool("use_model", { provider, model });
+    } catch {
+      // ignore
+    } finally {
+      setSwitchingModel(false);
+    }
+  }, []);
 
   // Switch to an existing session — restore its messages from the server.
   const switchSession = useCallback(async (sid: string) => {
@@ -378,7 +438,7 @@ export default function ChatPanel() {
     return (
       <div key={m.id} className="chat-msg assistant">
         {streamEvents.map((evt, i) => (
-          <EventBubble key={i} evt={evt} />
+          <EventBubble key={i} evt={evt} isActive={!m.done && streaming && i === 0} />
         ))}
         {showTyping && (
           <div className="typing-indicator">
@@ -522,6 +582,42 @@ export default function ChatPanel() {
             />
             <div className="input-row-actions">
               <div className="input-row-selectors">
+                {activeModelKey && (
+                  <>
+                  <select
+                    className="profile-select model-select"
+                    value={activeModelKey}
+                    onChange={(e) => handleModelChange(e.target.value)}
+                    disabled={streaming || switchingModel || catalogModels.length === 0}
+                    title={switchingModel ? "Switching model…" : "Active LLM model"}
+                  >
+                    {catalogModels.length === 0 ? (
+                      <option value={activeModelKey}>{activeModelKey.replace("::", " / ")}</option>
+                    ) : (
+                      Object.entries(
+                        catalogModels.reduce<Record<string, CatalogModel[]>>((acc, m) => {
+                          (acc[m.provider] ??= []).push(m);
+                          return acc;
+                        }, {})
+                      ).map(([provider, models]) => (
+                        <optgroup key={provider} label={provider}>
+                          {models.map((m) => (
+                            <option key={`${m.provider}::${m.name}`} value={`${m.provider}::${m.name}`}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))
+                    )}
+                  </select>
+                  <button
+                    className="reload-models-btn"
+                    onClick={reloadModels}
+                    disabled={streaming || switchingModel}
+                    title="Reload models from models.yaml"
+                  >↺</button>
+                  </>
+                )}
                 <select
                   className="profile-select"
                   value={contextProfile}

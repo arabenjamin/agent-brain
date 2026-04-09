@@ -59,6 +59,7 @@ Copy `.env.example` to `.env` and configure:
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | *required* | Neo4j password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint. Set to `https://ollama.com` for Ollama Cloud |
+| `OLLAMA_LOCAL_URL` | `http://localhost:11434` | Local Ollama endpoint. Background scheduler jobs with `provider_hint="ollama"` always use this, never the cloud URL |
 | `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model to use for text generation |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `OLLAMA_API_KEY` | - | API key for Ollama Cloud authentication. Get one at `ollama.com/settings/keys` |
@@ -84,6 +85,8 @@ Copy `.env.example` to `.env` and configure:
 | `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
 | `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
+| `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
+| `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
 
 ## Local Development
 
@@ -248,11 +251,12 @@ See `project-docs/architecture_context.md` for skill registry table, initializat
      └────────────────────────┬────────────────────────┘
                               │
      ┌────────────────────────▼────────────────────────┐
-     │    Skill Registry (~75 static + N runtime)      │
+     │    Skill Registry (~85 static + N runtime)      │
      │  KnowledgeSkill(16)  TaskSkill(6)  AgentSkill(8)│
      │  WorkingMemorySkill(4)  DynamicSkill(4+runtime) │
-     │  ModelSkill(5)  SleepSkill(2)  ProcedureSkill(2)│
+     │  ModelSkill(6)  SleepSkill(2)  ProcedureSkill(2)│
      │  SearchSkill(1)  SchedulerSkill(5)              │
+     │  CodebaseSkill(10)                              │
      └─────────────────────────────────────────────────┘
 ```
 

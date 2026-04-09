@@ -48,7 +48,7 @@ impl KnowledgeSkill {
                     },
                     "note_type": {
                         "type": "string",
-                        "description": "Type of note: semantic (default), episodic, reflection, consolidated"
+                        "description": "Type of note: semantic (default), episodic, reflection, consolidated, news"
                     },
                     "source_context": {
                         "type": "string",
@@ -212,7 +212,7 @@ impl KnowledgeSkill {
                     },
                     "note_type": {
                         "type": "string",
-                        "description": "Optional filter: semantic, episodic, reflection, consolidated, outcome, inference"
+                        "description": "Optional filter: semantic, episodic, reflection, consolidated, outcome, inference, news"
                     }
                 }
             }),
@@ -565,11 +565,7 @@ impl KnowledgeSkill {
 
         info!(limit = input.limit, note_type = ?input.note_type, "Listing notes");
 
-        let service = &self.svc;
-        match service
-            .list_notes(input.limit, input.note_type.as_deref())
-            .await
-        {
+        match self.svc.list_notes(input.limit, input.note_type.as_deref()).await {
             Ok(notes) => {
                 let response = json!({ "count": notes.len(), "notes": notes });
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())

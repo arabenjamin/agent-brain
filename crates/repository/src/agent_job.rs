@@ -74,8 +74,12 @@ impl Neo4jClient {
     /// List all queued (and parked) jobs ordered by priority desc then created_at asc.
     /// Used at startup to reload the in-memory heap.
     pub async fn list_queued_agent_jobs(&self) -> Result<Vec<AgentJob>, RepositoryError> {
+        // Only load explicitly queued jobs — parked jobs must not run until their
+        // parent explicitly unparks them via unpark_children().  Including 'parked'
+        // here caused children to execute before their parent completed, breaking
+        // the chain ordering and making {{_prev}} substitution impossible.
         let q = query(
-            "MATCH (j:AgentJob) WHERE j.status IN ['queued', 'parked'] \
+            "MATCH (j:AgentJob) WHERE j.status = 'queued' \
              RETURN j ORDER BY j.priority DESC, j.created_at ASC",
         );
         let rows = self.execute(q).await?;
@@ -186,6 +190,22 @@ impl Neo4jClient {
         self.run(q).await
     }
 
+    /// Re-queue a failed job for automatic retry (attempt_count already incremented).
+    /// Sets status back to 'queued' so the coordinator picks it up again.
+    pub async fn requeue_for_retry(&self, id: &str, error: &str) -> Result<(), RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (j:AgentJob {id: $id}) \
+             SET j.status = 'queued', \
+                 j.updated_at = $now, \
+                 j.error = $error",
+        )
+        .param("id", id)
+        .param("now", now)
+        .param("error", error);
+        self.run(q).await
+    }
+
     /// Mark a job as failed (can still be retried manually).
     pub async fn set_job_failed(&self, id: &str, error: &str) -> Result<(), RepositoryError> {
         let now = Utc::now().to_rfc3339();
@@ -284,19 +304,23 @@ impl Neo4jClient {
     }
 
     /// Promote all parked children of a completed job to `queued`.
+    /// Stamps `parent_result_text` onto each child as `prev_result_json` so the
+    /// coordinator can substitute `{{_prev}}` in the child's arguments at execution time.
     /// Returns the newly-queued jobs so the coordinator can push them onto the heap.
     pub async fn unpark_children(
         &self,
         parent_job_id: &str,
+        parent_result_text: &str,
     ) -> Result<Vec<AgentJob>, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (j:AgentJob {parent_job_id: $parent_id, status: 'parked'})
-             SET j.status = 'queued', j.updated_at = $now
+             SET j.status = 'queued', j.updated_at = $now, j.prev_result_json = $prev
              RETURN j",
         )
         .param("parent_id", parent_job_id)
-        .param("now", now);
+        .param("now", now)
+        .param("prev", parent_result_text);
 
         let rows = self.execute(q).await?;
         let jobs = rows
@@ -394,6 +418,7 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
     let parent_job_id: String = node.get("parent_job_id").unwrap_or_default();
     let provider_hint: String = node.get("provider_hint").unwrap_or_default();
     let context_profile: String = node.get("context_profile").unwrap_or_default();
+    let prev_result: String = node.get("prev_result_json").unwrap_or_default();
 
     AgentJob {
         id,
@@ -428,6 +453,11 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
             None
         } else {
             Some(context_profile)
+        },
+        prev_result: if prev_result.is_empty() {
+            None
+        } else {
+            Some(prev_result)
         },
     }
 }

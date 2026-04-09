@@ -35,6 +35,33 @@ impl Neo4jClient {
         Ok(id)
     }
 
+    /// Reset tasks that have been stuck in `in_progress` for longer than `stale_hours` hours
+    /// back to `created` so the scheduler will re-dispatch them.
+    /// Returns the number of tasks reset.
+    pub async fn reset_stale_in_progress_tasks(
+        &self,
+        stale_hours: u64,
+    ) -> Result<usize, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (t:Task {status: 'in_progress'}) \
+             WHERE t.updated_at < datetime() - duration({hours: $hours}) \
+             SET t.status = 'failed', t.updated_at = $now \
+             RETURN count(t) AS n",
+        )
+        .param("hours", stale_hours as i64)
+        .param("now", now);
+        let rows = self.execute(q).await?;
+        let count = rows
+            .first()
+            .and_then(|r| r.get::<i64>("n").ok())
+            .unwrap_or(0) as usize;
+        if count > 0 {
+            info!(count, stale_hours, "Reset stale in_progress tasks to failed");
+        }
+        Ok(count)
+    }
+
     /// Get a task by ID.
     pub async fn get_task(&self, id: &str) -> Result<Option<Task>, RepositoryError> {
         let q = query("MATCH (t:Task {id: $id}) RETURN t").param("id", id);

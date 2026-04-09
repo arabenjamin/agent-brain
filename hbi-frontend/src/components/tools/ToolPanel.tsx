@@ -49,7 +49,7 @@ const SKILLS: SkillDef[] = [
     color: "var(--purple)",
     desc:  "Durable priority job queue (0–3), per-provider semaphores (Ollama×3, Anthropic×2, Gemini×5), job chaining with parked/unparked state.",
     tools: [
-      "enqueue_agent", "enqueue_chain", "queue_status",
+      "enqueue_jobs", "queue_status",
       "get_job_result", "cancel_job", "retry_job",
       "set_worker_config", "drain_queue",
     ],
@@ -93,10 +93,10 @@ const SKILLS: SkillDef[] = [
     label: "Models",
     icon:  "🤖",
     color: "var(--purple)",
-    desc:  "LLM provider/model registry, runtime switching via use_model, capability-based selection, and per-provider usage stats.",
+    desc:  "LLM provider/model registry, runtime switching via use_model, capability-based selection, and YAML catalog reload. Usage analytics via the generic duckdb_query tool on the model_usage table.",
     tools: [
-      "list_models", "use_model", "register_model",
-      "select_model", "get_model_stats",
+      "list_models", "use_model",
+      "select_model", "reload_models",
     ],
   },
   {

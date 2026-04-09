@@ -88,11 +88,24 @@ fn build_llm_config(config: &Config) -> LlmConfig {
     match llm.provider {
         LlmProviderType::Ollama => {
             base = base
+                .with_base_url(llm.ollama_local_url.clone())
+                .with_model(llm.ollama_model.clone());
+            if let Some(key) = &llm.ollama_api_key {
+                base = base.with_api_key(key);
+            }
+            if let Some(embed_model) = &llm.ollama_embed_model {
+                base = base.with_embed_model(embed_model);
+            }
+        }
+        LlmProviderType::OllamaCloud => {
+            base = base
                 .with_base_url(llm.ollama_url.clone())
                 .with_model(llm.ollama_model.clone());
             if let Some(key) = &llm.ollama_api_key {
                 base = base.with_api_key(key);
             }
+            // Embeddings always route to local Ollama
+            base = base.with_embed_base_url(llm.ollama_local_url.clone());
             if let Some(embed_model) = &llm.ollama_embed_model {
                 base = base.with_embed_model(embed_model);
             }
@@ -237,7 +250,7 @@ async fn run_serve(
                 .with_session_manager(session_manager)
                 .with_chat_service(server.chat_service());
 
-            if let Some(key) = api_key {
+            if let Some(key) = api_key.filter(|k| !k.is_empty()) {
                 http_config = http_config.with_api_key(key);
                 info!("API key authentication enabled");
             }

@@ -246,7 +246,7 @@ See `project-docs/env.md` for the complete variable reference.
 
 ```json
 {
-  "name": "enqueue_chain",
+  "name": "enqueue_jobs",
   "arguments": {
     "steps": [
       {"tool_name": "search_notes", "arguments": {"query": "API authentication patterns"}},

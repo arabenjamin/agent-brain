@@ -64,7 +64,7 @@ build_skills() creates all skills and populates both.
 ## Key Design Patterns
 - dry_run: all destructive admin operations accept dry_run=true
 - builder pattern: McpServerCore uses with_*() methods for config
-- Parked jobs: enqueue_chain creates sequential pipelines; steps 2..N wait parked
+- Parked jobs: enqueue_jobs creates sequential pipelines; steps 2..N wait parked
 - Per-provider semaphores: ollama(3), anthropic(2), gemini(5) concurrency
 - ContextStore: in-memory API cache with Neo4j fallback on miss
 - Context Profiles: YAML profiles in contexts/ that restrict tools + inject
@@ -156,14 +156,13 @@ ChatService sees live tool registry and LLM config — supports use_model switch
 - list_tasks: filtered list with parent_id and depends_on for sub-tasks
 - record_outcome: episodic outcome note; on failure+task_id auto-enqueues reflect→store chain
 
-## AgentSkill (8 tools) — Background job queue
-- enqueue_agent: submit MCP tool as background job (priority 0-3)
+## AgentSkill (6 tools) — Background job queue
+- enqueue_jobs: submit one tool call or a sequential pipeline of tool calls (steps 2..N parked, unpark on parent success)
 - queue_status: stats (pending, running, per-provider breakdown)
-- get_job_result: poll a job for status/result
 - cancel_job / retry_job: lifecycle management
 - set_worker_config: change concurrency, enable/pause, poll interval
 - drain_queue: cancel all pending jobs
-- enqueue_chain: submit sequential pipeline (steps 2..N are parked, unpark on parent success)
+- get_job_result: dynamic tool (not in AgentSkill); poll a job for status/result
 
 ## AdminSkill (10 tools) — Graph maintenance, snapshots, integrity
 - delete_api: cascade-delete all nodes for one ingested API (dry_run)
@@ -311,7 +310,7 @@ SchedulerService runs a background Tokio task every SCHEDULER_INTERVAL_SECS (def
 do_tick() flow:
 1. List tasks with status='created'
 2. Map each goal to ChainSteps via goal_to_steps() (keyword matching + profile assignment)
-3. enqueue_chain() each chain (steps 2..N parked, unpark on parent success)
+3. enqueue_jobs() each chain (steps 2..N parked, unpark on parent success)
 4. Mark tasks in_progress
 5. perception_scan(): proactive perception after every tick
 
@@ -341,7 +340,7 @@ consolidate_memories() always:
 5. Resets source notes: next_review_at = now + 30 days
 
 ## Job Chain Mechanics
-- enqueue_chain: step 1 queued; steps 2..N stored as parked with parent_job_id
+- enqueue_jobs: step 1 queued; steps 2..N stored as parked with parent_job_id
 - On parent completed: coordinator calls unpark_children() → queued
 - On parent dead (exhausted retries): cancel_parked_children()
 - On parent retryable failure: children stay parked (retry parent → continue chain)
@@ -355,7 +354,7 @@ When execute_http_request encounters 4xx/5xx:
 5. Failure: mark endpoint status='broken'
 
 ## Target Self-Improvement Loop (ideal behavior)
-1. receive_goal → create_task → decompose_goal → enqueue_chain(subtasks)
+1. receive_goal → create_task → decompose_goal → enqueue_jobs(subtasks)
 2. Each sub-agent: search_notes → reason → execute → record_outcome
 3. On completion: reflect_on_work → identify_gaps → plan_next_iteration
 4. Periodically: perception_scan → consolidate_memories → prune_old_notes → review_due_notes
@@ -720,7 +719,7 @@ def main():
         },
     ]
 
-    chain_result = call("enqueue_chain", {"steps": chain_steps, "session_id": session_id})
+    chain_result = call("enqueue_jobs", {"steps": chain_steps, "session_id": session_id})
     chain_data = extract_json(chain_result)
     job_ids = chain_data.get("job_ids", [])
     step_names = ["search_notes", "reason", "reflect_on_work", "consolidate_memories"]
@@ -759,7 +758,7 @@ def main():
         },
     ]
 
-    goals_chain_result = call("enqueue_chain", {"steps": goals_chain, "session_id": session_id})
+    goals_chain_result = call("enqueue_jobs", {"steps": goals_chain, "session_id": session_id})
     goals_chain_data = extract_json(goals_chain_result)
     goals_job_ids = goals_chain_data.get("job_ids", [])
     goals_step_names = ["search_notes (goals)", "reason (30-day roadmap)"]

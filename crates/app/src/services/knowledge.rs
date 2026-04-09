@@ -484,7 +484,7 @@ impl KnowledgeService {
         event_at: Option<&str>,
     ) -> Result<(String, usize)> {
         // Attempt semantic chunking for long content (skip for consolidated/reflection types).
-        let skip_chunk = matches!(note_type, Some("consolidated") | Some("reflection"));
+        let skip_chunk = matches!(note_type, Some("consolidated") | Some("reflection") | Some("news"));
 
         if !skip_chunk
             && content.len() > CHUNK_THRESHOLD_CHARS
@@ -1005,7 +1005,7 @@ impl KnowledgeService {
             if dry_run {
                 let cypher = r#"
                 MATCH (n:Note)
-                WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection']
+                WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
                 OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
                 WITH n, count(other) AS in_degree,
                      duration.between(n.last_accessed_at, datetime()).days AS days_idle
@@ -1069,6 +1069,7 @@ impl KnowledgeService {
             MATCH (n:Note)
             WHERE n.last_accessed_at < datetime() - duration({days: $days})
               AND n.access_count < $min_accesses
+              AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
             RETURN count(n) AS total
             "#;
             let rows = self
@@ -1090,6 +1091,7 @@ impl KnowledgeService {
         MATCH (n:Note)
         WHERE n.last_accessed_at < datetime() - duration({days: $days})
           AND n.access_count < $min_accesses
+          AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
         WITH collect(n) AS stale
         FOREACH (n IN stale | DETACH DELETE n)
         RETURN size(stale) AS total

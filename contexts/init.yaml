@@ -24,5 +24,15 @@ steps:
     tool: analyze_own_structure
     args:
       store_as_note: true
+  - type: tool_call
+    tool: create_task
+    args:
+      goal: "Review and consolidate initial self-knowledge notes"
+      context: "First-run init: analyze notes seeded during initialization and consolidate key insights."
+  - type: tool_call
+    tool: create_task
+    args:
+      goal: "Identify capability gaps and create tasks to address them"
+      context: "Bootstrap: review own structure analysis and queue follow-up improvement tasks."
   - type: log
     message: "Init protocol complete — self-knowledge seeded"

@@ -85,6 +85,9 @@ pub struct AgentJob {
     pub provider_hint: Option<String>,
     /// Optional context profile name for observability and routing hints.
     pub context_profile: Option<String>,
+    /// Plain-text result from the preceding chain step, injected at unpark time.
+    /// Available via `{{_prev}}` template substitution in this job's arguments.
+    pub prev_result: Option<String>,
 }
 
 /// Wrapper for `BinaryHeap` ordering.

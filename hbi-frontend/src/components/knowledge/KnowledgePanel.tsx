@@ -42,7 +42,7 @@ export default function KnowledgePanel() {
     try {
       const json = await callTool("list_notes", { limit: 20 });
       const data = JSON.parse(json);
-      setNotes(data.notes ?? []);
+      setNotes(data.notes ?? data.rows ?? []);
     } catch (e) {
       setError(String(e));
     } finally {

@@ -22,9 +22,12 @@ const MAX_TOOL_ITERATIONS: usize = 10;
 
 const DEFAULT_SYSTEM_PROMPT: &str = "\
 You are agent-brain, an autonomous AI assistant backed by a persistent Neo4j \
-knowledge graph. You can search notes, manage tasks, reason over stored \
-knowledge, and use many other tools. Always think step-by-step before acting \
-and use the available tools to give the most accurate, grounded answer possible.";
+knowledge graph. Always think step-by-step before acting and use the available \
+tools to give the most accurate, grounded answer possible.\n\
+Key tools: `create_task` (create a task/goal), `search_web` (search the internet), \
+`search_notes` (query the knowledge graph), `store_note` (save information), \
+`list_tasks` / `update_task` (manage tasks), `reason` (synthesize knowledge). \
+Only call tools that exist — do not invent tool names.";
 
 const CHAT_SYSTEM_PROMPT: &str = DEFAULT_SYSTEM_PROMPT;
 
@@ -153,10 +156,24 @@ impl ChatService {
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         let cb_opt = self.context_builder.read().await.clone();
+
+        // Resolve the effective profile name: use the one from the request, or
+        // auto-assign based on the message content when none is provided.
+        let resolved_profile: Option<String> = if has_explicit_tools {
+            None
+        } else if request.context_profile.is_some() {
+            request.context_profile.clone()
+        } else if let Some(ref cb) = cb_opt {
+            let assigned = cb.auto_assign(&request.message).await;
+            Some(assigned)
+        } else {
+            None
+        };
+
         let (tools, _profile_system_prompt, _profile_notes) = if has_explicit_tools {
             let names = request.tools.as_deref().unwrap_or_default();
             (filter_tools(all_tools, names), None, Vec::new())
-        } else if let (Some(profile_name), Some(cb)) = (&request.context_profile, cb_opt) {
+        } else if let (Some(profile_name), Some(ref cb)) = (&resolved_profile, cb_opt) {
             if let Ok(bundle) = cb.build_bundle(profile_name).await {
                 let filtered = filter_tools(all_tools, &bundle.profile.tools);
                 let prompt = if bundle.profile.system_prompt.is_empty() {
@@ -170,8 +187,7 @@ impl ChatService {
                 (all_tools, None, Vec::new())
             }
         } else {
-            let names = request.tools.as_deref().unwrap_or_default();
-            (filter_tools(all_tools, names), None, Vec::new())
+            (all_tools, None, Vec::new())
         };
 
         let handler = self.tool_handler.read().await.clone();
@@ -213,7 +229,7 @@ impl ChatService {
         {
             let provider_str = config
                 .as_ref()
-                .map(|c| format!("{:?}", c.provider).to_lowercase())
+                .map(|c| c.provider.to_string())
                 .unwrap_or_else(|| "none".into());
             let mode = if let Some(p) = &request.synthesis_provider {
                 format!("research → synthesize({})", p)
@@ -223,9 +239,10 @@ impl ChatService {
             let _ = inner_tx
                 .send(ChatEvent::Thinking {
                     content: format!(
-                        "⚙ provider={} | profile={} | tools={} | mode={}",
+                        "⚙ provider={} | model={} | profile={} | tools={} | mode={}",
                         provider_str,
-                        request.context_profile.as_deref().unwrap_or("none"),
+                        config.as_ref().map(|c| c.model.as_str()).unwrap_or("unknown"),
+                        resolved_profile.as_deref().unwrap_or("general"),
                         tools.len(),
                         mode,
                     ),
@@ -238,7 +255,9 @@ impl ChatService {
                 self.run_anthropic_loop(cfg, tools, handler.clone(), request, inner_tx)
                     .await;
             }
-            Some(cfg) if cfg.provider == LlmProviderType::Ollama => {
+            Some(cfg) if cfg.provider == LlmProviderType::Ollama
+                      || cfg.provider == LlmProviderType::OllamaCloud =>
+            {
                 self.run_ollama_tool_loop(cfg, tools, handler.clone(), request, inner_tx)
                     .await;
             }
@@ -567,12 +586,15 @@ impl ChatService {
                 }
             });
 
-            let response = match client
+            let mut req = client
                 .post(format!("{}/api/chat", base_url))
                 .header("content-type", "application/json")
-                .json(&body)
                 .timeout(config.timeout)
-                .send()
+                .json(&body);
+            if let Some(ref key) = config.api_key {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+            let response = match req.send()
                 .await
             {
                 Ok(r) => r,
@@ -592,6 +614,12 @@ impl ChatService {
             let mut line_buf = String::new();
             let mut full_content = String::new();
             let mut tool_calls: Vec<Value> = Vec::new();
+            // Buffer tokens that arrive before <think> to suppress garbage
+            // leading characters. Once <think> is seen, flush the buffer and
+            // stream normally. If the stream ends without <think>, flush the
+            // whole buffer (model doesn't use thinking blocks).
+            let mut pre_think_buf: Vec<String> = Vec::new();
+            let mut think_started = false;
 
             'stream: while let Some(chunk_result) = byte_stream.next().await {
                 let chunk = match chunk_result {
@@ -638,7 +666,21 @@ impl ChatService {
                         .to_string();
                     if !token.is_empty() {
                         full_content.push_str(&token);
-                        let _ = tx.send(ChatEvent::Token { content: token }).await;
+                        if think_started {
+                            let _ = tx.send(ChatEvent::Token { content: token }).await;
+                        } else if full_content.contains("<think>") {
+                            // First time we see <think>: flush buffered tokens
+                            // (from <think> onwards only) then stream normally.
+                            think_started = true;
+                            let flush_start = full_content.find("<think>").unwrap_or(0);
+                            let flushed = full_content[flush_start..].to_string();
+                            if !flushed.is_empty() {
+                                let _ = tx.send(ChatEvent::Token { content: flushed }).await;
+                            }
+                        } else {
+                            // Haven't seen <think> yet — buffer rather than emit.
+                            pre_think_buf.push(token);
+                        }
                     }
 
                     // Ollama sends tool_calls in a non-done chunk; accumulate from every chunk.
@@ -658,7 +700,22 @@ impl ChatService {
                 }
             }
 
-            let content = full_content;
+            // If <think> was never seen, the model doesn't use thinking blocks.
+            // Flush the buffered pre-think tokens now so the client sees output.
+            if !think_started && !pre_think_buf.is_empty() {
+                for t in pre_think_buf {
+                    let _ = tx.send(ChatEvent::Token { content: t }).await;
+                }
+            }
+
+            // Strip any garbage tokens emitted before the <think> block.
+            // Some small models output stray characters (e.g. CJK tokens) before
+            // beginning their actual reasoning.
+            let content = if let Some(idx) = full_content.find("<think>") {
+                full_content[idx..].to_string()
+            } else {
+                full_content
+            };
 
             if tool_calls.is_empty() {
                 // No tool calls — weak model has a final answer.

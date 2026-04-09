@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::mcp::tools::ToolHandler;
+use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::repository::Neo4jClient;
 use crate::services::procedure_executor;
 use crate::skills::Skill;
@@ -43,15 +43,22 @@ pub struct DynamicSkill {
     tools_map: Arc<RwLock<HashMap<String, DynamicToolEntry>>>,
     /// Reference to the current ToolHandler (for procedure execution).
     tool_handler_ref: Arc<RwLock<Option<ToolHandler>>>,
+    /// Reference to the tool registry — used to validate step tool names at define time.
+    tool_registry: Arc<RwLock<ToolRegistry>>,
 }
 
 impl DynamicSkill {
     /// Create a new DynamicSkill with an empty tools map.
-    pub fn new(neo4j: Neo4jClient, tool_handler_ref: Arc<RwLock<Option<ToolHandler>>>) -> Self {
+    pub fn new(
+        neo4j: Neo4jClient,
+        tool_handler_ref: Arc<RwLock<Option<ToolHandler>>>,
+        tool_registry: Arc<RwLock<ToolRegistry>>,
+    ) -> Self {
         Self {
             neo4j,
             tools_map: Arc::new(RwLock::new(HashMap::new())),
             tool_handler_ref,
+            tool_registry,
         }
     }
 
@@ -62,6 +69,7 @@ impl DynamicSkill {
             neo4j: self.neo4j.clone(),
             tools_map: Arc::clone(&self.tools_map),
             tool_handler_ref: Arc::clone(&self.tool_handler_ref),
+            tool_registry: Arc::clone(&self.tool_registry),
         }
     }
 
@@ -245,13 +253,24 @@ impl DynamicSkill {
             return ToolCallResult::error("steps must not be empty".to_string());
         }
 
-        // Validate each step has 'tool' and 'purpose'
-        for (i, step) in input.steps.iter().enumerate() {
-            if step.get("tool").is_none() {
-                return ToolCallResult::error(format!("Step {} missing 'tool' field", i));
-            }
-            if step.get("purpose").is_none() {
-                return ToolCallResult::error(format!("Step {} missing 'purpose' field", i));
+        // Validate each step has 'tool' and 'purpose', and that the tool exists.
+        {
+            let registry = self.tool_registry.read().await;
+            for (i, step) in input.steps.iter().enumerate() {
+                let tool_name = match step.get("tool").and_then(|v| v.as_str()) {
+                    Some(t) => t,
+                    None => return ToolCallResult::error(format!("Step {} missing 'tool' field", i)),
+                };
+                if step.get("purpose").is_none() {
+                    return ToolCallResult::error(format!("Step {} missing 'purpose' field", i));
+                }
+                if registry.get(tool_name).is_none() {
+                    return ToolCallResult::error(format!(
+                        "Step {} references unknown tool '{}'. Use list_dynamic_tools or \
+                         check available tools — do not invent tool names.",
+                        i, tool_name
+                    ));
+                }
             }
         }
 
@@ -373,6 +392,7 @@ impl DynamicSkill {
 
         let response = json!({
             "tool_id": tool_id,
+            "procedure_id": procedure_id,
             "name": input.name,
             "steps_count": input.steps.len(),
             "registered": true,
@@ -523,51 +543,60 @@ impl DynamicSkill {
     }
 
     /// Execute a dynamically-defined tool (dispatch to procedure executor).
+    ///
+    /// Always returns a JSON-serialisable `ToolCallResult` so callers can
+    /// safely `JSON.parse` the content regardless of success or failure.
     async fn handle_dynamic_tool(
         &self,
         tool_name: &str,
         arguments: Option<Value>,
     ) -> ToolCallResult {
+        // Helper: return a JSON error object (never plain text).
+        macro_rules! json_err {
+            ($msg:expr) => {
+                ToolCallResult::error(
+                    serde_json::to_string_pretty(&json!({
+                        "error": $msg,
+                        "tool":  tool_name,
+                        "rows":  [],
+                        "count": 0,
+                    }))
+                    .unwrap(),
+                )
+            };
+        }
+
         let entry = {
             let map = self.tools_map.read().await;
             map.get(tool_name).cloned()
         };
-
         let entry = match entry {
             Some(e) => e,
-            None => {
-                return ToolCallResult::error(format!("Dynamic tool '{}' not found", tool_name));
-            }
+            None => return json_err!(format!("Dynamic tool '{}' not found in tools_map", tool_name)),
         };
 
-        // Fetch procedure steps
-        let cypher = r#"
-        MATCH (p:Procedure {id: $id})
-        RETURN p.steps AS steps
-        "#;
-
+        // Fetch procedure steps from Neo4j.
+        let cypher = "MATCH (p:Procedure {id: $id}) RETURN p.steps AS steps";
         let rows = match self
             .neo4j
             .execute(neo4rs::query(cypher).param("id", entry.procedure_id.clone()))
             .await
         {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("Failed to fetch procedure: {}", e)),
+            Err(e) => return json_err!(format!("Neo4j fetch failed for procedure '{}': {}", entry.procedure_id, e)),
         };
 
         let steps_str = match rows.first().and_then(|r| r.get::<String>("steps").ok()) {
             Some(s) => s,
-            None => {
-                return ToolCallResult::error(format!(
-                    "Procedure '{}' not found for tool '{}'",
-                    entry.procedure_id, tool_name
-                ));
-            }
+            None => return json_err!(format!(
+                "Procedure id='{}' not found — tool '{}' may need reseeding (restart the server)",
+                entry.procedure_id, tool_name
+            )),
         };
 
         let steps: Vec<Value> = match serde_json::from_str(&steps_str) {
             Ok(v) => v,
-            Err(e) => return ToolCallResult::error(format!("Failed to parse steps: {}", e)),
+            Err(e) => return json_err!(format!("Steps JSON invalid for '{}': {} — steps={}", tool_name, e, &steps_str[..steps_str.len().min(200)])),
         };
 
         let input_map = arguments
@@ -579,7 +608,7 @@ impl DynamicSkill {
         let handler_guard = self.tool_handler_ref.read().await;
         let handler = match &*handler_guard {
             Some(h) => h.clone(),
-            None => return ToolCallResult::error("ToolHandler not initialized".to_string()),
+            None => return json_err!("ToolHandler not yet initialised — call too early"),
         };
         drop(handler_guard);
 
@@ -590,26 +619,18 @@ impl DynamicSkill {
             .last()
             .map(|r| r.output.clone())
             .unwrap_or(Value::Null);
-        let step_summaries: Vec<Value> = results
-            .iter()
-            .map(|r| {
-                json!({
-                    "step": r.step_index,
-                    "tool": r.tool,
-                    "success": r.success,
-                    "output_preview": r.output_preview,
-                })
-            })
-            .collect();
 
-        let response = json!({
-            "tool": tool_name,
-            "steps_run": results.len(),
-            "total_success": total_success,
-            "steps": step_summaries,
-            "result": last_output,
-        });
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        if total_success {
+            // Transparent: return the step's output directly so DynamicTools
+            // are drop-in replacements for their Rust counterparts.
+            ToolCallResult::success_text(serde_json::to_string_pretty(&last_output).unwrap())
+        } else {
+            let detail = results
+                .last()
+                .map(|r| r.output_preview.clone())
+                .unwrap_or_else(|| "procedure produced no output".to_string());
+            json_err!(format!("Step failed for '{}': {}", tool_name, detail))
+        }
     }
 }
 

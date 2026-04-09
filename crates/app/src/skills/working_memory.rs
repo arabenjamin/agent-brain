@@ -85,25 +85,6 @@ impl WorkingMemorySkill {
         }
     }
 
-    fn list_sessions_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_sessions".to_string(),
-            description: "List all working-memory sessions, ordered by most recent first. \
-                         Returns session IDs, message counts, start time, and the title \
-                         (first user message in the session)."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum sessions to return (default: 50)"
-                    }
-                }
-            }),
-        }
-    }
-
     fn summarise_session_def() -> ToolDefinition {
         ToolDefinition {
             name: "summarise_session".to_string(),
@@ -180,27 +161,6 @@ impl WorkingMemorySkill {
                 ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
             }
             Err(e) => ToolCallResult::error(format!("Failed to retrieve context: {}", e)),
-        }
-    }
-
-    async fn handle_list_sessions(&self, arguments: Option<Value>) -> ToolCallResult {
-        let limit = arguments
-            .as_ref()
-            .and_then(|v| v.get("limit"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(50);
-
-        info!("Listing working-memory sessions");
-
-        match self.store.list_sessions(limit).await {
-            Ok(sessions) => {
-                let response = json!({
-                    "count": sessions.len(),
-                    "sessions": sessions
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to list sessions: {}", e)),
         }
     }
 
@@ -298,7 +258,6 @@ impl Skill for WorkingMemorySkill {
             Self::push_context_def(),
             Self::get_context_def(),
             Self::summarise_session_def(),
-            Self::list_sessions_def(),
         ]
     }
 
@@ -307,7 +266,6 @@ impl Skill for WorkingMemorySkill {
             "push_context" => Some(self.handle_push_context(arguments).await),
             "get_context" => Some(self.handle_get_context(arguments).await),
             "summarise_session" => Some(self.handle_summarise_session(arguments).await),
-            "list_sessions" => Some(self.handle_list_sessions(arguments).await),
             _ => None,
         }
     }

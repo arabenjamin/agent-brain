@@ -679,6 +679,7 @@ struct UpdateTaskInput {
     note: Option<String>,
 }
 
+
 #[derive(Debug, Deserialize)]
 struct ListTasksInput {
     #[serde(default)]

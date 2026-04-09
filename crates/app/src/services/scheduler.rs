@@ -248,6 +248,13 @@ impl SchedulerService {
             (cfg.max_tasks_per_run, cfg.session_id.clone())
         };
 
+        // Reset tasks that got stuck in_progress (e.g. because a job chain failed and the final
+        // update_task step was cancelled).  Any task in_progress for > 6 hours is reset to
+        // 'failed' so the user can see it clearly, rather than silently blocking future runs.
+        if let Err(e) = self.neo4j.reset_stale_in_progress_tasks(6).await {
+            warn!(error = %e, "Failed to reset stale in_progress tasks");
+        }
+
         let tasks = self
             .neo4j
             .list_tasks(Some("created"), 20)
@@ -257,6 +264,93 @@ impl SchedulerService {
         let tasks_found = tasks.len();
         let mut tasks_dispatched = 0usize;
 
+        // Dedup: for self-scheduling task types, keep only the first 'created' instance per tick.
+        // Mark extras as Completed so chains never multiply.
+        let mut skip_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        {
+            let mut health_seen = false;
+            let mut daily_news_seen = false;
+            let mut weekly_news_seen = false;
+            for task in &tasks {
+                let goal_lower = task["goal"].as_str().unwrap_or("").to_lowercase();
+                let is_health = goal_lower.contains("health monitor") || goal_lower.contains("health check");
+                let is_daily_news = goal_lower.contains("daily news")
+                    || goal_lower.contains("news aggregation")
+                    || goal_lower.contains("news briefing");
+                let is_weekly_news = goal_lower.contains("weekly news")
+                    || goal_lower.contains("weekly briefing");
+
+                let is_dup = (is_health && health_seen)
+                    || (is_daily_news && daily_news_seen)
+                    || (is_weekly_news && weekly_news_seen);
+
+                if is_dup {
+                    let dup_id = task["id"].as_str().unwrap_or("").to_string();
+                    if !dup_id.is_empty() {
+                        if let Err(e) = self
+                            .neo4j
+                            .update_task_status(&dup_id, TaskStatus::Completed)
+                            .await
+                        {
+                            warn!(task_id = %dup_id, error = %e, "Failed to dedup self-scheduling task");
+                        } else {
+                            warn!(task_id = %dup_id, goal = %goal_lower, "Deduped duplicate self-scheduling task");
+                            skip_ids.insert(dup_id);
+                        }
+                    }
+                } else {
+                    if is_health       { health_seen       = true; }
+                    if is_daily_news   { daily_news_seen   = true; }
+                    if is_weekly_news  { weekly_news_seen  = true; }
+                }
+            }
+        }
+
+        // Cooldown: skip daily news if one completed within the last 20 hours (once-per-day cadence).
+        // The in_progress check is time-bounded so stale stuck tasks don't permanently block runs.
+        let recent_daily_news_exists = {
+            let q = neo4rs::query(
+                "MATCH (t:Task) \
+                 WHERE (t.goal CONTAINS 'daily news' \
+                     OR t.goal CONTAINS 'news aggregation' \
+                     OR t.goal CONTAINS 'news briefing') \
+                   AND ((t.status = 'in_progress' \
+                         AND t.updated_at >= datetime() - duration({hours: 20})) \
+                     OR (t.status = 'completed' \
+                         AND t.updated_at >= datetime() - duration({hours: 20}))) \
+                 RETURN count(t) AS cnt",
+            );
+            self.neo4j
+                .execute(q)
+                .await
+                .ok()
+                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+                .unwrap_or(0)
+                > 0
+        };
+
+        // Cooldown: skip weekly news if one completed within the last 6 days.
+        // The in_progress check is time-bounded so stale stuck tasks don't permanently block runs.
+        let recent_weekly_news_exists = {
+            let q = neo4rs::query(
+                "MATCH (t:Task) \
+                 WHERE (t.goal CONTAINS 'weekly news' \
+                     OR t.goal CONTAINS 'weekly briefing') \
+                   AND ((t.status = 'in_progress' \
+                         AND t.updated_at >= datetime() - duration({days: 6})) \
+                     OR (t.status = 'completed' \
+                         AND t.updated_at >= datetime() - duration({days: 6}))) \
+                 RETURN count(t) AS cnt",
+            );
+            self.neo4j
+                .execute(q)
+                .await
+                .ok()
+                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+                .unwrap_or(0)
+                > 0
+        };
+
         for task in tasks.iter().take(max_tasks) {
             let task_id = task["id"].as_str().unwrap_or("").to_string();
             let goal = task["goal"].as_str().unwrap_or("").to_string();
@@ -265,7 +359,32 @@ impl SchedulerService {
                 continue;
             }
 
-            let mut steps = Self::goal_to_steps(&goal, &task_id);
+            if skip_ids.contains(&task_id) {
+                continue;
+            }
+
+            let goal_lower = goal.to_lowercase();
+
+            // Skip daily news tasks if one ran recently (20-hour cooldown).
+            if recent_daily_news_exists
+                && (goal_lower.contains("daily news")
+                    || goal_lower.contains("news aggregation")
+                    || goal_lower.contains("news briefing"))
+            {
+                debug!(task_id = %task_id, "Skipping daily news task — ran within last 20 hours");
+                continue;
+            }
+
+            // Skip weekly news tasks if one ran recently (6-day cooldown).
+            if recent_weekly_news_exists
+                && (goal_lower.contains("weekly news")
+                    || goal_lower.contains("weekly briefing"))
+            {
+                debug!(task_id = %task_id, "Skipping weekly news task — ran within last 6 days");
+                continue;
+            }
+
+            let mut steps = self.goal_to_steps(&goal, &task_id).await;
 
             // Auto-assign a context profile to all steps if context_builder is available.
             if let Some(cb) = &self.context_builder {
@@ -474,20 +593,27 @@ impl SchedulerService {
             }
         }
 
-        // Helper: check if an open consolidation task already exists.
+        // Helper: check if a consolidation task is active OR was completed recently (within 2h).
+        // The 2-hour cooldown prevents perception_scan from re-queuing consolidation every tick
+        // when the previous run finishes in under 5 minutes.
         let open_consolidation_exists = || async {
             let q = neo4rs::query(
                 "MATCH (t:Task) \
                  WHERE t.goal CONTAINS 'consolidat' \
-                   AND t.status IN ['created', 'in_progress'] \
+                   AND (t.status IN ['created', 'in_progress'] \
+                     OR (t.status = 'completed' \
+                         AND t.created_at >= datetime() - duration({hours: 2}))) \
                  RETURN count(t) AS cnt",
             );
+            // Default to 1 (assume consolidation exists) on any DB error so that
+            // a transient Neo4j failure never causes a spurious duplicate task to
+            // be created — the safe direction is to skip, not to enqueue.
             self.neo4j
                 .execute(q)
                 .await
                 .ok()
                 .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(0)
+                .unwrap_or(1)
                 > 0
         };
 
@@ -506,7 +632,9 @@ impl SchedulerService {
             .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
             .unwrap_or(0);
 
-        if due_count >= 10 && !open_consolidation_exists().await {
+        // Raised threshold from 10 → 25: 10 was too easily hit by normal note accumulation,
+        // causing a new consolidation task every scheduler tick.
+        if due_count >= 25 && !open_consolidation_exists().await {
             let goal = format!(
                 "Consolidate {} overdue spaced-repetition notes into long-term memory",
                 due_count
@@ -560,7 +688,7 @@ impl SchedulerService {
             .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
             .unwrap_or(0);
 
-        if episodic_count >= 50 && !open_consolidation_exists().await {
+        if episodic_count >= 75 && !open_consolidation_exists().await {
             let goal = format!(
                 "Consolidate {} episodic notes — distil recurring patterns into semantic memory",
                 episodic_count
@@ -637,6 +765,109 @@ impl SchedulerService {
             }
         }
 
+        // Trigger 4: daily news cycle self-healing — if no news note has been stored in the last
+        // 26 hours (slightly beyond the 20-hour cooldown) and no daily news task is active or
+        // recently completed, the cycle has broken (e.g. chain died, self-scheduling step was
+        // cancelled).  Auto-create a new task so the cycle recovers without manual intervention.
+        let news_cycle_check = neo4rs::query(
+            "MATCH (n:Note) \
+             WHERE n.note_type = 'news' \
+               AND n.created_at >= datetime() - duration({hours: 26}) \
+             RETURN count(n) AS cnt",
+        );
+        let recent_news_count: i64 = self
+            .neo4j
+            .execute(news_cycle_check)
+            .await
+            .ok()
+            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+            .unwrap_or(1); // default to 1 so we don't fire if the query fails
+
+        if recent_news_count == 0 {
+            let check_active = neo4rs::query(
+                "MATCH (t:Task) \
+                 WHERE (t.goal CONTAINS 'daily news' \
+                     OR t.goal CONTAINS 'news aggregation' \
+                     OR t.goal CONTAINS 'news briefing') \
+                   AND t.status IN ['created', 'in_progress'] \
+                 RETURN count(t) AS cnt",
+            );
+            let active: i64 = self
+                .neo4j
+                .execute(check_active)
+                .await
+                .ok()
+                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+                .unwrap_or(1);
+
+            if active == 0 {
+                let goal = "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing";
+                if self
+                    .neo4j
+                    .create_task(
+                        goal,
+                        Some(
+                            "Auto-generated by perception scan: daily news cycle recovery \
+                             (no news note in the last 26 hours and no active news task)",
+                        ),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    created += 1;
+                    info!("Perception scan created daily news recovery task (cycle was broken)");
+                }
+            }
+        }
+
+        // Trigger 5 (was 4): no codebase self-analysis note exists — bootstrap self-knowledge.
+        // Only fires once (or after all codebase notes are pruned).
+        let codebase_check = neo4rs::query(
+            "MATCH (n:Note) \
+             WHERE n.source_context = 'codebase_self_analysis' \
+             RETURN count(n) AS cnt",
+        );
+        let codebase_note_count: i64 = self
+            .neo4j
+            .execute(codebase_check)
+            .await
+            .ok()
+            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+            .unwrap_or(0);
+
+        if codebase_note_count == 0 {
+            let check_existing = neo4rs::query(
+                "MATCH (t:Task) \
+                 WHERE (t.goal CONTAINS 'codebase' OR t.goal CONTAINS 'self-knowledge') \
+                   AND t.status IN ['created', 'in_progress'] \
+                 RETURN count(t) AS cnt",
+            );
+            let existing: i64 = self
+                .neo4j
+                .execute(check_existing)
+                .await
+                .ok()
+                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+                .unwrap_or(0);
+
+            if existing == 0 {
+                let goal =
+                    "Analyze own codebase structure and store self-knowledge in graph";
+                if self
+                    .neo4j
+                    .create_task(
+                        goal,
+                        Some("Auto-generated: no codebase self-analysis note found in graph"),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    created += 1;
+                    info!("Perception scan created codebase self-analysis task");
+                }
+            }
+        }
+
         Ok(created)
     }
 
@@ -644,10 +875,730 @@ impl SchedulerService {
     // Goal → chain-step mapper
     // =========================================================================
 
-    fn goal_to_steps(goal: &str, task_id: &str) -> Vec<ChainStep> {
+    /// Look up a matching `SchedulerChain` node in Neo4j.
+    /// Returns `Some(steps)` if a pattern match is found; `None` to fall through
+    /// to the hardcoded heuristics.  Template vars `{{task_id}}`, `{{goal}}`,
+    /// and `{{date}}` are substituted before deserialization.
+    async fn try_load_chain_from_neo4j(
+        &self,
+        goal: &str,
+        task_id: &str,
+    ) -> Option<Vec<ChainStep>> {
+        let cypher = "MATCH (c:SchedulerChain) \
+                      WHERE toLower($goal) CONTAINS toLower(c.pattern) \
+                      RETURN c.steps AS steps \
+                      ORDER BY c.priority ASC \
+                      LIMIT 1";
+        let rows = self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("goal", goal))
+            .await
+            .ok()?;
+        let steps_json = rows.first()?.get::<String>("steps").ok()?;
+        let date = Utc::now().format("%Y-%m-%d").to_string();
+        let substituted = steps_json
+            .replace("{{task_id}}", task_id)
+            .replace("{{goal}}", goal)
+            .replace("{{date}}", &date);
+        match serde_json::from_str::<Vec<ChainStep>>(&substituted) {
+            Ok(steps) => {
+                info!(goal = %goal, steps = steps.len(), "Scheduler: routing via SchedulerChain from Neo4j");
+                Some(steps)
+            }
+            Err(e) => {
+                warn!(goal = %goal, error = %e, "SchedulerChain deserialization failed — falling back to heuristics");
+                None
+            }
+        }
+    }
+
+    async fn goal_to_steps(&self, goal: &str, task_id: &str) -> Vec<ChainStep> {
+        // Agent-defined routing chains take priority over hardcoded heuristics.
+        if let Some(steps) = self.try_load_chain_from_neo4j(goal, task_id).await {
+            return steps;
+        }
+
         let g = goal.to_lowercase();
 
-        let mut steps = if g.contains("document") || g.contains("current state") {
+        // Health monitor is checked first — its goal contains "failure" and "review" which
+        // would otherwise be swallowed by later generic branches.
+        let mut steps = if g.contains("health monitor") || g.contains("health check") {
+            // Recurring brain health monitor: gather metrics, reason, store snapshot, re-queue.
+            let next_goal =
+                "Brain health monitor: review scheduler state, queue metrics, and failure patterns";
+            vec![
+                ChainStep {
+                    tool_name: "get_scheduler_status".to_string(),
+                    arguments: Some(json!({})),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "queue_status".to_string(),
+                    arguments: Some(json!({ "limit": 20 })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "list_tasks".to_string(),
+                    arguments: Some(json!({ "status": "failed", "limit": 10 })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "duckdb_query".to_string(),
+                    arguments: Some(json!({
+                        "sql": "SELECT model_name, \
+                                       COUNT(*) AS total, \
+                                       SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes, \
+                                       SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures, \
+                                       AVG(duration_ms) AS avg_duration_ms, \
+                                       SUM(tokens_in) AS total_tokens_in, \
+                                       SUM(tokens_out) AS total_tokens_out \
+                                FROM model_usage \
+                                GROUP BY model_name \
+                                ORDER BY total DESC"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": "Model usage stats from the previous step: {{_prev}}\n\n\
+                                     Based on the above model stats, plus the scheduler state, \
+                                     queue metrics, and recent failed tasks collected earlier \
+                                     in this chain: what is the current health of the brain? \
+                                     Are there any regressions, bottlenecks, or patterns \
+                                     emerging compared to previous health snapshots?",
+                        "store_inference": true
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": "Health monitor snapshot stored — see inference note for analysis.",
+                        "note_type": "outcome",
+                        "source_context": "health_monitor"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // Self-scheduling: re-create the task so the next cycle runs automatically.
+                ChainStep {
+                    tool_name: "create_task".to_string(),
+                    arguments: Some(json!({
+                        "goal": next_goal,
+                        "context": "Recurring autonomous health check — self-scheduled"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("daily news")
+            || g.contains("news aggregation")
+            || g.contains("news briefing")
+        {
+            // Daily news aggregation:
+            //   - 4 search categories (world, tech/AI, business/politics, international)
+            //   - Outlet names embedded in queries to steer results toward quality sources
+            //   - reason prompt performs bias labelling (L/R/C/I), propaganda flagging, and
+            //     produces a ## CURIOUS THREADS section for follow-up research
+            //   - Stores briefing as note_type="news"; creates a follow-up research task;
+            //     self-schedules tomorrow's run.
+            let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let session_id = format!("news-{}", date);
+            let next_daily_goal = "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing";
+            let follow_up_goal = format!("Follow-up research from {} news briefing: investigate curious threads and store findings", date);
+            let store_context = format!("daily_news_briefing_{}", date);
+            vec![
+                // --- World & international news (AP, Reuters, BBC, Guardian) ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("top world news {} AP Reuters BBC Guardian Associated Press", date),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "WORLD NEWS:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Technology, AI & science (TechCrunch, Wired, Ars Technica, MIT Tech Review) ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("AI technology science news {} TechCrunch Wired Ars Technica MIT Technology Review", date),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "TECHNOLOGY & AI NEWS:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Business, economy & politics (FT, WSJ, Bloomberg, Politico) ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("business economy politics news {} Financial Times WSJ Bloomberg Politico", date),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "BUSINESS, ECONOMY & POLITICS:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Non-Western & international perspectives (Al Jazeera, Der Spiegel, Le Monde, South China Morning Post) ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("international news perspectives {} Al Jazeera Der Spiegel Le Monde South China Morning Post", date),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "INTERNATIONAL PERSPECTIVES:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Retrieve all accumulated results ---
+                ChainStep {
+                    tool_name: "get_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "limit": 30
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Synthesise the daily briefing with bias analysis ---
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": format!(
+                            "You are a senior news analyst compiling the daily intelligence briefing for {}.\n\n\
+                             Below are search results from four news categories \
+                             (world, technology/AI, business/politics, international perspectives):\n\n\
+                             {{{{_prev}}}}\n\n\
+                             Produce a comprehensive daily briefing structured EXACTLY as follows:\n\n\
+                             ## EXECUTIVE SUMMARY\n\
+                             One paragraph covering the 3 most consequential stories of the day.\n\n\
+                             ## WORLD NEWS\n\
+                             3-5 stories. For each story: 2-3 sentence summary + source link.\n\
+                             After each story headline add a bias label in brackets: [LEFT], [RIGHT], [CENTER], or [INDIFFERENT].\n\
+                             If a story shows signs of spin, selective framing, or propaganda add ⚠️ SPIN FLAG: <one-sentence explanation>.\n\n\
+                             ## TECHNOLOGY & AI\n\
+                             3-5 stories. Same format: summary + link + bias label + spin flag if warranted.\n\
+                             Flag stories that appear to be PR/marketing disguised as news.\n\n\
+                             ## BUSINESS, ECONOMY & POLITICS\n\
+                             3-5 stories. Same format. Flag partisan framing or motivated reasoning.\n\n\
+                             ## INTERNATIONAL PERSPECTIVES\n\
+                             2-3 stories specifically from non-Western outlets. Note how they frame \
+                             events differently from Western sources where relevant.\n\n\
+                             ## CURIOUS THREADS\n\
+                             List exactly 3 topics from today's news that are:\n\
+                             - Potentially significant for AI, software engineering, or distributed systems\n\
+                             - Underreported or framed too narrowly\n\
+                             - Relevant to autonomous agents, LLMs, or Rust/systems development\n\
+                             Format each as: **[Topic]**: one-sentence explanation of why it warrants investigation.\n\n\
+                             ## STORY TO WATCH\n\
+                             One sentence on the story most likely to develop further in the next 48 hours.\n\n\
+                             Rules:\n\
+                             - Preserve ALL URLs exactly as they appear in the search results.\n\
+                             - Be factual and analytical, not opinionated.\n\
+                             - Cross-reference the same story across multiple sources when possible.",
+                            date
+                        ),
+                        "store_inference": true
+                    })),
+                    priority: Some(2),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Persist as a daily news briefing note ---
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": "{{_prev}}",
+                        "note_type": "news",
+                        "source_context": store_context
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Create follow-up research task for today's curious threads ---
+                ChainStep {
+                    tool_name: "create_task".to_string(),
+                    arguments: Some(json!({
+                        "goal": follow_up_goal,
+                        "context": format!("Research the CURIOUS THREADS topics identified in the {} daily news briefing. Search for more context on each topic and store findings.", date)
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Self-schedule for next daily run ---
+                ChainStep {
+                    tool_name: "create_task".to_string(),
+                    arguments: Some(json!({
+                        "goal": next_daily_goal,
+                        "context": "Recurring daily news aggregation — self-scheduled"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("weekly news") || g.contains("weekly briefing") {
+            // Weekly news synthesis:
+            //   - Broader "this week" queries across the same 4 categories
+            //   - reason prompt focuses on week-level themes, trend arcs, and pattern shifts
+            //   - 6-day self-scheduling cadence (cooldown enforced in do_tick)
+            let week_start = {
+                use chrono::Datelike;
+                let now = chrono::Utc::now();
+                let days_since_monday = now.weekday().num_days_from_monday();
+                (now - chrono::Duration::days(days_since_monday as i64))
+                    .format("%Y-%m-%d")
+                    .to_string()
+            };
+            let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let session_id = format!("weekly-news-{}", week_start);
+            let next_weekly_goal = "Weekly news briefing and analysis: synthesize major world, tech, business, and international stories from the past week";
+            let store_context = format!("weekly_news_briefing_{}", week_start);
+            vec![
+                // --- World news this week ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("major world news events week of {} AP Reuters BBC", week_start),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "WORLD NEWS THIS WEEK:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Technology & AI this week ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("AI technology breakthroughs this week {} TechCrunch Wired Ars Technica", week_start),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "TECHNOLOGY & AI THIS WEEK:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Business & politics this week ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("business economy politics developments week of {} Financial Times Bloomberg Politico", week_start),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "BUSINESS & POLITICS THIS WEEK:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- International perspectives this week ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("international news analysis week {} Al Jazeera Der Spiegel Le Monde South China Morning Post", week_start),
+                        "count": 10
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "INTERNATIONAL PERSPECTIVES THIS WEEK:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Also pull any daily briefings already stored for this week ---
+                ChainStep {
+                    tool_name: "search_notes".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("daily news briefing {}", week_start),
+                        "limit": 7
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "STORED DAILY BRIEFINGS THIS WEEK:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Retrieve all accumulated context ---
+                ChainStep {
+                    tool_name: "get_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "limit": 40
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Synthesise the weekly briefing ---
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": format!(
+                            "You are a senior intelligence analyst compiling the weekly briefing for the week of {}.\n\n\
+                             Below are search results and any stored daily briefings from this week:\n\n\
+                             {{{{_prev}}}}\n\n\
+                             Produce a comprehensive weekly intelligence briefing structured EXACTLY as follows:\n\n\
+                             ## WEEK IN REVIEW — {}\n\
+                             Two-paragraph executive summary of the week's most consequential developments \
+                             and any emergent patterns or inflection points.\n\n\
+                             ## MAJOR WORLD EVENTS\n\
+                             Top 5 world stories of the week. For each: 3-4 sentence summary + source link.\n\
+                             Add bias label [LEFT/RIGHT/CENTER/INDIFFERENT] and ⚠️ SPIN FLAG where warranted.\n\n\
+                             ## TECHNOLOGY & AI DEVELOPMENTS\n\
+                             Top 5 tech/AI stories. Same format. Flag PR-driven stories explicitly.\n\
+                             Note any stories with direct implications for autonomous agents or LLMs.\n\n\
+                             ## BUSINESS, ECONOMY & POLITICS\n\
+                             Top 5 stories. Same format. Note any regulatory, economic, or geopolitical \
+                             shifts that could affect the technology sector.\n\n\
+                             ## INTERNATIONAL PERSPECTIVES\n\
+                             3 stories from non-Western sources. Highlight framing differences from Western coverage.\n\n\
+                             ## TREND ARCS\n\
+                             3 multi-day trends that developed or accelerated this week. \
+                             For each: what drove it, where it's heading, why it matters.\n\n\
+                             ## CURIOUS THREADS\n\
+                             3 underreported or technically significant topics worth deeper investigation. \
+                             Format: **[Topic]**: why it matters for AI/systems/agents.\n\n\
+                             ## STORY TO WATCH NEXT WEEK\n\
+                             One sentence on the most likely developing story to follow.\n\n\
+                             Rules: preserve ALL URLs. Be analytical, not opinionated. Cross-reference sources.",
+                            week_start, week_start
+                        ),
+                        "store_inference": true
+                    })),
+                    priority: Some(2),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Persist as a weekly news note ---
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": "{{_prev}}",
+                        "note_type": "news",
+                        "source_context": store_context
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Self-schedule for next week ---
+                ChainStep {
+                    tool_name: "create_task".to_string(),
+                    arguments: Some(json!({
+                        "goal": next_weekly_goal,
+                        "context": format!("Recurring weekly news briefing — self-scheduled after {}", date)
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+
+        } else if g.contains("follow-up research from")
+            || g.contains("research curious threads")
+            || g.contains("investigate curious")
+        {
+            // Follow-up research: find the relevant news briefing, pull the CURIOUS THREADS
+            // topics, search the web for each, and store consolidated findings.
+            // Triggered by the daily/weekly news chain's follow-up task.
+            let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let session_id = format!("research-{}", date);
+            let store_context = format!("news_research_{}", date);
+            vec![
+                // --- Find today's (or most recent) news briefing ---
+                ChainStep {
+                    tool_name: "search_notes".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("daily news briefing CURIOUS THREADS {}", date),
+                        "limit": 3
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "NEWS BRIEFING CONTEXT:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Search for more context on the curious threads topics ---
+                ChainStep {
+                    tool_name: "search_web".to_string(),
+                    arguments: Some(json!({
+                        "query": format!("AI autonomous agents LLM systems developments research {}", date),
+                        "count": 8
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "push_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "content": "FOLLOW-UP SEARCH RESULTS:\n{{_prev}}",
+                        "role": "observation"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Retrieve all context ---
+                ChainStep {
+                    tool_name: "get_context".to_string(),
+                    arguments: Some(json!({
+                        "session_id": session_id,
+                        "limit": 20
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Synthesise research findings ---
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": format!(
+                            "You are a research analyst doing follow-up investigation on topics \
+                             flagged as CURIOUS THREADS in today's ({}) news briefing.\n\n\
+                             Below is the briefing context and additional search results:\n\n\
+                             {{{{_prev}}}}\n\n\
+                             Produce a research findings report:\n\
+                             1. For each CURIOUS THREAD topic found in the briefing, provide 2-3 \
+                                paragraphs of deeper context and analysis.\n\
+                             2. Identify any connections between these topics and autonomous agents, \
+                                LLMs, Rust/systems programming, or distributed systems.\n\
+                             3. Note any actionable implications: things to build, patterns to adopt, \
+                                risks to be aware of, or areas to monitor.\n\
+                             4. Include all relevant source URLs.\n\n\
+                             Be concise and technically precise.",
+                            date
+                        ),
+                        "store_inference": true
+                    })),
+                    priority: Some(2),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                // --- Store research findings ---
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": "{{_prev}}",
+                        "note_type": "semantic",
+                        "source_context": store_context
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+
+        } else if g.contains("add news source")
+            || g.starts_with("news source:")
+            || g.contains("register news source")
+        {
+            // News source management: store a new source as a news_source note.
+            // The note content is JSON: { name, url, bias, scope, description }.
+            // Bias values: "left" | "right" | "center" | "indifferent"
+            // Scope values: "world" | "tech" | "business" | "international" | "financial" | "general"
+            // Both humans and the LLM can add sources by creating tasks with this goal pattern.
+            vec![
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": format!(
+                            "Extract news source details from this task goal and format as JSON.\n\
+                             Task goal: \"{}\"\n\n\
+                             Return ONLY a JSON object with these fields:\n\
+                             - name: outlet name (string)\n\
+                             - url: domain or URL (string)\n\
+                             - bias: political leaning — one of: \"left\", \"right\", \"center\", \"indifferent\"\n\
+                             - scope: coverage focus — one of: \"world\", \"tech\", \"business\", \"international\", \"financial\", \"general\"\n\
+                             - description: one sentence describing the outlet (string)\n\n\
+                             Example: {{\"name\":\"Reuters\",\"url\":\"reuters.com\",\"bias\":\"center\",\"scope\":\"world\",\"description\":\"International wire service known for factual reporting.\"}}\n\n\
+                             If you cannot determine bias from the goal, use \"indifferent\". \
+                             If you cannot determine scope, use \"general\".",
+                            goal
+                        ),
+                        "store_inference": false
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": "{{_prev}}",
+                        "note_type": "news_source",
+                        "source_context": "news_source_registry"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+
+        } else if g.contains("document") || g.contains("current state") {
             // Document / capture state: search knowledge, then consolidate
             vec![
                 ChainStep {
@@ -655,7 +1606,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -663,7 +1614,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "topic": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -675,7 +1626,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -683,7 +1634,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -694,7 +1645,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -706,7 +1657,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -714,7 +1665,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -726,7 +1677,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -738,7 +1689,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -749,7 +1700,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -774,7 +1725,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "topic": topic, "limit": 15 })),
                     priority: Some(1),
                     max_attempts: Some(2),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -786,7 +1737,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(2),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 // Mark the parent task completed so open_consolidation_exists() stays accurate.
@@ -795,7 +1746,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "task_id": task_id, "status": "completed" })),
                     priority: Some(1),
                     max_attempts: Some(1),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -812,7 +1763,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 15 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -820,7 +1771,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -831,7 +1782,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -843,7 +1794,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -859,7 +1810,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "count": 5 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -870,7 +1821,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -886,7 +1837,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -894,7 +1845,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -905,7 +1856,86 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("codebase")
+            || g.contains("own structure")
+            || g.contains("self-knowledge")
+            || g.contains("self knowledge")
+        {
+            // Codebase self-analysis: generate overview, log history, reason over structure.
+            // Triggered by perception_scan when no codebase note exists, or manually.
+            vec![
+                ChainStep {
+                    tool_name: "analyze_own_structure".to_string(),
+                    arguments: Some(json!({ "store_as_note": true })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "get_git_log".to_string(),
+                    arguments: Some(json!({ "n": 10 })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": "Based on the codebase structure and recent commits, what are the key architectural patterns, current capabilities, and areas for improvement?",
+                        "store_inference": true
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+            ]
+        } else if g.contains("git history")
+            || g.contains("recent changes")
+            || g.contains("what changed")
+            || g.contains("commit history")
+        {
+            // Git history analysis: fetch recent commits, diff, reason over changes.
+            vec![
+                ChainStep {
+                    tool_name: "get_git_log".to_string(),
+                    arguments: Some(json!({ "n": 20 })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "get_git_diff".to_string(),
+                    arguments: Some(json!({ "from_ref": "HEAD~10" })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": format!("Git history analysis: {goal}"),
+                        "note_type": "episodic"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({ "question": goal, "store_inference": true })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -917,7 +1947,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -925,7 +1955,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]
@@ -937,7 +1967,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "query": goal, "limit": 10 })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -945,7 +1975,7 @@ impl SchedulerService {
                     arguments: Some(json!({ "question": goal, "store_inference": true })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
                 ChainStep {
@@ -957,7 +1987,7 @@ impl SchedulerService {
                     })),
                     priority: Some(1),
                     max_attempts: Some(3),
-                    provider_hint: None,
+                    provider_hint: Some("ollama".to_string()),
                     context_profile: None,
                 },
             ]

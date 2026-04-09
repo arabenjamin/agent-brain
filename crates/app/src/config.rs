@@ -23,7 +23,11 @@ pub struct DatabaseConfig {
 #[derive(Debug, Clone)]
 pub struct LlmProviderConfig {
     pub provider: crate::services::llm::LlmProviderType,
+    /// Ollama Cloud endpoint (default: https://ollama.com). Used when provider=ollama-cloud.
     pub ollama_url: String,
+    /// Local Ollama endpoint (default: http://localhost:11434).
+    /// Always used for embeddings, and for provider=ollama.
+    pub ollama_local_url: String,
     pub ollama_model: String,
     pub ollama_embed_model: Option<String>,
     pub ollama_api_key: Option<String>,
@@ -109,11 +113,14 @@ impl Config {
                 provider: env::var("LLM_PROVIDER")
                     .map(|s| match s.to_lowercase().as_str() {
                         "anthropic" => crate::services::llm::LlmProviderType::Anthropic,
-                        "gemini" => crate::services::llm::LlmProviderType::Gemini,
+                        "gemini"    => crate::services::llm::LlmProviderType::Gemini,
+                        "ollama-cloud" | "ollamacloud" => crate::services::llm::LlmProviderType::OllamaCloud,
                         _ => crate::services::llm::LlmProviderType::Ollama,
                     })
                     .unwrap_or_default(),
                 ollama_url: env::var("OLLAMA_URL")
+                    .unwrap_or_else(|_| "https://ollama.com".to_string()),
+                ollama_local_url: env::var("OLLAMA_LOCAL_URL")
                     .unwrap_or_else(|_| "http://localhost:11434".to_string()),
                 ollama_model: env::var("OLLAMA_MODEL")
                     .unwrap_or_else(|_| "granite4:latest".to_string()),
@@ -170,7 +177,8 @@ impl Config {
             },
             llm: LlmProviderConfig {
                 provider: crate::services::llm::LlmProviderType::Ollama,
-                ollama_url: "http://localhost:11434".to_string(),
+                ollama_url: "https://ollama.com".to_string(),
+                ollama_local_url: "http://localhost:11434".to_string(),
                 ollama_model: "granite4:latest".to_string(),
                 ollama_embed_model: None,
                 ollama_api_key: None,

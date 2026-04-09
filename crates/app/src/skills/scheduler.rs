@@ -1,24 +1,27 @@
 //! Scheduler Skill — controls the autonomous self-improvement loop.
 //!
-//! Exposes 5 tools: `start_scheduler`, `stop_scheduler`, `get_scheduler_status`,
-//! `configure_scheduler`, `run_scheduler_tick`.
+//! Exposes 8 tools: `start_scheduler`, `stop_scheduler`, `get_scheduler_status`,
+//! `configure_scheduler`, `run_scheduler_tick`, `define_scheduler_chain`,
+//! `list_scheduler_chains`, `remove_scheduler_chain`.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+use crate::repository::Neo4jClient;
 use crate::services::scheduler::SchedulerService;
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 pub struct SchedulerSkill {
     service: Arc<SchedulerService>,
+    neo4j: Option<Neo4jClient>,
 }
 
 impl SchedulerSkill {
-    pub fn new(service: Arc<SchedulerService>) -> Self {
-        Self { service }
+    pub fn new(service: Arc<SchedulerService>, neo4j: Option<Neo4jClient>) -> Self {
+        Self { service, neo4j }
     }
 
     // =========================================================================
@@ -245,6 +248,197 @@ impl SchedulerSkill {
             Err(e) => ToolCallResult::error(format!("Scheduler tick failed: {e}")),
         }
     }
+
+    // =========================================================================
+    // SchedulerChain tool definitions
+    // =========================================================================
+
+    fn define_scheduler_chain_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "define_scheduler_chain".to_string(),
+            description: "Store or update a routing chain in Neo4j. When a task goal contains \
+                          'pattern' (case-insensitive), the scheduler dispatches these steps \
+                          instead of the built-in heuristics. Lower priority = checked first."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Substring to match in the task goal (case-insensitive)"
+                    },
+                    "steps": {
+                        "type": "array",
+                        "description": "Array of ChainStep objects (tool_name, arguments, context_profile). \
+                                        Use {{task_id}}, {{goal}}, {{date}} as template vars."
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "description": "Check order — lower = checked first (default: 100)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Human-readable description of what this chain does"
+                    }
+                },
+                "required": ["pattern", "steps"]
+            }),
+        }
+    }
+
+    fn list_scheduler_chains_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_scheduler_chains".to_string(),
+            description: "List all SchedulerChain nodes stored in Neo4j (pattern, priority, \
+                          description, step count). Does not return the full step definitions."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    fn remove_scheduler_chain_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "remove_scheduler_chain".to_string(),
+            description: "Delete a SchedulerChain by its id. The built-in heuristics continue \
+                          to apply for goals that no longer match any stored chain."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "SchedulerChain node id to delete" }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    // =========================================================================
+    // SchedulerChain handlers
+    // =========================================================================
+
+    async fn handle_define_scheduler_chain(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input {
+            pattern: String,
+            steps: Value,
+            #[serde(default = "default_priority")]
+            priority: i64,
+            #[serde(default)]
+            description: Option<String>,
+        }
+        fn default_priority() -> i64 { 100 }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+
+        let steps_json = match serde_json::to_string(&input.steps) {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(format!("Failed to serialize steps: {}", e)),
+        };
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let cypher = "MERGE (c:SchedulerChain {pattern: $pattern}) \
+                      SET c.id          = COALESCE(c.id, $id), \
+                          c.steps       = $steps, \
+                          c.priority    = $priority, \
+                          c.description = $description, \
+                          c.updated_at  = datetime()";
+
+        if let Err(e) = neo4j
+            .run(
+                neo4rs::query(cypher)
+                    .param("pattern",     input.pattern.clone())
+                    .param("id",          id)
+                    .param("steps",       steps_json)
+                    .param("priority",    input.priority)
+                    .param("description", input.description.unwrap_or_default()),
+            )
+            .await
+        {
+            return ToolCallResult::error(format!("Failed to store SchedulerChain: {}", e));
+        }
+
+        ToolCallResult::success_text(
+            serde_json::to_string_pretty(&json!({
+                "stored": true,
+                "pattern": input.pattern,
+                "priority": input.priority,
+                "step_count": input.steps.as_array().map(|a| a.len()).unwrap_or(0),
+            }))
+            .unwrap(),
+        )
+    }
+
+    async fn handle_list_scheduler_chains(&self) -> ToolCallResult {
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+
+        let cypher = "MATCH (c:SchedulerChain) \
+                      RETURN c.id AS id, c.pattern AS pattern, c.priority AS priority, \
+                             c.description AS description, c.steps AS steps \
+                      ORDER BY c.priority ASC, c.pattern ASC";
+
+        match neo4j.execute(neo4rs::query(cypher)).await {
+            Ok(rows) => {
+                let chains: Vec<Value> = rows.iter().map(|row| {
+                    let step_count = row.get::<String>("steps").ok()
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .and_then(|v| v.as_array().map(|a| a.len()))
+                        .unwrap_or(0);
+                    json!({
+                        "id":          row.get::<String>("id").unwrap_or_default(),
+                        "pattern":     row.get::<String>("pattern").unwrap_or_default(),
+                        "priority":    row.get::<i64>("priority").unwrap_or(100),
+                        "description": row.get::<String>("description").unwrap_or_default(),
+                        "step_count":  step_count,
+                    })
+                }).collect();
+                let count = chains.len();
+                ToolCallResult::success_text(
+                    serde_json::to_string_pretty(&json!({ "count": count, "chains": chains })).unwrap()
+                )
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to list chains: {}", e)),
+        }
+    }
+
+    async fn handle_remove_scheduler_chain(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input { id: String }
+
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+
+        let cypher = "MATCH (c:SchedulerChain {id: $id}) DELETE c RETURN count(c) AS deleted";
+        match neo4j.execute(neo4rs::query(cypher).param("id", input.id.clone())).await {
+            Ok(rows) => {
+                let deleted = rows.first()
+                    .and_then(|r| r.get::<i64>("deleted").ok())
+                    .unwrap_or(0);
+                if deleted > 0 {
+                    ToolCallResult::success_text(
+                        json!({ "deleted": true, "id": input.id }).to_string()
+                    )
+                } else {
+                    ToolCallResult::error(format!("No SchedulerChain found with id '{}'", input.id))
+                }
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to remove chain: {}", e)),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,22 +469,31 @@ impl Skill for SchedulerSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
+        let mut tools = vec![
             Self::start_scheduler_def(),
             Self::stop_scheduler_def(),
             Self::get_scheduler_status_def(),
             Self::configure_scheduler_def(),
             Self::run_scheduler_tick_def(),
-        ]
+        ];
+        if self.neo4j.is_some() {
+            tools.push(Self::define_scheduler_chain_def());
+            tools.push(Self::list_scheduler_chains_def());
+            tools.push(Self::remove_scheduler_chain_def());
+        }
+        tools
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         let result = match tool_name {
-            "start_scheduler" => self.handle_start_scheduler(arguments).await,
-            "stop_scheduler" => self.handle_stop_scheduler().await,
-            "get_scheduler_status" => self.handle_get_scheduler_status().await,
-            "configure_scheduler" => self.handle_configure_scheduler(arguments).await,
-            "run_scheduler_tick" => self.handle_run_scheduler_tick().await,
+            "start_scheduler"        => self.handle_start_scheduler(arguments).await,
+            "stop_scheduler"         => self.handle_stop_scheduler().await,
+            "get_scheduler_status"   => self.handle_get_scheduler_status().await,
+            "configure_scheduler"    => self.handle_configure_scheduler(arguments).await,
+            "run_scheduler_tick"     => self.handle_run_scheduler_tick().await,
+            "define_scheduler_chain" => self.handle_define_scheduler_chain(arguments).await,
+            "list_scheduler_chains"  => self.handle_list_scheduler_chains().await,
+            "remove_scheduler_chain" => self.handle_remove_scheduler_chain(arguments).await,
             _ => return None,
         };
         Some(result)

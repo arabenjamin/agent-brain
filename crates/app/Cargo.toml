@@ -28,7 +28,6 @@ reqwest = { workspace = true }
 
 # URL parsing
 url = "2"
-urlencoding = "2"
 
 # Regular expressions
 regex = "1"
@@ -65,9 +64,6 @@ rand = "0.8"
 # AWS Secrets Manager (optional — enable with 'aws' feature)
 aws-config = { version = "1.5", features = ["behavior-version-latest"], optional = true }
 aws-sdk-secretsmanager = { version = "1.54", optional = true }
-
-# Base64 encoding for Basic auth
-base64 = "0.22"
 
 # YAML parsing (model catalog)
 serde_yaml = { workspace = true }

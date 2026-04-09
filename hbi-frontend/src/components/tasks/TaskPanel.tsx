@@ -37,7 +37,7 @@ export default function TaskPanel() {
       ]);
 
       const taskData = JSON.parse(taskJson);
-      setTasks(taskData.tasks ?? []);
+      setTasks(taskData.tasks ?? taskData.rows ?? []);
 
       const queueData = JSON.parse(queueJson);
       setQueue(queueData);
@@ -49,10 +49,10 @@ export default function TaskPanel() {
     }
   }, []);
 
-  // Initial load + auto-refresh every 8 seconds.
+  // Initial load + auto-refresh every 1000 milliseconds.
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 8000);
+    const id = setInterval(refresh, 1000);
     return () => clearInterval(id);
   }, [refresh]);
 

@@ -99,23 +99,6 @@ impl ModelSkill {
         }
     }
 
-    fn get_model_stats_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "get_model_stats".to_string(),
-            description: "Get usage statistics for a model from the model_usage table.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "model": {
-                        "type": "string",
-                        "description": "Model name to look up."
-                    }
-                },
-                "required": ["model"]
-            }),
-        }
-    }
-
     fn reload_models_def() -> ToolDefinition {
         ToolDefinition {
             name: "reload_models".to_string(),
@@ -153,9 +136,10 @@ impl ModelSkill {
             "active_provider": active_provider,
             "active_model":    active_model,
             "available_providers": [
-                { "name": "Ollama",    "type": LlmProviderType::Ollama.to_string(),    "cost": "free (local)" },
-                { "name": "Anthropic", "type": LlmProviderType::Anthropic.to_string(), "cost": "paid" },
-                { "name": "Gemini",    "type": LlmProviderType::Gemini.to_string(),    "cost": "paid" },
+                { "name": "Ollama (local)", "type": LlmProviderType::Ollama.to_string(),      "cost": "free" },
+                { "name": "Ollama Cloud",   "type": LlmProviderType::OllamaCloud.to_string(), "cost": "usage-based" },
+                { "name": "Anthropic",      "type": LlmProviderType::Anthropic.to_string(),   "cost": "paid" },
+                { "name": "Gemini",         "type": LlmProviderType::Gemini.to_string(),      "cost": "paid" },
             ],
             "catalog_models": registered,
         });
@@ -180,13 +164,14 @@ impl ModelSkill {
         let mut config = self.llm_config.write().await;
         let base = config.as_ref().cloned().unwrap_or_default();
 
-        let mut new_config = match input.provider.as_str() {
-            "Ollama" | "ollama" => base.with_provider(LlmProviderType::Ollama),
-            "Anthropic" | "anthropic" => base.with_provider(LlmProviderType::Anthropic),
-            "Gemini" | "gemini" => base.with_provider(LlmProviderType::Gemini),
+        let mut new_config = match input.provider.to_lowercase().as_str() {
+            "ollama" => base.with_provider(LlmProviderType::Ollama),
+            "ollama-cloud" | "ollamacloud" => base.with_provider(LlmProviderType::OllamaCloud),
+            "anthropic" => base.with_provider(LlmProviderType::Anthropic),
+            "gemini" => base.with_provider(LlmProviderType::Gemini),
             _ => {
                 return ToolCallResult::error(
-                    "Invalid provider. Use Ollama, Anthropic, or Gemini.".to_string(),
+                    "Invalid provider. Use ollama, ollama-cloud, anthropic, or gemini.".to_string(),
                 );
             }
         };
@@ -245,28 +230,6 @@ impl ModelSkill {
         }
     }
 
-    async fn handle_get_model_stats(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            model: String,
-        }
-        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
-            Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
-        };
-
-        let Some(ref db) = self.telemetry else {
-            return ToolCallResult::error("Telemetry (DuckDB) not available".to_string());
-        };
-
-        match db.get_model_stats(&input.model) {
-            Ok(stats) => {
-                ToolCallResult::success_text(serde_json::to_string_pretty(&stats).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to get stats: {}", e)),
-        }
-    }
-
     async fn handle_reload_models(&self) -> ToolCallResult {
         let Some(ref db) = self.telemetry else {
             return ToolCallResult::error("Telemetry (DuckDB) not available".to_string());
@@ -298,7 +261,6 @@ impl Skill for ModelSkill {
             Self::list_models_def(),
             Self::use_model_def(),
             Self::select_model_def(),
-            Self::get_model_stats_def(),
             Self::reload_models_def(),
         ]
     }
@@ -308,7 +270,6 @@ impl Skill for ModelSkill {
             "list_models" => Some(self.handle_list_models().await),
             "use_model" => Some(self.handle_use_model(args).await),
             "select_model" => Some(self.handle_select_model(args).await),
-            "get_model_stats" => Some(self.handle_get_model_stats(args).await),
             "reload_models" => Some(self.handle_reload_models().await),
             _ => None,
         }

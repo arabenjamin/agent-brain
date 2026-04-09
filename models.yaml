@@ -9,6 +9,7 @@ defaults:
   timeout_secs: 120
 
 models:
+  # ── Ollama Local (http://localhost:11434) ─────────────────────────────────────
   qwen3.5:4b:
     provider: ollama
     model: "qwen3.5:4b"
@@ -39,6 +40,57 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
+  # ── Ollama Cloud (https://ollama.com) ─────────────────────────────────────────
+  minimax-m2.7:cloud:
+    provider: ollama-cloud
+    model: "minimax-m2.7:cloud"
+    context_window: 1000000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - vision
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  kimi-k2.5:cloud:
+    provider: ollama-cloud
+    model: "kimi-k2.5:cloud"
+    context_window: 1000000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - vision
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  gemma3:27b-cloud:
+    provider: ollama-cloud
+    model: "gemma3:27b-cloud"
+    context_window: 1000000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - vision
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+
+  # ── Anthropic (https://www.anthropic.com) ─────────────────────────────────
   claude-sonnet-4-6:
     provider: anthropic
     model: "claude-sonnet-4-6"
@@ -68,9 +120,10 @@ models:
     system_prompt: |
       You are agent-brain. Use tools efficiently and be concise.
 
-  gemini-2.0-flash:
+  # ── Gemini (https://ai.google.dev/gemini) ─────────────────────────────────
+  gemini-2.5-flash-lite:
     provider: gemini
-    model: "gemini-2.0-flash"
+    model: "gemini-2.5-flash-lite"
     context_window: 1048576
     cost_per_1k_input: 0.0001
     cost_per_1k_output: 0.0004
@@ -78,6 +131,45 @@ models:
       - reasoning
       - code
       - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  gemini-3.1-flash-lite-preview:
+    provider: gemini
+    model: "gemini-3.1-flash-lite-preview"
+    context_window: 1048576
+    cost_per_1k_input: 0.0001
+    cost_per_1k_output: 0.0004
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  gemini-3.1-pro-preview-customtools:
+    provider: gemini
+    model: "gemini-3.1-pro-preview-customtools"
+    context_window: 1048576
+    cost_per_1k_input: 0.0002
+    cost_per_1k_output: 0.0008
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
 
 # Default system prompt used when a model doesn't define its own.
 default_system_prompt: |

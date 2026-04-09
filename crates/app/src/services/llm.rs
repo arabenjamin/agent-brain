@@ -42,6 +42,8 @@ pub enum LlmError {
 pub enum LlmProviderType {
     #[default]
     Ollama,
+    /// Ollama Cloud (https://ollama.com) — same wire format as local, requires API key.
+    OllamaCloud,
     Anthropic,
     Gemini,
     /// vLLM or any OpenAI-compatible endpoint (LM Studio, Groq, Together, etc.)
@@ -50,7 +52,13 @@ pub enum LlmProviderType {
 
 impl std::fmt::Display for LlmProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            LlmProviderType::Ollama      => write!(f, "ollama"),
+            LlmProviderType::OllamaCloud => write!(f, "ollama-cloud"),
+            LlmProviderType::Anthropic   => write!(f, "anthropic"),
+            LlmProviderType::Gemini      => write!(f, "gemini"),
+            LlmProviderType::VLlm        => write!(f, "vllm"),
+        }
     }
 }
 
@@ -241,7 +249,7 @@ impl LlmClient {
         };
 
         let provider: Arc<dyn crate::services::llm_providers::LlmProvider> = match config.provider {
-            LlmProviderType::Ollama => Arc::new(OllamaProvider::new(provider_config)),
+            LlmProviderType::Ollama | LlmProviderType::OllamaCloud => Arc::new(OllamaProvider::new(provider_config)),
             LlmProviderType::Anthropic => Arc::new(AnthropicProvider::new(provider_config)),
             LlmProviderType::Gemini => Arc::new(GeminiProvider::new(provider_config)),
             LlmProviderType::VLlm => {

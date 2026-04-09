@@ -404,11 +404,60 @@ impl TelemetryClient {
     }
 
     /// Get aggregated usage statistics for a model.
-    pub fn get_model_stats(&self, model_name: &str) -> Result<serde_json::Value> {
+    pub fn get_model_stats(&self, model_name: Option<&str>) -> Result<serde_json::Value> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
+        // When no model is specified, return per-model stats for all models.
+        if model_name.is_none() {
+            let mut stmt = conn.prepare(
+                "SELECT
+                   model_name,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+                   SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
+                   AVG(duration_ms) AS avg_duration_ms,
+                   SUM(tokens_in)  AS total_tokens_in,
+                   SUM(tokens_out) AS total_tokens_out
+                 FROM model_usage
+                 GROUP BY model_name
+                 ORDER BY total DESC",
+            )?;
+            let rows: Vec<serde_json::Value> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .map(|(model, total, succ, fail, avg_ms, tin, tout)| {
+                    let successes = succ.unwrap_or(0);
+                    let failures = fail.unwrap_or(0);
+                    let success_rate = if total > 0 { successes as f64 / total as f64 } else { 0.0 };
+                    serde_json::json!({
+                        "model":           model,
+                        "total_calls":     total,
+                        "successes":       successes,
+                        "failures":        failures,
+                        "success_rate":    success_rate,
+                        "avg_duration_ms": avg_ms,
+                        "total_tokens_in": tin,
+                        "total_tokens_out": tout,
+                    })
+                })
+                .collect();
+            return Ok(serde_json::json!({ "models": rows }));
+        }
+
+        let name = model_name.unwrap();
         let mut stmt = conn.prepare(
             "SELECT
                COUNT(*) AS total,
@@ -420,7 +469,7 @@ impl TelemetryClient {
              FROM model_usage
              WHERE model_name = ?",
         )?;
-        let mut rows = stmt.query(params![model_name])?;
+        let mut rows = stmt.query(params![name])?;
         if let Some(row) = rows.next()? {
             let total: i64 = row.get(0)?;
             let successes: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
@@ -434,7 +483,7 @@ impl TelemetryClient {
                 0.0
             };
             Ok(serde_json::json!({
-                "model":             model_name,
+                "model":             name,
                 "total_calls":       total,
                 "successes":         successes,
                 "failures":          failures,
@@ -445,7 +494,7 @@ impl TelemetryClient {
             }))
         } else {
             Ok(serde_json::json!({
-                "model": model_name,
+                "model": name,
                 "total_calls": 0,
                 "success_rate": 0.0,
             }))
@@ -484,5 +533,71 @@ impl TelemetryClient {
         }
 
         Ok(examples)
+    }
+
+    /// Execute a read-only SQL query and return results as a JSON array.
+    ///
+    /// Write operations (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`,
+    /// `TRUNCATE`) are rejected with an error.  A `LIMIT` clause is appended
+    /// automatically if the query does not already contain one.
+    pub fn query_raw(&self, sql: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        use duckdb::types::ValueRef;
+
+        let upper = sql.trim().to_uppercase();
+        for kw in &[
+            "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE",
+        ] {
+            if upper.split_whitespace().any(|w| w == *kw) {
+                anyhow::bail!("Write operations are not allowed via query_raw (keyword: {})", kw);
+            }
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
+        let base = sql.trim().trim_end_matches(';');
+        let limited = if upper.contains(" LIMIT ") {
+            base.to_string()
+        } else {
+            format!("{} LIMIT {}", base, limit)
+        };
+
+        let mut stmt = conn.prepare(&limited)?;
+        let col_names: Vec<String> = stmt.column_names();
+        let col_count = stmt.column_count();
+
+        let rows: Vec<serde_json::Value> = stmt
+            .query_map([], |row| {
+                let mut obj = serde_json::Map::new();
+                for i in 0..col_count {
+                    let json_val = match row.get_ref(i)? {
+                        ValueRef::Null => serde_json::Value::Null,
+                        ValueRef::Boolean(b) => serde_json::Value::Bool(b),
+                        ValueRef::TinyInt(n) => serde_json::json!(n),
+                        ValueRef::SmallInt(n) => serde_json::json!(n),
+                        ValueRef::Int(n) => serde_json::json!(n),
+                        ValueRef::BigInt(n) => serde_json::json!(n),
+                        ValueRef::HugeInt(n) => serde_json::json!(n.to_string()),
+                        ValueRef::UTinyInt(n) => serde_json::json!(n),
+                        ValueRef::USmallInt(n) => serde_json::json!(n),
+                        ValueRef::UInt(n) => serde_json::json!(n),
+                        ValueRef::UBigInt(n) => serde_json::json!(n),
+                        ValueRef::Float(f) => serde_json::json!(f),
+                        ValueRef::Double(f) => serde_json::json!(f),
+                        ValueRef::Text(t) => serde_json::Value::String(
+                            std::str::from_utf8(t).unwrap_or("").to_string(),
+                        ),
+                        _ => serde_json::Value::String("(unsupported type)".to_string()),
+                    };
+                    obj.insert(col_names[i].clone(), json_val);
+                }
+                Ok(serde_json::Value::Object(obj))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
     }
 }

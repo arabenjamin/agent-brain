@@ -138,8 +138,8 @@ via DynamicSkill.
    Dependency tracking: DEPENDS_ON edges from decompose_goal.
    Meta-learning: record_outcome(failure) auto-enqueues reflect→store chain.
 
-4. AgentSkill (8 tools): enqueue_agent, enqueue_chain, queue_status, get_job_result,
-   cancel_job, retry_job, set_worker_config, drain_queue.
+4. AgentSkill (6 tools): enqueue_jobs, queue_status, cancel_job, retry_job,
+   set_worker_config, drain_queue. (get_job_result is a dynamic tool, seeded separately.)
    Priority job queue (0-3) backed by Neo4j. Per-provider semaphores:
    Ollama:3, Anthropic:2, Gemini:5. Parked/chaining lifecycle.
 
