@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::{error, info, warn};
 
-use agent_brain::cli::{Cli, Command, TransportType};
+use agent_brain::cli::{Cli, Command, TodoAction, TransportType};
 use agent_brain::config::{Config, LogFormat, LoggingConfig};
 use agent_brain::logging;
 use agent_brain::mcp::McpServer;
@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
             bind,
             api_key,
         }) => run_serve(&config, transport, &bind, api_key).await,
+        Some(Command::Todo { action, url }) => run_todo(&url, action).await,
         None => {
             // Default to stdio transport when no command specified
             run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None).await
@@ -157,6 +158,125 @@ async fn run_init_db(config: &Config) -> Result<()> {
     Ok(())
 }
 
+async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
+    let client = reqwest::Client::new();
+    let base = url.trim_end_matches('/');
+
+    match action {
+        TodoAction::Add { title, description, priority, due, tags } => {
+            let tags_vec: Vec<String> = tags
+                .unwrap_or_default()
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            let body = serde_json::json!({
+                "title": title,
+                "description": description,
+                "priority": priority,
+                "due_at": due,
+                "tags": tags_vec,
+            });
+
+            let resp = client
+                .post(format!("{base}/todos"))
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            let json: serde_json::Value = resp.json().await?;
+            if status.is_success() {
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                anyhow::bail!("Server error {}: {}", status, json);
+            }
+        }
+
+        TodoAction::List { status } => {
+            let mut req = client.get(format!("{base}/todos"));
+            if let Some(s) = status {
+                req = req.query(&[("status", s)]);
+            }
+            let resp = req.send().await?;
+            let status_code = resp.status();
+            let json: serde_json::Value = resp.json().await?;
+            if status_code.is_success() {
+                if let Some(todos) = json.get("todos").and_then(|t| t.as_array()) {
+                    if todos.is_empty() {
+                        println!("No todos found.");
+                    } else {
+                        for todo in todos {
+                            let id = todo["id"].as_str().unwrap_or("?");
+                            let title = todo["title"].as_str().unwrap_or("?");
+                            let status = todo["status"].as_str().unwrap_or("?");
+                            let priority = todo["priority"].as_i64().unwrap_or(2);
+                            let pri_label = match priority {
+                                0 => "urgent",
+                                1 => "high",
+                                2 => "normal",
+                                _ => "low",
+                            };
+                            println!("[{status}] [{pri_label}] {title}  (id: {id})");
+                        }
+                    }
+                }
+            } else {
+                anyhow::bail!("Server error {}: {}", status_code, json);
+            }
+        }
+
+        TodoAction::Done { id } => {
+            let body = serde_json::json!({"status": "done"});
+            let resp = client
+                .put(format!("{base}/todos/{id}"))
+                .json(&body)
+                .send()
+                .await?;
+            let status_code = resp.status();
+            let json: serde_json::Value = resp.json().await?;
+            if status_code.is_success() {
+                println!("Done: {}", json["title"].as_str().unwrap_or(&id));
+            } else {
+                anyhow::bail!("Server error {}: {}", status_code, json);
+            }
+        }
+
+        TodoAction::Status { id, status } => {
+            let body = serde_json::json!({"status": status});
+            let resp = client
+                .put(format!("{base}/todos/{id}"))
+                .json(&body)
+                .send()
+                .await?;
+            let status_code = resp.status();
+            let json: serde_json::Value = resp.json().await?;
+            if status_code.is_success() {
+                println!("Updated: {} -> {}", json["title"].as_str().unwrap_or(&id), json["status"].as_str().unwrap_or("?"));
+            } else {
+                anyhow::bail!("Server error {}: {}", status_code, json);
+            }
+        }
+
+        TodoAction::Delete { id } => {
+            let resp = client
+                .delete(format!("{base}/todos/{id}"))
+                .send()
+                .await?;
+            let status_code = resp.status();
+            if status_code == 204 {
+                println!("Deleted: {id}");
+            } else {
+                let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                anyhow::bail!("Server error {}: {}", status_code, json);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_serve(
     config: &Config,
     transport_type: TransportType,
@@ -240,6 +360,7 @@ async fn run_serve(
                 .with_system_prompt(system_prompt)
                 .with_catalog_path(catalog_path);
 
+            let todo_store = telemetry.as_ref().map(|t| Arc::new(t.clone()));
             if let Some(t) = telemetry {
                 server = server.with_telemetry(t);
             }
@@ -249,6 +370,10 @@ async fn run_serve(
                 .with_bind_addr(bind_addr)
                 .with_session_manager(session_manager)
                 .with_chat_service(server.chat_service());
+
+            if let Some(store) = todo_store {
+                http_config = http_config.with_todo_store(store);
+            }
 
             if let Some(key) = api_key.filter(|k| !k.is_empty()) {
                 http_config = http_config.with_api_key(key);

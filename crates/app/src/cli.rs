@@ -58,6 +58,60 @@ pub enum Command {
 
     /// Initialize the Neo4j database schema
     InitDb,
+
+    /// Manage todo items (requires server to be running)
+    Todo {
+        #[command(subcommand)]
+        action: TodoAction,
+
+        /// Agent Brain server URL
+        #[arg(long, env = "BRAIN_URL", default_value = "http://localhost:3000")]
+        url: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TodoAction {
+    /// Add a new todo
+    Add {
+        /// Title of the todo
+        title: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+        /// Priority: 0=urgent 1=high 2=normal 3=low
+        #[arg(long, default_value = "2")]
+        priority: i64,
+        /// Due date (ISO-8601, e.g. 2026-05-01)
+        #[arg(long)]
+        due: Option<String>,
+        /// Comma-separated tags
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// List todos
+    List {
+        /// Filter by status: pending, in_progress, done
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Mark a todo as done
+    Done {
+        /// Todo ID
+        id: String,
+    },
+    /// Update a todo's status
+    Status {
+        /// Todo ID
+        id: String,
+        /// New status: pending, in_progress, done
+        status: String,
+    },
+    /// Delete a todo
+    Delete {
+        /// Todo ID
+        id: String,
+    },
 }
 
 impl Cli {

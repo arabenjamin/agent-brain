@@ -10,7 +10,22 @@ pub use client::Neo4jClient;
 pub use error::{RepositoryError, Result};
 
 #[cfg(feature = "telemetry")]
-pub use telemetry::TelemetryClient;
+pub use telemetry::{TelemetryClient, Todo};
+
+/// Stub Todo struct compiled when the `telemetry` feature is disabled.
+#[cfg(not(feature = "telemetry"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Todo {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: i64,
+    pub tags: Vec<String>,
+    pub due_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
 
 /// Stub TelemetryClient compiled when the `telemetry` feature is disabled.
 ///
@@ -112,5 +127,42 @@ impl TelemetryClient {
 
     pub fn get_model_stats(&self, _model_name: &str) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::json!({ "model": _model_name, "total_calls": 0 }))
+    }
+
+    pub fn create_todo(
+        &self,
+        _title: &str,
+        _description: Option<&str>,
+        _status: Option<&str>,
+        _priority: Option<i64>,
+        _tags: Option<&str>,
+        _due_at: Option<&str>,
+    ) -> anyhow::Result<Todo> {
+        anyhow::bail!("compiled without 'telemetry' feature")
+    }
+
+    pub fn list_todos(&self, _status_filter: Option<&str>) -> anyhow::Result<Vec<Todo>> {
+        Ok(vec![])
+    }
+
+    pub fn get_todo(&self, _id: &str) -> anyhow::Result<Option<Todo>> {
+        Ok(None)
+    }
+
+    pub fn update_todo(
+        &self,
+        _id: &str,
+        _title: Option<&str>,
+        _description: Option<Option<&str>>,
+        _status: Option<&str>,
+        _priority: Option<i64>,
+        _tags: Option<&str>,
+        _due_at: Option<Option<&str>>,
+    ) -> anyhow::Result<Option<Todo>> {
+        Ok(None)
+    }
+
+    pub fn delete_todo(&self, _id: &str) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }

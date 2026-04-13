@@ -28,6 +28,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info};
 
+use crate::repository::TelemetryClient;
 use crate::services::{ChatEvent, ChatRequest, ChatService};
 
 use super::auth::{ApiKeyAuth, AuthError};
@@ -62,6 +63,8 @@ pub struct HttpTransportConfig {
     pub session_manager: Option<Arc<SessionManager>>,
     /// Optional chat service for the `/chat` SSE endpoint.
     pub chat_service: Option<Arc<ChatService>>,
+    /// Optional telemetry store for the `/todos` REST endpoints.
+    pub todo_store: Option<Arc<TelemetryClient>>,
 }
 
 impl Default for HttpTransportConfig {
@@ -75,6 +78,7 @@ impl Default for HttpTransportConfig {
             channel_buffer_size: 32,
             session_manager: None,
             chat_service: None,
+            todo_store: None,
         }
     }
 }
@@ -109,6 +113,12 @@ impl HttpTransportConfig {
         self.chat_service = Some(svc);
         self
     }
+
+    /// Attach a [`TelemetryClient`] to enable the `/todos` REST endpoints.
+    pub fn with_todo_store(mut self, store: Arc<TelemetryClient>) -> Self {
+        self.todo_store = Some(store);
+        self
+    }
 }
 
 /// Shared state for the HTTP transport.
@@ -124,6 +134,8 @@ struct HttpTransportState {
     config: HttpTransportConfig,
     /// Optional chat service for the `/chat` SSE endpoint.
     chat_service: Option<Arc<ChatService>>,
+    /// Optional telemetry store for the `/todos` REST endpoints.
+    todo_store: Option<Arc<TelemetryClient>>,
 }
 
 /// HTTP transport for MCP server.
@@ -177,6 +189,8 @@ impl HttpTransport {
             .route("/mcp", delete(handle_delete_mcp))
             .route("/chat", post(handle_post_chat))
             .route("/health", get(handle_health))
+            .route("/todos", get(handle_list_todos).post(handle_create_todo))
+            .route("/todos/{id}", get(handle_get_todo).put(handle_update_todo).delete(handle_delete_todo))
             .layer(cors)
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -233,6 +247,7 @@ impl McpTransport for HttpTransport {
             auth,
             message_tx,
             chat_service: self.config.chat_service.clone(),
+            todo_store: self.config.todo_store.clone(),
             config: self.config.clone(),
         });
 
@@ -581,6 +596,200 @@ async fn handle_delete_mcp(
         .map_err(|e| McpHttpError::SessionError(e.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================================
+// Todo REST Handlers
+// ============================================================================
+
+/// GET /todos[?status=pending|in_progress|done]
+async fn handle_list_todos(
+    State(state): State<Arc<HttpTransportState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let store = match &state.todo_store {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Todo storage not available"})),
+            )
+                .into_response()
+        }
+    };
+
+    let status_filter = params.get("status").map(String::as_str);
+    match store.list_todos(status_filter) {
+        Ok(todos) => Json(serde_json::json!({"todos": todos})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /todos
+async fn handle_create_todo(
+    State(state): State<Arc<HttpTransportState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let store = match &state.todo_store {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Todo storage not available"})),
+            )
+                .into_response()
+        }
+    };
+
+    let title = match body.get("title").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "title is required"})),
+            )
+                .into_response()
+        }
+    };
+
+    let description = body.get("description").and_then(|v| v.as_str()).map(str::to_string);
+    let status = body.get("status").and_then(|v| v.as_str()).map(str::to_string);
+    let priority = body.get("priority").and_then(|v| v.as_i64());
+    let tags = body.get("tags").map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()));
+    let due_at = body.get("due_at").and_then(|v| v.as_str()).map(str::to_string);
+
+    match store.create_todo(
+        &title,
+        description.as_deref(),
+        status.as_deref(),
+        priority,
+        tags.as_deref(),
+        due_at.as_deref(),
+    ) {
+        Ok(todo) => (StatusCode::CREATED, Json(serde_json::to_value(todo).unwrap_or_default())).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /todos/:id
+async fn handle_get_todo(
+    State(state): State<Arc<HttpTransportState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let store = match &state.todo_store {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Todo storage not available"})),
+            )
+                .into_response()
+        }
+    };
+
+    match store.get_todo(&id) {
+        Ok(Some(todo)) => Json(serde_json::to_value(todo).unwrap_or_default()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// PUT /todos/:id
+async fn handle_update_todo(
+    State(state): State<Arc<HttpTransportState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let store = match &state.todo_store {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Todo storage not available"})),
+            )
+                .into_response()
+        }
+    };
+
+    let title = body.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    // `None` key = "not in body" (leave unchanged); `Some(null)` = clear the field
+    let description: Option<Option<String>> = if body.as_object().map(|o| o.contains_key("description")).unwrap_or(false) {
+        Some(body.get("description").and_then(|v| v.as_str()).map(str::to_string))
+    } else {
+        None
+    };
+    let status = body.get("status").and_then(|v| v.as_str()).map(str::to_string);
+    let priority = body.get("priority").and_then(|v| v.as_i64());
+    let tags = if body.as_object().map(|o| o.contains_key("tags")).unwrap_or(false) {
+        body.get("tags").map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()))
+    } else {
+        None
+    };
+    let due_at: Option<Option<String>> = if body.as_object().map(|o| o.contains_key("due_at")).unwrap_or(false) {
+        Some(body.get("due_at").and_then(|v| v.as_str()).map(str::to_string))
+    } else {
+        None
+    };
+
+    let description_ref = description.as_ref().map(|d| d.as_deref());
+    let due_at_ref = due_at.as_ref().map(|d| d.as_deref());
+
+    match store.update_todo(
+        &id,
+        title.as_deref(),
+        description_ref,
+        status.as_deref(),
+        priority,
+        tags.as_deref(),
+        due_at_ref,
+    ) {
+        Ok(Some(todo)) => Json(serde_json::to_value(todo).unwrap_or_default()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /todos/:id
+async fn handle_delete_todo(
+    State(state): State<Arc<HttpTransportState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let store = match &state.todo_store {
+        Some(s) => s.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Todo storage not available"})),
+            )
+                .into_response()
+        }
+    };
+
+    match store.delete_todo(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 // ============================================================================

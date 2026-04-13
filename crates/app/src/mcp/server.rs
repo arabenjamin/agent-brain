@@ -507,6 +507,12 @@ impl McpServerCore {
             registry.register_skill(Box::new(sleep_skill));
         }
 
+        // Register Todo Skill (requires telemetry / DuckDB)
+        if let Some(ref telemetry) = self.storage.telemetry {
+            use crate::skills::TodoSkill;
+            registry.register_skill(Box::new(TodoSkill::new(Arc::new(telemetry.clone()))));
+        }
+
         // Register Working Memory Skill
         if let Some(neo4j) = &self.storage.neo4j {
             let config2 = self.llm_config.read().await.clone();
@@ -618,6 +624,11 @@ impl McpServerCore {
                 telemetry.clone(),
                 self.storage.dataset_dir.clone(),
             )));
+        }
+
+        if let Some(ref telemetry) = self.storage.telemetry {
+            use crate::skills::TodoSkill;
+            skills.push(Box::new(TodoSkill::new(Arc::new(telemetry.clone()))));
         }
 
         if let Some(neo4j) = &self.storage.neo4j {

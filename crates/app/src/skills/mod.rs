@@ -12,6 +12,7 @@ pub mod scheduler;
 pub mod search;
 pub mod sleep;
 pub mod task;
+pub mod todo;
 pub mod working_memory;
 pub mod ws;
 
@@ -25,6 +26,7 @@ pub use query::QuerySkill;
 pub use search::SearchSkill;
 pub use sleep::SleepSkill;
 pub use task::TaskSkill;
+pub use todo::TodoSkill;
 pub use working_memory::WorkingMemorySkill;
 
 // Re-export the Skill trait from the protocol crate so all skill implementations
