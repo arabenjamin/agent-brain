@@ -593,16 +593,16 @@ impl SchedulerService {
             }
         }
 
-        // Helper: check if a consolidation task is active OR was completed recently (within 2h).
-        // The 2-hour cooldown prevents perception_scan from re-queuing consolidation every tick
-        // when the previous run finishes in under 5 minutes.
+        // Helper: check if a consolidation task is active OR was completed recently (within 24h).
+        // Evaluated once and shared across all consolidation triggers so at most one new
+        // consolidation task can be created per perception_scan tick.
         let open_consolidation_exists = || async {
             let q = neo4rs::query(
                 "MATCH (t:Task) \
-                 WHERE t.goal CONTAINS 'consolidat' \
+                 WHERE toLower(t.goal) CONTAINS 'consolidat' \
                    AND (t.status IN ['created', 'in_progress'] \
                      OR (t.status = 'completed' \
-                         AND t.created_at >= datetime() - duration({hours: 2}))) \
+                         AND t.created_at >= datetime() - duration({hours: 24}))) \
                  RETURN count(t) AS cnt",
             );
             // Default to 1 (assume consolidation exists) on any DB error so that
@@ -616,6 +616,10 @@ impl SchedulerService {
                 .unwrap_or(1)
                 > 0
         };
+
+        // Evaluate the guard once so both triggers share the same snapshot and a task created
+        // by trigger 1 is guaranteed to block trigger 2 within the same tick.
+        let mut consolidation_queued = open_consolidation_exists().await;
 
         // Trigger 1: many overdue spaced-repetition notes.
         let due_check = neo4rs::query(
@@ -632,9 +636,9 @@ impl SchedulerService {
             .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
             .unwrap_or(0);
 
-        // Raised threshold from 10 → 25: 10 was too easily hit by normal note accumulation,
-        // causing a new consolidation task every scheduler tick.
-        if due_count >= 25 && !open_consolidation_exists().await {
+        // Raised threshold from 10 → 25 → 50: lower values were too easily hit by normal note
+        // accumulation, causing consolidation to run too frequently and consume excess resources.
+        if due_count >= 50 && !consolidation_queued {
             let goal = format!(
                 "Consolidate {} overdue spaced-repetition notes into long-term memory",
                 due_count
@@ -649,6 +653,7 @@ impl SchedulerService {
                 .is_ok()
             {
                 created += 1;
+                consolidation_queued = true;
 
                 // Immediately advance next_review_at on ALL currently-overdue notes so that
                 // subsequent perception scan ticks don't see them as still overdue and queue
@@ -688,7 +693,7 @@ impl SchedulerService {
             .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
             .unwrap_or(0);
 
-        if episodic_count >= 75 && !open_consolidation_exists().await {
+        if episodic_count >= 75 && !consolidation_queued {
             let goal = format!(
                 "Consolidate {} episodic notes — distil recurring patterns into semantic memory",
                 episodic_count
