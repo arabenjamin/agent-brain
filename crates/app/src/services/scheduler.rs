@@ -1114,7 +1114,24 @@ impl SchedulerService {
         // ScheduledTask nodes dispatched in dispatch_scheduled_tasks(). Only reactive
         // one-off goals reach this function.
         // Recurring tasks are dispatched via ScheduledTask nodes.
-        let mut steps = if g.contains("document") || g.contains("current state") {
+        let mut steps = if g.contains("consolidat") {
+            // Memory consolidation: call consolidate_memories so notes' next_review_at is
+            // actually advanced. Falling through to the default branch was the root cause of
+            // the consolidation loop — default never calls consolidate_memories, so notes stay
+            // overdue and a new task is created on every 14-day cycle.
+            vec![
+                ChainStep {
+                    tool_name: "consolidate_memories".to_string(),
+                    arguments: Some(json!({ "topic": "recent experiences and knowledge", "limit": 20 })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Consolidate overdue spaced-repetition notes".to_string()),
+                },
+            ]
+        } else if g.contains("document") || g.contains("current state") {
             // Document / capture state: search knowledge, then consolidate
             vec![
                 ChainStep {
