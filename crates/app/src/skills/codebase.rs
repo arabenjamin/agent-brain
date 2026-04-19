@@ -22,16 +22,23 @@ use crate::services::KnowledgeStore;
 use crate::skills::Skill;
 use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, parse_args};
 
-/// Codebase Skill — read-only filesystem access to the agent's own source code.
+/// Codebase Skill — read-only filesystem access to the agent's own source code,
+/// plus a write_proposal tool for staging structured fix proposals.
 pub struct CodebaseSkill {
     /// Root directory of the codebase (from CODEBASE_DIR or auto-detected).
     codebase_dir: Option<PathBuf>,
+    /// Directory where fix proposals are written (from PROPOSALS_DIR, default ./proposals).
+    proposals_dir: Option<PathBuf>,
     /// Optional knowledge store for analyze_own_structure(store_as_note=true).
     knowledge: Option<Arc<dyn KnowledgeStore>>,
 }
 
 impl CodebaseSkill {
-    pub fn new(codebase_dir: Option<PathBuf>, knowledge: Option<Arc<dyn KnowledgeStore>>) -> Self {
+    pub fn new(
+        codebase_dir: Option<PathBuf>,
+        proposals_dir: Option<PathBuf>,
+        knowledge: Option<Arc<dyn KnowledgeStore>>,
+    ) -> Self {
         if let Some(ref dir) = codebase_dir {
             info!(path = %dir.display(), "CodebaseSkill initialized with codebase root");
         } else {
@@ -39,8 +46,12 @@ impl CodebaseSkill {
                 "CodebaseSkill: no CODEBASE_DIR configured — filesystem tools will return errors"
             );
         }
+        if let Some(ref dir) = proposals_dir {
+            info!(path = %dir.display(), "CodebaseSkill: proposals directory configured");
+        }
         Self {
             codebase_dir,
+            proposals_dir,
             knowledge,
         }
     }
@@ -192,6 +203,103 @@ impl CodebaseSkill {
                     }
                 },
                 "required": ["from_ref"]
+            }),
+        }
+    }
+
+    fn list_proposals_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_proposals".to_string(),
+            description: "List all pending fix proposals in the proposals directory. Returns a JSON array sorted newest-first.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "include_applied": {
+                        "type": "boolean",
+                        "description": "Also include applied/dismissed proposals (default: false)"
+                    }
+                }
+            }),
+        }
+    }
+
+    fn read_proposal_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "read_proposal".to_string(),
+            description: "Read the full markdown content of a specific proposal by filename.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Proposal filename as returned by list_proposals"
+                    }
+                },
+                "required": ["filename"]
+            }),
+        }
+    }
+
+    fn dismiss_proposal_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "dismiss_proposal".to_string(),
+            description: "Mark a proposal as applied or dismissed, moving it to proposals/applied/.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Proposal filename to dismiss"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["applied", "rejected", "obsolete"],
+                        "description": "Why this proposal is being dismissed"
+                    }
+                },
+                "required": ["filename", "reason"]
+            }),
+        }
+    }
+
+    fn write_proposal_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "write_proposal".to_string(),
+            description: "Write a structured fix proposal to the proposals directory for human review. Use this after diagnosing a bug or improvement — it stages the proposal as a markdown file without touching the source code.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short human-readable title for the proposal"
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID of the Task node that triggered this diagnosis"
+                    },
+                    "diagnosis": {
+                        "type": "string",
+                        "description": "Root cause analysis — what is broken and why"
+                    },
+                    "affected_file": {
+                        "type": "string",
+                        "description": "Relative path to the affected source file (or 'unknown')"
+                    },
+                    "proposed_fix": {
+                        "type": "string",
+                        "description": "Plain-English description of the fix"
+                    },
+                    "code_snippet": {
+                        "type": "string",
+                        "description": "Optional diff or replacement code snippet"
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                        "description": "Estimated impact severity"
+                    }
+                },
+                "required": ["title", "task_id", "diagnosis", "proposed_fix", "severity"]
             }),
         }
     }
@@ -502,6 +610,242 @@ impl CodebaseSkill {
     }
 
     // =========================================================================
+    // Proposal reader / manager
+    // =========================================================================
+
+    async fn handle_list_proposals(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Args {
+            include_applied: Option<bool>,
+        }
+        let args: Args = parse_args(arguments).unwrap_or_default();
+
+        let proposals_dir = match &self.proposals_dir {
+            Some(d) => d.clone(),
+            None => return ToolCallResult::error("PROPOSALS_DIR not configured"),
+        };
+
+        let mut entries: Vec<serde_json::Value> = Vec::new();
+
+        let dirs_to_scan: Vec<(PathBuf, bool)> = if args.include_applied.unwrap_or(false) {
+            vec![
+                (proposals_dir.clone(), false),
+                (proposals_dir.join("applied"), true),
+            ]
+        } else {
+            vec![(proposals_dir.clone(), false)]
+        };
+
+        for (dir, is_applied) in dirs_to_scan {
+            let mut read_dir = match tokio::fs::read_dir(&dir).await {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".md") {
+                    continue;
+                }
+                let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+
+                // Parse metadata from the markdown header.
+                let title = content
+                    .lines()
+                    .find(|l| l.starts_with("# Proposal:"))
+                    .map(|l| l.trim_start_matches("# Proposal:").trim().to_string())
+                    .unwrap_or_else(|| name.clone());
+                let severity = content
+                    .lines()
+                    .find(|l| l.contains("**Severity:**"))
+                    .and_then(|l| l.split("**Severity:**").nth(1))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let task_id = content
+                    .lines()
+                    .find(|l| l.contains("**Task ID:**"))
+                    .and_then(|l| l.split('`').nth(1))
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                let created = content
+                    .lines()
+                    .find(|l| l.contains("**Created:**"))
+                    .and_then(|l| l.split("**Created:**").nth(1))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+
+                entries.push(serde_json::json!({
+                    "filename": name,
+                    "title": title,
+                    "severity": severity,
+                    "task_id": task_id,
+                    "created": created,
+                    "applied": is_applied,
+                }));
+            }
+        }
+
+        // Sort newest-first by filename (timestamp prefix ensures lexicographic == chronological).
+        entries.sort_by(|a, b| {
+            b["filename"].as_str().unwrap_or("").cmp(a["filename"].as_str().unwrap_or(""))
+        });
+
+        ToolCallResult::success_text(
+            serde_json::to_string_pretty(&serde_json::json!({ "proposals": entries }))
+                .unwrap_or_default(),
+        )
+    }
+
+    async fn handle_read_proposal(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Args {
+            filename: String,
+        }
+        let args: Args = match parse_args(arguments) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+
+        let proposals_dir = match &self.proposals_dir {
+            Some(d) => d.clone(),
+            None => return ToolCallResult::error("PROPOSALS_DIR not configured"),
+        };
+
+        // Accept filenames from both pending and applied subdirs.
+        let candidates = [
+            proposals_dir.join(&args.filename),
+            proposals_dir.join("applied").join(&args.filename),
+        ];
+        for path in &candidates {
+            if path.exists() {
+                return match tokio::fs::read_to_string(path).await {
+                    Ok(c) => ToolCallResult::success_text(c),
+                    Err(e) => ToolCallResult::error(format!("Cannot read proposal: {e}")),
+                };
+            }
+        }
+        ToolCallResult::error(format!("Proposal '{}' not found", args.filename))
+    }
+
+    async fn handle_dismiss_proposal(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Args {
+            filename: String,
+            reason: String,
+        }
+        let args: Args = match parse_args(arguments) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+
+        let proposals_dir = match &self.proposals_dir {
+            Some(d) => d.clone(),
+            None => return ToolCallResult::error("PROPOSALS_DIR not configured"),
+        };
+
+        let src = proposals_dir.join(&args.filename);
+        if !src.exists() {
+            return ToolCallResult::error(format!("Proposal '{}' not found", args.filename));
+        }
+
+        let applied_dir = proposals_dir.join("applied");
+        if let Err(e) = tokio::fs::create_dir_all(&applied_dir).await {
+            return ToolCallResult::error(format!("Cannot create applied dir: {e}"));
+        }
+
+        let dst = applied_dir.join(&args.filename);
+        if let Err(e) = tokio::fs::rename(&src, &dst).await {
+            return ToolCallResult::error(format!("Failed to move proposal: {e}"));
+        }
+
+        info!(filename = %args.filename, reason = %args.reason, "proposal dismissed");
+        ToolCallResult::success_text(format!(
+            "Proposal '{}' marked as {} and moved to applied/.",
+            args.filename, args.reason
+        ))
+    }
+
+    // =========================================================================
+    // Proposal writer
+    // =========================================================================
+
+    async fn handle_write_proposal(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Args {
+            title: String,
+            task_id: String,
+            diagnosis: String,
+            affected_file: Option<String>,
+            proposed_fix: String,
+            code_snippet: Option<String>,
+            severity: String,
+        }
+        let args: Args = match parse_args(arguments) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+
+        let proposals_dir = match &self.proposals_dir {
+            Some(d) => d.clone(),
+            None => return ToolCallResult::error(
+                "PROPOSALS_DIR not configured — set PROPOSALS_DIR env var",
+            ),
+        };
+
+        if let Err(e) = tokio::fs::create_dir_all(&proposals_dir).await {
+            return ToolCallResult::error(format!("Cannot create proposals dir: {e}"));
+        }
+
+        let now = chrono::Utc::now();
+        let timestamp = now.format("%Y%m%dT%H%M%SZ");
+        // Slugify the title for the filename.
+        let slug: String = args
+            .title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let filename = format!("{}-{}-{}.md", timestamp, &args.task_id[..8.min(args.task_id.len())], slug);
+        let path = proposals_dir.join(&filename);
+
+        let affected = args.affected_file.as_deref().unwrap_or("unknown");
+        let mut content = format!(
+            "# Proposal: {title}\n\n\
+             - **Created:** {ts}\n\
+             - **Task ID:** `{task_id}`\n\
+             - **Severity:** {severity}\n\
+             - **Affected file:** `{affected}`\n\n\
+             ## Diagnosis\n\n{diagnosis}\n\n\
+             ## Proposed Fix\n\n{proposed_fix}\n",
+            title = args.title,
+            ts = now.to_rfc3339(),
+            task_id = args.task_id,
+            severity = args.severity,
+            affected = affected,
+            diagnosis = args.diagnosis,
+            proposed_fix = args.proposed_fix,
+        );
+        if let Some(ref snippet) = args.code_snippet {
+            content.push_str(&format!("\n## Code\n\n```\n{}\n```\n", snippet));
+        }
+        content.push_str("\n---\n*Auto-generated by agent-brain. Human review required before applying.*\n");
+
+        if let Err(e) = tokio::fs::write(&path, &content).await {
+            return ToolCallResult::error(format!("Failed to write proposal: {e}"));
+        }
+
+        info!(file = %filename, severity = %args.severity, "write_proposal: proposal staged");
+        ToolCallResult::success_text(format!(
+            "Proposal written: {filename}\nPath: {}\nReview and apply manually when ready.",
+            path.display()
+        ))
+    }
+
+    // =========================================================================
     // Self-analysis handler
     // =========================================================================
 
@@ -605,6 +949,10 @@ impl Skill for CodebaseSkill {
             Self::get_file_tree_def(),
             Self::get_git_log_def(),
             Self::get_git_diff_def(),
+            Self::list_proposals_def(),
+            Self::read_proposal_def(),
+            Self::dismiss_proposal_def(),
+            Self::write_proposal_def(),
             Self::analyze_own_structure_def(),
         ]
     }
@@ -617,6 +965,10 @@ impl Skill for CodebaseSkill {
             "get_file_tree" => Some(self.handle_get_file_tree(arguments).await),
             "get_git_log" => Some(self.handle_get_git_log(arguments).await),
             "get_git_diff" => Some(self.handle_get_git_diff(arguments).await),
+            "list_proposals" => Some(self.handle_list_proposals(arguments).await),
+            "read_proposal" => Some(self.handle_read_proposal(arguments).await),
+            "dismiss_proposal" => Some(self.handle_dismiss_proposal(arguments).await),
+            "write_proposal" => Some(self.handle_write_proposal(arguments).await),
             "analyze_own_structure" => Some(self.handle_analyze_own_structure(arguments).await),
             _ => None,
         }

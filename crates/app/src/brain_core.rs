@@ -138,6 +138,8 @@ impl Default for SearchConfig {
 pub struct CodebaseConfig {
     /// Root directory of the codebase. Auto-detected from `Cargo.toml` walk-up if unset.
     pub codebase_dir: Option<PathBuf>,
+    /// Directory where the brain writes structured fix proposals. Defaults to `./proposals`.
+    pub proposals_dir: Option<PathBuf>,
 }
 
 impl Default for CodebaseConfig {
@@ -146,7 +148,14 @@ impl Default for CodebaseConfig {
             .map(PathBuf::from)
             .ok()
             .or_else(crate::skills::codebase::detect_repo_root);
-        Self { codebase_dir }
+        let proposals_dir = std::env::var("PROPOSALS_DIR")
+            .map(PathBuf::from)
+            .ok()
+            .or_else(|| Some(PathBuf::from("./proposals")));
+        Self {
+            codebase_dir,
+            proposals_dir,
+        }
     }
 }
 
@@ -567,8 +576,11 @@ impl BrainCore {
                 } else {
                     None
                 };
-            let codebase_skill =
-                CodebaseSkill::new(self.codebase.codebase_dir.clone(), knowledge_store);
+            let codebase_skill = CodebaseSkill::new(
+                self.codebase.codebase_dir.clone(),
+                self.codebase.proposals_dir.clone(),
+                knowledge_store,
+            );
             registry.register_skill(Box::new(codebase_skill));
         }
 
@@ -683,6 +695,7 @@ impl BrainCore {
                 };
             skills.push(Box::new(CodebaseSkill::new(
                 self.codebase.codebase_dir.clone(),
+                self.codebase.proposals_dir.clone(),
                 knowledge_store2,
             )));
         }

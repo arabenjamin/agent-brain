@@ -1,6 +1,5 @@
 #!/bin/bash
-# Pre-commit hook for agent-brain Rust project
-# Runs formatting check, clippy, and unit tests
+# Pre-commit hook: fmt, clippy, unit tests, and (if Neo4j reachable) integration tests.
 
 set -e
 
@@ -9,27 +8,43 @@ echo "Running pre-commit checks..."
 echo "=========================================="
 echo ""
 
-# Check if code is formatted
+# 1. Formatting
 echo "1. Checking code formatting (cargo fmt)..."
 if ! cargo fmt -- --check; then
     echo ""
-    echo "ERROR: Code is not properly formatted!"
-    echo "Run 'cargo fmt' to fix formatting issues."
+    echo "ERROR: Code is not properly formatted. Run 'cargo fmt' to fix."
     exit 1
 fi
 echo "✓ Formatting check passed"
 echo ""
 
-# Run clippy
+# 2. Clippy
 echo "2. Running clippy..."
 cargo clippy -- -D warnings
 echo "✓ Clippy check passed"
 echo ""
 
-# Run unit tests
+# 3. Unit tests
 echo "3. Running unit tests..."
 cargo test --lib
 echo "✓ Unit tests passed"
+echo ""
+
+# 4. Integration tests — auto-detect Neo4j
+NEO4J_URI="${NEO4J_URI:-bolt://localhost:7688}"
+HOST=$(echo "$NEO4J_URI" | sed 's|bolt://||' | cut -d: -f1)
+PORT=$(echo "$NEO4J_URI" | sed 's|bolt://||' | cut -d: -f2)
+PORT="${PORT:-7688}"
+
+echo "4. Checking for Neo4j at ${HOST}:${PORT}..."
+if nc -z -w2 "$HOST" "$PORT" 2>/dev/null; then
+    echo "   Neo4j reachable — running integration tests..."
+    cargo test --test '*'
+    echo "✓ Integration tests passed"
+else
+    echo "   Neo4j not reachable — skipping integration tests."
+    echo "   (Start Neo4j to run integration tests before pushing)"
+fi
 echo ""
 
 echo "=========================================="

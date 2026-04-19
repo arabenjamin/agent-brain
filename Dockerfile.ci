@@ -1,0 +1,37 @@
+# CI runtime image — expects a pre-built binary at target/release/agent-brain.
+# Used by GitHub Actions to avoid a double cargo build.
+# For local builds, use the regular Dockerfile (full multi-stage).
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 agent
+
+COPY target/release/agent-brain /usr/local/bin/
+COPY --chown=agent:agent contexts /home/agent/contexts/
+
+RUN mkdir -p /home/agent/snapshots && chown agent:agent /home/agent/snapshots
+
+USER agent
+WORKDIR /home/agent
+
+ENV NEO4J_URI=bolt://neo4j:7687 \
+    NEO4J_USER=neo4j \
+    OLLAMA_URL=http://ollama:11434 \
+    OLLAMA_MODEL=qwen3.5:4b \
+    LOG_LEVEL=info \
+    LOG_FORMAT=json \
+    RUST_BACKTRACE=1 \
+    MCP_TRANSPORT=http \
+    MCP_HTTP_BIND=0.0.0.0:3000
+
+EXPOSE 3002
+
+ENTRYPOINT ["agent-brain"]
+CMD ["serve"]
+
+LABEL org.opencontainers.image.title="agent-brain" \
+      org.opencontainers.image.description="General Intelligence Agent Core with Graph RAG and MCP"

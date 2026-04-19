@@ -10,20 +10,22 @@ const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
 const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
 const TodoPanel               = lazy(() => import("./components/todo/TodoPanel"));
 const ScheduledTasksPanel     = lazy(() => import("./components/scheduled-tasks/ScheduledTasksPanel"));
+const ProposalsPanel          = lazy(() => import("./components/proposals/ProposalsPanel"));
 const SettingsModal           = lazy(() => import("./components/settings/SettingsModal"));
 
-type Tab = "chat" | "tasks" | "todos" | "scheduled-tasks" | "knowledge" | "graph" | "tools" | "logs" | "architecture";
+type Tab = "chat" | "tasks" | "todos" | "scheduled-tasks" | "knowledge" | "graph" | "tools" | "logs" | "architecture" | "proposals";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
-  { id: "chat",      icon: "🧠", label: "Chat" },
-  { id: "tasks",     icon: "📋", label: "Tasks" },
+  { id: "chat",            icon: "🧠", label: "Chat" },
+  { id: "tasks",           icon: "📋", label: "Tasks" },
   { id: "todos",           icon: "✅", label: "Todos" },
   { id: "scheduled-tasks", icon: "📅", label: "Scheduled" },
+  { id: "proposals",       icon: "💡", label: "Proposals" },
   { id: "knowledge",       icon: "🔍", label: "Knowledge" },
-  { id: "graph",     icon: "🕸", label: "Graph" },
-  { id: "tools",        icon: "🔧", label: "Tools" },
-  { id: "logs",         icon: "📊", label: "Logs" },
-  { id: "architecture", icon: "🏗", label: "Architecture" },
+  { id: "graph",           icon: "🕸", label: "Graph" },
+  { id: "tools",           icon: "🔧", label: "Tools" },
+  { id: "logs",            icon: "📊", label: "Logs" },
+  { id: "architecture",    icon: "🏗", label: "Architecture" },
 ];
 
 function Fallback() {
@@ -70,14 +72,15 @@ export default function App() {
           </Suspense>
         </div>
         <Suspense fallback={<Fallback />}>
-          {tab === "tasks"     && <TaskPanel />}
-          {tab === "todos"            && <TodoPanel />}
+          {tab === "tasks"           && <TaskPanel />}
+          {tab === "todos"           && <TodoPanel />}
           {tab === "scheduled-tasks" && <ScheduledTasksPanel />}
+          {tab === "proposals"       && <ProposalsPanel />}
           {tab === "knowledge"       && <KnowledgePanel />}
-          {tab === "graph"     && <GraphPanel />}
-          {tab === "tools"        && <ToolPanel />}
-          {tab === "logs"         && <LogsPanel />}
-          {tab === "architecture" && <ArchitecturePanel />}
+          {tab === "graph"           && <GraphPanel />}
+          {tab === "tools"           && <ToolPanel />}
+          {tab === "logs"            && <LogsPanel />}
+          {tab === "architecture"    && <ArchitecturePanel />}
         </Suspense>
       </main>
 

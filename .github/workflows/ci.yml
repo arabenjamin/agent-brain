@@ -1,10 +1,10 @@
-name: CI
+name: CI/CD
 
 on:
   push:
-    branches: [master, main, dev, test, prod]
+    branches: [dev, master]
   pull_request:
-    branches: [master, main, test, prod]
+    branches: [master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,217 +17,159 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # -------------------------------------------------------------------------
-  # Detect which paths changed — gates downstream jobs
-  # -------------------------------------------------------------------------
-  changes:
-    name: Detect Changes
+  # ---------------------------------------------------------------------------
+  # PR checks — fast gate for pull requests into master
+  # ---------------------------------------------------------------------------
+  pr-check:
+    name: PR Check
     runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      frontend: ${{ steps.filter.outputs.frontend }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            rust:
-              - 'crates/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-            frontend:
-              - 'hbi-frontend/**'
-
-  # -------------------------------------------------------------------------
-  # Format check — all branches
-  # -------------------------------------------------------------------------
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-
-  # -------------------------------------------------------------------------
-  # Unit tests — all branches
-  # -------------------------------------------------------------------------
-  test-unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets
       - run: cargo test --lib
 
-  # -------------------------------------------------------------------------
-  # Frontend build & lint — all branches
-  # -------------------------------------------------------------------------
-  frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true'
-    defaults:
-      run:
-        working-directory: hbi-frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: hbi-frontend/package-lock.json
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
-
-  # -------------------------------------------------------------------------
-  # Clippy — test, prod, master, main
-  # -------------------------------------------------------------------------
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    needs: changes
-    if: >
-      needs.changes.outputs.rust == 'true' && (
-        github.ref == 'refs/heads/test' ||
-        github.ref == 'refs/heads/prod' ||
-        github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/main' ||
-        github.base_ref == 'test' ||
-        github.base_ref == 'prod' ||
-        github.base_ref == 'master' ||
-        github.base_ref == 'main'
-      )
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features
-
-  # -------------------------------------------------------------------------
-  # Integration tests — test, prod only (needs Neo4j)
-  # -------------------------------------------------------------------------
-  test-integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: changes
-    if: >
-      needs.changes.outputs.rust == 'true' && (
-        github.ref == 'refs/heads/test' ||
-        github.ref == 'refs/heads/prod' ||
-        github.base_ref == 'test' ||
-        github.base_ref == 'prod'
-      )
-    services:
-      neo4j:
-        image: neo4j:5
-        env:
-          NEO4J_AUTH: neo4j/testpassword
-        ports:
-          - 7687:7687
-          - 7474:7474
-        options: >-
-          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Wait for Neo4j
-        run: |
-          for i in {1..30}; do
-            if wget -q --spider http://localhost:7474; then
-              echo "Neo4j is ready"
-              break
-            fi
-            echo "Waiting for Neo4j... ($i/30)"
-            sleep 2
-          done
-      - name: Run integration tests
-        run: cargo test --test '*'
-        env:
-          NEO4J_URI: bolt://localhost:7687
-          NEO4J_USER: neo4j
-          NEO4J_PASSWORD: testpassword
-
-  # -------------------------------------------------------------------------
-  # Release build — all branches, gated on fmt + unit tests
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # dev: fmt + clippy + unit tests + release build
+  # ---------------------------------------------------------------------------
   build:
-    name: Build
+    name: Build & Test
     runs-on: ubuntu-latest
-    needs: [fmt, test-unit, frontend]
-    if: >
-      always() &&
-      (needs.fmt.result == 'success' || needs.fmt.result == 'skipped') &&
-      (needs.test-unit.result == 'success' || needs.test-unit.result == 'skipped') &&
-      (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') &&
-      (
-        github.ref == 'refs/heads/test' ||
-        github.ref == 'refs/heads/prod' ||
-        github.ref == 'refs/heads/master' ||
-        github.ref == 'refs/heads/main' ||
-        github.base_ref == 'test' ||
-        github.base_ref == 'prod' ||
-        github.base_ref == 'master' ||
-        github.base_ref == 'main'
-      )
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
 
-  # -------------------------------------------------------------------------
-  # Docker build + push to GHCR — prod only
-  # -------------------------------------------------------------------------
-  docker:
-    name: Docker Build & Push
+      - name: Set build metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE=$(date +'%m.%d.%Y')
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "tag=dev-${SHORT_SHA}-${DATE}" >> $GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets
+
+      - name: Unit tests
+        run: cargo test --lib
+
+      - name: Release build
+        run: cargo build --release
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-brain-linux-x86_64
+          path: target/release/agent-brain
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # Ship: Docker image → GHCR, GitHub Release, promote dev → master
+  # ---------------------------------------------------------------------------
+  ship:
+    name: Ship
     runs-on: ubuntu-latest
-    needs: [build, clippy, test-integration]
-    if: github.ref == 'refs/heads/prod'
+    needs: build
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-brain-linux-x86_64
+          path: target/release/
+
+      - run: chmod +x target/release/agent-brain
+
       - uses: docker/setup-buildx-action@v3
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-      - name: Build and push
+
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Dockerfile.ci
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
+          prerelease: true
+          files: target/release/agent-brain
+          body: |
+            Automated dev build — commit `${{ github.sha }}`
+
+            **Docker image:**
+            ```
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.tag }}
+            ```
+
+      - name: Promote dev → master
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin master
+          git checkout master
+          git merge --ff-only origin/dev
+          git push origin master
+
+  # ---------------------------------------------------------------------------
+  # master: re-tag dev image as latest (no rebuild)
+  # ---------------------------------------------------------------------------
+  retag-latest:
+    name: Tag Latest
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-tag dev as latest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev

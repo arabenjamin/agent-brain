@@ -833,22 +833,29 @@ impl SchedulerService {
             }
         }
 
-        // Trigger 4: no codebase self-analysis note exists — bootstrap self-knowledge.
-        // Only fires once (or after all codebase notes are pruned).
+        // Trigger 4: codebase self-knowledge — bootstrap if none exists, refresh if stale (>7 days).
         let codebase_check = neo4rs::query(
             "MATCH (n:Note) \
              WHERE n.source_context = 'codebase_self_analysis' \
-             RETURN count(n) AS cnt",
+             RETURN count(n) AS cnt, \
+                    toString(max(n.created_at)) AS newest",
         );
-        let codebase_note_count: i64 = self
-            .neo4j
-            .execute(codebase_check)
-            .await
-            .ok()
-            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
+        let codebase_rows = self.neo4j.execute(codebase_check).await.ok();
+        let codebase_note_count: i64 = codebase_rows
+            .as_ref()
+            .and_then(|rows| rows.first())
+            .and_then(|r| r.get::<i64>("cnt").ok())
             .unwrap_or(0);
+        // newest is None when count == 0; treat missing/parse error as stale → trigger re-analysis.
+        let codebase_is_stale: bool = codebase_rows
+            .as_ref()
+            .and_then(|rows| rows.first())
+            .and_then(|r| r.get::<String>("newest").ok())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| (Utc::now() - dt.to_utc()).num_days() >= 7)
+            .unwrap_or(true);
 
-        if codebase_note_count == 0 {
+        if codebase_note_count == 0 || codebase_is_stale {
             let check_existing = neo4rs::query(
                 "MATCH (t:Task) \
                  WHERE (t.goal CONTAINS 'codebase' OR t.goal CONTAINS 'self-knowledge') \
@@ -864,18 +871,29 @@ impl SchedulerService {
                 .unwrap_or(0);
 
             if existing == 0 {
-                let goal = "Analyze own codebase structure and store self-knowledge in graph";
+                let (goal, context) = if codebase_note_count == 0 {
+                    (
+                        "Analyze own codebase structure and store self-knowledge in graph",
+                        "Auto-generated: no codebase self-analysis note found in graph",
+                    )
+                } else {
+                    (
+                        "Refresh codebase self-knowledge — re-analyze structure and recent changes",
+                        "Auto-generated: codebase self-analysis note is more than 7 days old",
+                    )
+                };
                 if self
                     .neo4j
-                    .create_task(
-                        goal,
-                        Some("Auto-generated: no codebase self-analysis note found in graph"),
-                    )
+                    .create_task(goal, Some(context))
                     .await
                     .is_ok()
                 {
                     created += 1;
-                    info!("Perception scan created codebase self-analysis task");
+                    info!(
+                        stale = codebase_is_stale,
+                        count = codebase_note_count,
+                        "Perception scan created codebase self-analysis task"
+                    );
                 }
             }
         }
@@ -1290,6 +1308,73 @@ impl SchedulerService {
                     context_profile: None,
                     ttl_secs: None,
                     description: None,
+                },
+            ]
+        } else if g.contains("diagnos")
+            || g.contains("root cause")
+            || g.contains("repeated failure")
+            || g.contains("dead job")
+            || (g.contains("failure") && g.contains("analyz"))
+        {
+            // Diagnosis: find the affected code, gather failure notes, reason over root cause,
+            // and persist a structured diagnosis note for human or future-agent review.
+            vec![
+                ChainStep {
+                    tool_name: "search_codebase".to_string(),
+                    arguments: Some(json!({ "query": goal, "max_results": 10, "context_lines": 2 })),
+                    priority: Some(2),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Search codebase for relevant code".to_string()),
+                },
+                ChainStep {
+                    tool_name: "search_notes".to_string(),
+                    arguments: Some(json!({ "query": goal, "limit": 8 })),
+                    priority: Some(2),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Retrieve related failure and outcome notes".to_string()),
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": format!(
+                            "{} — Based on the codebase search results and historical failure \
+                             notes, identify the root cause. Structure your response as: \
+                             DIAGNOSIS: <root cause> | AFFECTED_FILE: <path or unknown> | \
+                             PROPOSED_FIX: <description of the fix> | \
+                             SEVERITY: <low|medium|high>",
+                            goal
+                        ),
+                        "store_inference": true
+                    })),
+                    priority: Some(2),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Reason over root cause and propose fix".to_string()),
+                },
+                ChainStep {
+                    tool_name: "write_proposal".to_string(),
+                    arguments: Some(json!({
+                        "title": format!("Fix: {}", goal),
+                        "task_id": task_id,
+                        "diagnosis": "See inference note stored by previous reasoning step.",
+                        "affected_file": "unknown",
+                        "proposed_fix": "Review the stored inference note for the full diagnosis and proposed fix.",
+                        "severity": "medium"
+                    })),
+                    priority: Some(2),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Stage proposal file for human review".to_string()),
                 },
             ]
         } else if g.contains("review") || g.contains("analyz") || g.contains("source") {
