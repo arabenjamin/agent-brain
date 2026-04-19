@@ -527,6 +527,7 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob) \
              WHERE j.expires_at IS NOT NULL \
+               AND j.expires_at <> '' \
                AND datetime(j.expires_at) <= datetime($now) \
                AND j.status IN ['queued', 'running', 'parked'] \
              SET j.status = 'cancelled', \
