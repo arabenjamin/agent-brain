@@ -45,7 +45,9 @@ impl Neo4jClient {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (t:Task {status: 'in_progress'}) \
-             WHERE t.updated_at < datetime() - duration({hours: $hours}) \
+             WHERE t.updated_at IS NOT NULL \
+               AND t.updated_at <> '' \
+               AND datetime(t.updated_at) < datetime() - duration({hours: $hours}) \
              SET t.status = 'failed', t.updated_at = $now \
              RETURN count(t) AS n",
         )

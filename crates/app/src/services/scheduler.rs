@@ -725,7 +725,7 @@ impl SchedulerService {
                 let bump = neo4rs::query(
                     "MATCH (n:Note) \
                      WHERE n.next_review_at <= datetime() \
-                       AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection'] \
+                       AND COALESCE(n.note_type, 'semantic') <> 'consolidated' \
                      SET n.next_review_at = datetime() + duration({days: 14}), \
                          n.review_interval_days = CASE \
                              WHEN COALESCE(n.review_interval_days, 1) < 14 THEN 14 \
