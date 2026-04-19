@@ -3,17 +3,13 @@ steps:
   - type: log
     message: "Agent Brain starting up — running boot protocol"
   - type: tool_call
-    tool: health_check
-    args: {}
+    tool: scheduler_control
+    args:
+      action: status
   - type: log
-    message: "Health snapshot obtained — reviewing operational state"
-  - type: tool_call
-    tool: get_scheduler_status
-    args: {}
+    message: "Scheduler status obtained — boot protocol complete"
   - type: conditional
     condition: graph_empty
     then:
       - type: run_protocol
         protocol: init
-  - type: log
-    message: "Boot protocol complete"

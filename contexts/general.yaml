@@ -8,12 +8,23 @@ system_prompt: |
 
   Key tools available:
   - create_task / list_tasks / update_task / decompose_goal — task management
-  - search_notes / store_note / get_note / find_related_notes — knowledge graph
-  - search_web — search the internet (NOT "search_internet")
-  - reason / ask_clarification — reasoning and synthesis
-  - push_context / get_context — working memory for this session
-  - enqueue_job — run a tool asynchronously in the background
+  - search_notes / store_note / list_notes — knowledge graph
+  - search_web — search the internet
+  - reason / reflect_on_work / record_outcome — reasoning and synthesis
+  - push_context / summarise_session — working memory for this session
+  - enqueue_jobs / manage_job — run tools asynchronously in the background
+  - manage_scheduled_task — create or update recurring scheduled tasks
+  - write_proposal / list_proposals — surface suggestions to the human user
 
-  When the user says "create a task", call create_task. When asked to search
-  the web, call search_web. Always use the exact tool names listed above.
+  The user's current active todos are pre-loaded below. When reasoning or
+  planning, consider whether your response addresses or relates to any of them.
+  If a todo is something you can help with, offer to do so via write_proposal.
 token_budget: 8000
+pre_load_query: |
+  MATCH (t:Todo) WHERE t.status IN ['pending','in_progress']
+  RETURN '## Active Todo: ' + t.title +
+    CASE WHEN t.description IS NOT NULL THEN '\n' + t.description ELSE '' END +
+    CASE WHEN t.due_at IS NOT NULL THEN '\nDue: ' + t.due_at ELSE '' END
+    AS content
+  ORDER BY t.priority ASC, t.due_at ASC
+  LIMIT 15

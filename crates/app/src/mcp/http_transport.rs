@@ -83,6 +83,8 @@ pub struct HttpTransportConfig {
     pub llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     /// Optional telemetry client for the `/api/models` REST endpoint.
     pub telemetry: Option<TelemetryClient>,
+    /// Optional in-memory log ring buffer for the `GET /api/logs` endpoint.
+    pub log_buffer: Option<Arc<crate::logging::LogBuffer>>,
 }
 
 impl Default for HttpTransportConfig {
@@ -102,6 +104,7 @@ impl Default for HttpTransportConfig {
             context_builder: None,
             llm_config: None,
             telemetry: None,
+            log_buffer: None,
         }
     }
 }
@@ -176,6 +179,11 @@ impl HttpTransportConfig {
         self.telemetry = Some(telemetry);
         self
     }
+
+    pub fn with_log_buffer(mut self, buf: Arc<crate::logging::LogBuffer>) -> Self {
+        self.log_buffer = Some(buf);
+        self
+    }
 }
 
 /// Shared state for the HTTP transport.
@@ -201,6 +209,8 @@ struct HttpTransportState {
     llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     /// Optional telemetry client for `/api/models`.
     telemetry: Option<TelemetryClient>,
+    /// Optional in-memory log ring buffer for `GET /api/logs`.
+    log_buffer: Option<Arc<crate::logging::LogBuffer>>,
 }
 
 /// HTTP transport for MCP server.
@@ -260,6 +270,7 @@ impl HttpTransport {
             .with_context_builder_opt(state.context_builder.clone())
             .with_llm_config_opt(state.llm_config.clone())
             .with_telemetry_opt(state.telemetry.clone())
+            .with_log_buffer_opt(state.log_buffer.clone())
             .build_state();
 
         Router::new()
@@ -338,6 +349,7 @@ impl HttpTransport {
                 "/api/tools/dynamic",
                 get(rest_handlers::handle_list_dynamic_tools),
             )
+            .route("/api/logs", get(rest_handlers::handle_get_logs))
             // Inject REST state for the handlers above.
             .layer(axum::Extension(rest_state))
             .layer(cors)
@@ -401,6 +413,7 @@ impl McpTransport for HttpTransport {
             context_builder: self.config.context_builder.clone(),
             llm_config: self.config.llm_config.clone(),
             telemetry: self.config.telemetry.clone(),
+            log_buffer: self.config.log_buffer.clone(),
             config: self.config.clone(),
         });
 

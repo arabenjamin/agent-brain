@@ -40,8 +40,11 @@ async fn main() -> Result<()> {
         },
     };
 
-    // Initialize logging
-    logging::init(&config);
+    // Create log ring buffer and initialize logging.
+    // The buffer is passed through to the HTTP transport for GET /api/logs.
+    // For stdio transport it's unused but we create it anyway to avoid cfg complexity.
+    let log_buffer = agent_brain::logging::LogBuffer::new(500);
+    logging::init_with_buffer(&config, Some(log_buffer.clone()));
 
     info!(
         neo4j_uri = %config.database.uri,
@@ -55,11 +58,11 @@ async fn main() -> Result<()> {
             transport,
             bind,
             api_key,
-        }) => run_serve(&config, transport, &bind, api_key).await,
+        }) => run_serve(&config, transport, &bind, api_key, log_buffer).await,
         Some(Command::Todo { action, url }) => run_todo(&url, action).await,
         None => {
             // Default to stdio transport when no command specified
-            run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None).await
+            run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None, log_buffer).await
         }
     };
 
@@ -312,6 +315,7 @@ async fn run_serve(
     transport_type: TransportType,
     bind: &str,
     api_key: Option<String>,
+    log_buffer: Arc<agent_brain::logging::LogBuffer>,
 ) -> Result<()> {
     let client = connect_neo4j(config).await?;
 
@@ -432,6 +436,9 @@ async fn run_serve(
 
             // Wire brain event bus into the HTTP transport for SSE job notifications.
             http_config = http_config.with_brain_event_sender(server.brain.event_sender());
+
+            // Wire the log ring buffer for GET /api/logs.
+            http_config = http_config.with_log_buffer(log_buffer);
 
             if let Some(key) = api_key.filter(|k| !k.is_empty()) {
                 http_config = http_config.with_api_key(key);

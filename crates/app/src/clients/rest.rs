@@ -45,6 +45,7 @@ pub struct RestState {
     pub context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
     pub llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     pub telemetry: Option<TelemetryClient>,
+    pub log_buffer: Option<Arc<crate::logging::LogBuffer>>,
 }
 
 // ============================================================================
@@ -61,6 +62,7 @@ pub struct RestAdapter {
     context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
     llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     telemetry: Option<TelemetryClient>,
+    log_buffer: Option<Arc<crate::logging::LogBuffer>>,
 }
 
 impl RestAdapter {
@@ -115,6 +117,11 @@ impl RestAdapter {
         self
     }
 
+    pub fn with_log_buffer_opt(mut self, buf: Option<Arc<crate::logging::LogBuffer>>) -> Self {
+        self.log_buffer = buf;
+        self
+    }
+
     /// Build the [`RestState`] that must be injected as an Extension into the
     /// router returned by [`Self::routes`].
     ///
@@ -134,6 +141,7 @@ impl RestAdapter {
             context_builder: self.context_builder,
             llm_config: self.llm_config,
             telemetry: self.telemetry,
+            log_buffer: self.log_buffer,
         })
     }
 
@@ -146,6 +154,8 @@ impl RestAdapter {
     /// ```
     pub fn routes() -> Router {
         Router::new()
+            // --- logs ---
+            .route("/api/logs", get(handle_get_logs))
             // --- todos ---
             .route("/todos", get(handle_list_todos).post(handle_create_todo))
             .route(
@@ -1408,4 +1418,24 @@ pub async fn handle_get_session_entries(
         .into_response(),
         Err(e) => internal(format!("Failed to fetch session entries: {e}")),
     }
+}
+
+/// GET /api/logs?limit=<n>&level=<info|warn|error|debug>
+/// Returns recent in-process log lines from the ring buffer.
+pub async fn handle_get_logs(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let level = params.get("level").map(|s| s.as_str());
+
+    let Some(ref buf) = state.log_buffer else {
+        return Json(json!({ "count": 0, "entries": [] })).into_response();
+    };
+
+    let entries = buf.recent(limit, level);
+    Json(json!({ "count": entries.len(), "entries": entries })).into_response()
 }

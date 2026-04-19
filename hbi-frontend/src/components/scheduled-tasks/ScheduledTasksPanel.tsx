@@ -77,16 +77,16 @@ interface StepDraft {
   priority: number;
 }
 
-const PROVIDERS = ["ollama", "anthropic", "gemini", "vllm"] as const;
+const PROVIDERS = ["ollama", "anthropic", "gemini"] as const;
 const DEFAULT_PROVIDER = "ollama";
 const DEFAULT_MODEL = "gemma4:latest";
 
-// Grouped tool options for the dropdown
+// Grouped tool options for the dropdown — keep in sync with live tools/list
 const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Knowledge",
     tools: [
-      "store_note", "search_notes",
+      "store_note", "search_notes", "list_notes",
       "consolidate_memories", "prune_old_notes",
       "synthesize_knowledge", "reason",
     ],
@@ -94,31 +94,33 @@ const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Tasks",
     tools: [
-      "create_task", "update_task", "decompose_goal",
+      "create_task", "update_task", "list_tasks", "decompose_goal",
       "reflect_on_work", "record_outcome",
     ],
   },
   {
     group: "Agent Jobs",
     tools: [
-      "enqueue_jobs", "manage_job",
-      "set_worker_config", "dead_letter", "update_job_progress",
+      "enqueue_jobs", "manage_job", "manage_chain",
+      "get_job_result", "dead_letter",
+      "update_job_progress", "set_worker_config",
     ],
   },
   {
     group: "Working Memory",
-    tools: ["push_context", "summarise_session"],
+    tools: ["push_context", "summarise_session", "list_sessions"],
   },
   {
     group: "HTTP / Search",
-    tools: ["http_request", "search_web", "define_api_context", "list_api_contexts", "load_api_context"],
+    tools: ["http_request", "search_web", "define_api_context"],
+  },
+  {
+    group: "Proposals",
+    tools: ["write_proposal", "read_proposal", "list_proposals", "dismiss_proposal"],
   },
   {
     group: "Scheduler",
-    tools: [
-      "list_scheduled_tasks", "create_scheduled_task", "update_scheduled_task",
-      "manage_scheduled_task", "manage_chain",
-    ],
+    tools: ["manage_scheduled_task", "scheduler_control", "run_scheduler_tick"],
   },
   {
     group: "Model",
@@ -126,18 +128,26 @@ const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   },
   {
     group: "Procedures / Dynamic",
-    tools: ["manage_dynamic_tool", "execute_procedure", "store_procedure"],
+    tools: ["manage_dynamic_tool", "execute_procedure", "store_procedure", "search_procedures"],
   },
   {
     group: "Query",
-    tools: ["neo4j_query", "duckdb_query"],
+    tools: ["neo4j_query"],
   },
   {
     group: "Codebase",
     tools: [
-      "read_file", "list_files", "search_code", "write_file", "run_tests",
-      "git_log", "git_diff", "git_status", "search_issues", "create_issue",
+      "read_codebase_file", "list_codebase_files", "search_codebase",
+      "get_git_log", "get_git_diff", "get_file_tree", "analyze_own_structure",
     ],
+  },
+  {
+    group: "Context / Resources",
+    tools: ["context", "resource"],
+  },
+  {
+    group: "WebSocket",
+    tools: ["ws_connect", "ws_send", "ws_receive", "ws_close"],
   },
 ];
 
@@ -841,6 +851,12 @@ function ScheduledTaskForm({
   const [rawJsonError, setRawJsonError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // AI assist state
+  const [showAiAssist, setShowAiAssist] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
   // Step builder state
   const [steps, setSteps] = useState<StepDraft[]>(() => {
     if (existing) {
@@ -913,6 +929,49 @@ function ScheduledTaskForm({
     const next = [...steps];
     [next[i], next[j]] = [next[j], next[i]];
     setSteps(next);
+  };
+
+  const handleAiGenerate = async () => {
+    if (!aiPrompt.trim()) return;
+    setAiLoading(true);
+    setAiError(null);
+
+    const allTools = TOOL_GROUPS.flatMap((g) => g.tools).join(", ");
+    const question =
+      `Design a scheduled task step chain for: "${aiPrompt.trim()}"\n\n` +
+      `Available tools: ${allTools}\n\n` +
+      `Return ONLY a valid JSON array of step objects with no extra text. ` +
+      `Each step must have: tool_name (string), arguments (object), provider_hint ("ollama"), priority (1). ` +
+      `Use {{goal}}, {{task_id}}, or {{date}} as template variables where appropriate.\n\n` +
+      `Example:\n[{"tool_name":"search_web","arguments":{"query":"{{goal}} {{date}}"},"provider_hint":"ollama","priority":1}]`;
+
+    try {
+      const res = await apiFetch(`${getBrainUrl()}/mcp`, {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "tools/call",
+          params: { name: "reason", arguments: { question, store_inference: false } },
+        }),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      const text: string = data?.result?.content?.[0]?.text ?? "";
+
+      // Extract JSON array from the response (may be wrapped in a code block)
+      const match = text.match(/\[[\s\S]*\]/);
+      if (!match) throw new Error("No JSON array found in AI response");
+
+      const parsed = jsonToStepDrafts(match[0]);
+      if (!parsed || parsed.length === 0) throw new Error("Could not parse step array from AI response");
+
+      setSteps(parsed);
+      setShowAiAssist(false);
+      setAiPrompt("");
+    } catch (e) {
+      setAiError(String(e));
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1039,6 +1098,44 @@ function ScheduledTaskForm({
             />
             Enabled
           </label>
+
+          {/* AI Assist */}
+          <div style={{ border: "1px solid var(--border, #45475a)", borderRadius: "8px", overflow: "hidden" }}>
+            <button
+              type="button"
+              onClick={() => setShowAiAssist((v) => !v)}
+              style={{ width: "100%", background: showAiAssist ? "var(--surface2, #313244)" : "none", border: "none", padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", color: "var(--accent, #89b4fa)", fontSize: "0.82rem", textAlign: "left" }}
+            >
+              <span>{showAiAssist ? "▲" : "▼"}</span>
+              <span>Ask AI to design steps</span>
+            </button>
+
+            {showAiAssist && (
+              <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: "8px", background: "var(--surface2, #313244)" }}>
+                <textarea
+                  style={{ background: "var(--surface, #1e1e2e)", border: "1px solid var(--border, #45475a)", borderRadius: "6px", padding: "6px 10px", color: "inherit", fontSize: "0.85rem", resize: "vertical", minHeight: "64px" }}
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  placeholder="Describe what you want this task to do, e.g. 'Every day, search for AI news and store a summary note'"
+                  spellCheck={false}
+                />
+                {aiError && <span style={{ color: "#f87171", fontSize: "0.78rem" }}>{aiError}</span>}
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className="sidebar-btn active"
+                    onClick={handleAiGenerate}
+                    disabled={aiLoading || !aiPrompt.trim()}
+                  >
+                    {aiLoading ? "Generating…" : "Generate Steps"}
+                  </button>
+                  <span style={{ fontSize: "0.75rem", opacity: 0.45 }}>
+                    Replaces current steps
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Steps header */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

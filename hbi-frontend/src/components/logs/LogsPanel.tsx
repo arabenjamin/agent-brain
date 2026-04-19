@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { callTool } from "../../api/mcp";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getBrainUrl, getApiKey } from "../../api/config";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,7 @@ interface SchedulerStatus {
     last_run_at: string | null;
     last_error: string | null;
     is_running: boolean;
+    is_sleeping: boolean;
   };
 }
 
@@ -32,6 +33,24 @@ interface Task {
   goal: string;
   status: string;
   created_at: string;
+}
+
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  target: string;
+  message: string;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function authHeaders(): Record<string, string> {
+  const key = getApiKey();
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
+
+async function apiFetch(path: string) {
+  return fetch(`${getBrainUrl()}${path}`, { headers: authHeaders() });
 }
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
@@ -54,33 +73,51 @@ const JOB_STATUS_COLORS: Record<string, string> = {
   cancelled: "#7a8099",
 };
 
+const LOG_LEVEL_COLORS: Record<string, string> = {
+  ERROR: "#f87171",
+  WARN:  "#fbbf24",
+  INFO:  "#89b4fa",
+  DEBUG: "#a6adc8",
+  TRACE: "#585b70",
+};
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function LogsPanel() {
   const [queueStatus,     setQueueStatus]     = useState<QueueStatus | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
   const [recentTasks,     setRecentTasks]     = useState<Task[]>([]);
+  const [logEntries,      setLogEntries]      = useState<LogEntry[]>([]);
+  const [logLevel,        setLogLevel]        = useState<string>("info");
   const [lastRefresh,     setLastRefresh]     = useState<Date>(new Date());
   const [loading,         setLoading]         = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [queueRes, schedulerRes, tasksRes] = await Promise.allSettled([
-        callTool("queue_status",        {}),
-        callTool("get_scheduler_status", {}),
-        callTool("list_tasks",          { limit: 20 }),
+      const [queueRes, schedulerRes, tasksRes, logsRes] = await Promise.allSettled([
+        apiFetch("/api/queue/status"),
+        apiFetch("/api/scheduler/status"),
+        apiFetch("/api/tasks?limit=20"),
+        apiFetch(`/api/logs?limit=200&level=${logLevel}`),
       ]);
 
-      if (queueRes.status === "fulfilled") {
-        setQueueStatus(JSON.parse(queueRes.value));
+      if (queueRes.status === "fulfilled" && queueRes.value.ok) {
+        const data = await queueRes.value.json();
+        setQueueStatus(data);
       }
-      if (schedulerRes.status === "fulfilled") {
-        setSchedulerStatus(JSON.parse(schedulerRes.value));
+      if (schedulerRes.status === "fulfilled" && schedulerRes.value.ok) {
+        const data = await schedulerRes.value.json();
+        setSchedulerStatus(data);
       }
-      if (tasksRes.status === "fulfilled") {
-        const data = JSON.parse(tasksRes.value);
+      if (tasksRes.status === "fulfilled" && tasksRes.value.ok) {
+        const data = await tasksRes.value.json();
         setRecentTasks(data.tasks ?? []);
+      }
+      if (logsRes.status === "fulfilled" && logsRes.value.ok) {
+        const data = await logsRes.value.json();
+        setLogEntries(data.entries ?? []);
       }
     } catch (e) {
       console.error("LogsPanel refresh error:", e);
@@ -88,7 +125,7 @@ export default function LogsPanel() {
       setLoading(false);
       setLastRefresh(new Date());
     }
-  }, []);
+  }, [logLevel]);
 
   useEffect(() => {
     refresh();
@@ -96,10 +133,15 @@ export default function LogsPanel() {
     return () => clearInterval(id);
   }, [refresh]);
 
+  // Scroll log pane to top when entries refresh
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = 0;
+  }, [logEntries]);
+
   return (
     <div className="panel">
       <div className="panel-header">
-        📊 System Logs
+        System Logs
         {loading && (
           <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 8 }}>updating…</span>
         )}
@@ -166,6 +208,7 @@ export default function LogsPanel() {
                 <span className={`sched-val ${schedulerStatus.config.enabled ? "ok" : "off"}`}>
                   {schedulerStatus.config.enabled ? "Enabled" : "Disabled"}
                   {schedulerStatus.state.is_running && " (running)"}
+                  {schedulerStatus.state.is_sleeping && " (sleeping)"}
                 </span>
               </div>
               <div className="sched-row">
@@ -220,6 +263,82 @@ export default function LogsPanel() {
                   />
                   <span className="task-log-goal">{t.goal}</span>
                   <span className="task-log-status">{t.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Process logs ───────────────────────────── */}
+        <section className="logs-section">
+          <div className="logs-section-title" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span>Process Logs</span>
+            <select
+              value={logLevel}
+              onChange={(e) => setLogLevel(e.target.value)}
+              style={{
+                marginLeft: "auto",
+                background: "var(--surface2, #313244)",
+                border: "1px solid var(--border, #45475a)",
+                borderRadius: "4px",
+                padding: "2px 6px",
+                color: "inherit",
+                fontSize: "0.78rem",
+              }}
+            >
+              <option value="debug">DEBUG+</option>
+              <option value="info">INFO+</option>
+              <option value="warn">WARN+</option>
+              <option value="error">ERROR</option>
+            </select>
+          </div>
+
+          {logEntries.length === 0 ? (
+            <div className="text-muted">
+              No log entries yet — they appear here once the server generates them after startup.
+            </div>
+          ) : (
+            <div
+              ref={logRef}
+              style={{
+                fontFamily: "monospace",
+                fontSize: "0.75rem",
+                maxHeight: "400px",
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: "1px",
+              }}
+            >
+              {logEntries.map((entry, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "90px 48px 1fr",
+                    gap: "6px",
+                    padding: "2px 4px",
+                    borderRadius: "3px",
+                    background: entry.level === "ERROR" ? "rgba(248,113,113,0.08)"
+                      : entry.level === "WARN" ? "rgba(251,191,36,0.06)"
+                      : "transparent",
+                  }}
+                >
+                  <span style={{ opacity: 0.45, whiteSpace: "nowrap", overflow: "hidden" }}>
+                    {entry.timestamp.slice(11, 23)}
+                  </span>
+                  <span
+                    style={{
+                      color: LOG_LEVEL_COLORS[entry.level] ?? "#a6adc8",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {entry.level}
+                  </span>
+                  <span style={{ wordBreak: "break-word", opacity: 0.85 }}>
+                    <span style={{ opacity: 0.45 }}>[{entry.target}]</span>{" "}
+                    {entry.message}
+                  </span>
                 </div>
               ))}
             </div>
