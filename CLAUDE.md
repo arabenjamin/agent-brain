@@ -13,7 +13,7 @@ Autonomous Agent Brain — A persistent, self-improving MCP server in Rust backe
 - **Protocol:** Model Context Protocol (MCP) via stdio or HTTP transport
 - **Web Framework:** Axum (HTTP transport with SSE streaming)
 - **Database:** Neo4j via `neo4rs` driver
-- **AI Model:** Pluggable — Ollama (local), Anthropic, or Gemini
+- **AI Model:** Pluggable — Ollama (local), Ollama Cloud, Anthropic, or Gemini
 
 ## Build Commands
 
@@ -63,6 +63,7 @@ Copy `.env.example` to `.env` and configure:
 | `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model to use for text generation |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `OLLAMA_API_KEY` | - | API key for Ollama Cloud authentication. Get one at `ollama.com/settings/keys` |
+| `OLLAMA_LOCAL_MODEL` | `gemma4:latest` | Model used exclusively for all background/scheduled jobs. Always routes to `OLLAMA_LOCAL_URL` — never touches cloud quota |
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
 | `MCP_TRANSPORT` | `stdio` | MCP transport type (stdio/http) |
@@ -87,6 +88,10 @@ Copy `.env.example` to `.env` and configure:
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
+| `CHAT_LLM_PROVIDER` | *(same as brain)* | Override the LLM provider for human-facing `/chat` sessions. Accepted values: `ollama`, `ollama-cloud`, `anthropic`, `gemini`. When unset, chat uses the same provider as the brain. |
+| `CHAT_LLM_MODEL` | *(same as brain)* | Override the model name for chat (e.g. `claude-opus-4-5`). When unset, chat uses the brain's model. |
+| `CHAT_API_KEY` | *(same as brain)* | Override the API key used by the chat LLM. When unset, inherits the brain's key. |
+| `CHAT_LLM_BASE_URL` | *(same as brain)* | Override the base URL for the chat LLM endpoint. |
 
 ## Local Development
 
@@ -153,15 +158,17 @@ agent-brain/
 │       ├── src/
 │       │   ├── lib.rs            # Library exports (re-exports models + repository)
 │       │   ├── main.rs           # CLI entry point
+│       │   ├── brain_core.rs     # BrainCore — brain engine (storage, LLM, skills, scheduler)
 │       │   ├── cli.rs            # Clap CLI definitions
-│       │   ├── config.rs         # Environment configuration
+│       │   ├── config.rs         # Environment configuration (incl. ChatLlmConfig)
 │       │   ├── logging.rs        # Tracing setup
 │       │   ├── models/           # Re-exported from agent-brain-models
 │       │   ├── repository/       # Re-exported from agent-brain-repository
-│       │   ├── services/         # Core business logic
-│       │   │   ├── chat.rs       # ChatService — SSE chat with tool loop
+│       │   ├── clients/          # Client adapters (translate client protocols → BrainCore)
+│       │   │   └── chat.rs       # ChatService — conversational LLM loop for /chat SSE
+│       │   ├── services/         # Brain-internal business logic
 │       │   │   ├── knowledge.rs  # Notes/RAG (vector+BM25, entity extraction, spaced rep)
-│       │   │   ├── llm.rs        # Multi-provider LLM client (Ollama/Anthropic/Gemini/vLLM)
+│       │   │   ├── llm.rs        # Multi-provider LLM client (Ollama/Anthropic/Gemini)
 │       │   │   ├── model_selector.rs  # Capability filter + cheapest-first model selection
 │       │   │   ├── procedure_executor.rs  # Template-substitution procedure step runner
 │       │   │   ├── queue.rs      # Priority job queue + coordinator (AgentJob execution)
@@ -181,7 +188,7 @@ agent-brain/
 │       │   │   ├── sleep.rs      # Sleep / Telemetry skill (2 tools)
 │       │   │   ├── task.rs       # Task Manager skill (6 tools)
 │       │   │   └── working_memory.rs  # Working Memory skill (4 tools)
-│       │   └── mcp/              # MCP server implementation
+│       │   └── mcp/              # MCP protocol adapter
 │       │       ├── protocol.rs   # Re-export facade (pub use agent_brain_protocol::*)
 │       │       ├── transport.rs  # Async stdio transport
 │       │       ├── transport_trait.rs  # McpTransport trait abstraction
@@ -189,7 +196,7 @@ agent-brain/
 │       │       ├── session.rs    # HTTP session management
 │       │       ├── auth.rs       # API key authentication
 │       │       ├── tools.rs      # Tool registry (skill-based dispatch)
-│       │       └── server.rs     # MCP server state machine (thread-safe)
+│       │       └── server.rs     # McpServerCore: MCP adapter + wires brain → chat
 │       └── tests/
 │           ├── common/mod.rs     # Test utilities
 │           ├── http_transport_test.rs  # HTTP transport infrastructure tests
@@ -246,18 +253,27 @@ See `project-docs/architecture_context.md` for skill registry table, initializat
                └──────────────┬──────────────┘
                               │
      ┌────────────────────────▼────────────────────────┐
-     │              McpServerCore                      │
-     │    (Arc<RwLock<ServerState>> for thread-safe)  │
-     └────────────────────────┬────────────────────────┘
-                              │
-     ┌────────────────────────▼────────────────────────┐
-     │    Skill Registry (~85 static + N runtime)      │
-     │  KnowledgeSkill(16)  TaskSkill(6)  AgentSkill(8)│
-     │  WorkingMemorySkill(4)  DynamicSkill(4+runtime) │
-     │  ModelSkill(6)  SleepSkill(2)  ProcedureSkill(2)│
-     │  SearchSkill(1)  SchedulerSkill(5)              │
-     │  CodebaseSkill(10)                              │
-     └─────────────────────────────────────────────────┘
+     │         McpServerCore  (MCP adapter)            │
+     │  MCP JSON-RPC state machine + session manager   │
+     │  chat_llm_config (optional, separate from brain)│
+     └──────────┬──────────────────────┬───────────────┘
+                │ brain:               │ ChatService
+                │ BrainCore            │ (clients/chat.rs)
+     ┌──────────▼──────────┐  ┌────────▼──────────────┐
+     │      BrainCore      │  │     ChatService        │
+     │  (brain_core.rs)    │  │  Conversational LLM    │
+     │  storage + LLM +    │  │  loop for /chat SSE    │
+     │  skill registry +   │  │  (own LLM config)      │
+     │  scheduler + queue  │  └────────────────────────┘
+     └─────────────────────┘
+           │ Skills
+     ┌─────▼──────────────────────────────────────────┐
+     │    Skill Registry (~85 static + N runtime)     │
+     │  KnowledgeSkill  TaskSkill  AgentSkill          │
+     │  WorkingMemorySkill  DynamicSkill  ModelSkill   │
+     │  SleepSkill  ProcedureSkill  SearchSkill        │
+     │  SchedulerSkill  CodebaseSkill  ...             │
+     └────────────────────────────────────────────────┘
 ```
 
 ### Self-Improvement Loop

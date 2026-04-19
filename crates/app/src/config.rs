@@ -6,6 +6,9 @@ use std::env;
 pub struct Config {
     pub database: DatabaseConfig,
     pub llm: LlmProviderConfig,
+    /// Optional overrides for the chat client adapter's LLM.
+    /// When all fields are `None`, chat falls back to `llm` (backward-compatible).
+    pub chat_llm: ChatLlmConfig,
     pub secrets: SecretsConfig,
     pub logging: LoggingConfig,
     pub telemetry: TelemetryConfig,
@@ -29,12 +32,40 @@ pub struct LlmProviderConfig {
     /// Always used for embeddings, and for provider=ollama.
     pub ollama_local_url: String,
     pub ollama_model: String,
+    /// Model used exclusively for background/scheduled jobs on the local Ollama instance.
+    /// Defaults to `OLLAMA_LOCAL_MODEL` env var, falls back to `"gemma4:latest"`.
+    pub ollama_local_model: String,
     pub ollama_embed_model: Option<String>,
     pub ollama_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: Option<String>,
     pub gemini_api_key: Option<String>,
     pub gemini_model: Option<String>,
+}
+
+/// Optional LLM overrides for the human-facing chat adapter.
+///
+/// Any field left `None` falls through to the corresponding value in
+/// [`LlmProviderConfig`], so an empty `ChatLlmConfig` is a no-op — the
+/// chat service uses exactly the same model as the brain's internal LLM.
+///
+/// Set these when you want a different model for chat than for internal
+/// cognitive operations (e.g. cloud Anthropic for chat, local Ollama for
+/// consolidation/embeddings).
+#[derive(Debug, Clone, Default)]
+pub struct ChatLlmConfig {
+    /// Override the LLM provider for chat (e.g. `"anthropic"`).
+    /// Env var: `CHAT_LLM_PROVIDER`
+    pub provider: Option<crate::services::llm::LlmProviderType>,
+    /// Override the model name for chat (e.g. `"claude-opus-4-5"`).
+    /// Env var: `CHAT_LLM_MODEL`
+    pub model: Option<String>,
+    /// Override the API key for the chat LLM.
+    /// Env var: `CHAT_API_KEY`
+    pub api_key: Option<String>,
+    /// Override the base URL for the chat LLM endpoint.
+    /// Env var: `CHAT_LLM_BASE_URL`
+    pub base_url: Option<String>,
 }
 
 /// Secret provider backend configuration.
@@ -113,8 +144,10 @@ impl Config {
                 provider: env::var("LLM_PROVIDER")
                     .map(|s| match s.to_lowercase().as_str() {
                         "anthropic" => crate::services::llm::LlmProviderType::Anthropic,
-                        "gemini"    => crate::services::llm::LlmProviderType::Gemini,
-                        "ollama-cloud" | "ollamacloud" => crate::services::llm::LlmProviderType::OllamaCloud,
+                        "gemini" => crate::services::llm::LlmProviderType::Gemini,
+                        "ollama-cloud" | "ollamacloud" => {
+                            crate::services::llm::LlmProviderType::OllamaCloud
+                        }
                         _ => crate::services::llm::LlmProviderType::Ollama,
                     })
                     .unwrap_or_default(),
@@ -124,12 +157,29 @@ impl Config {
                     .unwrap_or_else(|_| "http://localhost:11434".to_string()),
                 ollama_model: env::var("OLLAMA_MODEL")
                     .unwrap_or_else(|_| "granite4:latest".to_string()),
+                ollama_local_model: env::var("OLLAMA_LOCAL_MODEL")
+                    .unwrap_or_else(|_| "gemma4:latest".to_string()),
                 ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
                 ollama_api_key: env::var("OLLAMA_API_KEY").ok(),
                 anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
                 anthropic_model: env::var("ANTHROPIC_MODEL").ok(),
                 gemini_api_key: env::var("GEMINI_API_KEY").ok(),
                 gemini_model: env::var("GEMINI_MODEL").ok(),
+            },
+            chat_llm: ChatLlmConfig {
+                provider: env::var("CHAT_LLM_PROVIDER").ok().map(|s| {
+                    match s.to_lowercase().as_str() {
+                        "anthropic" => crate::services::llm::LlmProviderType::Anthropic,
+                        "gemini" => crate::services::llm::LlmProviderType::Gemini,
+                        "ollama-cloud" | "ollamacloud" => {
+                            crate::services::llm::LlmProviderType::OllamaCloud
+                        }
+                        _ => crate::services::llm::LlmProviderType::Ollama,
+                    }
+                }),
+                model: env::var("CHAT_LLM_MODEL").ok(),
+                api_key: env::var("CHAT_API_KEY").ok(),
+                base_url: env::var("CHAT_LLM_BASE_URL").ok(),
             },
             secrets: SecretsConfig {
                 provider: env::var("SECRET_PROVIDER")
@@ -180,6 +230,7 @@ impl Config {
                 ollama_url: "https://ollama.com".to_string(),
                 ollama_local_url: "http://localhost:11434".to_string(),
                 ollama_model: "granite4:latest".to_string(),
+                ollama_local_model: "gemma4:latest".to_string(),
                 ollama_embed_model: None,
                 ollama_api_key: None,
                 anthropic_api_key: None,
@@ -187,6 +238,7 @@ impl Config {
                 gemini_api_key: None,
                 gemini_model: None,
             },
+            chat_llm: ChatLlmConfig::default(),
             secrets: SecretsConfig {
                 provider: SecretProviderType::Local,
                 secrets_file: Some(".secrets.enc".to_string()),

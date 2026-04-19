@@ -6,6 +6,7 @@ import "highlight.js/styles/github-dark.css";
 import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
+import { getBrainUrl, getApiKey } from "../../api/config";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -179,13 +180,15 @@ export default function ChatPanel() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs]);
 
-  // Load session list from server.
+  // Load session list via REST (GET /api/sessions).
   const loadSessions = useCallback(async () => {
     setLoadingSessions(true);
     try {
-      const raw = await callTool("list_sessions", { limit: 50 });
-      const parsed = JSON.parse(raw) as { sessions?: Session[]; rows?: Session[] };
-      setSessions(parsed.sessions ?? parsed.rows ?? []);
+      const res = await fetch(`${getBrainUrl()}/api/sessions?limit=50`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const data = (await res.json()) as { sessions?: Session[] };
+      setSessions(data.sessions ?? []);
     } catch {
       // ignore — brain may not be connected yet
     } finally {
@@ -197,22 +200,26 @@ export default function ChatPanel() {
     loadSessions();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load context profiles for the selector.
+  // Load context profiles for the selector via REST (GET /api/contexts).
   useEffect(() => {
-    callTool("list_context_profiles", {})
-      .then((raw) => {
-        const parsed = JSON.parse(raw) as { profiles?: Array<{ name: string }> };
-        const names = (parsed.profiles ?? []).map((p) => p.name).sort();
+    fetch(`${getBrainUrl()}/api/contexts`, {
+      headers: { Authorization: `Bearer ${getApiKey()}` },
+    })
+      .then((r) => r.json())
+      .then((data: { profiles?: Array<{ name: string }> }) => {
+        const names = (data.profiles ?? []).map((p) => p.name).sort();
         if (names.length > 0) setProfiles(names);
       })
       .catch(() => {/* ignore — brain may not be connected yet */});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load active model + catalog from the backend.
+  // Load active model + catalog from the backend via REST (GET /api/models).
   const loadModels = useCallback(async () => {
     try {
-      const raw = await callTool("list_models", {});
-      const data = JSON.parse(raw) as {
+      const res = await fetch(`${getBrainUrl()}/api/models`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const data = (await res.json()) as {
         active_provider?: string;
         active_model?: string;
         catalog_models?: CatalogModel[];
@@ -262,8 +269,10 @@ export default function ChatPanel() {
     setSessionId(sid);
     setMsgs([]);
     try {
-      const raw = await callTool("get_context", { session_id: sid, limit: 200 });
-      const parsed = JSON.parse(raw) as {
+      const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const parsed = (await res.json()) as {
         entries?: Array<{ role: string; content: string }>;
       };
       const entries = parsed.entries ?? [];
@@ -366,12 +375,12 @@ export default function ChatPanel() {
     try {
       const raw = await callTool("reflect_on_work", {
         goal: userQuery || "chat response quality",
-        current_state: responseText.slice(0, 2000),
+        current_state: responseText.slice(0, 4000),
       });
       const data = JSON.parse(raw);
-      const reflectionText: string = data.reflection ?? data.analysis ?? raw;
+      const reflectionText: string = data.critique ?? data.reflection ?? data.analysis ?? raw;
       await callTool("store_note", {
-        content: `Chat reflection\nQ: ${userQuery}\n\nResponse summary: ${responseText.slice(0, 400)}\n\nReflection: ${reflectionText}`,
+        content: `Chat reflection\nQ: ${userQuery}\n\nResponse summary: ${responseText.slice(0, 800)}\n\nReflection: ${reflectionText}`,
         note_type: "reflection",
       });
       setMsgs((prev) => prev.map((m) =>

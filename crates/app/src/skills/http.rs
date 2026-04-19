@@ -5,8 +5,8 @@
 //! are resolved from the environment variable named in `auth_env_var` — secrets
 //! never touch the database.
 //!
-//! `define_api_context`, `list_api_contexts`, and `load_api_context` manage the
-//! `ApiContext` nodes that power auth injection.
+//! `define_api_context` manages the `ApiContext` nodes that power auth injection.
+//! Use `neo4j_query` to inspect contexts: MATCH (c:ApiContext) RETURN c
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -132,31 +132,7 @@ impl HttpSkill {
         }
     }
 
-    fn list_api_contexts_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_api_contexts".to_string(),
-            description: "List all stored ApiContext nodes (name, base_url, auth_scheme, description). \
-                          Does not expose secret values."
-                .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
-
-    fn load_api_context_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "load_api_context".to_string(),
-            description: "Fetch a single ApiContext by name. Returns all fields except \
-                          the resolved secret value."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Context name to fetch" }
-                },
-                "required": ["name"]
-            }),
-        }
-    }
+    // list_api_contexts is served by GET /api/http-contexts (REST API)
 
     // =========================================================================
     // Helpers
@@ -176,7 +152,9 @@ impl HttpSkill {
         let row = rows.first()?;
         Some(ApiContext {
             base_url: row.get::<String>("base_url").unwrap_or_default(),
-            auth_scheme: row.get::<String>("auth_scheme").unwrap_or_else(|_| "none".into()),
+            auth_scheme: row
+                .get::<String>("auth_scheme")
+                .unwrap_or_else(|_| "none".into()),
             auth_param: row.get::<String>("auth_param").ok(),
             auth_env_var: row.get::<String>("auth_env_var").ok(),
             default_headers: row
@@ -229,13 +207,13 @@ impl HttpSkill {
 
         // Build the request
         let method = match input.method.to_uppercase().as_str() {
-            "GET"    => reqwest::Method::GET,
-            "POST"   => reqwest::Method::POST,
-            "PUT"    => reqwest::Method::PUT,
-            "PATCH"  => reqwest::Method::PATCH,
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "PATCH" => reqwest::Method::PATCH,
             "DELETE" => reqwest::Method::DELETE,
-            "HEAD"   => reqwest::Method::HEAD,
-            other    => return ToolCallResult::error(format!("Unknown method: {}", other)),
+            "HEAD" => reqwest::Method::HEAD,
+            other => return ToolCallResult::error(format!("Unknown method: {}", other)),
         };
 
         let mut req = client.request(method, &input.url);
@@ -260,29 +238,25 @@ impl HttpSkill {
         }
 
         // Auth injection
-        if let Some(ref c) = ctx {
-            if let Some(ref env_var) = c.auth_env_var {
-                if let Ok(secret) = std::env::var(env_var) {
-                    match c.auth_scheme.as_str() {
-                        "bearer" => {
-                            req = req.header(
-                                reqwest::header::AUTHORIZATION,
-                                format!("Bearer {}", secret),
-                            );
-                        }
-                        "header" => {
-                            if let Some(ref param) = c.auth_param {
-                                req = req.header(param.as_str(), secret);
-                            }
-                        }
-                        "query_param" => {
-                            if let Some(ref param) = c.auth_param {
-                                req = req.query(&[(param.as_str(), secret.as_str())]);
-                            }
-                        }
-                        _ => {}
+        if let Some(ref c) = ctx
+            && let Some(ref env_var) = c.auth_env_var
+            && let Ok(secret) = std::env::var(env_var)
+        {
+            match c.auth_scheme.as_str() {
+                "bearer" => {
+                    req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", secret));
+                }
+                "header" => {
+                    if let Some(ref param) = c.auth_param {
+                        req = req.header(param.as_str(), secret);
                     }
                 }
+                "query_param" => {
+                    if let Some(ref param) = c.auth_param {
+                        req = req.query(&[(param.as_str(), secret.as_str())]);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -301,24 +275,22 @@ impl HttpSkill {
                 let resp_headers: HashMap<String, String> = resp
                     .headers()
                     .iter()
-                    .filter_map(|(k, v)| {
-                        v.to_str().ok().map(|s| (k.to_string(), s.to_string()))
-                    })
+                    .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))
                     .collect();
 
                 let body_text = resp.text().await.unwrap_or_default();
-                let body_val: Value = serde_json::from_str(&body_text)
-                    .unwrap_or(Value::String(body_text));
+                let body_val: Value =
+                    serde_json::from_str(&body_text).unwrap_or(Value::String(body_text));
 
                 let response = json!({
                     "status_code": status,
-                    "ok": status >= 200 && status < 300,
+                    "ok": (200..300).contains(&status),
                     "duration_ms": duration_ms,
                     "headers": resp_headers,
                     "body": body_val,
                     "context_used": input.context_name,
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("HTTP request failed: {}", e)),
         }
@@ -350,9 +322,9 @@ impl HttpSkill {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
 
-        let default_headers_json = serde_json::to_string(
-            &input.default_headers.unwrap_or_default()
-        ).unwrap_or_else(|_| "{}".to_string());
+        let default_headers_json =
+            serde_json::to_string(&input.default_headers.unwrap_or_default())
+                .unwrap_or_else(|_| "{}".to_string());
 
         let cypher = "MERGE (c:ApiContext {name: $name}) \
                       SET c.base_url        = $base_url, \
@@ -366,101 +338,27 @@ impl HttpSkill {
         if let Err(e) = neo4j
             .run(
                 neo4rs::query(cypher)
-                    .param("name",            input.name.clone())
-                    .param("base_url",        input.base_url.clone())
-                    .param("auth_scheme",     input.auth_scheme.unwrap_or_else(|| "none".into()))
-                    .param("auth_param",      input.auth_param.unwrap_or_default())
-                    .param("auth_env_var",    input.auth_env_var.unwrap_or_default())
+                    .param("name", input.name.clone())
+                    .param("base_url", input.base_url.clone())
+                    .param(
+                        "auth_scheme",
+                        input.auth_scheme.unwrap_or_else(|| "none".into()),
+                    )
+                    .param("auth_param", input.auth_param.unwrap_or_default())
+                    .param("auth_env_var", input.auth_env_var.unwrap_or_default())
                     .param("default_headers", default_headers_json)
-                    .param("description",     input.description.unwrap_or_default()),
+                    .param("description", input.description.unwrap_or_default()),
             )
             .await
         {
             return ToolCallResult::error(format!("Failed to store ApiContext: {}", e));
         }
 
-        ToolCallResult::success_text(
-            serde_json::to_string_pretty(&json!({
-                "stored": true,
-                "name": input.name,
-                "base_url": input.base_url,
-            }))
-            .unwrap(),
-        )
-    }
-
-    async fn handle_list_api_contexts(&self) -> ToolCallResult {
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-
-        let cypher = "MATCH (c:ApiContext) \
-                      RETURN c.name AS name, c.base_url AS base_url, \
-                             c.auth_scheme AS auth_scheme, c.description AS description \
-                      ORDER BY c.name ASC";
-
-        match neo4j.execute(neo4rs::query(cypher)).await {
-            Ok(rows) => {
-                let contexts: Vec<Value> = rows
-                    .iter()
-                    .map(|row| json!({
-                        "name":        row.get::<String>("name").unwrap_or_default(),
-                        "base_url":    row.get::<String>("base_url").unwrap_or_default(),
-                        "auth_scheme": row.get::<String>("auth_scheme").unwrap_or_default(),
-                        "description": row.get::<String>("description").unwrap_or_default(),
-                    }))
-                    .collect();
-                let count = contexts.len();
-                ToolCallResult::success_text(
-                    serde_json::to_string_pretty(&json!({ "count": count, "contexts": contexts }))
-                        .unwrap(),
-                )
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to list ApiContexts: {}", e)),
-        }
-    }
-
-    async fn handle_load_api_context(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input { name: String }
-
-        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
-            Ok(i) => i,
-            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
-        };
-
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-
-        let cypher = "MATCH (c:ApiContext {name: $name}) \
-                      RETURN c.name AS name, c.base_url AS base_url, \
-                             c.auth_scheme AS auth_scheme, c.auth_param AS auth_param, \
-                             c.auth_env_var AS auth_env_var, \
-                             c.default_headers AS default_headers, \
-                             c.description AS description";
-
-        match neo4j
-            .execute(neo4rs::query(cypher).param("name", input.name.clone()))
-            .await
-        {
-            Ok(rows) => match rows.first() {
-                Some(row) => {
-                    let ctx = json!({
-                        "name":            row.get::<String>("name").unwrap_or_default(),
-                        "base_url":        row.get::<String>("base_url").unwrap_or_default(),
-                        "auth_scheme":     row.get::<String>("auth_scheme").unwrap_or_default(),
-                        "auth_param":      row.get::<String>("auth_param").unwrap_or_default(),
-                        "auth_env_var":    row.get::<String>("auth_env_var").unwrap_or_default(),
-                        "default_headers": row.get::<String>("default_headers").unwrap_or_default(),
-                        "description":     row.get::<String>("description").unwrap_or_default(),
-                    });
-                    ToolCallResult::success_text(serde_json::to_string_pretty(&ctx).unwrap())
-                }
-                None => ToolCallResult::error(format!("ApiContext '{}' not found", input.name)),
-            },
-            Err(e) => ToolCallResult::error(format!("Failed to load ApiContext: {}", e)),
-        }
+        ToolCallResult::success_json(json!({
+            "stored": true,
+            "name": input.name,
+            "base_url": input.base_url,
+        }))
     }
 }
 
@@ -484,18 +382,14 @@ impl Skill for HttpSkill {
         let mut tools = vec![Self::http_request_def()];
         if self.neo4j.is_some() {
             tools.push(Self::define_api_context_def());
-            tools.push(Self::list_api_contexts_def());
-            tools.push(Self::load_api_context_def());
         }
         tools
     }
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
-            "http_request"        => Some(self.handle_http_request(args).await),
-            "define_api_context"  => Some(self.handle_define_api_context(args).await),
-            "list_api_contexts"   => Some(self.handle_list_api_contexts().await),
-            "load_api_context"    => Some(self.handle_load_api_context(args).await),
+            "http_request" => Some(self.handle_http_request(args).await),
+            "define_api_context" => Some(self.handle_define_api_context(args).await),
             _ => None,
         }
     }

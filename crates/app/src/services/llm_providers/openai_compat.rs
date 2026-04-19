@@ -1,9 +1,8 @@
 //! OpenAI-compatible LLM provider.
 //!
-//! Works with any server that implements the OpenAI REST API, including:
-//! - **vLLM** (`vllm serve <model>`, default http://localhost:8000)
-//! - LM Studio, Jan.ai, LocalAI, llama.cpp server
-//! - Groq, Together AI, Fireworks AI (with api_key)
+//! Used by `LlmProviderType::OllamaCloud` which exposes the OpenAI REST API at
+//! `https://ollama.com/v1/chat/completions`. Also compatible with other OpenAI-API
+//! servers (LM Studio, llama.cpp, Groq, etc.) if needed in future.
 //!
 //! Endpoints used:
 //! - `POST /v1/chat/completions` — chat and single-turn generation
@@ -158,7 +157,7 @@ impl LlmProvider for OpenAiCompatProvider {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(LlmProviderError::GenerationFailed(format!(
-                "vLLM embeddings error ({}): {}",
+                "OpenAI-compat embeddings error ({}): {}",
                 status, body
             )));
         }
@@ -183,7 +182,7 @@ impl LlmProvider for OpenAiCompatProvider {
                 match self.maybe_auth(self.client.get(&models_url)).send().await {
                     Ok(r) => r.status().is_success(),
                     Err(e) => {
-                        warn!(error = %e, "vLLM health check failed");
+                        warn!(error = %e, "OpenAI-compat health check failed");
                         false
                     }
                 }
@@ -216,7 +215,7 @@ impl OpenAiCompatProvider {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(LlmProviderError::GenerationFailed(format!(
-                "vLLM chat error ({}): {}",
+                "OpenAI-compat chat error ({}): {}",
                 status, body
             )));
         }

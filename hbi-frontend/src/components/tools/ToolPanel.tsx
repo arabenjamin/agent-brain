@@ -24,13 +24,11 @@ const SKILLS: SkillDef[] = [
     label: "Knowledge",
     icon:  "🧠",
     color: "var(--green)",
-    desc:  "Notes, hybrid RAG search, memory consolidation, spaced-repetition scheduling, entity extraction, and LLM reasoning over the graph.",
+    desc:  "Notes, hybrid RAG search (BM25+semantic+entity), memory consolidation, and multi-mode LLM reasoning (infer/explain/clarify/audit).",
     tools: [
-      "store_note", "search_notes", "list_notes", "get_note", "update_note",
-      "delete_note", "find_related_notes", "search_by_entity",
-      "prune_old_notes", "consolidate_memories", "review_due_notes",
-      "reason", "audit_action", "explain_reasoning", "ask_clarification",
-      "export_graph_visualization",
+      "store_note", "search_notes",
+      "prune_old_notes", "consolidate_memories",
+      "synthesize_knowledge", "reason",
     ],
   },
   {
@@ -39,7 +37,7 @@ const SKILLS: SkillDef[] = [
     color: "var(--cyan)",
     desc:  "Goal tracking, LLM-powered decomposition into subtasks, DEPENDS_ON edge wiring, outcome recording, and work reflection.",
     tools: [
-      "create_task", "list_tasks", "update_task",
+      "create_task", "update_task",
       "decompose_goal", "reflect_on_work", "record_outcome",
     ],
   },
@@ -49,9 +47,8 @@ const SKILLS: SkillDef[] = [
     color: "var(--purple)",
     desc:  "Durable priority job queue (0–3), per-provider semaphores (Ollama×3, Anthropic×2, Gemini×5), job chaining with parked/unparked state.",
     tools: [
-      "enqueue_jobs", "queue_status",
-      "get_job_result", "cancel_job", "retry_job",
-      "set_worker_config", "drain_queue",
+      "enqueue_jobs", "manage_job",
+      "set_worker_config", "dead_letter", "update_job_progress",
     ],
   },
   {
@@ -60,8 +57,8 @@ const SKILLS: SkillDef[] = [
     color: "var(--purple)",
     desc:  "Autonomous 5-min Tokio tick loop. Perception scan auto-creates tasks on failures or overdue notes. Idle sleep mode with bedtime chain.",
     tools: [
-      "start_scheduler", "stop_scheduler", "get_scheduler_status",
-      "configure_scheduler", "run_scheduler_tick",
+      "scheduler_control", "run_scheduler_tick",
+      "manage_chain", "manage_scheduled_task",
     ],
   },
   {
@@ -93,10 +90,9 @@ const SKILLS: SkillDef[] = [
     label: "Models",
     icon:  "🤖",
     color: "var(--purple)",
-    desc:  "LLM provider/model registry, runtime switching via use_model, capability-based selection, and YAML catalog reload. Usage analytics via the generic duckdb_query tool on the model_usage table.",
+    desc:  "LLM provider/model registry, runtime switching via use_model (pass required_capabilities to auto-select), and YAML catalog reload. Usage analytics via the generic duckdb_query tool on the model_usage table.",
     tools: [
-      "list_models", "use_model",
-      "select_model", "reload_models",
+      "use_model", "reload_models",
     ],
   },
   {
@@ -105,8 +101,7 @@ const SKILLS: SkillDef[] = [
     color: "var(--cyan)",
     desc:  "YAML context profiles with tool allowlists and system prompts. Boot/init protocols run on startup. Auto-assigns profiles to goals.",
     tools: [
-      "list_context_profiles", "get_context_profile",
-      "auto_assign_context", "build_agent_context",
+      "context",
     ],
   },
   {
@@ -115,8 +110,7 @@ const SKILLS: SkillDef[] = [
     color: "var(--accent)",
     desc:  "Per-session scratchpad for multi-step tasks. Entries have roles (observation/plan/result/error). LLM summarise to long-term memory.",
     tools: [
-      "push_context", "get_context",
-      "summarise_session", "list_sessions",
+      "push_context", "summarise_session",
     ],
   },
   {
@@ -125,8 +119,7 @@ const SKILLS: SkillDef[] = [
     color: "var(--yellow)",
     desc:  "Define new MCP tools at runtime backed by stored procedures. Hot-registered instantly without restart. Template substitution supported.",
     tools: [
-      "define_tool", "execute_procedure",
-      "list_dynamic_tools", "remove_dynamic_tool",
+      "manage_dynamic_tool", "execute_procedure", "store_procedure",
     ],
   },
   {

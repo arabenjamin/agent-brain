@@ -6,11 +6,7 @@ use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use uuid::Uuid;
 
-use crate::services::chat::ChatEvent;
-use crate::services::{
-    ChatService,
-    chat::{ChatHistoryMessage, ChatRequest},
-};
+use crate::clients::chat::{ChatEvent, ChatHistoryMessage, ChatRequest, ChatService};
 
 /// Start the interactive REPL.
 ///

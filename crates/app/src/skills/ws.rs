@@ -18,7 +18,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::mcp::protocol::{ToolCallResult, ToolDefinition};
+use crate::mcp::protocol::{ToolCallResult, ToolDefinition, parse_args};
 use crate::skills::Skill;
 
 // ============================================================================
@@ -193,14 +193,11 @@ impl WsSkill {
         self.connections.write().await.insert(conn_id.clone(), conn);
 
         info!(conn_id = %conn_id, "WebSocket connected");
-        ToolCallResult::success_text(
-            serde_json::to_string_pretty(&json!({
-                "connection_id": conn_id,
-                "url": input.url,
-                "status": "connected"
-            }))
-            .unwrap(),
-        )
+        ToolCallResult::success_json(json!({
+            "connection_id": conn_id,
+            "url": input.url,
+            "status": "connected"
+        }))
     }
 
     async fn handle_ws_send(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -239,13 +236,10 @@ impl WsSkill {
         {
             Ok(_) => {
                 info!(conn_id = %input.connection_id, bytes = input.message.len(), "WS message sent");
-                ToolCallResult::success_text(
-                    serde_json::to_string_pretty(&json!({
-                        "connection_id": input.connection_id,
-                        "sent": input.message
-                    }))
-                    .unwrap(),
-                )
+                ToolCallResult::success_json(json!({
+                    "connection_id": input.connection_id,
+                    "sent": input.message
+                }))
             }
             Err(e) => ToolCallResult::error(format!("Send failed: {}", e)),
         }
@@ -294,31 +288,22 @@ impl WsSkill {
                     _ => "<unknown>".to_string(),
                 };
                 info!(conn_id = %input.connection_id, "WS message received");
-                ToolCallResult::success_text(
-                    serde_json::to_string_pretty(&json!({
-                        "connection_id": input.connection_id,
-                        "message": text
-                    }))
-                    .unwrap(),
-                )
+                ToolCallResult::success_json(json!({
+                    "connection_id": input.connection_id,
+                    "message": text
+                }))
             }
             Ok(Some(Err(e))) => ToolCallResult::error(format!("Receive error: {}", e)),
-            Ok(None) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&json!({
-                    "connection_id": input.connection_id,
-                    "message": null,
-                    "reason": "connection closed by server"
-                }))
-                .unwrap(),
-            ),
-            Err(_) => ToolCallResult::success_text(
-                serde_json::to_string_pretty(&json!({
-                    "connection_id": input.connection_id,
-                    "message": null,
-                    "reason": "timeout"
-                }))
-                .unwrap(),
-            ),
+            Ok(None) => ToolCallResult::success_json(json!({
+                "connection_id": input.connection_id,
+                "message": null,
+                "reason": "connection closed by server"
+            })),
+            Err(_) => ToolCallResult::success_json(json!({
+                "connection_id": input.connection_id,
+                "message": null,
+                "reason": "timeout"
+            })),
         }
     }
 
@@ -343,38 +328,11 @@ impl WsSkill {
                 }
                 *guard = None;
                 info!(conn_id = %input.connection_id, "WebSocket closed");
-                ToolCallResult::success_text(
-                    serde_json::to_string_pretty(&json!({
-                        "connection_id": input.connection_id,
-                        "status": "closed"
-                    }))
-                    .unwrap(),
-                )
+                ToolCallResult::success_json(json!({
+                    "connection_id": input.connection_id,
+                    "status": "closed"
+                }))
             }
-        }
-    }
-
-    async fn handle_ws_list(&self, _arguments: Option<Value>) -> ToolCallResult {
-        let conns = self.connections.read().await;
-        let list: Vec<Value> = conns
-            .iter()
-            .map(|(id, c)| {
-                json!({
-                    "connection_id": id,
-                    "url": c.url,
-                })
-            })
-            .collect();
-        ToolCallResult::success_text(
-            serde_json::to_string_pretty(&json!({ "connections": list })).unwrap(),
-        )
-    }
-
-    fn ws_list_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "ws_list".to_string(),
-            description: "List all currently open WebSocket connections.".to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
 }
@@ -395,7 +353,6 @@ impl Skill for WsSkill {
             Self::ws_send_def(),
             Self::ws_receive_def(),
             Self::ws_close_def(),
-            Self::ws_list_def(),
         ]
     }
 
@@ -405,18 +362,7 @@ impl Skill for WsSkill {
             "ws_send" => Some(self.handle_ws_send(arguments).await),
             "ws_receive" => Some(self.handle_ws_receive(arguments).await),
             "ws_close" => Some(self.handle_ws_close(arguments).await),
-            "ws_list" => Some(self.handle_ws_list(arguments).await),
             _ => None,
         }
     }
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
 }

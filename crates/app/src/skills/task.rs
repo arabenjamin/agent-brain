@@ -10,7 +10,7 @@ use crate::models::TaskStatus;
 use crate::services::queue::{ChainStep, QueueService};
 use crate::services::traits::{LlmProvider, TaskStore};
 use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Task Skill implementation.
 pub struct TaskSkill {
@@ -145,28 +145,6 @@ impl TaskSkill {
         }
     }
 
-    fn list_tasks_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_tasks".to_string(),
-            description: "List tasks from the graph, optionally filtered by status. \
-                         Returns parent_id for sub-tasks created via decompose_goal."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "description": "Filter by status: created, in_progress, completed, failed, blocked"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of tasks to return (default: 20)"
-                    }
-                }
-            }),
-        }
-    }
-
     fn record_outcome_def() -> ToolDefinition {
         ToolDefinition {
             name: "record_outcome".to_string(),
@@ -221,7 +199,7 @@ impl TaskSkill {
                         "status": "created",
                         "message": "Task created successfully in database."
                     });
-                    ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                    ToolCallResult::success_json(response)
                 }
                 Err(e) => ToolCallResult::error(format!("Failed to create task in DB: {}", e)),
             }
@@ -241,14 +219,26 @@ impl TaskSkill {
 
         {
             let prompt = format!(
-                "You are a critical reviewer. Analyze the following work against the goal.\n\n\
+                "You are a rigorous but fair quality reviewer. Evaluate the output below against the stated goal.\n\n\
                 GOAL: {}\n\n\
-                CURRENT STATE/OUTPUT:\n{}\n\n\
-                PLAN (Optional): {}\n\n\
-                Provide a critique and specific next steps. Focus on missing requirements or errors.",
+                OUTPUT TO REVIEW:\n{}\n\n\
+                PLAN (if any): {}\n\n\
+                Respond in this exact format:\n\n\
+                ## Goal Assessment\n\
+                State whether the goal was FULLY MET, PARTIALLY MET, or NOT MET, and why in one sentence.\n\n\
+                ## What Was Done Well\n\
+                List 1-3 things the output got right (be specific, not generic).\n\n\
+                ## Critical Issues\n\
+                For each issue: state the problem, its severity (high/medium/low), and the exact fix needed.\n\
+                If the output is truncated or incomplete, flag this as high severity.\n\
+                If the output describes intent rather than delivering results, flag this as high severity.\n\
+                If the output claims success without showing evidence, flag this as high severity.\n\n\
+                ## Required Next Steps\n\
+                Numbered list of concrete, immediately actionable steps to fully satisfy the goal.\n\
+                Each step must be specific enough to execute without additional clarification.",
                 input.goal,
                 input.current_state,
-                input.plan.as_deref().unwrap_or("")
+                input.plan.as_deref().unwrap_or("none")
             );
 
             match self.llm.generate(&prompt, None).await {
@@ -280,9 +270,7 @@ impl TaskSkill {
                         response_json["id"] = json!(note_id);
                     }
 
-                    ToolCallResult::success_text(
-                        serde_json::to_string_pretty(&response_json).unwrap(),
-                    )
+                    ToolCallResult::success_json(response_json)
                 }
                 Err(e) => ToolCallResult::error(format!("LLM reflection failed: {}", e)),
             }
@@ -411,7 +399,7 @@ impl TaskSkill {
             "parent_id": input.goal_task_id,
             "subtasks": created_subtasks
         });
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        ToolCallResult::success_json(response)
     }
 
     async fn handle_update_task(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -491,32 +479,7 @@ impl TaskSkill {
             response["parent_completed"] = json!(pid);
         }
 
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-    }
-
-    async fn handle_list_tasks(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: ListTasksInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        let neo4j = match &self.neo4j {
-            Some(n) => n,
-            None => return ToolCallResult::error("Neo4j not available".to_string()),
-        };
-
-        let limit = input.limit.unwrap_or(20);
-
-        match neo4j.list_tasks(input.status.as_deref(), limit).await {
-            Ok(tasks) => {
-                let response = json!({
-                    "count": tasks.len(),
-                    "tasks": tasks
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to list tasks: {}", e)),
-        }
+        ToolCallResult::success_json(response)
     }
 
     async fn handle_record_outcome(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -563,8 +526,10 @@ impl TaskSkill {
                             })),
                             priority: Some(1),
                             max_attempts: Some(2),
-                            provider_hint: None,
+                            provider_hint: Some("ollama".to_string()),
                             context_profile: None,
+                            ttl_secs: None,
+                            description: None,
                         },
                         ChainStep {
                             tool_name: "store_note".to_string(),
@@ -577,8 +542,10 @@ impl TaskSkill {
                             })),
                             priority: Some(1),
                             max_attempts: Some(2),
-                            provider_hint: None,
+                            provider_hint: Some("ollama".to_string()),
                             context_profile: None,
+                            ttl_secs: None,
+                            description: None,
                         },
                     ];
                     match queue.enqueue_chain(&steps, None).await {
@@ -604,7 +571,7 @@ impl TaskSkill {
                 if let Some(jid) = reflection_job_id {
                     response["reflection_job_id"] = json!(jid);
                 }
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Failed to store outcome: {}", e)),
         }
@@ -623,7 +590,6 @@ impl Skill for TaskSkill {
             Self::reflect_def(),
             Self::decompose_goal_def(),
             Self::update_task_def(),
-            Self::list_tasks_def(),
             Self::record_outcome_def(),
         ]
     }
@@ -634,7 +600,6 @@ impl Skill for TaskSkill {
             "reflect_on_work" => Some(self.handle_reflect(arguments).await),
             "decompose_goal" => Some(self.handle_decompose_goal(arguments).await),
             "update_task" => Some(self.handle_update_task(arguments).await),
-            "list_tasks" => Some(self.handle_list_tasks(arguments).await),
             "record_outcome" => Some(self.handle_record_outcome(arguments).await),
             _ => None,
         }
@@ -679,15 +644,6 @@ struct UpdateTaskInput {
     note: Option<String>,
 }
 
-
-#[derive(Debug, Deserialize)]
-struct ListTasksInput {
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    limit: Option<usize>,
-}
-
 #[derive(Debug, Deserialize)]
 struct RecordOutcomeInput {
     tool_name: String,
@@ -697,8 +653,299 @@ struct RecordOutcomeInput {
     task_id: Option<String>,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::test_helpers::*;
+    use std::sync::Arc;
+
+    fn skill(store: MockTaskStore) -> TaskSkill {
+        TaskSkill::new(
+            Arc::new(MockLlm::ok("reflection text")),
+            Some(Arc::new(store)),
+            None,
+        )
+    }
+
+    fn skill_no_db() -> TaskSkill {
+        TaskSkill::new(Arc::new(MockLlm::ok("ok")), None, None)
+    }
+
+    // -- tool registry --------------------------------------------------------
+
+    #[test]
+    fn tools_list_has_correct_count() {
+        assert_eq!(skill(MockTaskStore::default()).tools().len(), 5);
+    }
+
+    #[test]
+    fn execute_unknown_tool_returns_none() {
+        let s = skill_no_db();
+        let r = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(s.execute("not_a_tool", None));
+        assert!(r.is_none());
+    }
+
+    // -- create_task ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_task_success() {
+        let r = result_json(
+            skill(MockTaskStore::default())
+                .execute(
+                    "create_task",
+                    Some(serde_json::json!({"goal": "build thing"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["id"], "task-id-1");
+        assert_eq!(r["status"], "created");
+    }
+
+    #[tokio::test]
+    async fn create_task_no_db_returns_error() {
+        let msg = result_error(
+            skill_no_db()
+                .execute("create_task", Some(serde_json::json!({"goal": "test"})))
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not available"));
+    }
+
+    #[tokio::test]
+    async fn create_task_missing_goal_returns_error() {
+        let r = skill(MockTaskStore::default())
+            .execute("create_task", Some(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn create_task_store_error_propagates() {
+        let mut store = MockTaskStore::default();
+        store.create_result = Err("db error".into());
+        let msg = result_error(
+            skill(store)
+                .execute("create_task", Some(serde_json::json!({"goal": "x"})))
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("db error"));
+    }
+
+    // -- reflect_on_work ------------------------------------------------------
+
+    #[tokio::test]
+    async fn reflect_on_work_success_stores_note() {
+        let r = result_json(
+            skill(MockTaskStore::default())
+                .execute(
+                    "reflect_on_work",
+                    Some(serde_json::json!({
+                        "goal": "write tests",
+                        "current_state": "wrote some tests",
+                        "task_id": "task-id-1"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["status"], "reflection_complete");
+        assert_eq!(r["id"], "reflection-note-id");
+    }
+
+    #[tokio::test]
+    async fn reflect_on_work_without_task_id_stores_note_anyway() {
+        // neo4j is present: note is stored even without a task_id link
+        let r = result_json(
+            skill(MockTaskStore::default())
+                .execute(
+                    "reflect_on_work",
+                    Some(serde_json::json!({
+                        "goal": "test",
+                        "current_state": "state"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["status"], "reflection_complete");
+        assert_eq!(r["id"], "reflection-note-id");
+    }
+
+    #[tokio::test]
+    async fn reflect_on_work_no_db_omits_id() {
+        let r = result_json(
+            skill_no_db()
+                .execute(
+                    "reflect_on_work",
+                    Some(serde_json::json!({
+                        "goal": "test",
+                        "current_state": "state"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["status"], "reflection_complete");
+        assert!(r.get("id").is_none());
+    }
+
+    #[tokio::test]
+    async fn reflect_on_work_llm_error() {
+        let s = TaskSkill::new(
+            Arc::new(MockLlm::err("llm fail")),
+            Some(Arc::new(MockTaskStore::default())),
+            None,
+        );
+        let msg = result_error(
+            s.execute(
+                "reflect_on_work",
+                Some(serde_json::json!({"goal": "g", "current_state": "s"})),
+            )
+            .await
+            .unwrap(),
+        );
+        assert!(msg.contains("llm fail"));
+    }
+
+    // -- update_task ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn update_task_success() {
+        let r = result_json(
+            skill(MockTaskStore::default())
+                .execute(
+                    "update_task",
+                    Some(serde_json::json!({"task_id": "task-id-1", "status": "completed"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["status"], "completed");
+        assert_eq!(r["id"], "task-id-1");
+    }
+
+    #[tokio::test]
+    async fn update_task_with_note() {
+        let r = result_json(
+            skill(MockTaskStore::default())
+                .execute(
+                    "update_task",
+                    Some(serde_json::json!({
+                        "task_id": "task-id-1",
+                        "status": "in_progress",
+                        "note": "making progress"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["note_id"], "outcome-note-id");
+    }
+
+    #[tokio::test]
+    async fn update_task_unknown_status() {
+        let msg = result_error(
+            skill(MockTaskStore::default())
+                .execute(
+                    "update_task",
+                    Some(serde_json::json!({"task_id": "t1", "status": "unknown_val"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("Unknown status"));
+    }
+
+    #[tokio::test]
+    async fn update_task_auto_completes_parent() {
+        let mut store = MockTaskStore::default();
+        store.auto_complete_result = Ok(Some("parent-id-1".into()));
+        let r = result_json(
+            skill(store)
+                .execute(
+                    "update_task",
+                    Some(serde_json::json!({"task_id": "task-id-1", "status": "completed"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["parent_completed"], "parent-id-1");
+    }
+
+    // -- decompose_goal -------------------------------------------------------
+
+    #[tokio::test]
+    async fn decompose_goal_task_not_found() {
+        let mut store = MockTaskStore::default();
+        store.get_result = Ok(None);
+        let msg = result_error(
+            skill(store)
+                .execute(
+                    "decompose_goal",
+                    Some(serde_json::json!({"goal_task_id": "missing-id"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn decompose_goal_no_db_returns_error() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "decompose_goal",
+                    Some(serde_json::json!({"goal_task_id": "t1"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not available"));
+    }
+
+    // -- record_outcome -------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_outcome_success() {
+        let r = result_json(
+            skill(MockTaskStore::default())
+                .execute(
+                    "record_outcome",
+                    Some(serde_json::json!({
+                        "tool_name": "store_note",
+                        "summary": "stored ok",
+                        "success": true
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["tool_name"], "store_note");
+        assert_eq!(r["success"], true);
+    }
+
+    #[tokio::test]
+    async fn record_outcome_no_db_returns_error() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "record_outcome",
+                    Some(serde_json::json!({
+                        "tool_name": "x",
+                        "summary": "failed",
+                        "success": false
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not available"));
+    }
 }

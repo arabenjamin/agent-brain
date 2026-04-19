@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 pub struct SearchSkill {
     client: Client,
@@ -23,10 +23,7 @@ pub struct SearchSkill {
 }
 
 impl SearchSkill {
-    pub fn new(
-        telemetry: Option<TelemetryClient>,
-        neo4j: Option<Neo4jClient>,
-    ) -> Self {
+    pub fn new(telemetry: Option<TelemetryClient>, neo4j: Option<Neo4jClient>) -> Self {
         Self {
             client: Client::new(),
             telemetry,
@@ -47,12 +44,15 @@ impl SearchSkill {
         if let Some(ref neo4j) = self.neo4j {
             let cypher = "MATCH (c:ApiContext {name: $name}) \
                           RETURN c.auth_env_var AS auth_env_var LIMIT 1";
-            if let Ok(rows) = neo4j.execute(neo4rs::query(cypher).param("name", context_name)).await {
-                if let Some(env_var) = rows.first().and_then(|r| r.get::<String>("auth_env_var").ok()) {
-                    if let Ok(val) = std::env::var(&env_var) {
-                        return Some(val);
-                    }
-                }
+            if let Ok(rows) = neo4j
+                .execute(neo4rs::query(cypher).param("name", context_name))
+                .await
+                && let Some(env_var) = rows
+                    .first()
+                    .and_then(|r| r.get::<String>("auth_env_var").ok())
+                && let Ok(val) = std::env::var(&env_var)
+            {
+                return Some(val);
             }
         }
         // Direct env var fallback
@@ -60,17 +60,22 @@ impl SearchSkill {
     }
 
     /// Load a non-auth config value from ApiContext (e.g. Google CX).
-    async fn resolve_context_field(&self, context_name: &str, field: &str, fallback_env_var: &str) -> Option<String> {
+    async fn resolve_context_field(
+        &self,
+        context_name: &str,
+        field: &str,
+        fallback_env_var: &str,
+    ) -> Option<String> {
         if let Some(ref neo4j) = self.neo4j {
-            let cypher = format!(
-                "MATCH (c:ApiContext {{name: $name}}) RETURN c.{field} AS val LIMIT 1"
-            );
-            if let Ok(rows) = neo4j.execute(neo4rs::query(&cypher).param("name", context_name)).await {
-                if let Some(val) = rows.first().and_then(|r| r.get::<String>("val").ok()) {
-                    if !val.is_empty() {
-                        return Some(val);
-                    }
-                }
+            let cypher =
+                format!("MATCH (c:ApiContext {{name: $name}}) RETURN c.{field} AS val LIMIT 1");
+            if let Ok(rows) = neo4j
+                .execute(neo4rs::query(&cypher).param("name", context_name))
+                .await
+                && let Some(val) = rows.first().and_then(|r| r.get::<String>("val").ok())
+                && !val.is_empty()
+            {
+                return Some(val);
             }
         }
         std::env::var(fallback_env_var).ok()
@@ -125,9 +130,9 @@ impl SearchSkill {
 
         match engine.as_str() {
             "serpapi" => self.search_serpapi(&input.query, count).await,
-            "brave"   => self.search_brave(&input.query, count).await,
-            "google"  => self.search_google(&input.query, count).await,
-            _         => ToolCallResult::error(format!("Unsupported search engine: {}", engine)),
+            "brave" => self.search_brave(&input.query, count).await,
+            "google" => self.search_google(&input.query, count).await,
+            _ => ToolCallResult::error(format!("Unsupported search engine: {}", engine)),
         }
     }
 
@@ -136,9 +141,16 @@ impl SearchSkill {
             Some(k) => k,
             None => {
                 if let Some(ref t) = self.telemetry {
-                    let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "missing_tool_config");
+                    let _ = t.log_knowledge_gap(
+                        query,
+                        Some("search_web:serpapi"),
+                        "missing_tool_config",
+                    );
                 }
-                return ToolCallResult::error("SerpApi key not configured (set SERPAPI_KEY or define serpapi ApiContext)".to_string());
+                return ToolCallResult::error(
+                    "SerpApi key not configured (set SERPAPI_KEY or define serpapi ApiContext)"
+                        .to_string(),
+                );
             }
         };
 
@@ -172,20 +184,28 @@ impl SearchSkill {
                             .as_array()
                             .unwrap_or(&vec![])
                             .iter()
-                            .map(|item| json!({
-                                "title":   item.get("title"),
-                                "link":    item.get("link"),
-                                "snippet": item.get("snippet"),
-                            }))
+                            .map(|item| {
+                                json!({
+                                    "title":   item.get("title"),
+                                    "link":    item.get("link"),
+                                    "snippet": item.get("snippet"),
+                                })
+                            })
                             .collect::<Vec<_>>();
-                        if results.is_empty() {
-                            if let Some(ref t) = self.telemetry {
-                                let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "missing_info");
-                            }
+                        if results.is_empty()
+                            && let Some(ref t) = self.telemetry
+                        {
+                            let _ = t.log_knowledge_gap(
+                                query,
+                                Some("search_web:serpapi"),
+                                "missing_info",
+                            );
                         }
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&results).unwrap())
+                        ToolCallResult::success_json(results)
                     }
-                    Err(e) => ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e)),
+                    Err(e) => {
+                        ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e))
+                    }
                 }
             }
             Err(e) => {
@@ -198,12 +218,14 @@ impl SearchSkill {
     }
 
     async fn search_brave(&self, query: &str, count: u8) -> ToolCallResult {
-        let api_key = match self.resolve_key("brave", "BRAVE_API_KEY").await {
-            Some(k) => k,
-            None => return ToolCallResult::error(
-                "Brave API key not configured (set BRAVE_API_KEY or define brave ApiContext)".to_string()
-            ),
-        };
+        let api_key =
+            match self.resolve_key("brave", "BRAVE_API_KEY").await {
+                Some(k) => k,
+                None => return ToolCallResult::error(
+                    "Brave API key not configured (set BRAVE_API_KEY or define brave ApiContext)"
+                        .to_string(),
+                ),
+            };
 
         let response = self
             .client
@@ -218,7 +240,10 @@ impl SearchSkill {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!("Brave Search failed: {} - {}", status, text));
+                    return ToolCallResult::error(format!(
+                        "Brave Search failed: {} - {}",
+                        status, text
+                    ));
                 }
                 match resp.json::<Value>().await {
                     Ok(json) => {
@@ -232,16 +257,20 @@ impl SearchSkill {
                             .unwrap_or(&vec![])
                             .iter()
                             .take(count as usize)
-                            .map(|r| json!({
-                                "title":       r.get("title"),
-                                "url":         r.get("url"),
-                                "description": r.get("description"),
-                                "age":         r.get("age"),
-                            }))
+                            .map(|r| {
+                                json!({
+                                    "title":       r.get("title"),
+                                    "url":         r.get("url"),
+                                    "description": r.get("description"),
+                                    "age":         r.get("age"),
+                                })
+                            })
                             .collect();
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&simplified).unwrap())
+                        ToolCallResult::success_json(simplified)
                     }
-                    Err(e) => ToolCallResult::error(format!("Failed to parse Brave response: {}", e)),
+                    Err(e) => {
+                        ToolCallResult::error(format!("Failed to parse Brave response: {}", e))
+                    }
                 }
             }
             Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
@@ -280,7 +309,10 @@ impl SearchSkill {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!("Google Search failed: {} - {}", status, text));
+                    return ToolCallResult::error(format!(
+                        "Google Search failed: {} - {}",
+                        status, text
+                    ));
                 }
                 match resp.json::<Value>().await {
                     Ok(json) => {
@@ -290,15 +322,19 @@ impl SearchSkill {
                             .as_array()
                             .unwrap_or(&vec![])
                             .iter()
-                            .map(|item| json!({
-                                "title":   item.get("title"),
-                                "link":    item.get("link"),
-                                "snippet": item.get("snippet"),
-                            }))
+                            .map(|item| {
+                                json!({
+                                    "title":   item.get("title"),
+                                    "link":    item.get("link"),
+                                    "snippet": item.get("snippet"),
+                                })
+                            })
                             .collect::<Vec<_>>();
-                        ToolCallResult::success_text(serde_json::to_string_pretty(&items).unwrap())
+                        ToolCallResult::success_json(items)
                     }
-                    Err(e) => ToolCallResult::error(format!("Failed to parse Google response: {}", e)),
+                    Err(e) => {
+                        ToolCallResult::error(format!("Failed to parse Google response: {}", e))
+                    }
                 }
             }
             Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
@@ -329,12 +365,27 @@ struct SearchInput {
     query: String,
     #[serde(default)]
     engine: Option<String>,
-    #[serde(default)]
+    /// Accepts both integer and string values (e.g. `10` or `"10"`) so that
+    /// ScheduledTask step definitions stored with quoted counts still work.
+    #[serde(default, deserialize_with = "deserialize_optional_count")]
     count: Option<u8>,
 }
 
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
+fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::Number(n)) => Ok(Some(
+            n.as_u64()
+                .and_then(|v| u8::try_from(v).ok())
+                .ok_or_else(|| D::Error::custom("count must be in range 0-255"))?,
+        )),
+        Some(serde_json::Value::String(s)) => s.parse::<u8>().map(Some).map_err(D::Error::custom),
+        Some(other) => Err(D::Error::custom(format!(
+            "invalid type for count: expected integer, got {other}"
+        ))),
+    }
 }

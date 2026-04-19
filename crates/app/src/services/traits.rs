@@ -77,6 +77,12 @@ pub trait KnowledgeStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<(String, usize, String)>;
 
+    async fn synthesize_knowledge(
+        &self,
+        topic: &str,
+        limit: usize,
+    ) -> anyhow::Result<(String, String)>;
+
     async fn review_due_notes(&self, limit: usize) -> anyhow::Result<Vec<Value>>;
 
     async fn reason(
@@ -187,25 +193,4 @@ pub trait WorkingMemoryStore: Send + Sync {
 
     /// Delete all WorkingMemory nodes for `session_id`.
     async fn delete_session(&self, session_id: &str) -> anyhow::Result<()>;
-}
-
-// ============================================================================
-// ProcedureStore
-// ============================================================================
-
-/// Storage operations for `ProcedureSkill`.
-#[async_trait]
-pub trait ProcedureStore: Send + Sync {
-    /// Persist a procedure node and return `Ok(())`.
-    async fn store_procedure(
-        &self,
-        id: &str,
-        name: &str,
-        description: &str,
-        steps_json: &str,
-        timestamp: &str,
-    ) -> anyhow::Result<()>;
-
-    /// Return procedures matching `query` (case-insensitive keyword), up to `limit`.
-    async fn search_procedures(&self, query: &str, limit: usize) -> anyhow::Result<Vec<Value>>;
 }

@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::repository::Neo4jClient;
-use crate::services::LlmClient;
+use crate::services::LlmProvider;
 use crate::services::snapshot::SnapshotService;
 
 /// Content length above which we attempt to chunk into sub-notes.
@@ -19,7 +19,7 @@ const CHUNK_THRESHOLD_CHARS: usize = 1500;
 /// Service for managing general knowledge (RAG).
 pub struct KnowledgeService {
     pub(crate) neo4j: Neo4jClient,
-    pub(crate) llm: Option<LlmClient>,
+    pub(crate) llm: Option<Arc<dyn LlmProvider>>,
     pub(crate) snapshot_svc: Option<Arc<SnapshotService>>,
     pub(crate) auto_snapshot: bool,
     pub(crate) auto_snapshot_prune: bool,
@@ -27,7 +27,7 @@ pub struct KnowledgeService {
 
 impl KnowledgeService {
     /// Create a new knowledge service.
-    pub fn new(neo4j: Neo4jClient, llm: Option<LlmClient>) -> Self {
+    pub fn new(neo4j: Neo4jClient, llm: Option<Arc<dyn LlmProvider>>) -> Self {
         Self {
             neo4j,
             llm,
@@ -69,7 +69,7 @@ impl KnowledgeService {
 
         let embedding = if let Some(llm) = &self.llm {
             debug!("Generating embedding for note…");
-            match llm.embeddings(content).await {
+            match llm.embed(content).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
                     info!("Failed to generate embedding: {}", e);
@@ -379,7 +379,7 @@ impl KnowledgeService {
         &self,
         note_id: &str,
         content: &str,
-        llm: &LlmClient,
+        llm: &Arc<dyn LlmProvider>,
     ) -> Result<usize> {
         let prompt = format!(
             "Extract named entities from the text. Classify each into one of: \
@@ -395,7 +395,7 @@ impl KnowledgeService {
             content
         );
 
-        let response = match llm.generate(&prompt).await {
+        let response = match llm.generate(&prompt, None).await {
             Ok(r) => r,
             Err(e) => {
                 warn!("Entity extraction LLM call failed: {}", e);
@@ -403,7 +403,7 @@ impl KnowledgeService {
             }
         };
 
-        let text = response.text.trim();
+        let text = response.trim();
         let json_start = text.find('[').unwrap_or(0);
         let json_end = text.rfind(']').map(|i| i + 1).unwrap_or(text.len());
         let json_str = &text[json_start..json_end];
@@ -484,7 +484,10 @@ impl KnowledgeService {
         event_at: Option<&str>,
     ) -> Result<(String, usize)> {
         // Attempt semantic chunking for long content (skip for consolidated/reflection types).
-        let skip_chunk = matches!(note_type, Some("consolidated") | Some("reflection") | Some("news"));
+        let skip_chunk = matches!(
+            note_type,
+            Some("consolidated") | Some("reflection") | Some("news")
+        );
 
         if !skip_chunk
             && content.len() > CHUNK_THRESHOLD_CHARS
@@ -690,7 +693,7 @@ impl KnowledgeService {
         // 1. Vector search (if LLM available)
         let mut vec_hits: Vec<(String, String)> = Vec::new();
         if let Some(llm) = &self.llm
-            && let Ok(query_embedding) = llm.embeddings(query_text).await
+            && let Ok(query_embedding) = llm.embed(query_text).await
         {
             let cypher = r#"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
@@ -1185,7 +1188,7 @@ impl KnowledgeService {
 
         let mut vec_hits: Vec<(String, String)> = Vec::new();
         if let Some(llm) = &self.llm
-            && let Ok(query_embedding) = llm.embeddings(query_text).await
+            && let Ok(query_embedding) = llm.embed(query_text).await
         {
             let cypher = r#"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
@@ -1317,11 +1320,11 @@ impl KnowledgeService {
         );
 
         let response = llm
-            .generate(&prompt)
+            .generate(&prompt, None)
             .await
             .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?;
 
-        let text = response.text.trim();
+        let text = response.trim();
         let json_start = text.find('{').unwrap_or(0);
         let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
         let json_str = &text[json_start..json_end];
@@ -1412,6 +1415,123 @@ impl KnowledgeService {
         Ok((answer, inferences, confidence, gaps, inference_note_id))
     }
 
+    /// Embed `topic` and return similar notes from the vector index as `(id, note_type, content)`.
+    ///
+    /// `fetch_limit` — how many raw candidates to pull from the index (over-fetch when
+    /// `min_score > 0` to compensate for filtered-out low-quality hits).
+    /// `min_score` — drop notes below this cosine similarity (0.0 = no filter).
+    /// Results are capped at `limit`.
+    async fn fetch_similar_notes(
+        &self,
+        topic: &str,
+        limit: usize,
+        fetch_limit: usize,
+        min_score: f64,
+    ) -> Result<Vec<(String, String, String)>> {
+        let llm = self.llm.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("LLM required for vector search but is not configured")
+        })?;
+
+        let embedding = llm
+            .embed(topic)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to embed topic: {}", e))?;
+
+        let cypher = r#"
+        CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
+        YIELD node, score
+        WHERE score > $min_score
+        RETURN node.id AS id, node.content AS content, node.note_type AS note_type
+        ORDER BY score DESC
+        "#;
+
+        let rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(cypher)
+                    .param("embedding", embedding)
+                    .param("limit", fetch_limit as i64)
+                    .param("min_score", min_score),
+            )
+            .await?;
+
+        let mut notes = Vec::new();
+        for row in rows {
+            if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
+                let note_type = row
+                    .get::<String>("note_type")
+                    .unwrap_or_else(|_| "semantic".to_string());
+                notes.push((id, note_type, content));
+                if notes.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(notes)
+    }
+
+    /// Synthesize semantic knowledge from recent notes and inferences about a topic.
+    ///
+    /// Finds the most relevant notes (vector search), asks the LLM to extract
+    /// durable facts/patterns/insights, and stores the result as a `semantic` note.
+    /// Returns `(note_id, preview)`.
+    pub async fn synthesize_knowledge(
+        &self,
+        topic: &str,
+        limit: usize,
+    ) -> Result<(String, String)> {
+        let llm = self.llm.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("LLM is required for knowledge synthesis but is not configured")
+        })?;
+
+        // 1. Fetch relevant notes (over-fetch 2x to compensate for score filtering)
+        let notes = self
+            .fetch_similar_notes(topic, limit, limit * 2, 0.3)
+            .await?;
+
+        if notes.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No notes found related to topic '{}' — nothing to synthesize",
+                topic
+            ));
+        }
+
+        // 2. Build synthesis prompt
+        let notes_block = notes
+            .iter()
+            .enumerate()
+            .map(|(i, (_, nt, c))| format!("[{} {}]\n{}", nt, i + 1, c))
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n");
+
+        let prompt = format!(
+            "You are a knowledge distillation system. Your task is to synthesize the following \
+             notes into concise, durable semantic knowledge about: \"{topic}\"\n\n\
+             Extract the key facts, patterns, lessons, and actionable insights. \
+             Write in clear prose with section headers. Omit ephemeral details (dates of \
+             individual runs, specific counts that will change). Focus on knowledge that \
+             remains true across time.\n\n\
+             Do NOT echo the input labels ([inference N], [outcome N], etc.).\n\n\
+             {notes_block}"
+        );
+
+        // 3. Generate and store
+        let content = llm
+            .generate(&prompt, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("LLM synthesis failed: {}", e))?;
+
+        let (note_id, _) = self
+            .store_note_raw(&content, Some("semantic"), Some(topic), None)
+            .await?;
+
+        let preview: String = content.chars().take(200).collect();
+        info!(note_id = %note_id, topic = %topic, sources = notes.len(), "Synthesized semantic knowledge note");
+
+        Ok((note_id, preview))
+    }
+
     /// Check a proposed action against stored values and principles.
     /// Returns (aligned, confidence, concerns, suggestions, reasoning).
     pub async fn audit_action(
@@ -1475,11 +1595,11 @@ impl KnowledgeService {
         );
 
         let response = llm
-            .generate(&prompt)
+            .generate(&prompt, None)
             .await
             .map_err(|e| anyhow::anyhow!("LLM audit failed: {}", e))?;
 
-        let text = response.text.trim();
+        let text = response.trim();
         let json_start = text.find('{').unwrap_or(0);
         let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
         let json_str = &text[json_start..json_end];
@@ -1602,7 +1722,7 @@ impl KnowledgeService {
         );
 
         let response = llm
-            .generate(&prompt)
+            .generate(&prompt, None)
             .await
             .map_err(|e| anyhow::anyhow!("LLM explanation failed: {}", e))?;
 
@@ -1614,7 +1734,7 @@ impl KnowledgeService {
             })
             .collect();
 
-        Ok((response.text, sources))
+        Ok((response, sources))
     }
 
     /// Consolidate a set of notes on a topic into a single summary note via LLM.
@@ -1627,48 +1747,24 @@ impl KnowledgeService {
             anyhow::anyhow!("LLM is required for memory consolidation but is not configured")
         })?;
 
-        // 1. Get embedding for the topic
-        let topic_embedding = llm
-            .embeddings(topic)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to embed topic: {}", e))?;
+        // 1. Fetch top-N similar notes (no score filter for consolidation)
+        let notes = self.fetch_similar_notes(topic, limit, limit, 0.0).await?;
 
-        // 2. Find top-N similar notes
-        let search_cypher = r#"
-        CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
-        YIELD node, score
-        RETURN node.id AS id, node.content AS content
-        "#;
-
-        let search_query = neo4rs::query(search_cypher)
-            .param("embedding", topic_embedding)
-            .param("limit", limit as i64);
-
-        let rows = self.neo4j.execute(search_query).await?;
-        let mut source_ids: Vec<String> = Vec::new();
-        let mut note_contents: Vec<String> = Vec::new();
-
-        for row in rows {
-            if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
-                source_ids.push(id);
-                note_contents.push(content);
-            }
-        }
-
-        if note_contents.is_empty() {
+        if notes.is_empty() {
             return Err(anyhow::anyhow!(
                 "No notes found related to topic '{}'",
                 topic
             ));
         }
 
-        let source_count = note_contents.len();
+        let source_ids: Vec<String> = notes.iter().map(|(id, _, _)| id.clone()).collect();
+        let source_count = notes.len();
 
-        // 3. Build consolidation prompt
-        let notes_block = note_contents
+        // 2. Build consolidation prompt
+        let notes_block = notes
             .iter()
             .enumerate()
-            .map(|(i, c)| format!("[Memory {}]\n{}", i + 1, c))
+            .map(|(i, (_, _, c))| format!("[Memory {}]\n{}", i + 1, c))
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
@@ -1693,11 +1789,10 @@ impl KnowledgeService {
         }
 
         // 5. Generate consolidated content
-        let llm_response = llm
-            .generate(&prompt)
+        let consolidated_content = llm
+            .generate(&prompt, None)
             .await
             .map_err(|e| anyhow::anyhow!("LLM generation failed: {}", e))?;
-        let consolidated_content = llm_response.text;
 
         // 6. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
         let (consolidated_id, _) = self
@@ -1976,6 +2071,14 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         limit: usize,
     ) -> anyhow::Result<(String, usize, String)> {
         KnowledgeService::consolidate_memories(self, topic, limit).await
+    }
+
+    async fn synthesize_knowledge(
+        &self,
+        topic: &str,
+        limit: usize,
+    ) -> anyhow::Result<(String, String)> {
+        KnowledgeService::synthesize_knowledge(self, topic, limit).await
     }
 
     async fn review_due_notes(&self, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {

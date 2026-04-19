@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::services::traits::{KnowledgeStore, LlmProvider};
 use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Knowledge Skill implementation.
 pub struct KnowledgeSkill {
@@ -67,17 +67,25 @@ impl KnowledgeSkill {
     fn search_notes_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_notes".to_string(),
-            description: "Search stored notes using hybrid BM25 + semantic search with optional \
-                         multi-hop graph expansion. Falls back to keyword matching if no index available. \
-                         Enable entity_expansion to also surface notes that share named entities with the \
-                         primary results."
+            description: "Search stored notes. Provide `query` for hybrid BM25+semantic search with \
+                         optional graph expansion. Provide `entity_name` instead to find notes that \
+                         mention a specific named entity (case-insensitive). At least one of `query` \
+                         or `entity_name` must be supplied."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query"
+                        "description": "Text search query (BM25 + semantic)"
+                    },
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Find notes that mention this named entity (case-insensitive)"
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Optional entity type filter when using entity_name (e.g. technology, organisation)"
                     },
                     "limit": {
                         "type": "integer",
@@ -85,56 +93,18 @@ impl KnowledgeSkill {
                     },
                     "graph_hops": {
                         "type": "integer",
-                        "description": "Number of RELATES_TO hops to expand results (default: 2, 0 to disable)"
+                        "description": "RELATES_TO hops to expand text-search results (default: 2, 0 to disable)"
                     },
                     "entity_expansion": {
                         "type": "boolean",
-                        "description": "Also surface notes that share named entities with the primary results (default: false)"
-                    }
-                },
-                "required": ["query"]
-            }),
-        }
-    }
-
-    fn export_graph_visualization_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "export_graph_visualization".to_string(),
-            description: "Export the knowledge graph as a node/edge structure for visualisation. \
-                         Returns Note, Entity, and Task nodes with RELATES_TO, MENTIONS, PART_OF, \
-                         SUMMARIZED_BY, REFLECTS_ON, SUBTASK_OF, and DERIVED_FROM edges."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "max_nodes": {
-                        "type": "integer",
-                        "description": "Maximum total nodes to include (default: 200). Notes are \
-                                       prioritised by recency; entities by mention count; tasks by recency."
+                        "description": "Also surface notes that share named entities with text-search results (default: false)"
                     }
                 }
             }),
         }
     }
 
-    fn find_related_notes_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "find_related_notes".to_string(),
-            description: "Find notes that are semantically related to a given note via \
-                         graph edges (RELATES_TO). Returns related notes ordered by similarity."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "note_id": {
-                        "type": "string",
-                        "description": "ID of the note to find related notes for"
-                    }
-                },
-                "required": ["note_id"]
-            }),
-        }
-    }
+    // export_graph_visualization is served by GET /api/graph (REST API)
 
     fn prune_old_notes_def() -> ToolDefinition {
         ToolDefinition {
@@ -196,199 +166,49 @@ impl KnowledgeSkill {
         }
     }
 
-    fn list_notes_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_notes".to_string(),
-            description: "List recently created notes, optionally filtered by type. \
-                         Returns notes in reverse-chronological order. \
-                         Use for browsing or initial knowledge panel load."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of notes to return (default: 20)"
-                    },
-                    "note_type": {
-                        "type": "string",
-                        "description": "Optional filter: semantic, episodic, reflection, consolidated, outcome, inference, news"
-                    }
-                }
-            }),
-        }
-    }
-
-    fn review_due_notes_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "review_due_notes".to_string(),
-            description: "Return notes whose spaced-repetition review interval has elapsed. \
-                         Reviewing a note (via search_notes) doubles its review interval."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of notes to return (default: 10)"
-                    }
-                }
-            }),
-        }
-    }
-
     fn reason_def() -> ToolDefinition {
         ToolDefinition {
             name: "reason".to_string(),
-            description: "Retrieve relevant notes and derive new inferences via LLM reasoning. \
-                         Optionally stores the inference as a Note with DERIVED_FROM edges to sources."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The question or topic to reason about"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of knowledge notes to retrieve (default: 8)"
-                    },
-                    "store_inference": {
-                        "type": "boolean",
-                        "description": "Whether to persist the inference as a Note (default: true)"
-                    }
-                },
-                "required": ["question"]
-            }),
-        }
-    }
-
-    fn audit_action_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "audit_action".to_string(),
-            description: "Check a proposed action against the brain's stored values and principles. \
-                         Retrieves ethical guidelines from the knowledge graph and evaluates alignment."
+            description: "Multi-mode LLM reasoning tool. \
+                         action=\"infer\" (default): derive new inferences from stored knowledge; \
+                         action=\"explain\": narrate why a decision occurred, citing sources; \
+                         action=\"clarify\": analyse a request for ambiguity and generate questions; \
+                         action=\"audit\": check a proposed action against stored values and principles."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "The proposed action to evaluate"
+                        "description": "Mode: infer (default), explain, clarify, or audit"
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "The question/decision/request/action to reason about (required)"
                     },
                     "context": {
                         "type": "string",
-                        "description": "Optional context about why the action is being considered"
-                    }
-                },
-                "required": ["action"]
-            }),
-        }
-    }
-
-    fn explain_reasoning_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "explain_reasoning".to_string(),
-            description:
-                "Narrate a human-readable explanation of why a decision or action occurred, \
-                         citing the knowledge sources that drove it."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "decision": {
-                        "type": "string",
-                        "description": "The decision or action to explain"
-                    },
-                    "task_id": {
-                        "type": "string",
-                        "description": "Optional task ID to include task-linked reflection notes"
+                        "description": "Optional extra context (used by clarify and audit)"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max number of knowledge notes to retrieve (default: 10)"
-                    }
-                },
-                "required": ["decision"]
-            }),
-        }
-    }
-
-    fn ask_clarification_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "ask_clarification".to_string(),
-            description: "Analyze a request for ambiguity and generate specific clarifying \
-                         questions before acting. Use this when a goal is underspecified, has \
-                         multiple reasonable interpretations, or when acting on wrong assumptions \
-                         would waste significant effort. Returns whether clarification is needed, \
-                         what questions to ask, and what assumptions would be made if proceeding \
-                         without clarification."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "request": {
-                        "type": "string",
-                        "description": "The request or instruction to analyze for ambiguity"
+                        "description": "Max knowledge notes to retrieve (default: 8 for infer/explain)"
                     },
-                    "context": {
+                    "store_inference": {
+                        "type": "boolean",
+                        "description": "Persist the result as a Note (default: true, infer mode only)"
+                    },
+                    "task_id": {
                         "type": "string",
-                        "description": "Additional context about the current situation"
+                        "description": "Include task-linked reflection notes (explain mode)"
                     },
                     "available_tools": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "List of tools available to fulfill the request"
+                        "description": "Tools available to the agent (clarify mode)"
                     }
                 },
-                "required": ["request"]
-            }),
-        }
-    }
-
-    fn get_note_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "get_note".to_string(),
-            description: "Fetch a single note by its ID. Returns full content, type, timestamps, \
-                         and access stats. Updates the note's access count and last_accessed_at."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "The UUID of the note to retrieve"
-                    }
-                },
-                "required": ["id"]
-            }),
-        }
-    }
-
-    fn search_by_entity_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "search_by_entity".to_string(),
-            description: "Find notes that mention a named entity (API, technology, organisation, \
-                         concept, person). Entities are extracted automatically when notes are stored."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "entity_name": {
-                        "type": "string",
-                        "description": "Entity name to search for (case-insensitive partial match)"
-                    },
-                    "entity_type": {
-                        "type": "string",
-                        "description": "Optional entity type filter (e.g. technology, organisation)"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max number of results (default: 5)"
-                    }
-                },
-                "required": ["entity_name"]
+                "required": ["question"]
             }),
         }
     }
@@ -422,7 +242,7 @@ impl KnowledgeSkill {
                     "links_created": links_created,
                     "message": "Note stored successfully"
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Failed to store note: {}", e)),
         }
@@ -434,50 +254,45 @@ impl KnowledgeSkill {
             Err(e) => return e,
         };
 
-        info!(query = %input.query, "Searching notes");
+        // entity_name path — direct named-entity lookup
+        if let Some(ref entity_name) = input.entity_name {
+            info!(entity = %entity_name, "Searching notes by entity");
+            return match self
+                .svc
+                .search_by_entity(entity_name, input.entity_type.as_deref(), input.limit)
+                .await
+            {
+                Ok(notes) => ToolCallResult::success_json(json!({
+                    "entity_name": entity_name,
+                    "count": notes.len(),
+                    "notes": notes
+                })),
+                Err(e) => ToolCallResult::error(format!("Entity search failed: {}", e)),
+            };
+        }
+
+        let query = match input.query.as_deref() {
+            Some(q) if !q.is_empty() => q,
+            _ => return ToolCallResult::error("Provide `query` or `entity_name`".to_string()),
+        };
+
+        info!(query = %query, "Searching notes");
 
         let results = if input.entity_expansion {
             self.svc
-                .search_notes_with_entity_expansion(&input.query, input.limit, input.graph_hops)
+                .search_notes_with_entity_expansion(query, input.limit, input.graph_hops)
                 .await
         } else {
             self.svc
-                .search_notes(&input.query, input.limit, input.graph_hops)
+                .search_notes(query, input.limit, input.graph_hops)
                 .await
         };
         match results {
-            Ok(results) => {
-                let response = json!({
-                    "count": results.len(),
-                    "notes": results
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
+            Ok(results) => ToolCallResult::success_json(json!({
+                "count": results.len(),
+                "notes": results
+            })),
             Err(e) => ToolCallResult::error(format!("Search failed: {}", e)),
-        }
-    }
-
-    async fn handle_find_related_notes(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: FindRelatedNotesInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(note_id = %input.note_id, "Finding related notes");
-
-        match self.svc.find_related_notes(&input.note_id).await {
-            Ok(related) => {
-                let notes: Vec<Value> = related
-                    .into_iter()
-                    .map(|(content, score)| json!({ "content": content, "similarity": score }))
-                    .collect();
-                let response = json!({
-                    "count": notes.len(),
-                    "related_notes": notes
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to find related notes: {}", e)),
         }
     }
 
@@ -518,7 +333,7 @@ impl KnowledgeSkill {
                         "message": format!("Deleted {} stale note(s)", count)
                     })
                 };
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Failed to prune notes: {}", e)),
         }
@@ -543,54 +358,9 @@ impl KnowledgeSkill {
                     "source_count": source_count,
                     "preview": preview
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Consolidation failed: {}", e)),
-        }
-    }
-
-    async fn handle_list_notes(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            #[serde(default = "default_list_limit")]
-            limit: usize,
-            #[serde(default)]
-            note_type: Option<String>,
-        }
-
-        let input: Input = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(limit = input.limit, note_type = ?input.note_type, "Listing notes");
-
-        match self.svc.list_notes(input.limit, input.note_type.as_deref()).await {
-            Ok(notes) => {
-                let response = json!({ "count": notes.len(), "notes": notes });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to list notes: {}", e)),
-        }
-    }
-
-    async fn handle_review_due_notes(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: ReviewDueNotesInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(limit = input.limit, "Fetching due notes for review");
-
-        match self.svc.review_due_notes(input.limit).await {
-            Ok(notes) => {
-                let response = json!({
-                    "count": notes.len(),
-                    "notes": notes
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to fetch due notes: {}", e)),
         }
     }
 
@@ -600,102 +370,37 @@ impl KnowledgeSkill {
             Err(e) => return e,
         };
 
-        info!(question = %input.question, limit = input.limit, "Reasoning");
-
-        match self
-            .svc
-            .reason(&input.question, input.limit, input.store_inference)
-            .await
-        {
-            Ok((answer, inferences, confidence, gaps, note_id)) => {
-                let mut response = json!({
-                    "answer": answer,
-                    "inferences": inferences,
-                    "confidence": confidence,
-                    "gaps": gaps,
-                });
-                if let Some(nid) = note_id {
-                    response["id"] = json!(nid);
+        match input.action.as_deref().unwrap_or("infer") {
+            "explain" => {
+                info!(decision = %input.question, "Explaining reasoning");
+                match self
+                    .svc
+                    .explain_reasoning(&input.question, input.task_id.as_deref(), input.limit)
+                    .await
+                {
+                    Ok((explanation, sources)) => ToolCallResult::success_json(json!({
+                        "explanation": explanation,
+                        "knowledge_sources": sources,
+                    })),
+                    Err(e) => ToolCallResult::error(format!("Explanation failed: {}", e)),
                 }
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
             }
-            Err(e) => ToolCallResult::error(format!("Reasoning failed: {}", e)),
-        }
-    }
-
-    async fn handle_audit_action(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: AuditActionInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(action = %input.action, "Auditing action");
-
-        match self
-            .svc
-            .audit_action(&input.action, input.context.as_deref())
-            .await
-        {
-            Ok((aligned, confidence, concerns, suggestions, reasoning)) => {
-                let response = json!({
-                    "aligned": aligned,
-                    "confidence": confidence,
-                    "concerns": concerns,
-                    "suggestions": suggestions,
-                    "reasoning": reasoning,
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Audit failed: {}", e)),
-        }
-    }
-
-    async fn handle_explain_reasoning(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: ExplainReasoningInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(decision = %input.decision, "Explaining reasoning");
-
-        match self
-            .svc
-            .explain_reasoning(&input.decision, input.task_id.as_deref(), input.limit)
-            .await
-        {
-            Ok((explanation, sources)) => {
-                let response = json!({
-                    "explanation": explanation,
-                    "knowledge_sources": sources,
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Explanation failed: {}", e)),
-        }
-    }
-
-    async fn handle_ask_clarification(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: AskClarificationInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(request = %input.request, "Analyzing request for clarification");
-
-        let mut prompt = format!(
-            "Analyze the following request for ambiguity. Determine if clarification is needed before acting.\n\nREQUEST: {}\n",
-            input.request
-        );
-        if let Some(ctx) = &input.context {
-            prompt.push_str(&format!("\nCONTEXT: {}\n", ctx));
-        }
-        if let Some(tools) = &input.available_tools
-            && !tools.is_empty()
-        {
-            prompt.push_str(&format!("\nAVAILABLE TOOLS: {}\n", tools.join(", ")));
-        }
-        prompt.push_str(
-            r#"
+            "clarify" => {
+                info!(request = %input.question, "Analyzing request for clarification");
+                let mut prompt = format!(
+                    "Analyze the following request for ambiguity. Determine if clarification is needed before acting.\n\nREQUEST: {}\n",
+                    input.question
+                );
+                if let Some(ctx) = &input.context {
+                    prompt.push_str(&format!("\nCONTEXT: {}\n", ctx));
+                }
+                if let Some(tools) = &input.available_tools
+                    && !tools.is_empty()
+                {
+                    prompt.push_str(&format!("\nAVAILABLE TOOLS: {}\n", tools.join(", ")));
+                }
+                prompt.push_str(
+                    r#"
 Respond with a JSON object only (no markdown, no explanation):
 {
   "needs_clarification": true,
@@ -704,179 +409,119 @@ Respond with a JSON object only (no markdown, no explanation):
   "assumptions": ["assumption that would be made if proceeding 1", "..."],
   "recommended_approach": "brief description of how to proceed"
 }"#,
-        );
-
-        match self.llm.generate(&prompt, None).await {
-            Ok(text_resp) => {
-                let text = text_resp.trim();
-                let json_start = text.find('{').unwrap_or(0);
-                let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-                let parsed: Value = serde_json::from_str(&text[json_start..json_end])
-                    .unwrap_or_else(|_| {
-                        json!({
-                            "needs_clarification": true,
-                            "ambiguities": [],
-                            "clarifying_questions": [text],
-                            "assumptions": [],
-                            "recommended_approach": "Seek clarification before proceeding"
-                        })
-                    });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&parsed).unwrap())
+                );
+                match self.llm.generate(&prompt, None).await {
+                    Ok(text_resp) => {
+                        let text = text_resp.trim();
+                        let json_start = text.find('{').unwrap_or(0);
+                        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
+                        let parsed: Value = serde_json::from_str(&text[json_start..json_end])
+                            .unwrap_or_else(|_| {
+                                json!({
+                                    "needs_clarification": true,
+                                    "ambiguities": [],
+                                    "clarifying_questions": [text],
+                                    "assumptions": [],
+                                    "recommended_approach": "Seek clarification before proceeding"
+                                })
+                            });
+                        ToolCallResult::success_json(parsed)
+                    }
+                    Err(e) => {
+                        ToolCallResult::error(format!("Clarification analysis failed: {}", e))
+                    }
+                }
             }
-            Err(e) => ToolCallResult::error(format!("Clarification analysis failed: {}", e)),
+            "audit" => {
+                info!(action = %input.question, "Auditing action");
+                match self
+                    .svc
+                    .audit_action(&input.question, input.context.as_deref())
+                    .await
+                {
+                    Ok((aligned, confidence, concerns, suggestions, reasoning)) => {
+                        ToolCallResult::success_json(json!({
+                            "aligned": aligned,
+                            "confidence": confidence,
+                            "concerns": concerns,
+                            "suggestions": suggestions,
+                            "reasoning": reasoning,
+                        }))
+                    }
+                    Err(e) => ToolCallResult::error(format!("Audit failed: {}", e)),
+                }
+            }
+            _ => {
+                // "infer" (default)
+                info!(question = %input.question, limit = input.limit, "Reasoning");
+                match self
+                    .svc
+                    .reason(&input.question, input.limit, input.store_inference)
+                    .await
+                {
+                    Ok((answer, inferences, confidence, gaps, note_id)) => {
+                        let mut response = json!({
+                            "answer": answer,
+                            "inferences": inferences,
+                            "confidence": confidence,
+                            "gaps": gaps,
+                        });
+                        if let Some(nid) = note_id {
+                            response["id"] = json!(nid);
+                        }
+                        ToolCallResult::success_json(response)
+                    }
+                    Err(e) => ToolCallResult::error(format!("Reasoning failed: {}", e)),
+                }
+            }
         }
     }
 
-    async fn handle_export_graph_visualization(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize, Default)]
-        struct Input {
-            #[serde(default = "default_max_nodes")]
-            max_nodes: usize,
-        }
-        fn default_max_nodes() -> usize {
-            200
-        }
-
-        let input: Input = arguments
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-
-        match self.svc.export_graph_visualization(input.max_nodes).await {
-            Ok((nodes, edges)) => {
-                let response = json!({
-                    "node_count": nodes.len(),
-                    "edge_count": edges.len(),
-                    "nodes": nodes,
-                    "edges": edges
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Graph export failed: {}", e)),
-        }
-    }
-
-    async fn handle_get_note(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            id: String,
-        }
-        let input: Input = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        match self.svc.get_note(&input.id).await {
-            Ok(Some(note)) => {
-                ToolCallResult::success_text(serde_json::to_string_pretty(&note).unwrap())
-            }
-            Ok(None) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
-            Err(e) => ToolCallResult::error(format!("Failed to get note: {}", e)),
-        }
-    }
-
-    fn delete_note_def() -> ToolDefinition {
+    fn synthesize_knowledge_def() -> ToolDefinition {
         ToolDefinition {
-            name: "delete_note".to_string(),
-            description: "Permanently delete a note and all its relationships by ID. \
-                          Use this to remove bad, duplicate, or unwanted notes from the graph."
+            name: "synthesize_knowledge".to_string(),
+            description: "Search for recent notes and inferences related to a topic, then use \
+                         the LLM to distill durable facts, patterns, and insights into a new \
+                         semantic knowledge note. Use this at the end of a reasoning or research \
+                         chain to persist what was actually learned."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "UUID of the note to delete" }
+                    "topic": {
+                        "type": "string",
+                        "description": "The topic or goal to synthesize knowledge about"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of source notes to draw from (default: 10)"
+                    }
                 },
-                "required": ["id"]
+                "required": ["topic"]
             }),
         }
     }
 
-    async fn handle_delete_note(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            id: String,
-        }
-        let input: Input = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let service = &self.svc;
-        match service.delete_note(&input.id).await {
-            Ok(true) => ToolCallResult::success_text(
-                serde_json::to_string(&json!({"deleted": true, "id": input.id})).unwrap(),
-            ),
-            Ok(false) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
-            Err(e) => ToolCallResult::error(format!("Failed to delete note: {}", e)),
-        }
-    }
-
-    fn update_note_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "update_note".to_string(),
-            description: "Update the content of an existing note in-place, preserving all graph \
-                          edges (RELATES_TO, SUMMARIZED_BY, REFLECTS_ON, etc.) and metadata \
-                          (access_count, note_type, embeddings). Use this to correct or expand \
-                          a note without losing its connections."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id":      { "type": "string", "description": "UUID of the note to update" },
-                    "content": { "type": "string", "description": "New content for the note" }
-                },
-                "required": ["id", "content"]
-            }),
-        }
-    }
-
-    async fn handle_update_note(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            id: String,
-            content: String,
-        }
-        let input: Input = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        if input.content.trim().is_empty() {
-            return ToolCallResult::error("content must not be empty".to_string());
-        }
-        let service = &self.svc;
-        match service.update_note(&input.id, &input.content).await {
-            Ok(true) => ToolCallResult::success_text(
-                serde_json::to_string(&json!({"updated": true, "id": input.id})).unwrap(),
-            ),
-            Ok(false) => ToolCallResult::error(format!("Note '{}' not found", input.id)),
-            Err(e) => ToolCallResult::error(format!("Failed to update note: {}", e)),
-        }
-    }
-
-    async fn handle_search_by_entity(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: SearchByEntityInput = match parse_args(arguments) {
+    async fn handle_synthesize_knowledge(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: SynthesizeKnowledgeInput = match parse_args(arguments) {
             Ok(v) => v,
             Err(e) => return e,
         };
 
-        info!(entity = %input.entity_name, "Searching by entity");
+        info!(topic = %input.topic, limit = input.limit, "Synthesizing semantic knowledge");
 
         match self
             .svc
-            .search_by_entity(
-                &input.entity_name,
-                input.entity_type.as_deref(),
-                input.limit,
-            )
+            .synthesize_knowledge(&input.topic, input.limit)
             .await
         {
-            Ok(notes) => {
-                let response = json!({
-                    "entity_name": input.entity_name,
-                    "count": notes.len(),
-                    "notes": notes
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Entity search failed: {}", e)),
+            Ok((note_id, preview)) => ToolCallResult::success_json(json!({
+                "success": true,
+                "note_id": note_id,
+                "note_type": "semantic",
+                "preview": preview
+            })),
+            Err(e) => ToolCallResult::error(format!("Knowledge synthesis failed: {}", e)),
         }
     }
 }
@@ -891,20 +536,10 @@ impl Skill for KnowledgeSkill {
         vec![
             Self::store_note_def(),
             Self::search_notes_def(),
-            Self::list_notes_def(),
-            Self::get_note_def(),
-            Self::delete_note_def(),
-            Self::update_note_def(),
-            Self::find_related_notes_def(),
             Self::prune_old_notes_def(),
             Self::consolidate_memories_def(),
-            Self::review_due_notes_def(),
-            Self::search_by_entity_def(),
+            Self::synthesize_knowledge_def(),
             Self::reason_def(),
-            Self::audit_action_def(),
-            Self::explain_reasoning_def(),
-            Self::ask_clarification_def(),
-            Self::export_graph_visualization_def(),
         ]
     }
 
@@ -912,22 +547,10 @@ impl Skill for KnowledgeSkill {
         match tool_name {
             "store_note" => Some(self.handle_store_note(arguments).await),
             "search_notes" => Some(self.handle_search_notes(arguments).await),
-            "list_notes" => Some(self.handle_list_notes(arguments).await),
-            "get_note" => Some(self.handle_get_note(arguments).await),
-            "delete_note" => Some(self.handle_delete_note(arguments).await),
-            "update_note" => Some(self.handle_update_note(arguments).await),
-            "find_related_notes" => Some(self.handle_find_related_notes(arguments).await),
             "prune_old_notes" => Some(self.handle_prune_old_notes(arguments).await),
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),
-            "review_due_notes" => Some(self.handle_review_due_notes(arguments).await),
-            "search_by_entity" => Some(self.handle_search_by_entity(arguments).await),
+            "synthesize_knowledge" => Some(self.handle_synthesize_knowledge(arguments).await),
             "reason" => Some(self.handle_reason(arguments).await),
-            "audit_action" => Some(self.handle_audit_action(arguments).await),
-            "explain_reasoning" => Some(self.handle_explain_reasoning(arguments).await),
-            "ask_clarification" => Some(self.handle_ask_clarification(arguments).await),
-            "export_graph_visualization" => {
-                Some(self.handle_export_graph_visualization(arguments).await)
-            }
             _ => None,
         }
     }
@@ -953,18 +576,18 @@ struct StoreNoteInput {
 
 #[derive(Debug, Deserialize)]
 struct SearchNotesInput {
-    query: String,
-    #[serde(default = "default_limit")]
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    entity_name: Option<String>,
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default = "agent_brain_protocol::default_limit_5")]
     limit: usize,
-    #[serde(default = "default_graph_hops")]
+    #[serde(default = "agent_brain_protocol::default_graph_hops")]
     graph_hops: usize,
     #[serde(default)]
     entity_expansion: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct FindRelatedNotesInput {
-    note_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -989,63 +612,29 @@ struct ConsolidateMemoriesInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct ReviewDueNotesInput {
-    #[serde(default = "default_review_limit")]
-    limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchByEntityInput {
-    entity_name: String,
-    #[serde(default)]
-    entity_type: Option<String>,
-    #[serde(default = "default_limit")]
-    limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
 struct ReasonInput {
     question: String,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
     #[serde(default = "default_reason_limit")]
     limit: usize,
     #[serde(default = "default_store_inference")]
     store_inference: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuditActionInput {
-    action: String,
-    #[serde(default)]
-    context: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExplainReasoningInput {
-    decision: String,
     #[serde(default)]
     task_id: Option<String>,
-    #[serde(default = "default_explain_limit")]
-    limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct AskClarificationInput {
-    request: String,
-    #[serde(default)]
-    context: Option<String>,
     #[serde(default)]
     available_tools: Option<Vec<String>>,
 }
 
-fn default_limit() -> usize {
-    5
+#[derive(Debug, Deserialize)]
+struct SynthesizeKnowledgeInput {
+    topic: String,
+    #[serde(default = "default_consolidate_limit")]
+    limit: usize,
 }
-fn default_list_limit() -> usize {
-    20
-}
-fn default_graph_hops() -> usize {
-    2
-}
+
 fn default_days_stale() -> i64 {
     30
 }
@@ -1055,21 +644,248 @@ fn default_min_accesses() -> i64 {
 fn default_consolidate_limit() -> usize {
     10
 }
-fn default_review_limit() -> usize {
-    10
-}
 fn default_reason_limit() -> usize {
     8
 }
 fn default_store_inference() -> bool {
     true
 }
-fn default_explain_limit() -> usize {
-    10
-}
 
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::test_helpers::*;
+    use std::sync::Arc;
+
+    fn skill_ok() -> KnowledgeSkill {
+        KnowledgeSkill::new(
+            Arc::new(MockKnowledgeStore::default()),
+            Arc::new(MockLlm::ok("{}")),
+        )
+    }
+
+    // -- tool registry --------------------------------------------------------
+
+    #[test]
+    fn tools_list_has_correct_count() {
+        assert_eq!(skill_ok().tools().len(), 6);
+    }
+
+    #[test]
+    fn execute_unknown_tool_returns_none() {
+        let skill = skill_ok();
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(skill.execute("nonexistent_tool", None));
+        assert!(result.is_none());
+    }
+
+    // -- store_note -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn store_note_success() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"content": "hello world"});
+        let r = result_json(skill.execute("store_note", Some(args)).await.unwrap());
+        assert_eq!(r["id"], "note-id-1");
+        assert_eq!(r["links_created"], 2);
+    }
+
+    #[tokio::test]
+    async fn store_note_missing_content_returns_error() {
+        let skill = skill_ok();
+        let r = skill
+            .execute("store_note", Some(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn store_note_propagates_store_error() {
+        let mut store = MockKnowledgeStore::default();
+        store.store_result = Err("db down".into());
+        let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
+        let args = serde_json::json!({"content": "test"});
+        let msg = result_error(skill.execute("store_note", Some(args)).await.unwrap());
+        assert!(msg.contains("db down"));
+    }
+
+    // -- search_notes ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn search_notes_success() {
+        let mut store = MockKnowledgeStore::default();
+        store.search_result = Ok(vec![serde_json::json!({"id": "n1", "content": "c1"})]);
+        let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
+        let args = serde_json::json!({"query": "something"});
+        let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
+        assert_eq!(r["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn search_notes_with_entity_expansion() {
+        let mut store = MockKnowledgeStore::default();
+        store.search_result = Ok(vec![serde_json::json!({"id": "n1"})]);
+        let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
+        let args = serde_json::json!({"query": "rust", "entity_expansion": true});
+        let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
+        assert_eq!(r["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn search_notes_empty_query_returns_error() {
+        let skill = skill_ok();
+        let r = skill
+            .execute("search_notes", Some(serde_json::json!({"query": ""})))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn search_notes_no_query_or_entity_returns_error() {
+        let skill = skill_ok();
+        let r = skill
+            .execute("search_notes", Some(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+    }
+
+    // -- search_notes entity_name path ----------------------------------------
+
+    #[tokio::test]
+    async fn search_notes_by_entity_name_success() {
+        let mut store = MockKnowledgeStore::default();
+        store.search_result = Ok(vec![serde_json::json!({"id": "n2"})]);
+        let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
+        let args = serde_json::json!({"entity_name": "Rust"});
+        let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
+        assert_eq!(r["count"], 1);
+        assert_eq!(r["entity_name"], "Rust");
+    }
+
+    // -- prune_old_notes ------------------------------------------------------
+
+    #[tokio::test]
+    async fn prune_old_notes_dry_run() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"dry_run": true});
+        let r = result_json(skill.execute("prune_old_notes", Some(args)).await.unwrap());
+        assert_eq!(r["dry_run"], true);
+        assert_eq!(r["count"], 3);
+    }
+
+    #[tokio::test]
+    async fn prune_old_notes_actual() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"days_stale": 14});
+        let r = result_json(skill.execute("prune_old_notes", Some(args)).await.unwrap());
+        assert_eq!(r["count"], 3);
+        assert!(r.get("dry_run").is_none());
+    }
+
+    // -- consolidate_memories -------------------------------------------------
+
+    #[tokio::test]
+    async fn consolidate_memories_success() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"topic": "rust async"});
+        let r = result_json(
+            skill
+                .execute("consolidate_memories", Some(args))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["id"], "consolidated-id");
+        assert_eq!(r["source_count"], 5);
+    }
+
+    #[tokio::test]
+    async fn consolidate_memories_propagates_error() {
+        let mut store = MockKnowledgeStore::default();
+        store.consolidate_result = Err("consolidation failed".into());
+        let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
+        let args = serde_json::json!({"topic": "test"});
+        let msg = result_error(
+            skill
+                .execute("consolidate_memories", Some(args))
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("consolidation failed"));
+    }
+
+    // -- synthesize_knowledge -------------------------------------------------
+
+    #[tokio::test]
+    async fn synthesize_knowledge_success() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"topic": "Rust async"});
+        let r = result_json(
+            skill
+                .execute("synthesize_knowledge", Some(args))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["note_id"], "synth-id");
+        assert_eq!(r["success"], true);
+    }
+
+    // -- reason ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn reason_success() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"question": "What is async?"});
+        let r = result_json(skill.execute("reason", Some(args)).await.unwrap());
+        assert_eq!(r["answer"], "answer text");
+        assert!((r["confidence"].as_f64().unwrap() - 0.85).abs() < 1e-9);
+    }
+
+    // -- reason action=audit --------------------------------------------------
+
+    #[tokio::test]
+    async fn reason_audit_success() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"action": "audit", "question": "deploy to prod"});
+        let r = result_json(skill.execute("reason", Some(args)).await.unwrap());
+        assert_eq!(r["aligned"], true);
+    }
+
+    // -- reason action=explain ------------------------------------------------
+
+    #[tokio::test]
+    async fn reason_explain_success() {
+        let skill = skill_ok();
+        let args = serde_json::json!({"action": "explain", "question": "chose Rust"});
+        let r = result_json(skill.execute("reason", Some(args)).await.unwrap());
+        assert_eq!(r["explanation"], "explanation text");
+    }
+
+    // -- reason action=clarify ------------------------------------------------
+
+    #[tokio::test]
+    async fn reason_clarify_parses_llm_json() {
+        let llm_resp = r#"{"needs_clarification": true, "ambiguities": ["scope"], "clarifying_questions": ["Which env?"], "assumptions": [], "recommended_approach": "ask first"}"#;
+        let skill = KnowledgeSkill::new(
+            Arc::new(MockKnowledgeStore::default()),
+            Arc::new(MockLlm::ok(llm_resp)),
+        );
+        let args = serde_json::json!({"action": "clarify", "question": "deploy the thing"});
+        let r = result_json(skill.execute("reason", Some(args)).await.unwrap());
+        assert_eq!(r["needs_clarification"], true);
+    }
+
+    #[tokio::test]
+    async fn reason_clarify_llm_error_returns_error() {
+        let skill = KnowledgeSkill::new(
+            Arc::new(MockKnowledgeStore::default()),
+            Arc::new(MockLlm::err("llm unavailable")),
+        );
+        let args = serde_json::json!({"action": "clarify", "question": "do something"});
+        let msg = result_error(skill.execute("reason", Some(args)).await.unwrap());
+        assert!(msg.contains("llm unavailable"));
+    }
 }

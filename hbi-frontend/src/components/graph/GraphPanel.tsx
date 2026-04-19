@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import type { ForceGraphMethods } from "react-force-graph-2d";
-import { callTool } from "../../api/mcp";
+import { getBrainUrl, getApiKey } from "../../api/config";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -228,8 +228,11 @@ export default function GraphPanel() {
     setFocusNodeId(null);
     setSelectedNode(null);
     try {
-      const json = await callTool("export_graph_visualization", { max_nodes: 200 });
-      const data = JSON.parse(json);
+      const res = await fetch(`${getBrainUrl()}/api/graph?max_nodes=200`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
       setAllNodes(data.nodes ?? []);
       setAllEdges(data.edges ?? []);
     } catch (e) {
@@ -266,9 +269,11 @@ export default function GraphPanel() {
       return;
     }
     try {
-      const json = await callTool("get_note", { id: node.id });
-      const data = JSON.parse(json);
-      if (data) {
+      const res = await fetch(`${getBrainUrl()}/api/notes/${node.id}`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
         setSelectedNode({
           id:           data.id ?? node.id,
           type:         "note",

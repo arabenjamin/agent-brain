@@ -30,6 +30,7 @@ pub use agent_brain_protocol::{
     ToolsCapability,
     ToolsListResult,
     error_codes,
+    parse_args,
 };
 
 #[cfg(test)]

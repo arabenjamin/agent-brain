@@ -5,12 +5,12 @@ steps:
   - type: store_note
     content: |
       Agent Brain is an autonomous MCP server backed by a Neo4j knowledge graph.
-      It manages 74+ tools across 12 skills: ApiSkill, KnowledgeSkill, TaskSkill,
-      AgentSkill, ModelSkill, DynamicSkill, AdminSkill, WorkingMemorySkill,
-      SleepSkill, ProcedureSkill, SearchSkill, SchedulerSkill, ContextSkill.
+      It manages 47 tools across 15 skills: HttpSkill, KnowledgeSkill, TaskSkill,
+      AgentSkill, ModelSkill, DynamicSkill, QuerySkill, WorkingMemorySkill,
+      CodebaseSkill, WsSkill, ResourceSkill, SearchSkill, SleepSkill,
+      SchedulerSkill, ContextSkill.
       Core capabilities: hybrid vector+BM25 RAG, background job queue with
-      chaining, autonomous scheduler, self-healing HTTP requests, and snapshot
-      backup/restore for the knowledge graph.
+      chaining, autonomous scheduler, and codebase self-analysis.
     note_type: semantic
   - type: store_note
     content: |

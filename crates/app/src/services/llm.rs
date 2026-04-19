@@ -46,18 +46,15 @@ pub enum LlmProviderType {
     OllamaCloud,
     Anthropic,
     Gemini,
-    /// vLLM or any OpenAI-compatible endpoint (LM Studio, Groq, Together, etc.)
-    VLlm,
 }
 
 impl std::fmt::Display for LlmProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LlmProviderType::Ollama      => write!(f, "ollama"),
+            LlmProviderType::Ollama => write!(f, "ollama"),
             LlmProviderType::OllamaCloud => write!(f, "ollama-cloud"),
-            LlmProviderType::Anthropic   => write!(f, "anthropic"),
-            LlmProviderType::Gemini      => write!(f, "gemini"),
-            LlmProviderType::VLlm        => write!(f, "vllm"),
+            LlmProviderType::Anthropic => write!(f, "anthropic"),
+            LlmProviderType::Gemini => write!(f, "gemini"),
         }
     }
 }
@@ -81,7 +78,7 @@ pub struct LlmConfig {
     pub embed_model: Option<String>,
 
     /// Base URL for the embedding endpoint when it differs from the generation endpoint.
-    /// Used by the vLLM provider to route embed() calls to a separate server (e.g. port 8001).
+    /// Used by OllamaCloud to pin embed() calls to local Ollama instead of the cloud endpoint.
     pub embed_base_url: Option<String>,
 
     /// Request timeout.
@@ -249,13 +246,15 @@ impl LlmClient {
         };
 
         let provider: Arc<dyn crate::services::llm_providers::LlmProvider> = match config.provider {
-            LlmProviderType::Ollama | LlmProviderType::OllamaCloud => Arc::new(OllamaProvider::new(provider_config)),
-            LlmProviderType::Anthropic => Arc::new(AnthropicProvider::new(provider_config)),
-            LlmProviderType::Gemini => Arc::new(GeminiProvider::new(provider_config)),
-            LlmProviderType::VLlm => {
+            LlmProviderType::Ollama => Arc::new(OllamaProvider::new(provider_config)),
+            // Ollama Cloud uses the OpenAI-compatible API at /v1/chat/completions,
+            // not the native Ollama /api/chat endpoint.
+            LlmProviderType::OllamaCloud => {
                 use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
                 Arc::new(OpenAiCompatProvider::new(provider_config))
             }
+            LlmProviderType::Anthropic => Arc::new(AnthropicProvider::new(provider_config)),
+            LlmProviderType::Gemini => Arc::new(GeminiProvider::new(provider_config)),
         };
 
         // Initialize embedding provider (separate from generation if requested)
@@ -269,17 +268,28 @@ impl LlmClient {
                 temperature: 0.0,
                 max_tokens: None,
             };
-            // For vLLM, route embeddings to the OpenAI-compat endpoint (potentially a separate server).
-            // For all other providers, keep using Ollama as the local embedding backend.
-            match config.provider {
-                LlmProviderType::VLlm => {
-                    use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
-                    Arc::new(OpenAiCompatProvider::new(embed_config))
-                        as Arc<dyn crate::services::llm_providers::LlmProvider>
-                }
-                _ => Arc::new(OllamaProvider::new(embed_config))
-                    as Arc<dyn crate::services::llm_providers::LlmProvider>,
-            }
+            // Embeddings always use local Ollama regardless of the active generation provider.
+            Arc::new(OllamaProvider::new(embed_config))
+                as Arc<dyn crate::services::llm_providers::LlmProvider>
+        } else if let Some(ref embed_base) = config.embed_base_url {
+            // embed_base_url is set but no dedicated embed_model (OllamaCloud without
+            // OLLAMA_EMBED_MODEL).  Before the OllamaCloud→OpenAiCompatProvider refactor,
+            // the fallback `provider.clone()` was still an OllamaProvider.  Now it is an
+            // OpenAiCompatProvider pointed at the cloud URL, which causes embed() to hit
+            // `{cloud_url}/v1/embeddings` — hanging for the full 120-second timeout every
+            // time search_notes is called.  Route to local Ollama instead.  If the model
+            // isn't pulled locally the call fails fast and vector search is skipped
+            // gracefully; BM25 still runs.
+            let embed_config = ProviderConfig {
+                model: config.model.clone(),
+                api_key: None, // local Ollama doesn't need auth
+                base_url: Some(embed_base.clone()),
+                timeout: config.timeout,
+                temperature: 0.0,
+                max_tokens: None,
+            };
+            Arc::new(OllamaProvider::new(embed_config))
+                as Arc<dyn crate::services::llm_providers::LlmProvider>
         } else {
             provider.clone()
         };

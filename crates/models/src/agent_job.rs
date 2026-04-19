@@ -13,12 +13,14 @@ pub enum AgentJobStatus {
     Completed,
     /// Failed but within max_attempts — can be retried.
     Failed,
-    /// Exhausted all retry attempts.
+    /// Exhausted all retry attempts (not yet moved to DLQ).
     Dead,
-    /// Manually paused — will not be picked up until resumed.
+    /// Manually paused — will not run until resumed.
     Parked,
     /// Permanently cancelled.
     Cancelled,
+    /// Moved to dead letter queue (permanently failed after DLQ review).
+    DeadLetter,
 }
 
 impl std::fmt::Display for AgentJobStatus {
@@ -31,6 +33,7 @@ impl std::fmt::Display for AgentJobStatus {
             AgentJobStatus::Dead => "dead",
             AgentJobStatus::Parked => "parked",
             AgentJobStatus::Cancelled => "cancelled",
+            AgentJobStatus::DeadLetter => "dead_letter",
         };
         write!(f, "{s}")
     }
@@ -47,6 +50,7 @@ impl std::str::FromStr for AgentJobStatus {
             "dead" => Ok(AgentJobStatus::Dead),
             "parked" => Ok(AgentJobStatus::Parked),
             "cancelled" => Ok(AgentJobStatus::Cancelled),
+            "dead_letter" => Ok(AgentJobStatus::DeadLetter),
             _ => Err(()),
         }
     }
@@ -88,6 +92,42 @@ pub struct AgentJob {
     /// Plain-text result from the preceding chain step, injected at unpark time.
     /// Available via `{{_prev}}` template substitution in this job's arguments.
     pub prev_result: Option<String>,
+
+    // =========================================================================
+    // Progress tracking
+    // =========================================================================
+    /// Current progress percentage (0-100) if job is running.
+    pub progress_percent: Option<u8>,
+    /// Current progress message describing the current phase.
+    pub progress_message: Option<String>,
+    /// Additional progress metadata (e.g., items processed).
+    pub progress_metadata: Option<serde_json::Value>,
+    /// When progress was last updated (RFC3339).
+    pub progress_updated_at: Option<String>,
+
+    // =========================================================================
+    // TTL (Time To Live) and expiration
+    // =========================================================================
+    /// When this job expires and should be auto-cancelled (RFC3339).
+    pub expires_at: Option<String>,
+    /// Original TTL in seconds, if set.
+    pub ttl_secs: Option<u64>,
+
+    // =========================================================================
+    // Dead Letter Queue
+    // =========================================================================
+    /// When this job was moved to the dead letter queue (RFC3339).
+    pub dead_lettered_at: Option<String>,
+    /// Reason for moving to dead letter queue.
+    pub dead_letter_reason: Option<String>,
+
+    // =========================================================================
+    // Description and observability
+    // =========================================================================
+    /// Human-readable description of the job.
+    pub description: Option<String>,
+    /// Execution duration in milliseconds (set on completion).
+    pub duration_ms: Option<u64>,
 }
 
 /// Wrapper for `BinaryHeap` ordering.

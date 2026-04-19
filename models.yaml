@@ -40,6 +40,22 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
+  gemma4:latest:
+    provider: ollama
+    model: "gemma4:latest"
+    context_window: 128000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - vision
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
   # ── Ollama Cloud (https://ollama.com) ─────────────────────────────────────────
   minimax-m2.7:cloud:
     provider: ollama-cloud
@@ -73,9 +89,11 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
-  gemma3:27b-cloud:
+  
+
+  gemma4:31b-cloud:
     provider: ollama-cloud
-    model: "gemma3:27b-cloud"
+    model: "gemma4:31b-cloud"
     context_window: 1000000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0

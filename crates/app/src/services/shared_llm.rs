@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::repository::TelemetryClient;
 use crate::services::queue::USE_LOCAL_LLM;
@@ -76,9 +76,42 @@ impl LlmProvider for SharedLlm {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
         let duration_ms = start.elapsed().as_millis() as i64;
+
+        // If the cloud call was rate-limited, fall back to local Ollama before giving up.
+        if !use_local
+            && let Err(ref e) = result
+            && is_rate_limited(e)
+        {
+            warn!("SharedLlm: cloud LLM rate-limited, falling back to local Ollama");
+            if let Some(local_llm) = self.local_config.read().await.clone() {
+                let local_model = local_llm.model.clone();
+                let local_client = LlmClient::with_config(local_llm)
+                    .map_err(|e| anyhow::anyhow!("Local LLM init error: {}", e))?;
+                let local_start = Instant::now();
+                let local_result = local_client
+                    .generate_with_system(prompt, system)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e));
+                let local_duration_ms = local_start.elapsed().as_millis() as i64;
+                if let Some(ref tc) = self.telemetry {
+                    let success = local_result.is_ok();
+                    let _ = tc.record_model_usage(
+                        &local_model,
+                        None,
+                        success,
+                        Some(local_duration_ms),
+                        None,
+                        None,
+                    );
+                }
+                return local_result.map(|r| r.text);
+            }
+        }
+
         if let Some(ref tc) = self.telemetry {
             let success = result.is_ok();
-            let _ = tc.record_model_usage(&model_name, None, success, Some(duration_ms), None, None);
+            let _ =
+                tc.record_model_usage(&model_name, None, success, Some(duration_ms), None, None);
         }
         result.map(|r| r.text)
     }
@@ -107,4 +140,10 @@ impl LlmProvider for SharedLlm {
         // Non-async probe: treat as available if the config is set.
         true
     }
+}
+
+/// Returns true if the error looks like an HTTP 429 / rate-limit / quota error.
+fn is_rate_limited(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("429") || msg.contains("Too Many Requests") || msg.contains("usage limit")
 }

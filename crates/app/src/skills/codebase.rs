@@ -20,7 +20,7 @@ use tracing::{info, warn};
 
 use crate::services::KnowledgeStore;
 use crate::skills::Skill;
-use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, parse_args};
 
 /// Codebase Skill — read-only filesystem access to the agent's own source code.
 pub struct CodebaseSkill {
@@ -31,14 +31,13 @@ pub struct CodebaseSkill {
 }
 
 impl CodebaseSkill {
-    pub fn new(
-        codebase_dir: Option<PathBuf>,
-        knowledge: Option<Arc<dyn KnowledgeStore>>,
-    ) -> Self {
+    pub fn new(codebase_dir: Option<PathBuf>, knowledge: Option<Arc<dyn KnowledgeStore>>) -> Self {
         if let Some(ref dir) = codebase_dir {
             info!(path = %dir.display(), "CodebaseSkill initialized with codebase root");
         } else {
-            warn!("CodebaseSkill: no CODEBASE_DIR configured — filesystem tools will return errors");
+            warn!(
+                "CodebaseSkill: no CODEBASE_DIR configured — filesystem tools will return errors"
+            );
         }
         Self {
             codebase_dir,
@@ -74,7 +73,9 @@ impl CodebaseSkill {
     fn list_codebase_files_def() -> ToolDefinition {
         ToolDefinition {
             name: "list_codebase_files".to_string(),
-            description: "List files in the codebase, optionally filtered by directory and filename pattern.".to_string(),
+            description:
+                "List files in the codebase, optionally filtered by directory and filename pattern."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -131,7 +132,9 @@ impl CodebaseSkill {
     fn get_file_tree_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_file_tree".to_string(),
-            description: "Get a tree view of the codebase directory structure, skipping build artifacts.".to_string(),
+            description:
+                "Get a tree view of the codebase directory structure, skipping build artifacts."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -218,7 +221,11 @@ impl CodebaseSkill {
     fn safe_path(&self, relative: &str) -> Result<PathBuf, ToolCallResult> {
         let root = match &self.codebase_dir {
             Some(d) => d,
-            None => return Err(ToolCallResult::error("CODEBASE_DIR not configured — set CODEBASE_DIR env var")),
+            None => {
+                return Err(ToolCallResult::error(
+                    "CODEBASE_DIR not configured — set CODEBASE_DIR env var",
+                ));
+            }
         };
 
         let canonical_root = root
@@ -363,7 +370,15 @@ impl CodebaseSkill {
         };
 
         let mut results: Vec<String> = Vec::new();
-        search_in_dir(&root, &root, &re, &args.file_pattern, ctx, &mut results, max);
+        search_in_dir(
+            &root,
+            &root,
+            &re,
+            &args.file_pattern,
+            ctx,
+            &mut results,
+            max,
+        );
 
         if results.is_empty() {
             ToolCallResult::success_text(format!("No matches found for '{}'", args.query))
@@ -399,10 +414,7 @@ impl CodebaseSkill {
             },
         };
 
-        let root_name = start
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(".");
+        let root_name = start.file_name().and_then(|n| n.to_str()).unwrap_or(".");
         let mut out = format!("{}/\n", root_name);
         build_tree(&start, "", max_depth, 0, &mut out);
 
@@ -534,9 +546,7 @@ impl CodebaseSkill {
         }
 
         // Section 4: Recent git log
-        let log = self
-            .handle_get_git_log(Some(json!({"n": 10})))
-            .await;
+        let log = self.handle_get_git_log(Some(json!({"n": 10}))).await;
         sections.push(format!(
             "## Recent Git History\n```\n{}\n```",
             extract_text(&log)
@@ -554,9 +564,7 @@ impl CodebaseSkill {
             "analyze_own_structure complete"
         );
 
-        if store
-            && let Some(knowledge) = &self.knowledge
-        {
+        if store && let Some(knowledge) = &self.knowledge {
             match knowledge
                 .store_note(
                     &content,
@@ -619,14 +627,6 @@ impl Skill for CodebaseSkill {
 // Helper functions
 // =========================================================================
 
-fn parse_args<T: for<'de> serde::Deserialize<'de>>(
-    arguments: Option<Value>,
-) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {e}")))
-}
-
 /// Extract text content from a ToolCallResult (used internally for composing analyze_own_structure).
 fn extract_text(result: &ToolCallResult) -> String {
     result
@@ -659,7 +659,13 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 const SKIP_DIRS: &[&str] = &[
-    "target", ".git", "node_modules", ".cargo", "dist", "build", "__pycache__",
+    "target",
+    ".git",
+    "node_modules",
+    ".cargo",
+    "dist",
+    "build",
+    "__pycache__",
 ];
 
 /// Recursively collect files matching an optional suffix/substring filter.
@@ -694,7 +700,8 @@ fn collect_files(
             collect_files(root, &path, pattern, results, max);
         } else if path.is_file() {
             if let Some(pat) = pattern
-                && !name_str.ends_with(pat.as_str()) && !name_str.contains(pat.as_str())
+                && !name_str.ends_with(pat.as_str())
+                && !name_str.contains(pat.as_str())
             {
                 continue;
             }
@@ -746,7 +753,8 @@ fn search_in_dir(
                 continue;
             }
             if let Some(pat) = file_pattern
-                && !name_str.ends_with(pat.as_str()) && !name_str.contains(pat.as_str())
+                && !name_str.ends_with(pat.as_str())
+                && !name_str.contains(pat.as_str())
             {
                 continue;
             }

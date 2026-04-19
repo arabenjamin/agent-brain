@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::services::traits::{KnowledgeStore, LlmProvider, WorkingMemoryStore};
 use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Working Memory Skill — push/retrieve session context and summarise into long-term memory.
 pub struct WorkingMemorySkill {
@@ -59,28 +59,6 @@ impl WorkingMemorySkill {
                     }
                 },
                 "required": ["session_id", "content"]
-            }),
-        }
-    }
-
-    fn get_context_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "get_context".to_string(),
-            description: "Retrieve all working-memory entries for a session, ordered by turn."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session identifier"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max entries to return (default: 20)"
-                    }
-                },
-                "required": ["session_id"]
             }),
         }
     }
@@ -137,30 +115,9 @@ impl WorkingMemorySkill {
                     "turn_index": turn_index,
                     "session_id": input.session_id
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Failed to push context: {}", e)),
-        }
-    }
-
-    async fn handle_get_context(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: GetContextInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(session_id = %input.session_id, "Retrieving working-memory context");
-
-        match self.store.get_entries(&input.session_id, input.limit).await {
-            Ok(entries) => {
-                let response = json!({
-                    "session_id": input.session_id,
-                    "count": entries.len(),
-                    "entries": entries
-                });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to retrieve context: {}", e)),
         }
     }
 
@@ -243,7 +200,7 @@ impl WorkingMemorySkill {
             "entries_summarised": entries_summarised,
             "deleted": deleted
         });
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        ToolCallResult::success_json(response)
     }
 }
 
@@ -254,17 +211,12 @@ impl Skill for WorkingMemorySkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::push_context_def(),
-            Self::get_context_def(),
-            Self::summarise_session_def(),
-        ]
+        vec![Self::push_context_def(), Self::summarise_session_def()]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
             "push_context" => Some(self.handle_push_context(arguments).await),
-            "get_context" => Some(self.handle_get_context(arguments).await),
             "summarise_session" => Some(self.handle_summarise_session(arguments).await),
             _ => None,
         }
@@ -284,25 +236,172 @@ struct PushContextInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct GetContextInput {
-    session_id: String,
-    #[serde(default = "default_get_limit")]
-    limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
 struct SummariseSessionInput {
     session_id: String,
     #[serde(default)]
     delete_after_summarise: bool,
 }
 
-fn default_get_limit() -> usize {
-    20
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::test_helpers::*;
+    use std::sync::Arc;
 
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
+    fn skill(wm: MockWorkingMemoryStore) -> WorkingMemorySkill {
+        WorkingMemorySkill::new(
+            Arc::new(wm),
+            Arc::new(MockKnowledgeStore::default()),
+            Arc::new(MockLlm::ok("session summary text")),
+        )
+    }
+
+    // -- tool registry --------------------------------------------------------
+
+    #[test]
+    fn tools_list_has_correct_count() {
+        assert_eq!(skill(MockWorkingMemoryStore::default()).tools().len(), 2);
+    }
+
+    #[test]
+    fn execute_unknown_tool_returns_none() {
+        let s = skill(MockWorkingMemoryStore::default());
+        let r = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(s.execute("not_a_tool", None));
+        assert!(r.is_none());
+    }
+
+    // -- push_context ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn push_context_success() {
+        let r = result_json(
+            skill(MockWorkingMemoryStore::default())
+                .execute(
+                    "push_context",
+                    Some(serde_json::json!({
+                        "session_id": "sess-1",
+                        "content": "did a thing"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["session_id"], "sess-1");
+        assert_eq!(r["turn_index"], 0);
+        assert!(r["id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn push_context_with_role() {
+        let r = result_json(
+            skill(MockWorkingMemoryStore::default())
+                .execute(
+                    "push_context",
+                    Some(serde_json::json!({
+                        "session_id": "sess-1",
+                        "content": "planning",
+                        "role": "plan"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["turn_index"], 0);
+    }
+
+    #[tokio::test]
+    async fn push_context_missing_fields_returns_error() {
+        let r = skill(MockWorkingMemoryStore::default())
+            .execute("push_context", Some(serde_json::json!({"session_id": "s"})))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn push_context_store_error_propagates() {
+        let mut wm = MockWorkingMemoryStore::default();
+        wm.push_result = Err("store down".into());
+        let msg = result_error(
+            skill(wm)
+                .execute(
+                    "push_context",
+                    Some(serde_json::json!({"session_id": "s", "content": "c"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("store down"));
+    }
+
+    // -- summarise_session ----------------------------------------------------
+
+    #[tokio::test]
+    async fn summarise_session_success() {
+        let r = result_json(
+            skill(MockWorkingMemoryStore::default())
+                .execute(
+                    "summarise_session",
+                    Some(serde_json::json!({"session_id": "sess-1"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["session_id"], "sess-1");
+        assert_eq!(r["entries_summarised"], 2);
+        assert_eq!(r["deleted"], false);
+    }
+
+    #[tokio::test]
+    async fn summarise_session_with_delete() {
+        let r = result_json(
+            skill(MockWorkingMemoryStore::default())
+                .execute(
+                    "summarise_session",
+                    Some(serde_json::json!({
+                        "session_id": "sess-1",
+                        "delete_after_summarise": true
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn summarise_session_empty_returns_error() {
+        let mut wm = MockWorkingMemoryStore::default();
+        wm.get_all_result = Ok(vec![]);
+        let msg = result_error(
+            skill(wm)
+                .execute(
+                    "summarise_session",
+                    Some(serde_json::json!({"session_id": "empty"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("No entries found"));
+    }
+
+    #[tokio::test]
+    async fn summarise_session_llm_error() {
+        let s = WorkingMemorySkill::new(
+            Arc::new(MockWorkingMemoryStore::default()),
+            Arc::new(MockKnowledgeStore::default()),
+            Arc::new(MockLlm::err("llm down")),
+        );
+        let msg = result_error(
+            s.execute(
+                "summarise_session",
+                Some(serde_json::json!({"session_id": "sess-1"})),
+            )
+            .await
+            .unwrap(),
+        );
+        assert!(msg.contains("llm down"));
+    }
 }

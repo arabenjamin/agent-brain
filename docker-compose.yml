@@ -45,7 +45,7 @@ services:
       - MCP_HTTP_BIND=0.0.0.0:3000
       - MCP_API_KEY=   # disabled: env_file would otherwise enable auth from .env
       - SERPAPI_KEY=${SERPAPI_KEY:-}
-      - TELEMETRY_DB_PATH=/home/agent/telemetry.duckdb
+      - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
       - LOG_LEVEL=info
       - LOG_FORMAT=json
@@ -60,6 +60,7 @@ services:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
       - /home/ara/agent-brain:/home/agent/agent-brain:ro
       - brain_snapshots:/home/agent/snapshots
+      - telemetry_data:/home/agent/telemetry
     depends_on:
       neo4j:
         condition: service_healthy
@@ -89,3 +90,4 @@ volumes:
   neo4j_data:
   neo4j_logs:
   brain_snapshots:
+  telemetry_data:

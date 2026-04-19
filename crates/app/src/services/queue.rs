@@ -30,18 +30,22 @@ tokio::task_local! {
 }
 
 use serde::Deserialize;
-use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore, broadcast};
 use tracing::{debug, error, info, warn};
 
+use crate::brain_core::BrainEvent;
 use crate::mcp::tools::ToolHandler;
 use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
 use crate::repository::Neo4jClient;
-use agent_brain_protocol::{Content, SseNotifier, ToolCallResult};
+use agent_brain_protocol::{Content, ToolCallResult};
 
 const DEFAULT_MAX_CONCURRENT: usize = 5;
 const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 3;
 const DEFAULT_MAX_CONCURRENT_ANTHROPIC: usize = 2;
 const DEFAULT_MAX_CONCURRENT_GEMINI: usize = 5;
+
+/// Progress tuple: (percent, message, updated_at).
+pub type JobProgressTuple = (u8, Option<String>, Option<String>);
 
 /// Runtime configuration for the queue coordinator.
 #[derive(Debug, Clone)]
@@ -75,17 +79,30 @@ impl Default for WorkerConfig {
 }
 
 /// One step in a sequential job chain submitted via `enqueue_chain`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct ChainStep {
+    #[serde(default)]
     pub tool_name: String,
     #[serde(default)]
     pub arguments: Option<serde_json::Value>,
-    /// 0=low … 3=critical. Defaults to 1 (normal).
     pub priority: Option<u8>,
-    /// Max execution attempts. Defaults to 3.
     pub max_attempts: Option<u32>,
     pub provider_hint: Option<String>,
     pub context_profile: Option<String>,
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl ChainStep {
+    pub fn new(tool_name: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            ..Default::default()
+        }
+    }
 }
 
 /// Priority job queue with Neo4j-backed persistence and Tokio worker coordination.
@@ -94,25 +111,21 @@ pub struct QueueService {
     tool_handler: Arc<RwLock<Option<ToolHandler>>>,
     heap: Arc<Mutex<BinaryHeap<PrioritizedJob>>>,
     notify: Arc<Notify>,
-    /// Per-provider concurrency semaphores, wrapped in RwLock to allow runtime resizing.
     semaphore_ollama: Arc<RwLock<Arc<Semaphore>>>,
     semaphore_anthropic: Arc<RwLock<Arc<Semaphore>>>,
     semaphore_gemini: Arc<RwLock<Arc<Semaphore>>>,
-    /// Publicly readable for `AgentSkill::handle_set_worker_config`.
     pub config: Arc<RwLock<WorkerConfig>>,
-    /// Tombstone set — jobs cancelled while still in the heap (lazy deletion).
     cancelled_ids: Arc<Mutex<HashSet<String>>>,
-    /// Optional SSE notifier for pushing notifications on job completion.
-    session_manager: Option<Arc<dyn SseNotifier>>,
+    /// Brain event bus — emits `JobCompleted / JobFailed / JobDead` events that
+    /// transport adapters (e.g. HTTP SSE) can subscribe to and forward to clients.
+    event_tx: Option<broadcast::Sender<BrainEvent>>,
 }
 
 impl QueueService {
-    /// Create a new queue service.  Call `recover().await` and then
-    /// `spawn_coordinator()` before enqueuing jobs.
     pub fn new(
         neo4j: Neo4jClient,
         tool_handler: Arc<RwLock<Option<ToolHandler>>>,
-        session_manager: Option<Arc<dyn SseNotifier>>,
+        event_tx: Option<broadcast::Sender<BrainEvent>>,
     ) -> Self {
         Self {
             neo4j,
@@ -130,7 +143,7 @@ impl QueueService {
             )))),
             config: Arc::new(RwLock::new(WorkerConfig::default())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
-            session_manager,
+            event_tx,
         }
     }
 
@@ -144,6 +157,14 @@ impl QueueService {
             Ok(n) if n > 0 => info!(count = n, "Reset crashed AgentJobs to queued"),
             Ok(_) => {}
             Err(e) => warn!("Failed to reset running jobs: {}", e),
+        }
+
+        // Cancel parked jobs whose parent is now terminal — these accumulated during
+        // crashes or explicit cancellations and can never be unparked.
+        match self.neo4j.cancel_orphaned_parked_jobs().await {
+            Ok(n) if n > 0 => info!(count = n, "Cancelled orphaned parked AgentJobs on recovery"),
+            Ok(_) => {}
+            Err(e) => warn!("Failed to cancel orphaned parked jobs on recovery: {}", e),
         }
 
         match self.neo4j.list_queued_agent_jobs().await {
@@ -193,6 +214,8 @@ impl QueueService {
                 session_id,
                 parent_job_id,
                 provider_hint,
+                None,
+                None,
                 None,
             )
             .await
@@ -247,6 +270,8 @@ impl QueueService {
                         None,
                         step.provider_hint.as_deref(),
                         step.context_profile.as_deref(),
+                        step.description.as_deref(),
+                        step.ttl_secs,
                     )
                     .await
                     .map_err(|e| e.to_string())?
@@ -261,6 +286,8 @@ impl QueueService {
                         prev_id.as_deref().unwrap(),
                         step.provider_hint.as_deref(),
                         step.context_profile.as_deref(),
+                        step.description.as_deref(),
+                        step.ttl_secs,
                     )
                     .await
                     .map_err(|e| e.to_string())?
@@ -304,6 +331,9 @@ impl QueueService {
             .update_agent_job_status(job_id, AgentJobStatus::Cancelled)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Cancel any parked chain children — they can never run without this parent.
+        let _ = self.neo4j.cancel_parked_children(job_id).await;
 
         // Lazy removal from heap via tombstone.
         self.cancelled_ids.lock().await.insert(job_id.to_string());
@@ -352,11 +382,13 @@ impl QueueService {
             heap.drain().map(|pj| pj.job).collect()
         };
         let count = jobs.len();
-        for job in jobs {
+        for job in &jobs {
             let _ = self
                 .neo4j
                 .update_agent_job_status(&job.id, AgentJobStatus::Cancelled)
                 .await;
+            // Cancel parked children of each drained job.
+            let _ = self.neo4j.cancel_parked_children(&job.id).await;
         }
         Ok(count)
     }
@@ -416,6 +448,11 @@ impl QueueService {
             .get_queue_stats()
             .await
             .unwrap_or(serde_json::json!({}));
+        let provider_stats = self
+            .neo4j
+            .get_provider_stats()
+            .await
+            .unwrap_or(serde_json::json!({}));
         let heap_len = self.heap.lock().await.len();
         let cfg = self.config.read().await;
 
@@ -438,7 +475,105 @@ impl QueueService {
                 "gemini": { "running": running_gemini, "max": cfg.max_concurrent_gemini },
             },
             "by_status": db_stats,
+            "provider_stats": provider_stats,
         })
+    }
+
+    /// List agent jobs from Neo4j, optionally filtered by status.
+    /// Returns up to `limit` jobs ordered by created_at DESC.
+    pub async fn list_jobs(
+        &self,
+        status: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::models::AgentJob>, crate::repository::RepositoryError> {
+        self.neo4j.list_agent_jobs(status, limit).await
+    }
+
+    // =========================================================================
+    // Progress tracking
+    // =========================================================================
+
+    /// Update progress for a running job.
+    pub async fn update_progress(
+        &self,
+        job_id: &str,
+        percent: u8,
+        message: Option<&str>,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        self.neo4j
+            .update_job_progress(job_id, percent, message, metadata)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Get progress for a job.
+    pub async fn get_job_progress(&self, job_id: &str) -> Result<Option<JobProgressTuple>, String> {
+        self.neo4j
+            .get_job_progress(job_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    // =========================================================================
+    // TTL and expiration
+    // =========================================================================
+
+    /// Expire jobs that have exceeded their TTL.
+    pub async fn expire_jobs(&self) -> Result<usize, String> {
+        self.neo4j.expire_jobs().await.map_err(|e| e.to_string())
+    }
+
+    // =========================================================================
+    // Dead Letter Queue
+    // =========================================================================
+
+    /// List jobs in the dead letter queue.
+    pub async fn list_dead_letter(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::models::AgentJob>, String> {
+        self.neo4j
+            .list_dead_letter(limit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Retry a job from the dead letter queue.
+    pub async fn retry_dead_letter(&self, job_id: &str) -> Result<bool, String> {
+        self.neo4j
+            .retry_dead_letter(job_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Permanently delete a dead letter entry.
+    pub async fn delete_dead_letter(&self, job_id: &str) -> Result<bool, String> {
+        self.neo4j
+            .delete_dead_letter(job_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Get dead letter queue statistics.
+    pub async fn get_dead_letter_stats(&self) -> Result<serde_json::Value, String> {
+        self.neo4j
+            .get_dead_letter_stats()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    // =========================================================================
+    // Cleanup
+    // =========================================================================
+
+    /// Clean up old completed and dead jobs.
+    pub async fn cleanup_old_jobs(&self) -> Result<usize, String> {
+        // Default: keep completed for 1 day, dead for 7 days.
+        self.neo4j
+            .cleanup_old_jobs(24 * 3600, 7 * 24 * 3600)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     // =========================================================================
@@ -449,8 +584,31 @@ impl QueueService {
     /// Must be called **after** `tool_handler` has been populated (i.e. after
     /// `McpServerCore::build_skills()`).
     pub fn spawn_coordinator(queue: Arc<QueueService>) {
+        let queue_coordinator = Arc::clone(&queue);
         tokio::spawn(async move {
-            queue.run_coordinator().await;
+            queue_coordinator.run_coordinator().await;
+        });
+        // Spawn periodic TTL expiration check (every 60 seconds).
+        let queue_ttl = Arc::clone(&queue);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Err(e) = queue_ttl.expire_jobs().await {
+                    warn!("TTL expiration check failed: {}", e);
+                }
+            }
+        });
+        // Spawn periodic cleanup (every 5 minutes).
+        let queue_cleanup = Arc::clone(&queue);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                if let Err(e) = queue_cleanup.cleanup_old_jobs().await {
+                    warn!("Periodic cleanup failed: {}", e);
+                }
+            }
         });
     }
 
@@ -545,32 +703,28 @@ impl QueueService {
     // Job execution
     // =========================================================================
 
-    /// Push an SSE notification to the session that owns `job`, if any.
-    async fn notify_session(&self, job: &AgentJob, status: &str, error: Option<&str>) {
-        let (Some(sm), Some(sid)) = (&self.session_manager, &job.session_id) else {
-            return;
-        };
-        let mut params = serde_json::json!({
-            "job_id":    job.id,
-            "tool_name": job.tool_name,
-            "status":    status,
-        });
-        if let Some(e) = error {
-            params["error"] = serde_json::Value::String(e.to_string());
+    /// Emit a brain event for a job status change.
+    ///
+    /// Ignores send errors — having no subscribers is fine.
+    fn emit_job_event(&self, event: BrainEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(event);
         }
-        let data = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method":  "notifications/agent_job",
-            "params":  params,
-        });
-        sm.notify(sid, "agent_job", data).await;
     }
 
     /// Promote any parked children of `parent_id` to queued and push them onto the heap.
     /// `prev_result_text` is the plain-text output of the completing job; it is stamped
     /// onto each child so `{{_prev}}` can be resolved when the child executes.
-    async fn unpark_and_enqueue_children(self: &Arc<Self>, parent_id: &str, prev_result_text: &str) {
-        match self.neo4j.unpark_children(parent_id, prev_result_text).await {
+    async fn unpark_and_enqueue_children(
+        self: &Arc<Self>,
+        parent_id: &str,
+        prev_result_text: &str,
+    ) {
+        match self
+            .neo4j
+            .unpark_children(parent_id, prev_result_text)
+            .await
+        {
             Ok(children) if !children.is_empty() => {
                 let mut heap = self.heap.lock().await;
                 for child in children {
@@ -611,7 +765,7 @@ impl QueueService {
                 if job
                     .arguments
                     .as_ref()
-                    .map_or(false, |a| a.to_string().contains("{{_prev}}")) =>
+                    .is_some_and(|a| a.to_string().contains("{{_prev}}")) =>
             {
                 job.arguments
                     .as_ref()
@@ -641,8 +795,14 @@ impl QueueService {
             } else {
                 info!(job_id = %job.id, "AgentJob completed");
                 // Promote any chained children waiting on this job, passing the result text.
-                self.unpark_and_enqueue_children(&job.id, &result_text).await;
-                self.notify_session(&job, "completed", None).await;
+                self.unpark_and_enqueue_children(&job.id, &result_text)
+                    .await;
+                self.emit_job_event(BrainEvent::JobCompleted {
+                    job_id: job.id.clone(),
+                    tool_name: job.tool_name.clone(),
+                    session_id: job.session_id.clone(),
+                    result_preview: Some(result_text.chars().take(200).collect()),
+                });
             }
         } else {
             let error_text = result
@@ -670,7 +830,29 @@ impl QueueService {
                 warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
                 // Parent chain is broken — cancel any waiting children.
                 let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                self.notify_session(&job, "dead", Some(&error_text)).await;
+                // Store a reflection note so the brain can learn from this failure.
+                let reflection_content = format!(
+                    "Dead job: tool '{}' (job_id: {}) exhausted {}/{} attempts and was marked dead.\n\
+                     Last error: {}\n\
+                     This is an automated failure record. Investigate the tool definition, \
+                     its input arguments, or any external dependencies to prevent recurrence.",
+                    job.tool_name, job.id, attempt, max, error_text
+                );
+                if let Err(e) = self
+                    .neo4j
+                    .store_reflection_note(&reflection_content, None)
+                    .await
+                {
+                    warn!(job_id = %job.id, error = %e, "Failed to store dead-job reflection note");
+                } else {
+                    debug!(job_id = %job.id, tool = %job.tool_name, "Stored dead-job reflection note");
+                }
+                self.emit_job_event(BrainEvent::JobDead {
+                    job_id: job.id.clone(),
+                    tool_name: job.tool_name.clone(),
+                    session_id: job.session_id.clone(),
+                    error: error_text.clone(),
+                });
             } else {
                 // Re-queue for automatic retry: set status back to 'queued' so the
                 // coordinator picks it up again.  Children remain parked and will be
@@ -678,7 +860,12 @@ impl QueueService {
                 let _ = self.neo4j.requeue_for_retry(&job.id, &error_text).await;
                 warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed — re-queued for retry");
                 self.notify.notify_one(); // wake coordinator immediately
-                self.notify_session(&job, "failed", Some(&error_text)).await;
+                self.emit_job_event(BrainEvent::JobFailed {
+                    job_id: job.id.clone(),
+                    tool_name: job.tool_name.clone(),
+                    session_id: job.session_id.clone(),
+                    error: error_text.clone(),
+                });
             }
         }
     }
@@ -725,9 +912,9 @@ fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Valu
                 .map(|(k, v)| (k.clone(), substitute_prev(v, prev_text)))
                 .collect(),
         ),
-        serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.iter().map(|v| substitute_prev(v, prev_text)).collect(),
-        ),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(|v| substitute_prev(v, prev_text)).collect())
+        }
         other => other.clone(),
     }
 }

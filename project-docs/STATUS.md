@@ -27,19 +27,25 @@
 ---
 
 ## Skill Registry (81 tools static + N runtime)
-
-| Skill | File | Tools | Notes |
+| Skill | Path | Tools | Notes |
 |-------|------|-------|-------|
-| ApiSkill | `src/skills/api.rs` | 14 | OpenAPI ingestion, query, execute, heal, export, discovery, docgen |
-| KnowledgeSkill | `src/skills/knowledge.rs` | 16 | RAG, reasoning, audit, explain, spaced-rep, note CRUD, entity search, graph viz |
-| TaskSkill | `src/skills/task.rs` | 6 | Goal tracking, decomposition, outcomes, reflection |
-| AgentSkill | `src/skills/agent.rs` | 8 | Background job queue + sequential chaining |
-| AdminSkill | `src/skills/admin.rs` | 10 | Graph cleanup, backfill embeddings, snapshots, integrity check, analyze structure |
-| ModelSkill | `src/skills/model.rs` | 5 | Model registry + intelligent selection |
-| SchedulerSkill | `src/skills/scheduler.rs` | 5 | Autonomous background scheduler; idle sleep mode; runtime control |
-| ContextSkill | `src/skills/context.rs` | 4 | Context profile management and bundle building |
-| DynamicSkill | `src/skills/dynamic.rs` | 4 + N | Runtime tool definition, hot-registration |
-| WorkingMemorySkill | `src/skills/working_memory.rs` | 4 | Session scratchpad, LLM summarisation, session listing |
+| HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
+| KnowledgeSkill | `src/skills/knowledge.rs` | 6 | RAG, reasoning, consolidation, note CRUD |
+| TaskSkill | `src/skills/task.rs` | 5 | Goal tracking, decomposition, outcomes, reflection |
+| AgentSkill | `src/skills/agent.rs` | 5 | Background job queue + sequential chaining |
+| QuerySkill | `src/skills/query.rs` | 2 | Generic Neo4j (Cypher) and DuckDB (SQL) primitives |
+| ModelSkill | `src/skills/model.rs` | 2 | Model registry + selection |
+| SchedulerSkill | `src/skills/scheduler.rs` | 4 | Autonomous background scheduler |
+| ContextSkill | `src/skills/context.rs` | 1 | Context profile management |
+| DynamicSkill | `src/skills/dynamic.rs` | 3 | Runtime tool definition and procedures |
+| WorkingMemorySkill | `src/skills/working_memory.rs` | 2 | Session scratchpad and summarisation |
+| CodebaseSkill | `src/skills/codebase.rs` | 7 | Codebase analysis, git logs/diffs, file reading |
+| WsSkill | `src/skills/ws.rs` | 4 | WebSocket connection management |
+| ResourceSkill | `src/skills/resource.rs` | 1 | Shared resource/token registry |
+| SearchSkill | `src/skills/search.rs` | 1 | Web search integration |
+| SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
+| **Total** | | **47** | |
+
 | ProcedureSkill | `src/skills/procedure.rs` | 2 | Stored multi-step workflows |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Training data export (`digest_experiences`), knowledge gap analysis |
 | SearchSkill | `src/skills/search.rs` | 1 | Web search (SerpApi / Brave / Google) |

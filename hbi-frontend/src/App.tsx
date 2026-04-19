@@ -8,16 +8,18 @@ const GraphPanel         = lazy(() => import("./components/graph/GraphPanel"));
 const ToolPanel          = lazy(() => import("./components/tools/ToolPanel"));
 const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
 const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
-const TodoPanel          = lazy(() => import("./components/todo/TodoPanel"));
-const SettingsModal      = lazy(() => import("./components/settings/SettingsModal"));
+const TodoPanel               = lazy(() => import("./components/todo/TodoPanel"));
+const ScheduledTasksPanel     = lazy(() => import("./components/scheduled-tasks/ScheduledTasksPanel"));
+const SettingsModal           = lazy(() => import("./components/settings/SettingsModal"));
 
-type Tab = "chat" | "tasks" | "todos" | "knowledge" | "graph" | "tools" | "logs" | "architecture";
+type Tab = "chat" | "tasks" | "todos" | "scheduled-tasks" | "knowledge" | "graph" | "tools" | "logs" | "architecture";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "chat",      icon: "🧠", label: "Chat" },
   { id: "tasks",     icon: "📋", label: "Tasks" },
-  { id: "todos",     icon: "✅", label: "Todos" },
-  { id: "knowledge", icon: "🔍", label: "Knowledge" },
+  { id: "todos",           icon: "✅", label: "Todos" },
+  { id: "scheduled-tasks", icon: "📅", label: "Scheduled" },
+  { id: "knowledge",       icon: "🔍", label: "Knowledge" },
   { id: "graph",     icon: "🕸", label: "Graph" },
   { id: "tools",        icon: "🔧", label: "Tools" },
   { id: "logs",         icon: "📊", label: "Logs" },
@@ -69,8 +71,9 @@ export default function App() {
         </div>
         <Suspense fallback={<Fallback />}>
           {tab === "tasks"     && <TaskPanel />}
-          {tab === "todos"     && <TodoPanel />}
-          {tab === "knowledge" && <KnowledgePanel />}
+          {tab === "todos"            && <TodoPanel />}
+          {tab === "scheduled-tasks" && <ScheduledTasksPanel />}
+          {tab === "knowledge"       && <KnowledgePanel />}
           {tab === "graph"     && <GraphPanel />}
           {tab === "tools"        && <ToolPanel />}
           {tab === "logs"         && <LogsPanel />}

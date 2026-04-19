@@ -1,7 +1,13 @@
-//! Server-side agentic chat service.
+//! Chat client adapter.
 //!
-//! Provides a `/chat` SSE endpoint that runs the full LLM ↔ tool-use loop
-//! server-side, streaming events back to the caller.
+//! Runs the full LLM ↔ tool-use loop for human-facing chat sessions,
+//! streaming [`ChatEvent`]s back to the caller via an SSE endpoint.
+//!
+//! This is a **client adapter** — it drives a conversational LLM on behalf
+//! of a human user and calls into the brain's tool registry to act on the
+//! world.  It is intentionally separate from the brain's internal services
+//! (`services/`) which use LLMs as a cognitive substrate rather than as a
+//! conversational interface.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -241,7 +247,10 @@ impl ChatService {
                     content: format!(
                         "⚙ provider={} | model={} | profile={} | tools={} | mode={}",
                         provider_str,
-                        config.as_ref().map(|c| c.model.as_str()).unwrap_or("unknown"),
+                        config
+                            .as_ref()
+                            .map(|c| c.model.as_str())
+                            .unwrap_or("unknown"),
                         resolved_profile.as_deref().unwrap_or("general"),
                         tools.len(),
                         mode,
@@ -255,10 +264,12 @@ impl ChatService {
                 self.run_anthropic_loop(cfg, tools, handler.clone(), request, inner_tx)
                     .await;
             }
-            Some(cfg) if cfg.provider == LlmProviderType::Ollama
-                      || cfg.provider == LlmProviderType::OllamaCloud =>
-            {
+            Some(cfg) if cfg.provider == LlmProviderType::Ollama => {
                 self.run_ollama_tool_loop(cfg, tools, handler.clone(), request, inner_tx)
+                    .await;
+            }
+            Some(cfg) if cfg.provider == LlmProviderType::OllamaCloud => {
+                self.run_ollama_cloud_loop(cfg, tools, handler.clone(), request, inner_tx)
                     .await;
             }
             Some(cfg) => {
@@ -594,9 +605,7 @@ impl ChatService {
             if let Some(ref key) = config.api_key {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
-            let response = match req.send()
-                .await
-            {
+            let response = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx
@@ -813,6 +822,290 @@ impl ChatService {
         if do_synthesis {
             self.run_synthesis(&request, &messages, &weak_model_answer, tx.clone())
                 .await;
+        }
+
+        let _ = tx.send(ChatEvent::Done).await;
+    }
+
+    // ========================================================================
+    // Ollama Cloud tool-use loop (OpenAI-compatible SSE streaming)
+    // ========================================================================
+    //
+    // Ollama Cloud at https://ollama.com uses the OpenAI-compatible API:
+    //   POST /v1/chat/completions  (not /api/chat)
+    // The streaming response is SSE ("data: {...}\n\n") not NDJSON.
+    // Tool-call deltas arrive piece-by-piece and must be accumulated per index.
+
+    async fn run_ollama_cloud_loop(
+        &self,
+        config: LlmConfig,
+        tools: Vec<agent_brain_protocol::ToolDefinition>,
+        handler: Option<ToolHandler>,
+        request: ChatRequest,
+        tx: mpsc::Sender<ChatEvent>,
+    ) {
+        let base_url = config.base_url.as_deref().unwrap_or("https://ollama.com");
+        let url = format!("{}/v1/chat/completions", base_url);
+        let model = config.model.clone();
+
+        // OpenAI-format tools array.
+        let oai_tools: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                })
+            })
+            .collect();
+
+        // Initial messages.
+        let mut messages: Vec<Value> =
+            vec![json!({ "role": "system", "content": CHAT_SYSTEM_PROMPT })];
+        for h in &request.history {
+            messages.push(json!({ "role": h.role, "content": h.content }));
+        }
+        messages.push(json!({ "role": "user", "content": request.message }));
+
+        let client = reqwest::Client::new();
+
+        for _iteration in 0..MAX_TOOL_ITERATIONS {
+            let body = json!({
+                "model": model,
+                "messages": messages,
+                "tools": oai_tools,
+                "stream": true,
+                "temperature": config.temperature,
+            });
+
+            let mut req = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .timeout(config.timeout)
+                .json(&body);
+            if let Some(ref key) = config.api_key {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+
+            let response = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx
+                        .send(ChatEvent::Error {
+                            message: format!("OllamaCloud request failed: {e}"),
+                        })
+                        .await;
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
+                }
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body_text = response.text().await.unwrap_or_default();
+                let _ = tx
+                    .send(ChatEvent::Error {
+                        message: format!("OllamaCloud error ({status}): {body_text}"),
+                    })
+                    .await;
+                let _ = tx.send(ChatEvent::Done).await;
+                return;
+            }
+
+            // Parse SSE stream: lines look like "data: {...}" or "data: [DONE]".
+            let mut byte_stream = response.bytes_stream();
+            let mut line_buf = String::new();
+            let mut full_content = String::new();
+            // Tool call accumulator: index -> (call_id, name, accumulated_args)
+            let mut tc_acc: std::collections::BTreeMap<u64, (String, String, String)> =
+                std::collections::BTreeMap::new();
+            'stream: while let Some(chunk_result) = byte_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx
+                            .send(ChatEvent::Error {
+                                message: format!("OllamaCloud stream error: {e}"),
+                            })
+                            .await;
+                        let _ = tx.send(ChatEvent::Done).await;
+                        return;
+                    }
+                };
+                line_buf.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(nl) = line_buf.find('\n') {
+                    let line = line_buf[..nl].trim().to_string();
+                    line_buf = line_buf[nl + 1..].to_string();
+
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if line == "data: [DONE]" {
+                        break 'stream;
+                    }
+
+                    let json_str = line.strip_prefix("data: ").unwrap_or(&line);
+                    let chunk_json: Value = match serde_json::from_str(json_str) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // Surface API-level errors.
+                    if let Some(err) = chunk_json.get("error").and_then(|v| v.as_str()) {
+                        let _ = tx
+                            .send(ChatEvent::Error {
+                                message: format!("OllamaCloud error: {err}"),
+                            })
+                            .await;
+                        let _ = tx.send(ChatEvent::Done).await;
+                        return;
+                    }
+
+                    let delta = &chunk_json["choices"][0]["delta"];
+
+                    // Stream content tokens.
+                    if let Some(content) = delta["content"].as_str()
+                        && !content.is_empty()
+                    {
+                        full_content.push_str(content);
+                        let _ = tx
+                            .send(ChatEvent::Token {
+                                content: content.to_string(),
+                            })
+                            .await;
+                    }
+
+                    // Accumulate tool-call deltas.
+                    if let Some(tcs) = delta["tool_calls"].as_array() {
+                        for tc in tcs {
+                            let idx = tc["index"].as_u64().unwrap_or(0);
+                            let entry = tc_acc.entry(idx).or_default();
+                            if let Some(id) = tc["id"].as_str() {
+                                entry.0 = id.to_string();
+                            }
+                            if let Some(name) = tc["function"]["name"].as_str() {
+                                entry.1 = name.to_string();
+                            }
+                            if let Some(args) = tc["function"]["arguments"].as_str() {
+                                entry.2.push_str(args);
+                            }
+                        }
+                    }
+
+                    let finish = chunk_json["choices"][0]["finish_reason"]
+                        .as_str()
+                        .unwrap_or("");
+                    if finish == "stop" || finish == "tool_calls" {
+                        break 'stream;
+                    }
+                }
+            }
+
+            // Convert accumulated tool calls to a stable ordered list.
+            let tool_calls: Vec<(String, String, Value)> = tc_acc
+                .into_values()
+                .map(|(id, name, args_str)| {
+                    let args = serde_json::from_str(&args_str).unwrap_or(Value::Null);
+                    (id, name, args)
+                })
+                .collect();
+
+            if tool_calls.is_empty() {
+                // No tool calls — final answer.
+                if !full_content.is_empty() {
+                    let _ = tx
+                        .send(ChatEvent::Message {
+                            content: full_content,
+                        })
+                        .await;
+                }
+                break;
+            }
+
+            // Emit any reasoning text that accompanied the tool calls.
+            if !full_content.trim().is_empty() {
+                let _ = tx
+                    .send(ChatEvent::Thinking {
+                        content: full_content.clone(),
+                    })
+                    .await;
+            }
+
+            // Append assistant message with tool_calls in OpenAI format.
+            let oai_tc: Vec<Value> = tool_calls
+                .iter()
+                .map(|(id, name, args)| {
+                    json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": serde_json::to_string(args).unwrap_or_default()
+                        }
+                    })
+                })
+                .collect();
+            messages.push(json!({
+                "role": "assistant",
+                "content": full_content,
+                "tool_calls": oai_tc,
+            }));
+
+            // Execute each tool call and append results.
+            for (tool_id, tool_name, tool_args) in &tool_calls {
+                let _ = tx
+                    .send(ChatEvent::ToolCall {
+                        tool: tool_name.clone(),
+                        args: tool_args.clone(),
+                    })
+                    .await;
+
+                let (success, result_text) = if let Some(ref h) = handler {
+                    let args = if tool_args.is_object() {
+                        Some(tool_args.clone())
+                    } else {
+                        None
+                    };
+                    let result = h.execute(tool_name, args).await;
+                    let is_err = result.is_error.unwrap_or(false);
+                    let text = result
+                        .content
+                        .iter()
+                        .filter_map(|c| {
+                            if let Content::Text { text } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (!is_err, text)
+                } else {
+                    (false, "No tool handler available".to_string())
+                };
+
+                let preview: String = result_text.chars().take(4000).collect();
+                let _ = tx
+                    .send(ChatEvent::ToolResult {
+                        tool: tool_name.clone(),
+                        success,
+                        preview,
+                    })
+                    .await;
+
+                // OpenAI requires tool results as role="tool" with tool_call_id.
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": result_text,
+                }));
+            }
         }
 
         let _ = tx.send(ChatEvent::Done).await;

@@ -57,7 +57,10 @@ impl Neo4jClient {
             .and_then(|r| r.get::<i64>("n").ok())
             .unwrap_or(0) as usize;
         if count > 0 {
-            info!(count, stale_hours, "Reset stale in_progress tasks to failed");
+            info!(
+                count,
+                stale_hours, "Reset stale in_progress tasks to failed"
+            );
         }
         Ok(count)
     }

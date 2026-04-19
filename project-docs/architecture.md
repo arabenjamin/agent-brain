@@ -4,20 +4,22 @@
 
 | Skill | Tools | Notes |
 |-------|-------|-------|
-| ApiSkill | 14 | API ingestion, discovery, HTTP execution, credentials |
-| KnowledgeSkill | 15 | Notes, RAG, entities, reasoning, integrity |
-| TaskSkill | 6 | Goal tracking, decomposition, outcomes |
-| AgentSkill | 8 | Background job queue, chaining |
-| AdminSkill | 10 | Graph cleanup, snapshots, integrity checks, structure analysis |
-| ModelSkill | 5 | LLM registry, runtime provider switching |
-| SchedulerSkill | 5 | Autonomous self-improvement loop |
-| ContextSkill | 4 | Context profile management |
-| WorkingMemorySkill | 4 | Session scratchpad, summarization |
-| ProcedureSkill | 2 | Named multi-step workflows |
-| DynamicSkill | 4+N | Runtime tool definition |
+| HttpSkill | 2 | Generic HTTP requests, ApiContext management |
+| KnowledgeSkill | 6 | Notes, RAG, reasoning, consolidation |
+| TaskSkill | 5 | Goal tracking, decomposition, outcomes, reflection |
+| AgentSkill | 5 | Background job queue, chaining |
+| QuerySkill | 2 | Generic Neo4j (Cypher) and DuckDB (SQL) primitives |
+| ModelSkill | 2 | LLM registry, runtime provider switching |
+| SchedulerSkill | 4 | Autonomous self-improvement loop |
+| ContextSkill | 1 | Context profile management |
+| WorkingMemorySkill | 2 | Session scratchpad, summarization |
+| DynamicSkill | 3 | Runtime tool definition and procedures |
+| CodebaseSkill | 7 | Self-analysis, file reading, git integration |
+| WsSkill | 4 | WebSocket connections |
+| ResourceSkill | 1 | Shared token/resource registry |
 | SearchSkill | 1 | Web search (SerpApi/Brave/Google) |
 | SleepSkill | 2 | Experience export, gap analysis |
-| **Total** | **78+N** | N = runtime-defined dynamic tools |
+| **Total** | **47** | |
 
 ## Skill Registration Pattern
 

@@ -20,7 +20,7 @@ use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::repository::Neo4jClient;
 use crate::services::procedure_executor;
 use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 // ============================================================================
 // Internal types
@@ -129,31 +129,37 @@ impl DynamicSkill {
     // Tool definitions (static tools in DynamicSkill itself)
     // ========================================================================
 
-    fn define_tool_def() -> ToolDefinition {
+    fn manage_dynamic_tool_def() -> ToolDefinition {
         ToolDefinition {
-            name: "define_tool".to_string(),
-            description: "Define a new MCP tool at runtime backed by a procedure pipeline. \
-                         The tool is persisted in Neo4j and available immediately. \
-                         Steps support {{input.field}} and {{context.var}} template substitution."
+            name: "manage_dynamic_tool".to_string(),
+            description: "Define or remove runtime MCP tools backed by procedure pipelines. \
+                         Defined tools are persisted in Neo4j and available immediately. \
+                         Actions: define (create a new tool), remove (delete an existing tool)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
+                "required": ["action"],
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["define", "remove"],
+                        "description": "Operation: define (create new tool) or remove (delete existing tool)."
+                    },
                     "name": {
                         "type": "string",
-                        "description": "Unique tool name (snake_case recommended)"
+                        "description": "Tool name. Required for both actions."
                     },
                     "description": {
                         "type": "string",
-                        "description": "Human-readable description of what the tool does"
+                        "description": "Human-readable description. Required for define."
                     },
                     "input_schema": {
                         "type": "object",
-                        "description": "JSON Schema object describing the tool's input parameters"
+                        "description": "JSON Schema for the tool's input parameters. Required for define."
                     },
                     "steps": {
                         "type": "array",
-                        "description": "Ordered procedure steps. Each step: {tool, args?, purpose, output_var?, condition?}",
+                        "description": "Ordered procedure steps. Each step: {tool, args?, purpose, output_var?, condition?}. Required for define.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -177,10 +183,9 @@ impl DynamicSkill {
                     },
                     "test_input": {
                         "type": "object",
-                        "description": "Optional input to dry-run the steps before registering"
+                        "description": "Optional input to dry-run the steps before registering (define only)."
                     }
-                },
-                "required": ["name", "description", "input_schema", "steps"]
+                }
             }),
         }
     }
@@ -212,30 +217,57 @@ impl DynamicSkill {
         }
     }
 
-    fn list_dynamic_tools_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_dynamic_tools".to_string(),
-            description: "List all runtime-defined tools registered via define_tool.".to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
+    // list_dynamic_tools is served by GET /api/tools/dynamic (REST API)
 
-    fn remove_dynamic_tool_def() -> ToolDefinition {
+    fn store_procedure_def() -> ToolDefinition {
         ToolDefinition {
-            name: "remove_dynamic_tool".to_string(),
-            description: "Remove a runtime-defined tool by name. \
-                         Deletes from Neo4j and unregisters from memory immediately."
+            name: "store_procedure".to_string(),
+            description: "Store a named multi-step procedure (workflow) in procedural memory. \
+                         Each step should describe a tool call with its purpose."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Name of the dynamic tool to remove"
+                        "description": "Short name for the procedure (e.g. 'Research loop')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "When and why to use this procedure"
+                    },
+                    "steps": {
+                        "type": "array",
+                        "description": "Ordered list of steps. Each step: { tool, args?, purpose }",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": { "type": "string" },
+                                "args": { "type": "object" },
+                                "purpose": { "type": "string" }
+                            },
+                            "required": ["tool", "purpose"]
+                        }
                     }
                 },
-                "required": ["name"]
+                "required": ["name", "description", "steps"]
             }),
+        }
+    }
+
+    async fn handle_manage_dynamic_tool(&self, arguments: Option<Value>) -> ToolCallResult {
+        let args = arguments.clone().unwrap_or_default();
+        let action = match args.get("action").and_then(|v| v.as_str()) {
+            Some(a) => a.to_string(),
+            None => return ToolCallResult::error("Missing required field: action".to_string()),
+        };
+
+        match action.as_str() {
+            "define" => self.handle_define_tool(arguments).await,
+            "remove" => self.handle_remove_dynamic_tool(arguments).await,
+            other => ToolCallResult::error(format!(
+                "Unknown action '{other}'. Valid actions: define, remove"
+            )),
         }
     }
 
@@ -259,7 +291,9 @@ impl DynamicSkill {
             for (i, step) in input.steps.iter().enumerate() {
                 let tool_name = match step.get("tool").and_then(|v| v.as_str()) {
                     Some(t) => t,
-                    None => return ToolCallResult::error(format!("Step {} missing 'tool' field", i)),
+                    None => {
+                        return ToolCallResult::error(format!("Step {} missing 'tool' field", i));
+                    }
                 };
                 if step.get("purpose").is_none() {
                     return ToolCallResult::error(format!("Step {} missing 'purpose' field", i));
@@ -397,7 +431,7 @@ impl DynamicSkill {
             "steps_count": input.steps.len(),
             "registered": true,
         });
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        ToolCallResult::success_json(response)
     }
 
     async fn handle_execute_procedure(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -477,35 +511,65 @@ impl DynamicSkill {
             "total_success": total_success,
             "dry_run": dry_run,
         });
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        ToolCallResult::success_json(response)
     }
 
-    async fn handle_list_dynamic_tools(&self) -> ToolCallResult {
+    async fn handle_store_procedure(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(serde::Deserialize)]
+        struct Input {
+            name: String,
+            description: String,
+            steps: Vec<Value>,
+        }
+
+        let input: Input = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        if input.steps.is_empty() {
+            return ToolCallResult::error("steps must not be empty");
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let steps_json = match serde_json::to_string(&input.steps) {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(format!("Failed to serialize steps: {e}")),
+        };
+
         let cypher = r#"
-        MATCH (d:DynamicTool)
-        RETURN d.id AS id, d.name AS name, d.description AS description,
-               toString(d.created_at) AS created_at
-        ORDER BY d.created_at DESC
+        CREATE (p:Procedure {
+            id: $id,
+            name: $name,
+            description: $description,
+            steps: $steps,
+            created_at: datetime($ts)
+        })
         "#;
 
-        match self.neo4j.execute(neo4rs::query(cypher)).await {
-            Ok(rows) => {
-                let tools: Vec<Value> = rows
-                    .iter()
-                    .map(|row| {
-                        json!({
-                            "id": row.get::<String>("id").unwrap_or_default(),
-                            "name": row.get::<String>("name").unwrap_or_default(),
-                            "description": row.get::<String>("description").unwrap_or_default(),
-                            "created_at": row.get::<String>("created_at").unwrap_or_default(),
-                        })
-                    })
-                    .collect();
-
-                let response = json!({ "count": tools.len(), "tools": tools });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        match self
+            .neo4j
+            .run(
+                neo4rs::query(cypher)
+                    .param("id", id.clone())
+                    .param("name", input.name.clone())
+                    .param("description", input.description.clone())
+                    .param("steps", steps_json)
+                    .param("ts", now),
+            )
+            .await
+        {
+            Ok(_) => {
+                info!(name = %input.name, id = %id, "Stored procedure");
+                ToolCallResult::success_json(json!({
+                    "success": true,
+                    "id": id,
+                    "name": input.name,
+                    "steps_count": input.steps.len()
+                }))
             }
-            Err(e) => ToolCallResult::error(format!("Failed to list dynamic tools: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Failed to store procedure: {e}")),
         }
     }
 
@@ -539,7 +603,7 @@ impl DynamicSkill {
         info!(tool_name = %input.name, "Removed dynamic tool");
 
         let response = json!({ "removed": true, "name": input.name });
-        ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+        ToolCallResult::success_json(response)
     }
 
     /// Execute a dynamically-defined tool (dispatch to procedure executor).
@@ -572,7 +636,12 @@ impl DynamicSkill {
         };
         let entry = match entry {
             Some(e) => e,
-            None => return json_err!(format!("Dynamic tool '{}' not found in tools_map", tool_name)),
+            None => {
+                return json_err!(format!(
+                    "Dynamic tool '{}' not found in tools_map",
+                    tool_name
+                ));
+            }
         };
 
         // Fetch procedure steps from Neo4j.
@@ -583,20 +652,34 @@ impl DynamicSkill {
             .await
         {
             Ok(r) => r,
-            Err(e) => return json_err!(format!("Neo4j fetch failed for procedure '{}': {}", entry.procedure_id, e)),
+            Err(e) => {
+                return json_err!(format!(
+                    "Neo4j fetch failed for procedure '{}': {}",
+                    entry.procedure_id, e
+                ));
+            }
         };
 
         let steps_str = match rows.first().and_then(|r| r.get::<String>("steps").ok()) {
             Some(s) => s,
-            None => return json_err!(format!(
-                "Procedure id='{}' not found — tool '{}' may need reseeding (restart the server)",
-                entry.procedure_id, tool_name
-            )),
+            None => {
+                return json_err!(format!(
+                    "Procedure id='{}' not found — tool '{}' may need reseeding (restart the server)",
+                    entry.procedure_id, tool_name
+                ));
+            }
         };
 
         let steps: Vec<Value> = match serde_json::from_str(&steps_str) {
             Ok(v) => v,
-            Err(e) => return json_err!(format!("Steps JSON invalid for '{}': {} — steps={}", tool_name, e, &steps_str[..steps_str.len().min(200)])),
+            Err(e) => {
+                return json_err!(format!(
+                    "Steps JSON invalid for '{}': {} — steps={}",
+                    tool_name,
+                    e,
+                    &steps_str[..steps_str.len().min(200)]
+                ));
+            }
         };
 
         let input_map = arguments
@@ -623,7 +706,7 @@ impl DynamicSkill {
         if total_success {
             // Transparent: return the step's output directly so DynamicTools
             // are drop-in replacements for their Rust counterparts.
-            ToolCallResult::success_text(serde_json::to_string_pretty(&last_output).unwrap())
+            ToolCallResult::success_json(last_output)
         } else {
             let detail = results
                 .last()
@@ -643,10 +726,9 @@ impl Skill for DynamicSkill {
     fn tools(&self) -> Vec<ToolDefinition> {
         // Static management tools
         let mut tools = vec![
-            Self::define_tool_def(),
+            Self::manage_dynamic_tool_def(),
             Self::execute_procedure_def(),
-            Self::list_dynamic_tools_def(),
-            Self::remove_dynamic_tool_def(),
+            Self::store_procedure_def(),
         ];
 
         // Dynamically-registered tools (read from shared Arc)
@@ -661,10 +743,9 @@ impl Skill for DynamicSkill {
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
-            "define_tool" => Some(self.handle_define_tool(arguments).await),
+            "manage_dynamic_tool" => Some(self.handle_manage_dynamic_tool(arguments).await),
             "execute_procedure" => Some(self.handle_execute_procedure(arguments).await),
-            "list_dynamic_tools" => Some(self.handle_list_dynamic_tools().await),
-            "remove_dynamic_tool" => Some(self.handle_remove_dynamic_tool(arguments).await),
+            "store_procedure" => Some(self.handle_store_procedure(arguments).await),
             name => {
                 // Check if this is a dynamically-registered tool
                 let is_dynamic = self
@@ -709,10 +790,4 @@ struct ExecuteProcedureInput {
 #[derive(Debug, Deserialize)]
 struct RemoveDynamicToolInput {
     name: String,
-}
-
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
 }

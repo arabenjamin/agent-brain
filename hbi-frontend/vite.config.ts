@@ -8,8 +8,11 @@ export default defineConfig({
     port: 5173,
     // Proxy to the brain so the browser never makes cross-origin requests.
     proxy: {
-      '/mcp':  'http://localhost:3001',
-      '/chat': 'http://localhost:3001',
+      '/mcp':               'http://localhost:3001',
+      '/chat':              'http://localhost:3001',
+      '/todos':             'http://localhost:3001',
+      '/scheduled-tasks':   'http://localhost:3001',
+      '/api':               'http://localhost:3001',
     },
     allowedHosts: [
       'pcman', 

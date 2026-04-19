@@ -22,6 +22,7 @@ pub mod tools;
 pub mod transport;
 pub mod transport_trait;
 
+pub use crate::brain_core::BrainCore;
 #[cfg(feature = "http-transport")]
 pub use auth::{ApiKeyAuth, AuthConfig, AuthError};
 #[cfg(feature = "http-transport")]

@@ -23,13 +23,18 @@ use axum::{
 };
 use futures_util::stream::{Stream, StreamExt};
 use serde_json::Value;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
-use crate::repository::TelemetryClient;
-use crate::services::{ChatEvent, ChatRequest, ChatService};
+use crate::brain_core::BrainEvent;
+use crate::clients::{ChatEvent, ChatRequest, ChatService, RestAdapter};
+use crate::repository::{Neo4jClient, TelemetryClient};
+use crate::services::LlmConfig;
+use crate::services::context_builder::ContextBuilderService;
+use crate::services::scheduler::SchedulerService;
+use agent_brain_protocol::SseNotifier as _;
 
 use super::auth::{ApiKeyAuth, AuthError};
 use super::protocol::{IncomingMessage, JsonRpcErrorResponse, JsonRpcNotification};
@@ -63,8 +68,21 @@ pub struct HttpTransportConfig {
     pub session_manager: Option<Arc<SessionManager>>,
     /// Optional chat service for the `/chat` SSE endpoint.
     pub chat_service: Option<Arc<ChatService>>,
-    /// Optional telemetry store for the `/todos` REST endpoints.
-    pub todo_store: Option<Arc<TelemetryClient>>,
+    /// Optional Neo4j client for the `/todos` and `/scheduled-tasks` REST endpoints.
+    pub neo4j: Option<Arc<Neo4jClient>>,
+    /// Optional scheduler service handle for the `/scheduler-config` REST endpoints.
+    /// Pass `server.scheduler_handle()` before calling `run_with_transport`.
+    pub scheduler: Option<Arc<RwLock<Option<Arc<SchedulerService>>>>>,
+    /// Optional brain event bus sender.  When set, the HTTP transport spawns a
+    /// background task that subscribes to [`BrainEvent`]s and pushes
+    /// `notifications/agent_job` SSE messages to the owning session.
+    pub brain_event_sender: Option<broadcast::Sender<BrainEvent>>,
+    /// Optional context-builder handle for the `/api/contexts` REST endpoints.
+    pub context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
+    /// Optional live LLM-config for the `/api/models` REST endpoint.
+    pub llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    /// Optional telemetry client for the `/api/models` REST endpoint.
+    pub telemetry: Option<TelemetryClient>,
 }
 
 impl Default for HttpTransportConfig {
@@ -78,7 +96,12 @@ impl Default for HttpTransportConfig {
             channel_buffer_size: 32,
             session_manager: None,
             chat_service: None,
-            todo_store: None,
+            neo4j: None,
+            scheduler: None,
+            brain_event_sender: None,
+            context_builder: None,
+            llm_config: None,
+            telemetry: None,
         }
     }
 }
@@ -114,9 +137,43 @@ impl HttpTransportConfig {
         self
     }
 
-    /// Attach a [`TelemetryClient`] to enable the `/todos` REST endpoints.
-    pub fn with_todo_store(mut self, store: Arc<TelemetryClient>) -> Self {
-        self.todo_store = Some(store);
+    /// Attach a [`Neo4jClient`] to enable the `/todos` and `/scheduled-tasks` REST endpoints.
+    pub fn with_neo4j_client(mut self, neo4j: Arc<Neo4jClient>) -> Self {
+        self.neo4j = Some(neo4j);
+        self
+    }
+
+    /// Attach the scheduler handle to enable the `/scheduler-config` REST endpoints.
+    pub fn with_scheduler(mut self, handle: Arc<RwLock<Option<Arc<SchedulerService>>>>) -> Self {
+        self.scheduler = Some(handle);
+        self
+    }
+
+    /// Attach the brain event bus so the transport can push job notifications
+    /// to client sessions via SSE.
+    pub fn with_brain_event_sender(mut self, sender: broadcast::Sender<BrainEvent>) -> Self {
+        self.brain_event_sender = Some(sender);
+        self
+    }
+
+    /// Attach the context-builder handle to enable the `/api/contexts` endpoints.
+    pub fn with_context_builder(
+        mut self,
+        handle: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
+    ) -> Self {
+        self.context_builder = Some(handle);
+        self
+    }
+
+    /// Attach the live LLM-config Arc to enable the `/api/models` endpoint.
+    pub fn with_llm_config_arc(mut self, cfg: Arc<RwLock<Option<LlmConfig>>>) -> Self {
+        self.llm_config = Some(cfg);
+        self
+    }
+
+    /// Attach the telemetry client to enable model catalog reads on `/api/models`.
+    pub fn with_telemetry(mut self, telemetry: TelemetryClient) -> Self {
+        self.telemetry = Some(telemetry);
         self
     }
 }
@@ -134,8 +191,16 @@ struct HttpTransportState {
     config: HttpTransportConfig,
     /// Optional chat service for the `/chat` SSE endpoint.
     chat_service: Option<Arc<ChatService>>,
-    /// Optional telemetry store for the `/todos` REST endpoints.
-    todo_store: Option<Arc<TelemetryClient>>,
+    /// Optional Neo4j client for the `/todos` and `/scheduled-tasks` REST endpoints.
+    neo4j: Option<Arc<Neo4jClient>>,
+    /// Optional scheduler handle for the `/scheduler-config` REST endpoints.
+    scheduler: Option<Arc<RwLock<Option<Arc<SchedulerService>>>>>,
+    /// Optional context-builder handle for `/api/contexts` endpoints.
+    context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
+    /// Optional live LLM-config for `/api/models`.
+    llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    /// Optional telemetry client for `/api/models`.
+    telemetry: Option<TelemetryClient>,
 }
 
 /// HTTP transport for MCP server.
@@ -183,14 +248,98 @@ impl HttpTransport {
             ])
             .expose_headers([mcp_session_id_header]);
 
+        use crate::clients::rest as rest_handlers;
+
+        // Build REST state — injected as an Extension so REST handlers can
+        // extract it without coupling to HttpTransportState.
+        // (In Axum 0.8 routers with different state types cannot be merged,
+        // so we wire REST routes directly here and inject the state via layer.)
+        let rest_state = RestAdapter::new()
+            .with_neo4j_opt(state.neo4j.clone())
+            .with_scheduler_opt(state.scheduler.clone())
+            .with_context_builder_opt(state.context_builder.clone())
+            .with_llm_config_opt(state.llm_config.clone())
+            .with_telemetry_opt(state.telemetry.clone())
+            .build_state();
+
         Router::new()
             .route("/mcp", post(handle_post_mcp))
             .route("/mcp", get(handle_get_mcp))
             .route("/mcp", delete(handle_delete_mcp))
             .route("/chat", post(handle_post_chat))
             .route("/health", get(handle_health))
-            .route("/todos", get(handle_list_todos).post(handle_create_todo))
-            .route("/todos/{id}", get(handle_get_todo).put(handle_update_todo).delete(handle_delete_todo))
+            // --- REST routes (handlers defined in clients/rest.rs) ---
+            .route(
+                "/todos",
+                get(rest_handlers::handle_list_todos).post(rest_handlers::handle_create_todo),
+            )
+            .route(
+                "/todos/{id}",
+                get(rest_handlers::handle_get_todo)
+                    .put(rest_handlers::handle_update_todo)
+                    .delete(rest_handlers::handle_delete_todo),
+            )
+            .route(
+                "/scheduled-tasks",
+                get(rest_handlers::handle_list_scheduled_tasks)
+                    .post(rest_handlers::handle_create_scheduled_task),
+            )
+            .route(
+                "/scheduled-tasks/{id}",
+                get(rest_handlers::handle_get_scheduled_task)
+                    .put(rest_handlers::handle_update_scheduled_task)
+                    .delete(rest_handlers::handle_delete_scheduled_task),
+            )
+            .route(
+                "/scheduler-config",
+                get(rest_handlers::handle_get_scheduler_config)
+                    .put(rest_handlers::handle_put_scheduler_config),
+            )
+            // --- read-only API endpoints (formerly MCP tools) ---
+            .route("/api/graph", get(rest_handlers::handle_get_graph))
+            .route("/api/health", get(rest_handlers::handle_api_health))
+            .route(
+                "/api/scheduler/status",
+                get(rest_handlers::handle_get_scheduler_status),
+            )
+            .route("/api/queue/status", get(rest_handlers::handle_queue_status))
+            .route("/api/queue/drain", post(rest_handlers::handle_queue_drain))
+            .route(
+                "/api/scheduler/chains",
+                get(rest_handlers::handle_list_scheduler_chains),
+            )
+            .route(
+                "/api/contexts",
+                get(rest_handlers::handle_list_context_profiles),
+            )
+            .route(
+                "/api/contexts/{name}",
+                get(rest_handlers::handle_get_context_profile),
+            )
+            .route(
+                "/api/http-contexts",
+                get(rest_handlers::handle_list_http_contexts),
+            )
+            .route("/api/models", get(rest_handlers::handle_list_models))
+            .route("/api/sessions", get(rest_handlers::handle_list_sessions))
+            .route(
+                "/api/sessions/{id}/entries",
+                get(rest_handlers::handle_get_session_entries),
+            )
+            .route("/api/jobs", get(rest_handlers::handle_list_jobs))
+            .route("/api/tasks", get(rest_handlers::handle_list_tasks))
+            .route("/api/notes", get(rest_handlers::handle_list_notes))
+            .route("/api/notes/{id}", get(rest_handlers::handle_get_note))
+            .route(
+                "/api/notes/{id}/related",
+                get(rest_handlers::handle_get_related_notes),
+            )
+            .route(
+                "/api/tools/dynamic",
+                get(rest_handlers::handle_list_dynamic_tools),
+            )
+            // Inject REST state for the handlers above.
+            .layer(axum::Extension(rest_state))
             .layer(cors)
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -243,13 +392,43 @@ impl McpTransport for HttpTransport {
 
         // Create shared state
         let state = Arc::new(HttpTransportState {
-            sessions,
+            sessions: sessions.clone(),
             auth,
             message_tx,
             chat_service: self.config.chat_service.clone(),
-            todo_store: self.config.todo_store.clone(),
+            neo4j: self.config.neo4j.clone(),
+            scheduler: self.config.scheduler.clone(),
+            context_builder: self.config.context_builder.clone(),
+            llm_config: self.config.llm_config.clone(),
+            telemetry: self.config.telemetry.clone(),
             config: self.config.clone(),
         });
+
+        // Spawn brain-event relay: subscribes to BrainEvents and forwards job
+        // notifications to the owning session as SSE `notifications/agent_job`.
+        if let Some(ref sender) = self.config.brain_event_sender {
+            let mut event_rx = sender.subscribe();
+            let sessions_for_relay = sessions.clone();
+            tokio::spawn(async move {
+                loop {
+                    match event_rx.recv().await {
+                        Ok(event) => {
+                            relay_brain_event(event, &sessions_for_relay).await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!(
+                                skipped = n,
+                                "Brain event relay lagged — some notifications dropped"
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("Brain event channel closed — relay task exiting");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
 
         // Build router
         let router = Self::build_router(state);
@@ -321,6 +500,80 @@ impl McpTransport for HttpTransport {
     fn name(&self) -> &'static str {
         "http"
     }
+}
+
+// ============================================================================
+// Brain-event relay
+// ============================================================================
+
+/// Convert a [`BrainEvent`] into an SSE `notifications/agent_job` push and
+/// deliver it to the session identified inside the event, if any.
+async fn relay_brain_event(event: BrainEvent, sessions: &SessionManager) {
+    let (session_id, params) = match &event {
+        BrainEvent::JobCompleted {
+            job_id,
+            tool_name,
+            session_id,
+            result_preview,
+        } => {
+            let Some(sid) = session_id else { return };
+            let mut p = serde_json::json!({
+                "job_id":    job_id,
+                "tool_name": tool_name,
+                "status":    "completed",
+            });
+            if let Some(preview) = result_preview {
+                p["result_preview"] = serde_json::Value::String(preview.clone());
+            }
+            (sid.clone(), p)
+        }
+        BrainEvent::JobFailed {
+            job_id,
+            tool_name,
+            session_id,
+            error,
+        } => {
+            let Some(sid) = session_id else { return };
+            (
+                sid.clone(),
+                serde_json::json!({
+                    "job_id":    job_id,
+                    "tool_name": tool_name,
+                    "status":    "failed",
+                    "error":     error,
+                }),
+            )
+        }
+        BrainEvent::JobDead {
+            job_id,
+            tool_name,
+            session_id,
+            error,
+        } => {
+            let Some(sid) = session_id else { return };
+            (
+                sid.clone(),
+                serde_json::json!({
+                    "job_id":    job_id,
+                    "tool_name": tool_name,
+                    "status":    "dead",
+                    "error":     error,
+                }),
+            )
+        }
+        // Scheduler events are broadcast-only — no per-session routing yet.
+        BrainEvent::SchedulerTick { .. }
+        | BrainEvent::SchedulerSleepEntered
+        | BrainEvent::SchedulerSleepExited => return,
+    };
+
+    let data = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method":  "notifications/agent_job",
+        "params":  params,
+    });
+
+    sessions.notify(&session_id, "agent_job", data).await;
 }
 
 // ============================================================================
@@ -598,199 +851,7 @@ async fn handle_delete_mcp(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ============================================================================
-// Todo REST Handlers
-// ============================================================================
-
-/// GET /todos[?status=pending|in_progress|done]
-async fn handle_list_todos(
-    State(state): State<Arc<HttpTransportState>>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
-    let store = match &state.todo_store {
-        Some(s) => s.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Todo storage not available"})),
-            )
-                .into_response()
-        }
-    };
-
-    let status_filter = params.get("status").map(String::as_str);
-    match store.list_todos(status_filter) {
-        Ok(todos) => Json(serde_json::json!({"todos": todos})).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /todos
-async fn handle_create_todo(
-    State(state): State<Arc<HttpTransportState>>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let store = match &state.todo_store {
-        Some(s) => s.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Todo storage not available"})),
-            )
-                .into_response()
-        }
-    };
-
-    let title = match body.get("title").and_then(|v| v.as_str()) {
-        Some(t) => t.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "title is required"})),
-            )
-                .into_response()
-        }
-    };
-
-    let description = body.get("description").and_then(|v| v.as_str()).map(str::to_string);
-    let status = body.get("status").and_then(|v| v.as_str()).map(str::to_string);
-    let priority = body.get("priority").and_then(|v| v.as_i64());
-    let tags = body.get("tags").map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()));
-    let due_at = body.get("due_at").and_then(|v| v.as_str()).map(str::to_string);
-
-    match store.create_todo(
-        &title,
-        description.as_deref(),
-        status.as_deref(),
-        priority,
-        tags.as_deref(),
-        due_at.as_deref(),
-    ) {
-        Ok(todo) => (StatusCode::CREATED, Json(serde_json::to_value(todo).unwrap_or_default())).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-/// GET /todos/:id
-async fn handle_get_todo(
-    State(state): State<Arc<HttpTransportState>>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> impl IntoResponse {
-    let store = match &state.todo_store {
-        Some(s) => s.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Todo storage not available"})),
-            )
-                .into_response()
-        }
-    };
-
-    match store.get_todo(&id) {
-        Ok(Some(todo)) => Json(serde_json::to_value(todo).unwrap_or_default()).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-/// PUT /todos/:id
-async fn handle_update_todo(
-    State(state): State<Arc<HttpTransportState>>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let store = match &state.todo_store {
-        Some(s) => s.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Todo storage not available"})),
-            )
-                .into_response()
-        }
-    };
-
-    let title = body.get("title").and_then(|v| v.as_str()).map(str::to_string);
-    // `None` key = "not in body" (leave unchanged); `Some(null)` = clear the field
-    let description: Option<Option<String>> = if body.as_object().map(|o| o.contains_key("description")).unwrap_or(false) {
-        Some(body.get("description").and_then(|v| v.as_str()).map(str::to_string))
-    } else {
-        None
-    };
-    let status = body.get("status").and_then(|v| v.as_str()).map(str::to_string);
-    let priority = body.get("priority").and_then(|v| v.as_i64());
-    let tags = if body.as_object().map(|o| o.contains_key("tags")).unwrap_or(false) {
-        body.get("tags").map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()))
-    } else {
-        None
-    };
-    let due_at: Option<Option<String>> = if body.as_object().map(|o| o.contains_key("due_at")).unwrap_or(false) {
-        Some(body.get("due_at").and_then(|v| v.as_str()).map(str::to_string))
-    } else {
-        None
-    };
-
-    let description_ref = description.as_ref().map(|d| d.as_deref());
-    let due_at_ref = due_at.as_ref().map(|d| d.as_deref());
-
-    match store.update_todo(
-        &id,
-        title.as_deref(),
-        description_ref,
-        status.as_deref(),
-        priority,
-        tags.as_deref(),
-        due_at_ref,
-    ) {
-        Ok(Some(todo)) => Json(serde_json::to_value(todo).unwrap_or_default()).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-/// DELETE /todos/:id
-async fn handle_delete_todo(
-    State(state): State<Arc<HttpTransportState>>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> impl IntoResponse {
-    let store = match &state.todo_store {
-        Some(s) => s.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Todo storage not available"})),
-            )
-                .into_response()
-        }
-    };
-
-    match store.delete_todo(&id) {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
+// (REST handlers are in clients/rest.rs — merged via RestAdapter::into_router())
 
 // ============================================================================
 // Error Types

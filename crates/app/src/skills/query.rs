@@ -97,22 +97,25 @@ impl QuerySkill {
             #[serde(default = "default_limit")]
             limit: usize,
         }
-        fn default_true() -> bool { true }
-        fn default_limit() -> usize { 100 }
+        fn default_true() -> bool {
+            true
+        }
+        fn default_limit() -> usize {
+            100
+        }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
             Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
         };
 
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-
-        // Safety guard for read-only mode
+        // Safety guard for read-only mode — checked before the DB call so it
+        // fires even when Neo4j is unavailable (fail-fast on bad input).
         if input.readonly {
             let upper = input.cypher.to_uppercase();
-            for kw in &["CREATE", "MERGE", "SET", "DELETE", "REMOVE", "DETACH", "DROP"] {
+            for kw in &[
+                "CREATE", "MERGE", "SET", "DELETE", "REMOVE", "DETACH", "DROP",
+            ] {
                 if upper.split_whitespace().any(|w| w.starts_with(kw)) {
                     return ToolCallResult::error(format!(
                         "Write keyword '{}' rejected in readonly mode. Pass readonly=false to allow writes.",
@@ -121,6 +124,10 @@ impl QuerySkill {
                 }
             }
         }
+
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
 
         // Inject LIMIT if not already present and query returns rows
         let cypher = {
@@ -169,7 +176,7 @@ impl QuerySkill {
                     "rows": result,
                     "count": count,
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Neo4j query failed: {}", e)),
         }
@@ -182,7 +189,9 @@ impl QuerySkill {
             #[serde(default = "default_limit")]
             limit: usize,
         }
-        fn default_limit() -> usize { 100 }
+        fn default_limit() -> usize {
+            100
+        }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
             Ok(i) => i,
@@ -202,7 +211,7 @@ impl QuerySkill {
                     "rows": rows,
                     "count": count,
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("DuckDB query failed: {}", e)),
         }
@@ -229,5 +238,149 @@ impl Skill for QuerySkill {
             "duckdb_query" => Some(self.handle_duckdb_query(args).await),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::test_helpers::*;
+
+    fn skill_no_db() -> QuerySkill {
+        QuerySkill::new(None, None)
+    }
+
+    // -- tool registry --------------------------------------------------------
+
+    #[test]
+    fn tools_without_db_has_only_neo4j_query() {
+        let tools = skill_no_db().tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "neo4j_query");
+    }
+
+    #[test]
+    fn execute_unknown_tool_returns_none() {
+        let r = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(skill_no_db().execute("not_a_tool", None));
+        assert!(r.is_none());
+    }
+
+    // -- neo4j_query: no-db path ----------------------------------------------
+
+    #[tokio::test]
+    async fn neo4j_query_without_db_returns_error() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({"cypher": "MATCH (n) RETURN n"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not available"));
+    }
+
+    // -- neo4j_query: readonly guard ------------------------------------------
+
+    #[tokio::test]
+    async fn neo4j_query_readonly_blocks_create() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({
+                        "cypher": "CREATE (n:Test {id: '1'})",
+                        "readonly": true
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("CREATE"));
+        assert!(msg.contains("readonly"));
+    }
+
+    #[tokio::test]
+    async fn neo4j_query_readonly_blocks_merge() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({"cypher": "MERGE (n:Foo)"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("MERGE"));
+    }
+
+    #[tokio::test]
+    async fn neo4j_query_readonly_blocks_delete() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({"cypher": "MATCH (n) DELETE n"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("DELETE"));
+    }
+
+    #[tokio::test]
+    async fn neo4j_query_readonly_blocks_set() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({"cypher": "MATCH (n) SET n.x = 1"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("SET"));
+    }
+
+    #[tokio::test]
+    async fn neo4j_query_readonly_allows_match_return() {
+        // Should pass guard (blocked by no-db, not by readonly), error is "not available"
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({"cypher": "MATCH (n) RETURN n"})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not available"));
+    }
+
+    // -- duckdb_query: no-db path ---------------------------------------------
+
+    #[tokio::test]
+    async fn duckdb_query_without_telemetry_returns_error() {
+        let msg = result_error(
+            skill_no_db()
+                .execute("duckdb_query", Some(serde_json::json!({"sql": "SELECT 1"})))
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("not available"));
+    }
+
+    // -- missing required fields ----------------------------------------------
+
+    #[tokio::test]
+    async fn neo4j_query_missing_cypher_returns_error() {
+        let r = skill_no_db()
+            .execute("neo4j_query", Some(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(true));
     }
 }

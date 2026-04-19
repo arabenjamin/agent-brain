@@ -2,7 +2,7 @@
 //!
 //! These are pure data types with no dependencies on MCP transport internals.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 /// JSON-RPC version constant.
@@ -300,10 +300,22 @@ impl ToolCallResult {
         Self::success(vec![Content::text(text)])
     }
 
+    pub fn success_json<T: Serialize>(value: T) -> Self {
+        Self::success_text(serde_json::to_string_pretty(&value).unwrap_or_default())
+    }
+
     pub fn error(message: impl Into<String>) -> Self {
         Self {
             content: vec![Content::text(message)],
             is_error: Some(true),
         }
     }
+}
+
+/// Parse tool arguments from an optional JSON value into a typed struct.
+/// Returns a `ToolCallResult::error` if deserialization fails.
+pub fn parse_args<T: DeserializeOwned>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
+    let args = arguments.unwrap_or(Value::Object(Default::default()));
+    serde_json::from_value(args)
+        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
 }

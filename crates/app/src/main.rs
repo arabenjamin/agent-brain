@@ -135,17 +135,40 @@ fn build_llm_config(config: &Config) -> LlmConfig {
                 base = base.with_embed_model(embed_model);
             }
         }
-        LlmProviderType::VLlm => {
-            if let Ok(url) = std::env::var("VLLM_URL") {
-                base = base.with_base_url(url);
-            }
-            if let Ok(model) = std::env::var("VLLM_MODEL") {
-                base = base.with_model(model);
-            }
-            if let Ok(key) = std::env::var("VLLM_API_KEY") {
-                base = base.with_api_key(key);
-            }
-        }
+    }
+    base
+}
+
+/// Build the LLM config for the human-facing chat adapter.
+///
+/// Starts from the brain's LLM config and applies any `CHAT_LLM_*` overrides
+/// from [`Config::chat_llm`].  When all overrides are `None` the result is
+/// identical to the brain's config (single-model deployments are unchanged).
+fn build_chat_llm_config(config: &Config) -> LlmConfig {
+    let chat = &config.chat_llm;
+
+    // No overrides at all → return the exact same config as the brain.
+    if chat.provider.is_none()
+        && chat.model.is_none()
+        && chat.api_key.is_none()
+        && chat.base_url.is_none()
+    {
+        return build_llm_config(config);
+    }
+
+    // Apply overrides on top of the brain's base config.
+    let mut base = build_llm_config(config);
+    if let Some(provider) = chat.provider {
+        base = base.with_provider(provider);
+    }
+    if let Some(ref model) = chat.model {
+        base = base.with_model(model);
+    }
+    if let Some(ref key) = chat.api_key {
+        base = base.with_api_key(key);
+    }
+    if let Some(ref url) = chat.base_url {
+        base = base.with_base_url(url.clone());
     }
     base
 }
@@ -163,7 +186,13 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
     let base = url.trim_end_matches('/');
 
     match action {
-        TodoAction::Add { title, description, priority, due, tags } => {
+        TodoAction::Add {
+            title,
+            description,
+            priority,
+            due,
+            tags,
+        } => {
             let tags_vec: Vec<String> = tags
                 .unwrap_or_default()
                 .split(',')
@@ -253,17 +282,18 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
             let status_code = resp.status();
             let json: serde_json::Value = resp.json().await?;
             if status_code.is_success() {
-                println!("Updated: {} -> {}", json["title"].as_str().unwrap_or(&id), json["status"].as_str().unwrap_or("?"));
+                println!(
+                    "Updated: {} -> {}",
+                    json["title"].as_str().unwrap_or(&id),
+                    json["status"].as_str().unwrap_or("?")
+                );
             } else {
                 anyhow::bail!("Server error {}: {}", status_code, json);
             }
         }
 
         TodoAction::Delete { id } => {
-            let resp = client
-                .delete(format!("{base}/todos/{id}"))
-                .send()
-                .await?;
+            let resp = client.delete(format!("{base}/todos/{id}")).send().await?;
             let status_code = resp.status();
             if status_code == 204 {
                 println!("Deleted: {id}");
@@ -307,6 +337,17 @@ async fn run_serve(
     // Initialize Telemetry (always attempted; stub returns Err when feature disabled)
     #[allow(unused_variables)]
     let telemetry = if let Some(path) = &config.telemetry.db_path {
+        // Ensure the parent directory exists (e.g. when using a named Docker volume).
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            warn!(
+                "Could not create telemetry directory {}: {}",
+                parent.display(),
+                e
+            );
+        }
         match agent_brain::repository::TelemetryClient::new(path) {
             Ok(tc) => {
                 if let Err(e) = catalog.sync_to_duckdb(&tc) {
@@ -352,15 +393,20 @@ async fn run_serve(
                 session_config,
             ));
 
+            // Build chat-specific LLM config (may be identical to brain's if
+            // no CHAT_LLM_* env vars are set — separate Arc either way).
+            let chat_llm_config = build_chat_llm_config(config);
+
             // Create thread-safe server core
+            let neo4j_for_http = client.clone();
             let mut server = McpServerCore::new()
                 .with_neo4j(client)
                 .with_llm_config(llm_config)
+                .with_chat_llm_config(chat_llm_config)
                 .with_session_manager(session_manager.clone())
                 .with_system_prompt(system_prompt)
                 .with_catalog_path(catalog_path);
 
-            let todo_store = telemetry.as_ref().map(|t| Arc::new(t.clone()));
             if let Some(t) = telemetry {
                 server = server.with_telemetry(t);
             }
@@ -371,9 +417,21 @@ async fn run_serve(
                 .with_session_manager(session_manager)
                 .with_chat_service(server.chat_service());
 
-            if let Some(store) = todo_store {
-                http_config = http_config.with_todo_store(store);
+            // Wire Neo4j into the HTTP transport for /todos and /scheduled-tasks endpoints.
+            http_config = http_config.with_neo4j_client(Arc::new(neo4j_for_http));
+
+            // Wire scheduler handle for /scheduler-config endpoints.
+            http_config = http_config.with_scheduler(server.scheduler_handle());
+
+            // Wire context-builder, LLM config, and telemetry for the new /api/* endpoints.
+            http_config = http_config.with_context_builder(server.context_builder_handle());
+            http_config = http_config.with_llm_config_arc(server.llm_config_arc());
+            if let Some(t) = server.telemetry() {
+                http_config = http_config.with_telemetry(t);
             }
+
+            // Wire brain event bus into the HTTP transport for SSE job notifications.
+            http_config = http_config.with_brain_event_sender(server.brain.event_sender());
 
             if let Some(key) = api_key.filter(|k| !k.is_empty()) {
                 http_config = http_config.with_api_key(key);

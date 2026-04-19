@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { callTool, onNotification } from "../../api/mcp";
+import { getBrainUrl, getApiKey } from "../../api/config";
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 const C = {
@@ -28,12 +29,6 @@ function relTime(iso: string | null | undefined): string {
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
   return `${Math.floor(secs / 86400)}d ago`;
-}
-
-function fmtBytes(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function parseJson<T>(raw: string): T | null {
@@ -71,19 +66,10 @@ interface QueueStatus {
   by_status: Record<string, number>;
 }
 
-interface SnapshotMeta {
-  file: string;
-  exported_at: string;
-  notes: number;
-  entities: number;
-  tasks: number;
-  size_bytes: number;
-  schema_version: number;
-}
-
-interface SnapshotList {
-  count: number;
-  snapshots: SnapshotMeta[];
+interface ContextProfile {
+  name: string;
+  description?: string;
+  tools?: string[];
 }
 
 interface IntegrityResult {
@@ -204,10 +190,12 @@ function SchedulerCard() {
 
   const fetch = useCallback(async () => {
     try {
-      const raw = await callTool("get_scheduler_status", {});
-      const parsed = parseJson<SchedulerStatus>(raw);
-      if (parsed) { setData(parsed); setError(null); }
-      else setError("bad response");
+      const res = await window.fetch(`${getBrainUrl()}/api/scheduler/status`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const parsed = await res.json() as SchedulerStatus;
+      setData(parsed);
+      setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -240,10 +228,10 @@ function SchedulerCard() {
 
   const handleToggle = async () => {
     if (isRunning) {
-      await callTool("stop_scheduler", {});
+      await callTool("scheduler_control", { action: "stop" });
       showToast("Scheduler paused");
     } else {
-      await callTool("start_scheduler", {});
+      await callTool("scheduler_control", { action: "start" });
       showToast("Scheduler started");
     }
     await fetch();
@@ -346,10 +334,12 @@ function QueueCard() {
 
   const fetch = useCallback(async () => {
     try {
-      const raw = await callTool("queue_status", {});
-      const parsed = parseJson<QueueStatus>(raw);
-      if (parsed) { setData(parsed); setError(null); }
-      else setError("bad response");
+      const res = await window.fetch(`${getBrainUrl()}/api/queue/status`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const parsed = await res.json() as QueueStatus;
+      setData(parsed);
+      setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -373,7 +363,10 @@ function QueueCard() {
 
   const handleDrain = async () => {
     if (!confirm("Drain all pending jobs? Running jobs continue.")) return;
-    await callTool("drain_queue", {});
+    await window.fetch(`${getBrainUrl()}/api/queue/drain`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getApiKey()}` },
+    });
     showToast("Queue drained");
     fetch();
   };
@@ -425,24 +418,21 @@ function QueueCard() {
   );
 }
 
-// ── Snapshot Card ──────────────────────────────────────────────────────────────
-function SnapshotCard() {
-  const [data, setData]     = useState<SnapshotList | null>(null);
-  const [error, setError]   = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [toast, setToast]   = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
-  };
+// ── Context Profiles Card ─────────────────────────────────────────────────────
+function ContextProfilesCard() {
+  const [profiles, setProfiles] = useState<ContextProfile[]>([]);
+  const [error, setError]       = useState<string | null>(null);
+  const [loading, setLoading]   = useState(true);
 
   const fetch = useCallback(async () => {
     try {
-      const raw = await callTool("list_snapshots", {});
-      const parsed = parseJson<SnapshotList>(raw);
-      if (parsed) { setData(parsed); setError(null); }
-      else setError("bad response");
+      const res = await window.fetch(`${getBrainUrl()}/api/contexts`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const json = await res.json() as { profiles?: ContextProfile[] } | ContextProfile[];
+      const list: ContextProfile[] = Array.isArray(json) ? json : (json.profiles ?? []);
+      setProfiles(list);
+      setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -450,89 +440,45 @@ function SnapshotCard() {
     }
   }, []);
 
-  // Poll every 2 minutes — snapshots change rarely
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 120_000);
-    return () => clearInterval(interval);
-  }, [fetch]);
+  useEffect(() => { fetch(); }, [fetch]);
 
-  const latest = data?.snapshots?.[0];
-  const hasSnaps = (data?.count ?? 0) > 0;
-  const ageHours = latest
-    ? (Date.now() - new Date(latest.exported_at).getTime()) / 3600000
-    : Infinity;
-  const stale = ageHours > 24;
-  const statusColor = !hasSnaps ? C.red : stale ? C.yellow : C.green;
-
-  const handleSnapshot = async () => {
-    showToast("Taking snapshot…");
-    try {
-      await callTool("snapshot_knowledge", { label: "manual" });
-      showToast("Snapshot saved");
-      fetch();
-    } catch (e) {
-      showToast(`Failed: ${e}`);
-    }
-  };
+  const statusColor = error ? C.red : profiles.length > 0 ? C.cyan : C.muted;
 
   return (
     <Card accent={statusColor}>
       <CardHeader
-        title="SnapshotService"
-        icon="💾"
-        status={<StatusDot ok={hasSnaps} warn={stale} />}
-        pill={<Pill label={!hasSnaps ? "no backups" : stale ? "stale" : "healthy"} color={statusColor} />}
+        title="Context Profiles"
+        icon="🧩"
+        status={<StatusDot ok={!error && profiles.length > 0} />}
+        pill={<Pill label={`${profiles.length} profiles`} color={statusColor} />}
       />
       <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
         {loading && <div style={{ color: C.muted, fontSize: 11 }}>Loading…</div>}
         {error   && <div style={{ color: C.red,   fontSize: 11 }}>Error: {error}</div>}
 
-        {data && (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-              <Metric label="Snapshots" value={data.count}                      color={hasSnaps ? C.text : C.red} />
-              <Metric label="Last saved" value={relTime(latest?.exported_at)}   color={stale ? C.yellow : C.text} />
-              <Metric label="Size"       value={latest ? fmtBytes(latest.size_bytes) : "—"} />
-            </div>
-
-            {latest && (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-                <Metric label="Notes"    value={latest.notes} />
-                <Metric label="Entities" value={latest.entities} />
-                <Metric label="Tasks"    value={latest.tasks} />
+        {profiles.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflow: "auto" }}>
+            {profiles.map((p) => (
+              <div key={p.name} style={{
+                display: "flex", flexDirection: "column", gap: 2,
+                padding: "5px 8px", background: C.panel,
+                borderRadius: 4, border: `1px solid ${C.border}`,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: C.cyan }}>{p.name}</span>
+                  {p.tools && (
+                    <span style={{ fontSize: 9, color: C.muted }}>{p.tools.length} tools</span>
+                  )}
+                </div>
+                {p.description && (
+                  <span style={{ fontSize: 9, color: C.dim, lineHeight: 1.4 }}>{p.description}</span>
+                )}
               </div>
-            )}
-
-            {/* Snapshot list */}
-            {data.snapshots.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflow: "auto" }}>
-                {data.snapshots.map((s) => (
-                  <div key={s.file} style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    fontSize: 10, color: C.dim, padding: "3px 8px",
-                    background: C.panel, borderRadius: 4, border: `1px solid ${C.border}`,
-                  }}>
-                    <span style={{ color: C.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "55%" }}>
-                      {s.file}
-                    </span>
-                    <span style={{ display: "flex", gap: 12, flexShrink: 0 }}>
-                      <span>{s.notes} notes</span>
-                      <span>{fmtBytes(s.size_bytes)}</span>
-                      <span>{relTime(s.exported_at)}</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <ActionBtn label="Take Snapshot" color={C.green} onClick={handleSnapshot} />
-              <ActionBtn label="Refresh" onClick={fetch} />
-              {toast && <span style={{ fontSize: 10, color: C.dim, marginLeft: 4 }}>{toast}</span>}
-            </div>
-          </>
+            ))}
+          </div>
         )}
+
+        <ActionBtn label="Refresh" onClick={fetch} />
       </div>
     </Card>
   );
@@ -612,17 +558,41 @@ function IntegrityCard() {
 }
 
 // ── LLM Provider Card ──────────────────────────────────────────────────────────
+interface LlmCardModel { name: string; provider: string; active?: boolean; }
+interface LlmCardData { models: LlmCardModel[]; }
+
 function LlmCard() {
-  const [data, setData]     = useState<{ models: Array<{ name: string; provider: string; active?: boolean }> } | null>(null);
-  const [error, setError]   = useState<string | null>(null);
+  const [data, setData]       = useState<LlmCardData | null>(null);
+  const [error, setError]     = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetch = useCallback(async () => {
     try {
-      const raw = await callTool("list_models", {});
-      const parsed = parseJson<{ models: Array<{ name: string; provider: string; active?: boolean }> }>(raw);
-      if (parsed) { setData(parsed); setError(null); }
-      else setError("bad response");
+      const res = await window.fetch(`${getBrainUrl()}/api/models`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const json = await res.json() as {
+        active_provider?: string;
+        active_model?: string;
+        catalog_models?: Array<{ name: string; provider: string; model?: string }>;
+      };
+      // Normalise REST response into the shape the card renders.
+      const catalogModels: LlmCardModel[] = (json.catalog_models ?? []).map((m) => ({
+        name: m.model ?? m.name,
+        provider: m.provider,
+        active:
+          m.provider.toLowerCase() === (json.active_provider ?? "").toLowerCase() &&
+          (m.model ?? m.name) === (json.active_model ?? ""),
+      }));
+      // If catalog is empty, synthesise a single entry from the active config.
+      const models: LlmCardModel[] =
+        catalogModels.length > 0
+          ? catalogModels
+          : json.active_model
+            ? [{ name: json.active_model, provider: json.active_provider ?? "unknown", active: true }]
+            : [];
+      setData({ models });
+      setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -694,7 +664,7 @@ function ServicesView() {
       }}>
         <SchedulerCard />
         <QueueCard />
-        <SnapshotCard />
+        <ContextProfilesCard />
         <IntegrityCard />
         <LlmCard />
       </div>
@@ -786,70 +756,85 @@ const DETAILS: Record<string, Detail> = {
     ],
   },
   "core": {
-    title: "McpServerCore — Central Dispatcher",
-    color: C.accent,
-    body:  "The heart of the server. Holds the live ToolRegistry, ToolHandler, ChatService, SessionManager, and ContextBuilderService. All skill registrations go through build_skills().",
+    title: "McpServerCore — MCP Protocol Adapter",
+    color: C.cyan,
+    body:  "Thin protocol adapter that wraps BrainCore. Owns only MCP-specific concerns: the JSON-RPC session state machine, HTTP session management, and an optional separate LLM config for /chat. All skills, tools, and services live in BrainCore.",
     items: [
-      "ToolRegistry — lists all 78+ tools for tools/list responses",
-      "ToolHandler  — routes tools/call to the correct skill handler",
-      "ChatService  — runs the LLM tool-use loop with SSE streaming",
-      "SessionManager — tracks HTTP session state per client",
-      "ContextBuilder — loads 6 YAML profiles from contexts/",
-      "build_skills() init order: DynamicSkill → QueueService → SchedulerService → ContextStore → register all → spawn coordinator",
-      "McpServer is a thin stdio wrapper around McpServerCore",
+      "ServerState — JSON-RPC lifecycle: Uninitialized → Initializing → Running",
+      "SessionManager — tracks per-connection state for HTTP/SSE clients",
+      "ChatService — wires brain.tool_handler + brain.tool_registry into SSE tool-use loop",
+      "chat_llm_config — optional separate LLM for /chat (e.g. cloud Anthropic while brain uses local Ollama)",
+      "McpServer — thin stdio wrapper around McpServerCore for backward-compatible local use",
+      "All skills, the LLM Arc, and all services live in BrainCore — McpServerCore only delegates",
+    ],
+  },
+  "brain": {
+    title: "BrainCore — The Central Engine",
+    color: C.accent,
+    body:  "The true heart of the system. BrainCore owns all stateful services: storage, LLM config, skill/tool registry, background jobs, context profiles, and the internal event bus. McpServerCore and the transports are just protocol adapters on top.",
+    items: [
+      "ToolRegistry — Arc<RwLock<ToolRegistry>>: 47 tools registered here; serves tools/list",
+      "ToolHandler  — Arc<RwLock<Option<ToolHandler>>>: routes tools/call to the correct skill",
+      "LlmConfig    — Arc<RwLock<Option<LlmConfig>>>: live-swappable Arc shared by all skills",
+      "StorageConfig — Neo4j client + DuckDB telemetry + dataset dir + secrets provider",
+      "JobServices   — Arc-wrapped QueueService + SchedulerService (both Option until build_skills)",
+      "ContextBuilderService — 7 profiles + boot/init protocols; lazy-init in build_skills()",
+      "EventBus — broadcast::Sender<BrainEvent>: scheduler ticked/slept/woke events",
+      "initialize() calls build_skills() then seeds Neo4j schema and runs boot.yaml protocol",
     ],
   },
   "sk-memory": {
-    title: "Memory Skills — 21 tools",
+    title: "Memory Skills — 9 tools",
     color: C.green,
-    body:  "Long-term and working memory. KnowledgeSkill is the core — it stores notes with hybrid BM25+vector embeddings, extracts entities, supports spaced-repetition, and reasons over the graph.",
+    body:  "Long-term, working, and resource memory. KnowledgeSkill is the core — it stores notes with hybrid BM25+vector embeddings and extracts entities.",
     items: [
-      "KnowledgeSkill (15): store_note, search_notes, find_related_notes, list_notes, get_note, delete_note, update_note, prune_old_notes, consolidate_memories, review_due_notes, search_by_entity, reason, audit_action, explain_reasoning, export_graph_visualization",
-      "WorkingMemorySkill (4): push_context, get_context, summarise_session, list_sessions",
-      "ProcedureSkill (2): store_procedure, search_procedures",
+      "KnowledgeSkill (6): store_note, search_notes, prune_old_notes, consolidate_memories, reason, synthesize_knowledge",
+      "WorkingMemorySkill (2): push_context, summarise_session",
+      "ResourceSkill (1): resource",
       "search_notes: hybrid BM25 + 1024-dim bge-m3 vectors with RRF + freshness boost",
       "consolidate_memories: LLM synthesis → SUMMARIZED_BY edges; auto-snapshots first",
       "Long notes (>1500 chars) are chunked with PART_OF edges",
     ],
   },
   "sk-auto": {
-    title: "Automation Skills — 17+ tools",
+    title: "Automation Skills — 12 tools",
     color: C.purple,
-    body:  "Background job execution and autonomous self-improvement. The scheduler wakes every 5 minutes, perceives failures and stale memory, and dispatches LLM job chains without human input.",
+    body:  "Background job execution and autonomous self-improvement. The scheduler wakes every 5 minutes and dispatches LLM job chains without human input.",
     items: [
-      "AgentSkill (6): enqueue_jobs, queue_status, cancel_job, retry_job, set_worker_config, drain_queue (+ get_job_result as dynamic tool)",
-      "SchedulerSkill (5): start_scheduler, stop_scheduler, get_scheduler_status, configure_scheduler, run_scheduler_tick",
-      "DynamicSkill (4+N): define_tool, execute_procedure, list_dynamic_tools, remove_dynamic_tool",
+      "AgentSkill (5): manage_job, set_worker_config, enqueue_jobs, dead_letter, update_job_progress",
+      "SchedulerSkill (4): scheduler_control, run_scheduler_tick, manage_chain, manage_scheduled_task",
+      "DynamicSkill (3): manage_dynamic_tool, execute_procedure, store_procedure",
       "Job queue: BinaryHeap priority 0–3, per-provider semaphores (Ollama×3, Anthropic×2, Gemini×5)",
       "Job chaining: step 2..N stored as 'parked'; promoted on predecessor success",
       "Scheduler perception scan: detects ≥3 tool failures in 7 days → creates analysis tasks",
-      "DynamicSkill: new tools hot-registered immediately without restart",
+      "DynamicSkill: new tools hot-registered immediately via Neo4j storage",
     ],
   },
   "sk-data": {
-    title: "Data Skills — 20 tools",
+    title: "Data Skills — 8 tools",
     color: C.green,
-    body:  "Goal tracking, graph maintenance, and context profile management. TaskSkill uses LLM decomposition to break goals into subtasks. AdminSkill keeps the Neo4j graph healthy.",
+    body:  "Goal tracking, graph maintenance, and context profile management. TaskSkill uses LLM decomposition to break goals into subtasks.",
     items: [
-      "TaskSkill (6): create_task, reflect_on_work, decompose_goal, update_task, list_tasks, record_outcome",
-      "AdminSkill (10): delete_api, purge_duplicate_endpoints, purge_orphaned_schemas, reset_graph, backfill_endpoint_embeddings, snapshot_knowledge, restore_knowledge, list_snapshots, verify_knowledge_integrity, analyze_own_structure",
-      "ContextSkill (4): list_context_profiles, get_context_profile, auto_assign_context, build_agent_context",
+      "TaskSkill (5): create_task, reflect_on_work, decompose_goal, update_task, record_outcome",
+      "QuerySkill (2): neo4j_query, duckdb_query",
+      "ContextSkill (1): context",
       "decompose_goal: LLM → SUBTASK_OF edges + DEPENDS_ON edges",
       "record_outcome(success=false): auto-enqueues reflect_on_work → store_note chain",
-      "Context profiles: general · knowledge-worker · task-manager · code-analyst · api-builder · scheduler",
+      "Context profiles (7): general · knowledge-worker · task-manager · code-analyst · api-builder · scheduler · researcher",
+      "Boot protocols (2): boot.yaml (every startup) · init.yaml (empty graph only)",
     ],
   },
   "sk-ext": {
-    title: "External Skills — 22 tools",
+    title: "External & Utility Skills — 18 tools",
     color: C.orange,
-    body:  "Integrations with external APIs, LLM model management, web search, and telemetry export. ApiSkill includes LLM-powered self-healing: on 4xx/5xx it corrects the request and persists a HealingEvent.",
+    body:  "Integrations with external APIs, model management, search, and codebase analysis.",
     items: [
-      "ApiSkill (14): ingest_openapi, graph_query_endpoint, execute_http_request, get_api_context, list_loaded_apis, clear_api_context, discover_openapi, build_openapi_from_docs, build_openapi_from_repo, export_openapi, diff_api_spec, configure_api_credential, list_api_credentials, delete_api_credential",
-      "ModelSkill (4): list_models, use_model, select_model, reload_models",
-      "SearchSkill (1): search_web (SerpApi / Brave / Google Custom Search)",
-      "SleepSkill (2): digest_experiences (→ JSONL training data), analyze_gaps (DuckDB)",
-      "Self-healing: 4xx/5xx → LLM corrects payload → retry → HealingEvent node on success",
-      "select_model: capability filter + cheapest-first sort from registered ModelSpec nodes",
+      "HttpSkill (2): http_request, define_api_context",
+      "CodebaseSkill (7): read_codebase_file, list_codebase_files, search_codebase, get_file_tree, get_git_log, get_git_diff, analyze_own_structure",
+      "WsSkill (4): ws_connect, ws_send, ws_receive, ws_close",
+      "ModelSkill (2): use_model, reload_models",
+      "SearchSkill (1): search_web",
+      "SleepSkill (2): digest_experiences, analyze_gaps",
     ],
   },
   "svc": {
@@ -857,13 +842,14 @@ const DETAILS: Record<string, Detail> = {
     color: C.cyan,
     body:  "Business logic sitting between the skills and the repository/Neo4j layer. Each service is constructed once in build_skills() and shared via Arc references.",
     items: [
-      "KnowledgeService — RAG pipeline: BM25 + vector → RRF merge + freshness boost; auto-snapshots",
+      "KnowledgeService — RAG pipeline: BM25 + vector → RRF merge + freshness boost",
       "QueueService     — BinaryHeap + Tokio coordinator; per-provider semaphores; Neo4j persistence",
       "SchedulerService — background Tokio task; goal_to_steps() heuristic; perception_scan()",
-      "HealingService   — LLM error analysis; corrects & retries; persists HealingEvent nodes",
       "SnapshotService  — gzip JSON snapshots (.json.gz via flate2); MERGE-safe restore",
-      "ModelSelector    — capability-match filter → sort by combined cost/1k tokens",
-      "ContextBuilderService — loads YAML profiles; auto_assign by keyword; builds bundles",
+      "SleepService     — experience digestion and training data export (JSONL)",
+      "ContextBuilderService — 7 agent profiles + boot/init protocols from contexts/",
+      "ResourceRegistry — named connection pool shared across skills (WsSkill sessions, tokens)",
+      "ProcedureExecutor — template-substitution multi-step workflow runner",
     ],
   },
   "i-neo4j": {
@@ -885,13 +871,14 @@ const DETAILS: Record<string, Detail> = {
     color: C.purple,
     body:  "All four providers implement the LlmProvider trait. Switch at runtime with the use_model tool. The active provider is shared as Arc<RwLock<Option<LlmConfig>>> so all skills see the change immediately.",
     items: [
-      "Ollama   — local inference, granite3.3:8b default, also serves bge-m3 embeddings",
-      "Anthropic — claude-* via Messages API; native tool_use blocks for ChatService",
-      "Gemini   — Google generativeLanguage API",
-      "vLLM     — OpenAI-compatible (LM Studio, Groq, Together AI, any /v1/chat/completions)",
-      "Config env: LLM_PROVIDER · OLLAMA_MODEL · ANTHROPIC_API_KEY · GEMINI_API_KEY · VLLM_URL",
+      "Ollama      — local inference, qwen3.5:4b default, also serves bge-m3 embeddings",
+      "OllamaCloud — Ollama Cloud via OpenAI-compat /v1/chat/completions; embeddings always local",
+      "Anthropic   — claude-* via Messages API; native tool_use blocks for ChatService",
+      "Gemini      — Google generativeLanguage API",
+      "Config env: LLM_PROVIDER · OLLAMA_MODEL · OLLAMA_API_KEY · ANTHROPIC_API_KEY · GEMINI_API_KEY",
       "Runtime switch: use_model tool accepts provider + model + optional api_key",
       "Per-provider job semaphores: Ollama×3, Anthropic×2, Gemini×5",
+      "Background jobs: provider_hint='ollama' always routes to OLLAMA_LOCAL_URL + OLLAMA_LOCAL_MODEL",
     ],
   },
   "i-secrets": {
@@ -916,10 +903,8 @@ const DETAILS: Record<string, Detail> = {
       "digest_experiences — exports successful interactions to JSONL for fine-tuning",
       "analyze_gaps — reads knowledge_gaps table to identify weak areas",
       "Snapshots: /home/agent/snapshots/*.json.gz via SnapshotService (flate2)",
-      "AUTO_SNAPSHOT_BEFORE_CONSOLIDATION=true — safety net before every LLM consolidation",
-      "AUTO_SNAPSHOT_BEFORE_PRUNE=false — optional; enable for extra safety on prune",
-      "list_snapshots returns newest-first with node counts and file sizes",
-      "restore_knowledge uses MERGE — safe to run on non-empty graph",
+      "SnapshotService: gzip .json.gz via flate2; triggered by consolidate_memories flow",
+      "SleepService: digest_experiences exports to JSONL; analyze_gaps reads DuckDB gaps table",
     ],
   },
 };
@@ -1014,7 +999,7 @@ function DiagramView() {
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "16px 20px" }}>
-      <svg viewBox="0 0 960 715" style={{ width: "100%", height: "auto", minWidth: 640 }} fontFamily="'JetBrains Mono','Fira Code',monospace">
+      <svg viewBox="0 0 960 750" style={{ width: "100%", height: "auto", minWidth: 640 }} fontFamily="'JetBrains Mono','Fira Code',monospace">
         <defs>
           {([["b", C.accent], ["p", C.purple], ["c", C.cyan], ["g", C.green]] as [string,string][]).map(([id, col]) => (
             <marker key={id} id={`arr-${id}`} markerWidth={8} markerHeight={6} refX={8} refY={3} orient="auto">
@@ -1023,10 +1008,12 @@ function DiagramView() {
           ))}
         </defs>
 
+        {/* ── Title ── */}
         <text x={480} y={20} textAnchor="middle" fill={C.text}  fontSize={12} fontWeight={700} letterSpacing={3}>AGENT BRAIN — SYSTEM ARCHITECTURE</text>
-        <text x={480} y={34} textAnchor="middle" fill={C.dim}   fontSize={8}  letterSpacing={1}>78 MCP tools · 13 skills · Neo4j graph · 4 LLM providers · autonomous scheduler</text>
+        <text x={480} y={34} textAnchor="middle" fill={C.dim}   fontSize={8}  letterSpacing={1}>BrainCore (engine) · McpServerCore (MCP adapter) · 47 tools · 15 skills · Neo4j · 4 LLM providers</text>
         <line x1={30} y1={41} x2={930} y2={41} stroke={C.border} strokeWidth={1} />
 
+        {/* ── CLIENT LAYER ── */}
         <text x={30} y={57} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>CLIENT LAYER</text>
         <Box {...boxProps("c-claude",  "#101820","#182030", C.border, C.accent)} x={30}  y={61} w={213} h={44}>
           <text x={136} y={79} textAnchor="middle" fill={C.accent} fontSize={10} fontWeight={600}>🤖 Claude Code</text>
@@ -1037,148 +1024,175 @@ function DiagramView() {
           <text x={359} y={95} textAnchor="middle" fill={C.dim}    fontSize={8}>curl · requests · REST</text>
         </Box>
         <Box {...boxProps("c-webui",   "#101820","#182030", C.border, C.accent)} x={476} y={61} w={213} h={44}>
-          <text x={582} y={79} textAnchor="middle" fill={C.accent} fontSize={10} fontWeight={600}>💬 OpenWebUI</text>
+          <text x={582} y={79} textAnchor="middle" fill={C.accent} fontSize={10} fontWeight={600}>💬 HBI Frontend</text>
           <text x={582} y={95} textAnchor="middle" fill={C.dim}    fontSize={8}>SSE streaming browser</text>
         </Box>
         <Box {...boxProps("c-scripts", "#101820","#182030", C.border, C.accent)} x={699} y={61} w={231} h={44}>
           <text x={814} y={79} textAnchor="middle" fill={C.accent} fontSize={10} fontWeight={600}>📜 Self-Learn Scripts</text>
           <text x={814} y={95} textAnchor="middle" fill={C.dim}    fontSize={8}>self_learn.py · self_reflect.py</text>
         </Box>
-        {[136, 359, 582, 814].map(cx => <Conn key={cx} x1={cx} y1={105} x2={cx} y2={130} col={C.accent} marker="b" />)}
+        {[136, 359, 582, 814].map(cx => <Conn key={cx} x1={cx} y1={105} x2={cx} y2={122} col={C.accent} marker="b" />)}
 
-        <text x={30} y={130} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>TRANSPORT</text>
-        <Box {...boxProps("t-stdio", "#0c1318","#121c24", C.border, C.cyan)} x={30}  y={134} w={200} h={50}>
-          <text x={130} y={153} textAnchor="middle" fill={C.cyan}  fontSize={10} fontWeight={600}>stdio</text>
-          <text x={130} y={168} textAnchor="middle" fill={C.dim}   fontSize={8}>McpServer wrapper</text>
-          <text x={130} y={179} textAnchor="middle" fill={C.muted} fontSize={7}>line-delimited JSON-RPC 2.0</text>
+        {/* ── TRANSPORT ── */}
+        <text x={30} y={122} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>TRANSPORT</text>
+        <Box {...boxProps("t-stdio", "#0c1318","#121c24", C.border, C.cyan)} x={30}  y={126} w={200} h={48}>
+          <text x={130} y={145} textAnchor="middle" fill={C.cyan}  fontSize={10} fontWeight={600}>stdio</text>
+          <text x={130} y={159} textAnchor="middle" fill={C.dim}   fontSize={8}>McpServer wrapper</text>
+          <text x={130} y={170} textAnchor="middle" fill={C.muted} fontSize={7}>line-delimited JSON-RPC 2.0</text>
         </Box>
-        <Box {...boxProps("t-http", "#0c1318","#121c24", C.border, C.cyan)} x={240} y={134} w={690} h={50}>
-          <text x={585} y={153} textAnchor="middle" fill={C.cyan}  fontSize={10} fontWeight={600}>HTTP / SSE Transport</text>
-          <text x={585} y={168} textAnchor="middle" fill={C.dim}   fontSize={8}>Axum · SessionManager · MCP_API_KEY auth · /chat streaming · /health</text>
-          <text x={585} y={179} textAnchor="middle" fill={C.muted} fontSize={7}>initialize → notifications/initialized → tools/call</text>
+        <Box {...boxProps("t-http", "#0c1318","#121c24", C.border, C.cyan)} x={240} y={126} w={690} h={48}>
+          <text x={585} y={145} textAnchor="middle" fill={C.cyan}  fontSize={10} fontWeight={600}>HTTP / SSE Transport (Axum)</text>
+          <text x={585} y={159} textAnchor="middle" fill={C.dim}   fontSize={8}>POST /mcp · GET /mcp (SSE) · POST /chat · GET /health · REST /api/* · Bearer auth</text>
+          <text x={585} y={170} textAnchor="middle" fill={C.muted} fontSize={7}>initialize → notifications/initialized → tools/call</text>
         </Box>
-        <Conn x1={480} y1={184} x2={480} y2={208} col={C.cyan} marker="c" />
+        <Conn x1={480} y1={174} x2={480} y2={192} col={C.cyan} marker="c" />
 
-        <text x={30} y={208} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>CORE</text>
-        <Box {...boxProps("core", "#0d1420","#141d30","#2a4a8a", C.accent, 8)} x={30} y={212} w={900} h={82}>
-          <text x={480} y={230} textAnchor="middle" fill={C.accent} fontSize={11} fontWeight={700}>McpServerCore</text>
+        {/* ── MCP ADAPTER ── */}
+        <text x={30} y={192} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>MCP ADAPTER</text>
+        <Box {...boxProps("core", "#0c1020","#111828","#2a4a6a", C.cyan, 8)} x={30} y={196} w={900} h={62}>
+          <text x={480} y={212} textAnchor="middle" fill={C.cyan} fontSize={11} fontWeight={700}>McpServerCore</text>
+          <text x={480} y={223} textAnchor="middle" fill={C.muted} fontSize={7}>protocol adapter only — all engine logic is in BrainCore below</text>
           {([
-            { x: 46,  label: "ToolRegistry",   sub: "78+ tools listed" },
-            { x: 222, label: "ToolHandler",    sub: "dispatches tool/call" },
-            { x: 398, label: "ChatService",    sub: "tool-use loop · SSE" },
-            { x: 574, label: "SessionManager", sub: "HTTP session state" },
-            { x: 750, label: "ContextBuilder", sub: "6 YAML profiles" },
+            { x: 46,  w: 194, label: "ServerState",     sub: "JSON-RPC session machine" },
+            { x: 250, w: 194, label: "SessionManager",  sub: "HTTP per-client state" },
+            { x: 454, w: 194, label: "ChatService",     sub: "tool-use loop · SSE stream" },
+            { x: 658, w: 212, label: "chat_llm_config", sub: "optional /chat LLM override" },
+          ] as { x: number; w: number; label: string; sub: string }[]).map(({ x, w, label, sub }) => (
+            <g key={label}>
+              <rect x={x} y={229} width={w} height={24} rx={3} fill={C.card} stroke={C.border} strokeWidth={1} />
+              <text x={x + w/2} y={239} textAnchor="middle" fill={C.text} fontSize={8.5} fontWeight={600}>{label}</text>
+              <text x={x + w/2} y={249} textAnchor="middle" fill={C.dim}  fontSize={7}>{sub}</text>
+            </g>
+          ))}
+        </Box>
+        <Conn x1={480} y1={258} x2={480} y2={274} col={C.accent} marker="b" />
+
+        {/* ── BRAIN CORE ── */}
+        <text x={30} y={274} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>BRAIN CORE</text>
+        <Box {...boxProps("brain", "#0d1420","#141d30","#3a5aaa", C.accent, 8)} x={30} y={278} w={900} h={80}>
+          <text x={480} y={294} textAnchor="middle" fill={C.accent} fontSize={11} fontWeight={700}>BrainCore</text>
+          <text x={480} y={305} textAnchor="middle" fill={C.muted} fontSize={7}>owns all state — storage · LLM · skills · queue · scheduler · event bus</text>
+          {([
+            { x: 50,  label: "ToolRegistry",   sub: "47 tools · tools/list" },
+            { x: 195, label: "ToolHandler",    sub: "routes tool/call" },
+            { x: 340, label: "LlmConfig Arc",  sub: "live-swap · 4 providers" },
+            { x: 485, label: "JobServices",    sub: "queue + scheduler" },
+            { x: 630, label: "ContextBuilder", sub: "7 profiles · 2 protocols" },
+            { x: 775, label: "EventBus",       sub: "scheduler events" },
           ] as { x: number; label: string; sub: string }[]).map(({ x, label, sub }) => (
             <g key={label}>
-              <rect x={x} y={238} width={160} height={46} rx={4} fill={C.card} stroke={C.border} strokeWidth={1} />
-              <text x={x + 80} y={255} textAnchor="middle" fill={C.text} fontSize={9}  fontWeight={600}>{label}</text>
-              <text x={x + 80} y={269} textAnchor="middle" fill={C.dim}  fontSize={7.5}>{sub}</text>
+              <rect x={x} y={312} width={130} height={38} rx={4} fill={C.card} stroke={`${C.accent}44`} strokeWidth={1} />
+              <text x={x + 65} y={327} textAnchor="middle" fill={C.accent} fontSize={9} fontWeight={600}>{label}</text>
+              <text x={x + 65} y={340} textAnchor="middle" fill={C.dim}    fontSize={7.5}>{sub}</text>
             </g>
           ))}
         </Box>
-        <Conn x1={480} y1={294} x2={480} y2={316} col={C.purple} marker="p" />
+        <Conn x1={480} y1={358} x2={480} y2={374} col={C.purple} marker="p" />
 
-        <text x={30} y={316} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>SKILLS — 13 GROUPS · 78+ TOOLS</text>
-        <Box {...boxProps("sk-memory", "#0c1218","#111c28","#2a3550", C.accent)} x={30}  y={322} w={222} h={152}>
-          <text x={141} y={338} textAnchor="middle" fill={C.accent} fontSize={10} fontWeight={700}>MEMORY</text>
-          <Chip x={42}  y={345} label="KnowledgeSkill"     sub="15 tools · RAG · entities · spaced-rep" col={C.green}  />
-          <Chip x={42}  y={377} label="WorkingMemorySkill" sub="4 tools · session scratchpad"            col={C.green}  />
-          <Chip x={42}  y={409} label="ProcedureSkill"     sub="2 tools · stored workflows"              col={C.green}  />
-          <text x={141} y={453} textAnchor="middle" fill={C.accent} fontSize={8}>21 tools total</text>
-          <text x={141} y={464} textAnchor="middle" fill={C.muted}  fontSize={7}>BM25 · vector · RRF</text>
+        {/* ── SKILLS ── */}
+        <text x={30} y={374} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>SKILLS — 15 SKILLS · 47 TOOLS</text>
+        <Box {...boxProps("sk-memory", "#0c1218","#111c28","#2a3550", C.accent)} x={30}  y={378} w={222} h={150}>
+          <text x={141} y={394} textAnchor="middle" fill={C.accent} fontSize={10} fontWeight={700}>MEMORY</text>
+          <Chip x={42}  y={401} label="KnowledgeSkill"     sub="6 tools · RAG · entities"       col={C.green} />
+          <Chip x={42}  y={433} label="WorkingMemorySkill" sub="2 tools · session scratchpad"    col={C.green} />
+          <Chip x={42}  y={465} label="ResourceSkill"      sub="1 tool · connection registry"    col={C.green} />
+          <text x={141} y={510} textAnchor="middle" fill={C.accent} fontSize={8}>9 tools total</text>
+          <text x={141} y={521} textAnchor="middle" fill={C.muted}  fontSize={7}>BM25 · vector · RRF</text>
         </Box>
-        <Box {...boxProps("sk-auto", "#0c0c18","#121228","#352a50", C.purple)} x={262} y={322} w={222} h={152}>
-          <text x={373} y={338} textAnchor="middle" fill={C.purple} fontSize={10} fontWeight={700}>AUTOMATION</text>
-          <Chip x={274} y={345} label="AgentSkill"     sub="8 tools · job queue · chaining"  col={C.purple} />
-          <Chip x={274} y={377} label="SchedulerSkill" sub="5 tools · autonomous tick loop"  col={C.purple} />
-          <Chip x={274} y={409} label="DynamicSkill"   sub="4+N tools · runtime definition"  col={C.purple} />
-          <text x={373} y={453} textAnchor="middle" fill={C.purple} fontSize={8}>17+ tools total</text>
-          <text x={373} y={464} textAnchor="middle" fill={C.muted}  fontSize={7}>Tokio · BinaryHeap</text>
+        <Box {...boxProps("sk-auto", "#0c0c18","#121228","#352a50", C.purple)} x={262} y={378} w={222} h={150}>
+          <text x={373} y={394} textAnchor="middle" fill={C.purple} fontSize={10} fontWeight={700}>AUTOMATION</text>
+          <Chip x={274} y={401} label="AgentSkill"     sub="5 tools · job queue · chaining"  col={C.purple} />
+          <Chip x={274} y={433} label="SchedulerSkill" sub="4 tools · autonomous tick loop"  col={C.purple} />
+          <Chip x={274} y={465} label="DynamicSkill"   sub="3 tools · runtime definition"    col={C.purple} />
+          <text x={373} y={510} textAnchor="middle" fill={C.purple} fontSize={8}>12 tools total</text>
+          <text x={373} y={521} textAnchor="middle" fill={C.muted}  fontSize={7}>Tokio · BinaryHeap</text>
         </Box>
-        <Box {...boxProps("sk-data", "#0c1410","#121e14","#2a4030", C.green)} x={494} y={322} w={222} h={152}>
-          <text x={605} y={338} textAnchor="middle" fill={C.green} fontSize={10} fontWeight={700}>DATA</text>
-          <Chip x={506} y={345} label="TaskSkill"    sub="6 tools · goals · decompose · reflect" col={C.cyan} />
-          <Chip x={506} y={377} label="AdminSkill"   sub="10 tools · graph maintenance"           col={C.cyan} />
-          <Chip x={506} y={409} label="ContextSkill" sub="4 tools · profile management"           col={C.cyan} />
-          <text x={605} y={453} textAnchor="middle" fill={C.green} fontSize={8}>20 tools total</text>
-          <text x={605} y={464} textAnchor="middle" fill={C.muted} fontSize={7}>Neo4j · snapshots</text>
+        <Box {...boxProps("sk-data", "#0c1410","#121e14","#2a4030", C.green)} x={494} y={378} w={222} h={150}>
+          <text x={605} y={394} textAnchor="middle" fill={C.green} fontSize={10} fontWeight={700}>DATA</text>
+          <Chip x={506} y={401} label="TaskSkill"    sub="5 tools · goals · decompose"    col={C.cyan} />
+          <Chip x={506} y={433} label="QuerySkill"   sub="2 tools · neo4j + duckdb"       col={C.cyan} />
+          <Chip x={506} y={465} label="ContextSkill" sub="1 tool · profile management"    col={C.cyan} />
+          <text x={605} y={510} textAnchor="middle" fill={C.green} fontSize={8}>8 tools total</text>
+          <text x={605} y={521} textAnchor="middle" fill={C.muted} fontSize={7}>Neo4j · DuckDB</text>
         </Box>
-        <Box {...boxProps("sk-ext", "#140e08","#1e1610","#3a2e10", C.yellow)} x={726} y={322} w={204} h={152}>
-          <text x={828} y={338} textAnchor="middle" fill={C.yellow} fontSize={10} fontWeight={700}>EXTERNAL</text>
-          <Chip x={738} y={345} w={180} label="ApiSkill"     sub="14 tools · OpenAPI · self-heal"   col={C.orange} />
-          <Chip x={738} y={377} w={180} label="ModelSkill"   sub="5 tools · LLM registry + select"  col={C.orange} />
-          <Chip x={738} y={409} w={180} label="Search+Sleep" sub="3 tools · web · telemetry"         col={C.orange} />
-          <text x={828} y={453} textAnchor="middle" fill={C.yellow} fontSize={8}>22 tools total</text>
-          <text x={828} y={464} textAnchor="middle" fill={C.muted}  fontSize={7}>SerpApi · DuckDB</text>
+        <Box {...boxProps("sk-ext", "#140e08","#1e1610","#3a2e10", C.yellow)} x={726} y={378} w={204} h={150}>
+          <text x={828} y={394} textAnchor="middle" fill={C.yellow} fontSize={10} fontWeight={700}>EXT & UTILS</text>
+          <Chip x={738} y={401} w={180} label="HttpSkill"        sub="2 tools · generic HTTP"        col={C.orange} />
+          <Chip x={738} y={433} w={180} label="CodebaseSkill"    sub="7 tools · self-analysis · git" col={C.orange} />
+          <Chip x={738} y={465} w={180} label="WsSkill + Others" sub="9 tools · ws · search · sleep" col={C.orange} />
+          <text x={828} y={510} textAnchor="middle" fill={C.yellow} fontSize={8}>18 tools total</text>
+          <text x={828} y={521} textAnchor="middle" fill={C.muted}  fontSize={7}>Axum · git · search</text>
         </Box>
-        <Conn x1={480} y1={474} x2={480} y2={496} col={C.cyan} marker="c" />
+        <Conn x1={480} y1={528} x2={480} y2={546} col={C.cyan} marker="c" />
 
-        <text x={30} y={496} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>SERVICES</text>
-        <Box {...boxProps("svc", "#0c1018","#111520", C.border, C.cyan)} x={30} y={500} w={900} h={50}>
+        {/* ── SERVICES ── */}
+        <text x={30} y={546} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>SERVICES</text>
+        <Box {...boxProps("svc", "#0c1018","#111520", C.border, C.cyan)} x={30} y={550} w={900} h={46}>
           {([
-            { x: 46,  w: 157, name: "KnowledgeService", sub: "RAG · BM25 · snapshots" },
-            { x: 213, w: 157, name: "QueueService",     sub: "heap · semaphores · coord" },
-            { x: 380, w: 157, name: "SchedulerService", sub: "Tokio task · perception" },
-            { x: 547, w: 157, name: "HealingService",   sub: "LLM correction · events" },
-            { x: 714, w: 206, name: "SnapshotService + ModelSelector", sub: "gzip backup · capability match" },
+            { x: 46,  w: 152, name: "KnowledgeService", sub: "RAG · BM25 · snapshots" },
+            { x: 208, w: 152, name: "QueueService",     sub: "heap · semaphores · coord" },
+            { x: 370, w: 152, name: "SchedulerService", sub: "Tokio task · perception" },
+            { x: 532, w: 152, name: "SnapshotService",  sub: "gzip backup · flate2" },
+            { x: 694, w: 226, name: "ContextBuilder + ResourceRegistry", sub: "profiles · connection pool" },
           ] as { x: number; w: number; name: string; sub: string }[]).map(({ x, w, name, sub }) => (
             <g key={name}>
-              <rect x={x} y={506} width={w} height={38} rx={4} fill={C.card} stroke={C.border} strokeWidth={1} />
-              <text x={x + w / 2} y={521} textAnchor="middle" fill={C.text} fontSize={9}  fontWeight={600}>{name}</text>
-              <text x={x + w / 2} y={536} textAnchor="middle" fill={C.dim}  fontSize={7.5}>{sub}</text>
+              <rect x={x} y={556} width={w} height={34} rx={4} fill={C.card} stroke={C.border} strokeWidth={1} />
+              <text x={x + w/2} y={570} textAnchor="middle" fill={C.text} fontSize={9}  fontWeight={600}>{name}</text>
+              <text x={x + w/2} y={583} textAnchor="middle" fill={C.dim}  fontSize={7.5}>{sub}</text>
             </g>
           ))}
         </Box>
-        <Conn x1={480} y1={550} x2={480} y2={572} col={C.green} marker="g" />
+        <Conn x1={480} y1={596} x2={480} y2={614} col={C.green} marker="g" />
 
-        <text x={30} y={572} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>INFRASTRUCTURE</text>
-        <Box {...boxProps("i-neo4j",  "#0a1410","#111e16","#2a4030", C.green)}  x={30}  y={576} w={218} h={104}>
-          <text x={139} y={594} textAnchor="middle" fill={C.green}  fontSize={10} fontWeight={700}>Neo4j Graph DB</text>
-          <text x={139} y={608} textAnchor="middle" fill={C.dim}    fontSize={8}>neo4rs · bolt://localhost:7687</text>
-          <text x={139} y={622} textAnchor="middle" fill={C.dim}    fontSize={7.5}>Note · Entity · Task · Endpoint</text>
-          <text x={139} y={634} textAnchor="middle" fill={C.dim}    fontSize={7.5}>Schema · AgentJob · Procedure</text>
-          <text x={139} y={646} textAnchor="middle" fill={C.green}  fontSize={7.5}>BM25 + 1024-dim bge-m3 vectors</text>
-          <text x={139} y={658} textAnchor="middle" fill={C.muted}  fontSize={7}>MERGE-safe · 11 edge types</text>
-          <text x={139} y={671} textAnchor="middle" fill={C.dim}    fontSize={7.5}>RRF hybrid search + freshness</text>
+        {/* ── INFRASTRUCTURE ── */}
+        <text x={30} y={614} fill={C.muted} fontSize={8} letterSpacing={2} fontWeight={600}>INFRASTRUCTURE</text>
+        <Box {...boxProps("i-neo4j",  "#0a1410","#111e16","#2a4030", C.green)}  x={30}  y={618} w={218} h={98}>
+          <text x={139} y={636} textAnchor="middle" fill={C.green}  fontSize={10} fontWeight={700}>Neo4j Graph DB</text>
+          <text x={139} y={650} textAnchor="middle" fill={C.dim}    fontSize={8}>neo4rs · bolt://localhost:7687</text>
+          <text x={139} y={664} textAnchor="middle" fill={C.dim}    fontSize={7.5}>Note · Entity · Task · AgentJob</text>
+          <text x={139} y={676} textAnchor="middle" fill={C.dim}    fontSize={7.5}>Procedure · DynamicTool · etc.</text>
+          <text x={139} y={688} textAnchor="middle" fill={C.green}  fontSize={7.5}>BM25 + 1024-dim bge-m3 vectors</text>
+          <text x={139} y={700} textAnchor="middle" fill={C.muted}  fontSize={7}>MERGE-safe · 11 edge types · RRF</text>
         </Box>
-        <Box {...boxProps("i-llm",    "#0e0b14","#14102a","#352a40", C.purple)} x={258} y={576} w={285} h={104}>
-          <text x={400} y={594} textAnchor="middle" fill={C.purple} fontSize={10} fontWeight={700}>LLM Providers</text>
+        <Box {...boxProps("i-llm",    "#0e0b14","#14102a","#352a40", C.purple)} x={258} y={618} w={285} h={98}>
+          <text x={400} y={636} textAnchor="middle" fill={C.purple} fontSize={10} fontWeight={700}>LLM Providers</text>
           {([
-            [270, 610, "🦙 Ollama",     "granite3.3:8b · local · embeddings"],
-            [270, 626, "🔮 Anthropic",  "claude-* · Messages API · tool_use"],
-            [270, 642, "✨ Gemini",     "generativeLanguage API"],
-            [270, 658, "⚡ vLLM",      "OpenAI-compat · any server"],
+            [270, 652, "🦙 Ollama",       "qwen3.5:4b · local · embeddings"],
+            [270, 667, "☁️ OllamaCloud",  "openai-compat · cloud · embed→local"],
+            [270, 682, "🔮 Anthropic",    "claude-* · Messages API · tool_use"],
+            [270, 697, "✨ Gemini",       "generativeLanguage API"],
           ] as [number,number,string,string][]).map(([x, y, name, info]) => (
             <g key={name}>
               <text x={x}      y={y} fill={C.orange} fontSize={9}>{name}</text>
-              <text x={x + 88} y={y} fill={C.dim}    fontSize={7.5}>{info}</text>
+              <text x={x + 96} y={y} fill={C.dim}    fontSize={7.5}>{info}</text>
             </g>
           ))}
-          <text x={400} y={674} textAnchor="middle" fill={C.purple} fontSize={7.5}>runtime switch via use_model</text>
+          <text x={400} y={710} textAnchor="middle" fill={C.purple} fontSize={7.5}>runtime switch via use_model tool</text>
         </Box>
-        <Box {...boxProps("i-secrets", "#12100a","#1c180e","#3a3010", C.yellow)} x={553} y={576} w={190} h={104}>
-          <text x={648} y={594} textAnchor="middle" fill={C.yellow} fontSize={10} fontWeight={700}>Secret Store</text>
-          <text x={648} y={608} textAnchor="middle" fill={C.dim}    fontSize={8}>automatic key injection</text>
-          <text x={563} y={624} fill={C.dim} fontSize={7.5}>Local  — AES-256-GCM</text>
-          <text x={563} y={638} fill={C.dim} fontSize={7.5}>Vault  — HashiCorp KV v2</text>
-          <text x={563} y={652} fill={C.dim} fontSize={7.5}>AWS    — Secrets Manager</text>
-          <text x={648} y={668} textAnchor="middle" fill={C.yellow} fontSize={7.5}>configure_api_credential</text>
+        <Box {...boxProps("i-secrets", "#12100a","#1c180e","#3a3010", C.yellow)} x={553} y={618} w={190} h={98}>
+          <text x={648} y={636} textAnchor="middle" fill={C.yellow} fontSize={10} fontWeight={700}>Secret Store</text>
+          <text x={648} y={650} textAnchor="middle" fill={C.dim}    fontSize={8}>automatic key injection</text>
+          <text x={563} y={666} fill={C.dim} fontSize={7.5}>Local  — AES-256-GCM</text>
+          <text x={563} y={680} fill={C.dim} fontSize={7.5}>Vault  — HashiCorp KV v2</text>
+          <text x={563} y={694} fill={C.dim} fontSize={7.5}>AWS    — Secrets Manager</text>
+          <text x={648} y={708} textAnchor="middle" fill={C.yellow} fontSize={7.5}>resource tool registration</text>
         </Box>
-        <Box {...boxProps("i-persist", "#140c0c","#1e1010","#3a1818", C.red)} x={753} y={576} w={177} h={104}>
-          <text x={841} y={594} textAnchor="middle" fill={C.red}   fontSize={10} fontWeight={700}>Telemetry + Snapshots</text>
-          <text x={841} y={608} textAnchor="middle" fill={C.dim}   fontSize={7.5}>DuckDB brain_logs.db</text>
-          <text x={841} y={622} textAnchor="middle" fill={C.dim}   fontSize={7.5}>digest_experiences → JSONL</text>
-          <text x={841} y={636} textAnchor="middle" fill={C.dim}   fontSize={7.5}>analyze_gaps → knowledge</text>
-          <text x={841} y={650} textAnchor="middle" fill={C.dim}   fontSize={7.5}>/home/agent/snapshots/*.json.gz</text>
-          <text x={841} y={664} textAnchor="middle" fill={C.dim}   fontSize={7.5}>auto pre_consolidate backup</text>
-          <text x={841} y={676} textAnchor="middle" fill={C.red}   fontSize={7.5}>SleepSkill · AdminSkill</text>
+        <Box {...boxProps("i-persist", "#140c0c","#1e1010","#3a1818", C.red)} x={753} y={618} w={177} h={98}>
+          <text x={841} y={636} textAnchor="middle" fill={C.red}   fontSize={10} fontWeight={700}>Telemetry + Snapshots</text>
+          <text x={841} y={650} textAnchor="middle" fill={C.dim}   fontSize={7.5}>DuckDB brain_logs.db</text>
+          <text x={841} y={664} textAnchor="middle" fill={C.dim}   fontSize={7.5}>digest_experiences → JSONL</text>
+          <text x={841} y={678} textAnchor="middle" fill={C.dim}   fontSize={7.5}>analyze_gaps → knowledge</text>
+          <text x={841} y={692} textAnchor="middle" fill={C.dim}   fontSize={7.5}>SnapshotService (flate2)</text>
+          <text x={841} y={706} textAnchor="middle" fill={C.red}   fontSize={7.5}>SleepSkill · QuerySkill</text>
         </Box>
 
-        <path d="M 930 398 C 948 398 948 528 930 528" fill="none" stroke={C.purple} strokeWidth={1.5} strokeDasharray="5,3" opacity={0.6} markerStart="url(#arr-p)" />
-        <text x={952} y={466} textAnchor="middle" fill={C.purple} fontSize={7.5} fontWeight={600} transform="rotate(90 952 466)">AUTONOMOUS SELF-IMPROVEMENT</text>
+        {/* Autonomous self-improvement loop arc */}
+        <path d="M 930 440 C 950 440 950 570 930 570" fill="none" stroke={C.purple} strokeWidth={1.5} strokeDasharray="5,3" opacity={0.6} markerStart="url(#arr-p)" />
+        <text x={954} y={508} textAnchor="middle" fill={C.purple} fontSize={7.5} fontWeight={600} transform="rotate(90 954 508)">AUTONOMOUS SELF-IMPROVEMENT</text>
 
-        <line x1={30} y1={692} x2={930} y2={692} stroke={C.border} strokeWidth={1} />
-        <text x={36} y={705} fill={C.muted} fontSize={7.5}>FLOW:</text>
+        {/* Footer */}
+        <line x1={30} y1={722} x2={930} y2={722} stroke={C.border} strokeWidth={1} />
+        <text x={36} y={735} fill={C.muted} fontSize={7.5}>FLOW:</text>
         {([
           [68,  C.accent, "MCP call"],
           [148, C.purple, "skill dispatch"],
@@ -1186,12 +1200,12 @@ function DiagramView() {
           [348, C.green,  "DB query"],
         ] as [number, string, string][]).map(([x, col, label]) => (
           <g key={label}>
-            <line x1={x} y1={702} x2={x+28} y2={702} stroke={col} strokeWidth={1.5} strokeDasharray="4,2" opacity={0.7} />
-            <text x={x+32} y={705} fill={C.dim} fontSize={7.5}>{label}</text>
+            <line x1={x} y1={732} x2={x+28} y2={732} stroke={col} strokeWidth={1.5} strokeDasharray="4,2" opacity={0.7} />
+            <text x={x+32} y={735} fill={C.dim} fontSize={7.5}>{label}</text>
           </g>
         ))}
-        <text x={460} y={705} fill={C.muted} fontSize={7.5}>
-          ↻ SchedulerService ticks every 5 min · perceives failures · enqueues LLM chains
+        <text x={460} y={735} fill={C.muted} fontSize={7.5}>
+          ↻ SchedulerService ticks every 5 min · perceives failures · enqueues LLM chains via BrainCore
         </text>
       </svg>
 
@@ -1224,7 +1238,7 @@ export default function ArchitecturePanel() {
         }}>
           🏗 Architecture
           <span style={{ fontSize: 10, background: "#2a4a8a", color: C.accent, padding: "1px 6px", borderRadius: 10 }}>
-            78 tools · 13 skills
+            BrainCore · 47 tools · 15 skills
           </span>
         </span>
 

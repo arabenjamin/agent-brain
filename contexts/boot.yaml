@@ -3,6 +3,11 @@ steps:
   - type: log
     message: "Agent Brain starting up — running boot protocol"
   - type: tool_call
+    tool: health_check
+    args: {}
+  - type: log
+    message: "Health snapshot obtained — reviewing operational state"
+  - type: tool_call
     tool: get_scheduler_status
     args: {}
   - type: conditional

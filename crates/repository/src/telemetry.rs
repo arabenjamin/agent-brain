@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use duckdb::{Connection, params};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -42,18 +41,6 @@ impl TelemetryClient {
         // Logs every turn of conversation/action.
         conn.execute_batch(
             r"
-            CREATE TABLE IF NOT EXISTS todos (
-                id          TEXT PRIMARY KEY,
-                title       TEXT NOT NULL,
-                description TEXT,
-                status      TEXT NOT NULL DEFAULT 'pending',
-                priority    INTEGER NOT NULL DEFAULT 2,
-                tags        TEXT NOT NULL DEFAULT '[]',
-                due_at      TEXT,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS interactions (
                 id UUID PRIMARY KEY,
                 timestamp TIMESTAMPTZ NOT NULL,
@@ -454,7 +441,11 @@ impl TelemetryClient {
                 .map(|(model, total, succ, fail, avg_ms, tin, tout)| {
                     let successes = succ.unwrap_or(0);
                     let failures = fail.unwrap_or(0);
-                    let success_rate = if total > 0 { successes as f64 / total as f64 } else { 0.0 };
+                    let success_rate = if total > 0 {
+                        successes as f64 / total as f64
+                    } else {
+                        0.0
+                    };
                     serde_json::json!({
                         "model":           model,
                         "total_calls":     total,
@@ -548,162 +539,6 @@ impl TelemetryClient {
         Ok(examples)
     }
 
-    // =========================================================================
-    // Todo CRUD
-    // =========================================================================
-
-    /// Insert a new todo and return it.
-    pub fn create_todo(
-        &self,
-        title: &str,
-        description: Option<&str>,
-        status: Option<&str>,
-        priority: Option<i64>,
-        tags: Option<&str>,
-        due_at: Option<&str>,
-    ) -> Result<Todo> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-        let status = status.unwrap_or("pending");
-        let priority = priority.unwrap_or(2);
-        let tags = tags.unwrap_or("[]");
-
-        conn.execute(
-            "INSERT INTO todos (id, title, description, status, priority, tags, due_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![id, title, description, status, priority, tags, due_at, now, now],
-        )?;
-
-        Ok(Todo {
-            id,
-            title: title.to_string(),
-            description: description.map(str::to_string),
-            status: status.to_string(),
-            priority,
-            tags: serde_json::from_str(tags).unwrap_or_default(),
-            due_at: due_at.map(str::to_string),
-            created_at: now.clone(),
-            updated_at: now,
-        })
-    }
-
-    /// List todos, optionally filtered by status.
-    pub fn list_todos(&self, status_filter: Option<&str>) -> Result<Vec<Todo>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-
-        let sql = if status_filter.is_some() {
-            "SELECT id, title, description, status, priority, tags, due_at, created_at, updated_at
-             FROM todos WHERE status = ? ORDER BY priority ASC, created_at DESC"
-        } else {
-            "SELECT id, title, description, status, priority, tags, due_at, created_at, updated_at
-             FROM todos ORDER BY priority ASC, created_at DESC"
-        };
-
-        let mut stmt = conn.prepare(sql)?;
-        let rows: Vec<_> = if let Some(s) = status_filter {
-            stmt.query_map(params![s], Todo::from_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        } else {
-            stmt.query_map([], Todo::from_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        };
-
-        Ok(rows)
-    }
-
-    /// Fetch a single todo by id.
-    pub fn get_todo(&self, id: &str) -> Result<Option<Todo>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, title, description, status, priority, tags, due_at, created_at, updated_at
-             FROM todos WHERE id = ?",
-        )?;
-        let mut rows = stmt.query_map(params![id], Todo::from_row)?;
-        Ok(rows.next().transpose()?)
-    }
-
-    /// Update a todo's fields. Only `Some` values are applied; `None` means "leave unchanged".
-    /// For nullable fields (description, due_at) use `Some(None)` to clear the value.
-    pub fn update_todo(
-        &self,
-        id: &str,
-        title: Option<&str>,
-        description: Option<Option<&str>>,
-        status: Option<&str>,
-        priority: Option<i64>,
-        tags: Option<&str>,
-        due_at: Option<Option<&str>>,
-    ) -> Result<Option<Todo>> {
-        // Fetch current state first so we can merge the patch.
-        let current = match self.get_todo(id)? {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-
-        let new_title = title.unwrap_or(&current.title).to_string();
-        let new_description: Option<String> = match description {
-            Some(Some(s)) => Some(s.to_string()),
-            Some(None) => None,
-            None => current.description.clone(),
-        };
-        let new_status = status.unwrap_or(&current.status).to_string();
-        let new_priority = priority.unwrap_or(current.priority);
-        let new_tags_str = tags.map(str::to_string).unwrap_or_else(|| {
-            serde_json::to_string(&current.tags).unwrap_or_else(|_| "[]".to_string())
-        });
-        let new_due_at: Option<String> = match due_at {
-            Some(Some(s)) => Some(s.to_string()),
-            Some(None) => None,
-            None => current.due_at.clone(),
-        };
-        let now = Utc::now().to_rfc3339();
-
-        {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-            conn.execute(
-                "UPDATE todos
-                 SET title = ?, description = ?, status = ?, priority = ?,
-                     tags = ?, due_at = ?, updated_at = ?
-                 WHERE id = ?",
-                params![
-                    new_title,
-                    new_description,
-                    new_status,
-                    new_priority,
-                    new_tags_str,
-                    new_due_at,
-                    now,
-                    id
-                ],
-            )?;
-        }
-
-        self.get_todo(id)
-    }
-
-    /// Delete a todo. Returns true if a row was removed.
-    pub fn delete_todo(&self, id: &str) -> Result<bool> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        let n = conn.execute("DELETE FROM todos WHERE id = ?", params![id])?;
-        Ok(n > 0)
-    }
-
     /// Execute a read-only SQL query and return results as a JSON array.
     ///
     /// Write operations (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`,
@@ -717,7 +552,10 @@ impl TelemetryClient {
             "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE",
         ] {
             if upper.split_whitespace().any(|w| w == *kw) {
-                anyhow::bail!("Write operations are not allowed via query_raw (keyword: {})", kw);
+                anyhow::bail!(
+                    "Write operations are not allowed via query_raw (keyword: {})",
+                    kw
+                );
             }
         }
 
@@ -734,77 +572,87 @@ impl TelemetryClient {
         };
 
         let mut stmt = conn.prepare(&limited)?;
-        let col_names: Vec<String> = stmt.column_names();
-        let col_count = stmt.column_count();
 
-        let rows: Vec<serde_json::Value> = stmt
+        // duckdb 1.4.x: both column_count() and column_names() read from the
+        // execution result (RawStatement::result), which is None until the
+        // statement actually runs.  Calling either before execution panics.
+        //
+        // Workaround:
+        //   1. Execute via query_map; inside the closure probe columns by index
+        //      until get_ref() returns InvalidColumnIndex to learn the count.
+        //   2. After the MappedRows iterator is consumed (result populated),
+        //      call column_names() — now safe — and re-key the collected rows.
+        let mut observed_col_count: usize = 0;
+
+        let raw_rows: Vec<Vec<serde_json::Value>> = stmt
             .query_map([], |row| {
-                let mut obj = serde_json::Map::new();
-                for i in 0..col_count {
-                    let json_val = match row.get_ref(i)? {
-                        ValueRef::Null => serde_json::Value::Null,
-                        ValueRef::Boolean(b) => serde_json::Value::Bool(b),
-                        ValueRef::TinyInt(n) => serde_json::json!(n),
-                        ValueRef::SmallInt(n) => serde_json::json!(n),
-                        ValueRef::Int(n) => serde_json::json!(n),
-                        ValueRef::BigInt(n) => serde_json::json!(n),
-                        ValueRef::HugeInt(n) => serde_json::json!(n.to_string()),
-                        ValueRef::UTinyInt(n) => serde_json::json!(n),
-                        ValueRef::USmallInt(n) => serde_json::json!(n),
-                        ValueRef::UInt(n) => serde_json::json!(n),
-                        ValueRef::UBigInt(n) => serde_json::json!(n),
-                        ValueRef::Float(f) => serde_json::json!(f),
-                        ValueRef::Double(f) => serde_json::json!(f),
-                        ValueRef::Text(t) => serde_json::Value::String(
-                            std::str::from_utf8(t).unwrap_or("").to_string(),
-                        ),
-                        _ => serde_json::Value::String("(unsupported type)".to_string()),
-                    };
-                    obj.insert(col_names[i].clone(), json_val);
+                let mut vals: Vec<serde_json::Value> = Vec::new();
+                loop {
+                    let i = vals.len();
+                    match row.get_ref(i) {
+                        Err(_) => {
+                            // Out-of-bounds or other error — stop probing.
+                            break;
+                        }
+                        Ok(vref) => {
+                            let json_val = match vref {
+                                ValueRef::Null => serde_json::Value::Null,
+                                ValueRef::Boolean(b) => serde_json::Value::Bool(b),
+                                ValueRef::TinyInt(n) => serde_json::json!(n),
+                                ValueRef::SmallInt(n) => serde_json::json!(n),
+                                ValueRef::Int(n) => serde_json::json!(n),
+                                ValueRef::BigInt(n) => serde_json::json!(n),
+                                ValueRef::HugeInt(n) => serde_json::json!(n.to_string()),
+                                ValueRef::UTinyInt(n) => serde_json::json!(n),
+                                ValueRef::USmallInt(n) => serde_json::json!(n),
+                                ValueRef::UInt(n) => serde_json::json!(n),
+                                ValueRef::UBigInt(n) => serde_json::json!(n),
+                                ValueRef::Float(f) => serde_json::json!(f),
+                                ValueRef::Double(f) => serde_json::json!(f),
+                                ValueRef::Text(t) => serde_json::Value::String(
+                                    std::str::from_utf8(t).unwrap_or("").to_string(),
+                                ),
+                                _ => serde_json::Value::String("(unsupported type)".to_string()),
+                            };
+                            vals.push(json_val);
+                        }
+                    }
                 }
-                Ok(serde_json::Value::Object(obj))
+                Ok(vals)
             })?
             .filter_map(|r| r.ok())
+            .inspect(|vals| {
+                if observed_col_count == 0 && !vals.is_empty() {
+                    observed_col_count = vals.len();
+                }
+            })
+            .collect();
+
+        // MappedRows consumed — result is populated, column_names() is now safe.
+        // Fall back to numeric names if it still panics (extra safety net).
+        let col_names: Vec<String> =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stmt.column_names()))
+                .unwrap_or_else(|_| {
+                    (0..observed_col_count)
+                        .map(|i| format!("col_{i}"))
+                        .collect()
+                });
+
+        let rows = raw_rows
+            .into_iter()
+            .map(|vals| {
+                let mut obj = serde_json::Map::new();
+                for (i, val) in vals.into_iter().enumerate() {
+                    let key = col_names
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| format!("col_{i}"));
+                    obj.insert(key, val);
+                }
+                serde_json::Value::Object(obj)
+            })
             .collect();
 
         Ok(rows)
-    }
-}
-
-// ============================================================================
-// Todo model
-// ============================================================================
-
-/// A single todo item stored in DuckDB.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Todo {
-    pub id: String,
-    pub title: String,
-    pub description: Option<String>,
-    /// `pending` | `in_progress` | `done`
-    pub status: String,
-    /// 0 = urgent, 1 = high, 2 = normal, 3 = low
-    pub priority: i64,
-    pub tags: Vec<String>,
-    pub due_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl Todo {
-    fn from_row(row: &duckdb::Row<'_>) -> duckdb::Result<Self> {
-        let tags_str: String = row.get::<_, Option<String>>(5)?.unwrap_or_default();
-        let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-        Ok(Self {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            description: row.get(2)?,
-            status: row.get(3)?,
-            priority: row.get(4)?,
-            tags,
-            due_at: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
-        })
     }
 }

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { callTool } from "../../api/mcp";
+import { getBrainUrl, getApiKey } from "../../api/config";
+
+function apiFetch(path: string) {
+  const url = new URL(`${getBrainUrl()}${path}`, window.location.href).toString();
+  return fetch(url, { headers: { Authorization: `Bearer ${getApiKey()}` } }).then((r) => r.json());
+}
 
 interface Note {
   id: string;
@@ -40,9 +46,8 @@ export default function KnowledgePanel() {
     setLoading(true);
     setError(null);
     try {
-      const json = await callTool("list_notes", { limit: 20 });
-      const data = JSON.parse(json);
-      setNotes(data.notes ?? data.rows ?? []);
+      const data = await apiFetch("/api/notes?limit=50");
+      setNotes(data.notes ?? []);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -80,8 +85,7 @@ export default function KnowledgePanel() {
     setRelated([]);
     setLoadingRelated(true);
     try {
-      const json = await callTool("find_related_notes", { note_id: note.id });
-      const data = JSON.parse(json);
+      const data = await apiFetch(`/api/notes/${note.id}/related`);
       setRelated(data.related_notes ?? []);
     } catch {
       // related notes are optional

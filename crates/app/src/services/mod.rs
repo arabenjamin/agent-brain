@@ -1,4 +1,3 @@
-pub mod chat;
 pub mod context_builder;
 pub mod knowledge;
 pub mod llm;
@@ -15,7 +14,6 @@ pub mod snapshot;
 pub mod store_impls;
 pub mod traits;
 
-pub use chat::{ChatEvent, ChatRequest, ChatService};
 pub use context_builder::ContextBuilderService;
 pub use knowledge::KnowledgeService;
 pub use llm::{LlmClient, LlmConfig, LlmProviderType};
@@ -30,4 +28,4 @@ pub use secrets::{
 pub use shared_llm::SharedLlm;
 pub use sleep::SleepService;
 pub use snapshot::SnapshotService;
-pub use traits::{KnowledgeStore, LlmProvider, ProcedureStore, TaskStore, WorkingMemoryStore};
+pub use traits::{KnowledgeStore, LlmProvider, TaskStore, WorkingMemoryStore};

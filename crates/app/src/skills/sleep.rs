@@ -9,7 +9,7 @@ use tracing::info;
 use crate::repository::TelemetryClient;
 use crate::services::SleepService;
 use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Sleep Skill implementation.
 pub struct SleepSkill {
@@ -90,7 +90,7 @@ impl SleepSkill {
                     "dataset_path": path.to_string_lossy(),
                     "message": format!("Sleep cycle complete. Digested {} experiences.", count)
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Sleep cycle failed: {}", e)),
         }
@@ -112,7 +112,7 @@ impl SleepSkill {
                     "count": count,
                     "gaps": gaps
                 });
-                ToolCallResult::success_text(serde_json::to_string_pretty(&response).unwrap())
+                ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Gap analysis failed: {}", e)),
         }
@@ -149,10 +149,4 @@ struct DigestExperiencesInput {
 struct AnalyzeGapsInput {
     #[serde(default)]
     limit: Option<usize>,
-}
-
-fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Option<Value>) -> Result<T, ToolCallResult> {
-    let args = arguments.unwrap_or(Value::Object(Default::default()));
-    serde_json::from_value(args)
-        .map_err(|e| ToolCallResult::error(format!("Invalid arguments: {}", e)))
 }

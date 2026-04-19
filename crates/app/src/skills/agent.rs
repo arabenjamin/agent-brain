@@ -1,10 +1,8 @@
 //! Agent Skill — manages the background job queue.
 //!
-//! Exposes 6 tools: `enqueue_jobs`, `queue_status`, `cancel_job`, `retry_job`,
-//! `set_worker_config`, `drain_queue`.
-//!
-//! `get_job_result` is a separate dynamic tool seeded from Neo4j as a raw Cypher
-//! procedure (see `mcp/server.rs::seed_built_ins`).
+//! 5 tools: `enqueue_jobs`, `manage_job`, `set_worker_config`, `dead_letter`, `update_job_progress`
+//! Queue stats → GET /api/queue/status  |  Drain → POST /api/queue/drain
+//! List jobs   → GET /api/jobs or neo4j_query: MATCH (j:AgentJob) RETURN j ORDER BY j.created_at DESC LIMIT 50
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -28,39 +26,31 @@ impl AgentSkill {
     // Tool definitions
     // =========================================================================
 
-    fn queue_status_def() -> ToolDefinition {
+    // queue_status → GET /api/queue/status (REST)
+    // drain_queue  → POST /api/queue/drain (REST)
+    // cleanup_jobs → use neo4j_query to delete old AgentJob nodes
+
+    fn manage_job_def() -> ToolDefinition {
         ToolDefinition {
-            name: "queue_status".to_string(),
-            description: "Show current queue statistics: pending, running, and per-status counts."
+            name: "manage_job".to_string(),
+            description: "Cancel or retry a background job. \
+                action=cancel: halt a queued or running job. \
+                action=retry: requeue a failed, dead, or cancelled job for another attempt."
                 .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
-
-    fn cancel_job_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "cancel_job".to_string(),
-            description: "Cancel a queued or running job.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "job_id": { "type": "string", "description": "The job ID to cancel" }
+                    "action": {
+                        "type": "string",
+                        "enum": ["cancel", "retry"],
+                        "description": "cancel: halt the job. retry: requeue it."
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "The AgentJob ID to act on."
+                    }
                 },
-                "required": ["job_id"]
-            }),
-        }
-    }
-
-    fn retry_job_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "retry_job".to_string(),
-            description: "Requeue a failed or dead job for another execution attempt.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "job_id": { "type": "string", "description": "The job ID to retry" }
-                },
-                "required": ["job_id"]
+                "required": ["action", "job_id"]
             }),
         }
     }
@@ -105,14 +95,6 @@ impl AgentSkill {
                     }
                 }
             }),
-        }
-    }
-
-    fn drain_queue_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "drain_queue".to_string(),
-            description: "Cancel all currently queued (pending) jobs.".to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
 
@@ -173,57 +155,101 @@ impl AgentSkill {
         }
     }
 
+    fn dead_letter_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "dead_letter".to_string(),
+            description: "Manage the dead letter queue (permanently failed jobs). Use action to select the operation:\n\
+                - list:   show dead letter entries (optional limit, default 20)\n\
+                - retry:  re-queue a job for execution (job_id required)\n\
+                - delete: permanently remove an entry (job_id required)"
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "retry", "delete"],
+                        "description": "The operation to perform"
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Dead letter job ID — required for retry and delete"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Max entries to return for list (default 20)"
+                    }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    fn update_job_progress_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "update_job_progress".to_string(),
+            description: "Update progress for a running job (0-100 percent). Use from within a job to report progress.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": { "type": "string", "description": "The job ID to update" },
+                    "percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Progress percentage (0-100)"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Optional status message describing current phase"
+                    }
+                },
+                "required": ["job_id", "percent"]
+            }),
+        }
+    }
+
     // =========================================================================
     // Handlers
     // =========================================================================
 
-    async fn handle_queue_status(&self) -> ToolCallResult {
-        ToolCallResult::success_text(
-            serde_json::to_string_pretty(&self.queue.stats().await).unwrap(),
-        )
-    }
-
-    async fn handle_cancel_job(&self, args: Option<Value>) -> ToolCallResult {
+    async fn handle_manage_job(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
         struct Input {
+            action: String,
             job_id: String,
         }
         let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
             Some(i) => i,
-            None => return ToolCallResult::error("Missing required field: job_id"),
+            None => return ToolCallResult::error("Missing required fields: action, job_id"),
         };
 
-        match self.queue.cancel(&input.job_id).await {
-            Ok(true) => ToolCallResult::success_text(
-                json!({ "cancelled": true, "id": input.job_id }).to_string(),
-            ),
-            Ok(false) => ToolCallResult::error(format!(
-                "Job {} not found or already in a terminal state",
-                input.job_id
-            )),
-            Err(e) => ToolCallResult::error(format!("Error: {e}")),
-        }
-    }
-
-    async fn handle_retry_job(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            job_id: String,
-        }
-        let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
-            Some(i) => i,
-            None => return ToolCallResult::error("Missing required field: job_id"),
-        };
-
-        match self.queue.retry(&input.job_id).await {
-            Ok(true) => ToolCallResult::success_text(
-                json!({ "requeued": true, "id": input.job_id, "status": "queued" }).to_string(),
-            ),
-            Ok(false) => ToolCallResult::error(format!(
-                "Job {} not found or not in a retryable state (must be failed/dead/cancelled)",
-                input.job_id
-            )),
-            Err(e) => ToolCallResult::error(format!("Error: {e}")),
+        match input.action.as_str() {
+            "cancel" => match self.queue.cancel(&input.job_id).await {
+                Ok(true) => {
+                    ToolCallResult::success_json(json!({ "cancelled": true, "id": input.job_id }))
+                }
+                Ok(false) => ToolCallResult::error(format!(
+                    "Job {} not found or already in a terminal state",
+                    input.job_id
+                )),
+                Err(e) => ToolCallResult::error(format!("Error: {e}")),
+            },
+            "retry" => match self.queue.retry(&input.job_id).await {
+                Ok(true) => ToolCallResult::success_json(
+                    json!({ "requeued": true, "id": input.job_id, "status": "queued" }),
+                ),
+                Ok(false) => ToolCallResult::error(format!(
+                    "Job {} not found or not retryable (must be failed/dead/cancelled)",
+                    input.job_id
+                )),
+                Err(e) => ToolCallResult::error(format!("Error: {e}")),
+            },
+            other => {
+                ToolCallResult::error(format!("Unknown action `{other}`. Use cancel or retry."))
+            }
         }
     }
 
@@ -261,19 +287,6 @@ impl AgentSkill {
             })
             .to_string(),
         )
-    }
-
-    async fn handle_drain_queue(&self) -> ToolCallResult {
-        match self.queue.drain().await {
-            Ok(count) => ToolCallResult::success_text(
-                json!({
-                    "count": count,
-                    "message": format!("Drained {count} queued jobs"),
-                })
-                .to_string(),
-            ),
-            Err(e) => ToolCallResult::error(format!("Drain failed: {e}")),
-        }
     }
 
     async fn handle_enqueue_jobs(&self, args: Option<Value>) -> ToolCallResult {
@@ -320,6 +333,107 @@ impl AgentSkill {
             Err(e) => ToolCallResult::error(format!("Failed to enqueue jobs: {e}")),
         }
     }
+
+    async fn handle_dead_letter(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Input {
+            action: String,
+            job_id: Option<String>,
+            limit: Option<usize>,
+        }
+        let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
+            Some(i) => i,
+            None => return ToolCallResult::error("Missing required field: action"),
+        };
+
+        match input.action.as_str() {
+            "list" => {
+                let limit = input.limit.unwrap_or(20).min(100);
+                match self.queue.list_dead_letter(limit).await {
+                    Ok(jobs) => {
+                        let rows: Vec<Value> = jobs
+                            .into_iter()
+                            .map(|j| {
+                                json!({
+                                    "id": j.id,
+                                    "tool_name": j.tool_name,
+                                    "reason": j.dead_letter_reason,
+                                    "attempt_count": j.attempt_count,
+                                    "error": j.error,
+                                    "dead_lettered_at": j.dead_lettered_at,
+                                })
+                            })
+                            .collect();
+                        ToolCallResult::success_json(
+                            json!({ "entries": rows, "count": rows.len() }),
+                        )
+                    }
+                    Err(e) => ToolCallResult::error(format!("Failed to list dead letter: {e}")),
+                }
+            }
+
+            "retry" => {
+                let id = match &input.job_id {
+                    Some(id) => id.clone(),
+                    None => return ToolCallResult::error("retry requires 'job_id'"),
+                };
+                match self.queue.retry_dead_letter(&id).await {
+                    Ok(true) => ToolCallResult::success_text(
+                        json!({ "requeued": true, "id": id }).to_string(),
+                    ),
+                    Ok(false) => {
+                        ToolCallResult::error(format!("Job {id} not found in dead letter"))
+                    }
+                    Err(e) => ToolCallResult::error(format!("Error: {e}")),
+                }
+            }
+
+            "delete" => {
+                let id = match &input.job_id {
+                    Some(id) => id.clone(),
+                    None => return ToolCallResult::error("delete requires 'job_id'"),
+                };
+                match self.queue.delete_dead_letter(&id).await {
+                    Ok(true) => ToolCallResult::success_text(
+                        json!({ "deleted": true, "id": id }).to_string(),
+                    ),
+                    Ok(false) => {
+                        ToolCallResult::error(format!("Job {id} not found in dead letter"))
+                    }
+                    Err(e) => ToolCallResult::error(format!("Error: {e}")),
+                }
+            }
+
+            other => ToolCallResult::error(format!(
+                "Unknown action '{other}'. Use: list, retry, delete"
+            )),
+        }
+    }
+
+    async fn handle_update_job_progress(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input {
+            job_id: String,
+            percent: u8,
+            message: Option<String>,
+        }
+        let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
+            Some(i) => i,
+            None => return ToolCallResult::error("Missing required fields"),
+        };
+
+        match self
+            .queue
+            .update_progress(&input.job_id, input.percent, input.message.as_deref(), None)
+            .await
+        {
+            Ok(_) => ToolCallResult::success_text(
+                json!({ "updated": true, "job_id": input.job_id, "percent": input.percent })
+                    .to_string(),
+            ),
+            Err(e) => ToolCallResult::error(format!("Error: {e}")),
+        }
+    }
 }
 
 #[async_trait]
@@ -331,23 +445,71 @@ impl Skill for AgentSkill {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             Self::enqueue_jobs_def(),
-            Self::queue_status_def(),
-            Self::cancel_job_def(),
-            Self::retry_job_def(),
+            Self::manage_job_def(),
             Self::set_worker_config_def(),
-            Self::drain_queue_def(),
+            Self::dead_letter_def(),
+            Self::update_job_progress_def(),
         ]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
             "enqueue_jobs" => Some(self.handle_enqueue_jobs(arguments).await),
-            "queue_status" => Some(self.handle_queue_status().await),
-            "cancel_job" => Some(self.handle_cancel_job(arguments).await),
-            "retry_job" => Some(self.handle_retry_job(arguments).await),
+            "manage_job" => Some(self.handle_manage_job(arguments).await),
             "set_worker_config" => Some(self.handle_set_worker_config(arguments).await),
-            "drain_queue" => Some(self.handle_drain_queue().await),
+            "dead_letter" => Some(self.handle_dead_letter(arguments).await),
+            "update_job_progress" => Some(self.handle_update_job_progress(arguments).await),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // AgentSkill wraps a concrete QueueService that requires a live Neo4j
+    // connection, so we test only the pure (non-network) surface: tool
+    // definitions and the execute() routing table.
+
+    fn tool_defs() -> Vec<ToolDefinition> {
+        vec![
+            AgentSkill::enqueue_jobs_def(),
+            AgentSkill::manage_job_def(),
+            AgentSkill::set_worker_config_def(),
+            AgentSkill::dead_letter_def(),
+            AgentSkill::update_job_progress_def(),
+        ]
+    }
+
+    #[test]
+    fn tools_list_has_five_tools() {
+        assert_eq!(tool_defs().len(), 5);
+    }
+
+    #[test]
+    fn tool_names_are_correct() {
+        let defs = tool_defs();
+        let names: Vec<&str> = defs.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"enqueue_jobs"));
+        assert!(names.contains(&"manage_job"));
+        assert!(names.contains(&"set_worker_config"));
+        assert!(names.contains(&"dead_letter"));
+        assert!(names.contains(&"update_job_progress"));
+    }
+
+    #[test]
+    fn enqueue_jobs_schema_requires_steps() {
+        let def = AgentSkill::enqueue_jobs_def();
+        let required = def.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("steps")));
+    }
+
+    #[test]
+    fn manage_job_schema_requires_action_and_job_id() {
+        let def = AgentSkill::manage_job_def();
+        let required = def.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("action")));
+        assert!(required.iter().any(|v| v.as_str() == Some("job_id")));
     }
 }

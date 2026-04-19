@@ -34,11 +34,14 @@ impl Neo4jClient {
     pub async fn init_schema(&self) -> Result<()> {
         // ... (existing schema init)
         let constraints = [
+            "CREATE CONSTRAINT scheduled_task_id IF NOT EXISTS FOR (s:ScheduledTask) REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT scheduled_task_name IF NOT EXISTS FOR (s:ScheduledTask) REQUIRE s.name IS UNIQUE",
             "CREATE CONSTRAINT procedure_id IF NOT EXISTS FOR (p:Procedure) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT working_memory_id IF NOT EXISTS FOR (w:WorkingMemory) REQUIRE w.id IS UNIQUE",
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
+            "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
             // Note: ModelSpec nodes removed — model registry now lives in DuckDB model_registry table
         ];
 
@@ -59,6 +62,8 @@ impl Neo4jClient {
             "CREATE INDEX agent_job_status IF NOT EXISTS FOR (j:AgentJob) ON (j.status)",
             "CREATE INDEX agent_job_priority IF NOT EXISTS FOR (j:AgentJob) ON (j.priority)",
             "CREATE INDEX agent_job_created IF NOT EXISTS FOR (j:AgentJob) ON (j.created_at)",
+            "CREATE INDEX todo_status IF NOT EXISTS FOR (t:Todo) ON (t.status)",
+            "CREATE INDEX todo_priority IF NOT EXISTS FOR (t:Todo) ON (t.priority)",
             // Note: model_spec_provider index removed — model registry lives in DuckDB
         ];
 

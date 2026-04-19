@@ -1,10 +1,10 @@
-//! WorkingMemoryStore and ProcedureStore implementations on Neo4jClient.
+//! WorkingMemoryStore and TaskStore implementations on Neo4jClient.
 
 use serde_json::{Value, json};
 
 use crate::models::{Task, TaskStatus};
 use crate::repository::Neo4jClient;
-use crate::services::traits::{ProcedureStore, TaskStore, WorkingMemoryStore};
+use crate::services::traits::{TaskStore, WorkingMemoryStore};
 
 // ============================================================================
 // WorkingMemoryStore
@@ -138,77 +138,6 @@ impl WorkingMemoryStore for Neo4jClient {
         let q = neo4rs::query("MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w")
             .param("session_id", session_id);
         self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
-    }
-}
-
-// ============================================================================
-// ProcedureStore
-// ============================================================================
-
-#[async_trait::async_trait]
-impl ProcedureStore for Neo4jClient {
-    async fn store_procedure(
-        &self,
-        id: &str,
-        name: &str,
-        description: &str,
-        steps_json: &str,
-        timestamp: &str,
-    ) -> anyhow::Result<()> {
-        let cypher = r#"
-        CREATE (p:Procedure {
-            id: $id,
-            name: $name,
-            description: $description,
-            steps: $steps,
-            created_at: datetime($timestamp)
-        })
-        "#;
-
-        let q = neo4rs::query(cypher)
-            .param("id", id)
-            .param("name", name)
-            .param("description", description)
-            .param("steps", steps_json)
-            .param("timestamp", timestamp);
-
-        self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn search_procedures(&self, query_str: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
-        let cypher = r#"
-        MATCH (p:Procedure)
-        WHERE toLower(p.name) CONTAINS toLower($query)
-           OR toLower(p.description) CONTAINS toLower($query)
-        RETURN p.id AS id, p.name AS name, p.description AS description, p.steps AS steps
-        LIMIT $limit
-        "#;
-
-        let q = neo4rs::query(cypher)
-            .param("query", query_str)
-            .param("limit", limit as i64);
-
-        let rows = self
-            .execute(q)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        let mut procedures = Vec::new();
-        for row in rows {
-            let id = row.get::<String>("id").unwrap_or_default();
-            let name = row.get::<String>("name").unwrap_or_default();
-            let description = row.get::<String>("description").unwrap_or_default();
-            let steps_str = row
-                .get::<String>("steps")
-                .unwrap_or_else(|_| "[]".to_string());
-            let steps: Value = serde_json::from_str(&steps_str).unwrap_or(json!([]));
-            procedures.push(json!({
-                "id": id,
-                "name": name,
-                "description": description,
-                "steps": steps
-            }));
-        }
-        Ok(procedures)
     }
 }
 

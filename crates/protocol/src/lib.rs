@@ -4,11 +4,15 @@
 //! `services/` layer and the `mcp/` transport layer, breaking the circular
 //! dependency between those two modules.
 
+pub mod params;
+pub mod queue;
 pub mod skill;
 pub mod sse_notifier;
 pub mod tool_handler;
 pub mod types;
 
+pub use params::*;
+pub use queue::*;
 pub use skill::Skill;
 pub use sse_notifier::SseNotifier;
 pub use tool_handler::ToolHandlerTrait;
