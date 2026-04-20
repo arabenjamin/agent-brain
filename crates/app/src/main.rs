@@ -440,6 +440,9 @@ async fn run_serve(
             // Wire the log ring buffer for GET /api/logs.
             http_config = http_config.with_log_buffer(log_buffer);
 
+            // Wire the tool registry for GET /api/skills.
+            http_config = http_config.with_tool_registry(server.tool_registry_handle());
+
             if let Some(key) = api_key.filter(|k| !k.is_empty()) {
                 http_config = http_config.with_api_key(key);
                 info!("API key authentication enabled");

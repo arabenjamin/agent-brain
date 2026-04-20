@@ -1088,6 +1088,9 @@ html, body, #root {
   flex: 1;
   overflow-y: auto;
 }
+.note-full-content.markdown-body {
+  white-space: normal;
+}
 
 .note-edit-area {
   flex: 1;

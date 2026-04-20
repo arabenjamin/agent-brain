@@ -46,6 +46,7 @@ pub struct RestState {
     pub llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     pub telemetry: Option<TelemetryClient>,
     pub log_buffer: Option<Arc<crate::logging::LogBuffer>>,
+    pub tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
 }
 
 // ============================================================================
@@ -63,6 +64,7 @@ pub struct RestAdapter {
     llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     telemetry: Option<TelemetryClient>,
     log_buffer: Option<Arc<crate::logging::LogBuffer>>,
+    tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
 }
 
 impl RestAdapter {
@@ -122,6 +124,14 @@ impl RestAdapter {
         self
     }
 
+    pub fn with_tool_registry_opt(
+        mut self,
+        registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
+    ) -> Self {
+        self.tool_registry = registry;
+        self
+    }
+
     /// Build the [`RestState`] that must be injected as an Extension into the
     /// router returned by [`Self::routes`].
     ///
@@ -142,6 +152,7 @@ impl RestAdapter {
             llm_config: self.llm_config,
             telemetry: self.telemetry,
             log_buffer: self.log_buffer,
+            tool_registry: self.tool_registry,
         })
     }
 
@@ -1438,4 +1449,16 @@ pub async fn handle_get_logs(
 
     let entries = buf.recent(limit, level);
     Json(json!({ "count": entries.len(), "entries": entries })).into_response()
+}
+
+/// GET /api/skills — live skill registry: each skill name with its tool list.
+pub async fn handle_list_skills(
+    Extension(state): Extension<Arc<RestState>>,
+) -> impl IntoResponse {
+    let Some(ref registry_arc) = state.tool_registry else {
+        return Json(json!({ "skills": [] })).into_response();
+    };
+    let registry = registry_arc.read().await;
+    let skills = registry.list_skills();
+    Json(json!({ "skills": skills })).into_response()
 }

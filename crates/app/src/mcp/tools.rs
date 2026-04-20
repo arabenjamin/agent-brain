@@ -36,6 +36,19 @@ impl ToolRegistry {
         self.skills.iter().flat_map(|s| s.tools()).collect()
     }
 
+    /// Return each skill's name and the tool names it owns.
+    pub fn list_skills(&self) -> Vec<serde_json::Value> {
+        self.skills
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name":  s.name(),
+                    "tools": s.tools().iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
+    }
+
     /// Get a tool definition by name.
     pub fn get(&self, name: &str) -> Option<ToolDefinition> {
         for skill in &self.skills {

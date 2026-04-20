@@ -386,6 +386,11 @@ impl BrainCore {
         Arc::clone(&self.llm_config)
     }
 
+    /// Return the tool registry Arc so HTTP transport can serve `/api/skills`.
+    pub fn tool_registry_handle(&self) -> Arc<RwLock<crate::mcp::tools::ToolRegistry>> {
+        Arc::clone(&self.tool_registry)
+    }
+
     /// Return a clone of the telemetry client (if one was configured).
     pub fn telemetry(&self) -> Option<TelemetryClient> {
         self.storage.telemetry.clone()
@@ -644,6 +649,10 @@ impl BrainCore {
             registry.register_skill(Box::new(d.clone_shared()));
         }
 
+        // Snapshot live tool names for the scheduler audit action.
+        let live_tool_names: Vec<String> = registry.list().iter().map(|t| t.name.clone()).collect();
+        let live_tools_arc: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(live_tool_names));
+
         drop(registry);
 
         // ── Build the ToolHandler skill list ──────────────────────────────
@@ -732,10 +741,10 @@ impl BrainCore {
         }
 
         if let Some(ref sched) = scheduler_arc {
-            skills.push(Box::new(SchedulerSkill::new(
-                Arc::clone(sched),
-                self.storage.neo4j.clone(),
-            )));
+            skills.push(Box::new(
+                SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())
+                    .with_live_tools(Arc::clone(&live_tools_arc)),
+            ));
         }
 
         if let Some(ref cb) = context_builder_arc {

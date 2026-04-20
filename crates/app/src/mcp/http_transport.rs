@@ -85,6 +85,8 @@ pub struct HttpTransportConfig {
     pub telemetry: Option<TelemetryClient>,
     /// Optional in-memory log ring buffer for the `GET /api/logs` endpoint.
     pub log_buffer: Option<Arc<crate::logging::LogBuffer>>,
+    /// Optional tool registry for the `GET /api/skills` endpoint.
+    pub tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
 }
 
 impl Default for HttpTransportConfig {
@@ -105,6 +107,7 @@ impl Default for HttpTransportConfig {
             llm_config: None,
             telemetry: None,
             log_buffer: None,
+            tool_registry: None,
         }
     }
 }
@@ -184,6 +187,14 @@ impl HttpTransportConfig {
         self.log_buffer = Some(buf);
         self
     }
+
+    pub fn with_tool_registry(
+        mut self,
+        registry: Arc<RwLock<crate::mcp::tools::ToolRegistry>>,
+    ) -> Self {
+        self.tool_registry = Some(registry);
+        self
+    }
 }
 
 /// Shared state for the HTTP transport.
@@ -211,6 +222,8 @@ struct HttpTransportState {
     telemetry: Option<TelemetryClient>,
     /// Optional in-memory log ring buffer for `GET /api/logs`.
     log_buffer: Option<Arc<crate::logging::LogBuffer>>,
+    /// Optional tool registry for `GET /api/skills`.
+    tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
 }
 
 /// HTTP transport for MCP server.
@@ -271,6 +284,7 @@ impl HttpTransport {
             .with_llm_config_opt(state.llm_config.clone())
             .with_telemetry_opt(state.telemetry.clone())
             .with_log_buffer_opt(state.log_buffer.clone())
+            .with_tool_registry_opt(state.tool_registry.clone())
             .build_state();
 
         Router::new()
@@ -350,6 +364,7 @@ impl HttpTransport {
                 get(rest_handlers::handle_list_dynamic_tools),
             )
             .route("/api/logs", get(rest_handlers::handle_get_logs))
+            .route("/api/skills", get(rest_handlers::handle_list_skills))
             // Inject REST state for the handlers above.
             .layer(axum::Extension(rest_state))
             .layer(cors)
@@ -414,6 +429,7 @@ impl McpTransport for HttpTransport {
             llm_config: self.config.llm_config.clone(),
             telemetry: self.config.telemetry.clone(),
             log_buffer: self.config.log_buffer.clone(),
+            tool_registry: self.config.tool_registry.clone(),
             config: self.config.clone(),
         });
 

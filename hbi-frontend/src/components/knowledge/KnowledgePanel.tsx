@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { callTool } from "../../api/mcp";
 import { getBrainUrl, getApiKey } from "../../api/config";
 
@@ -280,7 +283,11 @@ export default function KnowledgePanel() {
           </div>
         </div>
 
-        <div className="note-full-content scroll">{selected.content}</div>
+        <div className="note-full-content scroll markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+            {selected.content}
+          </ReactMarkdown>
+        </div>
 
         {selected.access_count != null && (
           <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "4px 0" }}>

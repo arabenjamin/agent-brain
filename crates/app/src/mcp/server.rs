@@ -250,6 +250,13 @@ impl McpServerCore {
         self.brain.telemetry()
     }
 
+    /// Return the tool registry Arc for the `/api/skills` REST endpoint.
+    pub fn tool_registry_handle(
+        &self,
+    ) -> Arc<RwLock<crate::mcp::tools::ToolRegistry>> {
+        self.brain.tool_registry_handle()
+    }
+
     // ── MCP state management ──────────────────────────────────────────────
 
     /// Get the current server state.

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getMcpClient } from "../../api/mcp";
+import { getBrainUrl, getApiKey } from "../../api/config";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -9,150 +10,124 @@ interface Tool {
   inputSchema?: Record<string, unknown>;
 }
 
-// ── Skill definitions ─────────────────────────────────────────────────────────
-
-interface SkillDef {
-  label:  string;
-  icon:   string;
-  color:  string;
-  desc:   string;
-  tools:  string[];
+interface LiveSkill {
+  name: string;
+  tools: string[];
 }
 
-const SKILLS: SkillDef[] = [
-  {
-    label: "Knowledge",
+// ── Static UI metadata keyed by skill name ────────────────────────────────────
+// Icons, colours, and descriptions are frontend-only concerns.
+// Tool lists come from /api/skills at runtime — never hardcoded here.
+
+interface SkillMeta {
+  icon:  string;
+  color: string;
+  desc:  string;
+}
+
+const SKILL_META: Record<string, SkillMeta> = {
+  knowledge: {
     icon:  "🧠",
     color: "var(--green)",
-    desc:  "Notes, hybrid RAG search (BM25+semantic+entity), memory consolidation, and multi-mode LLM reasoning (infer/explain/clarify/audit).",
-    tools: [
-      "store_note", "search_notes",
-      "prune_old_notes", "consolidate_memories",
-      "synthesize_knowledge", "reason",
-    ],
+    desc:  "Notes, hybrid RAG search (BM25+semantic+entity), memory consolidation, and multi-mode LLM reasoning.",
   },
-  {
-    label: "Tasks",
+  task: {
     icon:  "🎯",
     color: "var(--cyan)",
-    desc:  "Goal tracking, LLM-powered decomposition into subtasks, DEPENDS_ON edge wiring, outcome recording, and work reflection.",
-    tools: [
-      "create_task", "update_task",
-      "decompose_goal", "reflect_on_work", "record_outcome",
-    ],
+    desc:  "Goal tracking, LLM-powered decomposition into subtasks, dependency edges, outcome recording, and reflection.",
   },
-  {
-    label: "Agent Queue",
+  agent: {
     icon:  "⚙",
     color: "var(--purple)",
-    desc:  "Durable priority job queue (0–3), per-provider semaphores (Ollama×3, Anthropic×2, Gemini×5), job chaining with parked/unparked state.",
-    tools: [
-      "enqueue_jobs", "manage_job",
-      "set_worker_config", "dead_letter", "update_job_progress",
-    ],
+    desc:  "Durable priority job queue (0–3), per-provider semaphores, job chaining with parked/unparked state.",
   },
-  {
-    label: "Scheduler",
+  scheduler: {
     icon:  "⏱",
     color: "var(--purple)",
-    desc:  "Autonomous 5-min Tokio tick loop. Perception scan auto-creates tasks on failures or overdue notes. Idle sleep mode with bedtime chain.",
-    tools: [
-      "scheduler_control", "run_scheduler_tick",
-      "manage_chain", "manage_scheduled_task",
-    ],
+    desc:  "Autonomous Tokio tick loop. Perception scan auto-creates tasks. Idle sleep mode with bedtime chain.",
   },
-  {
-    label: "API",
+  http: {
     icon:  "🔌",
     color: "#fb923c",
-    desc:  "OpenAPI ingestion, HTTP execution with automatic credential injection, LLM self-healing on 4xx/5xx, and spec diff/export.",
-    tools: [
-      "ingest_openapi", "graph_query_endpoint", "execute_http_request",
-      "get_api_context", "list_loaded_apis", "clear_api_context",
-      "discover_openapi", "build_openapi_from_docs", "build_openapi_from_repo",
-      "export_openapi", "diff_api_spec",
-      "configure_api_credential", "list_api_credentials", "delete_api_credential",
-    ],
+    desc:  "Generic HTTP requests with automatic ApiContext credential injection and LLM self-healing.",
   },
-  {
-    label: "Admin",
-    icon:  "🛠",
-    color: "var(--cyan)",
-    desc:  "Graph maintenance, gzip snapshots, MERGE-safe restore, integrity checks, duplicate purging, and self-structure analysis.",
-    tools: [
-      "snapshot_knowledge", "restore_knowledge", "list_snapshots",
-      "verify_knowledge_integrity", "analyze_own_structure",
-      "delete_api", "purge_duplicate_endpoints", "purge_orphaned_schemas",
-      "reset_graph", "backfill_endpoint_embeddings",
-    ],
+  codebase: {
+    icon:  "💻",
+    color: "var(--accent)",
+    desc:  "Read files, search code, browse git log/diff, and manage codebase improvement proposals.",
   },
-  {
-    label: "Models",
+  model: {
     icon:  "🤖",
     color: "var(--purple)",
-    desc:  "LLM provider/model registry, runtime switching via use_model (pass required_capabilities to auto-select), and YAML catalog reload. Usage analytics via the generic duckdb_query tool on the model_usage table.",
-    tools: [
-      "use_model", "reload_models",
-    ],
+    desc:  "LLM provider/model registry, runtime switching, and YAML catalog reload.",
   },
-  {
-    label: "Context",
+  context: {
     icon:  "📋",
     color: "var(--cyan)",
-    desc:  "YAML context profiles with tool allowlists and system prompts. Boot/init protocols run on startup. Auto-assigns profiles to goals.",
-    tools: [
-      "context",
-    ],
+    desc:  "YAML context profiles with tool allowlists and system prompts. Boot/init protocols on startup.",
   },
-  {
-    label: "Working Memory",
+  working_memory: {
     icon:  "📝",
     color: "var(--accent)",
-    desc:  "Per-session scratchpad for multi-step tasks. Entries have roles (observation/plan/result/error). LLM summarise to long-term memory.",
-    tools: [
-      "push_context", "summarise_session",
-    ],
+    desc:  "Per-session scratchpad for multi-step tasks. Roles: observation/plan/result/error. LLM summarise to long-term.",
   },
-  {
-    label: "Dynamic Tools",
+  dynamic: {
     icon:  "⚡",
     color: "var(--yellow)",
-    desc:  "Define new MCP tools at runtime backed by stored procedures. Hot-registered instantly without restart. Template substitution supported.",
-    tools: [
-      "manage_dynamic_tool", "execute_procedure", "store_procedure",
-    ],
+    desc:  "Define new MCP tools at runtime backed by stored procedures. Hot-registered without restart.",
   },
-  {
-    label: "Procedures",
+  procedure: {
     icon:  "📜",
     color: "var(--accent)",
-    desc:  "Named multi-step workflow storage. Steps support {{input.field}}, {{context.steps.N}} substitution and per-step on_failure handling.",
-    tools: ["store_procedure", "search_procedures"],
+    desc:  "Named multi-step workflow storage with template substitution and per-step on_failure handling.",
   },
-  {
-    label: "Search",
+  search: {
     icon:  "🔍",
     color: "#fb923c",
-    desc:  "Web search via SerpApi, Brave, or Google Custom Search. Results can be stored as notes for long-term retention.",
-    tools: ["search_web"],
+    desc:  "Web search via SerpApi, Brave, or Google Custom Search. Results storable as long-term notes.",
   },
-  {
-    label: "Sleep",
+  sleep: {
     icon:  "💤",
     color: "var(--red)",
-    desc:  "Offline learning from DuckDB telemetry. Exports training data as JSONL and surfaces knowledge gaps for targeted improvement.",
-    tools: ["digest_experiences", "analyze_gaps"],
+    desc:  "Offline learning from DuckDB telemetry. Exports training data and surfaces knowledge gaps.",
   },
-];
+  query: {
+    icon:  "🗄",
+    color: "var(--green)",
+    desc:  "Raw Cypher against Neo4j and raw SQL against DuckDB telemetry.",
+  },
+  resource: {
+    icon:  "🔗",
+    color: "var(--cyan)",
+    desc:  "Named resource registry for cross-agent connection pooling and shared state.",
+  },
+  ws: {
+    icon:  "📡",
+    color: "#fb923c",
+    desc:  "Live WebSocket connections — connect, send, receive, and close.",
+  },
+};
 
-// Build name→skill index
-const TOOL_TO_SKILL = new Map<string, string>();
-for (const s of SKILLS) {
-  for (const t of s.tools) TOOL_TO_SKILL.set(t, s.label);
+const UNKNOWN_META: SkillMeta = {
+  icon:  "🔧",
+  color: "var(--text-muted)",
+  desc:  "Runtime-registered skill.",
+};
+
+function metaFor(skillName: string): SkillMeta {
+  return SKILL_META[skillName.toLowerCase()] ?? UNKNOWN_META;
 }
 
-function skillFor(name: string): string {
-  return TOOL_TO_SKILL.get(name) ?? "Dynamic";
+// ── Fetch helpers ─────────────────────────────────────────────────────────────
+
+async function fetchLiveSkills(): Promise<LiveSkill[]> {
+  const url = `${getBrainUrl()}/api/skills`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${getApiKey()}` },
+  });
+  if (!res.ok) throw new Error(`GET /api/skills → ${res.status}`);
+  const data = await res.json();
+  return (data.skills ?? []) as LiveSkill[];
 }
 
 // ── Schema view ───────────────────────────────────────────────────────────────
@@ -188,17 +163,16 @@ function SchemaView({ schema }: { schema: Record<string, unknown> }) {
 
 // ── Tool card ─────────────────────────────────────────────────────────────────
 
-function ToolCard({ tool, skillColor, showSkillBadge }: {
+function ToolCard({ tool, skillColor, skillLabel, showSkillBadge }: {
   tool: Tool;
   skillColor: string;
+  skillLabel?: string;
   showSkillBadge?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const hasSchema =
     !!tool.inputSchema?.properties &&
     Object.keys(tool.inputSchema.properties as object).length > 0;
-  const skill = showSkillBadge ? skillFor(tool.name) : null;
-  const def = skill ? SKILLS.find(s => s.label === skill) : null;
 
   return (
     <div
@@ -207,13 +181,13 @@ function ToolCard({ tool, skillColor, showSkillBadge }: {
     >
       <div className="tool-card-header" onClick={() => setOpen(v => !v)}>
         <span className="tool-name" style={{ color: skillColor }}>{tool.name}</span>
-        {def && (
+        {showSkillBadge && skillLabel && (
           <span style={{
             fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
-            background: `${def.color}22`, color: def.color,
-            border: `1px solid ${def.color}44`, flexShrink: 0,
+            background: `${skillColor}22`, color: skillColor,
+            border: `1px solid ${skillColor}44`, flexShrink: 0,
             textTransform: "uppercase", letterSpacing: "0.05em",
-          }}>{def.label}</span>
+          }}>{skillLabel}</span>
         )}
         {hasSchema && <span className="tool-toggle">{open ? "▲" : "▼"}</span>}
       </div>
@@ -229,8 +203,8 @@ function ToolCard({ tool, skillColor, showSkillBadge }: {
 
 // ── Skill nav item ────────────────────────────────────────────────────────────
 
-function SkillNavItem({ skill, count, active, onClick }: {
-  skill: SkillDef; count: number; active: boolean; onClick: () => void;
+function SkillNavItem({ name, meta, count, active, onClick }: {
+  name: string; meta: SkillMeta; count: number; active: boolean; onClick: () => void;
 }) {
   return (
     <button
@@ -238,24 +212,24 @@ function SkillNavItem({ skill, count, active, onClick }: {
       style={{
         display: "flex", alignItems: "center", gap: 9,
         width: "100%", padding: "8px 14px",
-        background: active ? `color-mix(in srgb, ${skill.color} 12%, transparent)` : "none",
+        background: active ? `color-mix(in srgb, ${meta.color} 12%, transparent)` : "none",
         border: "none",
-        borderRight: active ? `2px solid ${skill.color}` : "2px solid transparent",
+        borderRight: active ? `2px solid ${meta.color}` : "2px solid transparent",
         cursor: "pointer", textAlign: "left", fontFamily: "var(--font)",
         transition: "background 0.12s",
       }}
     >
-      <span style={{ fontSize: 13, flexShrink: 0 }}>{skill.icon}</span>
+      <span style={{ fontSize: 13, flexShrink: 0 }}>{meta.icon}</span>
       <span style={{
         flex: 1, fontSize: 11.5, fontWeight: active ? 700 : 400,
-        color: active ? skill.color : "var(--text-dim)",
+        color: active ? meta.color : "var(--text-dim)",
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-      }}>{skill.label}</span>
+      }}>{name}</span>
       <span style={{
         fontSize: 10, fontWeight: 600,
-        color: active ? skill.color : "var(--text-muted)",
-        background: active ? `color-mix(in srgb, ${skill.color} 18%, transparent)` : "var(--bg-card)",
-        border: `1px solid ${active ? skill.color + "55" : "var(--border)"}`,
+        color: active ? meta.color : "var(--text-muted)",
+        background: active ? `color-mix(in srgb, ${meta.color} 18%, transparent)` : "var(--bg-card)",
+        border: `1px solid ${active ? meta.color + "55" : "var(--border)"}`,
         padding: "1px 6px", borderRadius: 8, flexShrink: 0,
       }}>{count}</span>
     </button>
@@ -266,18 +240,26 @@ function SkillNavItem({ skill, count, active, onClick }: {
 
 export default function ToolPanel() {
   const [tools,    setTools]    = useState<Tool[]>([]);
+  const [skills,   setSkills]   = useState<LiveSkill[]>([]);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
   const [filter,   setFilter]   = useState("");
-  const [selected, setSelected] = useState<string>(SKILLS[0].label);
+  const [selected, setSelected] = useState<string>("");
 
-  const fetchTools = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const client = await getMcpClient();
-      const result = await client.listTools();
+      const [mcpClient, liveSkills] = await Promise.all([
+        getMcpClient(),
+        fetchLiveSkills(),
+      ]);
+      const result = await mcpClient.listTools();
       setTools(result.tools as Tool[]);
+      setSkills(liveSkills);
+      if (liveSkills.length > 0) {
+        setSelected(prev => prev || liveSkills[0].name);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -285,17 +267,25 @@ export default function ToolPanel() {
     }
   }, []);
 
-  useEffect(() => { fetchTools(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Build map of skill label → tools from live tool list
+  // Build tool-name → skill-name index from live registry
+  const toolToSkill = new Map<string, string>();
+  for (const sk of skills) {
+    for (const t of sk.tools) toolToSkill.set(t, sk.name);
+  }
+
+  // Build skill → Tool[] map using live MCP tool list
   const skillToolMap = new Map<string, Tool[]>();
-  for (const s of SKILLS) skillToolMap.set(s.label, []);
-  skillToolMap.set("Dynamic", []);
+  for (const sk of skills) skillToolMap.set(sk.name, []);
+  const unknownTools: Tool[] = [];
   for (const t of tools) {
-    const sk = skillFor(t.name);
-    const list = skillToolMap.get(sk) ?? [];
-    list.push(t);
-    skillToolMap.set(sk, list);
+    const skName = toolToSkill.get(t.name);
+    if (skName) {
+      skillToolMap.get(skName)!.push(t);
+    } else {
+      unknownTools.push(t);
+    }
   }
 
   // Search mode
@@ -308,20 +298,9 @@ export default function ToolPanel() {
       )
     : [];
 
-  const activeSkillDef = SKILLS.find(s => s.label === selected)
-    ?? { label: "Dynamic", icon: "⚡", color: "var(--text-muted)", desc: "Runtime-defined tools.", tools: [] };
-  const activeColor = activeSkillDef.color;
-  const activeTools = skillToolMap.get(selected) ?? [];
-
-  // Dynamic tools (unknown skill) if any
-  const dynamicTools = skillToolMap.get("Dynamic") ?? [];
-
-  const allSkills = [
-    ...SKILLS.filter(s => (skillToolMap.get(s.label)?.length ?? 0) > 0),
-    ...(dynamicTools.length > 0
-      ? [{ label: "Dynamic", icon: "⚡", color: "var(--text-muted)", desc: "Runtime-defined tools not yet in the static registry.", tools: [] }]
-      : []),
-  ];
+  const activeSkill   = skills.find(s => s.name === selected);
+  const activeMeta    = activeSkill ? metaFor(activeSkill.name) : UNKNOWN_META;
+  const activeTools   = skillToolMap.get(selected) ?? [];
 
   return (
     <div className="panel">
@@ -331,7 +310,7 @@ export default function ToolPanel() {
         🔧 Tool Explorer
         {tools.length > 0 && <span className="badge">{tools.length} tools</span>}
         {loading && <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 4 }}>loading…</span>}
-        <button className="refresh-btn" onClick={fetchTools} title="Refresh">↻</button>
+        <button className="refresh-btn" onClick={fetchAll} title="Refresh">↻</button>
       </div>
 
       {error && <div className="error-msg">{error}</div>}
@@ -366,20 +345,29 @@ export default function ToolPanel() {
           }}>
             Skills
           </div>
-          {allSkills.map(s => (
+          {skills.map(sk => (
             <SkillNavItem
-              key={s.label}
-              skill={s as SkillDef}
-              count={skillToolMap.get(s.label)?.length ?? 0}
-              active={!isSearching && selected === s.label}
-              onClick={() => { setSelected(s.label); setFilter(""); }}
+              key={sk.name}
+              name={sk.name}
+              meta={metaFor(sk.name)}
+              count={skillToolMap.get(sk.name)?.length ?? 0}
+              active={!isSearching && selected === sk.name}
+              onClick={() => { setSelected(sk.name); setFilter(""); }}
             />
           ))}
+          {unknownTools.length > 0 && (
+            <SkillNavItem
+              name="(unregistered)"
+              meta={{ icon: "❓", color: "var(--text-muted)", desc: "Tools present in MCP list but not in any registered skill." }}
+              count={unknownTools.length}
+              active={!isSearching && selected === "(unregistered)"}
+              onClick={() => { setSelected("(unregistered)"); setFilter(""); }}
+            />
+          )}
         </div>
 
         {/* ── Tool area ── */}
         {isSearching ? (
-          /* Search results — flat list with skill badges */
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{
               padding: "8px 14px", borderBottom: "1px solid var(--border)",
@@ -399,13 +387,14 @@ export default function ToolPanel() {
                 </div>
               ) : (
                 searchResults.map(t => {
-                  const sk = skillFor(t.name);
-                  const def = SKILLS.find(s => s.label === sk);
+                  const skName = toolToSkill.get(t.name) ?? "(unregistered)";
+                  const m = metaFor(skName);
                   return (
                     <ToolCard
                       key={t.name}
                       tool={t}
-                      skillColor={def?.color ?? "var(--text-muted)"}
+                      skillColor={m.color}
+                      skillLabel={skName}
                       showSkillBadge
                     />
                   );
@@ -414,31 +403,29 @@ export default function ToolPanel() {
             </div>
           </div>
         ) : (
-          /* Skill detail view */
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-
             {/* Skill header */}
             <div style={{
               padding: "12px 16px",
               borderBottom: "1px solid var(--border)",
-              background: `color-mix(in srgb, ${activeColor} 5%, var(--bg-panel))`,
+              background: `color-mix(in srgb, ${activeMeta.color} 5%, var(--bg-panel))`,
               flexShrink: 0,
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                <span style={{ fontSize: 18 }}>{activeSkillDef.icon}</span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: activeColor }}>
-                  {activeSkillDef.label}
+                <span style={{ fontSize: 18 }}>{activeMeta.icon}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: activeMeta.color }}>
+                  {selected}
                 </span>
                 <span style={{
                   fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
-                  background: `color-mix(in srgb, ${activeColor} 18%, transparent)`,
-                  color: activeColor, border: `1px solid ${activeColor}44`,
+                  background: `color-mix(in srgb, ${activeMeta.color} 18%, transparent)`,
+                  color: activeMeta.color, border: `1px solid ${activeMeta.color}44`,
                 }}>
                   {activeTools.length} tools
                 </span>
               </div>
               <p style={{ fontSize: 11.5, color: "var(--text-dim)", lineHeight: 1.6, margin: 0 }}>
-                {activeSkillDef.desc}
+                {activeMeta.desc}
               </p>
             </div>
 
@@ -454,7 +441,7 @@ export default function ToolPanel() {
                 </div>
               )}
               {activeTools.map(t => (
-                <ToolCard key={t.name} tool={t} skillColor={activeColor} />
+                <ToolCard key={t.name} tool={t} skillColor={activeMeta.color} />
               ))}
             </div>
           </div>

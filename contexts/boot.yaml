@@ -7,7 +7,14 @@ steps:
     args:
       action: status
   - type: log
-    message: "Scheduler status obtained — boot protocol complete"
+    message: "Scheduler status obtained — auditing scheduled task steps"
+  - type: tool_call
+    tool: manage_scheduled_task
+    args:
+      action: audit
+      disable_broken: true
+  - type: log
+    message: "Scheduled task audit complete — boot protocol complete"
   - type: conditional
     condition: graph_empty
     then:

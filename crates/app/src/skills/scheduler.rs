@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::repository::Neo4jClient;
 use crate::services::scheduler::SchedulerService;
@@ -16,11 +17,23 @@ use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 pub struct SchedulerSkill {
     service: Arc<SchedulerService>,
     neo4j: Option<Neo4jClient>,
+    /// Live tool names populated after skill registration — used by the audit action.
+    live_tools: Arc<RwLock<Vec<String>>>,
 }
 
 impl SchedulerSkill {
     pub fn new(service: Arc<SchedulerService>, neo4j: Option<Neo4jClient>) -> Self {
-        Self { service, neo4j }
+        Self {
+            service,
+            neo4j,
+            live_tools: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Inject a pre-populated live tool list (replaces the default empty vec).
+    pub fn with_live_tools(mut self, live_tools: Arc<RwLock<Vec<String>>>) -> Self {
+        self.live_tools = live_tools;
+        self
     }
 
     // =========================================================================
@@ -249,19 +262,25 @@ impl SchedulerSkill {
     fn manage_scheduled_task_def() -> ToolDefinition {
         ToolDefinition {
             name: "manage_scheduled_task".to_string(),
-            description: "Create/update or delete a ScheduledTask. \
+            description: "Create/update, delete, or audit ScheduledTasks. \
                 action=upsert: if a task with `name` exists it is updated in-place, otherwise created. \
                 Steps are ChainStep objects (tool_name, arguments, priority?, max_attempts?, provider_hint?). \
                 Template vars: {{task_id}}, {{goal}}, {{date}}. Do NOT include update_task — appended automatically. \
-                action=delete: permanently remove a task by `id` (use upsert with enabled=false to pause instead)."
+                action=delete: permanently remove a task by `id` (use upsert with enabled=false to pause instead). \
+                action=audit: scan all ScheduledTask steps against the live tool registry and return a report \
+                of broken tool names, plus optionally disable tasks that reference only dead tools."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["upsert", "delete"],
-                        "description": "upsert: create or update. delete: remove by id."
+                        "enum": ["upsert", "delete", "audit"],
+                        "description": "upsert: create or update. delete: remove by id. audit: validate all task steps."
+                    },
+                    "disable_broken": {
+                        "type": "boolean",
+                        "description": "audit only: if true, disable tasks where ALL steps reference dead tools (default false)."
                     },
                     "name": {
                         "type": "string",
@@ -517,10 +536,103 @@ impl SchedulerSkill {
                     }
                 }
             }
+            "audit" => self.handle_audit_scheduled_tasks(&args).await,
             other => {
-                ToolCallResult::error(format!("Unknown action `{other}`. Use upsert or delete."))
+                ToolCallResult::error(format!(
+                    "Unknown action `{other}`. Use upsert, delete, or audit."
+                ))
             }
         }
+    }
+
+    async fn handle_audit_scheduled_tasks(&self, args: &Value) -> ToolCallResult {
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+
+        // Fetch all ScheduledTask nodes.
+        let rows = match neo4j
+            .execute(neo4rs::query(
+                "MATCH (s:ScheduledTask) RETURN s.id AS id, s.name AS name, \
+                 s.enabled AS enabled, s.steps AS steps",
+            ))
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return ToolCallResult::error(format!("Failed to fetch scheduled tasks: {e}"));
+            }
+        };
+
+        let live_tools = self.live_tools.read().await;
+        let disable_broken = args["disable_broken"].as_bool().unwrap_or(false);
+
+        let mut healthy: Vec<Value> = Vec::new();
+        let mut broken: Vec<Value> = Vec::new();
+        let mut disabled_ids: Vec<String> = Vec::new();
+
+        for row in rows {
+            let id: String = row.get("id").unwrap_or_default();
+            let name: String = row.get("name").unwrap_or_default();
+            let enabled: bool = row.get("enabled").unwrap_or(true);
+            let steps_json: String = row.get("steps").unwrap_or_default();
+
+            let steps: Vec<Value> = match serde_json::from_str(&steps_json) {
+                Ok(v) => v,
+                Err(_) => {
+                    broken.push(json!({
+                        "id": id, "name": name,
+                        "issue": "steps JSON could not be parsed",
+                    }));
+                    continue;
+                }
+            };
+
+            let dead: Vec<String> = steps
+                .iter()
+                .filter_map(|s| s["tool_name"].as_str().map(|t| t.to_string()))
+                .filter(|t| !live_tools.is_empty() && !live_tools.contains(t))
+                .collect();
+
+            if dead.is_empty() {
+                healthy.push(json!({ "id": id, "name": name, "step_count": steps.len() }));
+            } else {
+                let all_dead = dead.len() == steps.len();
+                broken.push(json!({
+                    "id": id,
+                    "name": name,
+                    "enabled": enabled,
+                    "dead_tools": dead,
+                    "all_steps_dead": all_dead,
+                }));
+
+                if disable_broken && all_dead && enabled {
+                    // Disable rather than delete so the user can inspect and fix.
+                    let _ = neo4j
+                        .run(
+                            neo4rs::query(
+                                "MATCH (s:ScheduledTask {id: $id}) SET s.enabled = false",
+                            )
+                            .param("id", id.clone()),
+                        )
+                        .await;
+                    disabled_ids.push(id);
+                }
+            }
+        }
+
+        let live_tool_count = live_tools.len();
+        drop(live_tools);
+
+        ToolCallResult::success_json(json!({
+            "live_tool_count": live_tool_count,
+            "healthy_count": healthy.len(),
+            "broken_count": broken.len(),
+            "disabled_count": disabled_ids.len(),
+            "healthy": healthy,
+            "broken": broken,
+            "disabled_ids": disabled_ids,
+        }))
     }
 }
 
