@@ -62,7 +62,14 @@ async fn main() -> Result<()> {
         Some(Command::Todo { action, url }) => run_todo(&url, action).await,
         None => {
             // Default to stdio transport when no command specified
-            run_serve(&config, TransportType::Stdio, "127.0.0.1:3000", None, log_buffer).await
+            run_serve(
+                &config,
+                TransportType::Stdio,
+                "127.0.0.1:3000",
+                None,
+                log_buffer,
+            )
+            .await
         }
     };
 

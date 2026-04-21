@@ -1452,9 +1452,7 @@ pub async fn handle_get_logs(
 }
 
 /// GET /api/skills — live skill registry: each skill name with its tool list.
-pub async fn handle_list_skills(
-    Extension(state): Extension<Arc<RestState>>,
-) -> impl IntoResponse {
+pub async fn handle_list_skills(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
     let Some(ref registry_arc) = state.tool_registry else {
         return Json(json!({ "skills": [] })).into_response();
     };

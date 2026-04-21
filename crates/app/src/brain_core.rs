@@ -993,10 +993,10 @@ impl BrainCore {
             {"tool_name":"store_note","arguments":{"content":"{{_prev}}","note_type":"news","source_context":"scheduled_daily_news_brief"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
         ]);
         let health_monitor_steps = serde_json::json!([
-            {"tool_name":"get_scheduler_status","arguments":{},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"queue_status","arguments":{"limit":20},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
+            {"tool_name":"neo4j_query","arguments":{"cypher":"MATCH (j:AgentJob) WHERE j.created_at >= toString(datetime() - duration('P1D')) RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
+            {"tool_name":"dead_letter","arguments":{"action":"list","limit":20},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
             {"tool_name":"list_tasks","arguments":{"status":"failed","limit":10},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"reason","arguments":{"question":"Scheduler status, queue metrics, and recent failed tasks from previous steps: {{_prev}}\n\nSummarise the current health of the brain. Note any failure patterns, queue backlogs, or regressions compared to previous health snapshots.","store_inference":true},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"reason","arguments":{"question":"Job status counts from the past 24 h, dead-letter queue, and recent failed tasks: {{_prev}}\n\nSummarise the current health of the brain. Note any failure patterns, queue backlogs, or regressions compared to previous health snapshots.","store_inference":true},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
             {"tool_name":"store_note","arguments":{"content":"Health monitor cycle complete — see inference note for analysis.","note_type":"outcome","source_context":"health_monitor"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
         ]);
         let weekly_news_steps = serde_json::json!([

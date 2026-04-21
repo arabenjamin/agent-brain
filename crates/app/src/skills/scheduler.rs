@@ -537,11 +537,9 @@ impl SchedulerSkill {
                 }
             }
             "audit" => self.handle_audit_scheduled_tasks(&args).await,
-            other => {
-                ToolCallResult::error(format!(
-                    "Unknown action `{other}`. Use upsert, delete, or audit."
-                ))
-            }
+            other => ToolCallResult::error(format!(
+                "Unknown action `{other}`. Use upsert, delete, or audit."
+            )),
         }
     }
 

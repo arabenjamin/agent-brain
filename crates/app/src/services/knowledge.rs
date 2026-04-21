@@ -67,6 +67,11 @@ impl KnowledgeService {
         let timestamp = Utc::now().to_rfc3339();
         let nt = note_type.unwrap_or("semantic");
 
+        // Operational/event note types carry no durable knowledge worth reviewing.
+        // Excluding them prevents the spaced-rep loop from treating every job
+        // completion note as a memory worth consolidating.
+        let needs_review = !matches!(nt, "outcome" | "news" | "news_raw");
+
         let embedding = if let Some(llm) = &self.llm {
             debug!("Generating embedding for note…");
             match llm.embed(content).await {
@@ -80,8 +85,9 @@ impl KnowledgeService {
             None
         };
 
-        let cypher = if embedding.is_some() {
-            r#"
+        let cypher = match (embedding.is_some(), needs_review) {
+            (true, true) => {
+                r#"
             CREATE (n:Note {
                 id: $id,
                 content: $content,
@@ -94,8 +100,22 @@ impl KnowledgeService {
                 embedding: $embedding
             })
             "#
-        } else {
-            r#"
+            }
+            (true, false) => {
+                r#"
+            CREATE (n:Note {
+                id: $id,
+                content: $content,
+                note_type: $note_type,
+                created_at: datetime($timestamp),
+                last_accessed_at: datetime($timestamp),
+                access_count: 0,
+                embedding: $embedding
+            })
+            "#
+            }
+            (false, true) => {
+                r#"
             CREATE (n:Note {
                 id: $id,
                 content: $content,
@@ -107,6 +127,19 @@ impl KnowledgeService {
                 review_interval_days: 1
             })
             "#
+            }
+            (false, false) => {
+                r#"
+            CREATE (n:Note {
+                id: $id,
+                content: $content,
+                note_type: $note_type,
+                created_at: datetime($timestamp),
+                last_accessed_at: datetime($timestamp),
+                access_count: 0
+            })
+            "#
+            }
         };
 
         let mut query = neo4rs::query(cypher)
@@ -951,7 +984,7 @@ impl KnowledgeService {
         let cypher = r#"
         MATCH (n:Note)
         WHERE n.next_review_at <= datetime()
-          AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated']
+          AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'outcome', 'news', 'news_raw']
         RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
                toString(n.next_review_at) AS next_review_at, n.access_count AS access_count
         ORDER BY n.next_review_at ASC LIMIT $limit

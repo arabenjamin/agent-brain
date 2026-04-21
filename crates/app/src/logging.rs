@@ -55,7 +55,9 @@ impl LogBuffer {
             "DEBUG" => 1,
             _ => 0,
         };
-        let min_rank = min_level.map(|l| level_rank(&l.to_uppercase())).unwrap_or(0);
+        let min_rank = min_level
+            .map(|l| level_rank(&l.to_uppercase()))
+            .unwrap_or(0);
         entries
             .iter()
             .rev()
@@ -82,7 +84,8 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = value.to_string();
         } else {
-            self.extra.push((field.name().to_string(), value.to_string()));
+            self.extra
+                .push((field.name().to_string(), value.to_string()));
         }
     }
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -94,13 +97,16 @@ impl tracing::field::Visit for MessageVisitor {
         }
     }
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.extra.push((field.name().to_string(), value.to_string()));
+        self.extra
+            .push((field.name().to_string(), value.to_string()));
     }
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.extra.push((field.name().to_string(), value.to_string()));
+        self.extra
+            .push((field.name().to_string(), value.to_string()));
     }
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.extra.push((field.name().to_string(), value.to_string()));
+        self.extra
+            .push((field.name().to_string(), value.to_string()));
     }
 }
 

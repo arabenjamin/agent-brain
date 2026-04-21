@@ -306,6 +306,35 @@ impl ChatService {
                 )
                 .await;
         }
+
+        // Store an episodic note summarising this chat turn so the brain builds
+        // a first-person record of conversations it has had.
+        if let Some(h) = &handler
+            && !final_text.is_empty()
+        {
+            let user_snippet: String = user_message.chars().take(300).collect();
+            let response_snippet: String = final_text.chars().take(200).collect();
+            let profile = resolved_profile.as_deref().unwrap_or("general");
+            let session_tag = session_id
+                .as_deref()
+                .map(|s| format!(" [session: {s}]"))
+                .unwrap_or_default();
+            let note = format!(
+                "Chat turn{session_tag} — profile: {profile}\n\
+                 User: {user_snippet}\n\
+                 Response: {response_snippet}"
+            );
+            let _ = h
+                .execute(
+                    "store_note",
+                    Some(json!({
+                        "content": note,
+                        "note_type": "episodic",
+                        "source_context": "chat_session"
+                    })),
+                )
+                .await;
+        }
     }
 
     // ========================================================================

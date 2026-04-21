@@ -118,6 +118,36 @@ impl Neo4jClient {
     }
 
     /// Store a reflection note and optionally link it to a Task via REFLECTS_ON.
+    /// Persist a lightweight episodic note (no embedding) directly in Neo4j.
+    /// Use this from services that don't have access to `KnowledgeService` — it
+    /// skips vector embedding but still participates in spaced-rep review.
+    pub async fn store_episodic_note(
+        &self,
+        content: &str,
+        source_context: Option<&str>,
+    ) -> Result<String, RepositoryError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let src = source_context.unwrap_or("");
+
+        let q = query(
+            "CREATE (n:Note {id: $id, content: $content, note_type: 'episodic', \
+             source_context: $src, \
+             created_at: datetime($ts), last_accessed_at: datetime($ts), \
+             access_count: 0, \
+             next_review_at: datetime($ts) + duration({days: 1}), \
+             review_interval_days: 1})",
+        )
+        .param("id", id.clone())
+        .param("content", content)
+        .param("src", src)
+        .param("ts", now);
+
+        self.run(q).await?;
+        info!(note_id = %id, source_context = %src, "Stored episodic note");
+        Ok(id)
+    }
+
     pub async fn store_reflection_note(
         &self,
         content: &str,

@@ -188,7 +188,7 @@ impl KnowledgeSkill {
                     },
                     "context": {
                         "type": "string",
-                        "description": "Optional extra context (used by clarify and audit)"
+                        "description": "Optional raw context text. When provided in infer mode, bypasses RAG and reasons directly over this text — use for live data like search results passed via {{_prev}}. Also used by clarify and audit."
                     },
                     "limit": {
                         "type": "integer",
@@ -454,6 +454,40 @@ Respond with a JSON object only (no markdown, no explanation):
             _ => {
                 // "infer" (default)
                 info!(question = %input.question, limit = input.limit, "Reasoning");
+
+                // When external context is provided, bypass RAG and reason directly over it.
+                // This prevents contamination from stale notes when the caller has live data
+                // (e.g. freshly-fetched search results in a job chain).
+                if let Some(ctx) = &input.context {
+                    let prompt = format!(
+                        "You are a reasoning engine. Using the provided context, answer the question \
+                         clearly. Distinguish what is directly stated vs inferred.\n\
+                         Output ONLY valid JSON (no markdown, no code fences): \
+                         {{\"answer\":\"...\",\"inferences\":[\"...\"],\"confidence\":0.0,\"gaps\":[\"...\"]}}\n\n\
+                         QUESTION: {}\n\
+                         CONTEXT:\n{}",
+                        input.question, ctx
+                    );
+                    return match self.llm.generate(&prompt, None).await {
+                        Ok(text_resp) => {
+                            let text = text_resp.trim();
+                            let json_start = text.find('{').unwrap_or(0);
+                            let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
+                            let parsed: Value = serde_json::from_str(&text[json_start..json_end])
+                                .unwrap_or_else(|_| {
+                                    json!({
+                                        "answer": text,
+                                        "inferences": [],
+                                        "confidence": 0.5,
+                                        "gaps": []
+                                    })
+                                });
+                            ToolCallResult::success_json(parsed)
+                        }
+                        Err(e) => ToolCallResult::error(format!("Reasoning failed: {}", e)),
+                    };
+                }
+
                 match self
                     .svc
                     .reason(&input.question, input.limit, input.store_inference)

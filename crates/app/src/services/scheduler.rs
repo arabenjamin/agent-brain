@@ -321,6 +321,20 @@ impl SchedulerService {
                         goal = %goal,
                         "Scheduler dispatched task chain"
                     );
+                    // Record this dispatch as an episodic memory so the brain has a
+                    // first-person log of what it decided to work on and when.
+                    let note = format!(
+                        "Scheduler dispatched task (id: {task_id}): {goal}\n\
+                         Chain length: {} jobs",
+                        ids.len()
+                    );
+                    if let Err(e) = self
+                        .neo4j
+                        .store_episodic_note(&note, Some("scheduler_dispatch"))
+                        .await
+                    {
+                        warn!(task_id = %task_id, error = %e, "Failed to store scheduler episodic note");
+                    }
                 }
                 Err(e) => {
                     warn!(task_id = %task_id, error = %e, "Failed to enqueue task chain");
@@ -882,12 +896,7 @@ impl SchedulerService {
                         "Auto-generated: codebase self-analysis note is more than 7 days old",
                     )
                 };
-                if self
-                    .neo4j
-                    .create_task(goal, Some(context))
-                    .await
-                    .is_ok()
-                {
+                if self.neo4j.create_task(goal, Some(context)).await.is_ok() {
                     created += 1;
                     info!(
                         stale = codebase_is_stale,
@@ -1119,18 +1128,18 @@ impl SchedulerService {
             // actually advanced. Falling through to the default branch was the root cause of
             // the consolidation loop — default never calls consolidate_memories, so notes stay
             // overdue and a new task is created on every 14-day cycle.
-            vec![
-                ChainStep {
-                    tool_name: "consolidate_memories".to_string(),
-                    arguments: Some(json!({ "topic": "recent experiences and knowledge", "limit": 20 })),
-                    priority: Some(1),
-                    max_attempts: Some(3),
-                    provider_hint: Some("ollama".to_string()),
-                    context_profile: None,
-                    ttl_secs: None,
-                    description: Some("Consolidate overdue spaced-repetition notes".to_string()),
-                },
-            ]
+            vec![ChainStep {
+                tool_name: "consolidate_memories".to_string(),
+                arguments: Some(
+                    json!({ "topic": "recent experiences and knowledge", "limit": 20 }),
+                ),
+                priority: Some(1),
+                max_attempts: Some(3),
+                provider_hint: Some("ollama".to_string()),
+                context_profile: None,
+                ttl_secs: None,
+                description: Some("Consolidate overdue spaced-repetition notes".to_string()),
+            }]
         } else if g.contains("document") || g.contains("current state") {
             // Document / capture state: search knowledge, then consolidate
             vec![
@@ -1338,7 +1347,9 @@ impl SchedulerService {
             vec![
                 ChainStep {
                     tool_name: "search_codebase".to_string(),
-                    arguments: Some(json!({ "query": goal, "max_results": 10, "context_lines": 2 })),
+                    arguments: Some(
+                        json!({ "query": goal, "max_results": 10, "context_lines": 2 }),
+                    ),
                     priority: Some(2),
                     max_attempts: Some(2),
                     provider_hint: Some("ollama".to_string()),
