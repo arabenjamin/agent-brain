@@ -481,18 +481,8 @@ impl SchedulerService {
             description: None,
         });
 
-        // 5. Enqueue the chain.
-        self.queue
-            .enqueue_chain(&steps, session_id)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // 6. Mark Task in_progress and advance ScheduledTask timestamps.
-        let _ = self
-            .neo4j
-            .update_task_status(&task_id, TaskStatus::InProgress)
-            .await;
-
+        // 5. Advance ScheduledTask timestamps BEFORE enqueuing so a concurrent tick
+        //    that reads the DB between enqueue and timestamp update can't double-dispatch.
         let now = Utc::now().to_rfc3339();
         let next = Neo4jClient::compute_next_run_at(st.interval_seconds);
         if let Err(e) = self
@@ -502,6 +492,18 @@ impl SchedulerService {
         {
             warn!(id = %st.id, error = %e, "Failed to record ScheduledTask run timestamps");
         }
+
+        // 6. Enqueue the chain.
+        self.queue
+            .enqueue_chain(&steps, session_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 7. Mark Task in_progress.
+        let _ = self
+            .neo4j
+            .update_task_status(&task_id, TaskStatus::InProgress)
+            .await;
 
         info!(
             scheduled_task_id = %st.id,
