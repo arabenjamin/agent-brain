@@ -3,9 +3,9 @@ description: Focused note management and retrieval. Ideal for search, store, upd
 tools:
   - search_notes
   - store_note
-  - get_note
-  - update_note
-  - delete_note
+  - list_notes
+  - consolidate_memories
+  - reason
 system_prompt: |
   You are a focused knowledge assistant. Store and retrieve information concisely.
   Use search_notes to find relevant context before answering. Store important

@@ -3,12 +3,13 @@ description: Source code analysis, architecture review, and refactoring. Combine
 tools:
   - search_notes
   - store_note
-  - get_note
   - reason
   - analyze_own_structure
-  - verify_knowledge_integrity
-  - export_graph_visualization
   - consolidate_memories
+  - search_codebase
+  - read_codebase_file
+  - get_git_log
+  - get_git_diff
 system_prompt: |
   You are a code analysis assistant. Analyze source code structure, identify
   architectural patterns, and suggest improvements. Use reason to think through

@@ -132,7 +132,7 @@ impl Neo4jClient {
 
         let q = query(
             "CREATE (n:Note {id: $id, content: $content, note_type: 'episodic', \
-             source_context: $src, \
+             source_context: $src, provenance: 'user_input', \
              created_at: datetime($ts), last_accessed_at: datetime($ts), \
              access_count: 0, \
              next_review_at: datetime($ts) + duration({days: 1}), \
@@ -158,6 +158,7 @@ impl Neo4jClient {
 
         let create_q = query(
             "CREATE (n:Note {id: $id, content: $content, note_type: 'reflection', \
+             provenance: 'synthesis_inference', \
              created_at: datetime($ts), last_accessed_at: datetime($ts), \
              access_count: 0, next_review_at: datetime($ts) + duration({days: 1}), \
              review_interval_days: 1})",
@@ -355,6 +356,7 @@ impl Neo4jClient {
 
         let create_q = query(
             "CREATE (n:Note {id: $id, content: $content, note_type: 'outcome', \
+             provenance: 'synthesis_inference', \
              created_at: datetime($ts), last_accessed_at: datetime($ts), \
              access_count: 0, next_review_at: datetime($ts) + duration({days: 1}), \
              review_interval_days: 1})",

@@ -8,6 +8,7 @@ use tracing::info;
 
 use crate::services::traits::{KnowledgeStore, LlmProvider};
 use crate::skills::Skill;
+use agent_brain_models::ProvenanceFlag;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Knowledge Skill implementation.
@@ -57,6 +58,11 @@ impl KnowledgeSkill {
                     "event_at": {
                         "type": "string",
                         "description": "Optional ISO-8601 timestamp of the event this note describes"
+                    },
+                    "provenance": {
+                        "type": "string",
+                        "enum": ["user_input", "synthesis_inference", "core_training"],
+                        "description": "Source authority flag: who/what produced this note (default: user_input)"
                     }
                 },
                 "required": ["content"]
@@ -225,6 +231,12 @@ impl KnowledgeSkill {
 
         info!(content_len = input.content.len(), "Storing note");
 
+        let provenance = input
+            .provenance
+            .as_deref()
+            .and_then(|s| s.parse::<ProvenanceFlag>().ok())
+            .unwrap_or(ProvenanceFlag::UserInput);
+
         match self
             .svc
             .store_note(
@@ -232,6 +244,7 @@ impl KnowledgeSkill {
                 input.note_type.as_deref(),
                 input.source_context.as_deref(),
                 input.event_at.as_deref(),
+                Some(provenance),
             )
             .await
         {
@@ -462,7 +475,8 @@ Respond with a JSON object only (no markdown, no explanation):
                     let prompt = format!(
                         "You are a reasoning engine. Using the provided context, answer the question \
                          clearly. Distinguish what is directly stated vs inferred.\n\
-                         Output ONLY valid JSON (no markdown, no code fences): \
+                         Output ONLY valid JSON. The \"answer\" field may contain markdown formatting \
+                         (headers, bullets, bold) when the question requests a structured report:\n\
                          {{\"answer\":\"...\",\"inferences\":[\"...\"],\"confidence\":0.0,\"gaps\":[\"...\"]}}\n\n\
                          QUESTION: {}\n\
                          CONTEXT:\n{}",
@@ -606,6 +620,8 @@ struct StoreNoteInput {
     source_context: Option<String>,
     #[serde(default)]
     event_at: Option<String>,
+    #[serde(default)]
+    provenance: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

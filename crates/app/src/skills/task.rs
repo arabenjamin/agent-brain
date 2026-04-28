@@ -530,6 +530,7 @@ impl TaskSkill {
                             context_profile: None,
                             ttl_secs: None,
                             description: None,
+                            confidence_threshold: None,
                         },
                         ChainStep {
                             tool_name: "store_note".to_string(),
@@ -546,6 +547,7 @@ impl TaskSkill {
                             context_profile: None,
                             ttl_secs: None,
                             description: None,
+                            confidence_threshold: None,
                         },
                     ];
                     match queue.enqueue_chain(&steps, None).await {

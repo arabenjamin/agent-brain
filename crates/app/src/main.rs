@@ -349,27 +349,48 @@ async fn run_serve(
     #[allow(unused_variables)]
     let telemetry = if let Some(path) = &config.telemetry.db_path {
         // Ensure the parent directory exists (e.g. when using a named Docker volume).
-        if let Some(parent) = std::path::Path::new(path).parent()
+        let dir_ok = if let Some(parent) = std::path::Path::new(path).parent()
             && !parent.as_os_str().is_empty()
-            && let Err(e) = std::fs::create_dir_all(parent)
         {
-            warn!(
-                "Could not create telemetry directory {}: {}",
-                parent.display(),
-                e
-            );
-        }
-        match agent_brain::repository::TelemetryClient::new(path) {
-            Ok(tc) => {
-                if let Err(e) = catalog.sync_to_duckdb(&tc) {
-                    warn!("Could not sync model catalog to DuckDB: {}", e);
+            match std::fs::create_dir_all(parent) {
+                Ok(()) => true,
+                Err(e) => {
+                    error!(
+                        path = %path,
+                        directory = %parent.display(),
+                        error = %e,
+                        "Failed to create telemetry directory — DuckDB will not open. \
+                         Disabled: SleepSkill (digest_experiences/export_training_data), \
+                         QuerySkill (duckdb_query), model usage tracking."
+                    );
+                    false
                 }
-                info!("Telemetry enabled at {}", path);
-                Some(tc)
             }
-            Err(e) => {
-                warn!("Failed to initialize telemetry: {}", e);
-                None
+        } else {
+            true
+        };
+
+        if !dir_ok {
+            None
+        } else {
+            match agent_brain::repository::TelemetryClient::new(path) {
+                Ok(tc) => {
+                    if let Err(e) = catalog.sync_to_duckdb(&tc) {
+                        warn!("Could not sync model catalog to DuckDB: {}", e);
+                    }
+                    info!("Telemetry enabled at {}", path);
+                    Some(tc)
+                }
+                Err(e) => {
+                    error!(
+                        path = %path,
+                        error = %e,
+                        "Failed to initialize DuckDB telemetry. \
+                         Disabled: SleepSkill (digest_experiences/export_training_data), \
+                         QuerySkill (duckdb_query), model usage tracking."
+                    );
+                    None
+                }
             }
         }
     } else {

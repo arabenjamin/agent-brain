@@ -1,5 +1,6 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import "./styles/main.css";
+import { getBrainUrl, getApiKey } from "./api/config";
 
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
 const TaskPanel          = lazy(() => import("./components/tasks/TaskPanel"));
@@ -35,6 +36,35 @@ function Fallback() {
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
   const [showSettings, setShowSettings] = useState(false);
+  const [notifCount, setNotifCount] = useState(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchNotifCount = useCallback(async () => {
+    try {
+      const res = await fetch(`${getBrainUrl()}/api/notifications?unread=true`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      if (res.ok) {
+        const data = await res.json() as { notifications?: unknown[] };
+        setNotifCount(data.notifications?.length ?? 0);
+      }
+    } catch {
+      // brain not reachable — ignore
+    }
+  }, []);
+
+  // Poll for unread notifications every 30 s.
+  useEffect(() => {
+    fetchNotifCount();
+    pollRef.current = setInterval(fetchNotifCount, 30_000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [fetchNotifCount]);
+
+  const handleTabClick = useCallback((id: Tab) => {
+    setTab(id);
+  }, []);
 
   return (
     <div className="app">
@@ -44,10 +74,13 @@ export default function App() {
           <button
             key={t.id}
             className={`sidebar-btn${tab === t.id ? " active" : ""}`}
-            onClick={() => setTab(t.id)}
+            onClick={() => handleTabClick(t.id)}
           >
             <span className="icon">{t.icon}</span>
             {t.label}
+            {t.id === "chat" && notifCount > 0 && (
+              <span className="notif-badge">{notifCount}</span>
+            )}
           </button>
         ))}
         <div style={{ marginTop: "auto" }}>
@@ -68,7 +101,7 @@ export default function App() {
           ? { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }
           : { display: "none" }}>
           <Suspense fallback={<Fallback />}>
-            <ChatPanel />
+            <ChatPanel onNotifCountChange={setNotifCount} visible={tab === "chat"} />
           </Suspense>
         </div>
         <Suspense fallback={<Fallback />}>

@@ -26,16 +26,44 @@ use agent_brain_protocol::Content;
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;
 
-const DEFAULT_SYSTEM_PROMPT: &str = "\
+/// Maximum characters of a tool result fed back to the LLM.
+/// Prevents context-window overflow (OllamaCloud/Ollama models often have 4K–32K token limits).
+/// The display preview uses the same cap so the UI stays consistent.
+const MAX_TOOL_RESULT_CHARS: usize = 6000;
+
+/// For OllamaCloud/Ollama streaming loops, cap tool results at this smaller limit.
+/// Tool schemas (~9K chars) are resent every round; combined with cumulative tool results
+/// the context grows quickly and causes 500s from smaller cloud models.
+const CLOUD_TOOL_RESULT_CHARS: usize = 2000;
+
+/// Maximum number of non-system messages kept in the OllamaCloud/Ollama message history.
+/// Older messages are dropped (keeping system + user + last N) to prevent context overflow.
+const MAX_HISTORY_MESSAGES: usize = 10;
+
+const DEFAULT_SYSTEM_PROMPT_TEMPLATE: &str = "\
 You are agent-brain, an autonomous AI assistant backed by a persistent Neo4j \
 knowledge graph. Always think step-by-step before acting and use the available \
 tools to give the most accurate, grounded answer possible.\n\
-Key tools: `create_task` (create a task/goal), `search_web` (search the internet), \
-`search_notes` (query the knowledge graph), `store_note` (save information), \
-`list_tasks` / `update_task` (manage tasks), `reason` (synthesize knowledge). \
-Only call tools that exist — do not invent tool names.";
+Today's date is {DATE}. When searching for recent content, always include the \
+current date in your queries (e.g. \"daily news brief {DATE}\").\n\
+CRITICAL — interactive chat rules:\n\
+1. Always deliver the actual result. Never describe what you are about to do \
+   or what you have queued — the user is waiting for the answer RIGHT NOW.\n\
+2. Never use enqueue_jobs or manage_scheduled_task in chat. Background jobs run \
+   asynchronously and their output will NEVER appear here. Do the work inline: \
+   use search_web to fetch data, reason to synthesize it, store_note to save it, \
+   then present the result to the user directly.\n\
+3. If asked for a news brief that is not in the graph, search_web for current \
+   headlines, synthesize a brief with reason, store_note it, then show it here.\n\
+Key tools: `search_web` (fetch current info), `search_notes` (knowledge graph), \
+`store_note` (save), `reason` (synthesize), `create_task` / `list_tasks` (tasks). \
+Only call tools that exist — do not invent tool names. \
+Never output XML tags like <invoke> — use only the provided function-call tools.";
 
-const CHAT_SYSTEM_PROMPT: &str = DEFAULT_SYSTEM_PROMPT;
+fn build_system_prompt() -> String {
+    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE.replace("{DATE}", &date)
+}
 
 // ============================================================================
 // Public types
@@ -394,7 +422,7 @@ impl ChatService {
             let body = json!({
                 "model": model,
                 "max_tokens": 4096,
-                "system": CHAT_SYSTEM_PROMPT,
+                "system": build_system_prompt(),
                 "tools": anthropic_tools,
                 "messages": messages,
             });
@@ -538,19 +566,19 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(4000).collect();
+                let preview: String = result_text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
-                        preview,
+                        preview: preview.clone(),
                     })
                     .await;
 
                 tool_results.push(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_id,
-                    "content": result_text,
+                    "content": preview,
                     "is_error": !success,
                 }));
             }
@@ -606,7 +634,7 @@ impl ChatService {
 
         // Build the initial messages list.
         let mut messages: Vec<Value> =
-            vec![json!({ "role": "system", "content": CHAT_SYSTEM_PROMPT })];
+            vec![json!({ "role": "system", "content": build_system_prompt() })];
         for h in &request.history {
             messages.push(json!({ "role": h.role, "content": h.content }));
         }
@@ -830,19 +858,19 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(4000).collect();
+                let preview: String = result_text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
-                        preview,
+                        preview: preview.clone(),
                     })
                     .await;
 
-                // Append the tool result as a tool message.
+                // Append the tool result as a tool message (truncated to avoid context overflow).
                 messages.push(json!({
                     "role": "tool",
-                    "content": result_text,
+                    "content": preview,
                 }));
             }
         }
@@ -894,7 +922,7 @@ impl ChatService {
 
         // Initial messages.
         let mut messages: Vec<Value> =
-            vec![json!({ "role": "system", "content": CHAT_SYSTEM_PROMPT })];
+            vec![json!({ "role": "system", "content": build_system_prompt() })];
         for h in &request.history {
             messages.push(json!({ "role": h.role, "content": h.content }));
         }
@@ -936,6 +964,12 @@ impl ChatService {
             if !response.status().is_success() {
                 let status = response.status();
                 let body_text = response.text().await.unwrap_or_default();
+                warn!(
+                    status = %status,
+                    model = %model,
+                    body = %body_text,
+                    "OllamaCloud returned non-success status"
+                );
                 let _ = tx
                     .send(ChatEvent::Error {
                         message: format!("OllamaCloud error ({status}): {body_text}"),
@@ -1036,13 +1070,23 @@ impl ChatService {
             }
 
             // Convert accumulated tool calls to a stable ordered list.
-            let tool_calls: Vec<(String, String, Value)> = tc_acc
+            let mut tool_calls: Vec<(String, String, Value)> = tc_acc
                 .into_values()
                 .map(|(id, name, args_str)| {
                     let args = serde_json::from_str(&args_str).unwrap_or(Value::Null);
                     (id, name, args)
                 })
                 .collect();
+
+            // Fallback: some models (e.g. MiniMax) leak XML-style tool calls into the
+            // text stream instead of the function-call delta channel. Parse them here.
+            if tool_calls.is_empty() {
+                tool_calls = parse_xml_tool_calls(&full_content);
+                if !tool_calls.is_empty() {
+                    // Strip the XML from the displayed content.
+                    full_content = strip_xml_tool_calls(&full_content);
+                }
+            }
 
             if tool_calls.is_empty() {
                 // No tool calls — final answer.
@@ -1066,22 +1110,37 @@ impl ChatService {
             }
 
             // Append assistant message with tool_calls in OpenAI format.
+            // content must be null (not "") when the model emits no text before tool calls;
+            // sending an empty string causes 500s from strict OpenAI-compatible servers.
             let oai_tc: Vec<Value> = tool_calls
                 .iter()
                 .map(|(id, name, args)| {
+                    // OpenAI spec: `arguments` must be a JSON-encoded object string.
+                    // Value::Null (model sent no args) serialises to "null" which strict
+                    // servers reject; normalise to "{}" instead.
+                    let args_str = if args.is_null() || !args.is_object() {
+                        "{}".to_string()
+                    } else {
+                        serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+                    };
                     json!({
                         "id": id,
                         "type": "function",
                         "function": {
                             "name": name,
-                            "arguments": serde_json::to_string(args).unwrap_or_default()
+                            "arguments": args_str
                         }
                     })
                 })
                 .collect();
+            let content_val: Value = if full_content.is_empty() {
+                Value::Null
+            } else {
+                Value::String(full_content.clone())
+            };
             messages.push(json!({
                 "role": "assistant",
-                "content": full_content,
+                "content": content_val,
                 "tool_calls": oai_tc,
             }));
 
@@ -1119,21 +1178,34 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(4000).collect();
+                let preview: String = result_text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
-                        preview,
+                        preview: preview.clone(),
                     })
                     .await;
 
                 // OpenAI requires tool results as role="tool" with tool_call_id.
+                // Use CLOUD_TOOL_RESULT_CHARS (smaller cap) because tool schemas are resent
+                // every round; combined context grows quickly and causes 500s.
+                let cloud_preview: String =
+                    result_text.chars().take(CLOUD_TOOL_RESULT_CHARS).collect();
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_id,
-                    "content": result_text,
+                    "content": cloud_preview,
                 }));
+            }
+
+            // Trim message history to prevent unbounded context growth.
+            // Keep system message [0] + user message [1] + last MAX_HISTORY_MESSAGES.
+            if messages.len() > MAX_HISTORY_MESSAGES + 2 {
+                let keep_from = messages.len() - MAX_HISTORY_MESSAGES;
+                let tail: Vec<Value> = messages.drain(keep_from..).collect();
+                messages.truncate(2); // system + user
+                messages.extend(tail);
             }
         }
 
@@ -1348,7 +1420,8 @@ impl ChatService {
              Use the key \"tool\" (not \"name\"). \
              You may call multiple tools in sequence — one <tool_call> block at a time. \
              When you have a final answer write it as plain text with no <tool_call> tag.",
-            CHAT_SYSTEM_PROMPT, tools_str
+            build_system_prompt(),
+            tools_str
         );
 
         // Build initial chat message list.
@@ -1475,6 +1548,103 @@ fn filter_tools(
     all.into_iter()
         .filter(|t| allowed.contains(t.name.as_str()))
         .collect()
+}
+
+/// Parse XML-style `<invoke name="...">` tool calls leaked by models like MiniMax.
+///
+/// Handles patterns like:
+///   `<invoke name="search_web"><query>foo</query></invoke>`
+///   `<invoke name="search_web">{"query":"foo"}</invoke>`
+///   `<invoke name="list_tasks"></invoke></minimax:tool_call>`
+fn parse_xml_tool_calls(text: &str) -> Vec<(String, String, Value)> {
+    let mut calls = Vec::new();
+    let mut search = text;
+    let mut id_counter = 0u32;
+
+    while let Some(open_start) = search.find("<invoke") {
+        let rest = &search[open_start..];
+        // Extract name attribute
+        let name = if let Some(name_start) = rest.find("name=\"") {
+            let after = &rest[name_start + 6..];
+            if let Some(name_end) = after.find('"') {
+                after[..name_end].to_string()
+            } else {
+                break;
+            }
+        } else {
+            break;
+        };
+
+        // Find closing tag
+        let close_tag = "</invoke>";
+        let body_start = rest.find('>').map(|i| i + 1).unwrap_or(rest.len());
+        let body_end = rest.find(close_tag).unwrap_or(rest.len());
+
+        let body = &rest[body_start..body_end];
+        let args = if body.trim().is_empty() {
+            json!({})
+        } else if let Ok(v) = serde_json::from_str::<Value>(body.trim()) {
+            v
+        } else {
+            // Try parsing child XML tags as key=value pairs: <query>foo</query>
+            let mut map = serde_json::Map::new();
+            let mut rem = body.trim();
+            while let Some(tag_open) = rem.find('<') {
+                let tag_rest = &rem[tag_open + 1..];
+                if tag_rest.starts_with('/') {
+                    break;
+                }
+                if let Some(tag_end) = tag_rest.find('>') {
+                    let key = tag_rest[..tag_end].trim().to_string();
+                    let after_tag = &tag_rest[tag_end + 1..];
+                    let close = format!("</{}>", key);
+                    if let Some(val_end) = after_tag.find(&close) {
+                        map.insert(key, Value::String(after_tag[..val_end].trim().to_string()));
+                        rem = &after_tag[val_end + close.len()..];
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if map.is_empty() {
+                json!({})
+            } else {
+                Value::Object(map)
+            }
+        };
+
+        let id = format!("xml-{}", id_counter);
+        id_counter += 1;
+        calls.push((id, name, args));
+
+        // Advance past </invoke>
+        if let Some(end) = rest.find(close_tag) {
+            search = &search[open_start + end + close_tag.len()..];
+        } else {
+            break;
+        }
+    }
+
+    calls
+}
+
+/// Remove XML `<invoke>...</invoke>` and `</minimax:tool_call>` blocks from text.
+fn strip_xml_tool_calls(text: &str) -> String {
+    let mut result = text.to_string();
+    while let Some(start) = result.find("<invoke") {
+        if let Some(end) = result.find("</invoke>") {
+            result = format!("{}{}", &result[..start], &result[end + 9..]);
+        } else {
+            result = result[..start].to_string();
+            break;
+        }
+    }
+    // Strip any leftover minimax wrapper tags
+    result = result.replace("</minimax:tool_call>", "");
+    result = result.replace("<minimax:tool_call>", "");
+    result.trim().to_string()
 }
 
 /// Extract the first `<tool_call>...</tool_call>` block from a text.

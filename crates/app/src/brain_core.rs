@@ -71,6 +71,13 @@ pub enum BrainEvent {
         session_id: Option<String>,
         error: String,
     },
+    /// The brain created a proactive notification for the user.
+    AgentChatInitiated {
+        notification_id: String,
+        message: String,
+        /// Optional session the brain wants to continue (for context).
+        related_session_id: Option<String>,
+    },
     /// The scheduler completed one autonomous tick.
     SchedulerTick { tasks_dispatched: usize },
     /// The scheduler entered idle/sleep mode.
@@ -615,7 +622,8 @@ impl BrainCore {
                 wm_store,
                 knowledge_svc2,
                 Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-            );
+            )
+            .with_notification_support(Arc::new(neo4j.clone()), self.event_tx.clone());
             registry.register_skill(Box::new(wm_skill));
         }
 
@@ -729,11 +737,14 @@ impl BrainCore {
                     Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
                 ));
             let wm_store2: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
-            skills.push(Box::new(WorkingMemorySkill::new(
-                wm_store2,
-                knowledge_svc4,
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-            )));
+            skills.push(Box::new(
+                WorkingMemorySkill::new(
+                    wm_store2,
+                    knowledge_svc4,
+                    Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                )
+                .with_notification_support(Arc::new(neo4j.clone()), self.event_tx.clone()),
+            ));
         }
 
         if let Some(ref qs) = queue_arc {
@@ -984,12 +995,51 @@ impl BrainCore {
             }
         }
 
+        // ── Seed built-in SourceList for news ────────────────────────────
+        let news_domains: Vec<String> = vec![
+            "apnews.com".into(),
+            "reuters.com".into(),
+            "bbc.com".into(),
+            "bbc.co.uk".into(),
+            "theguardian.com".into(),
+            "nytimes.com".into(),
+            "washingtonpost.com".into(),
+            "wsj.com".into(),
+            "ft.com".into(),
+            "economist.com".into(),
+            "bloomberg.com".into(),
+            "politico.com".into(),
+            "techcrunch.com".into(),
+            "wired.com".into(),
+            "arstechnica.com".into(),
+            "theatlantic.com".into(),
+            "axios.com".into(),
+            "npr.org".into(),
+            "pbs.org".into(),
+            "aljazeera.com".into(),
+        ];
+        if let Err(e) = neo4j
+            .upsert_source_list(
+                "news",
+                &news_domains,
+                "Approved news sources for scheduled news briefings. \
+                 Edit via neo4j_query: MATCH (s:SourceList {name:'news'}) SET s.domains = [...]",
+            )
+            .await
+        {
+            warn!(error = %e, "Failed to upsert news SourceList");
+        } else {
+            debug!("Upserted news SourceList ({} domains)", news_domains.len());
+        }
+
         // ── Seed built-in ScheduledTasks ──────────────────────────────────
         let daily_news_steps = serde_json::json!([
-            {"tool_name":"search_web","arguments":{"query":"top world news headlines {{date}} AP Reuters BBC","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"search_web","arguments":{"query":"AI technology science news {{date}} TechCrunch Wired Ars Technica","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"search_web","arguments":{"query":"business economy politics news {{date}} Financial Times Bloomberg Politico","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"reason","arguments":{"question":"Below are search results from three news categories (world, technology, business/politics) for {{date}}:\n\n{{_prev}}\n\nWrite a structured daily news brief with sections:\n## EXECUTIVE SUMMARY\n## WORLD NEWS\n## TECHNOLOGY & AI\n## BUSINESS & POLITICS\n## STORY TO WATCH\n\n3-4 bullets per section. Cite sources with URLs. Flag notable spin or framing with ⚠️.","store_inference":true},"priority":2,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"search_web","arguments":{"query":"top world news headlines {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"search_web","arguments":{"query":"AI technology science news {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"search_web","arguments":{"query":"business economy politics news {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"reason","arguments":{"question":"Write a structured daily news brief for {{date}} with the following sections:\n## EXECUTIVE SUMMARY\n## WORLD NEWS\n## TECHNOLOGY & AI\n## BUSINESS & POLITICS\n## STORY TO WATCH\n\n3-4 bullets per section. Cite sources with URLs. Flag notable spin or framing with ⚠️.","context":"{{_prev}}","store_inference":false},"priority":2,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"notify_user","arguments":{"message":"{{_prev}}","context":"Daily News Brief {{date}}","related_session_id":"news-{{date}}"},"priority":2,"max_attempts":2,"provider_hint":"ollama"},
+            {"tool_name":"push_context","arguments":{"session_id":"news-{{date}}","content":"{{_prev}}","role":"assistant"},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
             {"tool_name":"store_note","arguments":{"content":"{{_prev}}","note_type":"news","source_context":"scheduled_daily_news_brief"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
         ]);
         let health_monitor_steps = serde_json::json!([
@@ -1003,8 +1053,55 @@ impl BrainCore {
             {"tool_name":"search_web","arguments":{"query":"major world news events this week AP Reuters BBC","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
             {"tool_name":"search_web","arguments":{"query":"AI technology breakthroughs this week TechCrunch Wired","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
             {"tool_name":"search_web","arguments":{"query":"business economy politics week Financial Times Bloomberg","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"reason","arguments":{"question":"Search results from world, technology, and business news this week:\n\n{{_prev}}\n\nWrite a weekly news synthesis: top 3 stories per category, emerging themes, and one trend to watch next week. Cite sources.","store_inference":true},"priority":2,"max_attempts":3,"provider_hint":"ollama"},
+            {"tool_name":"reason","arguments":{"question":"Write a weekly news synthesis with top 3 stories per category (world, technology, business/politics), emerging themes across categories, and one trend to watch next week. Cite sources with URLs.","context":"{{_prev}}","store_inference":false},"priority":2,"max_attempts":3,"provider_hint":"ollama"},
             {"tool_name":"store_note","arguments":{"content":"{{_prev}}","note_type":"news","source_context":"scheduled_weekly_news_brief"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
+        ]);
+
+        // Todo review: query outstanding todos → reason over them → open a dedicated chat
+        // session pre-loaded with the agent's message → notify the user to join.
+        //
+        // Step flow and {{_prev}} chain:
+        //   1. neo4j_query  → raw todo rows JSON
+        //   2. reason       → agent opening message (markdown)     [returns {"answer":"..."}]
+        //   3. notify_user  → delivers message, opens "todos-{{date}}" session
+        //                     [returns {"answer":"[msg]"} so next step gets clean text]
+        //   4. push_context → seeds "todos-{{date}}" session with the agent message
+        //                     so it appears as chat history when user clicks "Continue"
+        let todo_review_steps = serde_json::json!([
+            {
+                "tool_name": "neo4j_query",
+                "arguments": {
+                    "cypher": "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] RETURN t.id AS id, t.title AS title, t.description AS description, t.priority AS priority, t.status AS status, t.due_at AS due_at ORDER BY t.priority ASC, t.created_at ASC LIMIT 15"
+                },
+                "priority": 1, "max_attempts": 2, "provider_hint": "ollama"
+            },
+            {
+                "tool_name": "reason",
+                "arguments": {
+                    "question": "You are reviewing the user's outstanding todos for {{date}}. Here is the current list:\n\n{{_prev}}\n\nWrite a friendly, concise message to the user (under 250 words) that:\n1. Opens with a brief summary of what's on their plate (number of items, any urgent/overdue ones).\n2. Picks the 1-2 highest-priority or most unclear todos and asks a specific clarifying question for each — e.g. what does completion look like, are there blockers, should you start on it now?\n3. Closes with an offer to help with any of them.\n\nIf there are no outstanding todos, say so warmly and ask if the user wants to add anything.\n\nWrite directly to the user (second person). Do not use bullet-point headers for the questions — keep it conversational.",
+                    "context": "{{_prev}}",
+                    "store_inference": false
+                },
+                "priority": 2, "max_attempts": 3, "provider_hint": "ollama"
+            },
+            {
+                "tool_name": "notify_user",
+                "arguments": {
+                    "message": "{{_prev}}",
+                    "context": "Todo Review {{date}}",
+                    "related_session_id": "todos-{{date}}"
+                },
+                "priority": 2, "max_attempts": 2, "provider_hint": "ollama"
+            },
+            {
+                "tool_name": "push_context",
+                "arguments": {
+                    "session_id": "todos-{{date}}",
+                    "content": "{{_prev}}",
+                    "role": "assistant"
+                },
+                "priority": 1, "max_attempts": 2, "provider_hint": "ollama"
+            }
         ]);
 
         let seeds: &[(&str, Option<&str>, i64, &serde_json::Value)] = &[
@@ -1032,6 +1129,14 @@ impl BrainCore {
                 604800,
                 &weekly_news_steps,
             ),
+            (
+                "Daily todo review: check outstanding todos and open a chat session to discuss progress, blockers, and next steps with the user",
+                Some(
+                    "Reviews pending todos daily, asks the user clarifying questions, and opens a dedicated chat session for follow-up.",
+                ),
+                86400,
+                &todo_review_steps,
+            ),
         ];
 
         for (name, description, interval, steps) in seeds {
@@ -1041,7 +1146,19 @@ impl BrainCore {
                 .await
             {
                 Ok((id, true)) => info!(name = *name, id = %id, "Seeded ScheduledTask"),
-                Ok((_, false)) => debug!(name = *name, "ScheduledTask already exists — skipped"),
+                Ok((_, false)) => {
+                    debug!(name = *name, "ScheduledTask already exists — skipped");
+                    // Force-update steps for tasks whose chain definition has changed.
+                    // This patches live tasks that were seeded before the change.
+                    let steps_str2 = serde_json::to_string(steps).unwrap_or_default();
+                    match neo4j.update_scheduled_task_steps(name, &steps_str2).await {
+                        Ok(true) => debug!(name = *name, "Updated ScheduledTask steps"),
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(name = *name, error = %e, "Failed to update ScheduledTask steps")
+                        }
+                    }
+                }
                 Err(e) => warn!(name = *name, error = %e, "Failed to seed ScheduledTask"),
             }
         }

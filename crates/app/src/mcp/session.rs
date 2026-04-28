@@ -361,6 +361,20 @@ impl SseNotifier for SessionManager {
     }
 }
 
+impl SessionManager {
+    /// Broadcast an SSE event to every active session.
+    /// Used for brain-initiated notifications that have no target session.
+    pub async fn notify_all(&self, event: &str, data: serde_json::Value) {
+        let payload = serde_json::to_string(&data).unwrap_or_default();
+        let sessions = self.sessions.read().await;
+        for session in sessions.values() {
+            let msg = SseMessage::new(payload.clone()).with_event(event.to_string());
+            // Best-effort
+            let _ = session.send_sse(msg);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

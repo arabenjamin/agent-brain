@@ -261,7 +261,13 @@ impl HttpTransport {
         // Build CORS layer
         let cors = CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
             .allow_headers([
                 header::CONTENT_TYPE,
                 header::ACCEPT,
@@ -353,8 +359,16 @@ impl HttpTransport {
             )
             .route("/api/jobs", get(rest_handlers::handle_list_jobs))
             .route("/api/tasks", get(rest_handlers::handle_list_tasks))
-            .route("/api/notes", get(rest_handlers::handle_list_notes))
-            .route("/api/notes/{id}", get(rest_handlers::handle_get_note))
+            .route(
+                "/api/notes",
+                get(rest_handlers::handle_list_notes).post(rest_handlers::handle_create_note),
+            )
+            .route(
+                "/api/notes/{id}",
+                get(rest_handlers::handle_get_note)
+                    .put(rest_handlers::handle_update_note)
+                    .delete(rest_handlers::handle_delete_note),
+            )
             .route(
                 "/api/notes/{id}/related",
                 get(rest_handlers::handle_get_related_notes),
@@ -365,6 +379,18 @@ impl HttpTransport {
             )
             .route("/api/logs", get(rest_handlers::handle_get_logs))
             .route("/api/skills", get(rest_handlers::handle_list_skills))
+            .route(
+                "/api/notifications",
+                get(rest_handlers::handle_list_notifications),
+            )
+            .route(
+                "/api/notifications/read-all",
+                axum::routing::post(rest_handlers::handle_mark_all_notifications_read),
+            )
+            .route(
+                "/api/notifications/{id}/read",
+                axum::routing::post(rest_handlers::handle_mark_notification_read),
+            )
             // Inject REST state for the handlers above.
             .layer(axum::Extension(rest_state))
             .layer(cors)
@@ -589,6 +615,24 @@ async fn relay_brain_event(event: BrainEvent, sessions: &SessionManager) {
                     "error":     error,
                 }),
             )
+        }
+        BrainEvent::AgentChatInitiated {
+            notification_id,
+            message,
+            related_session_id,
+        } => {
+            let data = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method":  "notifications/agent_chat",
+                "params": {
+                    "notification_id": notification_id,
+                    "message": message,
+                    "related_session_id": related_session_id,
+                },
+            });
+            // Push to ALL connected sessions — this is a user-facing notification.
+            sessions.notify_all("agent_chat", data).await;
+            return;
         }
         // Scheduler events are broadcast-only — no per-session routing yet.
         BrainEvent::SchedulerTick { .. }

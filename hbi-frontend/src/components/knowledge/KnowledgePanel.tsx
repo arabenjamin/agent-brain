@@ -2,12 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { callTool } from "../../api/mcp";
 import { getBrainUrl, getApiKey } from "../../api/config";
 
-function apiFetch(path: string) {
+async function apiFetch(path: string, init: RequestInit = {}) {
   const url = new URL(`${getBrainUrl()}${path}`, window.location.href).toString();
-  return fetch(url, { headers: { Authorization: `Bearer ${getApiKey()}` } }).then((r) => r.json());
+  const headers: Record<string, string> = { Authorization: `Bearer ${getApiKey()}` };
+  if (init.body) headers["Content-Type"] = "application/json";
+  const res = await fetch(url, { ...init, headers: { ...headers, ...(init.headers as Record<string, string> ?? {}) } });
+  if (res.status === 204) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err?.error ?? `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 interface Note {
@@ -29,6 +36,7 @@ export default function KnowledgePanel() {
   const [related, setRelated]           = useState<Note[]>([]);
   const [loading, setLoading]           = useState(false);
   const [loadingRelated, setLoadingRelated] = useState(false);
+  const [relatedOpen, setRelatedOpen]       = useState(false);
   const [error, setError]               = useState<string | null>(null);
 
   // Create state
@@ -69,8 +77,7 @@ export default function KnowledgePanel() {
     setEditing(false);
     setConfirmDelete(false);
     try {
-      const json = await callTool("search_notes", { query: q, limit: 30 });
-      const data = JSON.parse(json);
+      const data = await apiFetch(`/api/notes?q=${encodeURIComponent(q)}&limit=30`);
       setNotes(data.notes ?? []);
     } catch (e) {
       setError(String(e));
@@ -86,6 +93,7 @@ export default function KnowledgePanel() {
     setConfirmDelete(false);
     setComposing(false);
     setRelated([]);
+    setRelatedOpen(false);
     setLoadingRelated(true);
     try {
       const data = await apiFetch(`/api/notes/${note.id}/related`);
@@ -117,11 +125,10 @@ export default function KnowledgePanel() {
     setSaving(true);
     setError(null);
     try {
-      const json = await callTool("store_note", {
-        content:   newContent.trim(),
-        note_type: newNoteType,
+      const data = await apiFetch("/api/notes", {
+        method: "POST",
+        body: JSON.stringify({ content: newContent.trim(), note_type: newNoteType }),
       });
-      const data = JSON.parse(json);
       const newNote: Note = {
         id:        data.note_id ?? "",
         content:   newContent.trim(),
@@ -157,7 +164,10 @@ export default function KnowledgePanel() {
     setSaving(true);
     setError(null);
     try {
-      await callTool("update_note", { id: selected.id, content: editContent.trim() });
+      await apiFetch(`/api/notes/${selected.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ content: editContent.trim() }),
+      });
       const updated = { ...selected, content: editContent.trim() };
       setSelected(updated);
       setNotes(prev => prev.map(n => n.id === selected.id ? updated : n));
@@ -176,7 +186,7 @@ export default function KnowledgePanel() {
     setDeleting(true);
     setError(null);
     try {
-      await callTool("delete_note", { id: selected.id });
+      await apiFetch(`/api/notes/${selected.id}`, { method: "DELETE" });
       setNotes(prev => prev.filter(n => n.id !== selected.id));
       setSelected(null);
       setConfirmDelete(false);
@@ -297,10 +307,14 @@ export default function KnowledgePanel() {
 
         {(loadingRelated || related.length > 0) && (
           <div className="related-section">
-            <div className="related-section-title">
-              Related ({loadingRelated ? "…" : related.length})
-            </div>
-            {related.map((r, i) => (
+            <button
+              className="related-section-title"
+              onClick={() => setRelatedOpen(v => !v)}
+              style={{ background: "none", border: "none", cursor: "pointer", width: "100%", textAlign: "left", color: "inherit" }}
+            >
+              Related ({loadingRelated ? "…" : related.length}) {relatedOpen ? "▲" : "▼"}
+            </button>
+            {relatedOpen && related.map((r, i) => (
               <div
                 key={i}
                 className="related-note-item"

@@ -94,6 +94,12 @@ pub struct ChainStep {
     pub ttl_secs: Option<u64>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Minimum confidence score (0.0–1.0) required to execute this chain.
+    /// When set on the first step the scheduler evaluates confidence before
+    /// dispatching; if the score falls below the threshold the original chain
+    /// is replaced with a lightweight diagnosis chain.
+    #[serde(default)]
+    pub confidence_threshold: Option<f32>,
 }
 
 impl ChainStep {
@@ -759,13 +765,15 @@ impl QueueService {
             return;
         };
 
-        // Resolve {{_prev}} in arguments if the job carries a prior step result.
+        // Resolve {{_prev}} / {{result}} in arguments if the job carries a prior step result.
+        // {{result}} is treated as an alias for {{_prev}} — brain-generated chains often use
+        // the more natural name.
         let resolved_args = match &job.prev_result {
             Some(prev_text)
-                if job
-                    .arguments
-                    .as_ref()
-                    .is_some_and(|a| a.to_string().contains("{{_prev}}")) =>
+                if job.arguments.as_ref().is_some_and(|a| {
+                    let s = a.to_string();
+                    s.contains("{{_prev}}") || s.contains("{{result}}")
+                }) =>
             {
                 job.arguments
                     .as_ref()
@@ -847,6 +855,81 @@ impl QueueService {
                 } else {
                     debug!(job_id = %job.id, tool = %job.tool_name, "Stored dead-job reflection note");
                 }
+
+                // Enqueue a targeted meta-learning chain for non-infrastructure tools.
+                // This triggers the Analyze→Hypothesize→Test→Integrate cycle immediately
+                // rather than waiting for perception_scan to accumulate 3+ failures.
+                if should_meta_learn(&job.tool_name) {
+                    let search_query = format!("failure {} root cause error", job.tool_name);
+                    let hypothesis_question = format!(
+                        "You are a meta-learning system. A job running '{}' just died after {} \
+                         attempts with error: {}\n\n\
+                         Based on any related notes above:\n\
+                         1. ANALYZE: What is causing this failure?\n\
+                         2. HYPOTHESIZE: Form a specific, testable hypothesis.\n\
+                         3. TEST: Propose a concrete test to confirm/refute the hypothesis.\n\
+                         4. INTEGRATE: What single change would prevent this failure from recurring?",
+                        job.tool_name, attempt, error_text
+                    );
+                    let meta_steps = vec![
+                        crate::services::queue::ChainStep {
+                            tool_name: "search_notes".to_string(),
+                            arguments: Some(serde_json::json!({
+                                "query": search_query,
+                                "limit": 6
+                            })),
+                            priority: Some(0),
+                            max_attempts: Some(2),
+                            provider_hint: Some("ollama".to_string()),
+                            description: Some(format!(
+                                "Meta-learn: gather evidence for '{}' failure",
+                                job.tool_name
+                            )),
+                            ..Default::default()
+                        },
+                        crate::services::queue::ChainStep {
+                            tool_name: "reason".to_string(),
+                            arguments: Some(serde_json::json!({
+                                "question": hypothesis_question,
+                                "store_inference": true
+                            })),
+                            priority: Some(0),
+                            max_attempts: Some(2),
+                            provider_hint: Some("ollama".to_string()),
+                            description: Some(format!(
+                                "Meta-learn: hypothesize root cause for '{}'",
+                                job.tool_name
+                            )),
+                            ..Default::default()
+                        },
+                        crate::services::queue::ChainStep {
+                            tool_name: "store_note".to_string(),
+                            arguments: Some(serde_json::json!({
+                                "content": "{{_prev}}",
+                                "note_type": "meta_learning_result",
+                                "source_context": format!("dead_job:{}", job.tool_name),
+                                "provenance": "synthesis_inference"
+                            })),
+                            priority: Some(0),
+                            max_attempts: Some(2),
+                            provider_hint: Some("ollama".to_string()),
+                            description: Some(format!(
+                                "Meta-learn: store result for '{}'",
+                                job.tool_name
+                            )),
+                            ..Default::default()
+                        },
+                    ];
+                    if let Err(e) = self
+                        .enqueue_chain(&meta_steps, job.session_id.as_deref())
+                        .await
+                    {
+                        warn!(job_id = %job.id, error = %e, "Failed to enqueue meta-learning chain for dead job");
+                    } else {
+                        info!(job_id = %job.id, tool = %job.tool_name, "Enqueued meta-learning chain for dead job");
+                    }
+                }
+
                 self.emit_job_event(BrainEvent::JobDead {
                     job_id: job.id.clone(),
                     tool_name: job.tool_name.clone(),
@@ -872,13 +955,42 @@ impl QueueService {
 }
 
 // ---------------------------------------------------------------------------
+// Meta-learning helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if exhausted retries for `tool_name` should trigger a
+/// meta-learning chain rather than only a reflection note.
+///
+/// Maintenance and infrastructure tools are excluded to prevent the meta-
+/// learning loop from generating endless self-referential failures.
+fn should_meta_learn(tool_name: &str) -> bool {
+    const EXCLUDED: &[&str] = &[
+        "store_note",
+        "update_task",
+        "consolidate_memories",
+        "synthesize_knowledge",
+        "reason",
+        "reflect_on_work",
+        "prune_old_notes",
+        "review_due_notes",
+        "record_outcome",
+        "get_task",
+        "list_tasks",
+    ];
+    !EXCLUDED.contains(&tool_name)
+}
+
+// ---------------------------------------------------------------------------
 // {{_prev}} template substitution helpers
 // ---------------------------------------------------------------------------
 
 /// Extract the plain-text content from a ToolCallResult for use as {{_prev}}.
-/// Tries `content[0].text` first (standard ToolCallResult shape). Falls back
-/// to serialising the entire result so `{{_prev}}` is never left unreplaced when
-/// a tool returns structured data rather than a bare text string (e.g. `duckdb_query`).
+/// Tries `content[0].text` first (standard ToolCallResult shape). When the text is
+/// a JSON object with an `"answer"` field (the standard `reason` tool output shape),
+/// returns just the answer string so downstream `store_note` steps receive clean
+/// markdown instead of a JSON wrapper. Falls back to the full serialised result so
+/// `{{_prev}}` is never left unreplaced when a tool returns structured data without
+/// a human-readable answer field (e.g. `duckdb_query`, `search_web`).
 fn extract_result_text(result: &ToolCallResult) -> String {
     let text = result
         .content
@@ -893,6 +1005,14 @@ fn extract_result_text(result: &ToolCallResult) -> String {
         .unwrap_or("");
 
     if !text.is_empty() {
+        // When the text is a JSON object with an "answer" key (reason tool output),
+        // return just the answer so {{_prev}} in store_note steps gets clean markdown.
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text)
+            && let Some(answer) = parsed.get("answer").and_then(|a| a.as_str())
+            && !answer.is_empty()
+        {
+            return answer.to_string();
+        }
         text.to_string()
     } else {
         // Fallback: serialise the whole result so downstream steps always receive data.
@@ -900,13 +1020,14 @@ fn extract_result_text(result: &ToolCallResult) -> String {
     }
 }
 
-/// Recursively replace `{{_prev}}` in all string values of a JSON Value tree.
-/// Operates at the Value level so there is no risk of JSON injection.
+/// Recursively replace `{{_prev}}` and its alias `{{result}}` in all string values of a JSON
+/// Value tree.  Operates at the Value level so there is no risk of JSON injection.
 fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Value {
     match val {
-        serde_json::Value::String(s) => {
-            serde_json::Value::String(s.replace("{{_prev}}", prev_text))
-        }
+        serde_json::Value::String(s) => serde_json::Value::String(
+            s.replace("{{_prev}}", prev_text)
+                .replace("{{result}}", prev_text),
+        ),
         serde_json::Value::Object(obj) => serde_json::Value::Object(
             obj.iter()
                 .map(|(k, v)| (k.clone(), substitute_prev(v, prev_text)))

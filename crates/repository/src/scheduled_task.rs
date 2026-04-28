@@ -283,6 +283,28 @@ impl Neo4jClient {
         Ok((task.id, true))
     }
 
+    /// Update the `steps` JSON of an existing `ScheduledTask` matched by exact name.
+    /// Used to hot-patch seeded tasks when their chain definition changes.
+    /// Returns `true` if a node was matched and updated, `false` if not found.
+    pub async fn update_scheduled_task_steps(
+        &self,
+        name: &str,
+        steps: &str,
+    ) -> Result<bool, RepositoryError> {
+        let rows = self
+            .execute(
+                query(
+                    "MATCH (s:ScheduledTask {name: $name}) \
+                     SET s.steps = $steps \
+                     RETURN s.id AS id",
+                )
+                .param("name", name)
+                .param("steps", steps),
+            )
+            .await?;
+        Ok(!rows.is_empty())
+    }
+
     /// Compute `next_run_at` as `now + interval_seconds`.
     pub fn compute_next_run_at(interval_seconds: i64) -> String {
         (Utc::now() + Duration::seconds(interval_seconds)).to_rfc3339()

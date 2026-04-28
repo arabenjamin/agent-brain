@@ -64,7 +64,7 @@ def get_commit_summary():
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://localhost:3001")
     args = parser.parse_args()
@@ -118,5 +118,4 @@ def main():
 
     print("[self_update] self-knowledge refreshed")
 
-if __name__ == "__main__":
-    main()
+

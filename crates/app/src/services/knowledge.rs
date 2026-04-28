@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::repository::Neo4jClient;
 use crate::services::LlmProvider;
 use crate::services::snapshot::SnapshotService;
+use agent_brain_models::ProvenanceFlag;
 
 /// Content length above which we attempt to chunk into sub-notes.
 const CHUNK_THRESHOLD_CHARS: usize = 1500;
@@ -62,6 +63,7 @@ impl KnowledgeService {
         note_type: Option<&str>,
         source_context: Option<&str>,
         event_at: Option<&str>,
+        provenance: Option<ProvenanceFlag>,
     ) -> Result<(String, Option<Vec<f32>>)> {
         let note_id = Uuid::new_v4().to_string();
         let timestamp = Utc::now().to_rfc3339();
@@ -168,6 +170,12 @@ impl KnowledgeService {
                 .param("ea", ea);
             let _ = self.neo4j.run(q).await;
         }
+
+        let prov = provenance.unwrap_or(ProvenanceFlag::UserInput);
+        let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.provenance = $prov")
+            .param("id", note_id.clone())
+            .param("prov", prov.as_str());
+        let _ = self.neo4j.run(q).await;
 
         Ok((note_id, embedding))
     }
@@ -515,6 +523,7 @@ impl KnowledgeService {
         note_type: Option<&str>,
         source_context: Option<&str>,
         event_at: Option<&str>,
+        provenance: Option<ProvenanceFlag>,
     ) -> Result<(String, usize)> {
         // Attempt semantic chunking for long content (skip for consolidated/reflection types).
         let skip_chunk = matches!(
@@ -531,7 +540,13 @@ impl KnowledgeService {
 
             // Create parent note
             let (parent_id, parent_emb) = self
-                .store_note_raw(content, note_type, source_context, event_at)
+                .store_note_raw(
+                    content,
+                    note_type,
+                    source_context,
+                    event_at,
+                    provenance.clone(),
+                )
                 .await?;
 
             let mut total_links = if let Some(ref emb) = parent_emb {
@@ -543,7 +558,13 @@ impl KnowledgeService {
             // Create child chunk notes
             for chunk in &chunks {
                 let (child_id, child_emb) = self
-                    .store_note_raw(chunk, note_type, source_context, event_at)
+                    .store_note_raw(
+                        chunk,
+                        note_type,
+                        source_context,
+                        event_at,
+                        provenance.clone(),
+                    )
                     .await?;
 
                 // Link child to parent
@@ -570,7 +591,7 @@ impl KnowledgeService {
 
         // Normal (non-chunked) path
         let (note_id, embedding) = self
-            .store_note_raw(content, note_type, source_context, event_at)
+            .store_note_raw(content, note_type, source_context, event_at, provenance)
             .await?;
 
         let links_created = if let Some(ref emb) = embedding {
@@ -602,7 +623,8 @@ impl KnowledgeService {
                n.note_type AS note_type,
                toString(n.created_at) AS created_at,
                n.access_count AS access_count,
-               n.review_interval_days AS review_interval_days
+               n.review_interval_days AS review_interval_days,
+               n.provenance AS provenance
         "#;
 
         let rows = self
@@ -620,13 +642,17 @@ impl KnowledgeService {
             let created_at = row.get::<String>("created_at").unwrap_or_default();
             let access_count = row.get::<i64>("access_count").unwrap_or(0);
             let review_interval = row.get::<i64>("review_interval_days").unwrap_or(1);
+            let provenance = row
+                .get::<String>("provenance")
+                .unwrap_or_else(|_| "user_input".to_string());
             Ok(Some(json!({
                 "id": id,
                 "content": content,
                 "note_type": note_type,
                 "created_at": created_at,
                 "access_count": access_count,
-                "review_interval_days": review_interval
+                "review_interval_days": review_interval,
+                "provenance": provenance
             })))
         } else {
             Ok(None)
@@ -938,7 +964,7 @@ impl KnowledgeService {
             WHERE n.note_type = $note_type
             RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
                    n.access_count AS access_count, toString(n.created_at) AS created_at,
-                   n.source_context AS source_context
+                   n.source_context AS source_context, n.provenance AS provenance
             ORDER BY n.created_at DESC LIMIT $limit
             "#,
             )
@@ -950,7 +976,7 @@ impl KnowledgeService {
             MATCH (n:Note)
             RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
                    n.access_count AS access_count, toString(n.created_at) AS created_at,
-                   n.source_context AS source_context
+                   n.source_context AS source_context, n.provenance AS provenance
             ORDER BY n.created_at DESC LIMIT $limit
             "#,
             )
@@ -968,13 +994,17 @@ impl KnowledgeService {
             let access_count = row.get::<i64>("access_count").unwrap_or(0);
             let created_at = row.get::<String>("created_at").unwrap_or_default();
             let source_context = row.get::<String>("source_context").unwrap_or_default();
+            let provenance = row
+                .get::<String>("provenance")
+                .unwrap_or_else(|_| "user_input".to_string());
             results.push(serde_json::json!({
                 "id": id,
                 "content": content,
                 "note_type": note_type,
                 "access_count": access_count,
                 "created_at": created_at,
-                "source_context": source_context
+                "source_context": source_context,
+                "provenance": provenance
             }));
         }
         Ok(results)
@@ -1413,7 +1443,13 @@ impl KnowledgeService {
                     .join("\n")
             );
             match self
-                .store_note_raw(&inference_content, Some("inference"), Some(question), None)
+                .store_note_raw(
+                    &inference_content,
+                    Some("inference"),
+                    Some(question),
+                    None,
+                    Some(ProvenanceFlag::SynthesisInference),
+                )
                 .await
             {
                 Ok((inf_id, _)) => {
@@ -1556,7 +1592,13 @@ impl KnowledgeService {
             .map_err(|e| anyhow::anyhow!("LLM synthesis failed: {}", e))?;
 
         let (note_id, _) = self
-            .store_note_raw(&content, Some("semantic"), Some(topic), None)
+            .store_note_raw(
+                &content,
+                Some("semantic"),
+                Some(topic),
+                None,
+                Some(ProvenanceFlag::SynthesisInference),
+            )
             .await?;
 
         let preview: String = content.chars().take(200).collect();
@@ -1829,7 +1871,13 @@ impl KnowledgeService {
 
         // 6. Persist via store_note_raw (skip chunking + entity extraction for consolidated notes)
         let (consolidated_id, _) = self
-            .store_note_raw(&consolidated_content, Some("consolidated"), None, None)
+            .store_note_raw(
+                &consolidated_content,
+                Some("consolidated"),
+                None,
+                None,
+                Some(ProvenanceFlag::SynthesisInference),
+            )
             .await?;
 
         // 7. Create SUMMARIZED_BY relationships from source notes to consolidated note
@@ -2053,8 +2101,17 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         note_type: Option<&str>,
         source_context: Option<&str>,
         event_at: Option<&str>,
+        provenance: Option<ProvenanceFlag>,
     ) -> anyhow::Result<(String, usize)> {
-        KnowledgeService::store_note(self, content, note_type, source_context, event_at).await
+        KnowledgeService::store_note(
+            self,
+            content,
+            note_type,
+            source_context,
+            event_at,
+            provenance,
+        )
+        .await
     }
 
     async fn search_notes(

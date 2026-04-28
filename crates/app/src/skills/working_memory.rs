@@ -5,11 +5,15 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::brain_core::BrainEvent;
+use crate::repository::Neo4jClient;
 use crate::services::traits::{KnowledgeStore, LlmProvider, WorkingMemoryStore};
 use crate::skills::Skill;
+use agent_brain_models::ProvenanceFlag;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Working Memory Skill — push/retrieve session context and summarise into long-term memory.
@@ -17,6 +21,10 @@ pub struct WorkingMemorySkill {
     store: Arc<dyn WorkingMemoryStore>,
     knowledge: Arc<dyn KnowledgeStore>,
     llm: Arc<dyn LlmProvider>,
+    /// Optional Neo4j client for persisting `AgentNotification` nodes.
+    neo4j: Option<Arc<Neo4jClient>>,
+    /// Optional event bus for broadcasting `AgentChatInitiated` events.
+    event_tx: Option<broadcast::Sender<BrainEvent>>,
 }
 
 impl WorkingMemorySkill {
@@ -29,7 +37,20 @@ impl WorkingMemorySkill {
             store,
             knowledge,
             llm,
+            neo4j: None,
+            event_tx: None,
         }
+    }
+
+    /// Enable the `notify_user` tool by providing Neo4j + the brain event bus.
+    pub fn with_notification_support(
+        mut self,
+        neo4j: Arc<Neo4jClient>,
+        event_tx: broadcast::Sender<BrainEvent>,
+    ) -> Self {
+        self.neo4j = Some(neo4j);
+        self.event_tx = Some(event_tx);
+        self
     }
 
     // ========================================================================
@@ -63,6 +84,35 @@ impl WorkingMemorySkill {
         }
     }
 
+    fn notify_user_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "notify_user".to_string(),
+            description: "Send a proactive message to the user — opens or continues a chat \
+                         conversation so the user sees your message when they next check the UI. \
+                         Use when you need human input, want to report a long-running task result, \
+                         or have a follow-up question that requires user action."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The message to show the user in chat"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional short context label (e.g. 'Task: deploy app', 'Follow-up on research')"
+                    },
+                    "related_session_id": {
+                        "type": "string",
+                        "description": "Optional session ID to resume an existing conversation"
+                    }
+                },
+                "required": ["message"]
+            }),
+        }
+    }
+
     fn summarise_session_def() -> ToolDefinition {
         ToolDefinition {
             name: "summarise_session".to_string(),
@@ -91,6 +141,55 @@ impl WorkingMemorySkill {
     // ========================================================================
     // Tool Handlers
     // ========================================================================
+
+    async fn handle_notify_user(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: NotifyUserInput = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("notify_user is not available: no database configured");
+        };
+
+        let notification_id = Uuid::new_v4().to_string();
+        let created_at = Utc::now().to_rfc3339();
+
+        info!(
+            notification_id = %notification_id,
+            session = ?input.related_session_id,
+            "Brain notifying user"
+        );
+
+        if let Err(e) = neo4j
+            .create_notification(
+                &notification_id,
+                &input.message,
+                input.context.as_deref(),
+                input.related_session_id.as_deref(),
+                &created_at,
+            )
+            .await
+        {
+            return ToolCallResult::error(format!("Failed to create notification: {e}"));
+        }
+
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(BrainEvent::AgentChatInitiated {
+                notification_id: notification_id.clone(),
+                message: input.message.clone(),
+                related_session_id: input.related_session_id.clone(),
+            });
+        }
+
+        // "answer" field makes extract_result_text return the brief text (not JSON)
+        // so a downstream {{_prev}} step (e.g. store_note) receives clean content.
+        ToolCallResult::success_json(json!({
+            "notification_id": notification_id,
+            "answer": input.message,
+            "status": "delivered"
+        }))
+    }
 
     async fn handle_push_context(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: PushContextInput = match parse_args(arguments) {
@@ -179,6 +278,7 @@ impl WorkingMemorySkill {
                 Some("consolidated"),
                 Some(&input.session_id),
                 None,
+                Some(ProvenanceFlag::SynthesisInference),
             )
             .await
         {
@@ -211,11 +311,16 @@ impl Skill for WorkingMemorySkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::push_context_def(), Self::summarise_session_def()]
+        let mut tools = vec![Self::push_context_def(), Self::summarise_session_def()];
+        if self.neo4j.is_some() {
+            tools.push(Self::notify_user_def());
+        }
+        tools
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
+            "notify_user" => Some(self.handle_notify_user(arguments).await),
             "push_context" => Some(self.handle_push_context(arguments).await),
             "summarise_session" => Some(self.handle_summarise_session(arguments).await),
             _ => None,
@@ -226,6 +331,15 @@ impl Skill for WorkingMemorySkill {
 // ============================================================================
 // Input structs
 // ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct NotifyUserInput {
+    message: String,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    related_session_id: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 struct PushContextInput {

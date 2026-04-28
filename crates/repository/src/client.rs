@@ -64,6 +64,9 @@ impl Neo4jClient {
             "CREATE INDEX agent_job_created IF NOT EXISTS FOR (j:AgentJob) ON (j.created_at)",
             "CREATE INDEX todo_status IF NOT EXISTS FOR (t:Todo) ON (t.status)",
             "CREATE INDEX todo_priority IF NOT EXISTS FOR (t:Todo) ON (t.priority)",
+            // AgentNotification index
+            "CREATE INDEX agent_notification_read IF NOT EXISTS FOR (n:AgentNotification) ON (n.read)",
+            "CREATE INDEX agent_notification_created IF NOT EXISTS FOR (n:AgentNotification) ON (n.created_at)",
             // Note: model_spec_provider index removed — model registry lives in DuckDB
         ];
 
@@ -81,6 +84,111 @@ impl Neo4jClient {
         Ok(())
     }
 
+    // ========================================================================
+    // AgentNotification CRUD
+    // ========================================================================
+
+    /// Create a new notification that the brain wants to show the user.
+    pub async fn create_notification(
+        &self,
+        id: &str,
+        message: &str,
+        context: Option<&str>,
+        related_session_id: Option<&str>,
+        created_at: &str,
+    ) -> Result<()> {
+        self.graph
+            .run(
+                neo4rs::query(
+                    "CREATE (n:AgentNotification {
+                    id: $id, message: $message, context: $context,
+                    related_session_id: $session_id, created_at: $created_at, read: false
+                })",
+                )
+                .param("id", id)
+                .param("message", message)
+                .param("context", context.unwrap_or(""))
+                .param("session_id", related_session_id.unwrap_or(""))
+                .param("created_at", created_at),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// List notifications, optionally filtering to unread only.
+    pub async fn list_notifications(&self, unread_only: bool) -> Result<Vec<serde_json::Value>> {
+        let cypher = if unread_only {
+            "MATCH (n:AgentNotification) WHERE n.read = false \
+             RETURN n ORDER BY n.created_at DESC LIMIT 100"
+        } else {
+            "MATCH (n:AgentNotification) \
+             RETURN n ORDER BY n.created_at DESC LIMIT 100"
+        };
+        let rows = self.execute(neo4rs::query(cypher)).await?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(node) = row.get::<neo4rs::Node>("n") {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "id".into(),
+                    serde_json::Value::String(node.get::<String>("id").unwrap_or_default()),
+                );
+                obj.insert(
+                    "message".into(),
+                    serde_json::Value::String(node.get::<String>("message").unwrap_or_default()),
+                );
+                obj.insert(
+                    "context".into(),
+                    serde_json::Value::String(node.get::<String>("context").unwrap_or_default()),
+                );
+                obj.insert(
+                    "related_session_id".into(),
+                    serde_json::Value::String(
+                        node.get::<String>("related_session_id").unwrap_or_default(),
+                    ),
+                );
+                obj.insert(
+                    "created_at".into(),
+                    serde_json::Value::String(node.get::<String>("created_at").unwrap_or_default()),
+                );
+                obj.insert(
+                    "read".into(),
+                    serde_json::Value::Bool(node.get::<bool>("read").unwrap_or(false)),
+                );
+                out.push(serde_json::Value::Object(obj));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Mark a single notification as read.
+    pub async fn mark_notification_read(&self, id: &str) -> Result<()> {
+        self.graph
+            .run(
+                neo4rs::query(
+                    "MATCH (n:AgentNotification {id: $id}) SET n.read = true, n.read_at = $ts",
+                )
+                .param("id", id)
+                .param("ts", chrono::Utc::now().to_rfc3339().as_str()),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Mark all unread notifications as read.
+    pub async fn mark_all_notifications_read(&self) -> Result<()> {
+        self.graph
+            .run(
+                neo4rs::query(
+                    "MATCH (n:AgentNotification {read: false}) \
+                     SET n.read = true, n.read_at = $ts",
+                )
+                .param("ts", chrono::Utc::now().to_rfc3339().as_str()),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Execute a query that returns rows.
     pub async fn execute(&self, query: Query) -> Result<Vec<Row>> {
         let mut result = self.graph.execute(query).await?;
@@ -95,6 +203,44 @@ impl Neo4jClient {
     pub async fn run(&self, query: Query) -> Result<()> {
         self.graph.run(query).await?;
         Ok(())
+    }
+
+    /// Fetch the domain list for a named SourceList node.
+    /// Returns an empty vec if the node doesn't exist yet.
+    pub async fn get_source_list(&self, name: &str) -> Result<Vec<String>> {
+        let rows = self
+            .execute(
+                neo4rs::query("MATCH (s:SourceList {name: $name}) RETURN s.domains AS domains")
+                    .param("name", name),
+            )
+            .await?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(vec![]);
+        };
+        let domains: Vec<String> = row.get::<Vec<String>>("domains").unwrap_or_default();
+        Ok(domains)
+    }
+
+    /// Upsert a SourceList node (MERGE on name, SET domains + description).
+    pub async fn upsert_source_list(
+        &self,
+        name: &str,
+        domains: &[String],
+        description: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.run(
+            neo4rs::query(
+                "MERGE (s:SourceList {name: $name}) \
+                 ON CREATE SET s.created_at = $now \
+                 SET s.domains = $domains, s.description = $description, s.updated_at = $now",
+            )
+            .param("name", name)
+            .param("domains", domains.to_vec())
+            .param("description", description)
+            .param("now", now.as_str()),
+        )
+        .await
     }
 }
 

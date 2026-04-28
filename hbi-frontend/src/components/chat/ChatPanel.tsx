@@ -8,6 +8,15 @@ import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
 import { getBrainUrl, getApiKey } from "../../api/config";
 
+interface AgentNotification {
+  id: string;
+  message: string;
+  context: string;
+  related_session_id: string;
+  created_at: string;
+  read: boolean;
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface UserMsg {
@@ -154,9 +163,148 @@ function EventBubble({ evt, isActive }: { evt: ChatEvent; isActive?: boolean }) 
   return null;
 }
 
+// ── Agent notification banner ─────────────────────────────────────────────────
+
+function NotificationBanner({
+  notifications,
+  onResume,
+  onDismiss,
+}: {
+  notifications: AgentNotification[];
+  onResume: (sessionId: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  if (notifications.length === 0) return null;
+  return (
+    <div className="agent-notifications">
+      {notifications.map((n) => (
+        <div key={n.id} className="agent-notification">
+          <div className="agent-notification-header">
+            <span className="agent-notification-label">🤖 Agent message</span>
+            {n.context && <span className="agent-notification-context">{n.context}</span>}
+            <button
+              className="agent-notification-dismiss"
+              onClick={() => onDismiss(n.id)}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+          <div className="agent-notification-body">{n.message}</div>
+          {n.related_session_id && (
+            <button
+              className="btn"
+              style={{ fontSize: 11, padding: "3px 10px", marginTop: 6 }}
+              onClick={() => onResume(n.related_session_id)}
+            >
+              Continue conversation
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Thread drawer types ────────────────────────────────────────────────────────
+
+interface ThreadMsg {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  events?: ChatEvent[];
+  done?: boolean;
+}
+
+interface ThreadState {
+  sessionId: string;
+  title: string;
+  msgs: ThreadMsg[];
+  input: string;
+  streaming: boolean;
+}
+
+// ── Thread Drawer component ────────────────────────────────────────────────────
+
+function ThreadDrawer({
+  thread,
+  onClose,
+  onInputChange,
+  onSend,
+}: {
+  thread: ThreadState;
+  onClose: () => void;
+  onInputChange: (v: string) => void;
+  onSend: () => void;
+}) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [thread.msgs]);
+
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      onSend();
+    }
+  };
+
+  return (
+    <div className="thread-drawer">
+      <div className="thread-drawer-header">
+        <span className="thread-drawer-label">Thread</span>
+        <span className="thread-drawer-title">{thread.title}</span>
+        <button className="thread-drawer-close" onClick={onClose} title="Close thread">×</button>
+      </div>
+      <div className="thread-drawer-messages">
+        {thread.msgs.map((m) => (
+          <div key={m.id} className={`thread-msg ${m.role}`}>
+            <div className="thread-msg-bubble markdown-body" style={m.role === "assistant" ? { fontSize: 12 } : undefined}>
+              {m.role === "assistant" && m.events && m.events.length > 0 ? (
+                // streaming assistant message: show token events
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                  {m.events.filter(e => e.type === "token").map(e => e.content ?? "").join("") ||
+                   m.events.find(e => e.type === "message")?.content ||
+                   m.content}
+                </ReactMarkdown>
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                  {m.content}
+                </ReactMarkdown>
+              )}
+            </div>
+          </div>
+        ))}
+        {thread.streaming && (
+          <div className="thread-msg assistant">
+            <div className="thread-msg-bubble">
+              <div className="typing-indicator"><span /><span /><span /></div>
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+      <div className="thread-drawer-input-row">
+        <textarea
+          rows={2}
+          placeholder="Reply in thread…"
+          value={thread.input}
+          onChange={(e) => onInputChange(e.target.value)}
+          onKeyDown={handleKey}
+          disabled={thread.streaming}
+          style={{ resize: "none" }}
+        />
+        <button className="btn" onClick={onSend} disabled={thread.streaming || !thread.input.trim()}>
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ChatPanel() {
+export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCountChange?: (count: number) => void; visible?: boolean }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -171,6 +319,9 @@ export default function ChatPanel() {
   const [activeModelKey, setActiveModelKey] = useState("");
   const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
   const [switchingModel, setSwitchingModel] = useState(false);
+  const [notifications, setNotifications] = useState<AgentNotification[]>([]);
+  const [thread, setThread] = useState<ThreadState | null>(null);
+  const threadAbortRef = useRef<AbortController | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -199,6 +350,152 @@ export default function ChatPanel() {
   useEffect(() => {
     loadSessions();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reload unread notifications whenever the Chat tab becomes active.
+  // This ensures the banner appears even if the notification arrived while on another tab.
+  useEffect(() => {
+    if (!visible) return;
+    const load = async () => {
+      try {
+        const res = await fetch(`${getBrainUrl()}/api/notifications?unread=true`, {
+          headers: { Authorization: `Bearer ${getApiKey()}` },
+        });
+        if (res.ok) {
+          const data = await res.json() as { notifications?: AgentNotification[] };
+          const notifs = data.notifications ?? [];
+          setNotifications(notifs);
+          onNotifCountChange?.(notifs.length);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    load();
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dismissNotification = useCallback(async (id: string) => {
+    setNotifications((prev) => {
+      const next = prev.filter((n) => n.id !== id);
+      onNotifCountChange?.(next.length);
+      return next;
+    });
+    try {
+      await fetch(`${getBrainUrl()}/api/notifications/${id}/read`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+    } catch {
+      // ignore
+    }
+  }, [onNotifCountChange]);
+
+  // Open a notification as a thread drawer — loads the related session's entries.
+  const openThread = useCallback(async (n: AgentNotification) => {
+    const sid = n.related_session_id;
+    // Dismiss only this notification, keep others.
+    dismissNotification(n.id);
+
+    if (!sid) {
+      // No session to continue into — nothing to do.
+      return;
+    }
+
+    // Seed thread with the notification message optimistically so it shows instantly.
+    const seedMsg: ThreadMsg = {
+      id: uid(),
+      role: "assistant",
+      content: n.message,
+    };
+    setThread({
+      sessionId: sid,
+      title: n.context || sid,
+      msgs: [seedMsg],
+      input: "",
+      streaming: false,
+    });
+
+    // Fetch any stored entries for the session (may include additional context).
+    try {
+      const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      const parsed = (await res.json()) as {
+        entries?: Array<{ role: string; content: string }>;
+      };
+      const entries = (parsed.entries ?? []).filter(
+        (e) => e.role === "user" || e.role === "assistant"
+      );
+      if (entries.length > 0) {
+        const restored: ThreadMsg[] = entries.map((e) => ({
+          id: uid(),
+          role: e.role as "user" | "assistant",
+          content: e.content,
+        }));
+        setThread((prev) =>
+          prev ? { ...prev, msgs: restored } : prev
+        );
+      }
+    } catch {
+      // Keep the seed message if fetch fails.
+    }
+  }, [dismissNotification]);
+
+  // Send a message within the thread drawer.
+  const sendThreadMessage = useCallback(async () => {
+    if (!thread || !thread.input.trim() || thread.streaming) return;
+    const text = thread.input.trim();
+    const userMsg: ThreadMsg = { id: uid(), role: "user", content: text };
+    const asstId = uid();
+    const asstMsg: ThreadMsg = {
+      id: asstId,
+      role: "assistant",
+      content: "",
+      events: [],
+      done: false,
+    };
+
+    setThread((prev) =>
+      prev ? { ...prev, msgs: [...prev.msgs, userMsg, asstMsg], input: "", streaming: true } : prev
+    );
+
+    const history = (thread.msgs).map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+
+    const abort = new AbortController();
+    threadAbortRef.current = abort;
+
+    await streamChat({
+      message: text,
+      history,
+      sessionId: thread.sessionId,
+      contextProfile,
+      signal: abort.signal,
+      onEvent: (evt) => {
+        setThread((prev) => {
+          if (!prev) return prev;
+          const updated = prev.msgs.map((m) => {
+            if (m.id !== asstId) return m;
+            const newEvents = [...(m.events ?? []), evt];
+            const finalText = newEvents.find(e => e.type === "message")?.content ?? "";
+            const tokenText = newEvents.filter(e => e.type === "token").map(e => e.content ?? "").join("");
+            return {
+              ...m,
+              events: newEvents,
+              content: finalText || tokenText || m.content,
+              done: evt.type === "done",
+            };
+          });
+          return { ...prev, msgs: updated };
+        });
+      },
+    });
+
+    setThread((prev) => prev ? { ...prev, streaming: false } : prev);
+    threadAbortRef.current = null;
+    loadSessions();
+  }, [thread, contextProfile, loadSessions]);
 
   // Load context profiles for the selector via REST (GET /api/contexts).
   useEffect(() => {
@@ -563,9 +860,17 @@ export default function ChatPanel() {
         </div>
 
         {/* ── Chat area ── */}
-        <div className="chat-area">
+        <div className="chat-area" style={{ minWidth: 0 }}>
           <div className="chat-messages">
-            {msgs.length === 0 && (
+            <NotificationBanner
+              notifications={notifications}
+              onResume={(sid) => {
+                const n = notifications.find((x) => x.related_session_id === sid);
+                if (n) openThread(n);
+              }}
+              onDismiss={dismissNotification}
+            />
+            {msgs.length === 0 && notifications.length === 0 && (
               <div className="empty-state" style={{ marginTop: 60 }}>
                 <span className="icon">🤖</span>
                 <span>Send a message to start a conversation</span>
@@ -665,6 +970,19 @@ export default function ChatPanel() {
             </div>
           </div>
         </div>
+
+        {/* ── Thread drawer ── */}
+        {thread && (
+          <ThreadDrawer
+            thread={thread}
+            onClose={() => {
+              threadAbortRef.current?.abort();
+              setThread(null);
+            }}
+            onInputChange={(v) => setThread((prev) => prev ? { ...prev, input: v } : prev)}
+            onSend={sendThreadMessage}
+          />
+        )}
       </div>
     </div>
   );

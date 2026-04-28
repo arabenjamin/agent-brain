@@ -20,6 +20,7 @@ use tracing::{info, warn};
 
 use crate::services::KnowledgeStore;
 use crate::skills::Skill;
+use agent_brain_models::ProvenanceFlag;
 use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, parse_args};
 
 /// Codebase Skill — read-only filesystem access to the agent's own source code,
@@ -930,6 +931,7 @@ impl CodebaseSkill {
                     Some("semantic"),
                     Some("codebase_self_analysis"),
                     None,
+                    Some(ProvenanceFlag::SynthesisInference),
                 )
                 .await
             {

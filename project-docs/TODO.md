@@ -48,15 +48,17 @@
 
 ## P2 — Frontend (hbi-frontend)
 
-- [ ] **Knowledge panel note search + filter by type** — Currently only search by query string. Add a `note_type` dropdown filter to search (semantic/episodic/reflection/consolidated/inference).
+- [x] **Knowledge panel note search + filter by type** — `note_type` dropdown filter + `GET /api/notes?q=` text search (REST, no MCP). Filter applied client-side on results.
 
-- [ ] **Graph panel — entity node styling** — Entity nodes render as generic nodes; give them a distinct shape/color so the graph is easier to interpret visually.
+- [x] **Graph panel — entity node styling** — Entity nodes rendered as diamonds (◇) in orange; task nodes as squares; note nodes as circles by note_type color.
 
-- [ ] **Graph panel — performance for large graphs** — `export_graph_visualization` with `max_nodes=200` is fine for now; consider virtualization or level-of-detail for graphs with thousands of nodes.
+- [ ] **Graph panel — performance for large graphs** — `max_nodes=200` cap is in place; virtualization/LOD deferred until graph regularly exceeds that limit.
 
-- [ ] **Chat panel — code block syntax highlighting** — ReactMarkdown renders fenced code blocks as plain text. Add `react-syntax-highlighter` or `rehype-highlight` for colored code.
+- [x] **Chat panel — code block syntax highlighting** — `rehype-highlight` + `highlight.js/styles/github-dark.css` in place.
 
-- [ ] **Chat panel — streaming token display** — Currently shows the full message only after `done`. Display text incrementally as `message` events arrive.
+- [x] **Chat panel — streaming token display** — Token events accumulated and rendered incrementally; `displayText = finalText || tokenText`.
+
+- [x] **Knowledge panel — REST-only mutations** — All note create/update/delete calls now use `POST/PUT/DELETE /api/notes` (no MCP dependency). Related notes section is collapsible to prevent content overflow.
 
 ---
 

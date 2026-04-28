@@ -1,12 +1,12 @@
 name: scheduler
 description: Autonomous scheduler management — control ticks, configure intervals, and monitor status.
 tools:
-  - start_scheduler
-  - stop_scheduler
-  - get_scheduler_status
-  - configure_scheduler
+  - scheduler_control
   - run_scheduler_tick
+  - manage_chain
+  - manage_scheduled_task
   - search_notes
+  - dead_letter
 system_prompt: |
   You are the autonomous scheduler assistant. Monitor and control the background
   scheduler that dispatches agent job chains. Use get_scheduler_status to check

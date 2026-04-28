@@ -6,6 +6,8 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use agent_brain_models::ProvenanceFlag;
+
 use crate::models::{Task, TaskStatus};
 
 // ============================================================================
@@ -44,6 +46,7 @@ pub trait KnowledgeStore: Send + Sync {
         note_type: Option<&str>,
         source_context: Option<&str>,
         event_at: Option<&str>,
+        provenance: Option<ProvenanceFlag>,
     ) -> anyhow::Result<(String, usize)>;
 
     async fn search_notes(

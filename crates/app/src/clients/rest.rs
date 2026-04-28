@@ -1167,9 +1167,9 @@ pub async fn handle_list_dynamic_tools(
     }
 }
 
-/// GET /api/notes?limit=<n>&note_type=<type>
+/// GET /api/notes?limit=<n>&note_type=<type>&q=<search>
 ///
-/// List notes from Neo4j for the Knowledge panel. Read-only; agents use neo4j_query.
+/// List notes from Neo4j. Pass `q` for text search; `note_type` to filter by type.
 pub async fn handle_list_notes(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -1185,26 +1185,32 @@ pub async fn handle_list_notes(
         .min(500);
 
     let note_type_filter = params.get("note_type").cloned();
+    let search_q = params.get("q").cloned().filter(|s| !s.trim().is_empty());
 
-    let cypher = if let Some(ref nt) = note_type_filter {
-        format!(
-            "MATCH (n:Note {{note_type: '{}'}}) \
-             RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
-                    n.access_count AS access_count, toString(n.created_at) AS created_at \
-             ORDER BY n.created_at DESC LIMIT {}",
-            nt, limit
-        )
-    } else {
-        format!(
-            "MATCH (n:Note) \
-             RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
-                    n.access_count AS access_count, toString(n.created_at) AS created_at \
-             ORDER BY n.created_at DESC LIMIT {}",
-            limit
-        )
+    let ret = "RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
+               n.access_count AS access_count, toString(n.created_at) AS created_at \
+               ORDER BY n.created_at DESC LIMIT $limit";
+
+    let cypher = match (&note_type_filter, &search_q) {
+        (Some(_), Some(_)) => format!(
+            "MATCH (n:Note) WHERE n.note_type = $nt AND toLower(n.content) CONTAINS toLower($q) {ret}"
+        ),
+        (Some(_), None) => format!("MATCH (n:Note) WHERE n.note_type = $nt {ret}"),
+        (None, Some(_)) => {
+            format!("MATCH (n:Note) WHERE toLower(n.content) CONTAINS toLower($q) {ret}")
+        }
+        (None, None) => format!("MATCH (n:Note) {ret}"),
     };
 
-    match neo4j.execute(neo4rs::query(&cypher)).await {
+    let mut q = neo4rs::query(&cypher).param("limit", limit);
+    if let Some(ref nt) = note_type_filter {
+        q = q.param("nt", nt.as_str());
+    }
+    if let Some(ref sq) = search_q {
+        q = q.param("q", sq.as_str());
+    }
+
+    match neo4j.execute(q).await {
         Ok(rows) => {
             let notes: Vec<Value> = rows
                 .iter()
@@ -1221,6 +1227,115 @@ pub async fn handle_list_notes(
             Json(json!({ "count": notes.len(), "notes": notes })).into_response()
         }
         Err(e) => internal(format!("Failed to list notes: {e}")),
+    }
+}
+
+/// POST /api/notes — create a note (no LLM embedding; brain's maintenance handles embedding later)
+pub async fn handle_create_note(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return unavailable("Neo4j not available");
+    };
+
+    let Some(content) = body.get("content").and_then(|v| v.as_str()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "content is required"})),
+        )
+            .into_response();
+    };
+    let note_type = body
+        .get("note_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("semantic");
+    let note_id = uuid::Uuid::new_v4().to_string();
+    let ts = chrono::Utc::now().to_rfc3339();
+
+    let q = neo4rs::query(
+        "CREATE (n:Note {id: $id, content: $content, note_type: $nt, \
+         access_count: 0, review_interval_days: 1.0, \
+         created_at: datetime($ts), last_accessed_at: datetime($ts), \
+         next_review_at: datetime($ts)}) \
+         RETURN n.id AS id",
+    )
+    .param("id", note_id.as_str())
+    .param("content", content)
+    .param("nt", note_type)
+    .param("ts", ts.as_str());
+
+    match neo4j.execute(q).await {
+        Ok(_) => (
+            StatusCode::CREATED,
+            Json(json!({"note_id": note_id, "id": note_id})),
+        )
+            .into_response(),
+        Err(e) => internal(format!("Failed to create note: {e}")),
+    }
+}
+
+/// PUT /api/notes/:id — update note content
+pub async fn handle_update_note(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(note_id): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return unavailable("Neo4j not available");
+    };
+
+    let Some(content) = body.get("content").and_then(|v| v.as_str()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "content is required"})),
+        )
+            .into_response();
+    };
+
+    let q = neo4rs::query(
+        "MATCH (n:Note {id: $id}) \
+         SET n.content = $content \
+         RETURN n.id AS id, n.content AS content, n.note_type AS note_type",
+    )
+    .param("id", note_id.as_str())
+    .param("content", content);
+
+    match neo4j.execute(q).await {
+        Ok(rows) if rows.is_empty() => not_found(),
+        Ok(rows) => Json(json!({
+            "id":        rows[0].get::<String>("id").unwrap_or_default(),
+            "content":   rows[0].get::<String>("content").unwrap_or_default(),
+            "note_type": rows[0].get::<String>("note_type").ok(),
+        }))
+        .into_response(),
+        Err(e) => internal(format!("Failed to update note: {e}")),
+    }
+}
+
+/// DELETE /api/notes/:id — delete a note and all its relationships
+pub async fn handle_delete_note(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(note_id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return unavailable("Neo4j not available");
+    };
+
+    // Check existence first so we can return 404 accurately.
+    let check =
+        neo4rs::query("MATCH (n:Note {id: $id}) RETURN n.id AS id").param("id", note_id.as_str());
+    match neo4j.execute(check).await {
+        Ok(rows) if rows.is_empty() => return not_found(),
+        Err(e) => return internal(format!("Failed to verify note: {e}")),
+        Ok(_) => {}
+    }
+
+    let del =
+        neo4rs::query("MATCH (n:Note {id: $id}) DETACH DELETE n").param("id", note_id.as_str());
+    match neo4j.run(del).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => internal(format!("Failed to delete note: {e}")),
     }
 }
 
@@ -1459,4 +1574,74 @@ pub async fn handle_list_skills(Extension(state): Extension<Arc<RestState>>) -> 
     let registry = registry_arc.read().await;
     let skills = registry.list_skills();
     Json(json!({ "skills": skills })).into_response()
+}
+
+// ============================================================================
+// Agent Notification endpoints
+// ============================================================================
+
+/// GET /api/notifications?unread=true
+pub async fn handle_list_notifications(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "No database"})),
+        )
+            .into_response();
+    };
+    let unread_only = params.get("unread").map(|v| v == "true").unwrap_or(false);
+    match neo4j.list_notifications(unread_only).await {
+        Ok(items) => Json(json!({ "notifications": items })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/notifications/{id}/read
+pub async fn handle_mark_notification_read(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "No database"})),
+        )
+            .into_response();
+    };
+    match neo4j.mark_notification_read(&id).await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/notifications/read-all
+pub async fn handle_mark_all_notifications_read(
+    Extension(state): Extension<Arc<RestState>>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "No database"})),
+        )
+            .into_response();
+    };
+    match neo4j.mark_all_notifications_read().await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }

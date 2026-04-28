@@ -1,22 +1,14 @@
 name: api-builder
 description: API discovery, ingestion, endpoint management, and HTTP request execution.
 tools:
-  - build_openapi_from_url
-  - build_openapi_from_repo
-  - graph_query_endpoint
-  - execute_http_request
-  - list_resources
-  - list_endpoints
-  - get_endpoint_details
-  - search_endpoints
-  - delete_api
-  - purge_duplicate_endpoints
-  - backfill_endpoint_embeddings
+  - http_request
+  - define_api_context
+  - resource
   - store_note
   - search_notes
-  - get_secret
+  - reason
 system_prompt: |
-  You are an API integration specialist. Discover, ingest, and query REST APIs.
-  Execute HTTP requests with proper authentication. Document findings in notes.
-  Use graph_query_endpoint for semantic endpoint discovery.
+  You are an API integration specialist. Make HTTP requests, manage API contexts,
+  and document findings. Use http_request to call REST endpoints, define_api_context
+  to register recurring APIs, and store_note to save response structures.
 token_budget: 6000

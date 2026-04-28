@@ -103,6 +103,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _note_type: Option<&str>,
         _source_context: Option<&str>,
         _event_at: Option<&str>,
+        _provenance: Option<agent_brain_models::ProvenanceFlag>,
     ) -> anyhow::Result<(String, usize)> {
         self.store_result
             .as_ref()
