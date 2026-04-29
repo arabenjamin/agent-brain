@@ -1575,6 +1575,52 @@ impl SchedulerService {
                     confidence_threshold: None,
                 },
             ]
+        } else if g.starts_with("fill knowledge gap:") {
+            // Curiosity engine: search for information to fill a specific knowledge gap,
+            // reason over findings, then store a synthesis note.
+            vec![
+                ChainStep {
+                    tool_name: "search_notes".to_string(),
+                    arguments: Some(json!({ "query": goal, "limit": 10 })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Gap fill: search existing knowledge".to_string()),
+                    confidence_threshold: None,
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": goal,
+                        "action": "structured",
+                        "store_inference": true
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Gap fill: structured reasoning over findings".to_string()),
+                    confidence_threshold: None,
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": format!("Gap synthesis: {goal}"),
+                        "note_type": "semantic",
+                        "provenance": "synthesis_inference"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    context_profile: None,
+                    ttl_secs: None,
+                    description: Some("Gap fill: store synthesis note".to_string()),
+                    confidence_threshold: None,
+                },
+            ]
         } else {
             // Default: search context, reason, reflect, and distill semantic knowledge.
             vec![

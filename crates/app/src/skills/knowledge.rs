@@ -179,14 +179,16 @@ impl KnowledgeSkill {
                          action=\"infer\" (default): derive new inferences from stored knowledge; \
                          action=\"explain\": narrate why a decision occurred, citing sources; \
                          action=\"clarify\": analyse a request for ambiguity and generate questions; \
-                         action=\"audit\": check a proposed action against stored values and principles."
+                         action=\"audit\": check a proposed action against stored values and principles; \
+                         action=\"structured\": full structured output with sources, caveats, follow-up questions, \
+                         gaps, inferences, and optional adversarial critic pass."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "Mode: infer (default), explain, clarify, or audit"
+                        "description": "Mode: infer (default), explain, clarify, audit, or structured"
                     },
                     "question": {
                         "type": "string",
@@ -212,6 +214,14 @@ impl KnowledgeSkill {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Tools available to the agent (clarify mode)"
+                    },
+                    "run_critic": {
+                        "type": "boolean",
+                        "description": "Run adversarial critic pass to stress-test the answer and adjust confidence (structured mode only, default: false)"
+                    },
+                    "create_gap_tasks": {
+                        "type": "boolean",
+                        "description": "Create Task nodes for each identified knowledge gap (structured mode only, requires store_inference=true, default: false)"
                     }
                 },
                 "required": ["question"]
@@ -464,6 +474,60 @@ Respond with a JSON object only (no markdown, no explanation):
                     Err(e) => ToolCallResult::error(format!("Audit failed: {}", e)),
                 }
             }
+            "structured" => {
+                info!(question = %input.question, run_critic = input.run_critic, "Structured reasoning");
+                match self
+                    .svc
+                    .reason_structured(
+                        &input.question,
+                        input.limit,
+                        input.store_inference,
+                        input.run_critic,
+                    )
+                    .await
+                {
+                    Ok(output) => {
+                        let sources_json: Vec<Value> = output
+                            .sources
+                            .iter()
+                            .map(|s| json!({ "note_id": s.note_id, "preview": s.preview }))
+                            .collect();
+
+                        let mut response = json!({
+                            "answer": output.answer,
+                            "sources": sources_json,
+                            "confidence": output.confidence,
+                            "caveats": output.caveats,
+                            "follow_up_questions": output.follow_up_questions,
+                            "inferences": output.inferences,
+                            "gaps": output.gaps,
+                            "critic_counter_arguments": output.critic_counter_arguments,
+                        });
+
+                        if let Some(nid) = &output.inference_note_id {
+                            response["inference_note_id"] = json!(nid);
+                        }
+
+                        if input.create_gap_tasks {
+                            if let Some(ref note_id) = output.inference_note_id {
+                                if !output.gaps.is_empty() {
+                                    match self.svc.create_gap_tasks(&output.gaps, note_id).await {
+                                        Ok(ids) => {
+                                            response["gap_task_ids"] = json!(ids);
+                                        }
+                                        Err(e) => {
+                                            response["gap_task_error"] = json!(e.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ToolCallResult::success_json(response)
+                    }
+                    Err(e) => ToolCallResult::error(format!("Structured reasoning failed: {}", e)),
+                }
+            }
             _ => {
                 // "infer" (default)
                 info!(question = %input.question, limit = input.limit, "Reasoning");
@@ -676,6 +740,10 @@ struct ReasonInput {
     task_id: Option<String>,
     #[serde(default)]
     available_tools: Option<Vec<String>>,
+    #[serde(default)]
+    run_critic: bool,
+    #[serde(default)]
+    create_gap_tasks: bool,
 }
 
 #[derive(Debug, Deserialize)]

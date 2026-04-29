@@ -15,7 +15,7 @@ pub mod store_impls;
 pub mod traits;
 
 pub use context_builder::ContextBuilderService;
-pub use knowledge::KnowledgeService;
+pub use knowledge::{KnowledgeService, ReasonOutput, SourceRef};
 pub use llm::{LlmClient, LlmConfig, LlmProviderType};
 pub use model_config::ModelCatalog;
 pub use queue::{ChainStep, QueueService, WorkerConfig};
