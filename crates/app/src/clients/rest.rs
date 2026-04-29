@@ -1561,9 +1561,7 @@ pub async fn handle_archive_session(
 }
 
 /// GET /api/models/usage — aggregated model usage stats from DuckDB.
-pub async fn handle_model_usage(
-    Extension(state): Extension<Arc<RestState>>,
-) -> impl IntoResponse {
+pub async fn handle_model_usage(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
     let Some(ref db) = state.telemetry else {
         return Json(json!({ "models": [], "available": false })).into_response();
     };

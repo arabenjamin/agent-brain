@@ -508,17 +508,16 @@ Respond with a JSON object only (no markdown, no explanation):
                             response["inference_note_id"] = json!(nid);
                         }
 
-                        if input.create_gap_tasks {
-                            if let Some(ref note_id) = output.inference_note_id {
-                                if !output.gaps.is_empty() {
-                                    match self.svc.create_gap_tasks(&output.gaps, note_id).await {
-                                        Ok(ids) => {
-                                            response["gap_task_ids"] = json!(ids);
-                                        }
-                                        Err(e) => {
-                                            response["gap_task_error"] = json!(e.to_string());
-                                        }
-                                    }
+                        if input.create_gap_tasks
+                            && let Some(ref note_id) = output.inference_note_id
+                            && !output.gaps.is_empty()
+                        {
+                            match self.svc.create_gap_tasks(&output.gaps, note_id).await {
+                                Ok(ids) => {
+                                    response["gap_task_ids"] = json!(ids);
+                                }
+                                Err(e) => {
+                                    response["gap_task_error"] = json!(e.to_string());
                                 }
                             }
                         }
