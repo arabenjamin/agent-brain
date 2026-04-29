@@ -252,6 +252,34 @@ impl KnowledgeStore for MockKnowledgeStore {
     async fn update_note(&self, _id: &str, _content: &str) -> anyhow::Result<bool> {
         Ok(true)
     }
+
+    async fn reason_structured(
+        &self,
+        _question: &str,
+        _limit: usize,
+        _store_inference: bool,
+        _run_critic: bool,
+    ) -> anyhow::Result<crate::services::knowledge::ReasonOutput> {
+        Ok(crate::services::knowledge::ReasonOutput {
+            answer: String::new(),
+            sources: vec![],
+            confidence: 0.5,
+            caveats: vec![],
+            follow_up_questions: vec![],
+            inferences: vec![],
+            gaps: vec![],
+            inference_note_id: None,
+            critic_counter_arguments: vec![],
+        })
+    }
+
+    async fn create_gap_tasks(
+        &self,
+        _gaps: &[String],
+        _triggering_note_id: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(vec![])
+    }
 }
 
 // ============================================================================

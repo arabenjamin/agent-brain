@@ -128,6 +128,20 @@ pub trait KnowledgeStore: Send + Sync {
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool>;
 
     async fn update_note(&self, id: &str, content: &str) -> anyhow::Result<bool>;
+
+    async fn reason_structured(
+        &self,
+        question: &str,
+        limit: usize,
+        store_inference: bool,
+        run_critic: bool,
+    ) -> anyhow::Result<crate::services::knowledge::ReasonOutput>;
+
+    async fn create_gap_tasks(
+        &self,
+        gaps: &[String],
+        triggering_note_id: &str,
+    ) -> anyhow::Result<Vec<String>>;
 }
 
 // ============================================================================
