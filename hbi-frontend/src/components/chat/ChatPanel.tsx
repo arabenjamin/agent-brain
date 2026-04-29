@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -23,6 +23,7 @@ interface UserMsg {
   kind: "user";
   id: string;
   text: string;
+  ts: string;
 }
 
 interface AssistantMsg {
@@ -32,6 +33,8 @@ interface AssistantMsg {
   done: boolean;
   reflecting?: boolean;
   reflection?: string;
+  ts: string;
+  model?: string;
 }
 
 type Msg = UserMsg | AssistantMsg;
@@ -45,8 +48,25 @@ interface Session {
 
 interface CatalogModel {
   name: string;
-  provider: string; // lowercase, e.g. "ollama"
+  provider: string;
   model: string;
+}
+
+interface AvailableProvider {
+  type: string;
+  name: string;
+  cost: string;
+}
+
+interface ModelUsageStat {
+  model: string;
+  total_calls: number;
+  successes: number;
+  failures: number;
+  success_rate: number;
+  avg_duration_ms: number | null;
+  total_tokens_in: number | null;
+  total_tokens_out: number | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,7 +75,6 @@ function uid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  // Fallback for non-secure contexts (e.g. accessing via IP on local network)
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
@@ -76,6 +95,15 @@ function formatDate(iso: string): string {
   try {
     const d = new Date(iso);
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   } catch {
     return "";
   }
@@ -261,7 +289,6 @@ function ThreadDrawer({
           <div key={m.id} className={`thread-msg ${m.role}`}>
             <div className="thread-msg-bubble markdown-body" style={m.role === "assistant" ? { fontSize: 12 } : undefined}>
               {m.role === "assistant" && m.events && m.events.length > 0 ? (
-                // streaming assistant message: show token events
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                   {m.events.filter(e => e.type === "token").map(e => e.content ?? "").join("") ||
                    m.events.find(e => e.type === "message")?.content ||
@@ -302,6 +329,210 @@ function ThreadDrawer({
   );
 }
 
+// ── Chat Settings Bar ─────────────────────────────────────────────────────────
+
+function ChatSettingsBar({
+  activeModelKey,
+  activeProvider,
+  catalogModels,
+  availableProviders,
+  modelUsage,
+  switchingModel,
+  streaming,
+  contextProfile,
+  profiles,
+  researchProvider,
+  onModelChange,
+  onReloadModels,
+  onProfileChange,
+  onResearchToggle,
+  onResearchProviderChange,
+}: {
+  activeModelKey: string;
+  activeProvider: string;
+  catalogModels: CatalogModel[];
+  availableProviders: AvailableProvider[];
+  modelUsage: ModelUsageStat[];
+  switchingModel: boolean;
+  streaming: boolean;
+  contextProfile: string;
+  profiles: string[];
+  researchProvider: string | null;
+  onModelChange: (provider: string, model: string) => void;
+  onReloadModels: () => void;
+  onProfileChange: (v: string) => void;
+  onResearchToggle: () => void;
+  onResearchProviderChange: (v: string) => void;
+}) {
+  // Parse current provider/model from the composite key
+  const sep = activeModelKey.indexOf("::");
+  const currentModel = sep >= 0 ? activeModelKey.slice(sep + 2) : activeModelKey;
+  const currentProvider = sep >= 0 ? activeModelKey.slice(0, sep) : activeProvider;
+
+  const [editModel, setEditModel] = useState(currentModel);
+  const [selectedProvider, setSelectedProvider] = useState(currentProvider);
+
+  // Sync local edits when active model changes externally
+  useEffect(() => { setEditModel(currentModel); }, [currentModel]);
+  useEffect(() => { setSelectedProvider(currentProvider); }, [currentProvider]);
+
+  const hasCatalog = catalogModels.length > 0;
+
+  const handleProviderChange = (p: string) => {
+    setSelectedProvider(p);
+    // If catalog exists, auto-pick the first model for this provider
+    if (hasCatalog) {
+      const first = catalogModels.find((m) => m.provider === p);
+      if (first) onModelChange(p, first.name);
+    }
+  };
+
+  const applyModel = () => {
+    if (editModel.trim()) onModelChange(selectedProvider, editModel.trim());
+  };
+
+  const handleModelInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") applyModel();
+  };
+
+  // Find usage stat for active model (unused in render but kept for future tooltip)
+  void modelUsage.find((s) => s.model === currentModel);
+
+  return (
+    <div className="chat-settings-bar">
+      {/* Model usage strip */}
+      {modelUsage.length > 0 && (
+        <div className="model-usage-strip">
+          {modelUsage.slice(0, 5).map((s) => (
+            <span
+              key={s.model}
+              className={`model-usage-chip${s.model === currentModel ? " active" : ""}`}
+              title={`${s.total_calls} calls · ${s.successes} ok · avg ${s.avg_duration_ms != null ? Math.round(s.avg_duration_ms) : "?"}ms`}
+            >
+              <span className="model-usage-name">{s.model.split(":")[0]}</span>
+              <span className="model-usage-count">{s.total_calls}</span>
+              <span className={`model-usage-rate${s.success_rate < 0.8 ? " warn" : ""}`}>
+                {Math.round(s.success_rate * 100)}%
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="chat-settings-row">
+        {/* Provider selector */}
+        {availableProviders.length > 0 && (
+          <div className="chat-settings-group">
+            <span className="chat-settings-label">Provider</span>
+            <select
+              className="profile-select"
+              value={selectedProvider}
+              onChange={(e) => handleProviderChange(e.target.value)}
+              disabled={streaming || switchingModel}
+              title="LLM provider"
+            >
+              {availableProviders.map((p) => (
+                <option key={p.type} value={p.type}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Model selector — catalog select when available, text input otherwise */}
+        <div className="chat-settings-group">
+          <span className="chat-settings-label">Model</span>
+          {hasCatalog ? (
+            <select
+              className="profile-select model-select"
+              value={`${selectedProvider}::${currentModel}`}
+              onChange={(e) => {
+                const s = e.target.value.indexOf("::");
+                if (s >= 0) onModelChange(e.target.value.slice(0, s), e.target.value.slice(s + 2));
+              }}
+              disabled={streaming || switchingModel}
+              title="Active LLM model"
+            >
+              {Object.entries(
+                catalogModels.reduce<Record<string, CatalogModel[]>>((acc, m) => {
+                  (acc[m.provider] ??= []).push(m);
+                  return acc;
+                }, {})
+              ).map(([provider, models]) => (
+                <optgroup key={provider} label={provider}>
+                  {models.map((m) => (
+                    <option key={`${m.provider}::${m.name}`} value={`${m.provider}::${m.name}`}>
+                      {m.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              className="model-name-input"
+              value={editModel}
+              onChange={(e) => setEditModel(e.target.value)}
+              onBlur={applyModel}
+              onKeyDown={handleModelInputKey}
+              disabled={streaming || switchingModel}
+              placeholder="model name"
+              title="Type a model name and press Enter"
+              style={{ width: 180 }}
+            />
+          )}
+          <button
+            className="reload-models-btn"
+            onClick={onReloadModels}
+            disabled={streaming || switchingModel}
+            title="Reload models from models.yaml"
+          >↺</button>
+        </div>
+
+        {/* Context profile */}
+        <div className="chat-settings-group">
+          <span className="chat-settings-label">Profile</span>
+          <select
+            className="profile-select"
+            value={contextProfile}
+            onChange={(e) => onProfileChange(e.target.value)}
+            disabled={streaming}
+            title="Context profile — limits tools sent to the model"
+          >
+            {(profiles.length > 0 ? profiles : ["general"]).map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Research mode */}
+        <div className="chat-settings-group">
+          <button
+            className={`research-toggle${researchProvider !== null ? " active" : ""}`}
+            onClick={onResearchToggle}
+            disabled={streaming}
+            title="Research mode: local model gathers data, strong model synthesizes"
+          >
+            ⚗ Research
+          </button>
+          {researchProvider !== null && (
+            <select
+              className="profile-select"
+              value={researchProvider}
+              onChange={(e) => onResearchProviderChange(e.target.value)}
+              disabled={streaming}
+              title="Model used to synthesize research findings"
+            >
+              <option value="gemini">Synthesize: Gemini</option>
+              <option value="anthropic">Synthesize: Claude</option>
+            </select>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCountChange?: (count: number) => void; visible?: boolean }) {
@@ -313,11 +544,12 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [contextProfile, setContextProfile] = useState("general");
-  // null = research mode off; string = research mode on with that provider
   const [researchProvider, setResearchProvider] = useState<string | null>(null);
-  // Model selector: "provider::name" composite key, e.g. "ollama::qwen3.5:4b"
   const [activeModelKey, setActiveModelKey] = useState("");
+  const [activeProvider, setActiveProvider] = useState("");
   const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
+  const [availableProviders, setAvailableProviders] = useState<AvailableProvider[]>([]);
+  const [modelUsage, setModelUsage] = useState<ModelUsageStat[]>([]);
   const [switchingModel, setSwitchingModel] = useState(false);
   const [notifications, setNotifications] = useState<AgentNotification[]>([]);
   const [thread, setThread] = useState<ThreadState | null>(null);
@@ -325,13 +557,13 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Cache full Msg[] per session to preserve thinking/tool events when switching sessions
+  const sessionCacheRef = useRef<Map<string, Msg[]>>(new Map());
 
-  // Auto-scroll to bottom on new messages.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs]);
 
-  // Load session list via REST (GET /api/sessions).
   const loadSessions = useCallback(async () => {
     setLoadingSessions(true);
     try {
@@ -341,7 +573,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
       const data = (await res.json()) as { sessions?: Session[] };
       setSessions(data.sessions ?? []);
     } catch {
-      // ignore — brain may not be connected yet
+      // ignore
     } finally {
       setLoadingSessions(false);
     }
@@ -351,8 +583,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     loadSessions();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reload unread notifications whenever the Chat tab becomes active.
-  // This ensures the banner appears even if the notification arrived while on another tab.
   useEffect(() => {
     if (!visible) return;
     const load = async () => {
@@ -389,18 +619,12 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     }
   }, [onNotifCountChange]);
 
-  // Open a notification as a thread drawer — loads the related session's entries.
   const openThread = useCallback(async (n: AgentNotification) => {
     const sid = n.related_session_id;
-    // Dismiss only this notification, keep others.
     dismissNotification(n.id);
 
-    if (!sid) {
-      // No session to continue into — nothing to do.
-      return;
-    }
+    if (!sid) return;
 
-    // Seed thread with the notification message optimistically so it shows instantly.
     const seedMsg: ThreadMsg = {
       id: uid(),
       role: "assistant",
@@ -414,7 +638,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
       streaming: false,
     });
 
-    // Fetch any stored entries for the session (may include additional context).
     try {
       const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
@@ -436,11 +659,10 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
         );
       }
     } catch {
-      // Keep the seed message if fetch fails.
+      // keep seed message
     }
   }, [dismissNotification]);
 
-  // Send a message within the thread drawer.
   const sendThreadMessage = useCallback(async () => {
     if (!thread || !thread.input.trim() || thread.streaming) return;
     const text = thread.input.trim();
@@ -497,7 +719,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     loadSessions();
   }, [thread, contextProfile, loadSessions]);
 
-  // Load context profiles for the selector via REST (GET /api/contexts).
   useEffect(() => {
     fetch(`${getBrainUrl()}/api/contexts`, {
       headers: { Authorization: `Bearer ${getApiKey()}` },
@@ -507,10 +728,9 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
         const names = (data.profiles ?? []).map((p) => p.name).sort();
         if (names.length > 0) setProfiles(names);
       })
-      .catch(() => {/* ignore — brain may not be connected yet */});
+      .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load active model + catalog from the backend via REST (GET /api/models).
   const loadModels = useCallback(async () => {
     try {
       const res = await fetch(`${getBrainUrl()}/api/models`, {
@@ -520,36 +740,57 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
         active_provider?: string;
         active_model?: string;
         catalog_models?: CatalogModel[];
+        available_providers?: AvailableProvider[];
       };
       const provider = (data.active_provider ?? "").toLowerCase();
       const model = data.active_model ?? "";
-      if (provider && model) setActiveModelKey(`${provider}::${model}`);
+      if (provider && model) {
+        setActiveModelKey(`${provider}::${model}`);
+        setActiveProvider(provider);
+      }
       setCatalogModels(data.catalog_models ?? []);
+      setAvailableProviders(data.available_providers ?? []);
     } catch {
-      // ignore — brain may not be connected yet
+      // ignore
     }
   }, []);
 
-  useEffect(() => { loadModels(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadModelUsage = useCallback(async () => {
+    try {
+      const res = await fetch(`${getBrainUrl()}/api/models/usage`, {
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { models?: ModelUsageStat[]; available?: boolean };
+        setModelUsage(data.models ?? []);
+      }
+    } catch {
+      // ignore — telemetry not configured
+    }
+  }, []);
+
+  useEffect(() => {
+    loadModels();
+    loadModelUsage();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reloadModels = useCallback(async () => {
     setSwitchingModel(true);
     try {
       await callTool("reload_models", {});
       await loadModels();
+      await loadModelUsage();
     } catch {
       // ignore
     } finally {
       setSwitchingModel(false);
     }
-  }, [loadModels]);
+  }, [loadModels, loadModelUsage]);
 
-  const handleModelChange = useCallback(async (value: string) => {
-    const sep = value.indexOf("::");
-    if (sep === -1) return;
-    const provider = value.slice(0, sep);
-    const model = value.slice(sep + 2);
-    setActiveModelKey(value);
+  const handleModelChange = useCallback(async (provider: string, model: string) => {
+    const key = `${provider}::${model}`;
+    setActiveModelKey(key);
+    setActiveProvider(provider);
     setSwitchingModel(true);
     try {
       await callTool("use_model", { provider, model });
@@ -560,11 +801,25 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     }
   }, []);
 
-  // Switch to an existing session — restore its messages from the server.
   const switchSession = useCallback(async (sid: string) => {
     if (sid === sessionId && msgs.length > 0) return;
+
+    // Save current session's full message list (preserves thinking/tool events)
+    if (msgs.length > 0) {
+      sessionCacheRef.current.set(sessionId, msgs);
+    }
+
     setSessionId(sid);
     setMsgs([]);
+
+    // Restore from cache if available (full events preserved)
+    const cached = sessionCacheRef.current.get(sid);
+    if (cached) {
+      setMsgs(cached);
+      return;
+    }
+
+    // Otherwise fetch from server (text-only fallback)
     try {
       const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
@@ -576,35 +831,66 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
       const restored: Msg[] = entries
         .filter((e) => e.role === "user" || e.role === "assistant")
         .map((e) => {
+          const ts = new Date().toISOString();
           if (e.role === "user") {
-            return { kind: "user" as const, id: uid(), text: e.content };
+            return { kind: "user" as const, id: uid(), text: e.content, ts };
           }
           return {
             kind: "assistant" as const,
             id: uid(),
             events: [{ type: "message" as const, content: e.content }],
             done: true,
+            ts,
           };
         });
       setMsgs(restored);
     } catch {
       setMsgs([]);
     }
-  }, [sessionId, msgs.length]);
+  }, [sessionId, msgs]);
 
-  // Start a fresh session.
+  const archiveSession = useCallback(async (sid: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await fetch(`${getBrainUrl()}/api/sessions/${sid}/archive`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${getApiKey()}` },
+      });
+      setSessions((prev) => prev.filter((s) => s.session_id !== sid));
+      // If the archived session was active, start a new chat
+      if (sid === sessionId) {
+        setSessionId(uid());
+        setMsgs([]);
+      }
+    } catch {
+      // ignore
+    }
+  }, [sessionId]);
+
   const newChat = useCallback(() => {
+    if (msgs.length > 0) {
+      sessionCacheRef.current.set(sessionId, msgs);
+    }
     setSessionId(uid());
     setMsgs([]);
-  }, []);
+    loadSessions();
+  }, [msgs, sessionId, loadSessions]);
 
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || streaming) return;
 
-    const userMsg: UserMsg = { kind: "user", id: uid(), text };
+    const now = new Date().toISOString();
+    const userMsg: UserMsg = { kind: "user", id: uid(), text, ts: now };
     const asstId = uid();
-    const asstMsg: AssistantMsg = { kind: "assistant", id: asstId, events: [], done: false };
+    const asstMsg: AssistantMsg = {
+      kind: "assistant",
+      id: asstId,
+      events: [],
+      done: false,
+      ts: now,
+      model: activeModelKey,
+    };
 
     setMsgs((prev) => [...prev, userMsg, asstMsg]);
     setInput("");
@@ -638,10 +924,8 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     setStreaming(false);
     abortRef.current = null;
     inputRef.current?.focus();
-
-    // Refresh the session list so this session appears / updates.
     loadSessions();
-  }, [input, msgs, streaming, sessionId, loadSessions, contextProfile, researchProvider]);
+  }, [input, msgs, streaming, sessionId, loadSessions, contextProfile, researchProvider, activeModelKey]);
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -655,7 +939,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     setStreaming(false);
   };
 
-  // Find the last user message before a given assistant message id.
   const getPriorUserMsg = (asstId: string): string => {
     const idx = msgs.findIndex((m) => m.id === asstId);
     for (let i = idx - 1; i >= 0; i--) {
@@ -698,7 +981,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     if (msgs.length === 0) return;
 
     let markdown = `# Chat Export - Session ${sessionId}\n\n`;
-    
+
     for (const m of msgs) {
       if (m.kind === "user") {
         markdown += `## User\n${m.text}\n\n`;
@@ -726,7 +1009,12 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     if (m.kind === "user") {
       return (
         <div key={m.id} className="chat-msg user">
-          <div className="chat-msg-bubble">{m.text}</div>
+          <div className="chat-msg-bubble markdown-body user-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+              {m.text}
+            </ReactMarkdown>
+          </div>
+          <div className="chat-msg-ts">{formatTime(m.ts)}</div>
         </div>
       );
     }
@@ -740,6 +1028,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     const displayText = finalText || tokenText;
     const streamEvents = nonDoneEvents.filter((e) => e.type !== "message" && e.type !== "token");
     const showTyping = !m.done && streaming && displayText.length === 0 && streamEvents.length === 0;
+    const modelLabel = m.model ? m.model.split("::")[1] || m.model : "";
 
     return (
       <div key={m.id} className="chat-msg assistant">
@@ -769,6 +1058,8 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
         )}
         {m.done && displayText && (
           <div className="chat-msg-meta">
+            <span className="chat-msg-ts">{formatTime(m.ts)}</span>
+            {modelLabel && <span className="chat-msg-model">{modelLabel}</span>}
             {m.reflecting ? (
               <span className="event-muted" style={{ fontSize: 10 }}>Reflecting…</span>
             ) : !m.reflection ? (
@@ -798,8 +1089,8 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
       <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span>🧠 Chat</span>
         <div style={{ display: "flex", gap: "8px" }}>
-          <button 
-            className="btn" 
+          <button
+            className="btn"
             style={{ padding: "3px 10px", fontSize: 11, background: "transparent", border: "1px solid var(--border)" }}
             onClick={exportChat}
             disabled={msgs.length === 0}
@@ -818,6 +1109,24 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
           )}
         </div>
       </div>
+
+      <ChatSettingsBar
+        activeModelKey={activeModelKey}
+        activeProvider={activeProvider}
+        catalogModels={catalogModels}
+        availableProviders={availableProviders}
+        modelUsage={modelUsage}
+        switchingModel={switchingModel}
+        streaming={streaming}
+        contextProfile={contextProfile}
+        profiles={profiles}
+        researchProvider={researchProvider}
+        onModelChange={handleModelChange}
+        onReloadModels={reloadModels}
+        onProfileChange={setContextProfile}
+        onResearchToggle={() => setResearchProvider((v) => v === null ? "gemini" : null)}
+        onResearchProviderChange={setResearchProvider}
+      />
 
       <div className="chat-body">
         {/* ── Session sidebar ── */}
@@ -848,12 +1157,19 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
                 onClick={() => switchSession(s.session_id)}
               >
                 <div className="session-item-title">
-                  {truncate(s.title, 38)}
+                  {truncate(s.title, 32)}
                 </div>
                 <div className="session-item-meta">
                   {formatDate(s.started_at)}
                   {s.msg_count > 0 && ` · ${s.msg_count} msgs`}
                 </div>
+                <button
+                  className="session-archive-btn"
+                  onClick={(e) => archiveSession(s.session_id, e)}
+                  title="Archive this chat (hidden from list, kept for training data)"
+                >
+                  🗄
+                </button>
               </div>
             ))}
           </div>
@@ -895,75 +1211,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
               style={{ resize: "none" }}
             />
             <div className="input-row-actions">
-              <div className="input-row-selectors">
-                {activeModelKey && (
-                  <>
-                  <select
-                    className="profile-select model-select"
-                    value={activeModelKey}
-                    onChange={(e) => handleModelChange(e.target.value)}
-                    disabled={streaming || switchingModel || catalogModels.length === 0}
-                    title={switchingModel ? "Switching model…" : "Active LLM model"}
-                  >
-                    {catalogModels.length === 0 ? (
-                      <option value={activeModelKey}>{activeModelKey.replace("::", " / ")}</option>
-                    ) : (
-                      Object.entries(
-                        catalogModels.reduce<Record<string, CatalogModel[]>>((acc, m) => {
-                          (acc[m.provider] ??= []).push(m);
-                          return acc;
-                        }, {})
-                      ).map(([provider, models]) => (
-                        <optgroup key={provider} label={provider}>
-                          {models.map((m) => (
-                            <option key={`${m.provider}::${m.name}`} value={`${m.provider}::${m.name}`}>
-                              {m.name}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))
-                    )}
-                  </select>
-                  <button
-                    className="reload-models-btn"
-                    onClick={reloadModels}
-                    disabled={streaming || switchingModel}
-                    title="Reload models from models.yaml"
-                  >↺</button>
-                  </>
-                )}
-                <select
-                  className="profile-select"
-                  value={contextProfile}
-                  onChange={(e) => setContextProfile(e.target.value)}
-                  disabled={streaming}
-                  title="Context profile — limits tools sent to the model"
-                >
-                  {(profiles.length > 0 ? profiles : ["general"]).map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </select>
-                <button
-                  className={`research-toggle${researchProvider !== null ? " active" : ""}`}
-                  onClick={() => setResearchProvider((v) => v === null ? "gemini" : null)}
-                  disabled={streaming}
-                  title="Research mode: local model gathers data, strong model synthesizes"
-                >
-                  ⚗ Research
-                </button>
-                {researchProvider !== null && (
-                  <select
-                    className="profile-select"
-                    value={researchProvider}
-                    onChange={(e) => setResearchProvider(e.target.value)}
-                    disabled={streaming}
-                    title="Model used to synthesize research findings"
-                  >
-                    <option value="gemini">Synthesize: Gemini</option>
-                    <option value="anthropic">Synthesize: Claude</option>
-                  </select>
-                )}
-              </div>
               <button className="btn" onClick={send} disabled={streaming || !input.trim()}>
                 Send
               </button>

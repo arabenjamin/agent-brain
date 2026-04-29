@@ -352,10 +352,15 @@ impl HttpTransport {
                 get(rest_handlers::handle_list_http_contexts),
             )
             .route("/api/models", get(rest_handlers::handle_list_models))
+            .route("/api/models/usage", get(rest_handlers::handle_model_usage))
             .route("/api/sessions", get(rest_handlers::handle_list_sessions))
             .route(
                 "/api/sessions/{id}/entries",
                 get(rest_handlers::handle_get_session_entries),
+            )
+            .route(
+                "/api/sessions/{id}/archive",
+                axum::routing::post(rest_handlers::handle_archive_session),
             )
             .route("/api/jobs", get(rest_handlers::handle_list_jobs))
             .route("/api/tasks", get(rest_handlers::handle_list_tasks))

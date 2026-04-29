@@ -443,6 +443,10 @@ impl WorkingMemoryStore for MockWorkingMemoryStore {
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
+
+    async fn archive_session(&self, _session_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ============================================================================

@@ -61,8 +61,8 @@ services:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
       - /home/ara/agent-brain:/home/agent/agent-brain:ro
       - brain_snapshots:/home/agent/snapshots
-      - telemetry_data:/home/agent/telemetry
-      - brain_proposals:/home/agent/proposals
+      - ./telemetry:/home/agent/telemetry
+      - ./proposals:/home/agent/proposals
     depends_on:
       neo4j:
         condition: service_healthy
@@ -92,5 +92,3 @@ volumes:
   neo4j_data:
   neo4j_logs:
   brain_snapshots:
-  telemetry_data:
-  brain_proposals:

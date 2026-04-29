@@ -210,4 +210,7 @@ pub trait WorkingMemoryStore: Send + Sync {
 
     /// Delete all WorkingMemory nodes for `session_id`.
     async fn delete_session(&self, session_id: &str) -> anyhow::Result<()>;
+
+    /// Mark a session archived (hidden from default list but preserved for training data).
+    async fn archive_session(&self, session_id: &str) -> anyhow::Result<()>;
 }

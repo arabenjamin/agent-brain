@@ -82,10 +82,12 @@ impl WorkingMemoryStore for Neo4jClient {
     async fn list_sessions(&self, limit: i64) -> anyhow::Result<Vec<Value>> {
         let cypher = r#"
         MATCH (w:WorkingMemory)
+        WHERE w.archived IS NULL OR w.archived = false
         WITH w.session_id AS sid,
              toString(min(w.created_at)) AS started_at,
              count(w) AS msg_count
         OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0})
+        WHERE first.archived IS NULL OR first.archived = false
         RETURN sid AS session_id, started_at, msg_count,
                COALESCE(first.content, sid) AS title
         ORDER BY started_at DESC
@@ -137,6 +139,14 @@ impl WorkingMemoryStore for Neo4jClient {
     async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
         let q = neo4rs::query("MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w")
             .param("session_id", session_id);
+        self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    async fn archive_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let q = neo4rs::query(
+            "MATCH (w:WorkingMemory {session_id: $session_id}) SET w.archived = true",
+        )
+        .param("session_id", session_id);
         self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
     }
 }

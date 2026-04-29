@@ -1546,6 +1546,37 @@ pub async fn handle_get_session_entries(
     }
 }
 
+/// POST /api/sessions/:id/archive — mark a session archived (hidden from list, preserved for training).
+pub async fn handle_archive_session(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return unavailable("Neo4j not available");
+    };
+    match neo4j.archive_session(&session_id).await {
+        Ok(()) => Json(json!({ "status": "archived", "session_id": session_id })).into_response(),
+        Err(e) => internal(format!("Failed to archive session: {e}")),
+    }
+}
+
+/// GET /api/models/usage — aggregated model usage stats from DuckDB.
+pub async fn handle_model_usage(
+    Extension(state): Extension<Arc<RestState>>,
+) -> impl IntoResponse {
+    let Some(ref db) = state.telemetry else {
+        return Json(json!({ "models": [], "available": false })).into_response();
+    };
+    match db.get_model_stats(None) {
+        Ok(stats) => {
+            // get_model_stats(None) returns {"models": [...]}
+            let models = stats.get("models").cloned().unwrap_or(json!([]));
+            Json(json!({ "models": models, "available": true })).into_response()
+        }
+        Err(e) => internal(format!("Failed to get model usage: {e}")),
+    }
+}
+
 /// GET /api/logs?limit=<n>&level=<info|warn|error|debug>
 /// Returns recent in-process log lines from the ring buffer.
 pub async fn handle_get_logs(
