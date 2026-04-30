@@ -520,6 +520,10 @@ impl BrainCore {
                 None
             };
 
+        // Local-only LLM for internal knowledge ops (entity extraction, etc.)
+        // Always routes to local Ollama regardless of the active provider.
+        let local_llm = SharedLlm::new(Arc::clone(&local_config_arc));
+
         // Shared LLM provider (wraps live Arc<RwLock<Option<LlmConfig>>>)
         let shared_llm = SharedLlm::new_with_local(
             Arc::clone(&self.llm_config),
@@ -539,7 +543,7 @@ impl BrainCore {
             let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> =
                 Arc::new(KnowledgeService::new(
                     neo4j.clone(),
-                    Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
                 ));
             let knowledge_skill = KnowledgeSkill::new(
                 knowledge_svc,
@@ -582,7 +586,7 @@ impl BrainCore {
                 if let Some(neo4j) = &self.storage.neo4j {
                     Some(Arc::new(KnowledgeService::new(
                         neo4j.clone(),
-                        Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+                        Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
                     ))
                         as Arc<dyn crate::services::KnowledgeStore>)
                 } else {
@@ -615,7 +619,7 @@ impl BrainCore {
             let knowledge_svc2: Arc<dyn crate::services::KnowledgeStore> =
                 Arc::new(KnowledgeService::new(
                     neo4j.clone(),
-                    Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
                 ));
             let wm_store: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
             let wm_skill = WorkingMemorySkill::new(
@@ -673,7 +677,7 @@ impl BrainCore {
             let knowledge_svc3: Arc<dyn crate::services::KnowledgeStore> =
                 Arc::new(KnowledgeService::new(
                     neo4j.clone(),
-                    Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
                 ));
             skills.push(Box::new(KnowledgeSkill::new(
                 knowledge_svc3,
@@ -704,7 +708,7 @@ impl BrainCore {
                 if let Some(neo4j) = &self.storage.neo4j {
                     Some(Arc::new(KnowledgeService::new(
                         neo4j.clone(),
-                        Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+                        Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
                     ))
                         as Arc<dyn crate::services::KnowledgeStore>)
                 } else {
@@ -734,7 +738,7 @@ impl BrainCore {
             let knowledge_svc4: Arc<dyn crate::services::KnowledgeStore> =
                 Arc::new(KnowledgeService::new(
                     neo4j.clone(),
-                    Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
                 ));
             let wm_store2: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
             skills.push(Box::new(
