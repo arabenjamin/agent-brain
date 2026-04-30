@@ -38,4 +38,4 @@ specs/
 tmp/
 
 # telemetry
-telemetry/telemetry.*
+telemetry/
