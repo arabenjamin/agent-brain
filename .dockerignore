@@ -1,5 +1,6 @@
 # Build artifacts
 target/
+!target/release/agent-brain
 debug/
 
 # IDE/Editor
