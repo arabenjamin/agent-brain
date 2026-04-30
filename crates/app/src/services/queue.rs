@@ -1085,9 +1085,10 @@ fn parse_evaluator_score(text: &str) -> f32 {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("Score:")
             && let Some(n_str) = rest.trim().split('/').next()
-                && let Ok(n) = n_str.trim().parse::<f32>() {
-                    return n.clamp(1.0, 5.0);
-                }
+            && let Ok(n) = n_str.trim().parse::<f32>()
+        {
+            return n.clamp(1.0, 5.0);
+        }
     }
     let lower = text.to_lowercase();
     if lower.contains("fully met") {
