@@ -436,8 +436,10 @@ mod tests {
 
     #[tokio::test]
     async fn push_context_store_error_propagates() {
-        let mut wm = MockWorkingMemoryStore::default();
-        wm.push_result = Err("store down".into());
+        let wm = MockWorkingMemoryStore {
+            push_result: Err("store down".into()),
+            ..Default::default()
+        };
         let msg = result_error(
             skill(wm)
                 .execute(
@@ -487,8 +489,10 @@ mod tests {
 
     #[tokio::test]
     async fn summarise_session_empty_returns_error() {
-        let mut wm = MockWorkingMemoryStore::default();
-        wm.get_all_result = Ok(vec![]);
+        let wm = MockWorkingMemoryStore {
+            get_all_result: Ok(vec![]),
+            ..Default::default()
+        };
         let msg = result_error(
             skill(wm)
                 .execute(

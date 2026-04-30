@@ -219,7 +219,7 @@ impl ContextBuilderService {
             })
             .collect();
 
-        scores.sort_by(|a, b| b.0.cmp(&a.0));
+        scores.sort_by_key(|b| std::cmp::Reverse(b.0));
 
         // Clear winner: top score > 0 and strictly better than second-best.
         if let (Some((best_score, best_name)), second_score) = (

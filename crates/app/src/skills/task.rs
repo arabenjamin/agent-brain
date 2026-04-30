@@ -738,8 +738,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_store_error_propagates() {
-        let mut store = MockTaskStore::default();
-        store.create_result = Err("db error".into());
+        let store = MockTaskStore {
+            create_result: Err("db error".into()),
+            ..Default::default()
+        };
         let msg = result_error(
             skill(store)
                 .execute("create_task", Some(serde_json::json!({"goal": "x"})))
@@ -876,8 +878,10 @@ mod tests {
 
     #[tokio::test]
     async fn update_task_auto_completes_parent() {
-        let mut store = MockTaskStore::default();
-        store.auto_complete_result = Ok(Some("parent-id-1".into()));
+        let store = MockTaskStore {
+            auto_complete_result: Ok(Some("parent-id-1".into())),
+            ..Default::default()
+        };
         let r = result_json(
             skill(store)
                 .execute(
@@ -894,8 +898,10 @@ mod tests {
 
     #[tokio::test]
     async fn decompose_goal_task_not_found() {
-        let mut store = MockTaskStore::default();
-        store.get_result = Ok(None);
+        let store = MockTaskStore {
+            get_result: Ok(None),
+            ..Default::default()
+        };
         let msg = result_error(
             skill(store)
                 .execute(

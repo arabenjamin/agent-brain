@@ -820,8 +820,10 @@ mod tests {
 
     #[tokio::test]
     async fn store_note_propagates_store_error() {
-        let mut store = MockKnowledgeStore::default();
-        store.store_result = Err("db down".into());
+        let store = MockKnowledgeStore {
+            store_result: Err("db down".into()),
+            ..Default::default()
+        };
         let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
         let args = serde_json::json!({"content": "test"});
         let msg = result_error(skill.execute("store_note", Some(args)).await.unwrap());
@@ -832,8 +834,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_notes_success() {
-        let mut store = MockKnowledgeStore::default();
-        store.search_result = Ok(vec![serde_json::json!({"id": "n1", "content": "c1"})]);
+        let store = MockKnowledgeStore {
+            search_result: Ok(vec![serde_json::json!({"id": "n1", "content": "c1"})]),
+            ..Default::default()
+        };
         let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
         let args = serde_json::json!({"query": "something"});
         let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
@@ -842,8 +846,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_notes_with_entity_expansion() {
-        let mut store = MockKnowledgeStore::default();
-        store.search_result = Ok(vec![serde_json::json!({"id": "n1"})]);
+        let store = MockKnowledgeStore {
+            search_result: Ok(vec![serde_json::json!({"id": "n1"})]),
+            ..Default::default()
+        };
         let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
         let args = serde_json::json!({"query": "rust", "entity_expansion": true});
         let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
@@ -874,8 +880,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_notes_by_entity_name_success() {
-        let mut store = MockKnowledgeStore::default();
-        store.search_result = Ok(vec![serde_json::json!({"id": "n2"})]);
+        let store = MockKnowledgeStore {
+            search_result: Ok(vec![serde_json::json!({"id": "n2"})]),
+            ..Default::default()
+        };
         let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
         let args = serde_json::json!({"entity_name": "Rust"});
         let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
@@ -921,8 +929,10 @@ mod tests {
 
     #[tokio::test]
     async fn consolidate_memories_propagates_error() {
-        let mut store = MockKnowledgeStore::default();
-        store.consolidate_result = Err("consolidation failed".into());
+        let store = MockKnowledgeStore {
+            consolidate_result: Err("consolidation failed".into()),
+            ..Default::default()
+        };
         let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
         let args = serde_json::json!({"topic": "test"});
         let msg = result_error(

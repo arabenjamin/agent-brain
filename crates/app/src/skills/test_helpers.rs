@@ -37,10 +37,7 @@ impl MockLlm {
 #[async_trait]
 impl LlmProvider for MockLlm {
     async fn generate(&self, _prompt: &str, _system: Option<&str>) -> anyhow::Result<String> {
-        self.response
-            .as_ref()
-            .map(|s| s.clone())
-            .map_err(|e| anyhow::anyhow!("{}", e))
+        self.response.clone().map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
@@ -63,14 +60,17 @@ impl LlmProvider for MockLlm {
 // MockKnowledgeStore
 // ============================================================================
 
+type ReasonResult = Result<(String, Vec<String>, f64, Vec<String>, Option<String>), String>;
+type AuditResult = Result<(bool, f64, Vec<String>, Vec<String>, String), String>;
+
 pub struct MockKnowledgeStore {
     pub store_result: Result<(String, usize), String>,
     pub search_result: Result<Vec<Value>, String>,
     pub prune_result: Result<usize, String>,
     pub consolidate_result: Result<(String, usize, String), String>,
     pub synthesize_result: Result<(String, String), String>,
-    pub reason_result: Result<(String, Vec<String>, f64, Vec<String>, Option<String>), String>,
-    pub audit_result: Result<(bool, f64, Vec<String>, Vec<String>, String), String>,
+    pub reason_result: ReasonResult,
+    pub audit_result: AuditResult,
     pub explain_result: Result<(String, Vec<Value>), String>,
 }
 
@@ -106,8 +106,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _provenance: Option<agent_brain_models::ProvenanceFlag>,
     ) -> anyhow::Result<(String, usize)> {
         self.store_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -118,8 +117,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _graph_hops: usize,
     ) -> anyhow::Result<Vec<Value>> {
         self.search_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -130,8 +128,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _graph_hops: usize,
     ) -> anyhow::Result<Vec<Value>> {
         self.search_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -159,8 +156,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _limit: usize,
     ) -> anyhow::Result<(String, usize, String)> {
         self.consolidate_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -170,8 +166,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _limit: usize,
     ) -> anyhow::Result<(String, String)> {
         self.synthesize_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -186,8 +181,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _store_inference: bool,
     ) -> anyhow::Result<(String, Vec<String>, f64, Vec<String>, Option<String>)> {
         self.reason_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -197,8 +191,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _context: Option<&str>,
     ) -> anyhow::Result<(bool, f64, Vec<String>, Vec<String>, String)> {
         self.audit_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -209,8 +202,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _limit: usize,
     ) -> anyhow::Result<(String, Vec<Value>)> {
         self.explain_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -232,8 +224,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _limit: usize,
     ) -> anyhow::Result<Vec<Value>> {
         self.search_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -325,15 +316,13 @@ impl TaskStore for MockTaskStore {
         _success_criteria: Option<&str>,
     ) -> anyhow::Result<String> {
         self.create_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     async fn get_task(&self, _id: &str) -> anyhow::Result<Option<Task>> {
         self.get_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -358,8 +347,7 @@ impl TaskStore for MockTaskStore {
         _task_id: Option<&str>,
     ) -> anyhow::Result<String> {
         self.store_reflection_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -369,8 +357,7 @@ impl TaskStore for MockTaskStore {
         _task_id: Option<&str>,
     ) -> anyhow::Result<String> {
         self.store_outcome_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -380,8 +367,7 @@ impl TaskStore for MockTaskStore {
 
     async fn auto_complete_parent_if_done(&self, _task_id: &str) -> anyhow::Result<Option<String>> {
         self.auto_complete_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
@@ -427,8 +413,7 @@ impl WorkingMemoryStore for MockWorkingMemoryStore {
 
     async fn get_entries(&self, _session_id: &str, _limit: usize) -> anyhow::Result<Vec<Value>> {
         self.get_all_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
@@ -438,8 +423,7 @@ impl WorkingMemoryStore for MockWorkingMemoryStore {
 
     async fn get_all_entries(&self, _session_id: &str) -> anyhow::Result<Vec<Value>> {
         self.get_all_result
-            .as_ref()
-            .map(|v| v.clone())
+            .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
