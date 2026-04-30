@@ -48,6 +48,10 @@ impl TaskSkill {
                     "context": {
                         "type": "string",
                         "description": "Additional context or constraints"
+                    },
+                    "success_criteria": {
+                        "type": "string",
+                        "description": "Measurable definition of done — used by the evaluator to grade output (e.g. 'Returns valid JSON with all required fields')"
                     }
                 },
                 "required": ["goal"]
@@ -189,7 +193,11 @@ impl TaskSkill {
 
         if let Some(neo4j) = &self.neo4j {
             match neo4j
-                .create_task(&input.goal, input.context.as_deref())
+                .create_task(
+                    &input.goal,
+                    input.context.as_deref(),
+                    input.success_criteria.as_deref(),
+                )
                 .await
             {
                 Ok(id) => {
@@ -223,7 +231,10 @@ impl TaskSkill {
                 GOAL: {}\n\n\
                 OUTPUT TO REVIEW:\n{}\n\n\
                 PLAN (if any): {}\n\n\
-                Respond in this exact format:\n\n\
+                Respond in this EXACT format (keep all section headers):\n\n\
+                ## Score\n\
+                Score: N/5\n\
+                (5 = goal FULLY MET; 4 = nearly met, minor gaps; 3 = PARTIALLY MET; 2 = mostly missing; 1 = NOT MET)\n\n\
                 ## Goal Assessment\n\
                 State whether the goal was FULLY MET, PARTIALLY MET, or NOT MET, and why in one sentence.\n\n\
                 ## What Was Done Well\n\
@@ -304,8 +315,10 @@ impl TaskSkill {
             "You are a task planner. Decompose the following goal into at most {} concrete, \
              ordered sub-tasks. Each sub-task should be independently actionable using available tools. \
              Use 'depends_on_step' (0-indexed) when a step cannot start before the referenced step finishes. \
+             Include a 'success_criteria' field for each sub-task: a single measurable sentence that \
+             defines what 'done' looks like (used by an evaluator to grade the output). \
              Output ONLY a JSON array with no additional text: \
-             [{{\"title\": \"...\", \"purpose\": \"...\", \"tool_hint\": \"...\", \"depends_on_step\": null}}]\n\n\
+             [{{\"title\": \"...\", \"purpose\": \"...\", \"tool_hint\": \"...\", \"depends_on_step\": null, \"success_criteria\": \"...\"}}]\n\n\
              GOAL: {}\n\
              CONTEXT: {}",
             max_steps, parent_task.goal, context
@@ -341,8 +354,9 @@ impl TaskSkill {
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unnamed subtask");
             let purpose = spec.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
+            let criteria = spec.get("success_criteria").and_then(|v| v.as_str());
 
-            match neo4j.create_task(title, Some(purpose)).await {
+            match neo4j.create_task(title, Some(purpose), criteria).await {
                 Ok(child_id) => {
                     if let Err(e) = neo4j.link_subtask(&input.goal_task_id, &child_id).await {
                         warn!("Failed to link subtask {}: {}", child_id, e);
@@ -527,10 +541,7 @@ impl TaskSkill {
                             priority: Some(1),
                             max_attempts: Some(2),
                             provider_hint: Some("ollama".to_string()),
-                            context_profile: None,
-                            ttl_secs: None,
-                            description: None,
-                            confidence_threshold: None,
+                            ..Default::default()
                         },
                         ChainStep {
                             tool_name: "store_note".to_string(),
@@ -544,10 +555,7 @@ impl TaskSkill {
                             priority: Some(1),
                             max_attempts: Some(2),
                             provider_hint: Some("ollama".to_string()),
-                            context_profile: None,
-                            ttl_secs: None,
-                            description: None,
-                            confidence_threshold: None,
+                            ..Default::default()
                         },
                     ];
                     match queue.enqueue_chain(&steps, None).await {
@@ -617,6 +625,8 @@ struct CreateTaskInput {
     goal: String,
     #[serde(default)]
     context: Option<String>,
+    #[serde(default)]
+    success_criteria: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

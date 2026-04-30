@@ -35,7 +35,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::brain_core::BrainEvent;
 use crate::mcp::tools::ToolHandler;
-use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob};
+use crate::models::{AgentJob, AgentJobStatus, PrioritizedJob, TaskStatus};
 use crate::repository::Neo4jClient;
 use agent_brain_protocol::{Content, ToolCallResult};
 
@@ -100,6 +100,19 @@ pub struct ChainStep {
     /// is replaced with a lightweight diagnosis chain.
     #[serde(default)]
     pub confidence_threshold: Option<f32>,
+    /// When `true`, this step is treated as an evaluator: after it completes the
+    /// coordinator parses a 1–5 score from the output.  If the score is below
+    /// `min_score` the original task is marked failed and re-created so the
+    /// scheduler will dispatch a new attempt with the critique as context.
+    #[serde(default)]
+    pub is_evaluator: bool,
+    /// Minimum acceptable score (1–5) from an evaluator step.  Defaults to 3.5.
+    #[serde(default)]
+    pub min_score: Option<f32>,
+    /// Task ID of the parent goal being evaluated.  Stored as `__evaluator_task_id`
+    /// in the job args so the coordinator can look up the original goal on re-queue.
+    #[serde(default)]
+    pub evaluator_task_id: Option<String>,
 }
 
 impl ChainStep {
@@ -265,11 +278,30 @@ impl QueueService {
             let priority = step.priority.unwrap_or(1);
             let max_attempts = step.max_attempts.unwrap_or(3);
 
+            // For evaluator steps, inject metadata fields into the args JSON so
+            // execute_job can parse them without needing extra AgentJob columns.
+            // The tool handler ignores unknown fields via serde default behaviour.
+            let effective_args: Option<serde_json::Value> = if step.is_evaluator {
+                let mut a = step.arguments.clone().unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut m) = a {
+                    m.insert(
+                        "__evaluator_min_score".to_string(),
+                        serde_json::json!(step.min_score.unwrap_or(3.5)),
+                    );
+                    if let Some(tid) = &step.evaluator_task_id {
+                        m.insert("__evaluator_task_id".to_string(), serde_json::json!(tid));
+                    }
+                }
+                Some(a)
+            } else {
+                step.arguments.clone()
+            };
+
             let id = if i == 0 {
                 self.neo4j
                     .create_agent_job(
                         &step.tool_name,
-                        step.arguments.as_ref(),
+                        effective_args.as_ref(),
                         priority,
                         max_attempts,
                         session_id,
@@ -285,7 +317,7 @@ impl QueueService {
                 self.neo4j
                     .create_agent_job_parked(
                         &step.tool_name,
-                        step.arguments.as_ref(),
+                        effective_args.as_ref(),
                         priority,
                         max_attempts,
                         session_id,
@@ -802,6 +834,38 @@ impl QueueService {
                 error!(job_id = %job.id, "Failed to store completed result: {}", e);
             } else {
                 info!(job_id = %job.id, "AgentJob completed");
+
+                // Evaluator step: parse score and re-queue the parent task if below threshold.
+                if let Some(min_score) = job
+                    .arguments
+                    .as_ref()
+                    .and_then(|a| a.get("__evaluator_min_score"))
+                    .and_then(|v| v.as_f64())
+                {
+                    let score = parse_evaluator_score(&result_text);
+                    let task_id = job
+                        .arguments
+                        .as_ref()
+                        .and_then(|a| a.get("__evaluator_task_id"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    if score < min_score as f32 {
+                        warn!(
+                            job_id = %job.id,
+                            score = score,
+                            min_score = min_score,
+                            "Evaluator: score below threshold — re-queuing task"
+                        );
+                        if let Some(tid) = &task_id {
+                            self.handle_evaluator_requeue(tid, score, &result_text)
+                                .await;
+                        }
+                    } else {
+                        info!(job_id = %job.id, score = score, "Evaluator: score passed");
+                    }
+                }
+
                 // Promote any chained children waiting on this job, passing the result text.
                 self.unpark_and_enqueue_children(&job.id, &result_text)
                     .await;
@@ -951,6 +1015,89 @@ impl QueueService {
                 });
             }
         }
+    }
+
+    // =========================================================================
+    // Evaluator re-queue
+    // =========================================================================
+
+    /// Called when an evaluator step scores a task below its threshold.
+    ///
+    /// Marks the original task `failed` and creates a new `Task` node with the
+    /// critique injected as context so the scheduler will re-dispatch it on the
+    /// next tick.
+    async fn handle_evaluator_requeue(&self, task_id: &str, score: f32, critique: &str) {
+        let task = match self.neo4j.get_task(task_id).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                warn!(task_id = %task_id, "Evaluator re-queue: task not found");
+                return;
+            }
+            Err(e) => {
+                warn!(task_id = %task_id, error = %e, "Evaluator re-queue: failed to fetch task");
+                return;
+            }
+        };
+
+        // Mark the original task failed.
+        let _ = self
+            .neo4j
+            .update_task_status(task_id, TaskStatus::Failed)
+            .await;
+
+        let retry_context = format!(
+            "RETRY — previous attempt scored {:.1}/5.\n\nEvaluator critique:\n{}\n\nOriginal context: {}",
+            score,
+            critique.chars().take(800).collect::<String>(),
+            task.context.as_deref().unwrap_or("none"),
+        );
+
+        match self
+            .neo4j
+            .create_task(
+                &task.goal,
+                Some(&retry_context),
+                task.success_criteria.as_deref(),
+            )
+            .await
+        {
+            Ok(new_id) => info!(
+                original_task_id = %task_id,
+                new_task_id = %new_id,
+                score,
+                "Evaluator: created retry task"
+            ),
+            Err(e) => warn!(error = %e, "Evaluator: failed to create retry task"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Evaluator helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a 1–5 score from the output of a `reflect_on_work` evaluator step.
+///
+/// Looks for an explicit `Score: N/5` line first; falls back to verdict keywords
+/// ("FULLY MET" → 5, "PARTIALLY MET" → 3, "NOT MET" → 1).
+fn parse_evaluator_score(text: &str) -> f32 {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Score:")
+            && let Some(n_str) = rest.trim().split('/').next()
+                && let Ok(n) = n_str.trim().parse::<f32>() {
+                    return n.clamp(1.0, 5.0);
+                }
+    }
+    let lower = text.to_lowercase();
+    if lower.contains("fully met") {
+        5.0
+    } else if lower.contains("partially met") {
+        3.0
+    } else if lower.contains("not met") {
+        1.0
+    } else {
+        3.0
     }
 }
 

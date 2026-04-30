@@ -23,6 +23,9 @@ pub struct Task {
     /// Additional context.
     #[serde(default)]
     pub context: Option<String>,
+    /// Measurable criteria that define "done" — used by the evaluator step to grade output.
+    #[serde(default)]
+    pub success_criteria: Option<String>,
     /// Current status.
     pub status: TaskStatus,
     /// When the task was created.

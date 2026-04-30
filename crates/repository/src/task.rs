@@ -12,21 +12,32 @@ impl Neo4jClient {
         &self,
         goal: &str,
         context: Option<&str>,
+        success_criteria: Option<&str>,
     ) -> Result<String, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        let mut q = query("CREATE (t:Task {id: $id, goal: $goal, status: 'created', created_at: $created_at, updated_at: $updated_at}) SET t.context = $context RETURN t.id")
-            .param("id", id.clone())
-            .param("goal", goal)
-            .param("created_at", now.clone())
-            .param("updated_at", now);
+        let mut q = query(
+            "CREATE (t:Task {id: $id, goal: $goal, status: 'created', \
+             created_at: $created_at, updated_at: $updated_at}) \
+             SET t.context = $context, t.success_criteria = $success_criteria \
+             RETURN t.id",
+        )
+        .param("id", id.clone())
+        .param("goal", goal)
+        .param("created_at", now.clone())
+        .param("updated_at", now);
 
         if let Some(ctx) = context {
             q = q.param("context", ctx);
         } else {
-            // Correct way to pass null in neo4rs
             q = q.param("context", BoltType::Null(BoltNull));
+        }
+
+        if let Some(sc) = success_criteria {
+            q = q.param("success_criteria", sc);
+        } else {
+            q = q.param("success_criteria", BoltType::Null(BoltNull));
         }
 
         self.execute(q).await?;
@@ -90,8 +101,8 @@ impl Neo4jClient {
             // Extract fields safely
             let id: String = node.get("id").unwrap_or_default();
             let goal: String = node.get("goal").unwrap_or_default();
-            // node.get() for Option returns Result<Option<T>, DeError>, so we unwrap_or(None)
             let context: Option<String> = node.get("context").unwrap_or(None);
+            let success_criteria: Option<String> = node.get("success_criteria").unwrap_or(None);
             let created_at: String = node.get("created_at").unwrap_or_default();
             let updated_at: String = node.get("updated_at").unwrap_or_default();
 
@@ -108,6 +119,7 @@ impl Neo4jClient {
                 id,
                 goal,
                 context,
+                success_criteria,
                 status,
                 created_at,
                 updated_at,
@@ -238,8 +250,8 @@ impl Neo4jClient {
                 "MATCH (t:Task) WHERE t.status = $status \
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                        t.context AS context, t.created_at AS created_at, \
-                        parent.id AS parent_id \
+                        t.context AS context, t.success_criteria AS success_criteria, \
+                        t.created_at AS created_at, parent.id AS parent_id \
                  ORDER BY t.created_at DESC LIMIT $limit",
             )
             .param("status", s)
@@ -250,8 +262,8 @@ impl Neo4jClient {
                 "MATCH (t:Task) \
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                        t.context AS context, t.created_at AS created_at, \
-                        parent.id AS parent_id \
+                        t.context AS context, t.success_criteria AS success_criteria, \
+                        t.created_at AS created_at, parent.id AS parent_id \
                  ORDER BY t.created_at DESC LIMIT $limit",
             )
             .param("limit", limit as i64);
@@ -264,10 +276,10 @@ impl Neo4jClient {
             let goal = row.get::<String>("goal").unwrap_or_default();
             let status_val = row.get::<String>("status").unwrap_or_default();
             let context: Option<String> = row.get("context").unwrap_or(None);
+            let success_criteria: Option<String> = row.get("success_criteria").unwrap_or(None);
             let created_at = row.get::<String>("created_at").unwrap_or_default();
             let parent_id: Option<String> = row.get("parent_id").unwrap_or(None);
 
-            // Fetch dependency IDs in a separate query to keep the list query simple.
             let deps = self.get_task_dependencies(&id).await.unwrap_or_default();
 
             tasks.push(serde_json::json!({
@@ -275,6 +287,7 @@ impl Neo4jClient {
                 "goal": goal,
                 "status": status_val,
                 "context": context,
+                "success_criteria": success_criteria,
                 "created_at": created_at,
                 "parent_id": parent_id,
                 "depends_on": deps,

@@ -1098,15 +1098,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
           >
             Export
           </button>
-          {streaming && (
-            <button
-              className="btn danger"
-              style={{ padding: "3px 10px", fontSize: 11 }}
-              onClick={stop}
-            >
-              Stop
-            </button>
-          )}
         </div>
       </div>
 
@@ -1214,7 +1205,16 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
               <button className="btn" onClick={send} disabled={streaming || !input.trim()}>
                 Send
               </button>
-            </div>
+              {streaming && (
+                <button
+                  className="btn danger"
+                  style={{ padding: "3px 10px", fontSize: 11 }}
+                  onClick={stop}
+                >
+                  Stop
+                </button>
+              )}
+           </div>
           </div>
         </div>
 

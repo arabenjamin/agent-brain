@@ -151,7 +151,12 @@ pub trait KnowledgeStore: Send + Sync {
 /// Methods on `Neo4jClient` (task repository) used by `TaskSkill`.
 #[async_trait]
 pub trait TaskStore: Send + Sync {
-    async fn create_task(&self, goal: &str, context: Option<&str>) -> anyhow::Result<String>;
+    async fn create_task(
+        &self,
+        goal: &str,
+        context: Option<&str>,
+        success_criteria: Option<&str>,
+    ) -> anyhow::Result<String>;
 
     async fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>>;
 

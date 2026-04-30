@@ -303,6 +303,7 @@ impl Default for MockTaskStore {
                 id: "task-id-1".into(),
                 goal: "Test goal".into(),
                 context: None,
+                success_criteria: None,
                 status: TaskStatus::Created,
                 created_at: "2026-01-01T00:00:00Z".into(),
                 updated_at: "2026-01-01T00:00:00Z".into(),
@@ -317,7 +318,12 @@ impl Default for MockTaskStore {
 
 #[async_trait]
 impl TaskStore for MockTaskStore {
-    async fn create_task(&self, _goal: &str, _context: Option<&str>) -> anyhow::Result<String> {
+    async fn create_task(
+        &self,
+        _goal: &str,
+        _context: Option<&str>,
+        _success_criteria: Option<&str>,
+    ) -> anyhow::Result<String> {
         self.create_result
             .as_ref()
             .map(|v| v.clone())
