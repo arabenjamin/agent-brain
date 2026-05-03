@@ -52,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -62,6 +63,10 @@ COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 
 # Copy context profiles (YAML files for ContextBuilderService)
 COPY --chown=agent:agent contexts /home/agent/contexts/
+
+# Copy entrypoint script
+COPY --chown=agent:agent entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Pre-create runtime directories with correct ownership so named volumes inherit permissions
 RUN mkdir -p /home/agent/snapshots /home/agent/telemetry /home/agent/proposals \
@@ -85,7 +90,7 @@ ENV NEO4J_URI=bolt://neo4j:7687 \
 # Expose HTTP port for MCP server
 EXPOSE 3002
 
-ENTRYPOINT ["agent-brain"]
+ENTRYPOINT ["entrypoint.sh"]
 CMD ["serve"]
 
 # Labels

@@ -55,13 +55,18 @@ services:
       - CODEBASE_DIR=/home/agent/agent-brain
       # GitHub access is via the seeded `github` ApiContext + `http_request` tool.
       # GITHUB_TOKEN is auto-injected by http_request when context_name="github".
+      # It is also used by entrypoint.sh to configure HTTPS push credentials.
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      # Git identity for commits made by the brain.
+      - GIT_USER_NAME=${GIT_USER_NAME:-agent-brain}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-agent-brain@noreply.local}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
       - /home/ara/agent-brain:/home/agent/agent-brain:rw
       - brain_snapshots:/home/agent/snapshots
+      - brain_ssh:/home/agent/.ssh          # persists signing key across rebuilds
       - ./telemetry:/home/agent/telemetry
       - ./proposals:/home/agent/proposals
       - ./workspace:/home/agent/workspace
@@ -94,3 +99,4 @@ volumes:
   neo4j_data:
   neo4j_logs:
   brain_snapshots:
+  brain_ssh:
