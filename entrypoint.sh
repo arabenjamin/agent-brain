@@ -9,7 +9,7 @@ SSH_KEY="${SSH_DIR}/id_ed25519"
 # 1. SSH signing key — generate once, persist via volume.
 # ---------------------------------------------------------------------------
 mkdir -p "${SSH_DIR}"
-chmod 700 "${SSH_DIR}"
+chmod 700 "${SSH_DIR}" 2>/dev/null || true
 
 if [ ! -f "${SSH_KEY}" ]; then
     ssh-keygen -t ed25519 -f "${SSH_KEY}" -N "" \
