@@ -60,7 +60,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
-      - /home/ara/agent-brain:/home/agent/agent-brain:ro
+      - /home/ara/agent-brain:/home/agent/agent-brain:rw
       - brain_snapshots:/home/agent/snapshots
       - ./telemetry:/home/agent/telemetry
       - ./proposals:/home/agent/proposals

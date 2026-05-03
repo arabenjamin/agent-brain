@@ -1726,6 +1726,16 @@ impl SchedulerService {
         criteria: Option<&str>,
     ) -> Vec<ChainStep> {
         if let Some(c) = criteria {
+            // Insert the evaluator BEFORE the trailing update_task step so that a
+            // failed score cancels update_task (keeping the task in_progress) rather
+            // than firing after the task is already marked completed.
+            let update_task_step = steps
+                .last()
+                .filter(|s| s.tool_name == "update_task")
+                .cloned();
+            if update_task_step.is_some() {
+                steps.pop();
+            }
             steps.push(ChainStep {
                 tool_name: "reflect_on_work".to_string(),
                 arguments: Some(json!({
@@ -1742,6 +1752,9 @@ impl SchedulerService {
                 evaluator_task_id: Some(task_id.to_string()),
                 ..Default::default()
             });
+            if let Some(ut) = update_task_step {
+                steps.push(ut);
+            }
         }
         steps
     }

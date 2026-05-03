@@ -41,7 +41,7 @@ use crate::repository::Neo4jClient;
 use agent_brain_protocol::{Content, ToolCallResult};
 
 const DEFAULT_MAX_CONCURRENT: usize = 5;
-const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 3;
+const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 2;
 const DEFAULT_MAX_CONCURRENT_ANTHROPIC: usize = 2;
 const DEFAULT_MAX_CONCURRENT_GEMINI: usize = 5;
 
@@ -886,7 +886,10 @@ impl QueueService {
                 info!(job_id = %job.id, "AgentJob completed");
 
                 // Evaluator step: parse score and re-queue the parent task if below threshold.
-                if let Some(min_score) = job
+                // When score fails, cancel parked children (e.g. update_task) so the task is
+                // not prematurely marked completed — the retry task created by
+                // handle_evaluator_requeue will drive the next attempt.
+                let evaluator_blocked = if let Some(min_score) = job
                     .arguments
                     .as_ref()
                     .and_then(|a| a.get("__evaluator_min_score"))
@@ -905,20 +908,28 @@ impl QueueService {
                             job_id = %job.id,
                             score = score,
                             min_score = min_score,
-                            "Evaluator: score below threshold — re-queuing task"
+                            "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
                         );
+                        let _ = self.neo4j.cancel_parked_children(&job.id).await;
                         if let Some(tid) = &task_id {
                             self.handle_evaluator_requeue(tid, score, &result_text)
                                 .await;
                         }
+                        true
                     } else {
                         info!(job_id = %job.id, score = score, "Evaluator: score passed");
+                        false
                     }
-                }
+                } else {
+                    false
+                };
 
-                // Promote any chained children waiting on this job, passing the result text.
-                self.unpark_and_enqueue_children(&job.id, &result_text)
-                    .await;
+                // Promote any chained children waiting on this job, unless the evaluator
+                // already cancelled them due to a failed score.
+                if !evaluator_blocked {
+                    self.unpark_and_enqueue_children(&job.id, &result_text)
+                        .await;
+                }
                 self.emit_job_event(BrainEvent::JobCompleted {
                     job_id: job.id.clone(),
                     tool_name: job.tool_name.clone(),
