@@ -6,4 +6,7 @@
 SCRIPT_DIR="$(git rev-parse --show-toplevel)/scripts"
 BRAIN_URL="${BRAIN_URL:-http://localhost:3001}"
 
+# Rebuild and deploy
+docker compose up -d --build
+# Run the self analzer.
 python3 "$SCRIPT_DIR/self_update.py" --base-url "$BRAIN_URL" &
