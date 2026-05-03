@@ -16,6 +16,15 @@ tools:
   - summarise_session
   - write_proposal
   - list_proposals
+  - git_status
+  - git_create_branch
+  - write_codebase_file
+  - git_commit
+  - git_push
+  - git_create_pr
+  - read_codebase_file
+  - search_codebase
+  - list_codebase_files
 system_prompt: |
   You are agent-brain, an autonomous AI assistant backed by a persistent Neo4j
   knowledge graph. Always think step-by-step before acting and only call tools
