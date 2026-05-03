@@ -24,10 +24,12 @@ use agent_brain_models::ProvenanceFlag;
 use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, parse_args};
 
 /// Codebase Skill — read-only filesystem access to the agent's own source code,
-/// plus a write_proposal tool for staging structured fix proposals.
+/// plus workspace write tools and a write_proposal tool for staging fix proposals.
 pub struct CodebaseSkill {
     /// Root directory of the codebase (from CODEBASE_DIR or auto-detected).
     codebase_dir: Option<PathBuf>,
+    /// Writable workspace directory (from WORKSPACE_DIR) — separate from the read-only codebase.
+    workspace_dir: Option<PathBuf>,
     /// Directory where fix proposals are written (from PROPOSALS_DIR, default ./proposals).
     proposals_dir: Option<PathBuf>,
     /// Optional knowledge store for analyze_own_structure(store_as_note=true).
@@ -37,6 +39,7 @@ pub struct CodebaseSkill {
 impl CodebaseSkill {
     pub fn new(
         codebase_dir: Option<PathBuf>,
+        workspace_dir: Option<PathBuf>,
         proposals_dir: Option<PathBuf>,
         knowledge: Option<Arc<dyn KnowledgeStore>>,
     ) -> Self {
@@ -47,11 +50,15 @@ impl CodebaseSkill {
                 "CodebaseSkill: no CODEBASE_DIR configured — filesystem tools will return errors"
             );
         }
+        if let Some(ref dir) = workspace_dir {
+            info!(path = %dir.display(), "CodebaseSkill: workspace directory configured");
+        }
         if let Some(ref dir) = proposals_dir {
             info!(path = %dir.display(), "CodebaseSkill: proposals directory configured");
         }
         Self {
             codebase_dir,
+            workspace_dir,
             proposals_dir,
             knowledge,
         }
@@ -304,6 +311,56 @@ impl CodebaseSkill {
                     }
                 },
                 "required": ["title", "task_id", "diagnosis", "proposed_fix", "severity"]
+            }),
+        }
+    }
+
+    fn write_workspace_file_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "write_workspace_file".to_string(),
+            description: "Write a file to the agent's writable workspace directory. Use this for generated code, scripts, experiments, or any output that should persist outside the read-only codebase. Path is relative to the workspace root.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to workspace root (e.g. 'scripts/fetch.py' or 'experiments/test.rs')"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "File content to write"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["overwrite", "append"],
+                        "description": "Write mode: 'overwrite' (default) replaces the file, 'append' adds to end"
+                    }
+                },
+                "required": ["path", "content"]
+            }),
+        }
+    }
+
+    fn list_workspace_files_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_workspace_files".to_string(),
+            description: "List files in the agent's writable workspace directory.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Subdirectory to list (relative to workspace root, default: root)"
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Filename suffix or substring to filter (e.g. '.py', '.rs')"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum files to return (default: 100)"
+                    }
+                }
             }),
         }
     }
@@ -862,6 +919,132 @@ impl CodebaseSkill {
     }
 
     // =========================================================================
+    // Workspace write helpers
+    // =========================================================================
+
+    fn workspace_root(&self) -> Result<PathBuf, ToolCallResult> {
+        match &self.workspace_dir {
+            Some(d) => Ok(d.clone()),
+            None => Err(ToolCallResult::error(
+                "WORKSPACE_DIR not configured — set WORKSPACE_DIR env var to enable workspace tools",
+            )),
+        }
+    }
+
+    fn safe_workspace_path(&self, relative: &str) -> Result<PathBuf, ToolCallResult> {
+        let root = self.workspace_root()?;
+        let raw = root.join(relative.trim_start_matches('/'));
+        let normalized = normalize_path(&raw);
+        // Enforce no traversal outside workspace root.
+        if !normalized.starts_with(&root) {
+            return Err(ToolCallResult::error(format!(
+                "Path '{}' is outside the workspace root",
+                relative
+            )));
+        }
+        Ok(normalized)
+    }
+
+    async fn handle_write_workspace_file(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            content: String,
+            mode: Option<String>,
+        }
+        let args: Args = match parse_args(arguments) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let full_path = match self.safe_workspace_path(&args.path) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+
+        if let Some(parent) = full_path.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolCallResult::error(format!("Cannot create directory: {e}"));
+        }
+
+        let append = args.mode.as_deref() == Some("append");
+        let result = if append {
+            use tokio::io::AsyncWriteExt;
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&full_path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => return ToolCallResult::error(format!("Cannot open file: {e}")),
+            };
+            file.write_all(args.content.as_bytes()).await
+        } else {
+            tokio::fs::write(&full_path, &args.content).await
+        };
+
+        match result {
+            Ok(()) => {
+                info!(path = %full_path.display(), "write_workspace_file: wrote file");
+                ToolCallResult::success_text(format!(
+                    "Written: {}\nAbsolute path: {}",
+                    args.path,
+                    full_path.display()
+                ))
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to write '{}': {e}", args.path)),
+        }
+    }
+
+    async fn handle_list_workspace_files(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Args {
+            directory: Option<String>,
+            pattern: Option<String>,
+            max_results: Option<usize>,
+        }
+        let args: Args = match parse_args(arguments) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+        let max = args.max_results.unwrap_or(100).min(500);
+        let root = match self.workspace_root() {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let start_dir = match &args.directory {
+            Some(d) => match self.safe_workspace_path(d) {
+                Ok(p) => p,
+                Err(e) => return e,
+            },
+            None => root.clone(),
+        };
+
+        if !start_dir.exists() {
+            return ToolCallResult::success_text(format!(
+                "Workspace at '{}' is empty or does not exist yet.",
+                root.display()
+            ));
+        }
+
+        let mut files: Vec<String> = Vec::new();
+        collect_files(&root, &start_dir, &args.pattern, &mut files, max);
+        files.sort();
+
+        if files.is_empty() {
+            ToolCallResult::success_text(format!("Workspace at '{}' is empty.", root.display()))
+        } else {
+            ToolCallResult::success_text(format!(
+                "Workspace ({}): {} file(s):\n{}",
+                root.display(),
+                files.len(),
+                files.join("\n")
+            ))
+        }
+    }
+
+    // =========================================================================
     // Self-analysis handler
     // =========================================================================
 
@@ -959,7 +1142,7 @@ impl Skill for CodebaseSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
+        let mut tools = vec![
             Self::read_codebase_file_def(),
             Self::list_codebase_files_def(),
             Self::search_codebase_def(),
@@ -971,7 +1154,12 @@ impl Skill for CodebaseSkill {
             Self::dismiss_proposal_def(),
             Self::write_proposal_def(),
             Self::analyze_own_structure_def(),
-        ]
+        ];
+        if self.workspace_dir.is_some() {
+            tools.push(Self::write_workspace_file_def());
+            tools.push(Self::list_workspace_files_def());
+        }
+        tools
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
@@ -986,6 +1174,8 @@ impl Skill for CodebaseSkill {
             "read_proposal" => Some(self.handle_read_proposal(arguments).await),
             "dismiss_proposal" => Some(self.handle_dismiss_proposal(arguments).await),
             "write_proposal" => Some(self.handle_write_proposal(arguments).await),
+            "write_workspace_file" => Some(self.handle_write_workspace_file(arguments).await),
+            "list_workspace_files" => Some(self.handle_list_workspace_files(arguments).await),
             "analyze_own_structure" => Some(self.handle_analyze_own_structure(arguments).await),
             _ => None,
         }

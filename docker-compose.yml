@@ -48,6 +48,7 @@ services:
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
       - PROPOSALS_DIR=/home/agent/proposals
+      - WORKSPACE_DIR=/home/agent/workspace
       - LOG_LEVEL=info
       - LOG_FORMAT=json
       - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
@@ -63,6 +64,7 @@ services:
       - brain_snapshots:/home/agent/snapshots
       - ./telemetry:/home/agent/telemetry
       - ./proposals:/home/agent/proposals
+      - ./workspace:/home/agent/workspace
     depends_on:
       neo4j:
         condition: service_healthy

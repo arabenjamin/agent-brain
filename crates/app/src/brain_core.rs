@@ -145,6 +145,8 @@ impl Default for SearchConfig {
 pub struct CodebaseConfig {
     /// Root directory of the codebase. Auto-detected from `Cargo.toml` walk-up if unset.
     pub codebase_dir: Option<PathBuf>,
+    /// Writable workspace for generated code, scripts, and experiments. Set via `WORKSPACE_DIR`.
+    pub workspace_dir: Option<PathBuf>,
     /// Directory where the brain writes structured fix proposals. Defaults to `./proposals`.
     pub proposals_dir: Option<PathBuf>,
 }
@@ -155,12 +157,14 @@ impl Default for CodebaseConfig {
             .map(PathBuf::from)
             .ok()
             .or_else(crate::skills::codebase::detect_repo_root);
+        let workspace_dir = std::env::var("WORKSPACE_DIR").map(PathBuf::from).ok();
         let proposals_dir = std::env::var("PROPOSALS_DIR")
             .map(PathBuf::from)
             .ok()
             .or_else(|| Some(PathBuf::from("./proposals")));
         Self {
             codebase_dir,
+            workspace_dir,
             proposals_dir,
         }
     }
@@ -495,11 +499,16 @@ impl BrainCore {
                 .unwrap_or_else(|_| "http://localhost:11434".to_string());
             let model =
                 std::env::var("OLLAMA_LOCAL_MODEL").unwrap_or_else(|_| "gemma4:latest".to_string());
-            let local_llm_config = LlmConfig::default()
+            let mut local_llm_config = LlmConfig::default()
                 .with_provider(LlmProviderType::Ollama)
                 .with_base_url(local_url.clone())
                 .with_model(model)
                 .with_embed_base_url(local_url);
+            // Pin the embedding model so local knowledge ops use bge-m3 (or whatever
+            // OLLAMA_EMBED_MODEL is set to) instead of falling back to the generation model.
+            if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
+                local_llm_config = local_llm_config.with_embed_model(em);
+            }
             Arc::new(RwLock::new(Some(local_llm_config)))
         };
 
@@ -594,6 +603,7 @@ impl BrainCore {
                 };
             let codebase_skill = CodebaseSkill::new(
                 self.codebase.codebase_dir.clone(),
+                self.codebase.workspace_dir.clone(),
                 self.codebase.proposals_dir.clone(),
                 knowledge_store,
             );
@@ -716,6 +726,7 @@ impl BrainCore {
                 };
             skills.push(Box::new(CodebaseSkill::new(
                 self.codebase.codebase_dir.clone(),
+                self.codebase.workspace_dir.clone(),
                 self.codebase.proposals_dir.clone(),
                 knowledge_store2,
             )));

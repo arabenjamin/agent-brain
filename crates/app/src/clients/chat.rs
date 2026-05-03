@@ -46,6 +46,7 @@ knowledge graph. Always think step-by-step before acting and use the available \
 tools to give the most accurate, grounded answer possible.\n\
 Today's date is {DATE}. When searching for recent content, always include the \
 current date in your queries (e.g. \"daily news brief {DATE}\").\n\
+{PATHS_SECTION}\
 CRITICAL — interactive chat rules:\n\
 1. Always deliver the actual result. Never describe what you are about to do \
    or what you have queued — the user is waiting for the answer RIGHT NOW.\n\
@@ -62,7 +63,24 @@ Never output XML tags like <invoke> — use only the provided function-call tool
 
 fn build_system_prompt() -> String {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    DEFAULT_SYSTEM_PROMPT_TEMPLATE.replace("{DATE}", &date)
+    let codebase_dir = std::env::var("CODEBASE_DIR").unwrap_or_default();
+    let workspace_dir = std::env::var("WORKSPACE_DIR").unwrap_or_default();
+    let paths_section = match (codebase_dir.is_empty(), workspace_dir.is_empty()) {
+        (false, false) => format!(
+            "Your codebase root is `{codebase_dir}` (read-only via codebase tools). \
+             Your writable workspace is `{workspace_dir}` — use write_workspace_file to create files there.\n"
+        ),
+        (false, true) => {
+            format!("Your codebase root is `{codebase_dir}` (read-only via codebase tools).\n")
+        }
+        (true, false) => format!(
+            "Your writable workspace is `{workspace_dir}` — use write_workspace_file to create files there.\n"
+        ),
+        (true, true) => String::new(),
+    };
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE
+        .replace("{DATE}", &date)
+        .replace("{PATHS_SECTION}", &paths_section)
 }
 
 // ============================================================================

@@ -425,19 +425,22 @@ async fn run_serve(
                 session_config,
             ));
 
-            // Build chat-specific LLM config (may be identical to brain's if
-            // no CHAT_LLM_* env vars are set — separate Arc either way).
-            let chat_llm_config = build_chat_llm_config(config);
-
             // Create thread-safe server core
             let neo4j_for_http = client.clone();
             let mut server = McpServerCore::new()
                 .with_neo4j(client)
                 .with_llm_config(llm_config)
-                .with_chat_llm_config(chat_llm_config)
                 .with_session_manager(session_manager.clone())
                 .with_system_prompt(system_prompt)
                 .with_catalog_path(catalog_path);
+
+            // Only create a separate chat Arc when CHAT_LLM_* overrides are
+            // set. Otherwise leave chat_llm_config = None so chat_service()
+            // falls back to brain.llm_config — meaning use_model() applies to
+            // both the brain and the chat session immediately.
+            if config.chat_llm.has_overrides() {
+                server = server.with_chat_llm_config(build_chat_llm_config(config));
+            }
 
             if let Some(t) = telemetry {
                 server = server.with_telemetry(t);

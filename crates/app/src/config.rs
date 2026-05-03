@@ -68,6 +68,19 @@ pub struct ChatLlmConfig {
     pub base_url: Option<String>,
 }
 
+impl ChatLlmConfig {
+    /// Returns `true` when any override field is set, meaning chat should use
+    /// a dedicated `Arc` separate from the brain's `llm_config`.  When all
+    /// fields are `None`, chat should share the brain's Arc so that
+    /// `use_model` calls affect it immediately.
+    pub fn has_overrides(&self) -> bool {
+        self.provider.is_some()
+            || self.model.is_some()
+            || self.api_key.is_some()
+            || self.base_url.is_some()
+    }
+}
+
 /// Secret provider backend configuration.
 #[derive(Debug, Clone)]
 pub struct SecretsConfig {

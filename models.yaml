@@ -25,6 +25,22 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
+  nemotron-3-nano:4b:
+    provider: ollama
+    model: "nemotron-3-nano:4b"
+    context_window: 128000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - tools
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+
   granite4:latest:
     provider: ollama
     model: "granite4:latest"
@@ -57,40 +73,25 @@ models:
       before acting and use available tools for grounded answers.
 
   # ── Ollama Cloud (https://ollama.com) ─────────────────────────────────────────
-  minimax-m2.7:cloud:
+  # Free-tier models: small/open-weight, no subscription required.
+  # Models that return 403 "requires a subscription" (kimi-k2.5, minimax-m2.7,
+  # gemma4:31b) are excluded — add them back if you upgrade your Ollama plan.
+  qwen3.5:cloud:
     provider: ollama-cloud
-    model: "minimax-m2.7:cloud"
+    model: "qwen3.5:cloud"
     context_window: 1000000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
     capabilities:
       - reasoning
       - code
-      - vision
     system_prompt: |
       You are agent-brain, an autonomous AI agent backed by a persistent
       Neo4j knowledge graph. You can search notes, manage tasks, reason
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
-  kimi-k2.5:cloud:
-    provider: ollama-cloud
-    model: "kimi-k2.5:cloud"
-    context_window: 1000000
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    capabilities:
-      - reasoning
-      - code
-      - vision
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-  
-
+ 
   gemma4:31b-cloud:
     provider: ollama-cloud
     model: "gemma4:31b-cloud"
@@ -101,6 +102,56 @@ models:
       - reasoning
       - code
       - vision
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+
+
+  ministral-3:cloud:
+    provider: ollama-cloud
+    model: "ministral-3:cloud"
+    context_window: 131072
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  deepseek-v4-flash:cloud:
+    provider: ollama-cloud
+    model: "deepseek-v4-flash:cloud"
+    context_window: 131072
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  nemotron-3-nano:cloud:
+    provider: ollama-cloud
+    model: "nemotron-3-nano:cloud"
+    context_window: 131072
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - fast
     system_prompt: |
       You are agent-brain, an autonomous AI agent backed by a persistent
       Neo4j knowledge graph. You can search notes, manage tasks, reason

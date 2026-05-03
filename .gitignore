@@ -39,3 +39,6 @@ tmp/
 
 # telemetry
 telemetry/
+
+# Workspace
+workspace/
