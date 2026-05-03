@@ -606,6 +606,7 @@ impl BrainCore {
                 self.codebase.workspace_dir.clone(),
                 self.codebase.proposals_dir.clone(),
                 knowledge_store,
+                self.storage.neo4j.clone(),
             );
             registry.register_skill(Box::new(codebase_skill));
         }
@@ -729,6 +730,7 @@ impl BrainCore {
                 self.codebase.workspace_dir.clone(),
                 self.codebase.proposals_dir.clone(),
                 knowledge_store2,
+                self.storage.neo4j.clone(),
             )));
         }
 

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use crate::repository::Neo4jClient;
 use crate::services::KnowledgeStore;
 use crate::skills::Skill;
 use agent_brain_models::ProvenanceFlag;
@@ -34,6 +35,8 @@ pub struct CodebaseSkill {
     proposals_dir: Option<PathBuf>,
     /// Optional knowledge store for analyze_own_structure(store_as_note=true).
     knowledge: Option<Arc<dyn KnowledgeStore>>,
+    /// Optional Neo4j client for querying dynamic capabilities (chains, tools, procedures).
+    neo4j: Option<Neo4jClient>,
 }
 
 impl CodebaseSkill {
@@ -42,6 +45,7 @@ impl CodebaseSkill {
         workspace_dir: Option<PathBuf>,
         proposals_dir: Option<PathBuf>,
         knowledge: Option<Arc<dyn KnowledgeStore>>,
+        neo4j: Option<Neo4jClient>,
     ) -> Self {
         if let Some(ref dir) = codebase_dir {
             info!(path = %dir.display(), "CodebaseSkill initialized with codebase root");
@@ -61,6 +65,7 @@ impl CodebaseSkill {
             workspace_dir,
             proposals_dir,
             knowledge,
+            neo4j,
         }
     }
 
@@ -1094,6 +1099,76 @@ impl CodebaseSkill {
             "## Recent Git History\n```\n{}\n```",
             extract_text(&log)
         ));
+
+        // Section 5: Graph-stored dynamic capabilities (SchedulerChains, DynamicTools, Procedures)
+        if let Some(neo4j) = &self.neo4j {
+            use neo4rs::query;
+
+            let mut dyn_lines: Vec<String> = Vec::new();
+
+            // SchedulerChain nodes — the brain's learned/configured task automation
+            match neo4j
+                .execute(query(
+                    "MATCH (c:SchedulerChain) RETURN c.pattern AS pattern, c.description AS description, c.priority AS priority ORDER BY c.priority DESC, c.pattern",
+                ))
+                .await
+            {
+                Ok(rows) if !rows.is_empty() => {
+                    dyn_lines.push("### SchedulerChains (graph-stored task automation)".into());
+                    for row in &rows {
+                        let pattern = row.get::<String>("pattern").unwrap_or_default();
+                        let desc = row.get::<String>("description").unwrap_or_default();
+                        let prio = row.get::<i64>("priority").unwrap_or(1);
+                        dyn_lines.push(format!("- [{prio}] {pattern}: {desc}"));
+                    }
+                }
+                _ => {}
+            }
+
+            // DynamicTool nodes — runtime-defined MCP tools
+            match neo4j
+                .execute(query(
+                    "MATCH (t:DynamicTool) RETURN t.name AS name, t.description AS description ORDER BY t.name",
+                ))
+                .await
+            {
+                Ok(rows) if !rows.is_empty() => {
+                    dyn_lines.push("\n### DynamicTools (runtime-defined MCP tools)".into());
+                    for row in &rows {
+                        let name = row.get::<String>("name").unwrap_or_default();
+                        let desc = row.get::<String>("description").unwrap_or_default();
+                        dyn_lines.push(format!("- {name}: {desc}"));
+                    }
+                }
+                _ => {}
+            }
+
+            // Procedure nodes — named multi-step workflows
+            match neo4j
+                .execute(query(
+                    "MATCH (p:Procedure) RETURN p.name AS name, p.description AS description ORDER BY p.name",
+                ))
+                .await
+            {
+                Ok(rows) if !rows.is_empty() => {
+                    dyn_lines.push("\n### Procedures (named multi-step workflows)".into());
+                    for row in &rows {
+                        let name = row.get::<String>("name").unwrap_or_default();
+                        let desc = row.get::<String>("description").unwrap_or_default();
+                        dyn_lines.push(format!("- {name}: {desc}"));
+                    }
+                }
+                _ => {}
+            }
+
+            if !dyn_lines.is_empty() {
+                sections.push(format!(
+                    "## Graph-Stored Capabilities\n\n{}\n\n> NOTE: These capabilities already exist in the knowledge graph. \
+                     Do NOT recommend creating them when analysing gaps.",
+                    dyn_lines.join("\n")
+                ));
+            }
+        }
 
         let content = format!(
             "# Agent Brain — Codebase Self-Analysis\n\nGenerated: {}\n\n{}",
