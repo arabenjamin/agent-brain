@@ -18,6 +18,7 @@
 
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 tokio::task_local! {
@@ -138,6 +139,12 @@ pub struct QueueService {
     /// Brain event bus — emits `JobCompleted / JobFailed / JobDead` events that
     /// transport adapters (e.g. HTTP SSE) can subscribe to and forward to clients.
     event_tx: Option<broadcast::Sender<BrainEvent>>,
+    /// Set to `true` by `run_coordinator` on every heartbeat tick; proves the task is alive.
+    coordinator_alive: Arc<AtomicBool>,
+    /// Unix timestamp (seconds) of the last coordinator heartbeat, or -1 if never set.
+    coordinator_last_heartbeat: Arc<AtomicI64>,
+    /// Result of the last orphan-chain audit: count of orphaned parked jobs found (and cancelled).
+    last_orphan_audit_count: Arc<AtomicI64>,
 }
 
 impl QueueService {
@@ -163,6 +170,9 @@ impl QueueService {
             config: Arc::new(RwLock::new(WorkerConfig::default())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
             event_tx,
+            coordinator_alive: Arc::new(AtomicBool::new(false)),
+            coordinator_last_heartbeat: Arc::new(AtomicI64::new(-1)),
+            last_orphan_audit_count: Arc::new(AtomicI64::new(-1)),
         }
     }
 
@@ -501,7 +511,24 @@ impl QueueService {
         let running_anthropic = cfg.max_concurrent_anthropic.saturating_sub(avail_anthropic);
         let running_gemini = cfg.max_concurrent_gemini.saturating_sub(avail_gemini);
 
+        let coordinator_alive = self.coordinator_alive.load(Ordering::Relaxed);
+        let hb_ts = self.coordinator_last_heartbeat.load(Ordering::Relaxed);
+        let coordinator_last_heartbeat = if hb_ts >= 0 {
+            chrono::DateTime::from_timestamp(hb_ts, 0)
+                .map(|dt: chrono::DateTime<chrono::Utc>| dt.to_rfc3339())
+        } else {
+            None
+        };
+        let orphan_audit = self.last_orphan_audit_count.load(Ordering::Relaxed);
+
         serde_json::json!({
+            "coordinator": {
+                "alive": coordinator_alive,
+                "last_heartbeat": coordinator_last_heartbeat,
+            },
+            "orphan_audit": {
+                "last_cancelled": if orphan_audit >= 0 { serde_json::json!(orphan_audit) } else { serde_json::Value::Null },
+            },
             "in_memory_pending": heap_len,
             "running_now": running_ollama + running_anthropic + running_gemini,
             "max_concurrent": cfg.max_concurrent,
@@ -648,11 +675,34 @@ impl QueueService {
                 }
             }
         });
+        // Spawn periodic orphan-chain audit (every 5 minutes).
+        // Cancels any parked jobs whose parent is terminal/missing, and records the count.
+        let queue_orphan = Arc::clone(&queue);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                match queue_orphan.neo4j.cancel_orphaned_parked_jobs().await {
+                    Ok(n) => {
+                        queue_orphan
+                            .last_orphan_audit_count
+                            .store(n as i64, Ordering::Relaxed);
+                        if n > 0 {
+                            warn!(count = n, "Orphan-chain audit cancelled stuck parked jobs");
+                        }
+                    }
+                    Err(e) => warn!("Orphan-chain audit failed: {}", e),
+                }
+            }
+        });
     }
 
     async fn run_coordinator(self: Arc<Self>) {
         info!("AgentJob coordinator started");
+        self.coordinator_alive.store(true, Ordering::Relaxed);
         loop {
+            self.coordinator_last_heartbeat
+                .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
             let poll_secs = self.config.read().await.poll_interval_secs;
 
             tokio::select! {

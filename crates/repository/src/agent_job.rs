@@ -374,6 +374,24 @@ impl Neo4jClient {
 
     /// Cancel all parked jobs whose parent is in a terminal state or no longer exists.
     ///
+    /// Count parked jobs whose parent is missing or terminal, without mutating anything.
+    pub async fn count_orphaned_parked_jobs(&self) -> Result<usize, RepositoryError> {
+        let q = query(
+            "MATCH (child:AgentJob {status: 'parked'}) \
+             WHERE child.parent_job_id IS NOT NULL AND child.parent_job_id <> '' \
+             OPTIONAL MATCH (parent:AgentJob {id: child.parent_job_id}) \
+             WITH child, parent \
+             WHERE parent IS NULL \
+                OR parent.status IN ['cancelled', 'dead', 'dead_letter'] \
+             RETURN count(child) AS n",
+        );
+        let rows = self.execute(q).await?;
+        Ok(rows
+            .first()
+            .and_then(|r| r.get::<i64>("n").ok())
+            .unwrap_or(0) as usize)
+    }
+
     /// Called at startup recovery and after bulk drain to clear orphaned chain steps
     /// that accumulated due to crashes or explicit cancellations.
     /// Returns the number of jobs cancelled.
