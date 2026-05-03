@@ -32,9 +32,10 @@ use crate::services::{
 };
 use crate::skills::{
     Skill, agent::AgentSkill, codebase::CodebaseSkill, context::ContextSkill,
-    dynamic::DynamicSkill, http::HttpSkill, knowledge::KnowledgeSkill, model::ModelSkill,
-    query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill,
-    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
+    dynamic::DynamicSkill, git::GitSkill, http::HttpSkill, knowledge::KnowledgeSkill,
+    model::ModelSkill, query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill,
+    search::SearchSkill, sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
+    ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -611,6 +612,9 @@ impl BrainCore {
             registry.register_skill(Box::new(codebase_skill));
         }
 
+        // Git Skill (branch/commit/push/PR — always registered; requires CODEBASE_DIR)
+        registry.register_skill(Box::new(GitSkill::new(self.codebase.codebase_dir.clone())));
+
         // Model Skill (DuckDB-backed catalog, shares live LLM config Arc)
         let model_skill = ModelSkill::new(
             self.llm_config.clone(),
@@ -733,6 +737,8 @@ impl BrainCore {
                 self.storage.neo4j.clone(),
             )));
         }
+
+        skills.push(Box::new(GitSkill::new(self.codebase.codebase_dir.clone())));
 
         skills.push(Box::new(ModelSkill::new(
             self.llm_config.clone(),
