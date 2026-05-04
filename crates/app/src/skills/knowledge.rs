@@ -118,7 +118,8 @@ impl KnowledgeSkill {
             description:
                 "Delete stale notes. Use score_threshold/lambda for adaptive decay scoring \
                          (recommended), or days_stale/min_accesses for simple time-based pruning. \
-                         Protected types (consolidated, reflection) are never deleted."
+                         Protected types (consolidated, reflection) are never deleted. \
+                         min_retain (default 50) and max_pct (default 0.30) prevent over-pruning."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -142,6 +143,14 @@ impl KnowledgeSkill {
                     "dry_run": {
                         "type": "boolean",
                         "description": "If true, return count of stale notes without deleting (default: false)"
+                    },
+                    "min_retain": {
+                        "type": "integer",
+                        "description": "Never delete below this total note count (default: 50)"
+                    },
+                    "max_pct": {
+                        "type": "number",
+                        "description": "Cap deletions to this fraction of total notes per run (default: 0.30)"
                     }
                 }
             }),
@@ -340,6 +349,8 @@ impl KnowledgeSkill {
                 input.score_threshold,
                 input.lambda,
                 input.dry_run,
+                input.min_retain,
+                input.max_pct,
             )
             .await
         {
@@ -715,6 +726,10 @@ struct PruneOldNotesInput {
     lambda: Option<f64>,
     #[serde(default)]
     dry_run: bool,
+    #[serde(default = "default_min_retain")]
+    min_retain: i64,
+    #[serde(default = "default_max_prune_pct")]
+    max_pct: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -757,6 +772,12 @@ fn default_days_stale() -> i64 {
 }
 fn default_min_accesses() -> i64 {
     2
+}
+fn default_min_retain() -> i64 {
+    50
+}
+fn default_max_prune_pct() -> f64 {
+    0.30
 }
 fn default_consolidate_limit() -> usize {
     10

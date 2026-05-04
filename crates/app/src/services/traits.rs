@@ -65,6 +65,7 @@ pub trait KnowledgeStore: Send + Sync {
 
     async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>>;
 
+    #[allow(clippy::too_many_arguments)]
     async fn prune_old_notes(
         &self,
         days_stale: i64,
@@ -72,6 +73,8 @@ pub trait KnowledgeStore: Send + Sync {
         score_threshold: Option<f64>,
         lambda: Option<f64>,
         dry_run: bool,
+        min_retain: i64,
+        max_pct: f64,
     ) -> anyhow::Result<usize>;
 
     async fn consolidate_memories(

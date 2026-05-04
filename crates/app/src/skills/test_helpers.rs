@@ -143,6 +143,8 @@ impl KnowledgeStore for MockKnowledgeStore {
         _score_threshold: Option<f64>,
         _lambda: Option<f64>,
         _dry_run: bool,
+        _min_retain: i64,
+        _max_pct: f64,
     ) -> anyhow::Result<usize> {
         self.prune_result
             .as_ref()

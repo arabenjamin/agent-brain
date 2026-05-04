@@ -1066,7 +1066,10 @@ impl KnowledgeService {
     }
 
     /// Delete stale notes. When score_threshold/lambda provided, uses adaptive decay scoring.
-    /// When dry_run=true, returns count without deleting.
+    /// When dry_run=true, returns candidate count without deleting.
+    /// `min_retain` and `max_pct` guard against over-pruning: at most `max_pct` of total notes
+    /// are removed per call, and the graph never drops below `min_retain` notes.
+    #[allow(clippy::too_many_arguments)]
     pub async fn prune_old_notes(
         &self,
         days_stale: i64,
@@ -1074,6 +1077,8 @@ impl KnowledgeService {
         score_threshold: Option<f64>,
         lambda: Option<f64>,
         dry_run: bool,
+        min_retain: i64,
+        max_pct: f64,
     ) -> Result<usize> {
         if !dry_run
             && self.auto_snapshot_prune
@@ -1085,43 +1090,15 @@ impl KnowledgeService {
             }
         }
 
-        if score_threshold.is_some() || lambda.is_some() {
+        let use_adaptive = score_threshold.is_some() || lambda.is_some();
+
+        // Count candidates using the appropriate filter (same WHERE as the real delete).
+        let candidates: usize = if use_adaptive {
             let threshold = score_threshold.unwrap_or(0.1);
             let lam = lambda.unwrap_or(0.1);
-
-            if dry_run {
-                let cypher = r#"
-                MATCH (n:Note)
-                WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
-                OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
-                WITH n, count(other) AS in_degree,
-                     duration.between(n.last_accessed_at, datetime()).days AS days_idle
-                WITH n,
-                     toFloat(COALESCE(n.access_count, 0) + 1) / (1.0 + toFloat(in_degree))
-                         * exp(-$lambda * toFloat(days_idle)) AS decay_score
-                WHERE decay_score < $threshold
-                RETURN count(n) AS total
-                "#;
-
-                let rows = self
-                    .neo4j
-                    .execute(
-                        neo4rs::query(cypher)
-                            .param("lambda", lam)
-                            .param("threshold", threshold),
-                    )
-                    .await?;
-
-                let total = rows
-                    .first()
-                    .and_then(|r| r.get::<i64>("total").ok())
-                    .unwrap_or(0) as usize;
-                return Ok(total);
-            }
-
             let cypher = r#"
             MATCH (n:Note)
-            WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection']
+            WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
             OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
             WITH n, count(other) AS in_degree,
                  duration.between(n.last_accessed_at, datetime()).days AS days_idle
@@ -1129,11 +1106,8 @@ impl KnowledgeService {
                  toFloat(COALESCE(n.access_count, 0) + 1) / (1.0 + toFloat(in_degree))
                      * exp(-$lambda * toFloat(days_idle)) AS decay_score
             WHERE decay_score < $threshold
-            WITH collect(n) AS stale
-            FOREACH (n IN stale | DETACH DELETE n)
-            RETURN size(stale) AS total
+            RETURN count(n) AS total
             "#;
-
             let rows = self
                 .neo4j
                 .execute(
@@ -1142,16 +1116,10 @@ impl KnowledgeService {
                         .param("threshold", threshold),
                 )
                 .await?;
-
-            let total = rows
-                .first()
+            rows.first()
                 .and_then(|r| r.get::<i64>("total").ok())
-                .unwrap_or(0) as usize;
-            return Ok(total);
-        }
-
-        // Legacy path: days_stale / min_accesses
-        if dry_run {
+                .unwrap_or(0) as usize
+        } else {
             let cypher = r#"
             MATCH (n:Note)
             WHERE n.last_accessed_at < datetime() - duration({days: $days})
@@ -1167,38 +1135,102 @@ impl KnowledgeService {
                         .param("min_accesses", min_accesses),
                 )
                 .await?;
-            let total = rows
+            rows.first()
+                .and_then(|r| r.get::<i64>("total").ok())
+                .unwrap_or(0) as usize
+        };
+
+        if dry_run {
+            return Ok(candidates);
+        }
+
+        // Retention safeguard: cap deletion so we never go below min_retain or exceed max_pct.
+        let total_rows = self
+            .neo4j
+            .execute(neo4rs::query("MATCH (n:Note) RETURN count(n) AS total"))
+            .await?;
+        let total: i64 = total_rows
+            .first()
+            .and_then(|r| r.get::<i64>("total").ok())
+            .unwrap_or(0);
+
+        let headroom = (total - min_retain).max(0);
+        let pct_cap = (total as f64 * max_pct).floor() as i64;
+        let safe_limit = (candidates as i64).min(headroom).min(pct_cap).max(0);
+
+        if safe_limit <= 0 {
+            warn!(
+                total,
+                min_retain, candidates, "Pruning skipped — retention safeguard would be breached"
+            );
+            return Ok(0);
+        }
+        if safe_limit < candidates as i64 {
+            warn!(
+                safe_limit,
+                candidates, total, max_pct, min_retain, "Pruning capped by retention safeguard"
+            );
+        }
+
+        if use_adaptive {
+            let threshold = score_threshold.unwrap_or(0.1);
+            let lam = lambda.unwrap_or(0.1);
+            let cypher = r#"
+            MATCH (n:Note)
+            WHERE NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection']
+            OPTIONAL MATCH (other:Note)-[:RELATES_TO]->(n)
+            WITH n, count(other) AS in_degree,
+                 duration.between(n.last_accessed_at, datetime()).days AS days_idle
+            WITH n,
+                 toFloat(COALESCE(n.access_count, 0) + 1) / (1.0 + toFloat(in_degree))
+                     * exp(-$lambda * toFloat(days_idle)) AS decay_score
+            WHERE decay_score < $threshold
+            WITH n ORDER BY decay_score ASC
+            WITH collect(n)[0..$safe_limit] AS stale
+            FOREACH (n IN stale | DETACH DELETE n)
+            RETURN size(stale) AS total
+            "#;
+            let rows = self
+                .neo4j
+                .execute(
+                    neo4rs::query(cypher)
+                        .param("lambda", lam)
+                        .param("threshold", threshold)
+                        .param("safe_limit", safe_limit),
+                )
+                .await?;
+            let deleted = rows
                 .first()
                 .and_then(|r| r.get::<i64>("total").ok())
                 .unwrap_or(0) as usize;
-            return Ok(total);
+            return Ok(deleted);
         }
 
+        // Legacy path: days_stale / min_accesses
         let cypher = r#"
         MATCH (n:Note)
         WHERE n.last_accessed_at < datetime() - duration({days: $days})
           AND n.access_count < $min_accesses
           AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news']
-        WITH collect(n) AS stale
+        WITH n ORDER BY n.access_count ASC, n.last_accessed_at ASC
+        WITH collect(n)[0..$safe_limit] AS stale
         FOREACH (n IN stale | DETACH DELETE n)
         RETURN size(stale) AS total
         "#;
-
         let rows = self
             .neo4j
             .execute(
                 neo4rs::query(cypher)
                     .param("days", days_stale)
-                    .param("min_accesses", min_accesses),
+                    .param("min_accesses", min_accesses)
+                    .param("safe_limit", safe_limit),
             )
             .await?;
-
-        let total = rows
+        let deleted = rows
             .first()
             .and_then(|r| r.get::<i64>("total").ok())
             .unwrap_or(0) as usize;
-
-        Ok(total)
+        Ok(deleted)
     }
 
     /// Find notes that mention a given entity name.
@@ -2476,6 +2508,8 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         score_threshold: Option<f64>,
         lambda: Option<f64>,
         dry_run: bool,
+        min_retain: i64,
+        max_pct: f64,
     ) -> anyhow::Result<usize> {
         KnowledgeService::prune_old_notes(
             self,
@@ -2484,6 +2518,8 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
             score_threshold,
             lambda,
             dry_run,
+            min_retain,
+            max_pct,
         )
         .await
     }

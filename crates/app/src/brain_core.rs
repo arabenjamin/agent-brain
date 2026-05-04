@@ -472,7 +472,7 @@ impl BrainCore {
         };
 
         // Create SnapshotService when Neo4j is available.
-        let _snapshot_svc: Option<Arc<SnapshotService>> = self.storage.neo4j.as_ref().map(|db| {
+        let snapshot_svc: Option<Arc<SnapshotService>> = self.storage.neo4j.as_ref().map(|db| {
             Arc::new(SnapshotService::new(
                 db.clone(),
                 self.storage.snapshot_dir.clone(),
@@ -550,11 +550,14 @@ impl BrainCore {
 
         // Knowledge Skill
         if let Some(neo4j) = &self.storage.neo4j {
-            let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> =
-                Arc::new(KnowledgeService::new(
-                    neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ));
+            let mut ks = KnowledgeService::new(
+                neo4j.clone(),
+                Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
+            );
+            if let Some(ref snap) = snapshot_svc {
+                ks = ks.with_snapshot(Arc::clone(snap), true, true);
+            }
+            let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> = Arc::new(ks);
             let knowledge_skill = KnowledgeSkill::new(
                 knowledge_svc,
                 Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
@@ -689,11 +692,14 @@ impl BrainCore {
         let mut skills: Vec<Box<dyn Skill>> = Vec::new();
 
         if let Some(neo4j) = &self.storage.neo4j {
-            let knowledge_svc3: Arc<dyn crate::services::KnowledgeStore> =
-                Arc::new(KnowledgeService::new(
-                    neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ));
+            let mut ks3 = KnowledgeService::new(
+                neo4j.clone(),
+                Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
+            );
+            if let Some(ref snap) = snapshot_svc {
+                ks3 = ks3.with_snapshot(Arc::clone(snap), true, true);
+            }
+            let knowledge_svc3: Arc<dyn crate::services::KnowledgeStore> = Arc::new(ks3);
             skills.push(Box::new(KnowledgeSkill::new(
                 knowledge_svc3,
                 Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
