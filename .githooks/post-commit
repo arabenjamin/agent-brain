@@ -8,5 +8,14 @@ BRAIN_URL="${BRAIN_URL:-http://localhost:3001}"
 
 # Rebuild and deploy
 docker compose up -d --build
-# Run the self analzer.
+
+# Wait for brain to become healthy (up to 60 s) before refreshing self-knowledge.
+echo "[post-commit] waiting for brain to be healthy..."
+for i in $(seq 1 30); do
+    if curl -sf "${BRAIN_URL}/health" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
 python3 "$SCRIPT_DIR/self_update.py" --base-url "$BRAIN_URL" &
