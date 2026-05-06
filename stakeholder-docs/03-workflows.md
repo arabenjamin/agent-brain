@@ -19,14 +19,14 @@ sequenceDiagram
 
     alt content > 1500 chars
         Brain->>Brain: semantic chunking\n(sentence-aware 200-1500 chars)
-        Brain->>DB: store N chunk Notes\n[:PART_OF] → parent
+        Brain->>DB: store N chunk Notes\n(PART_OF) → parent
     end
 
     Brain->>LLM: extract_entities(content)
-    Brain->>DB: MERGE Entity nodes\n[:MENTIONS] edges
+    Brain->>DB: MERGE Entity nodes\n(MENTIONS) edges
 
     Brain->>DB: find Notes with cosine_sim ≥ 0.75
-    Brain->>DB: CREATE [:RELATES_TO {similarity}] edges
+    Brain->>DB: CREATE (RELATES_TO) edges with similarity score
 
     Brain-->>Client: note_id, chunk_count, entities_found
 
@@ -151,7 +151,7 @@ flowchart TD
     GATHER[Gather candidate notes\nnext_review_at ≤ now\nor note_type=episodic]
     GATHER --> GROUP[Group by semantic\nsimilarity clusters]
     GROUP --> LLM_CONS[LLM: synthesize\ngroup → 1 consolidated note]
-    LLM_CONS --> STORE[Store consolidated Note\nnote_type=consolidated\n[:SUMMARIZED_BY] edges]
+    LLM_CONS --> STORE["Store consolidated Note\nnote_type=consolidated\n(SUMMARIZED_BY) edges"]
     STORE --> UPDATE[Update source notes\nnext_review_at = now + 30 days\nreview_interval_days += 5]
     UPDATE --> DONE[Memory footprint reduced\nKnowledge preserved]
 
@@ -175,7 +175,7 @@ sequenceDiagram
     Client->>Brain: define_tool(name, description,\ninput_schema, procedure_steps)
     Brain->>DB: MERGE DynamicTool node
     Brain->>DB: MERGE Procedure node
-    Brain->>DB: CREATE [:USES] DynamicTool→Procedure
+    Brain->>DB: CREATE (USES) DynamicTool→Procedure
     Brain->>Brain: register tool in live registry\n(available immediately)
     Brain-->>Client: tool_id, now callable as MCP tool
 
@@ -198,9 +198,9 @@ graph LR
     Q --> EMBED[Vector embed query]
     EMBED --> TOP5[Top-5 similar notes\nby cosine + BM25]
     TOP5 --> ENTITY[Extract entities\nfrom results]
-    ENTITY --> HOP1[Hop 1: notes\n[:MENTIONS] entity='Rust']
-    HOP1 --> HOP2[Hop 2: notes\n[:RELATES_TO] Rust notes]
-    HOP2 --> HOP3[Hop 3: tasks\n[:REFLECTS_ON] related notes]
+    ENTITY --> HOP1["Hop 1: notes\n(MENTIONS) entity='Rust'"]
+    HOP1 --> HOP2["Hop 2: notes\n(RELATES_TO) Rust notes"]
+    HOP2 --> HOP3["Hop 3: tasks\n(REFLECTS_ON) related notes"]
     HOP3 --> FUSE[RRF fusion\nre-rank all candidates]
     FUSE --> LLM_R[LLM: synthesize\nfinal answer from\ntop-K context]
     LLM_R --> ANS[Reasoned Answer\nwith source citations]

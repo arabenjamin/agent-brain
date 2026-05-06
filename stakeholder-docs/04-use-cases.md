@@ -26,7 +26,7 @@ sequenceDiagram
     Claude->>Brain: store_note(content="Key finding: Tokio dominates\nproduction use cases...",\nnote_type="reflection")
     Brain-->>Claude: stored
 
-    Claude-->>Dev: "Here are my findings...\n[based on 5 notes including 2 from past sessions]"
+    Claude-->>Dev: "Here are my findings...\n(based on 5 notes including 2 from past sessions)"
 
     Note over Dev,DB: Next session — months later
 
@@ -172,13 +172,13 @@ and can be triggered by name.
 
 ```mermaid
 flowchart TD
-    STORE["store_procedure(\n  name='daily-standup-prep',\n  steps=[\n    search_notes yesterday's work,\n    search_notes blockers,\n    search_notes planned tasks,\n    store_note summary\n  ]\n)"]
+    STORE["store_procedure(\n  name='daily-standup-prep',\n  steps=(\n    search_notes yesterday's work,\n    search_notes blockers,\n    search_notes planned tasks,\n    store_note summary\n  )\n)"]
 
     TRIGGER[run_procedure\n'daily-standup-prep'\nargs={date: '2026-05-01'}]
-    TRIGGER --> S1[Step 1: search_notes\n'completed work {{context.date-1}}']
-    S1 --> S2[Step 2: search_notes\n'blockers issues problems']
+    TRIGGER --> S1["Step 1: search_notes\ncompleted work on date-1"]
+    S1 --> S2[Step 2: search_notes\nblockers issues problems]
     S2 --> S3[Step 3: list_tasks\nstatus=in_progress]
-    S3 --> S4[Step 4: store_note\n'Standup {{context.date}}: ...'  \nnote_type=episodic]
+    S3 --> S4["Step 4: store_note\nStandup summary\nnote_type=episodic"]
     S4 --> DONE[Standup prep note\nstored in knowledge graph]
 
     STORE -.->|defines| TRIGGER

@@ -42,7 +42,7 @@ flowchart TD
 
     SIZE -->|Yes| CHUNK[Semantic chunker\nsentence-boundary split\n200-1500 chars per chunk]
     CHUNK --> EMBED_EACH[Embed each chunk\nOllama bge-m3 → 1024-dim]
-    EMBED_EACH --> STORE_CHUNKS[Store N chunk Notes\n[:PART_OF] → parent]
+    EMBED_EACH --> STORE_CHUNKS["Store N chunk Notes\n(PART_OF) → parent"]
 
     SIZE -->|No| EMBED_SINGLE[Embed content\n1024-dim vector]
     EMBED_SINGLE --> STORE_NOTE[MERGE Note\nembedding + metadata]
