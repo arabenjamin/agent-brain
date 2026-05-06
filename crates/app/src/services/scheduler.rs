@@ -1680,6 +1680,115 @@ impl SchedulerService {
                     ..Default::default()
                 },
             ]
+        } else if g.contains("button")
+            || g.contains("modal")
+            || g.contains("panel")
+            || g.contains("frontend")
+            || g.contains("tsx")
+            || g.contains("react")
+            || (g.contains("implement") && (g.contains("trigger") || g.contains("widget")))
+            || (g.contains("extract") && g.contains("profile"))
+            || (g.contains("create") && (g.contains("modal") || g.contains("overlay")))
+            || (g.contains("move") && g.contains("panel"))
+            || (g.contains("remove") && g.contains("panel"))
+        {
+            // UI / frontend code-writing chain.
+            //
+            // Reads the codebase for context, reasons over the required changes, and writes
+            // generated implementation code to the writable workspace for human review.
+            // No evaluator is appended: the brain cannot verify a running UI, so any
+            // success_criteria requiring visual evidence would always score 1/5.
+            let file_slug: String = goal
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                .split('-')
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("-");
+            let file_slug = file_slug.chars().take(50).collect::<String>();
+            let output_path = format!("ui/{file_slug}.md");
+
+            let ui_steps = vec![
+                ChainStep {
+                    tool_name: "search_codebase".to_string(),
+                    arguments: Some(json!({ "query": goal, "max_results": 8, "context_lines": 5 })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    description: Some("UI task: locate relevant frontend code".to_string()),
+                    ..Default::default()
+                },
+                ChainStep {
+                    tool_name: "reason".to_string(),
+                    arguments: Some(json!({
+                        "question": format!(
+                            "You are a frontend engineer. Implement the following task:\n\n\
+                             TASK: {goal}\n\n\
+                             The codebase search results above show relevant files and code. \
+                             Generate a complete implementation. Include:\n\
+                             1. Which file(s) need to change and why\n\
+                             2. The complete modified code for each file\n\
+                             3. Any new components, types, or imports needed\n\n\
+                             Format each file as:\n\
+                             ## FILE: <path>\n```<language>\n<complete file content>\n```",
+                            goal = goal
+                        ),
+                        "store_inference": true
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    description: Some("UI task: generate implementation".to_string()),
+                    ..Default::default()
+                },
+                ChainStep {
+                    tool_name: "write_workspace_file".to_string(),
+                    arguments: Some(json!({
+                        "path": output_path,
+                        "content": "{{_prev}}"
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    description: Some("UI task: write implementation to workspace".to_string()),
+                    ..Default::default()
+                },
+                ChainStep {
+                    tool_name: "store_note".to_string(),
+                    arguments: Some(json!({
+                        "content": format!(
+                            "UI implementation written to workspace for task: {goal}\n\
+                             Review file: workspace/{output_path}\n\
+                             Apply the changes manually after review.",
+                            goal = goal,
+                            output_path = output_path
+                        ),
+                        "note_type": "outcome",
+                        "source_context": format!("ui_task:{task_id}")
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(2),
+                    provider_hint: Some("ollama".to_string()),
+                    description: Some("UI task: record completion outcome".to_string()),
+                    ..Default::default()
+                },
+                ChainStep {
+                    tool_name: "update_task".to_string(),
+                    arguments: Some(json!({
+                        "task_id": task_id,
+                        "status": "completed",
+                        "note": format!("Implementation written to workspace/ui/{file_slug}.md — ready for human review")
+                    })),
+                    priority: Some(1),
+                    max_attempts: Some(3),
+                    provider_hint: Some("ollama".to_string()),
+                    ..Default::default()
+                },
+            ];
+            // Suppress the evaluator: workspace output requires a human, not an LLM, to verify.
+            return ui_steps;
         } else {
             // Default: search context, reason, reflect, and distill semantic knowledge.
             vec![

@@ -1100,11 +1100,30 @@ impl QueueService {
             }
         };
 
+        // Count previous retry attempts embedded in the context string.
+        // Each retry prepends "RETRY —", so the count == number of prior retries.
+        let retry_count = task
+            .context
+            .as_deref()
+            .unwrap_or("")
+            .matches("RETRY —")
+            .count();
+
         // Mark the original task failed.
         let _ = self
             .neo4j
             .update_task_status(task_id, TaskStatus::Failed)
             .await;
+
+        if retry_count >= 3 {
+            warn!(
+                task_id = %task_id,
+                retry_count,
+                score,
+                "Evaluator: retry cap reached — marking terminal failure, not re-queuing"
+            );
+            return;
+        }
 
         let retry_context = format!(
             "RETRY — previous attempt scored {:.1}/5.\n\nEvaluator critique:\n{}\n\nOriginal context: {}",

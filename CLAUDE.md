@@ -296,10 +296,23 @@ Inspired by the Anthropic harness design article. When a `Task` has a `success_c
 2. `reflect_on_work` outputs a `Score: N/5` line the coordinator parses
 3. If score < `min_score` (default 3.5), the coordinator marks the original task `failed` and creates a new `Task` with the critique injected into `context`, so the scheduler re-dispatches it on the next tick
 4. If score passes, the chain continues normally
+5. **Retry cap:** `handle_evaluator_requeue` counts `"RETRY —"` occurrences already in the task context. If >= 3, it marks the task as terminal failure and stops re-queuing to prevent infinite loops.
 
 `ChainStep` evaluator fields: `is_evaluator: bool`, `min_score: Option<f32>`, `evaluator_task_id: Option<String>`. Evaluator metadata is embedded in the job's `args_json` as `__evaluator_min_score` and `__evaluator_task_id` (serde ignores them in the tool handler).
 
 `(:SchedulerChain)` nodes can carry an `evaluation_rubric` property that overrides `success_criteria` as the evaluator goal text — useful for custom chain-specific grading criteria.
+
+### UI / Frontend Code-Writing Chain
+
+Tasks containing keywords `"button"`, `"modal"`, `"panel"`, `"frontend"`, `"tsx"`, `"react"` (and combos like `"extract"+"profile"`, `"move"+"panel"`) route to a dedicated workspace-write chain instead of the default knowledge chain:
+
+1. `search_codebase` — locate relevant frontend files
+2. `reason` — generate complete modified file content(s) with implementation instructions
+3. `write_workspace_file` — write output to `workspace/ui/<slug>.md` (requires `WORKSPACE_DIR`)
+4. `store_note` — record an outcome note with the workspace path
+5. `update_task` — mark completed
+
+No evaluator is appended for this chain. The brain cannot verify a running UI; workspace output is flagged for human review. `WORKSPACE_DIR` is mounted at `./workspace` in docker-compose.
 
 ### Context Profiles
 
