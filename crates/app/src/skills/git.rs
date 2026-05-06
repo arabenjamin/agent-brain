@@ -437,13 +437,9 @@ fn parse_github_owner_repo(url: &str) -> Option<(String, String)> {
     let url = url.trim();
     let path = if let Some(rest) = url.strip_prefix("git@github.com:") {
         rest
-    } else if let Some(rest) = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))
-    {
-        rest
     } else {
-        return None;
+        url.strip_prefix("https://github.com/")
+            .or_else(|| url.strip_prefix("http://github.com/"))?
     };
     let path = path.trim_end_matches(".git");
     let mut parts = path.splitn(2, '/');
