@@ -2187,32 +2187,72 @@ impl KnowledgeService {
             anyhow::anyhow!("LLM is required for memory consolidation but is not configured")
         })?;
 
-        // 1. Fetch top-N similar notes (no score filter for consolidation)
-        let notes = self.fetch_similar_notes(topic, limit, limit, 0.0).await?;
+        // 1. Fetch top-N raw notes, excluding already-consolidated and reflection notes.
+        // Consolidated notes must not be re-used as consolidation sources: they are abstract
+        // LLM output, not observations, and re-feeding them produces an abstraction feedback
+        // loop that drifts further from reality with each cycle.
+        let embedding = {
+            let llm = self.llm.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("LLM required for consolidation embedding but is not configured")
+            })?;
+            llm.embed(topic)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to embed consolidation topic: {}", e))?
+        };
+
+        let source_cypher = r#"
+        CALL db.index.vector.queryNodes('note_embeddings', $fetch_limit, $embedding)
+        YIELD node, score
+        WHERE NOT coalesce(node.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw']
+        RETURN node.id AS id, node.content AS content
+        ORDER BY score DESC
+        "#;
+
+        let raw_rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(source_cypher)
+                    .param("embedding", embedding)
+                    .param("fetch_limit", (limit * 3) as i64),
+            )
+            .await?;
+
+        let mut notes: Vec<(String, String)> = Vec::new();
+        for row in raw_rows {
+            if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
+                notes.push((id, content));
+                if notes.len() >= limit {
+                    break;
+                }
+            }
+        }
 
         if notes.is_empty() {
             return Err(anyhow::anyhow!(
-                "No notes found related to topic '{}'",
+                "No source notes found for topic '{}' (consolidated/reflection types excluded)",
                 topic
             ));
         }
 
-        let source_ids: Vec<String> = notes.iter().map(|(id, _, _)| id.clone()).collect();
+        let source_ids: Vec<String> = notes.iter().map(|(id, _)| id.clone()).collect();
         let source_count = notes.len();
 
         // 2. Build consolidation prompt
         let notes_block = notes
             .iter()
             .enumerate()
-            .map(|(i, (_, _, c))| format!("[Memory {}]\n{}", i + 1, c))
+            .map(|(i, (_, c))| format!("[Memory {}]\n{}", i + 1, c))
             .collect::<Vec<_>>()
             .join("\n\n---\n\n");
 
         let prompt = format!(
-            "You are a memory consolidation system. Synthesize the following {} memories about '{}' \
-             into a single, well-structured summary that captures all key facts, patterns, and insights \
-             without redundancy. Write in flowing prose with clear section headers where helpful. \
-             Do NOT echo or repeat the [Memory N] input labels in your output.\n\n{}",
+            "You are a memory consolidation system. Write a factual, plain-prose summary of \
+             the following {} memory records about '{}'. \
+             Report only what is directly stated in the source records: what happened, \
+             what was built or changed, what errors occurred, what was learned. \
+             Do NOT add recommendations, analogies, frameworks, or analysis that is not in \
+             the source material. Do NOT use headers, bullet points, emoji, or section labels. \
+             Do NOT echo the [Memory N] input labels. Write 2-4 concise paragraphs.\n\n{}",
             source_count, topic, notes_block
         );
 

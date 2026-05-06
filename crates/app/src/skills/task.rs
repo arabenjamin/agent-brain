@@ -227,26 +227,25 @@ impl TaskSkill {
 
         {
             let prompt = format!(
-                "You are a rigorous but fair quality reviewer. Evaluate the output below against the stated goal.\n\n\
-                GOAL: {}\n\n\
+                "You are a quality reviewer. Your response MUST begin with the line \"Score: N/5\" \
+                and follow the exact structure below. Do NOT invent a title, do NOT write a preamble, \
+                do NOT use the goal text as a heading. Start your response with \"Score:\".\n\n\
+                GOAL TO EVALUATE AGAINST: {}\n\n\
                 OUTPUT TO REVIEW:\n{}\n\n\
                 PLAN (if any): {}\n\n\
-                Respond in this EXACT format (keep all section headers):\n\n\
-                ## Score\n\
+                REQUIRED RESPONSE FORMAT — output these sections in this exact order:\n\n\
                 Score: N/5\n\
-                (5 = goal FULLY MET; 4 = nearly met, minor gaps; 3 = PARTIALLY MET; 2 = mostly missing; 1 = NOT MET)\n\n\
+                (5=FULLY MET; 4=nearly met; 3=PARTIALLY MET; 2=mostly missing; 1=NOT MET)\n\n\
                 ## Goal Assessment\n\
-                State whether the goal was FULLY MET, PARTIALLY MET, or NOT MET, and why in one sentence.\n\n\
+                One sentence: FULLY MET / PARTIALLY MET / NOT MET, and why.\n\n\
                 ## What Was Done Well\n\
-                List 1-3 things the output got right (be specific, not generic).\n\n\
+                1-3 specific things the output got right.\n\n\
                 ## Critical Issues\n\
-                For each issue: state the problem, its severity (high/medium/low), and the exact fix needed.\n\
-                If the output is truncated or incomplete, flag this as high severity.\n\
-                If the output describes intent rather than delivering results, flag this as high severity.\n\
-                If the output claims success without showing evidence, flag this as high severity.\n\n\
+                Each issue: problem statement, severity (high/medium/low), exact fix needed.\n\
+                Flag as high severity: truncated output, stated intent without results, claimed \
+                success without evidence.\n\n\
                 ## Required Next Steps\n\
-                Numbered list of concrete, immediately actionable steps to fully satisfy the goal.\n\
-                Each step must be specific enough to execute without additional clarification.",
+                Numbered concrete steps to fully satisfy the goal.",
                 input.goal,
                 input.current_state,
                 input.plan.as_deref().unwrap_or("none")
