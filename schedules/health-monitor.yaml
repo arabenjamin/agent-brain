@@ -1,0 +1,43 @@
+name: "Brain health monitor: review scheduler state, queue metrics, and failure patterns"
+description: "Periodic brain health check — reviews scheduler state, queue depth, and failure trends."
+interval_seconds: 43200
+steps:
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (j:AgentJob) WHERE j.created_at >= toString(datetime() - duration('P1D')) RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: dead_letter
+    arguments:
+      action: list
+      limit: 20
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: list_tasks
+    arguments:
+      status: failed
+      limit: 10
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "Job status counts from the past 24 h, dead-letter queue, and recent failed tasks: {{_prev}}\n\nSummarise the current health of the brain. Note any failure patterns, queue backlogs, or regressions compared to previous health snapshots."
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "Health monitor cycle complete — see inference note for analysis."
+      note_type: outcome
+      source_context: health_monitor
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

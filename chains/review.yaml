@@ -1,0 +1,40 @@
+name: review
+pattern: "review"
+patterns:
+  - "analyz"
+  - "source"
+priority: 90
+description: "Review / analysis: search context, reason over it, distill findings into semantic knowledge."
+steps:
+  - tool_name: search_notes
+    arguments:
+      query: "{{goal}}"
+      limit: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "{{goal}}"
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: synthesize_knowledge
+    arguments:
+      topic: "{{goal}}"
+      limit: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

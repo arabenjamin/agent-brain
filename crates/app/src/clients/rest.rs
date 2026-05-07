@@ -29,7 +29,7 @@ use tokio::sync::RwLock;
 
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::LlmConfig;
-use crate::services::context_builder::ContextBuilderService;
+use crate::services::context_builder::{ContextBuilderService, ContextProfile};
 use crate::services::scheduler::SchedulerService;
 use crate::services::traits::WorkingMemoryStore;
 
@@ -958,6 +958,7 @@ pub async fn handle_list_context_profiles(
             json!({
                 "name":             p.name,
                 "description":      p.description,
+                "tools":            p.tools,
                 "tool_count":       p.tools.len(),
                 "model_preference": p.model_preference,
                 "provider_hint":    p.provider_hint,
@@ -994,6 +995,43 @@ pub async fn handle_get_context_profile(
         }))
         .into_response(),
         None => not_found(),
+    }
+}
+
+/// POST /api/contexts — create or update a context profile (upsert by name).
+pub async fn handle_upsert_context_profile(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(profile): Json<ContextProfile>,
+) -> impl IntoResponse {
+    let Some(ref handle) = state.context_builder else {
+        return unavailable("Context builder not available");
+    };
+    let guard = handle.read().await;
+    let Some(ref cb) = *guard else {
+        return unavailable("Context builder not yet initialised");
+    };
+    match cb.save_profile(profile).await {
+        Ok(()) => Json(json!({ "success": true })).into_response(),
+        Err(e) => internal(format!("Failed to save profile: {e}")),
+    }
+}
+
+/// DELETE /api/contexts/:name — delete a context profile.
+pub async fn handle_delete_context_profile(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref handle) = state.context_builder else {
+        return unavailable("Context builder not available");
+    };
+    let guard = handle.read().await;
+    let Some(ref cb) = *guard else {
+        return unavailable("Context builder not yet initialised");
+    };
+    match cb.delete_profile(&name).await {
+        Ok(true) => Json(json!({ "deleted": true, "name": name })).into_response(),
+        Ok(false) => not_found(),
+        Err(e) => internal(format!("Failed to delete profile: {e}")),
     }
 }
 

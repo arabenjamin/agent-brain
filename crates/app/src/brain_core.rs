@@ -1062,6 +1062,27 @@ impl BrainCore {
         }
 
         // ── Seed built-in ScheduledTasks ──────────────────────────────────
+        // Prefer loading from the schedules/ directory so step definitions can be
+        // edited without recompilation. Fall back to the hardcoded definitions when
+        // the directory is absent (e.g. Docker environments without the mount).
+        let schedules_dir =
+            PathBuf::from(std::env::var("SCHEDULES_DIR").unwrap_or_else(|_| "schedules".into()));
+        if schedules_dir.exists() {
+            match crate::services::schedule_seeder::seed_schedules_from_dir(neo4j, &schedules_dir)
+                .await
+            {
+                Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
+                Err(e) => {
+                    warn!(error = %e, "Failed to seed schedules from schedules/ — falling back to hardcoded")
+                }
+            }
+        } else {
+            Self::seed_scheduled_tasks_hardcoded(neo4j).await;
+        }
+    }
+
+    /// Hardcoded ScheduledTask seeds — used as a fallback when `schedules/` is not mounted.
+    async fn seed_scheduled_tasks_hardcoded(neo4j: &crate::repository::Neo4jClient) {
         let daily_news_steps = serde_json::json!([
             {"tool_name":"search_web","arguments":{"query":"top world news headlines {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
             {"tool_name":"search_web","arguments":{"query":"AI technology science news {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},

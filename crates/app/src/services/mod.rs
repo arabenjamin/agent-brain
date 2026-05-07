@@ -1,3 +1,4 @@
+pub mod chain_seeder;
 pub mod context_builder;
 pub mod knowledge;
 pub mod llm;
@@ -6,6 +7,7 @@ pub mod model_config;
 pub mod procedure_executor;
 pub mod queue;
 pub mod resource_registry;
+pub mod schedule_seeder;
 pub mod scheduler;
 pub mod secrets;
 pub mod shared_llm;

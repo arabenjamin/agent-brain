@@ -1,0 +1,39 @@
+name: codebase
+pattern: "codebase"
+patterns:
+  - "own structure"
+  - "self-knowledge"
+  - "self knowledge"
+priority: 60
+description: "Codebase self-analysis: generate structure overview, log recent commits, reason over architecture."
+steps:
+  - tool_name: analyze_own_structure
+    arguments:
+      store_as_note: true
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: get_git_log
+    arguments:
+      n: 10
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "Based on the codebase structure and recent commits, what are the key architectural patterns, current capabilities, and areas for improvement?"
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

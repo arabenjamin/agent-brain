@@ -42,6 +42,7 @@ impl Neo4jClient {
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
+            "CREATE CONSTRAINT scheduler_chain_id IF NOT EXISTS FOR (c:SchedulerChain) REQUIRE c.id IS UNIQUE",
             // Note: ModelSpec nodes removed — model registry now lives in DuckDB model_registry table
         ];
 

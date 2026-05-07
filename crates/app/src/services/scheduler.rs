@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::models::TaskStatus;
 use crate::repository::{Neo4jClient, ScheduledTask};
+use crate::services::chain_seeder;
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::queue::{ChainStep, QueueService};
 use crate::services::{LlmConfig, LlmProviderType};
@@ -114,6 +115,8 @@ pub struct SchedulerService {
     context_builder: Option<Arc<ContextBuilderService>>,
     /// Live local-Ollama config shared with `SharedLlm`. Mutated when `local_model` is updated.
     local_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    /// Guards the one-time auto-seed of SchedulerChain nodes on the first tick.
+    chains_seeded: Arc<AtomicBool>,
 }
 
 impl SchedulerService {
@@ -144,6 +147,7 @@ impl SchedulerService {
             wakeup: Arc::new(Notify::new()),
             context_builder,
             local_config,
+            chains_seeded: Arc::new(AtomicBool::new(false)),
         });
 
         let svc_clone = Arc::clone(&svc);
@@ -255,6 +259,32 @@ impl SchedulerService {
     // =========================================================================
 
     async fn do_tick(&self) -> Result<TickResult, String> {
+        // On the first tick, auto-seed SchedulerChain nodes from chains/ if none exist.
+        // This is a safety net for deployments that skipped `init-db`.
+        if !self.chains_seeded.swap(true, Ordering::Relaxed) {
+            let count: i64 = self
+                .neo4j
+                .execute(neo4rs::query(
+                    "MATCH (c:SchedulerChain) RETURN count(c) AS n",
+                ))
+                .await
+                .ok()
+                .and_then(|rows| rows.first()?.get("n").ok())
+                .unwrap_or(0);
+
+            if count == 0 {
+                let chains_dir = std::path::PathBuf::from(
+                    std::env::var("CHAINS_DIR").unwrap_or_else(|_| "chains".into()),
+                );
+                if chains_dir.exists() {
+                    match chain_seeder::seed_chains_from_dir(&self.neo4j, &chains_dir).await {
+                        Ok(n) => info!(count = n, "Auto-seeded SchedulerChains on first tick"),
+                        Err(e) => warn!(error = %e, "Auto-seed chains failed (non-fatal)"),
+                    }
+                }
+            }
+        }
+
         // Snapshot config — never hold an RwLock guard across .await.
         let (max_tasks, session_id) = {
             let cfg = self.config.read().await;
@@ -1170,10 +1200,15 @@ impl SchedulerService {
         &self,
         goal: &str,
         task_id: &str,
-    ) -> Option<(Vec<ChainStep>, Option<String>)> {
+    ) -> Option<(Vec<ChainStep>, Option<String>, bool)> {
+        // Multi-pattern matching: primary pattern, additional patterns list, or empty-string default.
         let cypher = "MATCH (c:SchedulerChain) \
-                      WHERE toLower($goal) CONTAINS toLower(c.pattern) \
-                      RETURN c.steps AS steps, c.evaluation_rubric AS rubric \
+                      WHERE (c.pattern <> '' AND toLower($goal) CONTAINS toLower(c.pattern)) \
+                         OR ANY(p IN coalesce(c.patterns, []) WHERE toLower($goal) CONTAINS toLower(p)) \
+                         OR c.pattern = '' \
+                      RETURN c.steps AS steps, \
+                             c.evaluation_rubric AS rubric, \
+                             c.no_evaluator AS no_evaluator \
                       ORDER BY c.priority ASC \
                       LIMIT 1";
         let rows = self
@@ -1184,15 +1219,28 @@ impl SchedulerService {
         let first = rows.first()?;
         let steps_json = first.get::<String>("steps").ok()?;
         let rubric: Option<String> = first.get("rubric").ok().flatten();
+        let no_evaluator: bool = first.get::<bool>("no_evaluator").unwrap_or(false);
         let date = Utc::now().format("%Y-%m-%d").to_string();
+        // Compute file_slug for UI chain template substitution.
+        let file_slug: String = goal
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let file_slug = file_slug.chars().take(50).collect::<String>();
         let substituted = steps_json
             .replace("{{task_id}}", task_id)
             .replace("{{goal}}", goal)
-            .replace("{{date}}", &date);
+            .replace("{{date}}", &date)
+            .replace("{{file_slug}}", &file_slug);
         match serde_json::from_str::<Vec<ChainStep>>(&substituted) {
             Ok(steps) => {
                 info!(goal = %goal, steps = steps.len(), "Scheduler: routing via SchedulerChain from Neo4j");
-                Some((steps, rubric))
+                Some((steps, rubric, no_evaluator))
             }
             Err(e) => {
                 warn!(goal = %goal, error = %e, "SchedulerChain deserialization failed — falling back to heuristics");
@@ -1207,21 +1255,34 @@ impl SchedulerService {
         task_id: &str,
         success_criteria: Option<&str>,
     ) -> Vec<ChainStep> {
-        // Agent-defined routing chains take priority over hardcoded heuristics.
-        let chain_rubric =
-            if let Some((steps, rubric)) = self.try_load_chain_from_neo4j(goal, task_id).await {
-                let effective_rubric = rubric.or_else(|| success_criteria.map(String::from));
-                return self.maybe_append_evaluator(steps, task_id, effective_rubric.as_deref());
-            } else {
-                success_criteria.map(String::from)
-            };
+        // Route via Neo4j-defined SchedulerChain nodes (populated from chains/ YAML or via
+        // manage_chain tool). The default chain (pattern="") catches any unmatched goal.
+        if let Some((steps, rubric, no_evaluator)) =
+            self.try_load_chain_from_neo4j(goal, task_id).await
+        {
+            if no_evaluator {
+                return steps;
+            }
+            let effective_rubric = rubric.or_else(|| success_criteria.map(String::from));
+            return self.maybe_append_evaluator(steps, task_id, effective_rubric.as_deref());
+        }
 
+        // No chain matched — gather context and park the task for human review.
+        // Only fires if chains/ was not seeded or the DB is unavailable.
+        warn!(goal = %goal, "goal_to_steps: no SchedulerChain matched, using diagnosis fallback");
+        Self::build_diagnosis_chain(goal, task_id)
+    }
+
+    #[allow(dead_code)]
+    async fn goal_to_steps_legacy(
+        &self,
+        goal: &str,
+        task_id: &str,
+        success_criteria: Option<&str>,
+    ) -> Vec<ChainStep> {
+        let chain_rubric = success_criteria.map(String::from);
         let g = goal.to_lowercase();
 
-        // Note: recurring tasks (daily news, health monitor, weekly news) are handled by
-        // ScheduledTask nodes dispatched in dispatch_scheduled_tasks(). Only reactive
-        // one-off goals reach this function.
-        // Recurring tasks are dispatched via ScheduledTask nodes.
         let mut steps = if g.starts_with("meta-learn:") || g.contains("hypothesize root cause") {
             // Meta-Learning Loop: Analyze → Hypothesize → Test → Integrate.
             // Triggered by perception_scan on repeated failure patterns.

@@ -184,10 +184,34 @@ fn build_chat_llm_config(config: &Config) -> LlmConfig {
 }
 
 async fn run_init_db(config: &Config) -> Result<()> {
+    use agent_brain::services::{chain_seeder, schedule_seeder};
+
     let client = connect_neo4j(config).await?;
     info!("Initializing database schema...");
     client.init_schema().await?;
     info!("Database schema initialized successfully");
+
+    let chains_dir = PathBuf::from(std::env::var("CHAINS_DIR").unwrap_or_else(|_| "chains".into()));
+    if chains_dir.exists() {
+        match chain_seeder::seed_chains_from_dir(&client, &chains_dir).await {
+            Ok(n) => info!(count = n, "Seeded SchedulerChains from chains/"),
+            Err(e) => warn!(error = %e, "Failed to seed chains (non-fatal)"),
+        }
+    } else {
+        info!(path = %chains_dir.display(), "chains/ directory not found — skipping chain seeding");
+    }
+
+    let schedules_dir =
+        PathBuf::from(std::env::var("SCHEDULES_DIR").unwrap_or_else(|_| "schedules".into()));
+    if schedules_dir.exists() {
+        match schedule_seeder::seed_schedules_from_dir(&client, &schedules_dir).await {
+            Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
+            Err(e) => warn!(error = %e, "Failed to seed schedules (non-fatal)"),
+        }
+    } else {
+        info!(path = %schedules_dir.display(), "schedules/ directory not found — skipping schedule seeding");
+    }
+
     Ok(())
 }
 

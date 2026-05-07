@@ -7,6 +7,7 @@ import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
 import { getBrainUrl, getApiKey } from "../../api/config";
+import ContextProfileModal from "./ContextProfileModal";
 
 interface AgentNotification {
   id: string;
@@ -44,18 +45,6 @@ interface Session {
   started_at: string;
   msg_count: number;
   title: string;
-}
-
-interface CatalogModel {
-  name: string;
-  provider: string;
-  model: string;
-}
-
-interface AvailableProvider {
-  type: string;
-  name: string;
-  cost: string;
 }
 
 interface ModelUsageStat {
@@ -333,201 +322,47 @@ function ThreadDrawer({
 
 function ChatSettingsBar({
   activeModelKey,
-  activeProvider,
-  catalogModels,
-  availableProviders,
   modelUsage,
-  switchingModel,
   streaming,
   contextProfile,
-  profiles,
-  researchProvider,
-  onModelChange,
-  onReloadModels,
-  onProfileChange,
-  onResearchToggle,
-  onResearchProviderChange,
+  onOpenAgentModal,
 }: {
   activeModelKey: string;
-  activeProvider: string;
-  catalogModels: CatalogModel[];
-  availableProviders: AvailableProvider[];
   modelUsage: ModelUsageStat[];
-  switchingModel: boolean;
   streaming: boolean;
   contextProfile: string;
-  profiles: string[];
-  researchProvider: string | null;
-  onModelChange: (provider: string, model: string) => void;
-  onReloadModels: () => void;
-  onProfileChange: (v: string) => void;
-  onResearchToggle: () => void;
-  onResearchProviderChange: (v: string) => void;
+  onOpenAgentModal: () => void;
 }) {
-  // Parse current provider/model from the composite key
   const sep = activeModelKey.indexOf("::");
   const currentModel = sep >= 0 ? activeModelKey.slice(sep + 2) : activeModelKey;
-  const currentProvider = sep >= 0 ? activeModelKey.slice(0, sep) : activeProvider;
-
-  const [editModel, setEditModel] = useState(currentModel);
-  const [selectedProvider, setSelectedProvider] = useState(currentProvider);
-
-  // Sync local edits when active model changes externally
-  useEffect(() => { setEditModel(currentModel); }, [currentModel]);
-  useEffect(() => { setSelectedProvider(currentProvider); }, [currentProvider]);
-
-  const hasCatalog = catalogModels.length > 0;
-
-  const handleProviderChange = (p: string) => {
-    setSelectedProvider(p);
-    // If catalog exists, auto-pick the first model for this provider
-    if (hasCatalog) {
-      const first = catalogModels.find((m) => m.provider === p);
-      if (first) onModelChange(p, first.name);
-    }
-  };
-
-  const applyModel = () => {
-    if (editModel.trim()) onModelChange(selectedProvider, editModel.trim());
-  };
-
-  const handleModelInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") applyModel();
-  };
-
-  // Find usage stat for active model (unused in render but kept for future tooltip)
-  void modelUsage.find((s) => s.model === currentModel);
 
   return (
     <div className="chat-settings-bar">
-      {/* Model usage strip */}
-      {modelUsage.length > 0 && (
-        <div className="model-usage-strip">
-          {modelUsage.slice(0, 5).map((s) => (
-            <span
-              key={s.model}
-              className={`model-usage-chip${s.model === currentModel ? " active" : ""}`}
-              title={`${s.total_calls} calls · ${s.successes} ok · avg ${s.avg_duration_ms != null ? Math.round(s.avg_duration_ms) : "?"}ms`}
-            >
-              <span className="model-usage-name">{s.model.split(":")[0]}</span>
-              <span className="model-usage-count">{s.total_calls}</span>
-              <span className={`model-usage-rate${s.success_rate < 0.8 ? " warn" : ""}`}>
-                {Math.round(s.success_rate * 100)}%
-              </span>
+      <div className="model-usage-strip">
+        {/* Agent configuration button */}
+        <button
+          className="agent-config-btn"
+          onClick={onOpenAgentModal}
+          disabled={streaming}
+          title={`Agent: ${contextProfile}`}
+        >
+          🤖 {contextProfile}
+        </button>
+
+        {/* Model usage chips */}
+        {modelUsage.slice(0, 5).map((s) => (
+          <span
+            key={s.model}
+            className={`model-usage-chip${s.model === currentModel ? " active" : ""}`}
+            title={`${s.total_calls} calls · ${s.successes} ok · avg ${s.avg_duration_ms != null ? Math.round(s.avg_duration_ms) : "?"}ms`}
+          >
+            <span className="model-usage-name">{s.model.split(":")[0]}</span>
+            <span className="model-usage-count">{s.total_calls}</span>
+            <span className={`model-usage-rate${s.success_rate < 0.8 ? " warn" : ""}`}>
+              {Math.round(s.success_rate * 100)}%
             </span>
-          ))}
-        </div>
-      )}
-
-      <div className="chat-settings-row">
-        {/* Provider selector */}
-        {availableProviders.length > 0 && (
-          <div className="chat-settings-group">
-            <span className="chat-settings-label">Provider</span>
-            <select
-              className="profile-select"
-              value={selectedProvider}
-              onChange={(e) => handleProviderChange(e.target.value)}
-              disabled={streaming || switchingModel}
-              title="LLM provider"
-            >
-              {availableProviders.map((p) => (
-                <option key={p.type} value={p.type}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Model selector — catalog select when available, text input otherwise */}
-        <div className="chat-settings-group">
-          <span className="chat-settings-label">Model</span>
-          {hasCatalog ? (
-            <select
-              className="profile-select model-select"
-              value={`${selectedProvider}::${currentModel}`}
-              onChange={(e) => {
-                const s = e.target.value.indexOf("::");
-                if (s >= 0) onModelChange(e.target.value.slice(0, s), e.target.value.slice(s + 2));
-              }}
-              disabled={streaming || switchingModel}
-              title="Active LLM model"
-            >
-              {Object.entries(
-                catalogModels.reduce<Record<string, CatalogModel[]>>((acc, m) => {
-                  (acc[m.provider] ??= []).push(m);
-                  return acc;
-                }, {})
-              ).map(([provider, models]) => (
-                <optgroup key={provider} label={provider}>
-                  {models.map((m) => (
-                    <option key={`${m.provider}::${m.name}`} value={`${m.provider}::${m.name}`}>
-                      {m.name}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          ) : (
-            <input
-              type="text"
-              className="model-name-input"
-              value={editModel}
-              onChange={(e) => setEditModel(e.target.value)}
-              onBlur={applyModel}
-              onKeyDown={handleModelInputKey}
-              disabled={streaming || switchingModel}
-              placeholder="model name"
-              title="Type a model name and press Enter"
-              style={{ width: 180 }}
-            />
-          )}
-          <button
-            className="reload-models-btn"
-            onClick={onReloadModels}
-            disabled={streaming || switchingModel}
-            title="Reload models from models.yaml"
-          >↺</button>
-        </div>
-
-        {/* Context profile */}
-        <div className="chat-settings-group">
-          <span className="chat-settings-label">Profile</span>
-          <select
-            className="profile-select"
-            value={contextProfile}
-            onChange={(e) => onProfileChange(e.target.value)}
-            disabled={streaming}
-            title="Context profile — limits tools sent to the model"
-          >
-            {(profiles.length > 0 ? profiles : ["general"]).map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Research mode */}
-        <div className="chat-settings-group">
-          <button
-            className={`research-toggle${researchProvider !== null ? " active" : ""}`}
-            onClick={onResearchToggle}
-            disabled={streaming}
-            title="Research mode: local model gathers data, strong model synthesizes"
-          >
-            ⚗ Research
-          </button>
-          {researchProvider !== null && (
-            <select
-              className="profile-select"
-              value={researchProvider}
-              onChange={(e) => onResearchProviderChange(e.target.value)}
-              disabled={streaming}
-              title="Model used to synthesize research findings"
-            >
-              <option value="gemini">Synthesize: Gemini</option>
-              <option value="anthropic">Synthesize: Claude</option>
-            </select>
-          )}
-        </div>
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -542,16 +377,13 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
   const [sessionId, setSessionId] = useState<string>(() => uid());
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
-  const [profiles, setProfiles] = useState<string[]>([]);
   const [contextProfile, setContextProfile] = useState("general");
-  const [researchProvider, setResearchProvider] = useState<string | null>(null);
+  const [researchProvider] = useState<string | null>(null);
   const [activeModelKey, setActiveModelKey] = useState("");
-  const [activeProvider, setActiveProvider] = useState("");
-  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
-  const [availableProviders, setAvailableProviders] = useState<AvailableProvider[]>([]);
   const [modelUsage, setModelUsage] = useState<ModelUsageStat[]>([]);
-  const [switchingModel, setSwitchingModel] = useState(false);
   const [notifications, setNotifications] = useState<AgentNotification[]>([]);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [profileInfos, setProfileInfos] = useState<Array<{ name: string; description?: string; tools?: string[] }>>([]);
   const [thread, setThread] = useState<ThreadState | null>(null);
   const threadAbortRef = useRef<AbortController | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -719,16 +551,22 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     loadSessions();
   }, [thread, contextProfile, loadSessions]);
 
-  useEffect(() => {
+  const loadProfiles = useCallback(() => {
     fetch(`${getBrainUrl()}/api/contexts`, {
       headers: { Authorization: `Bearer ${getApiKey()}` },
     })
       .then((r) => r.json())
-      .then((data: { profiles?: Array<{ name: string }> }) => {
-        const names = (data.profiles ?? []).map((p) => p.name).sort();
-        if (names.length > 0) setProfiles(names);
+      .then((data: { profiles?: Array<{ name: string; description?: string; tools?: string[] }> }) => {
+        const list = data.profiles ?? [];
+        if (list.length > 0) {
+          setProfileInfos([...list].sort((a, b) => a.name.localeCompare(b.name)));
+        }
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadProfiles();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadModels = useCallback(async () => {
@@ -736,20 +574,10 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
       const res = await fetch(`${getBrainUrl()}/api/models`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
       });
-      const data = (await res.json()) as {
-        active_provider?: string;
-        active_model?: string;
-        catalog_models?: CatalogModel[];
-        available_providers?: AvailableProvider[];
-      };
+      const data = (await res.json()) as { active_provider?: string; active_model?: string };
       const provider = (data.active_provider ?? "").toLowerCase();
       const model = data.active_model ?? "";
-      if (provider && model) {
-        setActiveModelKey(`${provider}::${model}`);
-        setActiveProvider(provider);
-      }
-      setCatalogModels(data.catalog_models ?? []);
-      setAvailableProviders(data.available_providers ?? []);
+      if (provider && model) setActiveModelKey(`${provider}::${model}`);
     } catch {
       // ignore
     }
@@ -774,32 +602,6 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     loadModelUsage();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const reloadModels = useCallback(async () => {
-    setSwitchingModel(true);
-    try {
-      await callTool("reload_models", {});
-      await loadModels();
-      await loadModelUsage();
-    } catch {
-      // ignore
-    } finally {
-      setSwitchingModel(false);
-    }
-  }, [loadModels, loadModelUsage]);
-
-  const handleModelChange = useCallback(async (provider: string, model: string) => {
-    const key = `${provider}::${model}`;
-    setActiveModelKey(key);
-    setActiveProvider(provider);
-    setSwitchingModel(true);
-    try {
-      await callTool("use_model", { provider, model });
-    } catch {
-      // ignore
-    } finally {
-      setSwitchingModel(false);
-    }
-  }, []);
 
   const switchSession = useCallback(async (sid: string) => {
     if (sid === sessionId && msgs.length > 0) return;
@@ -1088,35 +890,33 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     <div className="panel">
       <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span>🧠 Chat</span>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            className="btn"
-            style={{ padding: "3px 10px", fontSize: 11, background: "transparent", border: "1px solid var(--border)" }}
-            onClick={exportChat}
-            disabled={msgs.length === 0}
-            title="Export conversation as Markdown"
-          >
-            Export
-          </button>
-        </div>
+        <button
+          className="btn"
+          style={{ padding: "3px 10px", fontSize: 11, background: "transparent", border: "1px solid var(--border)" }}
+          onClick={exportChat}
+          disabled={msgs.length === 0}
+          title="Export conversation as Markdown"
+        >
+          Export
+        </button>
       </div>
+
+      <ContextProfileModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        activeProfile={contextProfile}
+        profiles={profileInfos}
+        onProfileChange={setContextProfile}
+        onProfilesChanged={loadProfiles}
+        disabled={streaming}
+      />
 
       <ChatSettingsBar
         activeModelKey={activeModelKey}
-        activeProvider={activeProvider}
-        catalogModels={catalogModels}
-        availableProviders={availableProviders}
         modelUsage={modelUsage}
-        switchingModel={switchingModel}
         streaming={streaming}
         contextProfile={contextProfile}
-        profiles={profiles}
-        researchProvider={researchProvider}
-        onModelChange={handleModelChange}
-        onReloadModels={reloadModels}
-        onProfileChange={setContextProfile}
-        onResearchToggle={() => setResearchProvider((v) => v === null ? "gemini" : null)}
-        onResearchProviderChange={setResearchProvider}
+        onOpenAgentModal={() => setProfileModalOpen(true)}
       />
 
       <div className="chat-body">

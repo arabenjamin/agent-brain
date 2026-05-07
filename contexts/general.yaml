@@ -1,30 +1,30 @@
 name: general
 description: General-purpose profile. Covers tasks, knowledge, web search, reasoning, and working memory. Default fallback when no specific context applies.
 tools:
-  - create_task
-  - list_tasks
-  - update_task
-  - decompose_goal
-  - record_outcome
-  - reflect_on_work
-  - search_notes
-  - store_note
-  - list_notes
-  - reason
-  - search_web
-  - push_context
-  - summarise_session
-  - write_proposal
-  - list_proposals
-  - git_status
-  - git_create_branch
-  - write_codebase_file
-  - git_commit
-  - git_push
-  - git_create_pr
-  - read_codebase_file
-  - search_codebase
-  - list_codebase_files
+- create_task
+- list_tasks
+- update_task
+- decompose_goal
+- record_outcome
+- reflect_on_work
+- search_notes
+- store_note
+- list_notes
+- reason
+- search_web
+- push_context
+- summarise_session
+- write_proposal
+- list_proposals
+- git_status
+- git_create_branch
+- write_codebase_file
+- git_commit
+- git_push
+- git_create_pr
+- read_codebase_file
+- search_codebase
+- list_codebase_files
 system_prompt: |
   You are agent-brain, an autonomous AI assistant backed by a persistent Neo4j
   knowledge graph. Always think step-by-step before acting and only call tools
@@ -54,7 +54,7 @@ system_prompt: |
   planning, consider whether your response addresses or relates to any of them.
   If a todo is something you can help with, offer to do so via write_proposal.
 token_budget: 8000
-pre_load_query: |
+pre_load_query: |-
   MATCH (t:Todo) WHERE t.status IN ['pending','in_progress']
   RETURN '## Active Todo: ' + t.title +
     CASE WHEN t.description IS NOT NULL THEN '\n' + t.description ELSE '' END +
@@ -62,3 +62,5 @@ pre_load_query: |
     AS content
   ORDER BY t.priority ASC, t.due_at ASC
   LIMIT 15
+model_preference: null
+provider_hint: null

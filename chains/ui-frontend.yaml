@@ -1,0 +1,79 @@
+name: ui-frontend
+pattern: "frontend"
+patterns:
+  - "button"
+  - "modal"
+  - "panel"
+  - "tsx"
+  - "react"
+  - "implement trigger"
+  - "implement widget"
+  - "extract profile"
+  - "create modal"
+  - "create overlay"
+  - "move panel"
+  - "remove panel"
+priority: 110
+description: "UI/frontend code-writing chain: locate relevant frontend code, generate a complete implementation, write it to the workspace for human review."
+no_evaluator: true
+steps:
+  - tool_name: search_codebase
+    arguments:
+      query: "{{goal}}"
+      max_results: 8
+      context_lines: 5
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "UI task: locate relevant frontend code"
+
+  - tool_name: reason
+    arguments:
+      question: |
+        You are a frontend engineer. Implement the following task:
+
+        TASK: {{goal}}
+
+        The codebase search results above show relevant files and code. Generate a complete implementation. Include:
+        1. Which file(s) need to change and why
+        2. The complete modified code for each file
+        3. Any new components, types, or imports needed
+
+        Format each file as:
+        ## FILE: <path>
+        ```<language>
+        <complete file content>
+        ```
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "UI task: generate implementation"
+
+  - tool_name: write_workspace_file
+    arguments:
+      path: "ui/{{file_slug}}.md"
+      content: "{{_prev}}"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "UI task: write implementation to workspace"
+
+  - tool_name: store_note
+    arguments:
+      content: "UI implementation written to workspace for task: {{goal}}\nReview file: workspace/ui/{{file_slug}}.md\nApply the changes manually after review."
+      note_type: outcome
+      source_context: "ui_task:{{task_id}}"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "UI task: record completion outcome"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Implementation written to workspace/ui/{{file_slug}}.md — ready for human review"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

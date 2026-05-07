@@ -1,0 +1,74 @@
+name: "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing"
+description: "Aggregates headlines from multiple sources daily and stores a structured news briefing."
+interval_seconds: 86400
+steps:
+  - tool_name: search_web
+    arguments:
+      query: "top world news headlines {{date}}"
+      count: 10
+      source_list: news
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "AI technology science news {{date}}"
+      count: 10
+      source_list: news
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "business economy politics news {{date}}"
+      count: 10
+      source_list: news
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        Write a structured daily news brief for {{date}} with the following sections:
+        ## EXECUTIVE SUMMARY
+        ## WORLD NEWS
+        ## TECHNOLOGY & AI
+        ## BUSINESS & POLITICS
+        ## STORY TO WATCH
+
+        3-4 bullets per section. Cite sources with URLs. Flag notable spin or framing with ⚠️.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{_prev}}"
+      context: "Daily News Brief {{date}}"
+      related_session_id: "news-{{date}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-{{date}}"
+      content: "{{_prev}}"
+      role: assistant
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "{{_prev}}"
+      note_type: news
+      source_context: scheduled_daily_news_brief
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

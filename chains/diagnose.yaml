@@ -1,0 +1,60 @@
+name: diagnose
+pattern: "diagnos"
+patterns:
+  - "root cause"
+  - "repeated failure"
+  - "dead job"
+  - "failure analyz"
+priority: 80
+description: "Diagnosis: find affected code, gather failure notes, reason over root cause, stage a proposal for human review."
+steps:
+  - tool_name: search_codebase
+    arguments:
+      query: "{{goal}}"
+      max_results: 10
+      context_lines: 2
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    confidence_threshold: 0.5
+    description: "Search codebase for relevant code"
+
+  - tool_name: search_notes
+    arguments:
+      query: "{{goal}}"
+      limit: 8
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Retrieve related failure and outcome notes"
+
+  - tool_name: reason
+    arguments:
+      question: "{{goal}} — Based on the codebase search results and historical failure notes, identify the root cause. Structure your response as: DIAGNOSIS: <root cause> | AFFECTED_FILE: <path or unknown> | PROPOSED_FIX: <description of the fix> | SEVERITY: <low|medium|high>"
+      store_inference: true
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reason over root cause and propose fix"
+
+  - tool_name: write_proposal
+    arguments:
+      title: "Fix: {{goal}}"
+      task_id: "{{task_id}}"
+      diagnosis: "See inference note stored by previous reasoning step."
+      affected_file: unknown
+      proposed_fix: "Review the stored inference note for the full diagnosis and proposed fix."
+      severity: medium
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Stage proposal file for human review"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

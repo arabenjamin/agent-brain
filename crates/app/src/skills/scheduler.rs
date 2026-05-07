@@ -221,7 +221,9 @@ impl SchedulerSkill {
             name: "manage_chain".to_string(),
             description: "Define or remove a SchedulerChain routing rule in Neo4j. \
                 action=define: store or update a chain — when a task goal matches `pattern` \
-                (case-insensitive) the scheduler dispatches `steps` instead of built-in heuristics. \
+                or any entry in `patterns` (case-insensitive CONTAINS) the scheduler dispatches \
+                `steps` instead of the built-in fallback. Use pattern=\"\" with priority=9999 for a \
+                default chain. Template vars in steps: {{task_id}}, {{goal}}, {{date}}, {{file_slug}}. \
                 action=remove: delete a chain by its `id`."
                 .to_string(),
             input_schema: json!({
@@ -232,22 +234,35 @@ impl SchedulerSkill {
                         "enum": ["define", "remove"],
                         "description": "define: store/update chain. remove: delete by id."
                     },
+                    "name": {
+                        "type": "string",
+                        "description": "Unique chain name used as the MERGE key (defaults to pattern value)."
+                    },
                     "pattern": {
                         "type": "string",
-                        "description": "Goal substring to match (required for action=define)."
+                        "description": "Primary goal substring to match (required for action=define). Use \"\" for a default chain."
+                    },
+                    "patterns": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Additional goal substrings (OR-matched with pattern)."
                     },
                     "steps": {
                         "type": "array",
-                        "description": "ChainStep array (tool_name, arguments, context_profile). \
-                                        Template vars: {{task_id}}, {{goal}}, {{date}}. (required for define)"
+                        "description": "ChainStep array (tool_name, arguments, priority?, provider_hint?, etc.). \
+                                        Template vars: {{task_id}}, {{goal}}, {{date}}, {{file_slug}}. (required for define)"
                     },
                     "priority": {
                         "type": "integer",
-                        "description": "Check order — lower = first (default 100)."
+                        "description": "Check order — lower = first (default 100). Use 9999 for default chain."
                     },
                     "description": {
                         "type": "string",
                         "description": "Human-readable description of this chain."
+                    },
+                    "no_evaluator": {
+                        "type": "boolean",
+                        "description": "When true, suppress the evaluator step even if task has success_criteria (default false)."
                     },
                     "id": {
                         "type": "string",
@@ -352,23 +367,39 @@ impl SchedulerSkill {
                 };
                 let priority = args["priority"].as_i64().unwrap_or(100);
                 let description = args["description"].as_str().unwrap_or("").to_string();
+                let name = args["name"].as_str().unwrap_or(&pattern).to_string();
+                let patterns: Vec<String> = args["patterns"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let no_evaluator = args["no_evaluator"].as_bool().unwrap_or(false);
                 let id = uuid::Uuid::new_v4().to_string();
 
-                let cypher = "MERGE (c:SchedulerChain {pattern: $pattern}) \
-                              SET c.id          = COALESCE(c.id, $id), \
-                                  c.steps       = $steps, \
-                                  c.priority    = $priority, \
-                                  c.description = $description, \
-                                  c.updated_at  = datetime()";
+                let cypher = "MERGE (c:SchedulerChain {name: $name}) \
+                              ON CREATE SET c.id = $id, c.created_at = datetime() \
+                              SET c.pattern       = $pattern, \
+                                  c.patterns      = $patterns, \
+                                  c.steps         = $steps, \
+                                  c.priority      = $priority, \
+                                  c.description   = $description, \
+                                  c.no_evaluator  = $no_evaluator, \
+                                  c.updated_at    = datetime()";
 
                 if let Err(e) = neo4j
                     .run(
                         neo4rs::query(cypher)
+                            .param("name", name.as_str())
                             .param("pattern", pattern.clone())
+                            .param("patterns", patterns)
                             .param("id", id)
                             .param("steps", steps_json)
                             .param("priority", priority)
-                            .param("description", description),
+                            .param("description", description.as_str())
+                            .param("no_evaluator", no_evaluator),
                     )
                     .await
                 {
@@ -377,8 +408,10 @@ impl SchedulerSkill {
 
                 ToolCallResult::success_json(json!({
                     "stored": true,
+                    "name": name,
                     "pattern": pattern,
                     "priority": priority,
+                    "no_evaluator": no_evaluator,
                     "step_count": args["steps"].as_array().map(|a| a.len()).unwrap_or(0),
                 }))
             }

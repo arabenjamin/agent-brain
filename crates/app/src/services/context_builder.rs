@@ -158,6 +158,39 @@ impl ContextBuilderService {
         profiles
     }
 
+    /// Write a profile to `contexts_dir/{name}.yaml` and update the in-memory map.
+    pub async fn save_profile(&self, profile: ContextProfile) -> anyhow::Result<()> {
+        if profile.name == "boot" || profile.name == "init" {
+            anyhow::bail!("Cannot overwrite reserved protocol files (boot/init)");
+        }
+        if profile.name.is_empty() {
+            anyhow::bail!("Profile name must not be empty");
+        }
+        let path = self.contexts_dir.join(format!("{}.yaml", profile.name));
+        let text = serde_yaml::to_string(&profile)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize profile: {}", e))?;
+        std::fs::write(&path, text)?;
+        let mut map = self.profiles.write().await;
+        map.insert(profile.name.clone(), profile);
+        Ok(())
+    }
+
+    /// Delete `contexts_dir/{name}.yaml` and remove from the in-memory map.
+    /// Returns `false` if the profile was not found.
+    pub async fn delete_profile(&self, name: &str) -> anyhow::Result<bool> {
+        if name == "general" {
+            anyhow::bail!("Cannot delete the default 'general' profile");
+        }
+        let path = self.contexts_dir.join(format!("{name}.yaml"));
+        let existed = path.exists();
+        if existed {
+            std::fs::remove_file(&path)?;
+        }
+        let mut map = self.profiles.write().await;
+        let was_in_memory = map.remove(name).is_some();
+        Ok(existed || was_in_memory)
+    }
+
     /// Build a [`ContextBundle`] for the named profile, optionally fetching pre-load notes.
     pub async fn build_bundle(&self, profile_name: &str) -> anyhow::Result<ContextBundle> {
         let profile = self

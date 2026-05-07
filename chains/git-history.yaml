@@ -1,0 +1,48 @@
+name: git-history
+pattern: "git history"
+patterns:
+  - "recent changes"
+  - "what changed"
+  - "commit history"
+priority: 70
+description: "Git history analysis: fetch recent commits, diff, reason over changes, distill into semantic knowledge."
+steps:
+  - tool_name: get_git_log
+    arguments:
+      n: 20
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    confidence_threshold: 0.5
+
+  - tool_name: get_git_diff
+    arguments:
+      from_ref: "HEAD~10"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "{{goal}}"
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: synthesize_knowledge
+    arguments:
+      topic: "{{goal}}"
+      limit: 8
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

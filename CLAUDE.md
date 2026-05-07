@@ -86,6 +86,8 @@ Copy `.env.example` to `.env` and configure:
 | `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
 | `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
+| `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and auto-seeded on the first scheduler tick if no chains exist in Neo4j |
+| `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup (force-updates existing steps) |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |
 | `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
@@ -302,17 +304,26 @@ Inspired by the Anthropic harness design article. When a `Task` has a `success_c
 
 `(:SchedulerChain)` nodes can carry an `evaluation_rubric` property that overrides `success_criteria` as the evaluator goal text — useful for custom chain-specific grading criteria.
 
-### UI / Frontend Code-Writing Chain
+### Externalized Agent Chains
 
-Tasks containing keywords `"button"`, `"modal"`, `"panel"`, `"frontend"`, `"tsx"`, `"react"` (and combos like `"extract"+"profile"`, `"move"+"panel"`) route to a dedicated workspace-write chain instead of the default knowledge chain:
+All scheduler routing chains are defined as YAML files in `chains/` and seeded into Neo4j as `(:SchedulerChain)` nodes by `init-db` (or auto-seeded on first scheduler tick). The `goal_to_steps()` function is now ~20 lines — it queries Neo4j first, falls back to `build_diagnosis_chain()` if nothing matches.
 
-1. `search_codebase` — locate relevant frontend files
-2. `reason` — generate complete modified file content(s) with implementation instructions
-3. `write_workspace_file` — write output to `workspace/ui/<slug>.md` (requires `WORKSPACE_DIR`)
-4. `store_note` — record an outcome note with the workspace path
-5. `update_task` — mark completed
+**Chain YAML schema** (`chains/*.yaml`):
+```yaml
+name: my-chain          # MERGE key in Neo4j
+pattern: "keyword"      # primary CONTAINS match; use "" for default chain
+patterns: [...]         # additional OR patterns
+priority: 100           # lower = matched first; default chain uses 9999
+no_evaluator: false     # true = skip evaluator even if task has success_criteria
+evaluation_rubric: null # overrides task success_criteria in evaluator step
+steps: [...]            # array of ChainStep-compatible objects
+```
 
-No evaluator is appended for this chain. The brain cannot verify a running UI; workspace output is flagged for human review. `WORKSPACE_DIR` is mounted at `./workspace` in docker-compose.
+Template variables in step `arguments`: `{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}` (slug derived from goal, used by UI chain for workspace file path).
+
+The **UI chain** (`chains/ui-frontend.yaml`) matches frontend keywords, writes to `workspace/ui/{{file_slug}}.md`, and sets `no_evaluator: true`. Built-in ScheduledTask step definitions live in `schedules/*.yaml` (seeded by `seed_built_ins` via `schedule_seeder`; falls back to hardcoded if `schedules/` is absent).
+
+**`manage_chain` tool** now accepts `name`, `patterns` (list), and `no_evaluator` fields in addition to `pattern`.
 
 ### Context Profiles
 

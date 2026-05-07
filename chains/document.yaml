@@ -1,0 +1,31 @@
+name: document
+pattern: "document"
+patterns:
+  - "current state"
+priority: 30
+description: "Document / capture state: search existing knowledge then consolidate into a durable note."
+steps:
+  - tool_name: search_notes
+    arguments:
+      query: "{{goal}}"
+      limit: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: consolidate_memories
+    arguments:
+      topic: "{{goal}}"
+      limit: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

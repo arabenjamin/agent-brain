@@ -1,0 +1,42 @@
+name: fill-knowledge-gap
+pattern: "fill knowledge gap:"
+priority: 100
+description: "Curiosity engine: search for information to fill a specific knowledge gap, reason over findings, then store a synthesis note."
+steps:
+  - tool_name: search_notes
+    arguments:
+      query: "{{goal}}"
+      limit: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Gap fill: search existing knowledge"
+
+  - tool_name: reason
+    arguments:
+      question: "{{goal}}"
+      action: structured
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Gap fill: structured reasoning over findings"
+
+  - tool_name: store_note
+    arguments:
+      content: "Gap synthesis: {{goal}}"
+      note_type: semantic
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Gap fill: store synthesis note"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

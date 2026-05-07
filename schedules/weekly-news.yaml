@@ -1,0 +1,45 @@
+name: "Weekly news briefing and analysis: synthesize major world, tech, business, and international stories from the past week"
+description: "Weekly synthesis of major news themes across world, technology, and business."
+interval_seconds: 604800
+steps:
+  - tool_name: search_web
+    arguments:
+      query: "major world news events this week AP Reuters BBC"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "AI technology breakthroughs this week TechCrunch Wired"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "business economy politics week Financial Times Bloomberg"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "Write a weekly news synthesis with top 3 stories per category (world, technology, business/politics), emerging themes across categories, and one trend to watch next week. Cite sources with URLs."
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "{{_prev}}"
+      note_type: news
+      source_context: scheduled_weekly_news_brief
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

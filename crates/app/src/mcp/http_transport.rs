@@ -341,11 +341,14 @@ impl HttpTransport {
             )
             .route(
                 "/api/contexts",
-                get(rest_handlers::handle_list_context_profiles),
+                get(rest_handlers::handle_list_context_profiles)
+                    .post(rest_handlers::handle_upsert_context_profile),
             )
             .route(
                 "/api/contexts/{name}",
-                get(rest_handlers::handle_get_context_profile),
+                get(rest_handlers::handle_get_context_profile)
+                    .put(rest_handlers::handle_upsert_context_profile)
+                    .delete(rest_handlers::handle_delete_context_profile),
             )
             .route(
                 "/api/http-contexts",

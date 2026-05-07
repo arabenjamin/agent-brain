@@ -1,0 +1,48 @@
+name: prioritize
+pattern: "prioriti"
+patterns:
+  - "roadmap"
+  - "plan"
+priority: 40
+description: "Planning / prioritisation: search context, reason twice over it, then distill into a durable plan note."
+steps:
+  - tool_name: search_notes
+    arguments:
+      query: "{{goal}}"
+      limit: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "{{goal}}"
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: "{{goal}}"
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: synthesize_knowledge
+    arguments:
+      topic: "{{goal}}"
+      limit: 8
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

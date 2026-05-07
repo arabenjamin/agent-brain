@@ -1,0 +1,22 @@
+name: consolidate
+pattern: "consolidat"
+priority: 20
+description: "Memory consolidation: advance next_review_at on overdue spaced-repetition notes."
+steps:
+  - tool_name: consolidate_memories
+    arguments:
+      topic: recent experiences and knowledge
+      limit: 20
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Consolidate overdue spaced-repetition notes"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+      note: "Task completed: {{goal}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

@@ -66,12 +66,6 @@ interface QueueStatus {
   by_status: Record<string, number>;
 }
 
-interface ContextProfile {
-  name: string;
-  description?: string;
-  tools?: string[];
-}
-
 interface IntegrityResult {
   total_issues: number;
   checks: {
@@ -418,72 +412,6 @@ function QueueCard() {
   );
 }
 
-// ── Context Profiles Card ─────────────────────────────────────────────────────
-function ContextProfilesCard() {
-  const [profiles, setProfiles] = useState<ContextProfile[]>([]);
-  const [error, setError]       = useState<string | null>(null);
-  const [loading, setLoading]   = useState(true);
-
-  const fetch = useCallback(async () => {
-    try {
-      const res = await window.fetch(`${getBrainUrl()}/api/contexts`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
-      const json = await res.json() as { profiles?: ContextProfile[] } | ContextProfile[];
-      const list: ContextProfile[] = Array.isArray(json) ? json : (json.profiles ?? []);
-      setProfiles(list);
-      setError(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { fetch(); }, [fetch]);
-
-  const statusColor = error ? C.red : profiles.length > 0 ? C.cyan : C.muted;
-
-  return (
-    <Card accent={statusColor}>
-      <CardHeader
-        title="Context Profiles"
-        icon="🧩"
-        status={<StatusDot ok={!error && profiles.length > 0} />}
-        pill={<Pill label={`${profiles.length} profiles`} color={statusColor} />}
-      />
-      <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
-        {loading && <div style={{ color: C.muted, fontSize: 11 }}>Loading…</div>}
-        {error   && <div style={{ color: C.red,   fontSize: 11 }}>Error: {error}</div>}
-
-        {profiles.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflow: "auto" }}>
-            {profiles.map((p) => (
-              <div key={p.name} style={{
-                display: "flex", flexDirection: "column", gap: 2,
-                padding: "5px 8px", background: C.panel,
-                borderRadius: 4, border: `1px solid ${C.border}`,
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 10, fontWeight: 600, color: C.cyan }}>{p.name}</span>
-                  {p.tools && (
-                    <span style={{ fontSize: 9, color: C.muted }}>{p.tools.length} tools</span>
-                  )}
-                </div>
-                {p.description && (
-                  <span style={{ fontSize: 9, color: C.dim, lineHeight: 1.4 }}>{p.description}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <ActionBtn label="Refresh" onClick={fetch} />
-      </div>
-    </Card>
-  );
-}
-
 // ── Knowledge Integrity Card ───────────────────────────────────────────────────
 function IntegrityCard() {
   const [data, setData]       = useState<IntegrityResult | null>(null);
@@ -664,7 +592,6 @@ function ServicesView() {
       }}>
         <SchedulerCard />
         <QueueCard />
-        <ContextProfilesCard />
         <IntegrityCard />
         <LlmCard />
       </div>
