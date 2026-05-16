@@ -909,27 +909,39 @@ pub async fn handle_list_scheduler_chains(
     };
 
     let cypher = "MATCH (c:SchedulerChain) \
-                  RETURN c.id AS id, c.pattern AS pattern, c.priority AS priority, \
-                         c.description AS description, c.steps AS steps \
-                  ORDER BY c.priority ASC, c.pattern ASC";
+                  RETURN c.id AS id, c.name AS name, c.pattern AS pattern, \
+                         coalesce(c.patterns, []) AS patterns, \
+                         c.priority AS priority, c.description AS description, \
+                         c.no_evaluator AS no_evaluator, \
+                         c.evaluation_rubric AS evaluation_rubric, \
+                         c.steps AS steps, c.updated_at AS updated_at \
+                  ORDER BY c.priority ASC, c.name ASC";
 
     match neo4j.execute(neo4rs::query(cypher)).await {
         Ok(rows) => {
             let chains: Vec<Value> = rows
                 .iter()
                 .map(|row| {
-                    let step_count = row
-                        .get::<String>("steps")
+                    let steps_json = row.get::<String>("steps").unwrap_or_default();
+                    let step_count = serde_json::from_str::<Value>(&steps_json)
                         .ok()
-                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                         .and_then(|v| v.as_array().map(|a| a.len()))
                         .unwrap_or(0);
+                    let patterns: Vec<String> = row
+                        .get::<Vec<String>>("patterns")
+                        .unwrap_or_default();
                     json!({
-                        "id":          row.get::<String>("id").unwrap_or_default(),
-                        "pattern":     row.get::<String>("pattern").unwrap_or_default(),
-                        "priority":    row.get::<i64>("priority").unwrap_or(100),
-                        "description": row.get::<String>("description").unwrap_or_default(),
-                        "step_count":  step_count,
+                        "id":                row.get::<String>("id").unwrap_or_default(),
+                        "name":              row.get::<String>("name").unwrap_or_default(),
+                        "pattern":           row.get::<String>("pattern").unwrap_or_default(),
+                        "patterns":          patterns,
+                        "priority":          row.get::<i64>("priority").unwrap_or(100),
+                        "description":       row.get::<String>("description").unwrap_or_default(),
+                        "no_evaluator":      row.get::<bool>("no_evaluator").unwrap_or(false),
+                        "evaluation_rubric": row.get::<String>("evaluation_rubric").ok(),
+                        "step_count":        step_count,
+                        "steps":             steps_json,
+                        "updated_at":        row.get::<String>("updated_at").ok(),
                     })
                 })
                 .collect();

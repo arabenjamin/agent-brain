@@ -71,6 +71,16 @@ if [ -n "${CODEBASE_DIR}" ] && [ "${CODEBASE_DIR}" != "/home/agent/agent-brain" 
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Start the server.
+# 6. Seed Neo4j schema, chains, and scheduled tasks before starting the server.
+#    Runs init-db every time so schema constraints and chain/schedule definitions
+#    stay in sync with the mounted YAML files without needing a manual init-db call.
+# ---------------------------------------------------------------------------
+if [ "${1:-serve}" = "serve" ]; then
+    echo "agent-brain: running init-db to seed schema and chains…"
+    agent-brain init-db || echo "agent-brain: init-db failed (Neo4j may not be ready yet — auto-seed on first tick will retry chains)"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Start the server.
 # ---------------------------------------------------------------------------
 exec agent-brain "$@"

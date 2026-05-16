@@ -2200,12 +2200,22 @@ impl KnowledgeService {
                 .map_err(|e| anyhow::anyhow!("Failed to embed consolidation topic: {}", e))?
         };
 
+        // Pre-filter by type so consolidated/reflection notes never crowd out source material.
+        // The vector index approach (queryNodes) posts the filter *after* ANN selection, which
+        // causes consolidated notes to dominate the top-K results for generic topics like
+        // "recent experiences and knowledge". Using vector.similarity.cosine() on a pre-filtered
+        // MATCH scans only the eligible notes (~1k) and is fast enough at this scale.
+        // The size() guard handles the handful of legacy notes with mismatched dimensions.
+        let embed_dim = embedding.len() as i64;
         let source_cypher = r#"
-        CALL db.index.vector.queryNodes('note_embeddings', $fetch_limit, $embedding)
-        YIELD node, score
-        WHERE NOT coalesce(node.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw']
-        RETURN node.id AS id, node.content AS content
+        MATCH (n:Note)
+        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw']
+          AND n.embedding IS NOT NULL
+          AND size(n.embedding) = $dim
+        WITH n, vector.similarity.cosine(n.embedding, $embedding) AS score
         ORDER BY score DESC
+        LIMIT $limit
+        RETURN n.id AS id, n.content AS content
         "#;
 
         let raw_rows = self
@@ -2213,7 +2223,8 @@ impl KnowledgeService {
             .execute(
                 neo4rs::query(source_cypher)
                     .param("embedding", embedding)
-                    .param("fetch_limit", (limit * 3) as i64),
+                    .param("dim", embed_dim)
+                    .param("limit", limit as i64),
             )
             .await?;
 

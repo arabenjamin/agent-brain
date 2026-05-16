@@ -1,6 +1,7 @@
 name: consolidate
 pattern: "consolidat"
 priority: 20
+no_evaluator: true
 description: "Memory consolidation: advance next_review_at on overdue spaced-repetition notes."
 steps:
   - tool_name: consolidate_memories

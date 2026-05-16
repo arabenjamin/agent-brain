@@ -1263,7 +1263,9 @@ impl SchedulerService {
             if no_evaluator {
                 return steps;
             }
-            let effective_rubric = rubric.or_else(|| success_criteria.map(String::from));
+            let effective_rubric = rubric
+                .filter(|s| !s.is_empty())
+                .or_else(|| success_criteria.map(String::from));
             return self.maybe_append_evaluator(steps, task_id, effective_rubric.as_deref());
         }
 

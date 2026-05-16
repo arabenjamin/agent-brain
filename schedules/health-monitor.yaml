@@ -4,7 +4,7 @@ interval_seconds: 43200
 steps:
   - tool_name: neo4j_query
     arguments:
-      cypher: "MATCH (j:AgentJob) WHERE j.created_at >= toString(datetime() - duration('P1D')) RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
+      cypher: "MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration('P1D') RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
     priority: 1
     max_attempts: 2
     provider_hint: ollama
