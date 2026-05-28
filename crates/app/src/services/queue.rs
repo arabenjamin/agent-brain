@@ -987,7 +987,8 @@ impl QueueService {
                 if should_meta_learn(&job.tool_name) {
                     let search_query = format!("failure {} root cause error", job.tool_name);
                     let hypothesis_question = format!(
-                        "You are a meta-learning system. A job running '{}' just died after {} \
+                        "You are a meta-learning system. Respond in English only.\n\
+                         A job running '{}' just died after {} \
                          attempts with error: {}\n\n\
                          Based on any related notes above:\n\
                          1. ANALYZE: What is causing this failure?\n\

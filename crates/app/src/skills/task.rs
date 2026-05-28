@@ -191,29 +191,83 @@ impl TaskSkill {
             Err(e) => return e,
         };
 
-        if let Some(neo4j) = &self.neo4j {
-            match neo4j
-                .create_task(
-                    &input.goal,
-                    input.context.as_deref(),
-                    input.success_criteria.as_deref(),
-                )
-                .await
-            {
-                Ok(id) => {
-                    info!(task_id = %id, goal = %input.goal, "Created new task in DB");
-                    let response = json!({
-                        "id": id,
-                        "status": "created",
-                        "message": "Task created successfully in database."
-                    });
-                    ToolCallResult::success_json(response)
-                }
-                Err(e) => ToolCallResult::error(format!("Failed to create task in DB: {}", e)),
+        let neo4j = match &self.neo4j {
+            Some(n) => n,
+            None => {
+                info!(goal = %input.goal, "Neo4j not available, skipping persistence");
+                return ToolCallResult::error(
+                    "Persistence layer (Neo4j) not available.".to_string(),
+                );
             }
-        } else {
-            info!(goal = %input.goal, "Neo4j not available, skipping persistence");
-            ToolCallResult::error("Persistence layer (Neo4j) not available.".to_string())
+        };
+
+        // Duplicate detection: scan tasks from the last 7 days for overlap.
+        //   • Active duplicate  (created / in_progress)  → return it; skip creation.
+        //   • Failed duplicate                           → inject prior failure context.
+        //   • Completed duplicate                        → allow fresh attempt as-is.
+        let mut effective_context = input.context.clone();
+        match neo4j.find_similar_tasks(7).await {
+            Ok(candidates) => {
+                for task in &candidates {
+                    let sim = jaccard_word_overlap(&input.goal, &task.goal);
+                    if sim < 0.6 {
+                        continue;
+                    }
+                    match &task.status {
+                        TaskStatus::Created | TaskStatus::InProgress => {
+                            let pct = (sim * 100.0) as u32;
+                            info!(
+                                existing_id = %task.id,
+                                similarity_pct = pct,
+                                "Suppressing duplicate task creation"
+                            );
+                            return ToolCallResult::success_json(json!({
+                                "id": task.id,
+                                "status": task.status,
+                                "duplicate": true,
+                                "similarity_pct": pct,
+                                "message": format!(
+                                    "Similar task already active ({pct}% word overlap). \
+                                     Returning existing task instead of creating a duplicate."
+                                )
+                            }));
+                        }
+                        TaskStatus::Failed => {
+                            let prior = format!(
+                                "PRIOR ATTEMPT FAILED — goal: \"{}\". Prior context: {}",
+                                task.goal,
+                                task.context.as_deref().unwrap_or("(none)")
+                            );
+                            effective_context = Some(match effective_context {
+                                Some(ctx) => format!("{prior}\n\n{ctx}"),
+                                None => prior,
+                            });
+                        }
+                        _ => {} // completed → allow fresh attempt unchanged
+                    }
+                    break;
+                }
+            }
+            Err(e) => warn!("find_similar_tasks failed, skipping dedup: {}", e),
+        }
+
+        match neo4j
+            .create_task(
+                &input.goal,
+                effective_context.as_deref(),
+                input.success_criteria.as_deref(),
+            )
+            .await
+        {
+            Ok(id) => {
+                info!(task_id = %id, goal = %input.goal, "Created new task in DB");
+                ToolCallResult::success_json(json!({
+                    "id": id,
+                    "status": "created",
+                    "message": "Task created successfully in database."
+                }))
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to create task in DB: {}", e)),
         }
     }
 
@@ -227,7 +281,8 @@ impl TaskSkill {
 
         {
             let prompt = format!(
-                "You are a quality reviewer. Your response MUST begin with the line \"Score: N/5\" \
+                "You are a quality reviewer. Respond in English only.\n\
+                Your response MUST begin with the line \"Score: N/5\" \
                 and follow the exact structure below. Do NOT invent a title, do NOT write a preamble, \
                 do NOT use the goal text as a heading. Start your response with \"Score:\".\n\n\
                 GOAL TO EVALUATE AGAINST: {}\n\n\
@@ -311,7 +366,8 @@ impl TaskSkill {
         let context = input.context.as_deref().unwrap_or("");
 
         let prompt = format!(
-            "You are a task planner. Decompose the following goal into at most {} concrete, \
+            "You are a task planner. Respond in English only.\n\
+             Decompose the following goal into at most {} concrete, \
              ordered sub-tasks. Each sub-task should be independently actionable using available tools. \
              Use 'depends_on_step' (0-indexed) when a step cannot start before the referenced step finishes. \
              Include a 'success_criteria' field for each sub-task: a single measurable sentence that \
@@ -616,6 +672,42 @@ impl Skill for TaskSkill {
 }
 
 // ============================================================================
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Jaccard word-overlap similarity between two goal strings, range [0, 1].
+///
+/// Stopwords and tokens ≤ 2 chars are excluded so that minor phrasing
+/// differences ("Analyze the repeated failures" vs "Analyze repeated failure")
+/// still score above the dedup threshold.
+fn jaccard_word_overlap(a: &str, b: &str) -> f32 {
+    const STOPWORDS: &[&str] = &[
+        "the", "a", "an", "to", "of", "in", "and", "or", "for", "with", "on", "at", "by", "is",
+        "are", "was", "were", "be", "been", "that", "this", "it", "its", "as", "so", "do", "has",
+        "have",
+    ];
+    let tokenize = |s: &str| -> std::collections::HashSet<String> {
+        s.split_whitespace()
+            .map(|w| {
+                w.chars()
+                    .filter(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    .to_lowercase()
+            })
+            .filter(|w| w.len() > 2 && !STOPWORDS.contains(&w.as_str()))
+            .collect()
+    };
+    let words_a = tokenize(a);
+    let words_b = tokenize(b);
+    let intersection = words_a.intersection(&words_b).count();
+    let union_count = words_a.union(&words_b).count();
+    if union_count == 0 {
+        return 0.0;
+    }
+    intersection as f32 / union_count as f32
+}
+
 // Input structs
 // ============================================================================
 

@@ -186,6 +186,12 @@ pub trait TaskStore: Send + Sync {
     /// If all subtasks of the parent are completed, auto-complete the parent too.
     /// Returns `Some(parent_id)` if the parent was auto-completed, `None` otherwise.
     async fn auto_complete_parent_if_done(&self, task_id: &str) -> anyhow::Result<Option<String>>;
+
+    /// Return recent tasks for duplicate detection.
+    ///
+    /// Returns tasks created within `days_lookback` days with active or terminal
+    /// statuses.  Similarity scoring is the caller's responsibility.
+    async fn find_similar_tasks(&self, days_lookback: u32) -> anyhow::Result<Vec<Task>>;
 }
 
 // ============================================================================

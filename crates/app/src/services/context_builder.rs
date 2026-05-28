@@ -279,7 +279,8 @@ impl ContextBuilderService {
                 .join("\n");
 
             let prompt = format!(
-                "You are a goal router. Given a goal, pick the single most relevant context profile.\n\
+                "You are a goal router. Respond in English only.\n\
+                 Given a goal, pick the single most relevant context profile.\n\
                  Profiles:\n{}\n\n\
                  Goal: {}\n\n\
                  Reply with ONLY the profile name exactly as shown (e.g. \"task-manager\"). \

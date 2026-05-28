@@ -547,7 +547,8 @@ Respond with a JSON object only (no markdown, no explanation):
                 // (e.g. freshly-fetched search results in a job chain).
                 if let Some(ctx) = &input.context {
                     let prompt = format!(
-                        "You are a reasoning engine. Using the provided context, answer the question \
+                        "You are a reasoning engine. Respond in English only. All JSON field values must be in English.\n\
+                         Using the provided context, answer the question \
                          clearly. Distinguish what is directly stated vs inferred.\n\
                          Output ONLY valid JSON. The \"answer\" field may contain markdown formatting \
                          (headers, bullets, bold) when the question requests a structured report:\n\

@@ -927,9 +927,8 @@ pub async fn handle_list_scheduler_chains(
                         .ok()
                         .and_then(|v| v.as_array().map(|a| a.len()))
                         .unwrap_or(0);
-                    let patterns: Vec<String> = row
-                        .get::<Vec<String>>("patterns")
-                        .unwrap_or_default();
+                    let patterns: Vec<String> =
+                        row.get::<Vec<String>>("patterns").unwrap_or_default();
                     json!({
                         "id":                row.get::<String>("id").unwrap_or_default(),
                         "name":              row.get::<String>("name").unwrap_or_default(),

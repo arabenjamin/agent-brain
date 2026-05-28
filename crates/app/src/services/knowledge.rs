@@ -1428,6 +1428,7 @@ impl KnowledgeService {
         let prompt = format!(
             "You are a reasoning engine. Given the following retrieved knowledge, answer the question \
              by logical inference. Clearly distinguish what is known vs inferred.\n\
+             IMPORTANT: Respond in English only. All text fields in the JSON must be in English.\n\
              Output ONLY valid JSON (no markdown, no code fences): \
              {{\"answer\":\"...\",\"inferences\":[\"...\"],\"confidence\":0.0,\"gaps\":[\"...\"]}}\n\n\
              QUESTION: {}\n\
@@ -1566,6 +1567,7 @@ impl KnowledgeService {
         let prompt = format!(
             "You are a reasoning engine. Given the following retrieved knowledge, answer the question \
              by logical inference. Clearly distinguish what is known vs inferred.\n\
+             IMPORTANT: Respond in English only. All text fields in the JSON must be in English.\n\
              Output ONLY valid JSON (no markdown, no code fences):\n\
              {{\"answer\":\"...\",\"inferences\":[\"...\"],\"confidence\":0.0,\
              \"gaps\":[\"...\"],\"caveats\":[\"...\"],\"follow_up_questions\":[\"...\"]}}\n\n\
@@ -1737,7 +1739,8 @@ impl KnowledgeService {
         initial_confidence: f64,
     ) -> (f64, Vec<String>) {
         let prompt = format!(
-            "You are a skeptical critic. Given the following question and answer, identify the \
+            "You are a skeptical critic. Respond in English only. All JSON field values must be in English.\n\
+             Given the following question and answer, identify the \
              strongest counter-arguments and flaws. Be concise and specific.\n\
              Output ONLY valid JSON: \
              {{\"counter_arguments\":[\"...\"],\"confidence_adjustment\":-0.1}}\n\
@@ -1940,7 +1943,8 @@ impl KnowledgeService {
             .join("\n\n---\n\n");
 
         let prompt = format!(
-            "You are a knowledge distillation system. Your task is to synthesize the following \
+            "You are a knowledge distillation system. Respond in English only.\n\
+             Your task is to synthesize the following \
              notes into concise, durable semantic knowledge about: \"{topic}\"\n\n\
              Extract the key facts, patterns, lessons, and actionable insights. \
              Write in clear prose with section headers. Omit ephemeral details (dates of \
@@ -2013,7 +2017,8 @@ impl KnowledgeService {
             .join("\n\n---\n\n");
 
         let prompt = format!(
-            "You are a values alignment auditor. Evaluate the proposed action against the principles.\n\
+            "You are a values alignment auditor. Respond in English only. All JSON field values must be in English.\n\
+             Evaluate the proposed action against the principles.\n\
              Output ONLY valid JSON (no markdown): \
              {{\"aligned\":true,\"confidence\":0.0,\"concerns\":[\"...\"],\"suggestions\":[\"...\"],\"reasoning\":\"...\"}}\n\n\
              PROPOSED ACTION: {}\n\
@@ -2143,7 +2148,8 @@ impl KnowledgeService {
             .join("\n\n---\n\n");
 
         let prompt = format!(
-            "You are an explainability engine. Using the context below, explain in plain language \
+            "You are an explainability engine. Respond in English only.\n\
+             Using the context below, explain in plain language \
              why the following decision was taken. Be specific about what information drove it.\n\n\
              DECISION: {}\n\
              TASK CONTEXT:\n{}\n\
@@ -2257,7 +2263,8 @@ impl KnowledgeService {
             .join("\n\n---\n\n");
 
         let prompt = format!(
-            "You are a memory consolidation system. Write a factual, plain-prose summary of \
+            "You are a memory consolidation system. Respond in English only.\n\
+             Write a factual, plain-prose summary of \
              the following {} memory records about '{}'. \
              Report only what is directly stated in the source records: what happened, \
              what was built or changed, what errors occurred, what was learned. \

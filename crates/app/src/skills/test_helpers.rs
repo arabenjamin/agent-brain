@@ -372,6 +372,10 @@ impl TaskStore for MockTaskStore {
             .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
+
+    async fn find_similar_tasks(&self, _days_lookback: u32) -> anyhow::Result<Vec<Task>> {
+        Ok(vec![])
+    }
 }
 
 // ============================================================================

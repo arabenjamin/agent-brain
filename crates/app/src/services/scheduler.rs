@@ -1291,7 +1291,7 @@ impl SchedulerService {
             // The chain: gather failure evidence, form a hypothesis, store it as a
             // 'hypothesis' note (human-reviewable), then synthesize into durable knowledge.
             let hypothesis_question = format!(
-                "You are a meta-learning system running the Analyze→Hypothesize→Test→Integrate cycle.\n\n\
+                "You are a meta-learning system running the Analyze→Hypothesize→Test→Integrate cycle. Respond in English only.\n\n\
                  GOAL: {goal}\n\n\
                  Based on the search results above:\n\
                  1. ANALYZE: What failure pattern is emerging? What do the failures have in common?\n\

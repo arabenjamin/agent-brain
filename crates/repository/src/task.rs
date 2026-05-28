@@ -129,6 +129,58 @@ impl Neo4jClient {
         }
     }
 
+    /// Return recent tasks for duplicate detection by the caller.
+    ///
+    /// Fetches up to 30 tasks created within `days_lookback` days. Similarity
+    /// scoring (Jaccard word-overlap) is performed by the caller so no text
+    /// matching happens inside Neo4j.
+    pub async fn find_similar_tasks(
+        &self,
+        days_lookback: u32,
+    ) -> Result<Vec<Task>, RepositoryError> {
+        let q = query(
+            "MATCH (t:Task) \
+             WHERE t.created_at >= datetime() - duration({days: $days}) \
+               AND t.status IN ['created', 'in_progress', 'failed', 'completed'] \
+             RETURN t \
+             ORDER BY t.created_at DESC LIMIT 30",
+        )
+        .param("days", days_lookback as i64);
+
+        let rows = self.execute(q).await?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            let node: Node = match row.get("t") {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let id: String = node.get("id").unwrap_or_default();
+            let goal: String = node.get("goal").unwrap_or_default();
+            let context: Option<String> = node.get("context").unwrap_or(None);
+            let success_criteria: Option<String> = node.get("success_criteria").unwrap_or(None);
+            let created_at: String = node.get("created_at").unwrap_or_default();
+            let updated_at: String = node.get("updated_at").unwrap_or_default();
+            let status_str: String = node.get("status").unwrap_or_else(|_| "created".to_string());
+            let status = match status_str.as_str() {
+                "in_progress" => TaskStatus::InProgress,
+                "completed" => TaskStatus::Completed,
+                "failed" => TaskStatus::Failed,
+                "blocked" => TaskStatus::Blocked,
+                _ => TaskStatus::Created,
+            };
+            tasks.push(Task {
+                id,
+                goal,
+                context,
+                success_criteria,
+                status,
+                created_at,
+                updated_at,
+            });
+        }
+        Ok(tasks)
+    }
+
     /// Store a reflection note and optionally link it to a Task via REFLECTS_ON.
     /// Persist a lightweight episodic note (no embedding) directly in Neo4j.
     /// Use this from services that don't have access to `KnowledgeService` — it

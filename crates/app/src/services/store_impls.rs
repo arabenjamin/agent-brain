@@ -238,4 +238,10 @@ impl TaskStore for Neo4jClient {
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(rows.first().and_then(|r| r.get::<String>("parent_id").ok()))
     }
+
+    async fn find_similar_tasks(&self, days_lookback: u32) -> anyhow::Result<Vec<Task>> {
+        Neo4jClient::find_similar_tasks(self, days_lookback)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
 }
