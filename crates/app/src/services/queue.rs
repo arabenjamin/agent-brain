@@ -114,6 +114,23 @@ pub struct ChainStep {
     /// in the job args so the coordinator can look up the original goal on re-queue.
     #[serde(default)]
     pub evaluator_task_id: Option<String>,
+    /// When `true`, this step runs *before* the main action steps and calls
+    /// `adversarial_plan_review`.  If the returned `overall_robustness` falls below
+    /// `min_robustness` the chain is aborted and the task re-created with the
+    /// adversarial critique injected as context for the next attempt.
+    #[serde(default)]
+    pub is_adversarial: bool,
+    /// Number of failure hypotheses the adversarial reviewer should generate (default 3).
+    #[serde(default)]
+    pub n_hypotheses: Option<u8>,
+    /// Minimum acceptable overall robustness score (1–5) from the adversarial review.
+    /// Defaults to 2.5 — plans that can't defend against half the scenarios are aborted.
+    #[serde(default)]
+    pub min_robustness: Option<f32>,
+    /// Task ID passed to the adversarial re-queue handler.  Stored as
+    /// `__adversarial_task_id` in job args.
+    #[serde(default)]
+    pub adversarial_task_id: Option<String>,
 }
 
 impl ChainStep {
@@ -300,6 +317,22 @@ impl QueueService {
                     );
                     if let Some(tid) = &step.evaluator_task_id {
                         m.insert("__evaluator_task_id".to_string(), serde_json::json!(tid));
+                    }
+                }
+                Some(a)
+            } else if step.is_adversarial {
+                let mut a = step.arguments.clone().unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut m) = a {
+                    m.insert(
+                        "__adversarial_min_robustness".to_string(),
+                        serde_json::json!(step.min_robustness.unwrap_or(2.5)),
+                    );
+                    m.insert(
+                        "__adversarial_n_hypotheses".to_string(),
+                        serde_json::json!(step.n_hypotheses.unwrap_or(3)),
+                    );
+                    if let Some(tid) = &step.adversarial_task_id {
+                        m.insert("__adversarial_task_id".to_string(), serde_json::json!(tid));
                     }
                 }
                 Some(a)
@@ -924,9 +957,47 @@ impl QueueService {
                     false
                 };
 
+                // Adversarial pre-flight: parse overall_robustness and abort the chain
+                // if the plan is too risky.  Mirrors the evaluator gate but fires on
+                // the first step rather than the last.
+                let adversarial_blocked = if let Some(min_robustness) = job
+                    .arguments
+                    .as_ref()
+                    .and_then(|a| a.get("__adversarial_min_robustness"))
+                    .and_then(|v| v.as_f64())
+                {
+                    let robustness = parse_adversarial_robustness(&result_text);
+                    let task_id = job
+                        .arguments
+                        .as_ref()
+                        .and_then(|a| a.get("__adversarial_task_id"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    if robustness < min_robustness as f32 {
+                        warn!(
+                            job_id = %job.id,
+                            robustness,
+                            min_robustness,
+                            "Adversarial: robustness below threshold — cancelling chain and re-queuing task"
+                        );
+                        let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                        if let Some(tid) = &task_id {
+                            self.handle_adversarial_requeue(tid, robustness, &result_text)
+                                .await;
+                        }
+                        true
+                    } else {
+                        info!(job_id = %job.id, robustness, "Adversarial: robustness passed — proceeding");
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 // Promote any chained children waiting on this job, unless the evaluator
-                // already cancelled them due to a failed score.
-                if !evaluator_blocked {
+                // or adversarial gate already cancelled them.
+                if !evaluator_blocked && !adversarial_blocked {
                     self.unpark_and_enqueue_children(&job.id, &result_text)
                         .await;
                 }
@@ -1154,6 +1225,78 @@ impl QueueService {
 }
 
 // ---------------------------------------------------------------------------
+// Adversarial re-queue
+// ---------------------------------------------------------------------------
+
+impl QueueService {
+    /// Called when an adversarial pre-flight step scores a plan below its robustness threshold.
+    ///
+    /// Marks the original task `failed` and creates a new `Task` node with the adversarial
+    /// critique injected as context so the scheduler will re-dispatch a hardened attempt.
+    async fn handle_adversarial_requeue(&self, task_id: &str, robustness: f32, critique: &str) {
+        let task = match self.neo4j.get_task(task_id).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                warn!(task_id = %task_id, "Adversarial re-queue: task not found");
+                return;
+            }
+            Err(e) => {
+                warn!(task_id = %task_id, error = %e, "Adversarial re-queue: failed to fetch task");
+                return;
+            }
+        };
+
+        // Count previous adversarial aborts to enforce the same retry cap as the evaluator.
+        let abort_count = task
+            .context
+            .as_deref()
+            .unwrap_or("")
+            .matches("ADVERSARIAL ABORT")
+            .count();
+
+        let _ = self
+            .neo4j
+            .update_task_status(task_id, TaskStatus::Failed)
+            .await;
+
+        if abort_count >= 3 {
+            warn!(
+                task_id = %task_id,
+                abort_count,
+                robustness,
+                "Adversarial: abort cap reached — marking terminal failure"
+            );
+            return;
+        }
+
+        let retry_context = format!(
+            "ADVERSARIAL ABORT — plan robustness {:.1}/5 (threshold 2.5).\n\nAdversarial critique:\n{}\n\nOriginal context: {}",
+            robustness,
+            critique.chars().take(800).collect::<String>(),
+            task.context.as_deref().unwrap_or("none"),
+        );
+
+        match self
+            .neo4j
+            .create_task(
+                &task.goal,
+                Some(&retry_context),
+                task.success_criteria.as_deref(),
+            )
+            .await
+        {
+            Ok(new_id) => info!(
+                original_task_id = %task_id,
+                new_task_id = %new_id,
+                robustness,
+                "Adversarial: created hardened retry task"
+            ),
+            Err(e) => warn!(error = %e, "Adversarial: failed to create retry task"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Evaluator helpers
 // ---------------------------------------------------------------------------
 
@@ -1184,6 +1327,40 @@ fn parse_evaluator_score(text: &str) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Adversarial helpers
+// ---------------------------------------------------------------------------
+
+/// Parse `overall_robustness` (1.0–5.0) from `adversarial_plan_review` JSON output.
+///
+/// Tries the JSON field first; falls back to a `Robustness: N/5` text pattern;
+/// defaults to 3.0 (neutral) if neither is found.
+fn parse_adversarial_robustness(text: &str) -> f32 {
+    // Try to parse the JSON blob returned by the tool.
+    let trimmed = text.trim();
+    let json_start = trimmed.find('{').unwrap_or(0);
+    let json_end = trimmed.rfind('}').map(|i| i + 1).unwrap_or(trimmed.len());
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[json_start..json_end]) {
+        if let Some(r) = v.get("overall_robustness").and_then(|x| x.as_f64()) {
+            return (r as f32).clamp(1.0, 5.0);
+        }
+    }
+    // Fallback: look for `Robustness: N/5` or `overall_robustness: N`.
+    for line in text.lines() {
+        let lower = line.trim().to_lowercase();
+        if let Some(rest) = lower.strip_prefix("robustness:")
+            .or_else(|| lower.strip_prefix("overall_robustness:"))
+        {
+            if let Some(n_str) = rest.trim().split('/').next()
+                && let Ok(n) = n_str.trim().parse::<f32>()
+            {
+                return n.clamp(1.0, 5.0);
+            }
+        }
+    }
+    3.0
+}
+
+// ---------------------------------------------------------------------------
 // Meta-learning helpers
 // ---------------------------------------------------------------------------
 
@@ -1200,6 +1377,7 @@ fn should_meta_learn(tool_name: &str) -> bool {
         "synthesize_knowledge",
         "reason",
         "reflect_on_work",
+        "adversarial_plan_review",
         "prune_old_notes",
         "review_due_notes",
         "record_outcome",

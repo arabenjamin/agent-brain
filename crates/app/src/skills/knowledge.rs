@@ -600,6 +600,132 @@ Respond with a JSON object only (no markdown, no explanation):
         }
     }
 
+    fn adversarial_plan_review_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "adversarial_plan_review".to_string(),
+            description: "Stress-test a proposed plan before execution by generating N adversarial \
+                         failure scenarios. For each hypothesis the tool scores how well the plan \
+                         handles it (1–5) and suggests a mitigation. Returns an overall robustness \
+                         score and adjusted plan notes. Results are stored as a semantic note so \
+                         future reviews benefit from accumulated failure-pattern knowledge."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": "The goal or objective the plan is trying to achieve"
+                    },
+                    "proposed_plan": {
+                        "type": "string",
+                        "description": "Description of the proposed plan steps (free text or step list)"
+                    },
+                    "n_hypotheses": {
+                        "type": "integer",
+                        "description": "Number of failure hypotheses to generate (default: 3)"
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "Optional task ID to link the adversarial review note via REFLECTS_ON"
+                    }
+                },
+                "required": ["goal", "proposed_plan"]
+            }),
+        }
+    }
+
+    async fn handle_adversarial_plan_review(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: AdversarialPlanReviewInput = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        info!(
+            goal = %input.goal,
+            n = input.n_hypotheses,
+            "Running adversarial plan review"
+        );
+
+        // Pull past adversarial analyses from the knowledge base so the LLM can
+        // avoid repeating already-known failure patterns and build on prior learning.
+        let past_patterns = self
+            .svc
+            .search_notes("adversarial review plan failure scenario", 3, 0)
+            .await
+            .unwrap_or_default();
+
+        let past_context = if past_patterns.is_empty() {
+            "None found.".to_string()
+        } else {
+            past_patterns
+                .iter()
+                .filter_map(|n| n["content"].as_str())
+                .take(3)
+                .map(|c| format!("- {}", c.chars().take(300).collect::<String>()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let prompt = format!(
+            "You are an Adversarial Critic. Stress-test the following plan by generating \
+             {n} distinct failure scenarios — plausible ways the plan could fail, be derailed, \
+             or produce a wrong outcome.\n\n\
+             GOAL: {goal}\n\
+             PROPOSED PLAN: {plan}\n\n\
+             PAST FAILURE PATTERNS (from knowledge base — do not repeat these):\n{past}\n\n\
+             For each scenario score how well the current plan handles it \
+             (1 = completely unprepared, 5 = fully mitigated).\n\
+             Then give an overall_robustness score (1.0–5.0, one decimal) and \
+             brief adjusted_plan_notes on how to strengthen the weakest points.\n\n\
+             Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON:\n\
+             {{\"hypotheses\":[{{\"scenario\":\"...\",\"robustness_score\":N,\"mitigation\":\"...\"}}],\
+             \"overall_robustness\":N.N,\"adjusted_plan_notes\":\"...\"}}",
+            n = input.n_hypotheses,
+            goal = input.goal,
+            plan = input.proposed_plan,
+            past = past_context,
+        );
+
+        let raw = match self.llm.generate(&prompt, None).await {
+            Ok(r) => r,
+            Err(e) => return ToolCallResult::error(format!("LLM call failed: {}", e)),
+        };
+
+        let text = raw.trim();
+        let json_start = text.find('{').unwrap_or(0);
+        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
+        let parsed: Value = serde_json::from_str(&text[json_start..json_end]).unwrap_or_else(|_| {
+            json!({
+                "hypotheses": [],
+                "overall_robustness": 3.0,
+                "adjusted_plan_notes": text
+            })
+        });
+
+        let overall_robustness = parsed["overall_robustness"].as_f64().unwrap_or(3.0);
+
+        // Persist so future reviews can learn from this one.
+        let note_content = format!(
+            "Adversarial Plan Review\nGoal: {}\nPlan: {}\nOverall robustness: {:.1}/5\n\n{}",
+            input.goal,
+            input.proposed_plan.chars().take(200).collect::<String>(),
+            overall_robustness,
+            serde_json::to_string_pretty(&parsed).unwrap_or_default()
+        );
+        let _ = self
+            .svc
+            .store_note(
+                &note_content,
+                Some("semantic"),
+                Some("adversarial_review"),
+                None,
+                None,
+            )
+            .await;
+
+        ToolCallResult::success_json(parsed)
+    }
+
     fn synthesize_knowledge_def() -> ToolDefinition {
         ToolDefinition {
             name: "synthesize_knowledge".to_string(),
@@ -663,6 +789,7 @@ impl Skill for KnowledgeSkill {
             Self::consolidate_memories_def(),
             Self::synthesize_knowledge_def(),
             Self::reason_def(),
+            Self::adversarial_plan_review_def(),
         ]
     }
 
@@ -674,6 +801,7 @@ impl Skill for KnowledgeSkill {
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),
             "synthesize_knowledge" => Some(self.handle_synthesize_knowledge(arguments).await),
             "reason" => Some(self.handle_reason(arguments).await),
+            "adversarial_plan_review" => Some(self.handle_adversarial_plan_review(arguments).await),
             _ => None,
         }
     }
@@ -768,6 +896,21 @@ struct SynthesizeKnowledgeInput {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct AdversarialPlanReviewInput {
+    goal: String,
+    proposed_plan: String,
+    #[serde(default = "default_n_hypotheses")]
+    n_hypotheses: u8,
+    #[serde(default)]
+    #[allow(dead_code)]
+    task_id: Option<String>,
+}
+
+fn default_n_hypotheses() -> u8 {
+    3
+}
+
 fn default_days_stale() -> i64 {
     30
 }
@@ -807,7 +950,7 @@ mod tests {
 
     #[test]
     fn tools_list_has_correct_count() {
-        assert_eq!(skill_ok().tools().len(), 6);
+        assert_eq!(skill_ok().tools().len(), 7);
     }
 
     #[test]

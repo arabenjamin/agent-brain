@@ -314,12 +314,15 @@ impl SchedulerService {
             let task_id = task["id"].as_str().unwrap_or("").to_string();
             let goal = task["goal"].as_str().unwrap_or("").to_string();
             let success_criteria = task["success_criteria"].as_str();
+            let task_context = task["context"].as_str();
 
             if task_id.is_empty() || goal.is_empty() {
                 continue;
             }
 
-            let mut steps = self.goal_to_steps(&goal, &task_id, success_criteria).await;
+            let mut steps = self
+                .goal_to_steps(&goal, &task_id, success_criteria, task_context)
+                .await;
 
             // Guardrail: if the first step carries a confidence threshold, estimate
             // chain confidence.  When below the threshold, replace the chain with a
@@ -1200,7 +1203,7 @@ impl SchedulerService {
         &self,
         goal: &str,
         task_id: &str,
-    ) -> Option<(Vec<ChainStep>, Option<String>, bool)> {
+    ) -> Option<(Vec<ChainStep>, Option<String>, bool, bool)> {
         // Multi-pattern matching: primary pattern, additional patterns list, or empty-string default.
         let cypher = "MATCH (c:SchedulerChain) \
                       WHERE (c.pattern <> '' AND toLower($goal) CONTAINS toLower(c.pattern)) \
@@ -1208,7 +1211,8 @@ impl SchedulerService {
                          OR c.pattern = '' \
                       RETURN c.steps AS steps, \
                              c.evaluation_rubric AS rubric, \
-                             c.no_evaluator AS no_evaluator \
+                             c.no_evaluator AS no_evaluator, \
+                             c.no_adversarial AS no_adversarial \
                       ORDER BY c.priority ASC \
                       LIMIT 1";
         let rows = self
@@ -1220,6 +1224,7 @@ impl SchedulerService {
         let steps_json = first.get::<String>("steps").ok()?;
         let rubric: Option<String> = first.get("rubric").ok().flatten();
         let no_evaluator: bool = first.get::<bool>("no_evaluator").unwrap_or(false);
+        let no_adversarial: bool = first.get::<bool>("no_adversarial").unwrap_or(false);
         let date = Utc::now().format("%Y-%m-%d").to_string();
         // Compute file_slug for UI chain template substitution.
         let file_slug: String = goal
@@ -1240,7 +1245,7 @@ impl SchedulerService {
         match serde_json::from_str::<Vec<ChainStep>>(&substituted) {
             Ok(steps) => {
                 info!(goal = %goal, steps = steps.len(), "Scheduler: routing via SchedulerChain from Neo4j");
-                Some((steps, rubric, no_evaluator))
+                Some((steps, rubric, no_evaluator, no_adversarial))
             }
             Err(e) => {
                 warn!(goal = %goal, error = %e, "SchedulerChain deserialization failed — falling back to heuristics");
@@ -1254,19 +1259,35 @@ impl SchedulerService {
         goal: &str,
         task_id: &str,
         success_criteria: Option<&str>,
+        task_context: Option<&str>,
     ) -> Vec<ChainStep> {
         // Route via Neo4j-defined SchedulerChain nodes (populated from chains/ YAML or via
         // manage_chain tool). The default chain (pattern="") catches any unmatched goal.
-        if let Some((steps, rubric, no_evaluator)) =
+        if let Some((steps, rubric, no_evaluator, no_adversarial)) =
             self.try_load_chain_from_neo4j(goal, task_id).await
         {
-            if no_evaluator {
+            if no_evaluator && no_adversarial {
                 return steps;
             }
             let effective_rubric = rubric
                 .filter(|s| !s.is_empty())
                 .or_else(|| success_criteria.map(String::from));
-            return self.maybe_append_evaluator(steps, task_id, effective_rubric.as_deref());
+            let steps = if no_evaluator {
+                steps
+            } else {
+                self.maybe_append_evaluator(steps, task_id, effective_rubric.as_deref())
+            };
+            return if no_adversarial {
+                steps
+            } else {
+                self.maybe_prepend_adversarial(
+                    steps,
+                    task_id,
+                    goal,
+                    effective_rubric.as_deref(),
+                    task_context,
+                )
+            };
         }
 
         // No chain matched — gather context and park the task for human review.
@@ -1963,6 +1984,63 @@ impl SchedulerService {
                 steps.push(ut);
             }
         }
+        steps
+    }
+
+    /// Prepend an `adversarial_plan_review` step to the chain when the task is
+    /// high-stakes (has `success_criteria`) and hasn't already been through an
+    /// adversarial abort cycle.
+    ///
+    /// Skipped when:
+    /// - `criteria` is `None` (no success criteria → not high-stakes)
+    /// - `no_adversarial` is `true` at the chain YAML level
+    /// - `task_context` already contains `"ADVERSARIAL ABORT"` (retry from prior abort)
+    fn maybe_prepend_adversarial(
+        &self,
+        mut steps: Vec<ChainStep>,
+        task_id: &str,
+        goal: &str,
+        criteria: Option<&str>,
+        task_context: Option<&str>,
+    ) -> Vec<ChainStep> {
+        if criteria.is_none() {
+            return steps;
+        }
+        if task_context
+            .map(|c| c.contains("ADVERSARIAL ABORT"))
+            .unwrap_or(false)
+        {
+            return steps;
+        }
+
+        // Build a compact plan description from step descriptions for the LLM prompt.
+        let plan_description = steps
+            .iter()
+            .filter_map(|s| s.description.as_deref().or(Some(s.tool_name.as_str())))
+            .collect::<Vec<_>>()
+            .join(" → ");
+
+        steps.insert(
+            0,
+            ChainStep {
+                tool_name: "adversarial_plan_review".to_string(),
+                arguments: Some(json!({
+                    "goal": goal,
+                    "proposed_plan": plan_description,
+                    "n_hypotheses": 3
+                })),
+                priority: Some(1),
+                max_attempts: Some(2),
+                provider_hint: Some("ollama".to_string()),
+                description: Some(
+                    "Adversarial pre-flight: stress-test plan before execution".to_string(),
+                ),
+                is_adversarial: true,
+                min_robustness: Some(2.5),
+                adversarial_task_id: Some(task_id.to_string()),
+                ..Default::default()
+            },
+        );
         steps
     }
 

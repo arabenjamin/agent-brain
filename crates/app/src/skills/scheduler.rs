@@ -264,6 +264,10 @@ impl SchedulerSkill {
                         "type": "boolean",
                         "description": "When true, suppress the evaluator step even if task has success_criteria (default false)."
                     },
+                    "no_adversarial": {
+                        "type": "boolean",
+                        "description": "When true, suppress the adversarial pre-flight step even if task has success_criteria (default false)."
+                    },
                     "id": {
                         "type": "string",
                         "description": "SchedulerChain node id (required for action=remove)."
@@ -377,6 +381,7 @@ impl SchedulerSkill {
                     })
                     .unwrap_or_default();
                 let no_evaluator = args["no_evaluator"].as_bool().unwrap_or(false);
+                let no_adversarial = args["no_adversarial"].as_bool().unwrap_or(false);
                 let id = uuid::Uuid::new_v4().to_string();
 
                 let cypher = "MERGE (c:SchedulerChain {name: $name}) \
@@ -387,6 +392,7 @@ impl SchedulerSkill {
                                   c.priority      = $priority, \
                                   c.description   = $description, \
                                   c.no_evaluator  = $no_evaluator, \
+                                  c.no_adversarial = $no_adversarial, \
                                   c.updated_at    = datetime()";
 
                 if let Err(e) = neo4j
@@ -399,7 +405,8 @@ impl SchedulerSkill {
                             .param("steps", steps_json)
                             .param("priority", priority)
                             .param("description", description.as_str())
-                            .param("no_evaluator", no_evaluator),
+                            .param("no_evaluator", no_evaluator)
+                            .param("no_adversarial", no_adversarial),
                     )
                     .await
                 {
@@ -412,6 +419,7 @@ impl SchedulerSkill {
                     "pattern": pattern,
                     "priority": priority,
                     "no_evaluator": no_evaluator,
+                    "no_adversarial": no_adversarial,
                     "step_count": args["steps"].as_array().map(|a| a.len()).unwrap_or(0),
                 }))
             }

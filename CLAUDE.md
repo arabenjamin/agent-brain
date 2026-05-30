@@ -304,6 +304,28 @@ Inspired by the Anthropic harness design article. When a `Task` has a `success_c
 
 `(:SchedulerChain)` nodes can carry an `evaluation_rubric` property that overrides `success_criteria` as the evaluator goal text — useful for custom chain-specific grading criteria.
 
+### Adversarial Critic (Pre-flight Plan Review)
+
+When a `Task` has `success_criteria`, `goal_to_steps()` also **prepends** an `adversarial_plan_review` step to the chain (before the main action steps). This is the "Level 5 Resilient Agent" upgrade: the plan is stress-tested before any real work happens.
+
+The adversarial step:
+1. Calls `adversarial_plan_review` with the goal + a description of the planned steps + N hypotheses (default 3)
+2. The LLM generates N failure scenarios, scores the plan's robustness per scenario (1–5), and returns `overall_robustness`
+3. If `overall_robustness < min_robustness` (default 2.5/5), the coordinator cancels all downstream steps and calls `handle_adversarial_requeue()`: marks the task `failed`, creates a new `Task` with the adversarial critique injected as context
+4. If robustness passes, the adversarial result (including `adjusted_plan_notes`) flows into the next step via `{{_prev}}`
+5. **Abort cap:** `handle_adversarial_requeue` counts `"ADVERSARIAL ABORT"` occurrences in context. At >= 3, marks terminal failure
+
+The adversarial step is **skipped** when:
+- The task has no `success_criteria` (not high-stakes)
+- The chain YAML has `no_adversarial: true`
+- The task context already contains `"ADVERSARIAL ABORT"` (this is a retry from a prior abort — the plan has already been hardened)
+
+The `adversarial_plan_review` tool is also callable directly (in KnowledgeSkill). Each run stores a `semantic` note with `source_context: "adversarial_review"` so future reviews learn from accumulated failure patterns.
+
+`ChainStep` adversarial fields: `is_adversarial: bool`, `n_hypotheses: Option<u8>`, `min_robustness: Option<f32>`, `adversarial_task_id: Option<String>`. Metadata injected as `__adversarial_min_robustness`, `__adversarial_n_hypotheses`, `__adversarial_task_id` in job args.
+
+`parse_adversarial_robustness()` in `queue.rs` parses `overall_robustness` from the JSON blob; falls back to `Robustness: N/5` text pattern; defaults to 3.0.
+
 ### Externalized Agent Chains
 
 All scheduler routing chains are defined as YAML files in `chains/` and seeded into Neo4j as `(:SchedulerChain)` nodes by `init-db` (or auto-seeded on first scheduler tick). The `goal_to_steps()` function is now ~20 lines — it queries Neo4j first, falls back to `build_diagnosis_chain()` if nothing matches.
@@ -315,6 +337,7 @@ pattern: "keyword"      # primary CONTAINS match; use "" for default chain
 patterns: [...]         # additional OR patterns
 priority: 100           # lower = matched first; default chain uses 9999
 no_evaluator: false     # true = skip evaluator even if task has success_criteria
+no_adversarial: false   # true = skip adversarial pre-flight even if task has success_criteria
 evaluation_rubric: null # overrides task success_criteria in evaluator step
 steps: [...]            # array of ChainStep-compatible objects
 ```
@@ -323,7 +346,7 @@ Template variables in step `arguments`: `{{goal}}`, `{{task_id}}`, `{{date}}`, `
 
 The **UI chain** (`chains/ui-frontend.yaml`) matches frontend keywords, writes to `workspace/ui/{{file_slug}}.md`, and sets `no_evaluator: true`. Built-in ScheduledTask step definitions live in `schedules/*.yaml` (seeded by `seed_built_ins` via `schedule_seeder`; falls back to hardcoded if `schedules/` is absent).
 
-**`manage_chain` tool** now accepts `name`, `patterns` (list), and `no_evaluator` fields in addition to `pattern`.
+**`manage_chain` tool** now accepts `name`, `patterns` (list), `no_evaluator`, and `no_adversarial` fields in addition to `pattern`.
 
 ### Context Profiles
 
