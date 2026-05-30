@@ -22,7 +22,7 @@ steps:
   - tool_name: reflect_on_work
     arguments:
       goal: "{{goal}}"
-      current_state: "Completed autonomous reasoning pass"
+      current_state: "{{_prev}}"
       task_id: "{{task_id}}"
     priority: 1
     max_attempts: 3

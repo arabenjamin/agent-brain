@@ -1,0 +1,93 @@
+name: schedule-review
+pattern: "scheduled task"
+patterns:
+  - "schedule review"
+  - "scheduled review"
+  - "todo agent review"
+  - "todo review performance"
+priority: 80
+description: "Review the performance of a named ScheduledTask: fetch run history, recent job outcomes, and any related notes, then reason and reflect."
+steps:
+  # Step 1: Fetch the ScheduledTask node by matching the goal text against its name.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: >
+        MATCH (s:ScheduledTask)
+        WHERE toLower(s.name) CONTAINS toLower('{{goal}}')
+           OR toLower('{{goal}}') CONTAINS toLower(s.name)
+        RETURN s.id AS id,
+               s.name AS name,
+               s.description AS description,
+               s.enabled AS enabled,
+               s.interval_seconds AS interval_seconds,
+               s.last_run_at AS last_run_at,
+               s.next_run_at AS next_run_at
+        LIMIT 5
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # Step 2: Fetch recent Task run-records and their AgentJob outcomes for this schedule.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: >
+        MATCH (t:Task)
+        WHERE t.context CONTAINS 'ScheduledTask'
+          AND (toLower(t.goal) CONTAINS toLower('{{goal}}')
+           OR toLower('{{goal}}') CONTAINS toLower(t.goal))
+        OPTIONAL MATCH (j:AgentJob)
+        WHERE j.session_id = t.id
+           OR (j.created_at >= t.created_at AND j.created_at <= coalesce(t.updated_at, datetime()))
+        RETURN t.id AS task_id,
+               t.goal AS goal,
+               t.status AS status,
+               t.created_at AS started_at,
+               t.updated_at AS finished_at,
+               collect(DISTINCT {tool: j.tool_name, status: j.status, error: j.error}) AS jobs
+        ORDER BY t.created_at DESC
+        LIMIT 10
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # Step 3: Pull any notes/outcomes stored during recent runs.
+  - tool_name: search_notes
+    arguments:
+      query: "{{goal}}"
+      limit: 8
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  # Step 4: Reason over all collected data and produce a structured performance review.
+  - tool_name: reason
+    arguments:
+      question: |
+        You are reviewing the operational performance of a scheduled brain task.
+        Goal / schedule name: {{goal}}
+
+        Data gathered (schedule metadata, recent run records, job outcomes, related notes):
+        {{_prev}}
+
+        Write a structured performance review covering:
+        1. **Run cadence** — is it firing on schedule? Any missed runs?
+        2. **Success rate** — what fraction of recent runs completed vs failed/dead?
+        3. **Output quality** — based on outcome notes, is it producing useful results?
+        4. **Failure patterns** — any recurring errors, dead jobs, or tool failures?
+        5. **Recommendations** — one or two concrete improvements to the schedule or its chain steps.
+
+        Be specific and data-driven. If data is missing, say so rather than speculating.
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  # Step 5: Reflect on the quality of this review itself and store a reflection note.
+  - tool_name: reflect_on_work
+    arguments:
+      goal: "{{goal}}"
+      current_state: "{{_prev}}"
+      task_id: "{{task_id}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
