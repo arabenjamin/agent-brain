@@ -687,7 +687,8 @@ pub async fn handle_get_graph(
         .execute(
             neo4rs::query(
                 "MATCH (n:Note) \
-             RETURN n.id AS id, n.content AS content, n.note_type AS note_type \
+             RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
+                    toString(n.created_at) AS created_at \
              ORDER BY n.last_accessed_at DESC LIMIT $limit",
             )
             .param("limit", max_nodes),
@@ -700,8 +701,9 @@ pub async fn handle_get_graph(
         let note_type = row
             .get::<String>("note_type")
             .unwrap_or_else(|_| "semantic".to_string());
+        let created_at = row.get::<String>("created_at").unwrap_or_default();
         let label: String = content.chars().take(60).collect();
-        nodes.push(json!({ "id": id, "label": label, "type": "note", "note_type": note_type }));
+        nodes.push(json!({ "id": id, "label": label, "type": "note", "note_type": note_type, "created_at": created_at }));
     }
 
     // Entities (most-mentioned first)
@@ -710,7 +712,8 @@ pub async fn handle_get_graph(
         .execute(
             neo4rs::query(
                 "MATCH (e:Entity)<-[r:MENTIONS]-() \
-             RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, count(r) AS mentions \
+             RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, count(r) AS mentions, \
+                    toString(e.created_at) AS created_at \
              ORDER BY mentions DESC LIMIT $limit",
             )
             .param("limit", entity_limit),
@@ -723,8 +726,8 @@ pub async fn handle_get_graph(
         let entity_type = row
             .get::<String>("entity_type")
             .unwrap_or_else(|_| "unknown".to_string());
-        nodes
-            .push(json!({ "id": id, "label": name, "type": "entity", "entity_type": entity_type }));
+        let created_at = row.get::<String>("created_at").unwrap_or_default();
+        nodes.push(json!({ "id": id, "label": name, "type": "entity", "entity_type": entity_type, "created_at": created_at }));
     }
 
     // Tasks
@@ -733,7 +736,8 @@ pub async fn handle_get_graph(
         .execute(
             neo4rs::query(
                 "MATCH (t:Task) \
-             RETURN t.id AS id, t.goal AS goal, t.status AS status \
+             RETURN t.id AS id, t.goal AS goal, t.status AS status, \
+                    toString(t.created_at) AS created_at \
              ORDER BY t.created_at DESC LIMIT $limit",
             )
             .param("limit", task_limit),
@@ -744,8 +748,9 @@ pub async fn handle_get_graph(
         let id = row.get::<String>("id").unwrap_or_default();
         let goal = row.get::<String>("goal").unwrap_or_default();
         let status = row.get::<String>("status").unwrap_or_default();
+        let created_at = row.get::<String>("created_at").unwrap_or_default();
         let label: String = goal.chars().take(60).collect();
-        nodes.push(json!({ "id": id, "label": label, "type": "task", "status": status }));
+        nodes.push(json!({ "id": id, "label": label, "type": "task", "status": status, "created_at": created_at }));
     }
 
     let node_ids: std::collections::HashSet<String> = nodes

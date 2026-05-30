@@ -26,6 +26,13 @@ interface Note {
   similarity?: number;
 }
 
+function fmtDate(s?: string): string {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s.slice(0, 10);
+  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 const NOTE_TYPES = ["semantic", "episodic", "reflection", "consolidated"];
 
 export default function KnowledgePanel() {
@@ -250,7 +257,7 @@ export default function KnowledgePanel() {
         <div className="note-detail">
           <div className="note-edit-header">
             <span className={`note-type-badge ${noteType(selected)}`}>{noteType(selected)}</span>
-            <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{selected.id.slice(0, 12)}…</span>
+            <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace", userSelect: "all" }}>{selected.id}</span>
           </div>
           <textarea
             className="note-edit-area"
@@ -273,9 +280,16 @@ export default function KnowledgePanel() {
       <div className="note-detail">
         <div className="note-detail-topbar">
           <span className={`note-type-badge ${noteType(selected)}`}>{noteType(selected)}</span>
-          <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: 8 }}>
-            {selected.id.slice(0, 12)}…
-          </span>
+          <div style={{ marginLeft: 8, display: "flex", flexDirection: "column", gap: 1 }}>
+            <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace", userSelect: "all" }}>
+              {selected.id}
+            </span>
+            {selected.created_at && (
+              <span style={{ fontSize: 9, color: "var(--text-muted)" }}>
+                {fmtDate(selected.created_at)}
+              </span>
+            )}
+          </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <button className="btn-ghost" onClick={startEdit} title="Edit note">✎ Edit</button>
             {!confirmDelete
@@ -398,11 +412,21 @@ export default function KnowledgePanel() {
                       {(n.similarity * 100).toFixed(0)}%
                     </span>
                   )}
+                  {n.created_at && (
+                    <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: "auto" }}>
+                      {fmtDate(n.created_at)}
+                    </span>
+                  )}
                 </div>
                 <div className="note-preview">{n.content}</div>
-                {n.access_count != null && (
-                  <div className="note-access">accessed {n.access_count}×</div>
-                )}
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
+                  {n.access_count != null && (
+                    <div className="note-access">accessed {n.access_count}×</div>
+                  )}
+                  <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace", userSelect: "all" }}>
+                    {n.id}
+                  </span>
+                </div>
               </div>
             ))}
           </div>

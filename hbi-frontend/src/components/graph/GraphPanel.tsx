@@ -12,6 +12,7 @@ interface RawGraphNode {
   note_type?: string;
   entity_type?: string;
   status?: string;
+  created_at?: string;
 }
 
 interface RawGraphEdge {
@@ -28,6 +29,7 @@ interface GraphNode {
   noteType?: string;
   entityType?: string;
   taskStatus?: string;
+  createdAt?: string;
   color: string;
   val: number;
   x?: number;
@@ -56,6 +58,20 @@ interface SelectedNodeInfo {
   entity_type?: string;
   status?: string;
   access_count?: number;
+  created_at?: string;
+}
+
+interface HoverTooltip {
+  x: number;
+  y: number;
+  node: GraphNode;
+}
+
+function fmtDate(s?: string): string {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s.slice(0, 10);
+  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 // ── Colour maps ───────────────────────────────────────────────────────────────
@@ -107,6 +123,7 @@ function toGraphNode(raw: RawGraphNode): GraphNode {
     noteType:   raw.note_type,
     entityType: raw.entity_type,
     taskStatus: raw.status,
+    createdAt:  raw.created_at,
     color:      nodeColorFor(raw),
     val:        nodeValFor(raw),
   };
@@ -168,6 +185,7 @@ export default function GraphPanel() {
   const [selectedNode, setSelectedNode]   = useState<SelectedNodeInfo | null>(null);
   const [frozen, setFrozen]               = useState(false);
   const [controlsOpen, setControlsOpen]  = useState(false);
+  const [hoverTooltip, setHoverTooltip]   = useState<HoverTooltip | null>(null);
 
   const fgRef        = useRef<ForceGraphMethods<GraphNode, GraphLink>>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -261,11 +279,11 @@ export default function GraphPanel() {
 
   const handleNodeClick = useCallback(async (node: GraphNode) => {
     if (node.nodeType === "entity") {
-      setSelectedNode({ id: node.id, type: "entity", label: node.label, entity_type: node.entityType });
+      setSelectedNode({ id: node.id, type: "entity", label: node.label, entity_type: node.entityType, created_at: node.createdAt });
       return;
     }
     if (node.nodeType === "task") {
-      setSelectedNode({ id: node.id, type: "task", label: node.label, status: node.taskStatus });
+      setSelectedNode({ id: node.id, type: "task", label: node.label, status: node.taskStatus, created_at: node.createdAt });
       return;
     }
     try {
@@ -281,11 +299,22 @@ export default function GraphPanel() {
           content:      data.content,
           note_type:    data.note_type,
           access_count: data.access_count,
+          created_at:   data.created_at ?? node.createdAt,
         });
       }
     } catch (e) {
       console.error("Failed to fetch note:", e);
     }
+  }, []);
+
+  // ── Node hover ───────────────────────────────────────────────────────────────
+
+  const handleNodeHover = useCallback((node: GraphNode | null, event?: MouseEvent) => {
+    if (!node || !event) { setHoverTooltip(null); return; }
+    const rect = containerRef.current?.getBoundingClientRect();
+    const x = event.clientX - (rect?.left ?? 0) + 12;
+    const y = event.clientY - (rect?.top ?? 0) + 12;
+    setHoverTooltip({ x, y, node });
   }, []);
 
   // ── Node painter ──────────────────────────────────────────────────────────────
@@ -537,9 +566,10 @@ export default function GraphPanel() {
           ref={fgRef}
           graphData={graphData}
           onNodeClick={handleNodeClick}
+          onNodeHover={handleNodeHover as Parameters<typeof ForceGraph2D>[0]["onNodeHover"]}
           nodeColor={(n) => (n as GraphNode).color}
           nodeVal={(n) => (n as GraphNode).val}
-          nodeLabel={(n) => (n as GraphNode).label}
+          nodeLabel={() => ""}
           linkColor={(l) => EDGE_COLORS[(l as GraphLink).edgeType] ?? "rgba(79,142,247,0.25)"}
           linkWidth={(l) => {
             const ll = l as GraphLink;
@@ -551,6 +581,40 @@ export default function GraphPanel() {
           width={dims.w}
           height={dims.h}
         />
+
+        {/* ── Hover tooltip ── */}
+        {hoverTooltip && (
+          <div
+            style={{
+              position: "absolute",
+              left: hoverTooltip.x,
+              top: hoverTooltip.y,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "6px 10px",
+              fontSize: 11,
+              pointerEvents: "none",
+              zIndex: 20,
+              maxWidth: 280,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+              lineHeight: 1.6,
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>{hoverTooltip.node.label.slice(0, 60)}</div>
+            <div style={{ color: "var(--text-muted)" }}>
+              <span style={{ marginRight: 8 }}>
+                {hoverTooltip.node.nodeType === "note"
+                  ? hoverTooltip.node.noteType ?? "note"
+                  : hoverTooltip.node.nodeType}
+              </span>
+              {hoverTooltip.node.createdAt && fmtDate(hoverTooltip.node.createdAt)}
+            </div>
+            <div style={{ fontFamily: "monospace", fontSize: 9, color: "var(--text-muted)", marginTop: 2, userSelect: "all" }}>
+              {hoverTooltip.node.id}
+            </div>
+          </div>
+        )}
 
         {/* ── Node detail overlay ── */}
         {selectedNode && (
@@ -603,11 +667,18 @@ export default function GraphPanel() {
                 </div>
               )}
             </div>
-            <div className="graph-detail-footer">
-              {selectedNode.access_count !== undefined && (
-                <span>Accessed {selectedNode.access_count}× · </span>
-              )}
-              ID: {selectedNode.id.slice(0, 8)}…
+            <div className="graph-detail-footer" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                {selectedNode.access_count !== undefined && (
+                  <span>Accessed {selectedNode.access_count}×</span>
+                )}
+                {selectedNode.created_at && (
+                  <span style={{ color: "var(--text-muted)" }}>{fmtDate(selectedNode.created_at)}</span>
+                )}
+              </div>
+              <span style={{ fontFamily: "monospace", fontSize: 9, userSelect: "all", color: "var(--text-muted)" }}>
+                {selectedNode.id}
+              </span>
             </div>
           </div>
         )}
