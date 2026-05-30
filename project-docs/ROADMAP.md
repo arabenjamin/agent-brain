@@ -203,52 +203,71 @@ See `NEXTSTEP.md §6` for the `config.ts` snippet.
 
 ---
 
-### 3.1 Branch Setup
+### 3.1 Branch Setup ✅
 
-Create the `dev`, `test`, and `prod` branches in GitHub to activate the full
-branch-tier CI pipeline defined in `.github/workflows/ci.yml`:
-
-```bash
-git checkout -b dev && git push -u origin dev
-git checkout -b test && git push -u origin test
-git checkout -b prod && git push -u origin prod
-git checkout master
-```
-
-After this, `master` is the working branch; merge to `dev` for a clean unit-test
-run, `test` for integration tests, `prod` to publish the Docker image to GHCR.
+`dev`, `test`, and `prod` branches exist on `origin`. CI pipeline active:
+- `dev` → format + unit tests
+- `test` → integration tests (requires Neo4j)
+- `prod` → Docker build + GHCR publish
 
 ---
 
 ### 3.2 Docker Compose — HBI Frontend Service ✅
 
-Add an `hbi-frontend` service to `docker-compose.yml` that builds and serves the
-React app alongside the brain:
-
-```yaml
-hbi-frontend:
-  build:
-    context: ./hbi-frontend
-    dockerfile: Dockerfile   # needs to be created — nginx serving dist/
-  ports:
-    - "5173:80"
-  environment:
-    - VITE_BRAIN_URL=http://agent-brain:3001
-  depends_on:
-    - agent-brain
-  networks:
-    - ai-network
-```
-
-Requires a new `hbi-frontend/Dockerfile` (multi-stage: `node:22` build → `nginx:alpine` serve).
+`hbi-frontend` service defined in `docker-compose.yml` with multi-stage `Dockerfile` (`node:22` build → `nginx:alpine` serve).
 
 ---
 
 ### 3.3 GHCR Package Visibility
 
-After the first `prod` push triggers the Docker workflow, the package will be
-created as private. Set it to public in GitHub:
+After the first `prod` push, set the package to public in GitHub:
 `github.com/arabenjamin → Packages → agent-brain → Package settings → Change visibility → Public`
+
+---
+
+## Tier 4 — Brain Evolution (Next Horizon)
+
+Items for the next significant capability leap. None started yet.
+
+---
+
+### 4.1 Federated Memory
+
+Allow multiple running brain instances to share a read-only view of each other's knowledge graphs. Use case: specialised sub-agents (code-brain, research-brain) feeding into a coordinator brain.
+
+**Sketch:** `FederatedKnowledgeStore` trait impl that proxies `search_notes` to remote brain HTTP endpoints; merge results with local RRF.
+
+---
+
+### 4.2 Multimodal Input
+
+Accept images and audio in the MCP protocol and route to vision/transcription models before storing as notes.
+
+**Sketch:** New `Content::Image` variant in `agent_brain_protocol`; `store_note` accepts base64 blob; LLM call includes image content for captioning before embedding.
+
+---
+
+### 4.3 Proactive Interrupts
+
+Let the brain surface insights to the user unprompted — not just when polled. When a high-confidence inference is stored, push a `notifications/insight` SSE event to active sessions.
+
+**Sketch:** `KnowledgeService::store_note()` triggers `SseNotifier::broadcast()` when `confidence > threshold`.
+
+---
+
+### 4.4 Self-Modifying Chains
+
+Allow the brain to edit its own `chains/*.yaml` and `schedules/*.yaml` files (via `write_codebase_doc`) based on observed chain failure patterns. The health-monitor schedule already collects failure data — add an analysis step that proposes chain edits.
+
+**Sketch:** `health-monitor.yaml` grows a `write_codebase_doc` step conditioned on failure rate thresholds.
+
+---
+
+### 4.5 Fine-Tuning Export Pipeline
+
+`digest_experiences` already exports JSONL. Complete the pipeline: automated train/eval split, upload to provider fine-tuning API, register the resulting model in `model_registry`.
+
+**Sketch:** New `SleepSkill` tool `submit_fine_tune_job` — reads JSONL from `DATASET_DIR`, calls Anthropic/OpenAI fine-tune API, polls status, calls `reload_models` on completion.
 
 ---
 

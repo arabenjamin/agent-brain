@@ -87,9 +87,34 @@ impl CodebaseSkill {
                     "max_lines": {
                         "type": "integer",
                         "description": "Maximum number of lines to return (default: 500)"
+                    },
+                    "prepend_context": {
+                        "type": "string",
+                        "description": "Optional text to prepend to the output before the file content — useful in chains where {{_prev}} carries prior step output that should be passed forward alongside the file."
                     }
                 },
                 "required": ["path"]
+            }),
+        }
+    }
+
+    fn write_codebase_doc_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "write_codebase_doc".to_string(),
+            description: "Write or overwrite a Markdown (.md) file in the codebase. Restricted to .md files only — cannot modify source code. Use this to update project-docs/, CLAUDE.md, README.md, schedules/, chains/, or contexts/ after the brain has reasoned about the correct new content.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to codebase root (e.g. 'project-docs/TODO.md'). Must end in .md."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Complete new file content to write."
+                    }
+                },
+                "required": ["path", "content"]
             }),
         }
     }
@@ -447,6 +472,7 @@ impl CodebaseSkill {
         struct Args {
             path: String,
             max_lines: Option<usize>,
+            prepend_context: Option<String>,
         }
         let args: Args = match parse_args(arguments) {
             Ok(a) => a,
@@ -468,7 +494,14 @@ impl CodebaseSkill {
         let truncated = total > max_lines;
         let shown = lines[..max_lines.min(total)].join("\n");
 
-        let mut out = format!("// File: {}\n{}", args.path, shown);
+        let mut out = String::new();
+        if let Some(ctx) = args.prepend_context
+            && !ctx.trim().is_empty()
+        {
+            out.push_str(&ctx);
+            out.push_str("\n\n---\n\n");
+        }
+        out.push_str(&format!("// File: {}\n{}", args.path, shown));
         if truncated {
             out.push_str(&format!(
                 "\n\n[... {} more lines truncated (total: {}) — use max_lines to read more ...]",
@@ -477,6 +510,48 @@ impl CodebaseSkill {
             ));
         }
         ToolCallResult::success_text(out)
+    }
+
+    async fn handle_write_codebase_doc(&self, arguments: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            content: String,
+        }
+        let args: Args = match parse_args(arguments) {
+            Ok(a) => a,
+            Err(e) => return e,
+        };
+
+        if !args.path.ends_with(".md") {
+            return ToolCallResult::error(
+                "write_codebase_doc only allows .md files — cannot modify source code",
+            );
+        }
+
+        let full_path = match self.safe_path(&args.path) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+
+        if let Some(parent) = full_path.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolCallResult::error(format!("Cannot create parent directory: {e}"));
+        }
+
+        if let Err(e) = tokio::fs::write(&full_path, &args.content).await {
+            return ToolCallResult::error(format!("Failed to write '{}': {e}", args.path));
+        }
+
+        let lines = args.content.lines().count();
+        info!(path = %args.path, lines, "write_codebase_doc: wrote file");
+        ToolCallResult::success_text(format!(
+            "Wrote {} ({} lines): {}",
+            args.path,
+            lines,
+            full_path.display()
+        ))
     }
 
     async fn handle_list_codebase_files(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -1228,6 +1303,7 @@ impl Skill for CodebaseSkill {
             Self::read_proposal_def(),
             Self::dismiss_proposal_def(),
             Self::write_proposal_def(),
+            Self::write_codebase_doc_def(),
             Self::analyze_own_structure_def(),
         ];
         if self.workspace_dir.is_some() {
@@ -1249,6 +1325,7 @@ impl Skill for CodebaseSkill {
             "read_proposal" => Some(self.handle_read_proposal(arguments).await),
             "dismiss_proposal" => Some(self.handle_dismiss_proposal(arguments).await),
             "write_proposal" => Some(self.handle_write_proposal(arguments).await),
+            "write_codebase_doc" => Some(self.handle_write_codebase_doc(arguments).await),
             "write_workspace_file" => Some(self.handle_write_workspace_file(arguments).await),
             "list_workspace_files" => Some(self.handle_list_workspace_files(arguments).await),
             "analyze_own_structure" => Some(self.handle_analyze_own_structure(arguments).await),

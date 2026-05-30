@@ -1339,22 +1339,21 @@ fn parse_adversarial_robustness(text: &str) -> f32 {
     let trimmed = text.trim();
     let json_start = trimmed.find('{').unwrap_or(0);
     let json_end = trimmed.rfind('}').map(|i| i + 1).unwrap_or(trimmed.len());
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[json_start..json_end]) {
-        if let Some(r) = v.get("overall_robustness").and_then(|x| x.as_f64()) {
-            return (r as f32).clamp(1.0, 5.0);
-        }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[json_start..json_end])
+        && let Some(r) = v.get("overall_robustness").and_then(|x| x.as_f64())
+    {
+        return (r as f32).clamp(1.0, 5.0);
     }
     // Fallback: look for `Robustness: N/5` or `overall_robustness: N`.
     for line in text.lines() {
         let lower = line.trim().to_lowercase();
-        if let Some(rest) = lower.strip_prefix("robustness:")
+        if let Some(rest) = lower
+            .strip_prefix("robustness:")
             .or_else(|| lower.strip_prefix("overall_robustness:"))
+            && let Some(n_str) = rest.trim().split('/').next()
+            && let Ok(n) = n_str.trim().parse::<f32>()
         {
-            if let Some(n_str) = rest.trim().split('/').next()
-                && let Ok(n) = n_str.trim().parse::<f32>()
-            {
-                return n.clamp(1.0, 5.0);
-            }
+            return n.clamp(1.0, 5.0);
         }
     }
     3.0

@@ -40,9 +40,7 @@
 
 - [ ] **Rhai scripting in procedure steps** — current conditionals (`on_failure`, `{{context.steps.N}}`) cover basic flow. Full Rhai embed enables arbitrary conditional logic in step args. Still deferred.
 
-- [ ] **`graph_query_endpoint` semantic search** — CONTAINS fallback works; upgrade to vector similarity via `endpoint_embeddings` index for better paraphrased queries. Low priority — endpoint search is rarely used day-to-day.
-
-- [ ] **`configure_scheduler` tool should expose `idle_sleep_after_ticks` / `sleep_interval_secs`** — `update_config()` already accepts them; verify the MCP tool schema includes them.
+- [x] **`configure_scheduler` tool exposes `idle_sleep_after_ticks` / `sleep_interval_secs`** — confirmed in `skills/scheduler.rs` lines 85-90; both fields in schema and handler.
 
 ---
 
@@ -64,14 +62,9 @@
 
 ## P3 — Infrastructure
 
-- [ ] **Create dev/test/prod branches** for CI pipeline (format + unit tests → integration tests → Docker build).
-  ```bash
-  git checkout -b dev && git push -u origin dev
-  git checkout -b test && git push -u origin test
-  git checkout -b prod && git push -u origin prod
-  ```
+- [x] **Create dev/test/prod branches** — all three branches exist on `origin` (dev, test, prod). CI pipeline wired.
 
-- [ ] **Docker Compose — add `hbi-frontend` service** — multi-stage Dockerfile (node:22 build → nginx:alpine serve); add to `docker-compose.yml`; expose on port 5173.
+- [x] **Docker Compose — add `hbi-frontend` service** — service defined in `docker-compose.yml` (line 83), multi-stage `Dockerfile` in `hbi-frontend/`.
 
 - [ ] **GHCR package visibility** — configure after first prod push.
 
@@ -79,10 +72,10 @@
 
 ## P3 — Documentation Debt
 
-- [ ] **Update ROADMAP.md** — Mark all Tier 1 and Tier 2 items complete; add Tier 3 items for next evolution (federated memory, plugin system, multimodal, etc.).
+- [x] **Update ROADMAP.md** — Tier 1/2/3 complete; Tier 4 evolution items added (federated memory, multimodal, proactive interrupts, self-modifying chains, fine-tuning pipeline).
 
-- [ ] **Add schema_version policy** to `project-docs/schema.md` — document how snapshot schema versions are bumped.
+- [x] **Add schema_version policy** to `project-docs/schema.md` — policy section added; documents how `init_schema()` serves as the migration script.
 
-- [ ] **`project-docs/architecture.md`** — add sequence diagram for job chain lifecycle (enqueue → park → unpark → complete).
+- [x] **`project-docs/architecture.md`** — skill registry table updated (16 skills, 61+ tools); job chain lifecycle ASCII diagram added; stale sections (SnapshotService, Self-Healing, vLLM) removed.
 
-- [ ] **`project-docs/tools.md`** — update tool count to 81; add `list_notes`, `search_by_entity`, `update_note` entries.
+- [x] **`project-docs/tools.md`** — full rewrite: removed deleted ApiSkill (14 tools); documents all 16 current skills with accurate tool lists and args.

@@ -1,0 +1,122 @@
+name: "Doc update: review recent git changes and sync project-docs"
+description: "Reads recent git history, then updates TODO.md and STATUS.md to reflect completed work, accurate tool counts, and any new backlog items inferred from commits."
+interval_seconds: 43200
+steps:
+  # Step flow and {{_prev}} chain:
+  #   1. get_git_log        → recent commit JSON (last 20 commits)
+  #   2. read_codebase_file → git log prepended to TODO.md content
+  #   3. reason             → complete updated TODO.md markdown
+  #   4. write_codebase_doc → writes project-docs/TODO.md
+  #   5. get_git_log        → recent commit JSON (restarted for STATUS chain)
+  #   6. read_codebase_file → git log prepended to STATUS.md content
+  #   7. reason             → complete updated STATUS.md markdown
+  #   8. write_codebase_doc → writes project-docs/STATUS.md
+  #   9. store_note         → records the update cycle
+
+  - tool_name: get_git_log
+    arguments:
+      n: 20
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: read_codebase_file
+    arguments:
+      path: "project-docs/TODO.md"
+      prepend_context: "RECENT GIT COMMITS:\n{{_prev}}\n"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        You are the agent brain's documentation maintainer. You have been given two pieces of information:
+
+        1. RECENT GIT COMMITS — a list of the last 20 commits to the codebase.
+        2. The current content of project-docs/TODO.md (below the separator).
+
+        Combined input:
+        {{_prev}}
+
+        Your job: produce the COMPLETE updated content of project-docs/TODO.md.
+
+        Rules:
+        - Mark items as complete (move to "Completed Phases" or add ✓) if the recent commits clearly implement them.
+        - Add new P2/P3 items if the commits introduce work that is partially done or implies follow-up.
+        - Remove items that are stale, obsolete, or already superseded by later work.
+        - Do NOT change the document structure (headings, P0/P1/P2/P3 sections).
+        - Do NOT invent items that are not grounded in the commits or existing backlog.
+        - Output ONLY the raw markdown content of the updated file — no explanation, no code fences.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: write_codebase_doc
+    arguments:
+      path: "project-docs/TODO.md"
+      content: "{{_prev}}"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: get_git_log
+    arguments:
+      n: 20
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: read_codebase_file
+    arguments:
+      path: "project-docs/STATUS.md"
+      prepend_context: "RECENT GIT COMMITS:\n{{_prev}}\n"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        You are the agent brain's documentation maintainer. You have been given:
+
+        1. RECENT GIT COMMITS — last 20 commits.
+        2. The current content of project-docs/STATUS.md (below the separator).
+
+        Combined input:
+        {{_prev}}
+
+        Your job: produce the COMPLETE updated content of project-docs/STATUS.md.
+
+        Rules:
+        - Update tool counts if commits add or remove tools (look for new tool definition functions or deletions).
+        - Update the "Last updated" date to today.
+        - Update LLM provider list if commits add or remove providers.
+        - Update the Skill Registry table if skills are added, removed, or have tool count changes.
+        - Do NOT change the document structure or headings.
+        - Do NOT invent capabilities that are not in the commits or current content.
+        - Output ONLY the raw markdown content of the updated file — no explanation, no code fences.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: write_codebase_doc
+    arguments:
+      path: "project-docs/STATUS.md"
+      content: "{{_prev}}"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "Doc update cycle complete on {{date}}. Updated project-docs/TODO.md and project-docs/STATUS.md based on last 20 git commits."
+      note_type: episodic
+      source_context: scheduled_doc_update
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

@@ -603,12 +603,13 @@ Respond with a JSON object only (no markdown, no explanation):
     fn adversarial_plan_review_def() -> ToolDefinition {
         ToolDefinition {
             name: "adversarial_plan_review".to_string(),
-            description: "Stress-test a proposed plan before execution by generating N adversarial \
+            description:
+                "Stress-test a proposed plan before execution by generating N adversarial \
                          failure scenarios. For each hypothesis the tool scores how well the plan \
                          handles it (1–5) and suggests a mitigation. Returns an overall robustness \
                          score and adjusted plan notes. Results are stored as a semantic note so \
                          future reviews benefit from accumulated failure-pattern knowledge."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -694,13 +695,14 @@ Respond with a JSON object only (no markdown, no explanation):
         let text = raw.trim();
         let json_start = text.find('{').unwrap_or(0);
         let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-        let parsed: Value = serde_json::from_str(&text[json_start..json_end]).unwrap_or_else(|_| {
-            json!({
-                "hypotheses": [],
-                "overall_robustness": 3.0,
-                "adjusted_plan_notes": text
-            })
-        });
+        let parsed: Value =
+            serde_json::from_str(&text[json_start..json_end]).unwrap_or_else(|_| {
+                json!({
+                    "hypotheses": [],
+                    "overall_robustness": 3.0,
+                    "adjusted_plan_notes": text
+                })
+            });
 
         let overall_robustness = parsed["overall_robustness"].as_f64().unwrap_or(3.0);
 

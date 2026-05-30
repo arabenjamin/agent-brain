@@ -4,25 +4,23 @@ Complete schema reference for both storage backends.
 
 ---
 
+## Schema Version Policy
+
+The Neo4j schema is initialised by `cargo run -- init-db` (`Neo4jClient::init_schema()`). There is no formal migration system — constraints and indexes use `CREATE IF NOT EXISTS`, so `init-db` is safe to re-run.
+
+When you add a new node type or index:
+1. Add the `CREATE CONSTRAINT` / `CREATE INDEX` statement to `init_schema()` in `repository/client.rs`.
+2. Re-run `cargo run -- init-db` against the running Neo4j instance.
+3. Update this file under the appropriate section.
+4. If the change removes a node type that existing deployments may have, document the manual Cypher cleanup here.
+
+There is no `schema_version` node — the schema is defined entirely by the Rust source. Treat `init_schema()` as the migration script.
+
+---
+
 ## DuckDB — Telemetry & Operational Data
 
 File path configured via `TELEMETRY_DB_PATH` env var. Schema is auto-initialised by `TelemetryClient::new()`.
-
-### `todos`
-
-Personal todo items managed by `TodoSkill`.
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | TEXT | PRIMARY KEY | UUID string |
-| `title` | TEXT | NOT NULL | Short summary |
-| `description` | TEXT | — | Extended detail (nullable) |
-| `status` | TEXT | NOT NULL, DEFAULT `'pending'` | `pending` \| `in_progress` \| `done` |
-| `priority` | INTEGER | NOT NULL, DEFAULT `2` | 0=urgent 1=high 2=normal 3=low |
-| `tags` | TEXT | NOT NULL, DEFAULT `'[]'` | JSON array of strings |
-| `due_at` | TEXT | — | RFC3339 deadline (nullable) |
-| `created_at` | TEXT | NOT NULL | RFC3339 |
-| `updated_at` | TEXT | NOT NULL | RFC3339 |
 
 ### `interactions`
 
@@ -229,16 +227,21 @@ HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; a
 | `default_headers` | String? | JSON object of default request headers |
 | `description` | String? | Human-readable summary |
 
-#### `SchedulerChain` *(planned)*
+#### `SchedulerChain`
 
-Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. Supports `{{task_id}}`, `{{goal}}`, `{{date}}` substitutions.
+Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. Seeded from `chains/*.yaml` by `init-db` (and auto-seeded on first scheduler tick if none exist). Supports `{{task_id}}`, `{{goal}}`, `{{date}}`, `{{file_slug}}` template substitutions in step arguments.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `pattern` | String | Keyword or regex matched against task goal |
-| `priority` | Integer | Default priority for the enqueued chain |
+| `name` | String | Unique chain name; MERGE key |
+| `pattern` | String | Primary CONTAINS keyword matched against task goal |
+| `patterns` | String? | JSON array of additional OR-matched keywords |
+| `priority` | Integer | Lower = matched first; default chain uses 9999 |
 | `steps` | String | JSON-encoded `Vec<ChainStep>` template |
 | `description` | String? | What this chain does |
+| `no_evaluator` | Boolean | If true, skip evaluator step even when task has `success_criteria` |
+| `no_adversarial` | Boolean | If true, skip adversarial pre-flight even when task has `success_criteria` |
+| `evaluation_rubric` | String? | Overrides `Task.success_criteria` as the evaluator goal text |
 
 ---
 
