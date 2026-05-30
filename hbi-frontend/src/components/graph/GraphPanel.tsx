@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import type { ForceGraphMethods } from "react-force-graph-2d";
 import { getBrainUrl, getApiKey } from "../../api/config";
@@ -61,17 +61,56 @@ interface SelectedNodeInfo {
   created_at?: string;
 }
 
-interface HoverTooltip {
-  x: number;
-  y: number;
-  node: GraphNode;
-}
-
 function fmtDate(s?: string): string {
   if (!s) return "";
   const d = new Date(s);
   if (isNaN(d.getTime())) return s.slice(0, 10);
   return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function NodeTooltip({ node, mousePos }: { node: GraphNode; mousePos: React.RefObject<{ x: number; y: number }> }) {
+  const [pos, setPos] = useState({ x: mousePos.current?.x ?? 0, y: mousePos.current?.y ?? 0 });
+
+  useEffect(() => {
+    let raf: number;
+    const tick = () => {
+      if (mousePos.current) setPos({ x: mousePos.current.x + 14, y: mousePos.current.y + 14 });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [mousePos]);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: pos.x,
+        top: pos.y,
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        padding: "6px 10px",
+        fontSize: 11,
+        pointerEvents: "none",
+        zIndex: 20,
+        maxWidth: 280,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+        lineHeight: 1.6,
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>{node.label.slice(0, 60)}</div>
+      <div style={{ color: "var(--text-muted)" }}>
+        <span style={{ marginRight: 8 }}>
+          {node.nodeType === "note" ? node.noteType ?? "note" : node.nodeType}
+        </span>
+        {node.createdAt && fmtDate(node.createdAt)}
+      </div>
+      <div style={{ fontFamily: "monospace", fontSize: 9, color: "var(--text-muted)", marginTop: 2, userSelect: "all" }}>
+        {node.id}
+      </div>
+    </div>
+  );
 }
 
 // ── Colour maps ───────────────────────────────────────────────────────────────
@@ -185,7 +224,8 @@ export default function GraphPanel() {
   const [selectedNode, setSelectedNode]   = useState<SelectedNodeInfo | null>(null);
   const [frozen, setFrozen]               = useState(false);
   const [controlsOpen, setControlsOpen]  = useState(false);
-  const [hoverTooltip, setHoverTooltip]   = useState<HoverTooltip | null>(null);
+  const [hoveredNode, setHoveredNode]     = useState<GraphNode | null>(null);
+  const mousePos = useRef({ x: 0, y: 0 });
 
   const fgRef        = useRef<ForceGraphMethods<GraphNode, GraphLink>>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -198,7 +238,14 @@ export default function GraphPanel() {
       setDims({ w: Math.floor(width), h: Math.floor(height) });
     });
     ro.observe(containerRef.current);
-    return () => ro.disconnect();
+
+    const el = containerRef.current;
+    const onMove = (e: MouseEvent) => {
+      const rect = el.getBoundingClientRect();
+      mousePos.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
+    el.addEventListener("mousemove", onMove);
+    return () => { ro.disconnect(); el.removeEventListener("mousemove", onMove); };
   }, []);
 
   // ── Computed view ─────────────────────────────────────────────────────────────
@@ -309,12 +356,8 @@ export default function GraphPanel() {
 
   // ── Node hover ───────────────────────────────────────────────────────────────
 
-  const handleNodeHover = useCallback((node: GraphNode | null, event?: MouseEvent) => {
-    if (!node || !event) { setHoverTooltip(null); return; }
-    const rect = containerRef.current?.getBoundingClientRect();
-    const x = event.clientX - (rect?.left ?? 0) + 12;
-    const y = event.clientY - (rect?.top ?? 0) + 12;
-    setHoverTooltip({ x, y, node });
+  const handleNodeHover = useCallback((node: GraphNode | null) => {
+    setHoveredNode(node ?? null);
   }, []);
 
   // ── Node painter ──────────────────────────────────────────────────────────────
@@ -583,37 +626,8 @@ export default function GraphPanel() {
         />
 
         {/* ── Hover tooltip ── */}
-        {hoverTooltip && (
-          <div
-            style={{
-              position: "absolute",
-              left: hoverTooltip.x,
-              top: hoverTooltip.y,
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              padding: "6px 10px",
-              fontSize: 11,
-              pointerEvents: "none",
-              zIndex: 20,
-              maxWidth: 280,
-              boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-              lineHeight: 1.6,
-            }}
-          >
-            <div style={{ fontWeight: 600, marginBottom: 2 }}>{hoverTooltip.node.label.slice(0, 60)}</div>
-            <div style={{ color: "var(--text-muted)" }}>
-              <span style={{ marginRight: 8 }}>
-                {hoverTooltip.node.nodeType === "note"
-                  ? hoverTooltip.node.noteType ?? "note"
-                  : hoverTooltip.node.nodeType}
-              </span>
-              {hoverTooltip.node.createdAt && fmtDate(hoverTooltip.node.createdAt)}
-            </div>
-            <div style={{ fontFamily: "monospace", fontSize: 9, color: "var(--text-muted)", marginTop: 2, userSelect: "all" }}>
-              {hoverTooltip.node.id}
-            </div>
-          </div>
+        {hoveredNode && (
+          <NodeTooltip node={hoveredNode} mousePos={mousePos} />
         )}
 
         {/* ── Node detail overlay ── */}
