@@ -268,11 +268,14 @@ impl KnowledgeSkill {
             .await
         {
             Ok((id, links_created)) => {
+                // "answer" echoes the stored content so downstream {{_prev}} steps
+                // (e.g. notify_user after store_note) receive the original text, not metadata JSON.
                 let response = json!({
                     "success": true,
                     "id": id,
                     "links_created": links_created,
-                    "message": "Note stored successfully"
+                    "message": "Note stored successfully",
+                    "answer": input.content
                 });
                 ToolCallResult::success_json(response)
             }

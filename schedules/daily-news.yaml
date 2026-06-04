@@ -40,10 +40,20 @@ steps:
         ## STORY TO WATCH
 
         3-4 bullets per section. Cite sources with URLs. Flag notable spin or framing with ⚠️.
+        Do not output JSON or any code fences. Write in plain prose with Markdown headings only.
       context: "{{_prev}}"
       store_inference: false
     priority: 2
     max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "{{_prev}}"
+      note_type: news
+      source_context: scheduled_daily_news_brief
+    priority: 1
+    max_attempts: 2
     provider_hint: ollama
 
   - tool_name: notify_user
@@ -60,15 +70,6 @@ steps:
       session_id: "news-{{date}}"
       content: "{{_prev}}"
       role: assistant
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: store_note
-    arguments:
-      content: "{{_prev}}"
-      note_type: news
-      source_context: scheduled_daily_news_brief
     priority: 1
     max_attempts: 2
     provider_hint: ollama

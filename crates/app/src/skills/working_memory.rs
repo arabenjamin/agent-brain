@@ -209,10 +209,13 @@ impl WorkingMemorySkill {
             .await
         {
             Ok(turn_index) => {
+                // "answer" echoes the pushed content so downstream {{_prev}} steps
+                // (e.g. store_note) receive the original text instead of metadata JSON.
                 let response = json!({
                     "id": entry_id,
                     "turn_index": turn_index,
-                    "session_id": input.session_id
+                    "session_id": input.session_id,
+                    "answer": input.content
                 });
                 ToolCallResult::success_json(response)
             }
