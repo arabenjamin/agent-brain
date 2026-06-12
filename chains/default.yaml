@@ -13,7 +13,8 @@ steps:
 
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
+      question: "{{goal}}\n\nThe CONTEXT contains related notes retrieved from the knowledge graph. Use them as your primary evidence; say so explicitly if they are insufficient."
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

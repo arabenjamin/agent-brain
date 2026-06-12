@@ -66,8 +66,9 @@ steps:
         You are reviewing the operational performance of a scheduled brain task.
         Goal / schedule name: {{goal}}
 
-        Data gathered (schedule metadata, recent run records, job outcomes, related notes):
-        {{_prev}}
+        The CONTEXT contains the notes gathered from recent runs (earlier
+        steps' run-record and metadata queries inform the graph, but only the
+        immediately previous step's output is passed forward).
 
         Write a structured performance review covering:
         1. **Run cadence** — is it firing on schedule? Any missed runs?
@@ -77,6 +78,7 @@ steps:
         5. **Recommendations** — one or two concrete improvements to the schedule or its chain steps.
 
         Be specific and data-driven. If data is missing, say so rather than speculating.
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

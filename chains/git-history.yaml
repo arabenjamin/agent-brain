@@ -24,7 +24,8 @@ steps:
 
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
+      question: "{{goal}}\n\nThe CONTEXT contains the recent git diff. Base your analysis ONLY on the CONTEXT."
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

@@ -5,28 +5,46 @@ patterns:
   - "study"
   - "understand"
 priority: 50
-description: "Learning / research: search existing knowledge, reason over it, persist new knowledge."
+description: "Learning / research: search the web for current information, reason over the gathered material, persist a sourced semantic note."
 steps:
-  - tool_name: search_notes
+  # Step flow and {{_prev}} chain:
+  #   1. search_web → external results (the graph can't answer a research goal
+  #                   about material it doesn't contain — re-chewing internal
+  #                   notes produced meta-commentary the evaluator rejected)
+  #   2. reason     → facts grounded ONLY in the gathered results
+  #                   (context pins the prompt; without it reason RAGs the graph)
+  #   3. store_note → durable semantic note that satisfies research
+  #                   success_criteria ("concrete, verifiable facts")
+  - tool_name: search_web
     arguments:
       query: "{{goal}}"
-      limit: 10
+      count: 8
     priority: 1
     max_attempts: 3
     provider_hint: ollama
 
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
-      store_inference: true
+      question: |
+        Research goal: {{goal}}
+
+        The CONTEXT contains web search results gathered for this goal. Based
+        ONLY on the CONTEXT, write the concrete, verifiable findings that answer
+        the research goal. Name the topic explicitly. Cite source URLs for each
+        claim. Do NOT describe your process or the nature of the task — state
+        the facts themselves. If the results are insufficient to answer, say
+        exactly what is missing instead of speculating.
+      context: "{{_prev}}"
+      store_inference: false
     priority: 1
     max_attempts: 3
     provider_hint: ollama
 
-  - tool_name: synthesize_knowledge
+  - tool_name: store_note
     arguments:
-      topic: "{{goal}}"
-      limit: 10
+      content: "## Research: {{goal}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: learn_chain
     priority: 1
     max_attempts: 3
     provider_hint: ollama

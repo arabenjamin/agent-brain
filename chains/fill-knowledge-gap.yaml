@@ -14,9 +14,10 @@ steps:
 
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
-      action: structured
-      store_inference: true
+      # action=structured has no context support — use the default grounded path.
+      question: "{{goal}}\n\nThe CONTEXT contains existing notes related to this gap. Synthesize what is known, state what remains unknown, and answer the gap as concretely as the evidence allows."
+      context: "{{_prev}}"
+      store_inference: false
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -24,7 +25,7 @@ steps:
 
   - tool_name: store_note
     arguments:
-      content: "Gap synthesis: {{goal}}"
+      content: "## Gap synthesis: {{goal}}\n\n{{_prev}}"
       note_type: semantic
       provenance: synthesis_inference
     priority: 1

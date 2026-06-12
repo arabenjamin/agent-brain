@@ -30,7 +30,11 @@ steps:
 
   - tool_name: reason
     arguments:
-      question: "{{goal}} — Based on the codebase search results and historical failure notes, identify the root cause. Structure your response as: DIAGNOSIS: <root cause> | AFFECTED_FILE: <path or unknown> | PROPOSED_FIX: <description of the fix> | SEVERITY: <low|medium|high>"
+      # context carries the failure/outcome notes from the previous step
+      # ({{_prev}} holds only the immediately preceding step's output, so the
+      # codebase search results are summarized into graph notes, not passed).
+      question: "{{goal}} — The CONTEXT contains historical failure and outcome notes. Based ONLY on the CONTEXT, identify the root cause. Structure your response as: DIAGNOSIS: <root cause> | AFFECTED_FILE: <path or unknown> | PROPOSED_FIX: <description of the fix> | SEVERITY: <low|medium|high>"
+      context: "{{_prev}}"
       store_inference: true
     priority: 2
     max_attempts: 3
@@ -41,7 +45,7 @@ steps:
     arguments:
       title: "Fix: {{goal}}"
       task_id: "{{task_id}}"
-      diagnosis: "See inference note stored by previous reasoning step."
+      diagnosis: "{{_prev}}"
       affected_file: unknown
       proposed_fix: "Review the stored inference note for the full diagnosis and proposed fix."
       severity: medium

@@ -23,7 +23,10 @@ steps:
 
   - tool_name: reason
     arguments:
-      question: "Based on the codebase structure and recent commits, what are the key architectural patterns, current capabilities, and areas for improvement?"
+      # context carries the git log from the previous step; without it reason
+      # RAGs the graph and answers from stale notes instead of the live data.
+      question: "The CONTEXT contains the recent commit log. Based ONLY on the CONTEXT and the codebase structure note stored by the earlier analysis step, what are the key architectural patterns, current capabilities, and areas for improvement?"
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

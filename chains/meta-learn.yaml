@@ -22,14 +22,15 @@ steps:
 
         GOAL: {{goal}}
 
-        Based on the search results above:
+        Based ONLY on the failure evidence in the CONTEXT:
         1. ANALYZE: What failure pattern is emerging? What do the failures have in common?
         2. HYPOTHESIZE: Form a specific, testable hypothesis about the root cause.
         3. TEST: Propose a concrete, observable test that would confirm or refute the hypothesis.
         4. INTEGRATE: What change to tooling, documentation, or procedure would prevent recurrence?
 
         Structure your response clearly with these four headings.
-      store_inference: true
+      context: "{{_prev}}"
+      store_inference: false
     priority: 2
     max_attempts: 3
     provider_hint: ollama

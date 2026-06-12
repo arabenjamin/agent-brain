@@ -16,7 +16,8 @@ steps:
 
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
+      question: "{{goal}}\n\nThe CONTEXT contains related notes from the knowledge graph. Base the review ONLY on the CONTEXT; say so explicitly if it is insufficient."
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

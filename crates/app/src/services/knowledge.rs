@@ -1612,6 +1612,44 @@ impl KnowledgeService {
         Ok((answer, inferences, confidence, gaps, inference_note_id))
     }
 
+    /// Store an inference note for a context-grounded `reason()` call.
+    /// Unlike the RAG path there are no retrieved source notes, so no
+    /// DERIVED_FROM edges are created. Returns the note id on success.
+    pub async fn store_context_inference(
+        &self,
+        question: &str,
+        answer: &str,
+        inferences: &[String],
+    ) -> Option<String> {
+        let inference_content = format!(
+            "Q: {}\n\nAnswer: {}\n\nInferences:\n{}",
+            question,
+            answer,
+            inferences
+                .iter()
+                .enumerate()
+                .map(|(i, inf)| format!("{}. {}", i + 1, inf))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        match self
+            .store_note_raw(
+                &inference_content,
+                Some("inference"),
+                Some("reason"),
+                None,
+                Some(ProvenanceFlag::SynthesisInference),
+            )
+            .await
+        {
+            Ok((id, _)) => Some(id),
+            Err(e) => {
+                warn!("Failed to store context inference note: {}", e);
+                None
+            }
+        }
+    }
+
     /// Structured variant of `reason()` — returns a typed `ReasonOutput` with source refs,
     /// caveats, follow-up questions, and optional adversarial critic pass.
     /// The existing `reason()` is unchanged for backward compatibility with scheduler chains.
@@ -2611,6 +2649,15 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
             provenance,
         )
         .await
+    }
+
+    async fn store_context_inference(
+        &self,
+        question: &str,
+        answer: &str,
+        inferences: &[String],
+    ) -> Option<String> {
+        KnowledgeService::store_context_inference(self, question, answer, inferences).await
     }
 
     async fn search_notes(

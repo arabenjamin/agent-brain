@@ -14,17 +14,22 @@ steps:
     max_attempts: 3
     provider_hint: ollama
 
+  # Draft → refine: the first reason drafts a plan from the retrieved notes,
+  # the second critiques and finalises it. Previously both steps were the
+  # identical ungrounded question, run twice.
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
-      store_inference: true
+      question: "Draft a prioritised plan for: {{goal}}\n\nThe CONTEXT contains related notes from the knowledge graph — use them as your evidence."
+      context: "{{_prev}}"
+      store_inference: false
     priority: 1
     max_attempts: 3
     provider_hint: ollama
 
   - tool_name: reason
     arguments:
-      question: "{{goal}}"
+      question: "The CONTEXT contains a draft prioritised plan for: {{goal}}. Critique it for missing dependencies, wrong ordering, and vague items, then produce the final improved plan."
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

@@ -595,15 +595,38 @@ Respond with a JSON object only (no markdown, no explanation):
                             let text = text_resp.trim();
                             let json_start = text.find('{').unwrap_or(0);
                             let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-                            let parsed: Value = serde_json::from_str(&text[json_start..json_end])
-                                .unwrap_or_else(|_| {
-                                    json!({
-                                        "answer": text,
-                                        "inferences": [],
-                                        "confidence": 0.5,
-                                        "gaps": []
+                            let mut parsed: Value = serde_json::from_str(
+                                &text[json_start..json_end],
+                            )
+                            .unwrap_or_else(|_| {
+                                json!({
+                                    "answer": text,
+                                    "inferences": [],
+                                    "confidence": 0.5,
+                                    "gaps": []
+                                })
+                            });
+                            // The context path must honor store_inference like the
+                            // RAG path does — scheduler chains rely on the inference
+                            // note as their durable output artifact.
+                            if input.store_inference {
+                                let answer = parsed["answer"].as_str().unwrap_or(text).to_string();
+                                let inferences: Vec<String> = parsed["inferences"]
+                                    .as_array()
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect()
                                     })
-                                });
+                                    .unwrap_or_default();
+                                if let Some(id) = self
+                                    .svc
+                                    .store_context_inference(&input.question, &answer, &inferences)
+                                    .await
+                                {
+                                    parsed["id"] = json!(id);
+                                }
+                            }
                             ToolCallResult::success_json(parsed)
                         }
                         Err(e) => ToolCallResult::error(format!("Reasoning failed: {}", e)),
