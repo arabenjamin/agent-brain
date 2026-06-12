@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::repository::TelemetryClient;
-use crate::services::queue::USE_LOCAL_LLM;
+use crate::services::queue::{SELECTED_LLM, USE_LOCAL_LLM};
 use crate::services::traits::LlmProvider;
 use crate::services::{LlmClient, LlmConfig};
 
@@ -58,15 +58,28 @@ impl SharedLlm {
 #[async_trait]
 impl LlmProvider for SharedLlm {
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String> {
+        // Routing precedence: capability-selected model (per-step router) >
+        // local pin (background jobs) > active config.
+        let selected = SELECTED_LLM.try_with(|v| v.clone()).unwrap_or(None);
         let use_local = USE_LOCAL_LLM.try_with(|&v| v).unwrap_or(false);
-        let cfg_arc = if use_local {
+        let (llm, is_local_route) = if let Some(sel) = selected {
+            debug!(model = %sel.model, "SharedLlm: routing generate() to capability-selected model");
+            let local = matches!(sel.provider, crate::services::LlmProviderType::Ollama);
+            (sel, local)
+        } else if use_local {
             debug!("SharedLlm: routing generate() to local Ollama (USE_LOCAL_LLM=true)");
-            &self.local_config
+            let config = self.local_config.read().await.clone();
+            (
+                config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?,
+                true,
+            )
         } else {
-            &self.config
+            let config = self.config.read().await.clone();
+            (
+                config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?,
+                false,
+            )
         };
-        let config = cfg_arc.read().await.clone();
-        let llm = config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?;
         let model_name = llm.model.clone();
         let client =
             LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
@@ -77,8 +90,10 @@ impl LlmProvider for SharedLlm {
             .map_err(|e| anyhow::anyhow!("{}", e));
         let duration_ms = start.elapsed().as_millis() as i64;
 
-        // If the cloud call was rate-limited, fall back to local Ollama before giving up.
-        if !use_local
+        // If a cloud call was rate-limited, fall back to local Ollama before
+        // giving up — applies to both the active config and capability-selected
+        // cloud models.
+        if !is_local_route
             && let Err(ref e) = result
             && is_rate_limited(e)
         {

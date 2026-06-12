@@ -28,6 +28,12 @@ tokio::task_local! {
     /// endpoint instead of the active (possibly cloud) model, preventing background
     /// maintenance jobs from consuming cloud quota.
     pub static USE_LOCAL_LLM: bool;
+
+    /// Per-step model override resolved from `ChainStep.required_capabilities`
+    /// by the model router (Phase 1 of the Agent Constructor plan).
+    /// Takes precedence over `USE_LOCAL_LLM` in `SharedLlm` — a step that
+    /// explicitly requires capabilities has earned its routing.
+    pub static SELECTED_LLM: Option<crate::services::LlmConfig>;
 }
 
 use serde::Deserialize;
@@ -131,6 +137,13 @@ pub struct ChainStep {
     /// `__adversarial_task_id` in job args.
     #[serde(default)]
     pub adversarial_task_id: Option<String>,
+    /// Capabilities this step's LLM calls require (e.g. `["reasoning"]`).
+    /// When set, the model router picks the cheapest catalog model that
+    /// satisfies them within the active `CLOUD_TIER` and the job's LLM calls
+    /// route to it. Stored as `__required_capabilities` in the job args.
+    /// When nothing qualifies the step falls back to normal routing.
+    #[serde(default)]
+    pub required_capabilities: Option<Vec<String>>,
 }
 
 impl ChainStep {
@@ -338,6 +351,22 @@ impl QueueService {
                 Some(a)
             } else {
                 step.arguments.clone()
+            };
+
+            // Inject required_capabilities for any step kind — the model router
+            // reads it at execution time; tools ignore it via serde defaults.
+            let effective_args: Option<serde_json::Value> = match &step.required_capabilities {
+                Some(caps) if !caps.is_empty() => {
+                    let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                    if let serde_json::Value::Object(ref mut m) = a {
+                        m.insert(
+                            "__required_capabilities".to_string(),
+                            serde_json::json!(caps),
+                        );
+                    }
+                    Some(a)
+                }
+                _ => effective_args,
             };
 
             let id = if i == 0 {
@@ -906,11 +935,41 @@ impl QueueService {
             _ => job.arguments.clone(),
         };
 
-        // Run the tool call inside a task-local scope so `SharedLlm` can detect
-        // background jobs and route to the local Ollama endpoint when appropriate.
+        // Per-step model routing: when the step declared required_capabilities,
+        // resolve a model within the active cloud tier. Falls back to normal
+        // routing (None) when nothing qualifies or telemetry is unavailable.
+        let selected_llm: Option<crate::services::LlmConfig> = job
+            .arguments
+            .as_ref()
+            .and_then(|a| a.get("__required_capabilities"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.as_str().map(String::from))
+                    .collect::<Vec<String>>()
+            })
+            .filter(|caps| !caps.is_empty())
+            .and_then(|caps| {
+                handler.telemetry().and_then(|tc| {
+                    // Base config only contributes timeout/temperature defaults;
+                    // provider, model, URL, and key are set by the router.
+                    crate::services::model_router::resolve_model_config(
+                        tc,
+                        &caps,
+                        &crate::services::LlmConfig::default(),
+                    )
+                })
+            });
+
+        // Run the tool call inside task-local scopes so `SharedLlm` can route:
+        // SELECTED_LLM (capability-resolved) takes precedence over USE_LOCAL_LLM
+        // (background default), which takes precedence over the active config.
         let use_local = job.provider_hint.as_deref() == Some("ollama");
-        let result = USE_LOCAL_LLM
-            .scope(use_local, handler.execute(&job.tool_name, resolved_args))
+        let result = SELECTED_LLM
+            .scope(
+                selected_llm,
+                USE_LOCAL_LLM.scope(use_local, handler.execute(&job.tool_name, resolved_args)),
+            )
             .await;
         // Drop the read lock before any awaits below.
         drop(handler_guard);

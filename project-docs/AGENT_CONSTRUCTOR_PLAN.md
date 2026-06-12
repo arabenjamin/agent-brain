@@ -141,9 +141,16 @@ Fix scope:
 ## Phasing
 
 - **0a. Usage accounting** — above. Trust gate for any cloud autonomy.
+  ✅ implemented + live-verified 2026-06-12.
 - **0b. Self-model sync** — introspection meta-graph. No behavior change.
+  ✅ implemented 2026-06-12 (`services/self_model.rs`).
 - **1. Per-step model selection** — `ChainStep.required_capabilities`,
-  resolved by `ModelSelector` at dispatch within the active tier.
+  resolved at execution within the active `CLOUD_TIER` (default 1).
+  ✅ implemented 2026-06-13 (`services/model_router.rs`, `SELECTED_LLM`
+  task-local in queue.rs, precedence selected > local-pin > active in
+  SharedLlm; learn chain's reason step is the first consumer). Known
+  limitation: semaphore selection still follows `provider_hint`, so a
+  capability-routed cloud call runs under the ollama semaphore.
 - **2. `construct_agent` tool** — LLM-planned AgentSpec constrained to
   the self-model; Tier 1 model for the planning call itself.
 - **3. Learning loop** — PERFORMED edges, reuse-before-construct,

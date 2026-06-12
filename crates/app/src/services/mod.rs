@@ -4,6 +4,7 @@ pub mod knowledge;
 pub mod llm;
 pub mod llm_providers;
 pub mod model_config;
+pub mod model_router;
 pub mod procedure_executor;
 pub mod queue;
 pub mod resource_registry;

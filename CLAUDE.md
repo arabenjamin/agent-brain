@@ -84,6 +84,7 @@ Copy `.env.example` to `.env` and configure:
 | `BRAVE_API_KEY` | - | Brave Search API key for `search_web` tool |
 | `GOOGLE_API_KEY` | - | Google Custom Search API key for `search_web` tool |
 | `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
+| `CLOUD_TIER` | `1` | Cloud autonomy tier for per-step model routing. `0` = local Ollama only; `1` = local + $0-cost Ollama Cloud models (needs `OLLAMA_API_KEY`); `2` = any provider with a configured key ("income mode") |
 | `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
 | `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and force-refreshed on the first scheduler tick after every startup (YAML edits propagate on restart) |
@@ -344,6 +345,8 @@ steps: [...]            # array of ChainStep-compatible objects
 ```
 
 Template variables in step `arguments`: `{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}` (slug derived from goal, used by UI chain for workspace file path).
+
+**Per-step model routing (Phase 1):** a step may declare `required_capabilities: ["reasoning", ...]`. At execution the model router (`services/model_router.rs`) picks the cheapest catalog model satisfying them within `CLOUD_TIER` (ties broken by largest context window) and the job's LLM calls route to it via the `SELECTED_LLM` task-local (precedence: capability-selected > `USE_LOCAL_LLM` background pin > active config). Cloud calls keep the 429→local fallback and land in the usage ledger. If no catalog model qualifies the step silently keeps normal routing. Metadata travels as `__required_capabilities` in job args (serde-ignored by tools).
 
 The **UI chain** (`chains/ui-frontend.yaml`) matches frontend keywords, writes to `workspace/ui/{{file_slug}}.md`, and sets `no_evaluator: true`.
 

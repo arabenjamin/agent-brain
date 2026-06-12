@@ -91,6 +91,12 @@ impl ToolHandler {
         }
     }
 
+    /// Telemetry handle for callers that need catalog access at execution
+    /// time (the queue's per-step model router).
+    pub fn telemetry(&self) -> Option<&TelemetryClient> {
+        self.telemetry.as_ref()
+    }
+
     /// Attach a telemetry client to log every tool call.
     pub fn with_telemetry(mut self, telemetry: TelemetryClient) -> Self {
         self.telemetry = Some(telemetry);

@@ -39,6 +39,10 @@ steps:
     priority: 1
     max_attempts: 3
     provider_hint: ollama
+    # Higher-order step: synthesis over web results benefits from a stronger
+    # model. The router picks the best catalog match within CLOUD_TIER
+    # (tier 1 default → free Ollama Cloud models; tier 0 → largest local).
+    required_capabilities: ["reasoning"]
 
   - tool_name: store_note
     arguments:
