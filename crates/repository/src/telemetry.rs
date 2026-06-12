@@ -449,8 +449,12 @@ impl TelemetryClient {
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
 
-        let window_clause = if window_hours.is_some() {
-            "created_at >= now() - to_hours(?)"
+        // Compute the cutoff in Rust — DuckDB's TIMESTAMPTZ minus INTERVAL
+        // binding is version-dependent, a literal timestamp comparison is not.
+        let cutoff: Option<String> =
+            window_hours.map(|h| (Utc::now() - chrono::Duration::hours(h)).to_rfc3339());
+        let window_clause = if cutoff.is_some() {
+            "created_at >= CAST(? AS TIMESTAMPTZ)"
         } else {
             "1 = 1"
         };
@@ -487,8 +491,8 @@ impl TelemetryClient {
                     row.get::<_, Option<i64>>(8)?,
                 ))
             };
-            let collected: Vec<_> = if let Some(h) = window_hours {
-                stmt.query_map(params![h], map_row)?
+            let collected: Vec<_> = if let Some(ref c) = cutoff {
+                stmt.query_map(params![c], map_row)?
                     .filter_map(|r| r.ok())
                     .collect()
             } else {
@@ -541,8 +545,8 @@ impl TelemetryClient {
              WHERE model_name = ? AND {window_clause}"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = if let Some(h) = window_hours {
-            stmt.query(params![name, h])?
+        let mut rows = if let Some(ref c) = cutoff {
+            stmt.query(params![name, c])?
         } else {
             stmt.query(params![name])?
         };
