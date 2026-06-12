@@ -74,16 +74,26 @@ pub fn resolve_model_config(
     let has_anthropic_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
     let has_gemini_key = std::env::var("GEMINI_API_KEY").is_ok();
 
+    // Observed availability: the catalog says what *should* be free, the
+    // ledger records what the provider actually served. A model that recently
+    // returned "subscription_required" (Ollama Cloud's undocumented paid
+    // tier) is skipped for a week rather than retried into dead-letter.
+    let unavailable = telemetry
+        .models_with_recent_errors("subscription_required", 24 * 7)
+        .unwrap_or_default();
+
     let chosen = candidates.iter().find(|c| {
-        candidate_allowed(
-            c["provider"].as_str().unwrap_or(""),
-            c["cost_per_1k_input"].as_f64().unwrap_or(f64::MAX),
-            c["cost_per_1k_output"].as_f64().unwrap_or(f64::MAX),
-            tier,
-            has_ollama_key,
-            has_anthropic_key,
-            has_gemini_key,
-        )
+        let model = c["model"].as_str().unwrap_or("");
+        !unavailable.iter().any(|u| u == model)
+            && candidate_allowed(
+                c["provider"].as_str().unwrap_or(""),
+                c["cost_per_1k_input"].as_f64().unwrap_or(f64::MAX),
+                c["cost_per_1k_output"].as_f64().unwrap_or(f64::MAX),
+                tier,
+                has_ollama_key,
+                has_anthropic_key,
+                has_gemini_key,
+            )
     })?;
 
     let provider = chosen["provider"].as_str().unwrap_or("ollama");

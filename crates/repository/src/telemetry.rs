@@ -441,6 +441,23 @@ impl TelemetryClient {
         Ok(())
     }
 
+    /// Model names with a given `error_kind` recorded in the last `hours`.
+    /// The model router uses this as observed availability: a model that
+    /// recently returned "subscription_required" is skipped at selection.
+    pub fn models_with_recent_errors(&self, error_kind: &str, hours: i64) -> Result<Vec<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let cutoff = (Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT model_name FROM model_usage
+             WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
+        )?;
+        let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// Get aggregated usage statistics for a model.
     ///
     /// `window_hours` restricts the aggregation to the last N hours — quota

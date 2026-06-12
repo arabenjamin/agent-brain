@@ -124,4 +124,12 @@ impl TelemetryClient {
     ) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::json!({ "models": [] }))
     }
+
+    pub fn models_with_recent_errors(
+        &self,
+        _error_kind: &str,
+        _hours: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(vec![])
+    }
 }

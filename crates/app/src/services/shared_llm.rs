@@ -90,16 +90,23 @@ impl LlmProvider for SharedLlm {
             .map_err(|e| anyhow::anyhow!("{}", e));
         let duration_ms = start.elapsed().as_millis() as i64;
 
-        // If a cloud call was rate-limited, fall back to local Ollama before
-        // giving up — applies to both the active config and capability-selected
-        // cloud models.
-        if !is_local_route
-            && let Err(ref e) = result
-            && is_rate_limited(e)
-        {
-            warn!("SharedLlm: cloud LLM rate-limited, falling back to local Ollama");
-            // Record the failed cloud call FIRST — rate-limit events are the
-            // primary quota-pressure signal and must not vanish from the ledger.
+        // If a cloud call was rate-limited OR rejected as subscription-only
+        // (Ollama Cloud's free tier is undocumented — 403 "requires a
+        // subscription" is how we learn a model isn't free), fall back to
+        // local Ollama before giving up. Applies to both the active config
+        // and capability-selected cloud models.
+        let unavailable_kind = match &result {
+            Err(e) if is_rate_limited(e) => Some("rate_limited"),
+            Err(e) if is_subscription_required(e) => Some("subscription_required"),
+            _ => None,
+        };
+        if !is_local_route && let Some(kind) = unavailable_kind {
+            warn!(
+                error_kind = kind,
+                "SharedLlm: cloud LLM unavailable, falling back to local Ollama"
+            );
+            // Record the failed cloud call FIRST — these events are how the
+            // model router learns observed availability; they must not vanish.
             if let Some(ref tc) = self.telemetry {
                 let _ = tc.record_model_usage(
                     &model_name,
@@ -108,7 +115,7 @@ impl LlmProvider for SharedLlm {
                     Some(duration_ms),
                     None,
                     None,
-                    Some("rate_limited"),
+                    Some(kind),
                 );
             }
             if let Some(local_llm) = self.local_config.read().await.clone() {
@@ -184,6 +191,13 @@ impl LlmProvider for SharedLlm {
 fn is_rate_limited(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
     msg.contains("429") || msg.contains("Too Many Requests") || msg.contains("usage limit")
+}
+
+/// Returns true if a cloud provider rejected the model as paid-only
+/// (observed from Ollama Cloud: HTTP 403 "this model requires a subscription").
+fn is_subscription_required(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("requires a subscription") || msg.contains("403 Forbidden")
 }
 
 /// Extract (tokens_in, tokens_out) from a generate result for telemetry.
