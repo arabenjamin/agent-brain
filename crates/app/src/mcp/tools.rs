@@ -49,6 +49,15 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Return each skill's name with its full tool definitions.
+    /// Used by the self-model sync to attribute ToolDef nodes to skills.
+    pub fn skills_with_tools(&self) -> Vec<(String, Vec<ToolDefinition>)> {
+        self.skills
+            .iter()
+            .map(|s| (s.name().to_string(), s.tools()))
+            .collect()
+    }
+
     /// Get a tool definition by name.
     pub fn get(&self, name: &str) -> Option<ToolDefinition> {
         for skill in &self.skills {

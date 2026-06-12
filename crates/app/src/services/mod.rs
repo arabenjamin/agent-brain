@@ -10,6 +10,7 @@ pub mod resource_registry;
 pub mod schedule_seeder;
 pub mod scheduler;
 pub mod secrets;
+pub mod self_model;
 pub mod shared_llm;
 pub mod sleep;
 pub mod snapshot;

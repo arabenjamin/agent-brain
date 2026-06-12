@@ -810,6 +810,27 @@ impl BrainCore {
         if let Some(qs) = queue_arc {
             QueueService::spawn_coordinator(qs);
         }
+
+        // Sync the self-model meta-graph (ToolDef / ContextProfile / ModelDef)
+        // now that the registry is fully populated. Non-fatal: a missing
+        // self-model degrades the Agent Constructor, not the brain.
+        if let Some(ref neo4j) = self.storage.neo4j {
+            let skills_with_tools = self.tool_registry.read().await.skills_with_tools();
+            let profiles = match context_builder_arc {
+                Some(ref cb) => cb.list_profiles().await,
+                None => Vec::new(),
+            };
+            if let Err(e) = crate::services::self_model::sync_self_model(
+                neo4j,
+                &skills_with_tools,
+                &profiles,
+                self.storage.telemetry.as_ref(),
+            )
+            .await
+            {
+                warn!(error = %e, "Self-model sync failed (continuing without it)");
+            }
+        }
     }
 
     // ========================================================================
