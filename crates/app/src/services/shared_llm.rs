@@ -83,6 +83,19 @@ impl LlmProvider for SharedLlm {
             && is_rate_limited(e)
         {
             warn!("SharedLlm: cloud LLM rate-limited, falling back to local Ollama");
+            // Record the failed cloud call FIRST — rate-limit events are the
+            // primary quota-pressure signal and must not vanish from the ledger.
+            if let Some(ref tc) = self.telemetry {
+                let _ = tc.record_model_usage(
+                    &model_name,
+                    None,
+                    false,
+                    Some(duration_ms),
+                    None,
+                    None,
+                    Some("rate_limited"),
+                );
+            }
             if let Some(local_llm) = self.local_config.read().await.clone() {
                 let local_model = local_llm.model.clone();
                 let local_client = LlmClient::with_config(local_llm)
@@ -95,12 +108,14 @@ impl LlmProvider for SharedLlm {
                 let local_duration_ms = local_start.elapsed().as_millis() as i64;
                 if let Some(ref tc) = self.telemetry {
                     let success = local_result.is_ok();
+                    let (tin, tout) = response_tokens(&local_result);
                     let _ = tc.record_model_usage(
                         &local_model,
                         None,
                         success,
                         Some(local_duration_ms),
-                        None,
+                        tin,
+                        tout,
                         None,
                     );
                 }
@@ -110,8 +125,16 @@ impl LlmProvider for SharedLlm {
 
         if let Some(ref tc) = self.telemetry {
             let success = result.is_ok();
-            let _ =
-                tc.record_model_usage(&model_name, None, success, Some(duration_ms), None, None);
+            let (tin, tout) = response_tokens(&result);
+            let _ = tc.record_model_usage(
+                &model_name,
+                None,
+                success,
+                Some(duration_ms),
+                tin,
+                tout,
+                None,
+            );
         }
         result.map(|r| r.text)
     }
@@ -146,4 +169,17 @@ impl LlmProvider for SharedLlm {
 fn is_rate_limited(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
     msg.contains("429") || msg.contains("Too Many Requests") || msg.contains("usage limit")
+}
+
+/// Extract (tokens_in, tokens_out) from a generate result for telemetry.
+fn response_tokens(
+    result: &anyhow::Result<crate::services::llm::LlmResponse>,
+) -> (Option<i64>, Option<i64>) {
+    match result {
+        Ok(r) => (
+            r.tokens_in.map(|t| t as i64),
+            r.tokens_out.map(|t| t as i64),
+        ),
+        Err(_) => (None, None),
+    }
 }

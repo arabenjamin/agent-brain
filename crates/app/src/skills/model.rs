@@ -91,6 +91,31 @@ impl ModelSkill {
         }
     }
 
+    fn get_usage_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "get_usage".to_string(),
+            description: "Get model usage statistics: calls, success rate, token totals, cost, \
+                and rate-limit hits per model. Pass `hours` to restrict to a recent window \
+                (quota budgets are time-windowed — use hours=24 to see today's consumption \
+                before choosing a cloud model). Omit `model` for all models."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Restrict stats to one model name (optional)."
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Restrict to the last N hours (optional; omit for all-time)."
+                    }
+                }
+            }),
+        }
+    }
+
     // =========================================================================
     // Handlers
     // =========================================================================
@@ -200,6 +225,19 @@ impl ModelSkill {
         ToolCallResult::success_text(format!("Switched to provider: {}", provider))
     }
 
+    async fn handle_get_usage(&self, args: Option<Value>) -> ToolCallResult {
+        let Some(ref db) = self.telemetry else {
+            return ToolCallResult::error("Telemetry (DuckDB) not available".to_string());
+        };
+        let args = args.unwrap_or_default();
+        let model = args["model"].as_str();
+        let hours = args["hours"].as_i64();
+        match db.get_model_stats(model, hours) {
+            Ok(stats) => ToolCallResult::success_json(stats),
+            Err(e) => ToolCallResult::error(format!("get_usage failed: {}", e)),
+        }
+    }
+
     async fn handle_reload_models(&self) -> ToolCallResult {
         let Some(ref db) = self.telemetry else {
             return ToolCallResult::error("Telemetry (DuckDB) not available".to_string());
@@ -224,13 +262,18 @@ impl Skill for ModelSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::use_model_def(), Self::reload_models_def()]
+        vec![
+            Self::use_model_def(),
+            Self::reload_models_def(),
+            Self::get_usage_def(),
+        ]
     }
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
             "use_model" => Some(self.handle_use_model(args).await),
             "reload_models" => Some(self.handle_reload_models().await),
+            "get_usage" => Some(self.handle_get_usage(args).await),
             _ => None,
         }
     }

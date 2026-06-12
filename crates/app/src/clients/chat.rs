@@ -158,6 +158,9 @@ pub struct ChatService {
     /// Lazily-read: shares the same Arc as McpServerCore so profiles loaded after
     /// ChatService creation are immediately visible (no restart needed).
     context_builder: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
+    /// Usage ledger. Chat is the main cloud consumer — every LLM call made by
+    /// the chat loops must land in `model_usage` or quota accounting is fiction.
+    telemetry: Option<crate::repository::TelemetryClient>,
 }
 
 impl ChatService {
@@ -172,6 +175,7 @@ impl ChatService {
             tool_registry,
             llm_config,
             context_builder: Arc::new(RwLock::new(None)),
+            telemetry: None,
         })
     }
 
@@ -182,13 +186,37 @@ impl ChatService {
         tool_registry: Arc<RwLock<ToolRegistry>>,
         llm_config: Arc<RwLock<Option<LlmConfig>>>,
         context_builder: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
+        telemetry: Option<crate::repository::TelemetryClient>,
     ) -> Arc<Self> {
         Arc::new(Self {
             tool_handler,
             tool_registry,
             llm_config,
             context_builder,
+            telemetry,
         })
+    }
+
+    /// Record one chat LLM call in the usage ledger (tool_name = "chat").
+    fn record_llm_call(
+        &self,
+        model: &str,
+        success: bool,
+        duration_ms: i64,
+        tokens_in: Option<i64>,
+        tokens_out: Option<i64>,
+    ) {
+        if let Some(ref tc) = self.telemetry {
+            let _ = tc.record_model_usage(
+                model,
+                Some("chat"),
+                success,
+                Some(duration_ms),
+                tokens_in,
+                tokens_out,
+                None,
+            );
+        }
     }
 
     /// Run the agentic loop for a chat request, emitting events on `tx`.
@@ -445,6 +473,7 @@ impl ChatService {
                 "messages": messages,
             });
 
+            let call_start = std::time::Instant::now();
             let response = match client
                 .post(format!("{}/v1/messages", base_url))
                 .header("x-api-key", &api_key)
@@ -457,6 +486,13 @@ impl ChatService {
             {
                 Ok(r) => r,
                 Err(e) => {
+                    self.record_llm_call(
+                        &model,
+                        false,
+                        call_start.elapsed().as_millis() as i64,
+                        None,
+                        None,
+                    );
                     let _ = tx
                         .send(ChatEvent::Error {
                             message: format!("Anthropic request failed: {e}"),
@@ -488,10 +524,30 @@ impl ChatService {
                     .as_str()
                     .unwrap_or("Unknown Anthropic error")
                     .to_string();
+                let rate_limited = msg.contains("rate") || msg.contains("429");
+                if let Some(ref tc) = self.telemetry {
+                    let _ = tc.record_model_usage(
+                        &model,
+                        Some("chat"),
+                        false,
+                        Some(call_start.elapsed().as_millis() as i64),
+                        None,
+                        None,
+                        rate_limited.then_some("rate_limited"),
+                    );
+                }
                 let _ = tx.send(ChatEvent::Error { message: msg }).await;
                 let _ = tx.send(ChatEvent::Done).await;
                 return;
             }
+
+            self.record_llm_call(
+                &model,
+                true,
+                call_start.elapsed().as_millis() as i64,
+                resp_json["usage"]["input_tokens"].as_i64(),
+                resp_json["usage"]["output_tokens"].as_i64(),
+            );
 
             let stop_reason = resp_json["stop_reason"].as_str().unwrap_or("").to_string();
             let content_blocks = match resp_json["content"].as_array() {
@@ -680,9 +736,17 @@ impl ChatService {
             if let Some(ref key) = config.api_key {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
+            let call_start = std::time::Instant::now();
             let response = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
+                    self.record_llm_call(
+                        &model,
+                        false,
+                        call_start.elapsed().as_millis() as i64,
+                        None,
+                        None,
+                    );
                     let _ = tx
                         .send(ChatEvent::Error {
                             message: format!("Ollama request failed: {e}"),
@@ -698,6 +762,8 @@ impl ChatService {
             let mut line_buf = String::new();
             let mut full_content = String::new();
             let mut tool_calls: Vec<Value> = Vec::new();
+            // Usage from the final (done) chunk, for the model_usage ledger.
+            let mut usage_tokens: (Option<i64>, Option<i64>) = (None, None);
             // Buffer tokens that arrive before <think> to suppress garbage
             // leading characters. Once <think> is seen, flush the buffer and
             // stream normally. If the stream ends without <think>, flush the
@@ -779,10 +845,22 @@ impl ChatService {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false)
                     {
+                        usage_tokens = (
+                            chunk_json["prompt_eval_count"].as_i64(),
+                            chunk_json["eval_count"].as_i64(),
+                        );
                         break 'stream;
                     }
                 }
             }
+
+            self.record_llm_call(
+                &model,
+                true,
+                call_start.elapsed().as_millis() as i64,
+                usage_tokens.0,
+                usage_tokens.1,
+            );
 
             // If <think> was never seen, the model doesn't use thinking blocks.
             // Flush the buffered pre-think tokens now so the client sees output.
@@ -966,9 +1044,17 @@ impl ChatService {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
 
+            let call_start = std::time::Instant::now();
             let response = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
+                    self.record_llm_call(
+                        &model,
+                        false,
+                        call_start.elapsed().as_millis() as i64,
+                        None,
+                        None,
+                    );
                     let _ = tx
                         .send(ChatEvent::Error {
                             message: format!("OllamaCloud request failed: {e}"),
@@ -988,6 +1074,23 @@ impl ChatService {
                     body = %body_text,
                     "OllamaCloud returned non-success status"
                 );
+                // 429s are the quota-pressure signal — mark them in the ledger.
+                if let Some(ref tc) = self.telemetry {
+                    let error_kind = if status.as_u16() == 429 {
+                        Some("rate_limited")
+                    } else {
+                        None
+                    };
+                    let _ = tc.record_model_usage(
+                        &model,
+                        Some("chat"),
+                        false,
+                        Some(call_start.elapsed().as_millis() as i64),
+                        None,
+                        None,
+                        error_kind,
+                    );
+                }
                 let _ = tx
                     .send(ChatEvent::Error {
                         message: format!("OllamaCloud error ({status}): {body_text}"),
@@ -1001,6 +1104,8 @@ impl ChatService {
             let mut byte_stream = response.bytes_stream();
             let mut line_buf = String::new();
             let mut full_content = String::new();
+            // Usage block (OpenAI-compat servers send it in the final chunk).
+            let mut usage_tokens: (Option<i64>, Option<i64>) = (None, None);
             // Tool call accumulator: index -> (call_id, name, accumulated_args)
             let mut tc_acc: std::collections::BTreeMap<u64, (String, String, String)> =
                 std::collections::BTreeMap::new();
@@ -1045,6 +1150,14 @@ impl ChatService {
                             .await;
                         let _ = tx.send(ChatEvent::Done).await;
                         return;
+                    }
+
+                    // Capture usage when the server includes it (final chunk).
+                    if chunk_json.get("usage").is_some() {
+                        usage_tokens = (
+                            chunk_json["usage"]["prompt_tokens"].as_i64(),
+                            chunk_json["usage"]["completion_tokens"].as_i64(),
+                        );
                     }
 
                     let delta = &chunk_json["choices"][0]["delta"];
@@ -1095,6 +1208,14 @@ impl ChatService {
                     (id, name, args)
                 })
                 .collect();
+
+            self.record_llm_call(
+                &model,
+                true,
+                call_start.elapsed().as_millis() as i64,
+                usage_tokens.0,
+                usage_tokens.1,
+            );
 
             // Fallback: some models (e.g. MiniMax) leak XML-style tool calls into the
             // text stream instead of the function-call delta channel. Parse them here.
@@ -1380,7 +1501,24 @@ impl ChatService {
         // (synthesis-start thinking event already emitted in the research_block block above)
 
         let messages = vec![ChatMessage::user(&synthesis_prompt)];
-        match llm.chat(&messages).await {
+        let call_start = std::time::Instant::now();
+        let chat_result = llm.chat(&messages).await;
+        self.record_llm_call(
+            &model,
+            chat_result.is_ok(),
+            call_start.elapsed().as_millis() as i64,
+            chat_result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.tokens_in)
+                .map(i64::from),
+            chat_result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.tokens_out)
+                .map(i64::from),
+        );
+        match chat_result {
             Ok(response) if !response.text.is_empty() => {
                 let _ = tx
                     .send(ChatEvent::Message {
@@ -1411,6 +1549,7 @@ impl ChatService {
         request: ChatRequest,
         tx: mpsc::Sender<ChatEvent>,
     ) {
+        let model = config.model.clone();
         let llm = match LlmClient::with_config(config) {
             Ok(c) => c,
             Err(e) => {
@@ -1453,7 +1592,24 @@ impl ChatService {
         messages.push(ChatMessage::user(&request.message));
 
         for _iteration in 0..MAX_TOOL_ITERATIONS {
-            let response = match llm.chat(&messages).await {
+            let call_start = std::time::Instant::now();
+            let chat_result = llm.chat(&messages).await;
+            self.record_llm_call(
+                &model,
+                chat_result.is_ok(),
+                call_start.elapsed().as_millis() as i64,
+                chat_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|r| r.tokens_in)
+                    .map(i64::from),
+                chat_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|r| r.tokens_out)
+                    .map(i64::from),
+            );
+            let response = match chat_result {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx

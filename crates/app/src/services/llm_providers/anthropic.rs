@@ -120,6 +120,8 @@ impl LlmProvider for AnthropicProvider {
             tokens_evaluated: Some(
                 anthropic_res.usage.input_tokens + anthropic_res.usage.output_tokens,
             ),
+            tokens_in: Some(anthropic_res.usage.input_tokens),
+            tokens_out: Some(anthropic_res.usage.output_tokens),
         })
     }
 
@@ -193,6 +195,8 @@ impl LlmProvider for AnthropicProvider {
             tokens_evaluated: Some(
                 anthropic_res.usage.input_tokens + anthropic_res.usage.output_tokens,
             ),
+            tokens_in: Some(anthropic_res.usage.input_tokens),
+            tokens_out: Some(anthropic_res.usage.output_tokens),
         })
     }
 

@@ -68,6 +68,8 @@ struct GenerateResponse {
     total_duration: Option<u64>,
     #[serde(default)]
     eval_count: Option<u32>,
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +87,8 @@ struct ChatResponse {
     total_duration: Option<u64>,
     #[serde(default)]
     eval_count: Option<u32>,
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +143,8 @@ impl LlmProvider for OllamaProvider {
             text: gen_response.response,
             duration_ns: gen_response.total_duration,
             tokens_evaluated: gen_response.eval_count,
+            tokens_in: gen_response.prompt_eval_count,
+            tokens_out: gen_response.eval_count,
         })
     }
 
@@ -195,6 +201,8 @@ impl LlmProvider for OllamaProvider {
             text: chat_response.message.content,
             duration_ns: chat_response.total_duration,
             tokens_evaluated: chat_response.eval_count,
+            tokens_in: chat_response.prompt_eval_count,
+            tokens_out: chat_response.eval_count,
         })
     }
 

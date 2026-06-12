@@ -158,6 +158,14 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
+        let tokens_in = gemini_res
+            .usage_metadata
+            .as_ref()
+            .map(|u| u.prompt_token_count);
+        let tokens_out = gemini_res
+            .usage_metadata
+            .as_ref()
+            .map(|u| u.candidates_token_count);
         let tokens = gemini_res
             .usage_metadata
             .map(|u| u.prompt_token_count + u.candidates_token_count);
@@ -166,6 +174,8 @@ impl LlmProvider for GeminiProvider {
             text,
             duration_ns: None,
             tokens_evaluated: tokens,
+            tokens_in,
+            tokens_out,
         })
     }
 
@@ -287,6 +297,14 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
+        let tokens_in = gemini_res
+            .usage_metadata
+            .as_ref()
+            .map(|u| u.prompt_token_count);
+        let tokens_out = gemini_res
+            .usage_metadata
+            .as_ref()
+            .map(|u| u.candidates_token_count);
         let tokens = gemini_res
             .usage_metadata
             .map(|u| u.prompt_token_count + u.candidates_token_count);
@@ -295,6 +313,8 @@ impl LlmProvider for GeminiProvider {
             text,
             duration_ns: None,
             tokens_evaluated: tokens,
+            tokens_in,
+            tokens_out,
         })
     }
 

@@ -103,6 +103,7 @@ impl TelemetryClient {
         Ok(vec![])
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_model_usage(
         &self,
         _model_name: &str,
@@ -111,11 +112,16 @@ impl TelemetryClient {
         _duration_ms: Option<i64>,
         _tokens_in: Option<i64>,
         _tokens_out: Option<i64>,
+        _error_kind: Option<&str>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    pub fn get_model_stats(&self, _model_name: &str) -> anyhow::Result<serde_json::Value> {
-        Ok(serde_json::json!({ "model": _model_name, "total_calls": 0 }))
+    pub fn get_model_stats(
+        &self,
+        _model_name: Option<&str>,
+        _window_hours: Option<i64>,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({ "models": [] }))
     }
 }

@@ -1617,16 +1617,21 @@ pub async fn handle_archive_session(
     }
 }
 
-/// GET /api/models/usage — aggregated model usage stats from DuckDB.
-pub async fn handle_model_usage(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
+/// GET /api/models/usage?hours=<n> — aggregated model usage stats from DuckDB.
+/// `hours` restricts the window (quota budgets are time-windowed); omit for all-time.
+pub async fn handle_model_usage(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
     let Some(ref db) = state.telemetry else {
         return Json(json!({ "models": [], "available": false })).into_response();
     };
-    match db.get_model_stats(None) {
+    let hours: Option<i64> = params.get("hours").and_then(|h| h.parse().ok());
+    match db.get_model_stats(None, hours) {
         Ok(stats) => {
-            // get_model_stats(None) returns {"models": [...]}
             let models = stats.get("models").cloned().unwrap_or(json!([]));
-            Json(json!({ "models": models, "available": true })).into_response()
+            Json(json!({ "models": models, "available": true, "window_hours": hours }))
+                .into_response()
         }
         Err(e) => internal(format!("Failed to get model usage: {e}")),
     }

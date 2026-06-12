@@ -86,8 +86,11 @@ impl TelemetryClient {
                 tokens_in      INTEGER,
                 tokens_out     INTEGER,
                 cost           DOUBLE,
+                error_kind     TEXT,
                 created_at     TIMESTAMPTZ DEFAULT current_timestamp
             );
+
+            ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS error_kind TEXT;
             ",
         )?;
 
@@ -369,6 +372,12 @@ impl TelemetryClient {
     // =========================================================================
 
     /// Record a single model invocation.
+    ///
+    /// `error_kind` marks notable failure classes (e.g. `"rate_limited"`) so
+    /// quota pressure is queryable; pass `None` for ordinary calls.
+    /// Cost is computed from `model_registry` per-1k rates when token counts
+    /// are present (matched on registry `model` or `name`).
+    #[allow(clippy::too_many_arguments)]
     pub fn record_model_usage(
         &self,
         model_name: &str,
@@ -377,18 +386,39 @@ impl TelemetryClient {
         duration_ms: Option<i64>,
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
+        error_kind: Option<&str>,
     ) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4().to_string();
-        // Compute cost from registry rates if available.
-        let cost: Option<f64> = None; // populated by a separate query if needed
+
+        // Compute cost from registry per-1k rates when we have token counts.
+        let cost: Option<f64> = if tokens_in.is_some() || tokens_out.is_some() {
+            conn.query_row(
+                "SELECT cost_input, cost_output FROM model_registry
+                 WHERE model = ? OR name = ? LIMIT 1",
+                params![model_name, model_name],
+                |row| {
+                    let cin: f64 = row.get(0)?;
+                    let cout: f64 = row.get(1)?;
+                    Ok((cin, cout))
+                },
+            )
+            .ok()
+            .map(|(cin, cout)| {
+                (tokens_in.unwrap_or(0) as f64 / 1000.0) * cin
+                    + (tokens_out.unwrap_or(0) as f64 / 1000.0) * cout
+            })
+        } else {
+            None
+        };
+
         conn.execute(
             "INSERT INTO model_usage
-             (id, model_name, tool_name, success, duration_ms, tokens_in, tokens_out, cost)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, model_name, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 model_name,
@@ -397,22 +427,37 @@ impl TelemetryClient {
                 duration_ms,
                 tokens_in,
                 tokens_out,
-                cost
+                cost,
+                error_kind
             ],
         )?;
         Ok(())
     }
 
     /// Get aggregated usage statistics for a model.
-    pub fn get_model_stats(&self, model_name: Option<&str>) -> Result<serde_json::Value> {
+    ///
+    /// `window_hours` restricts the aggregation to the last N hours — quota
+    /// budgets are time-windowed, so all-time totals are useless for "how much
+    /// have I used today". `None` keeps the historical all-time view.
+    pub fn get_model_stats(
+        &self,
+        model_name: Option<&str>,
+        window_hours: Option<i64>,
+    ) -> Result<serde_json::Value> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
 
+        let window_clause = if window_hours.is_some() {
+            "created_at >= now() - to_hours(?)"
+        } else {
+            "1 = 1"
+        };
+
         // When no model is specified, return per-model stats for all models.
         if model_name.is_none() {
-            let mut stmt = conn.prepare(
+            let sql = format!(
                 "SELECT
                    model_name,
                    COUNT(*) AS total,
@@ -420,49 +465,71 @@ impl TelemetryClient {
                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
                    AVG(duration_ms) AS avg_duration_ms,
                    SUM(tokens_in)  AS total_tokens_in,
-                   SUM(tokens_out) AS total_tokens_out
+                   SUM(tokens_out) AS total_tokens_out,
+                   SUM(cost)       AS total_cost,
+                   SUM(CASE WHEN error_kind = 'rate_limited' THEN 1 ELSE 0 END) AS rate_limited
                  FROM model_usage
+                 WHERE {window_clause}
                  GROUP BY model_name
-                 ORDER BY total DESC",
-            )?;
-            let rows: Vec<serde_json::Value> = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
-                        row.get::<_, Option<f64>>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<i64>>(6)?,
-                    ))
-                })?
-                .filter_map(|r| r.ok())
-                .map(|(model, total, succ, fail, avg_ms, tin, tout)| {
-                    let successes = succ.unwrap_or(0);
-                    let failures = fail.unwrap_or(0);
-                    let success_rate = if total > 0 {
-                        successes as f64 / total as f64
-                    } else {
-                        0.0
-                    };
-                    serde_json::json!({
-                        "model":           model,
-                        "total_calls":     total,
-                        "successes":       successes,
-                        "failures":        failures,
-                        "success_rate":    success_rate,
-                        "avg_duration_ms": avg_ms,
-                        "total_tokens_in": tin,
-                        "total_tokens_out": tout,
-                    })
-                })
+                 ORDER BY total DESC"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let map_row = |row: &duckdb::Row<'_>| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<f64>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                ))
+            };
+            let collected: Vec<_> = if let Some(h) = window_hours {
+                stmt.query_map(params![h], map_row)?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            } else {
+                stmt.query_map([], map_row)?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+            let rows: Vec<serde_json::Value> = collected
+                .into_iter()
+                .map(
+                    |(model, total, succ, fail, avg_ms, tin, tout, cost, rate_limited)| {
+                        let successes = succ.unwrap_or(0);
+                        let failures = fail.unwrap_or(0);
+                        let success_rate = if total > 0 {
+                            successes as f64 / total as f64
+                        } else {
+                            0.0
+                        };
+                        serde_json::json!({
+                            "model":           model,
+                            "total_calls":     total,
+                            "successes":       successes,
+                            "failures":        failures,
+                            "success_rate":    success_rate,
+                            "avg_duration_ms": avg_ms,
+                            "total_tokens_in": tin,
+                            "total_tokens_out": tout,
+                            "total_cost":      cost,
+                            "rate_limited":    rate_limited.unwrap_or(0),
+                        })
+                    },
+                )
                 .collect();
-            return Ok(serde_json::json!({ "models": rows }));
+            return Ok(serde_json::json!({
+                "window_hours": window_hours,
+                "models": rows,
+            }));
         }
 
         let name = model_name.unwrap();
-        let mut stmt = conn.prepare(
+        let sql = format!(
             "SELECT
                COUNT(*) AS total,
                SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
@@ -471,9 +538,14 @@ impl TelemetryClient {
                SUM(tokens_in)  AS total_tokens_in,
                SUM(tokens_out) AS total_tokens_out
              FROM model_usage
-             WHERE model_name = ?",
-        )?;
-        let mut rows = stmt.query(params![name])?;
+             WHERE model_name = ? AND {window_clause}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = if let Some(h) = window_hours {
+            stmt.query(params![name, h])?
+        } else {
+            stmt.query(params![name])?
+        };
         if let Some(row) = rows.next()? {
             let total: i64 = row.get(0)?;
             let successes: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);

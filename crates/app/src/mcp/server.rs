@@ -224,6 +224,7 @@ impl McpServerCore {
             Arc::clone(&self.brain.tool_registry),
             llm,
             Arc::clone(&self.brain.context_builder_svc),
+            self.brain.telemetry(),
         )
     }
 

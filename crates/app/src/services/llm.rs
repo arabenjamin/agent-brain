@@ -214,6 +214,12 @@ pub struct LlmResponse {
 
     /// Number of tokens evaluated (if available).
     pub tokens_evaluated: Option<u32>,
+
+    /// Prompt/input tokens (if the provider reports them separately).
+    pub tokens_in: Option<u32>,
+
+    /// Completion/output tokens (if the provider reports them separately).
+    pub tokens_out: Option<u32>,
 }
 
 /// LLM client for interacting with various providers.

@@ -228,6 +228,8 @@ impl OpenAiCompatProvider {
             .map(|c| c.message.content)
             .unwrap_or_default();
 
+        let tokens_in = chat_res.usage.as_ref().map(|u| u.prompt_tokens);
+        let tokens_out = chat_res.usage.as_ref().map(|u| u.completion_tokens);
         let tokens = chat_res
             .usage
             .map(|u| u.prompt_tokens + u.completion_tokens);
@@ -236,6 +238,8 @@ impl OpenAiCompatProvider {
             text,
             duration_ns: None,
             tokens_evaluated: tokens,
+            tokens_in,
+            tokens_out,
         })
     }
 }
