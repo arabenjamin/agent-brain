@@ -1004,6 +1004,29 @@ impl QueueService {
                         .and_then(|v| v.as_str())
                         .map(String::from);
 
+                    // Phase 3 learning edge: if this task was built by the Agent
+                    // Constructor, record the graded outcome on its AgentSpec —
+                    // pass AND fail (failures are the more valuable signal).
+                    if let Some(tid) = &task_id {
+                        match self
+                            .neo4j
+                            .record_agent_spec_performance(
+                                tid,
+                                score as f64,
+                                score >= min_score as f32,
+                            )
+                            .await
+                        {
+                            Ok(true) => {
+                                info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
+                            }
+                            Ok(false) => {} // not a constructed task — nothing to learn onto
+                            Err(e) => {
+                                warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
+                            }
+                        }
+                    }
+
                     if score < min_score as f32 {
                         warn!(
                             job_id = %job.id,

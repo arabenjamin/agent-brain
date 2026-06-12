@@ -114,6 +114,10 @@ impl ConstructorSkill {
                     "name": {
                         "type": "string",
                         "description": "Optional AgentSpec name (defaults to a slug of the goal)."
+                    },
+                    "force_new": {
+                        "type": "boolean",
+                        "description": "true = always plan a fresh spec, skipping reuse of proven AgentSpecs for similar goals (default false)."
                     }
                 },
                 "required": ["goal"]
@@ -233,6 +237,45 @@ impl ConstructorSkill {
             Err(e) => return ToolCallResult::error(e),
         };
 
+        // Phase 3: reuse-before-construct. A proven AgentSpec (avg PERFORMED
+        // score >= 3.5) whose goal closely matches is re-dispatched instead of
+        // planning from scratch — its PERFORMED history keeps accumulating.
+        if !args["force_new"].as_bool().unwrap_or(false)
+            && let Some(hit) = self.find_reusable_spec(goal).await
+        {
+            // Re-validate the stored steps against the CURRENT tool inventory —
+            // tools may have changed since the spec was planned.
+            let wrapped = format!("{{\"steps\": {}}}", hit.steps_json);
+            match parse_and_validate_plan(&wrapped, &known_tools, HARD_MAX_STEPS) {
+                Ok(plan) => {
+                    return self
+                        .finish(
+                            goal,
+                            context,
+                            success_criteria,
+                            dispatch,
+                            plan,
+                            hit.spec_id.clone(),
+                            hit.name.clone(),
+                            format!(
+                                "reused (avg score {:.1} over {} runs)",
+                                hit.avg_score, hit.runs
+                            ),
+                            json!({
+                                "reused": true,
+                                "reused_from": hit.spec_id,
+                                "avg_score": hit.avg_score,
+                                "runs": hit.runs,
+                            }),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    warn!(spec = %hit.name, error = %e, "Reusable spec no longer validates — planning fresh");
+                }
+            }
+        }
+
         // 2. Plan — capability-routed: constructing agents is the designated
         //    higher-order reasoning step from the cloud policy.
         let prompt = Self::planning_prompt(
@@ -266,14 +309,25 @@ impl ConstructorSkill {
         let plan = match parse_and_validate_plan(&raw, &known_tools, max_steps) {
             Ok(p) => p,
             Err(e) => {
-                return ToolCallResult::error(format!(
-                    "Constructed plan rejected: {e}\n--- raw plan ---\n{}",
-                    raw.chars().take(1500).collect::<String>()
-                ));
+                // Capability gap (red-run takeaway #4): the planner wanted a
+                // tool that doesn't exist — that's a signal worth a Task.
+                let gap_task = if e.contains("unknown tool") {
+                    self.maybe_create_gap_task(&e, goal).await
+                } else {
+                    None
+                };
+                let mut resp = json!({
+                    "error": format!("Constructed plan rejected: {e}"),
+                    "raw_plan_preview": raw.chars().take(1200).collect::<String>(),
+                });
+                if let Some(gid) = gap_task {
+                    resp["capability_gap_task_id"] = json!(gid);
+                }
+                return ToolCallResult::error(resp.to_string());
             }
         };
 
-        // 4. Persist the AgentSpec.
+        // 4. Persist the new AgentSpec, then finish (summary or dispatch).
         let spec_id = uuid::Uuid::new_v4().to_string();
         let spec_name = args["name"]
             .as_str()
@@ -304,6 +358,36 @@ impl ConstructorSkill {
             warn!(error = %e, "Failed to persist AgentSpec (continuing)");
         }
 
+        self.finish(
+            goal,
+            context,
+            success_criteria,
+            dispatch,
+            plan,
+            spec_id,
+            spec_name,
+            planner_model,
+            json!({ "reused": false }),
+        )
+        .await
+    }
+
+    /// Shared tail for fresh and reused specs: summarize, and when
+    /// `dispatch` is set, create the Task + adversarial gate + evaluator +
+    /// update_task chain and enqueue it.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish(
+        &self,
+        goal: &str,
+        context: Option<&str>,
+        success_criteria: Option<&str>,
+        dispatch: bool,
+        plan: ValidatedPlan,
+        spec_id: String,
+        spec_name: String,
+        planner_model: String,
+        extra: Value,
+    ) -> ToolCallResult {
         let step_summary: Vec<Value> = plan
             .steps
             .iter()
@@ -316,20 +400,28 @@ impl ConstructorSkill {
             })
             .collect();
 
-        // 5. Plan-only mode stops here.
-        if !dispatch {
-            return ToolCallResult::success_json(json!({
-                "agent_spec_id": spec_id,
-                "name": spec_name,
-                "planner_model": planner_model,
-                "rationale": plan.rationale,
-                "steps": step_summary,
-                "dispatched": false,
-                "hint": "Call again with dispatch=true to create a Task and run this chain."
-            }));
+        let mut base = json!({
+            "agent_spec_id": spec_id,
+            "name": spec_name,
+            "planner_model": planner_model,
+            "rationale": plan.rationale,
+            "steps": step_summary,
+        });
+        if let Value::Object(extra_m) = extra
+            && let Some(m) = base.as_object_mut()
+        {
+            for (k, v) in extra_m {
+                m.insert(k, v);
+            }
         }
 
-        // 6. Dispatch: Task + mandatory adversarial gate + evaluator + update_task.
+        if !dispatch {
+            base["dispatched"] = json!(false);
+            base["hint"] =
+                json!("Call again with dispatch=true to create a Task and run this chain.");
+            return ToolCallResult::success_json(base);
+        }
+
         let Some(ref queue) = self.queue else {
             return ToolCallResult::error(
                 "Queue service not available — cannot dispatch".to_string(),
@@ -349,7 +441,6 @@ impl ConstructorSkill {
         };
 
         let mut steps = plan.steps;
-        // Substitute {{task_id}} / {{goal}} / {{date}} like the scheduler does.
         let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
         for s in &mut steps {
             if let Some(a) = &s.arguments {
@@ -364,7 +455,6 @@ impl ConstructorSkill {
             }
         }
 
-        // Evaluator before update_task when criteria exist.
         if let Some(c) = success_criteria {
             steps.push(ChainStep {
                 tool_name: "reflect_on_work".to_string(),
@@ -376,7 +466,7 @@ impl ConstructorSkill {
                 priority: Some(1),
                 max_attempts: Some(2),
                 provider_hint: Some("ollama".to_string()),
-                description: Some("Evaluate constructed-chain output against criteria".into()),
+                description: Some("Evaluate constructed-chain output against criteria".to_string()),
                 is_evaluator: true,
                 min_score: Some(3.5),
                 evaluator_task_id: Some(task_id.clone()),
@@ -392,7 +482,6 @@ impl ConstructorSkill {
             ..Default::default()
         });
 
-        // Mandatory adversarial pre-flight, elevated threshold.
         let plan_description = steps
             .iter()
             .filter_map(|s| s.description.as_deref().or(Some(s.tool_name.as_str())))
@@ -410,7 +499,7 @@ impl ConstructorSkill {
                 priority: Some(1),
                 max_attempts: Some(2),
                 provider_hint: Some("ollama".to_string()),
-                description: Some("Adversarial pre-flight (constructed chain)".into()),
+                description: Some("Adversarial pre-flight (constructed chain)".to_string()),
                 is_adversarial: true,
                 min_robustness: Some(CONSTRUCTED_MIN_ROBUSTNESS),
                 adversarial_task_id: Some(task_id.clone()),
@@ -439,17 +528,109 @@ impl ConstructorSkill {
             .await;
 
         info!(spec = %spec_name, task_id = %task_id, jobs = job_ids.len(), "Constructed agent dispatched");
-        ToolCallResult::success_json(json!({
-            "agent_spec_id": spec_id,
-            "name": spec_name,
-            "planner_model": planner_model,
-            "rationale": plan.rationale,
-            "steps": step_summary,
-            "dispatched": true,
-            "task_id": task_id,
-            "job_ids": job_ids,
-        }))
+        base["dispatched"] = json!(true);
+        base["task_id"] = json!(task_id);
+        base["job_ids"] = json!(job_ids);
+        ToolCallResult::success_json(base)
     }
+
+    /// Find a proven AgentSpec (avg PERFORMED score >= 3.5) whose goal closely
+    /// matches. Similarity is word-overlap Jaccard — cheap and good enough to
+    /// catch re-asked goals without an embedding index on specs.
+    async fn find_reusable_spec(&self, goal: &str) -> Option<ReuseHit> {
+        let rows = self
+            .neo4j
+            .execute(neo4rs::query(
+                "MATCH (a:AgentSpec)-[p:PERFORMED]->() \
+                 WITH a, avg(p.score) AS avg_score, count(p) AS runs \
+                 WHERE avg_score >= 3.5 \
+                 RETURN a.id AS id, a.name AS name, a.goal AS goal, \
+                        a.steps_json AS steps_json, avg_score, runs",
+            ))
+            .await
+            .ok()?;
+
+        let mut best: Option<(f32, ReuseHit)> = None;
+        for row in &rows {
+            let spec_goal: String = row.get("goal").unwrap_or_default();
+            let sim = goal_similarity(goal, &spec_goal);
+            if sim >= 0.5 && best.as_ref().map(|(b, _)| sim > *b).unwrap_or(true) {
+                best = Some((
+                    sim,
+                    ReuseHit {
+                        spec_id: row.get("id").unwrap_or_default(),
+                        name: row.get("name").unwrap_or_default(),
+                        steps_json: row.get("steps_json").unwrap_or_default(),
+                        avg_score: row.get::<f64>("avg_score").unwrap_or(0.0),
+                        runs: row.get::<i64>("runs").unwrap_or(0),
+                    },
+                ));
+            }
+        }
+        best.map(|(sim, hit)| {
+            info!(spec = %hit.name, similarity = sim, "Reusing proven AgentSpec");
+            hit
+        })
+    }
+
+    /// Create a capability-gap Task when the planner asked for a tool that
+    /// doesn't exist — deduped on the tool name against open gap tasks.
+    async fn maybe_create_gap_task(&self, validation_error: &str, goal: &str) -> Option<String> {
+        // Error shape: "step N uses unknown tool `name`"
+        let tool = validation_error.split('`').nth(1)?;
+        let existing = self
+            .neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (t:Task) WHERE t.status IN ['created','in_progress'] \
+                     AND t.goal STARTS WITH 'Capability gap' AND t.goal CONTAINS $tool \
+                     RETURN t.id LIMIT 1",
+                )
+                .param("tool", tool),
+            )
+            .await
+            .ok()?;
+        if !existing.is_empty() {
+            return None;
+        }
+        self.neo4j
+            .create_task(
+                &format!("Capability gap: the Agent Constructor wanted a tool named '{tool}' that does not exist"),
+                Some(&format!("Surfaced while constructing an agent for: {goal}. Evaluate whether '{tool}' should exist as a DynamicTool, a new skill tool, or whether an existing tool already covers it.")),
+                None,
+            )
+            .await
+            .ok()
+    }
+}
+
+/// A proven spec selected for reuse.
+struct ReuseHit {
+    spec_id: String,
+    name: String,
+    steps_json: String,
+    avg_score: f64,
+    runs: i64,
+}
+
+/// Word-overlap Jaccard similarity between two goals (lowercased, short
+/// stopwords dropped). Pure — unit tested.
+fn goal_similarity(a: &str, b: &str) -> f32 {
+    use std::collections::HashSet;
+    fn words(s: &str) -> HashSet<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 3)
+            .map(String::from)
+            .collect()
+    }
+    let (wa, wb) = (words(a), words(b));
+    if wa.is_empty() || wb.is_empty() {
+        return 0.0;
+    }
+    let inter = wa.intersection(&wb).count() as f32;
+    let union = wa.union(&wb).count() as f32;
+    inter / union
 }
 
 // ============================================================================
@@ -619,6 +800,15 @@ mod tests {
         let raw = "```json\n{\"steps\":[{\"tool_name\":\"reason\",\"arguments\":{\"question\":\"q\"}}]}\n```";
         let plan = parse_and_validate_plan(raw, &tools(), 6).unwrap();
         assert_eq!(plan.steps.len(), 1);
+    }
+
+    #[test]
+    fn goal_similarity_matches_rephrasings() {
+        let a = "Produce a weekly summary of the brain's model usage with recommendations";
+        let b = "Produce a weekly summary of model usage for the brain, with one recommendation";
+        assert!(goal_similarity(a, b) >= 0.5);
+        assert!(goal_similarity(a, "Fix the frontend todo panel sorting") < 0.2);
+        assert_eq!(goal_similarity("", "anything here"), 0.0);
     }
 
     #[test]

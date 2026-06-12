@@ -79,7 +79,7 @@ sync: stale nodes are deleted.
 - Chains/schedules are NOT duplicated as `ChainTemplate` — `(:SchedulerChain)`
   and `(:ScheduledTask)` nodes already are the graph representation.
 
-Phase 3 additions (not yet built):
+Phase 3 additions (✅ built 2026-06-13):
 - `(:AgentSpec {name, model, profile, steps_json, created_by})`
 - `(:AgentSpec)-[:PERFORMED {score, task_type, duration_ms, cost, at}]->(:Task)`
   — written by the evaluator loop after every graded run
@@ -163,6 +163,15 @@ Fix scope:
   not the constructed spec (reuse-before-construct is Phase 3).
 - **3. Learning loop** — PERFORMED edges, reuse-before-construct,
   capability-gap tasks, usage-aware tier escalation proposals.
+  ✅ implemented 2026-06-13: the queue's evaluator hook writes
+  `(:AgentSpec)-[:PERFORMED {score, passed, at}]->(:Task)` on every graded
+  constructed run (pass and fail); `construct_agent` reuses the best
+  word-overlap-matching spec with avg score ≥ 3.5 (override with
+  `force_new: true`), re-validating its steps against the current tool
+  inventory; unknown-tool plan rejections auto-create deduped
+  "Capability gap" tasks. Deferred: usage-aware tier escalation
+  proposals, model-level preference from PERFORMED history (the router
+  still ranks by cost/context only).
 
 ## Open questions
 

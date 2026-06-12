@@ -447,4 +447,30 @@ impl Neo4jClient {
         info!(note_id = %id, "Stored outcome note");
         Ok(id)
     }
+
+    /// Record how a constructed AgentSpec performed on a task — the Phase 3
+    /// learning edge. Called by the queue's evaluator hook after every graded
+    /// run (pass AND fail: failures are the more valuable signal).
+    /// Returns `true` when the task was linked to an AgentSpec.
+    pub async fn record_agent_spec_performance(
+        &self,
+        task_id: &str,
+        score: f64,
+        passed: bool,
+    ) -> Result<bool, RepositoryError> {
+        let rows = self
+            .execute(
+                query(
+                    "MATCH (a:AgentSpec)-[:CONSTRUCTED_FOR]->(t:Task {id: $task_id}) \
+                     CREATE (a)-[:PERFORMED {score: $score, passed: $passed, at: $at}]->(t) \
+                     RETURN a.id AS id",
+                )
+                .param("task_id", task_id)
+                .param("score", score)
+                .param("passed", passed)
+                .param("at", Utc::now().to_rfc3339()),
+            )
+            .await?;
+        Ok(!rows.is_empty())
+    }
 }

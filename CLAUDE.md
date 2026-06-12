@@ -233,6 +233,8 @@ See `project-docs/architecture_context.md` for skill registry table, initializat
 - `(:Task)-[:SUBTASK_OF]->(:Task)` — sub-tasks created by `decompose_goal`
 - `(:Task)-[:DEPENDS_ON]->(:Task)` — dependency edges for task ordering
 - `(:DynamicTool)-[:USES]->(:Procedure)` — links a dynamic tool to its step definition
+- `(:AgentSpec)-[:CONSTRUCTED_FOR]->(:Task)` — a constructed agent linked to the task it was dispatched for
+- `(:AgentSpec)-[:PERFORMED {score, passed, at}]->(:Task)` — graded outcome written by the queue's evaluator hook; the constructor's reuse-before-construct prefers specs with avg score ≥ 3.5
 
 **Stdio Transport (Default)**
 - Standard input/output for local CLI usage
