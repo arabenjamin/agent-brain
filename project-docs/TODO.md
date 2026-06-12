@@ -29,6 +29,8 @@
 
 ## P1 — Open Bugs
 
+- [x] **Redesign the doc-update chain** — live test (2026-06-11) showed the local model cannot produce guard-compliant whole-file updates. Fixed: `write_codebase_doc` gained a `section` mode that confines writes to one markdown section, and the chain now only writes a commit-grounded digest into `## Recent Changes (auto)` in STATUS.md (TODO.md curation dropped from automation — needs human judgment).
+
 - [ ] **Docker image needs rebuild** — The local Rust build and frontend are ahead of the running Docker container. The 4000-char SSE preview increase and expandable events won't be visible in the container until a rebuild:
   ```bash
   docker compose build agent-brain && docker compose up -d agent-brain

@@ -124,6 +124,58 @@ fn validate_doc_rewrite(old: &str, new: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Replace (or append) one markdown section of a document, leaving everything
+/// else byte-for-byte untouched.
+///
+/// `section_heading` must be a full heading line (e.g. `## Recent Changes (auto)`).
+/// If the heading exists, everything from it up to the next heading of the same
+/// or higher level is replaced with `heading + content`. If it does not exist,
+/// the section is appended at the end of the document.
+///
+/// This is the safe write path for scheduled LLM-generated doc updates: the
+/// model's output is confined to its own section and can never destroy the
+/// rest of the document, however bad it is.
+fn upsert_doc_section(old: &str, section_heading: &str, content: &str) -> String {
+    let heading = section_heading.trim();
+    let level = heading.chars().take_while(|c| *c == '#').count().max(1);
+    let block = format!("{}\n\n{}", heading, content.trim());
+
+    let lines: Vec<&str> = old.lines().collect();
+    let start = lines.iter().position(|l| l.trim() == heading);
+
+    let new_text = match start {
+        Some(i) => {
+            let mut j = i + 1;
+            while j < lines.len() {
+                let t = lines[j].trim_start();
+                if t.starts_with('#') && t.chars().take_while(|c| *c == '#').count() <= level {
+                    break;
+                }
+                j += 1;
+            }
+            let mut parts: Vec<String> = lines[..i].iter().map(|s| s.to_string()).collect();
+            parts.push(block);
+            if j < lines.len() {
+                // Blank line between the new section and the next heading.
+                parts.push(String::new());
+                parts.extend(lines[j..].iter().map(|s| s.to_string()));
+            }
+            parts.join("\n")
+        }
+        None => {
+            let trimmed = old.trim_end();
+            if trimmed.is_empty() {
+                block
+            } else {
+                format!("{}\n\n{}", trimmed, block)
+            }
+        }
+    };
+
+    // Documents end with exactly one newline.
+    format!("{}\n", new_text.trim_end())
+}
+
 /// Codebase Skill — read-only filesystem access to the agent's own source code,
 /// plus workspace write tools and a write_proposal tool for staging fix proposals.
 pub struct CodebaseSkill {
@@ -201,7 +253,7 @@ impl CodebaseSkill {
     fn write_codebase_doc_def() -> ToolDefinition {
         ToolDefinition {
             name: "write_codebase_doc".to_string(),
-            description: "Write or overwrite a Markdown (.md) file in the codebase. Restricted to .md files only — cannot modify source code. Use this to update project-docs/, CLAUDE.md, README.md, schedules/, chains/, or contexts/ after the brain has reasoned about the correct new content. Overwrites of existing docs are guarded: the new content must preserve the document's headings and at least half of its existing lines (incremental update, not from-scratch regeneration). Pass force=true only for an intentional full rewrite.".to_string(),
+            description: "Write a Markdown (.md) file in the codebase. Restricted to .md files only — cannot modify source code. PREFERRED for automated updates: pass `section` (a heading line like '## Recent Changes') to replace or append just that section, leaving the rest of the document untouched. Whole-file overwrites of existing docs are guarded: the new content must preserve the document's headings and at least half of its existing lines (incremental update, not from-scratch regeneration); force=true bypasses for an intentional full rewrite.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -211,11 +263,15 @@ impl CodebaseSkill {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Complete new file content to write."
+                        "description": "File content, or the section body when `section` is set (max 8000 bytes in section mode)."
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Optional markdown heading line (e.g. '## Recent Changes (auto)'). Replaces that section in place, or appends it if absent. The rest of the document is never touched."
                     },
                     "force": {
                         "type": "boolean",
-                        "description": "Bypass the incremental-update guard for an intentional full rewrite of an existing doc (default: false)."
+                        "description": "Whole-file mode only: bypass the incremental-update guard for an intentional full rewrite (default: false)."
                     }
                 },
                 "required": ["path", "content"]
@@ -622,6 +678,8 @@ impl CodebaseSkill {
             path: String,
             content: String,
             #[serde(default)]
+            section: Option<String>,
+            #[serde(default)]
             force: bool,
         }
         let args: Args = match parse_args(arguments) {
@@ -640,20 +698,44 @@ impl CodebaseSkill {
             Err(e) => return e,
         };
 
-        // Guard overwrites of existing docs against from-scratch LLM regeneration.
-        // Trivially small existing files (< 200 bytes) are not worth guarding.
-        if !args.force
-            && let Ok(old) = tokio::fs::read_to_string(&full_path).await
-            && old.len() >= 200
-            && let Err(reason) = validate_doc_rewrite(&old, &args.content)
-        {
-            warn!(path = %args.path, %reason, "write_codebase_doc: rejected by doc guard");
-            return ToolCallResult::error(format!(
-                "Refusing to overwrite '{}': {} (Pass force=true to override for an \
-                 intentional full rewrite.)",
-                args.path, reason
-            ));
-        }
+        // Section mode: confine the write to one markdown section. The rest of
+        // the document is preserved by construction, so the rewrite guard does
+        // not apply — but the section content itself is size-capped.
+        let final_content = if let Some(ref section) = args.section {
+            if !section.trim_start().starts_with('#') {
+                return ToolCallResult::error(
+                    "`section` must be a markdown heading line (e.g. '## Recent Changes')",
+                );
+            }
+            if args.content.len() > 8_000 {
+                return ToolCallResult::error(format!(
+                    "Section content is {} bytes (max 8000). Section updates are \
+                     bounded digests, not whole documents.",
+                    args.content.len()
+                ));
+            }
+            let old = tokio::fs::read_to_string(&full_path)
+                .await
+                .unwrap_or_default();
+            upsert_doc_section(&old, section, &args.content)
+        } else {
+            // Whole-file mode: guard overwrites of existing docs against
+            // from-scratch LLM regeneration. Trivially small existing files
+            // (< 200 bytes) are not worth guarding.
+            if !args.force
+                && let Ok(old) = tokio::fs::read_to_string(&full_path).await
+                && old.len() >= 200
+                && let Err(reason) = validate_doc_rewrite(&old, &args.content)
+            {
+                warn!(path = %args.path, %reason, "write_codebase_doc: rejected by doc guard");
+                return ToolCallResult::error(format!(
+                    "Refusing to overwrite '{}': {} (Pass force=true to override for an \
+                     intentional full rewrite.)",
+                    args.path, reason
+                ));
+            }
+            args.content.clone()
+        };
 
         if let Some(parent) = full_path.parent()
             && let Err(e) = tokio::fs::create_dir_all(parent).await
@@ -661,16 +743,20 @@ impl CodebaseSkill {
             return ToolCallResult::error(format!("Cannot create parent directory: {e}"));
         }
 
-        if let Err(e) = tokio::fs::write(&full_path, &args.content).await {
+        if let Err(e) = tokio::fs::write(&full_path, &final_content).await {
             return ToolCallResult::error(format!("Failed to write '{}': {e}", args.path));
         }
 
-        let lines = args.content.lines().count();
-        info!(path = %args.path, lines, "write_codebase_doc: wrote file");
+        let lines = final_content.lines().count();
+        info!(path = %args.path, lines, section = ?args.section, "write_codebase_doc: wrote file");
         ToolCallResult::success_text(format!(
-            "Wrote {} ({} lines): {}",
+            "Wrote {} ({} lines{}): {}",
             args.path,
             lines,
+            args.section
+                .as_deref()
+                .map(|s| format!(", section '{}'", s))
+                .unwrap_or_default(),
             full_path.display()
         ))
     }
@@ -1678,7 +1764,7 @@ pub fn detect_repo_root() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_doc_rewrite;
+    use super::{upsert_doc_section, validate_doc_rewrite};
 
     const DOC: &str = "\
 # Brain Status
@@ -1754,5 +1840,79 @@ Rate limiting on the external data source is causing batch failures.
     fn new_file_has_no_old_content_to_check() {
         // Guard is only invoked for existing files, but empty old must not panic.
         assert!(validate_doc_rewrite("", "# Anything\nnew content\n").is_ok());
+    }
+
+    const SECTIONED: &str = "\
+# Brain Status
+
+Intro line.
+
+## Architecture Overview
+
+Arch content stays.
+
+## Recent Changes (auto)
+
+### 2026-06-10
+
+- old digest entry
+
+## Known Issues / Backlog
+
+- backlog item
+";
+
+    #[test]
+    fn section_replace_preserves_rest() {
+        let out = upsert_doc_section(
+            SECTIONED,
+            "## Recent Changes (auto)",
+            "### 2026-06-12\n\n- new digest entry",
+        );
+        assert!(out.contains("### 2026-06-12"), "new content missing: {out}");
+        assert!(
+            !out.contains("2026-06-10"),
+            "old section not replaced: {out}"
+        );
+        assert!(out.contains("Arch content stays."));
+        assert!(out.contains("## Known Issues / Backlog"));
+        assert!(out.contains("- backlog item"));
+        assert!(out.contains("Intro line."));
+    }
+
+    #[test]
+    fn section_appended_when_missing() {
+        let out = upsert_doc_section(
+            "# Doc\n\nBody text.\n",
+            "## Recent Changes (auto)",
+            "- first entry",
+        );
+        assert!(
+            out.starts_with("# Doc\n\nBody text.\n\n## Recent Changes (auto)\n\n- first entry")
+        );
+        assert!(out.ends_with("\n"));
+    }
+
+    #[test]
+    fn section_into_empty_file() {
+        let out = upsert_doc_section("", "## Recent Changes (auto)", "- entry");
+        assert_eq!(out, "## Recent Changes (auto)\n\n- entry\n");
+    }
+
+    #[test]
+    fn section_at_end_of_file_replaced() {
+        let doc = "# Doc\n\n## Recent Changes (auto)\n\n- old entry\n";
+        let out = upsert_doc_section(doc, "## Recent Changes (auto)", "- new entry");
+        assert!(out.contains("- new entry"));
+        assert!(!out.contains("- old entry"));
+        assert!(out.starts_with("# Doc\n"));
+    }
+
+    #[test]
+    fn section_subheadings_belong_to_section() {
+        // The ### sub-heading inside the section must be replaced along with it.
+        let out = upsert_doc_section(SECTIONED, "## Recent Changes (auto)", "- flat entry");
+        assert!(!out.contains("### 2026-06-10"));
+        assert!(out.contains("## Known Issues / Backlog"));
     }
 }

@@ -123,6 +123,14 @@
 
 ---
 
+## Recent Changes (auto)
+
+### 2026-06-11
+
+- Graph hygiene sweep: stale failed-job purge, outcome-note exclusions, scheduler trigger fixes
+- write_codebase_doc guarded against from-scratch doc regeneration; section mode added
+- Doc-update schedule redesigned to write a commit-grounded digest into this section only
+
 ## Known Issues / Backlog
 
 ### Open
