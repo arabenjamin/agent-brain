@@ -1032,6 +1032,9 @@ impl ChatService {
                 "messages": messages,
                 "tools": oai_tools,
                 "stream": true,
+                // Ask OpenAI-compat servers to include a usage block in the
+                // final stream chunk — without it token accounting is NULL.
+                "stream_options": { "include_usage": true },
                 "temperature": config.temperature,
             });
 
