@@ -1194,10 +1194,13 @@ impl ChatService {
                         }
                     }
 
+                    // Do NOT break on finish_reason: the usage chunk arrives
+                    // AFTER it (choices is empty there), followed by [DONE].
+                    // Breaking early was silently discarding token counts.
                     let finish = chunk_json["choices"][0]["finish_reason"]
                         .as_str()
                         .unwrap_or("");
-                    if finish == "stop" || finish == "tool_calls" {
+                    if (finish == "stop" || finish == "tool_calls") && usage_tokens.0.is_some() {
                         break 'stream;
                     }
                 }
