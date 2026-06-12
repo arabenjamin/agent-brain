@@ -1,0 +1,49 @@
+name: "Brain exercise: pick a topic from the knowledge graph and create a self-directed research task"
+description: "Weekly self-directed exercise — analyses entity mentions to find a topic the brain encounters often but knows little about, then creates a research Task with success criteria so the evaluator loop grades the outcome."
+interval_seconds: 604800
+steps:
+  # Step flow and {{_prev}} chain:
+  #   1. neo4j_query → entities ranked by mentions vs. how much semantic knowledge
+  #                    exists about them (high mentions + few semantic notes = a
+  #                    topic the brain keeps encountering but hasn't studied)
+  #   2. reason      → picks ONE topic and emits a single research-goal sentence
+  #   3. create_task → creates the research Task; the scheduler routes it through
+  #                    the learn chain ("research" keyword) and, because
+  #                    success_criteria is set, appends the evaluator step —
+  #                    the exercise is graded, which is the point
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (e:Entity)<-[:MENTIONS]-(n:Note) WITH e, count(n) AS mentions, sum(CASE WHEN n.note_type = 'semantic' THEN 1 ELSE 0 END) AS semantic_notes WHERE mentions >= 2 RETURN e.name AS entity, e.entity_type AS type, mentions, semantic_notes ORDER BY mentions DESC, semantic_notes ASC LIMIT 30"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        Today is {{date}}. The CONTEXT lists entities from your knowledge graph with
+        how often they are mentioned and how many semantic (studied) notes exist
+        about them. A high mention count with few semantic notes means you keep
+        encountering the topic without really understanding it.
+
+        Pick exactly ONE topic from the CONTEXT that would most improve your
+        usefulness if you understood it better. Base your choice ONLY on the CONTEXT.
+
+        Your answer must be a single sentence of at most 25 words, starting with
+        the word "Research", naming the topic and what specifically to find out.
+        Example: "Research vector embeddings: how dimensionality affects retrieval
+        quality in hybrid search." No other text in the answer field.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: create_task
+    arguments:
+      goal: "{{_prev}}"
+      context: "Self-directed brain exercise ({{date}}). Topic chosen by analysing entity mentions vs. studied knowledge in the graph. This task exists to exercise and measure the brain's research loop."
+      success_criteria: "At least one semantic note is stored that explicitly names the chosen topic and contains concrete, verifiable facts answering the research goal — not meta-commentary or restated questions."
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

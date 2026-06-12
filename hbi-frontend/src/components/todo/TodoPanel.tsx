@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBrainUrl, getApiKey } from "../../api/config";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -16,6 +16,38 @@ interface Todo {
 }
 
 type StatusFilter = "all" | "pending" | "in_progress" | "done";
+
+type SortBy = "priority" | "due" | "created" | "updated";
+
+const SORT_LABELS: Record<SortBy, string> = {
+  priority: "Priority",
+  due: "Due date",
+  created: "Newest",
+  updated: "Recently updated",
+};
+
+function isOverdue(todo: Todo): boolean {
+  if (!todo.due_at || todo.status === "done") return false;
+  return todo.due_at.slice(0, 10) < new Date().toISOString().slice(0, 10);
+}
+
+function compareTodos(a: Todo, b: Todo, sortBy: SortBy): number {
+  switch (sortBy) {
+    case "priority":
+      // Lower number = more urgent; tie-break on due date (missing dates last).
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return (a.due_at ?? "9999") < (b.due_at ?? "9999") ? -1 : 1;
+    case "due":
+      if (!a.due_at && !b.due_at) return 0;
+      if (!a.due_at) return 1;
+      if (!b.due_at) return -1;
+      return a.due_at < b.due_at ? -1 : 1;
+    case "created":
+      return a.created_at > b.created_at ? -1 : 1;
+    case "updated":
+      return a.updated_at > b.updated_at ? -1 : 1;
+  }
+}
 
 const PRIORITY_LABELS: Record<number, string> = {
   0: "Urgent",
@@ -54,10 +86,27 @@ async function apiFetch(url: string, init: RequestInit = {}) {
 export default function TodoPanel() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("all");
+  const [sortBy, setSortBy] = useState<SortBy>("priority");
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editTodo, setEditTodo] = useState<Todo | null>(null);
+
+  const visibleTodos = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const matches = q
+      ? todos.filter(
+          (t) =>
+            t.title.toLowerCase().includes(q) ||
+            (t.description ?? "").toLowerCase().includes(q) ||
+            t.tags.some((tag) => tag.toLowerCase().includes(q)),
+        )
+      : todos;
+    return [...matches].sort((a, b) => compareTodos(a, b, sortBy));
+  }, [todos, search, sortBy]);
+
+  const doneCount = useMemo(() => todos.filter((t) => t.status === "done").length, [todos]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -99,6 +148,27 @@ export default function TodoPanel() {
       await refresh();
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const handleClearDone = async () => {
+    const done = todos.filter((t) => t.status === "done");
+    if (done.length === 0) return;
+    if (!confirm(`Delete ${done.length} completed todo${done.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    setLoading(true);
+    try {
+      const results = await Promise.allSettled(
+        done.map((t) => apiFetch(todosUrl(`/${t.id}`), { method: "DELETE" })),
+      );
+      const failed = results.filter(
+        (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok && r.value.status !== 204),
+      ).length;
+      if (failed > 0) setError(`Failed to delete ${failed} of ${done.length} todos`);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -147,16 +217,67 @@ export default function TodoPanel() {
         </div>
       </div>
 
+      {/* Search + sort + bulk actions */}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search title, description, tags…"
+          style={{
+            flex: 1,
+            minWidth: "160px",
+            background: "var(--surface2, #313244)",
+            border: "1px solid var(--border, #45475a)",
+            borderRadius: "6px",
+            padding: "5px 10px",
+            color: "inherit",
+            fontSize: "0.85rem",
+          }}
+        />
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.8rem", opacity: 0.85 }}>
+          Sort
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortBy)}
+            style={{
+              background: "var(--surface2, #313244)",
+              border: "1px solid var(--border, #45475a)",
+              borderRadius: "6px",
+              padding: "4px 8px",
+              color: "inherit",
+              fontSize: "0.8rem",
+            }}
+          >
+            {(Object.keys(SORT_LABELS) as SortBy[]).map((s) => (
+              <option key={s} value={s}>{SORT_LABELS[s]}</option>
+            ))}
+          </select>
+        </label>
+        {doneCount > 0 && (
+          <button
+            className="sidebar-btn"
+            onClick={handleClearDone}
+            disabled={loading}
+            title="Delete all completed todos"
+            style={{ color: "#f87171", borderColor: "#f87171" }}
+          >
+            Clear done ({doneCount})
+          </button>
+        )}
+      </div>
+
       {error && (
         <div style={{ color: "var(--error, #f87171)", fontSize: "0.85rem" }}>{error}</div>
       )}
 
       {/* Todo list */}
       <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" }}>
-        {todos.length === 0 && !loading && (
-          <p style={{ opacity: 0.5, fontSize: "0.9rem" }}>No todos. Add one!</p>
+        {visibleTodos.length === 0 && !loading && (
+          <p style={{ opacity: 0.5, fontSize: "0.9rem" }}>
+            {todos.length === 0 ? "No todos. Add one!" : "No todos match the search."}
+          </p>
         )}
-        {todos.map((todo) => (
+        {visibleTodos.map((todo) => (
           <TodoRow
             key={todo.id}
             todo={todo}
@@ -193,12 +314,13 @@ function TodoRow({
   onDelete: () => void;
 }) {
   const done = todo.status === "done";
+  const overdue = isOverdue(todo);
 
   return (
     <div
       style={{
         background: "var(--surface, #1e1e2e)",
-        border: "1px solid var(--border, #313244)",
+        border: `1px solid ${overdue ? "#f38ba8" : "var(--border, #313244)"}`,
         borderRadius: "8px",
         padding: "10px 14px",
         display: "flex",
@@ -242,7 +364,16 @@ function TodoRow({
             </span>
           ))}
           {todo.due_at && (
-            <span style={{ fontSize: "0.72rem", opacity: 0.6 }}>Due: {todo.due_at.slice(0, 10)}</span>
+            <span
+              style={{
+                fontSize: "0.72rem",
+                opacity: overdue ? 1 : 0.6,
+                color: overdue ? "#f38ba8" : "inherit",
+                fontWeight: overdue ? 600 : 400,
+              }}
+            >
+              {overdue ? "Overdue: " : "Due: "}{todo.due_at.slice(0, 10)}
+            </span>
           )}
         </div>
       </div>
