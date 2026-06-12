@@ -28,4 +28,12 @@ pub struct ScheduledTask {
     pub created_at: String,
     /// RFC3339 timestamp of last update.
     pub updated_at: String,
+    /// Ownership marker. `"yaml"` = definition is owned by a `schedules/*.yaml`
+    /// file and force-synced on every startup (runtime edits to steps,
+    /// description, and interval are overwritten). `"runtime"` = created at
+    /// runtime via tools or REST; the seeder never touches it. `None` on
+    /// legacy nodes — resolved at seed time (claimed by a matching YAML name,
+    /// otherwise backfilled to `"runtime"`).
+    #[serde(default)]
+    pub managed_by: Option<String>,
 }

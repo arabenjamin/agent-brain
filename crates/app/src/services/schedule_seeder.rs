@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use crate::repository::Neo4jClient;
+use crate::repository::{Neo4jClient, YamlSyncOutcome};
 
 #[derive(Debug, Deserialize)]
 struct ScheduleFile {
@@ -14,9 +14,16 @@ struct ScheduleFile {
 }
 
 /// Read every `*.yaml` file from `dir`, parse each as a ScheduledTask definition,
-/// and upsert the task into Neo4j (creating it if absent, force-updating steps otherwise).
+/// and upsert the task into Neo4j with `managed_by = "yaml"` ownership:
 ///
-/// Preserves the force-update behavior so step changes propagate to existing deployments.
+/// - Absent → created (yaml-owned).
+/// - Existing yaml-owned (or legacy without `managed_by`) → steps, description,
+///   and interval force-synced so file edits propagate on restart.
+/// - Existing runtime-owned → left untouched (name collision is logged).
+///
+/// After seeding, any node still lacking `managed_by` is backfilled as
+/// `"runtime"` — it has no YAML file, so the graph owns it.
+///
 /// Non-fatal: parse or upsert errors for a single file are logged and skipped.
 /// Returns the number of tasks successfully processed.
 pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Result<usize> {
@@ -65,22 +72,34 @@ pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow:
             .await
         {
             Ok((id, true)) => {
-                info!(name = %schedule.name, id = %id, "Seeded ScheduledTask");
+                info!(name = %schedule.name, id = %id, "Seeded ScheduledTask (yaml-owned)");
             }
             Ok((_, false)) => {
-                // Already exists — force-update steps so definition changes propagate.
+                // Already exists — force-sync the definition if the file owns it.
                 match neo4j
-                    .update_scheduled_task_steps(&schedule.name, &steps_json)
+                    .sync_yaml_scheduled_task(
+                        &schedule.name,
+                        Some(schedule.description.as_str()),
+                        schedule.interval_seconds,
+                        &steps_json,
+                    )
                     .await
                 {
-                    Ok(true) => {
-                        info!(name = %schedule.name, "Updated ScheduledTask steps");
+                    Ok(YamlSyncOutcome::Updated) => {
+                        info!(name = %schedule.name, "Synced ScheduledTask from YAML");
                     }
-                    Ok(false) => {
-                        warn!(name = %schedule.name, "ScheduledTask not found during step update");
+                    Ok(YamlSyncOutcome::RuntimeOwned) => {
+                        warn!(
+                            name = %schedule.name,
+                            "ScheduledTask is runtime-owned — YAML definition skipped \
+                             (set managed_by='yaml' via manage_scheduled_task to hand it back)"
+                        );
+                    }
+                    Ok(YamlSyncOutcome::NotFound) => {
+                        warn!(name = %schedule.name, "ScheduledTask vanished during sync");
                     }
                     Err(e) => {
-                        warn!(name = %schedule.name, error = %e, "Failed to update ScheduledTask steps");
+                        warn!(name = %schedule.name, error = %e, "Failed to sync ScheduledTask from YAML");
                     }
                 }
             }
@@ -91,6 +110,16 @@ pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow:
         }
 
         seeded += 1;
+    }
+
+    // Whatever still lacks an owner has no YAML file backing it — the graph owns it.
+    match neo4j.backfill_scheduled_task_managed_by().await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            count = n,
+            "Backfilled managed_by='runtime' on ScheduledTasks"
+        ),
+        Err(e) => warn!(error = %e, "Failed to backfill ScheduledTask managed_by"),
     }
 
     Ok(seeded)

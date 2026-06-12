@@ -46,7 +46,19 @@ fn row_to_scheduled_task(row: &neo4rs::Row) -> Result<ScheduledTask, RepositoryE
         updated_at: node
             .get("updated_at")
             .map_err(|e| RepositoryError::InvalidData(e.to_string()))?,
+        managed_by: node.get("managed_by").ok(),
     })
+}
+
+/// Outcome of syncing a YAML schedule definition onto an existing node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YamlSyncOutcome {
+    /// The node was yaml-owned (or legacy/unclaimed) and has been updated.
+    Updated,
+    /// A node with this name exists but is runtime-owned — left untouched.
+    RuntimeOwned,
+    /// No node with this name exists.
+    NotFound,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +67,7 @@ fn row_to_scheduled_task(row: &neo4rs::Row) -> Result<ScheduledTask, RepositoryE
 
 impl Neo4jClient {
     /// Create a new `ScheduledTask` node. Returns the created record.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_scheduled_task(
         &self,
         name: &str,
@@ -63,6 +76,7 @@ impl Neo4jClient {
         interval_seconds: i64,
         steps: &str,
         next_run_at: &str,
+        managed_by: &str,
     ) -> Result<ScheduledTask, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -72,6 +86,7 @@ impl Neo4jClient {
                id: $id, name: $name, description: $description, \
                enabled: $enabled, interval_seconds: $interval_seconds, \
                steps: $steps, next_run_at: $next_run_at, \
+               managed_by: $managed_by, \
                created_at: $created_at, updated_at: $updated_at \
              }) \
              RETURN s",
@@ -82,6 +97,7 @@ impl Neo4jClient {
         .param("interval_seconds", interval_seconds)
         .param("steps", steps)
         .param("next_run_at", next_run_at)
+        .param("managed_by", managed_by)
         .param("created_at", now.clone())
         .param("updated_at", now);
 
@@ -153,6 +169,7 @@ impl Neo4jClient {
         interval_seconds: Option<i64>,
         steps: Option<&str>,
         next_run_at: Option<&str>,
+        managed_by: Option<&str>,
     ) -> Result<Option<ScheduledTask>, RepositoryError> {
         // Check existence first.
         if self.get_scheduled_task(id).await?.is_none() {
@@ -179,6 +196,9 @@ impl Neo4jClient {
         }
         if description.is_some() {
             sets.push("s.description = $description");
+        }
+        if managed_by.is_some() {
+            sets.push("s.managed_by = $managed_by");
         }
 
         let cypher = format!(
@@ -208,6 +228,9 @@ impl Neo4jClient {
             } else {
                 q = q.param("description", BoltType::Null(BoltNull));
             }
+        }
+        if let Some(v) = managed_by {
+            q = q.param("managed_by", v);
         }
 
         let rows = self.execute(q).await?;
@@ -278,31 +301,87 @@ impl Neo4jClient {
         let now = Utc::now().to_rfc3339();
         // Schedule first run immediately.
         let task = self
-            .create_scheduled_task(name, description, true, interval_seconds, steps, &now)
+            .create_scheduled_task(
+                name,
+                description,
+                true,
+                interval_seconds,
+                steps,
+                &now,
+                "yaml",
+            )
             .await?;
         Ok((task.id, true))
     }
 
-    /// Update the `steps` JSON of an existing `ScheduledTask` matched by exact name.
-    /// Used to hot-patch seeded tasks when their chain definition changes.
-    /// Returns `true` if a node was matched and updated, `false` if not found.
-    pub async fn update_scheduled_task_steps(
+    /// Force-sync a YAML schedule definition (steps, description, interval) onto the
+    /// existing `ScheduledTask` matched by exact name — but only when the node is
+    /// yaml-owned. Legacy nodes without a `managed_by` property are claimed as
+    /// `"yaml"` (a matching file now exists, so the file becomes the owner).
+    /// Runtime-owned nodes are never touched.
+    pub async fn sync_yaml_scheduled_task(
         &self,
         name: &str,
+        description: Option<&str>,
+        interval_seconds: i64,
         steps: &str,
-    ) -> Result<bool, RepositoryError> {
-        let rows = self
+    ) -> Result<YamlSyncOutcome, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let mut q = query(
+            "MATCH (s:ScheduledTask {name: $name}) \
+             WHERE s.managed_by IS NULL OR s.managed_by = 'yaml' \
+             SET s.steps = $steps, \
+                 s.description = $description, \
+                 s.interval_seconds = $interval_seconds, \
+                 s.managed_by = 'yaml', \
+                 s.updated_at = $now \
+             RETURN s.id AS id",
+        )
+        .param("name", name)
+        .param("steps", steps)
+        .param("interval_seconds", interval_seconds)
+        .param("now", now);
+        if let Some(d) = description {
+            q = q.param("description", d);
+        } else {
+            q = q.param("description", BoltType::Null(BoltNull));
+        }
+
+        if !self.execute(q).await?.is_empty() {
+            return Ok(YamlSyncOutcome::Updated);
+        }
+
+        // Nothing matched — distinguish a runtime-owned name collision from absence.
+        let exists = !self
             .execute(
-                query(
-                    "MATCH (s:ScheduledTask {name: $name}) \
-                     SET s.steps = $steps \
-                     RETURN s.id AS id",
-                )
-                .param("name", name)
-                .param("steps", steps),
+                query("MATCH (s:ScheduledTask {name: $name}) RETURN s.id AS id")
+                    .param("name", name),
             )
+            .await?
+            .is_empty();
+        Ok(if exists {
+            YamlSyncOutcome::RuntimeOwned
+        } else {
+            YamlSyncOutcome::NotFound
+        })
+    }
+
+    /// Mark every `ScheduledTask` that still lacks a `managed_by` property as
+    /// `"runtime"`-owned. Run after YAML seeding (so matching files claim their
+    /// nodes first); whatever remains was created at runtime. Returns the count.
+    pub async fn backfill_scheduled_task_managed_by(&self) -> Result<usize, RepositoryError> {
+        let rows = self
+            .execute(query(
+                "MATCH (s:ScheduledTask) WHERE s.managed_by IS NULL \
+                 SET s.managed_by = 'runtime' \
+                 RETURN count(s) AS n",
+            ))
             .await?;
-        Ok(!rows.is_empty())
+        let n: i64 = rows
+            .first()
+            .and_then(|r| r.get("n").ok())
+            .unwrap_or_default();
+        Ok(n as usize)
     }
 
     /// Compute `next_run_at` as `now + interval_seconds`.

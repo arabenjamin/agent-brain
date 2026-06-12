@@ -11,6 +11,7 @@ pub mod telemetry;
 pub use agent_brain_models::ScheduledTask;
 pub use client::Neo4jClient;
 pub use error::{RepositoryError, Result};
+pub use scheduled_task::YamlSyncOutcome;
 pub use todo::Todo;
 
 #[cfg(feature = "telemetry")]

@@ -87,7 +87,7 @@ Copy `.env.example` to `.env` and configure:
 | `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
 | `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and force-refreshed on the first scheduler tick after every startup (YAML edits propagate on restart) |
-| `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup (force-updates existing steps) |
+| `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup. A missing/unreadable directory is a **fatal startup error**. See "ScheduledTask ownership" below |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |
 | `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
@@ -344,7 +344,16 @@ steps: [...]            # array of ChainStep-compatible objects
 
 Template variables in step `arguments`: `{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}` (slug derived from goal, used by UI chain for workspace file path).
 
-The **UI chain** (`chains/ui-frontend.yaml`) matches frontend keywords, writes to `workspace/ui/{{file_slug}}.md`, and sets `no_evaluator: true`. Built-in ScheduledTask step definitions live in `schedules/*.yaml` (seeded by `seed_built_ins` via `schedule_seeder`; falls back to hardcoded if `schedules/` is absent).
+The **UI chain** (`chains/ui-frontend.yaml`) matches frontend keywords, writes to `workspace/ui/{{file_slug}}.md`, and sets `no_evaluator: true`.
+
+### ScheduledTask Ownership (`managed_by`)
+
+Built-in ScheduledTask definitions live in `schedules/*.yaml` (seeded by `seed_built_ins` via `schedule_seeder`). There is no hardcoded fallback — a missing `schedules/` directory aborts startup (`std::process::exit(1)`). The graph is always the runtime authority (the scheduler only reads `(:ScheduledTask)` nodes); YAML is the definition source for the tasks it owns. Every node carries a `managed_by` property:
+
+- **`yaml`** — owned by a `schedules/*.yaml` file (matched by exact `name`). Steps, description, and interval are force-synced on every startup, so file edits propagate and runtime edits are overwritten. Legacy nodes without `managed_by` that match a YAML name are claimed as `yaml` at seed time.
+- **`runtime`** — created at runtime via `manage_scheduled_task` or `POST /api/scheduled-tasks`. The seeder never touches these. Nodes left unclaimed after seeding are backfilled to `runtime`.
+
+Ownership can be transferred explicitly: `manage_scheduled_task` upsert accepts `managed_by` (`runtime` detaches a task from its YAML; `yaml` hands it back). Updating a yaml-owned task without transferring ownership returns a warning that the change will be overwritten on restart. To make a runtime task durable and reviewable, write a `schedules/*.yaml` with the exact same `name` — the seeder claims and syncs it on the next startup.
 
 **`manage_chain` tool** now accepts `name`, `patterns` (list), `no_evaluator`, and `no_adversarial` fields in addition to `pattern`.
 

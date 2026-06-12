@@ -285,6 +285,9 @@ impl SchedulerSkill {
                 action=upsert: if a task with `name` exists it is updated in-place, otherwise created. \
                 Steps are ChainStep objects (tool_name, arguments, priority?, max_attempts?, provider_hint?). \
                 Template vars: {{task_id}}, {{goal}}, {{date}}. Do NOT include update_task — appended automatically. \
+                Ownership: tasks created here are managed_by='runtime' (the seeder never touches them). \
+                Tasks managed_by='yaml' are force-synced from schedules/*.yaml on every startup — \
+                runtime edits to them are overwritten unless you pass managed_by='runtime' to take ownership. \
                 action=delete: permanently remove a task by `id` (use upsert with enabled=false to pause instead). \
                 action=audit: scan all ScheduledTask steps against the live tool registry and return a report \
                 of broken tool names, plus optionally disable tasks that reference only dead tools."
@@ -322,6 +325,11 @@ impl SchedulerSkill {
                     "next_run_at": {
                         "type": "string",
                         "description": "ISO8601 datetime to force next run (omit to use now)."
+                    },
+                    "managed_by": {
+                        "type": "string",
+                        "enum": ["yaml", "runtime"],
+                        "description": "Ownership marker. Omit to keep current (new tasks default to 'runtime'). Set 'runtime' to take ownership of a yaml-seeded task so the seeder stops overwriting it."
                     },
                     "id": {
                         "type": "string",
@@ -502,18 +510,48 @@ impl SchedulerSkill {
 
                 let description = args["description"].as_str();
                 let enabled = args["enabled"].as_bool().unwrap_or(true);
+                let managed_by = match args["managed_by"].as_str() {
+                    Some("yaml") => Some("yaml"),
+                    Some("runtime") => Some("runtime"),
+                    Some(other) => {
+                        return ToolCallResult::error(format!(
+                            "`managed_by` must be 'yaml' or 'runtime', got '{other}'"
+                        ));
+                    }
+                    None => None,
+                };
 
                 let existing = neo4j
                     .execute(
-                        neo4rs::query("MATCH (s:ScheduledTask {name: $name}) RETURN s.id AS id")
-                            .param("name", name.as_str()),
+                        neo4rs::query(
+                            "MATCH (s:ScheduledTask {name: $name}) \
+                             RETURN s.id AS id, s.managed_by AS managed_by",
+                        )
+                        .param("name", name.as_str()),
                     )
                     .await
                     .ok()
                     .and_then(|rows| rows.into_iter().next())
-                    .and_then(|row| row.get::<String>("id").ok());
+                    .map(|row| {
+                        (
+                            row.get::<String>("id").unwrap_or_default(),
+                            row.get::<String>("managed_by").ok(),
+                        )
+                    });
 
-                let result = if let Some(id) = existing {
+                let mut yaml_owned_warning: Option<String> = None;
+                let result = if let Some((id, current_managed_by)) = existing {
+                    if current_managed_by.as_deref() == Some("yaml")
+                        && managed_by.is_none_or(|m| m == "yaml")
+                    {
+                        yaml_owned_warning = Some(
+                            "This task is yaml-managed: steps, description, and interval \
+                             will be overwritten from schedules/*.yaml on the next startup. \
+                             Pass managed_by='runtime' to take runtime ownership, or edit \
+                             the YAML file instead."
+                                .to_string(),
+                        );
+                    }
                     neo4j
                         .update_scheduled_task(
                             &id,
@@ -523,6 +561,7 @@ impl SchedulerSkill {
                             Some(interval_seconds),
                             Some(&steps_json),
                             args["next_run_at"].as_str(),
+                            managed_by,
                         )
                         .await
                         .map(|opt| opt.map(|t| (t, false)))
@@ -540,6 +579,7 @@ impl SchedulerSkill {
                             interval_seconds,
                             &steps_json,
                             &next_run_at,
+                            managed_by.unwrap_or("runtime"),
                         )
                         .await
                         .map(|t| Some((t, true)))
@@ -547,11 +587,17 @@ impl SchedulerSkill {
                 };
 
                 match result {
-                    Ok(Some((task, created))) => ToolCallResult::success_json(json!({
-                        "created": created,
-                        "updated": !created,
-                        "task": task,
-                    })),
+                    Ok(Some((task, created))) => {
+                        let mut response = json!({
+                            "created": created,
+                            "updated": !created,
+                            "task": task,
+                        });
+                        if let Some(w) = yaml_owned_warning {
+                            response["warning"] = json!(w);
+                        }
+                        ToolCallResult::success_json(response)
+                    }
                     Ok(None) => ToolCallResult::error("Task not found after update".to_string()),
                     Err(e) => {
                         ToolCallResult::error(format!("Failed to upsert scheduled task: {e}"))

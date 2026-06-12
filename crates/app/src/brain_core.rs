@@ -21,7 +21,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::repository::{Neo4jClient, TelemetryClient};
@@ -1062,154 +1062,29 @@ impl BrainCore {
         }
 
         // ── Seed built-in ScheduledTasks ──────────────────────────────────
-        // Prefer loading from the schedules/ directory so step definitions can be
-        // edited without recompilation. Fall back to the hardcoded definitions when
-        // the directory is absent (e.g. Docker environments without the mount).
+        // schedules/*.yaml is the single source of truth for yaml-owned task
+        // definitions. A missing or unreadable directory is a deployment error
+        // (broken mount, wrong SCHEDULES_DIR) — fail hard rather than start a
+        // brain whose schedule definitions silently stop propagating.
         let schedules_dir =
             PathBuf::from(std::env::var("SCHEDULES_DIR").unwrap_or_else(|_| "schedules".into()));
-        if schedules_dir.exists() {
-            match crate::services::schedule_seeder::seed_schedules_from_dir(neo4j, &schedules_dir)
-                .await
-            {
-                Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
-                Err(e) => {
-                    warn!(error = %e, "Failed to seed schedules from schedules/ — falling back to hardcoded")
-                }
-            }
-        } else {
-            Self::seed_scheduled_tasks_hardcoded(neo4j).await;
+        if !schedules_dir.exists() {
+            error!(
+                dir = %schedules_dir.display(),
+                "Schedules directory not found — check the volume mount or SCHEDULES_DIR. Refusing to start."
+            );
+            std::process::exit(1);
         }
-    }
-
-    /// Hardcoded ScheduledTask seeds — used as a fallback when `schedules/` is not mounted.
-    async fn seed_scheduled_tasks_hardcoded(neo4j: &crate::repository::Neo4jClient) {
-        let daily_news_steps = serde_json::json!([
-            {"tool_name":"search_web","arguments":{"query":"top world news headlines {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"search_web","arguments":{"query":"AI technology science news {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"search_web","arguments":{"query":"business economy politics news {{date}}","count":10,"source_list":"news"},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"reason","arguments":{"question":"Write a structured daily news brief for {{date}} with the following sections:\n## EXECUTIVE SUMMARY\n## WORLD NEWS\n## TECHNOLOGY & AI\n## BUSINESS & POLITICS\n## STORY TO WATCH\n\n3-4 bullets per section. Cite sources with URLs. Flag notable spin or framing with ⚠️.","context":"{{_prev}}","store_inference":false},"priority":2,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"notify_user","arguments":{"message":"{{_prev}}","context":"Daily News Brief {{date}}","related_session_id":"news-{{date}}"},"priority":2,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"push_context","arguments":{"session_id":"news-{{date}}","content":"{{_prev}}","role":"assistant"},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"store_note","arguments":{"content":"{{_prev}}","note_type":"news","source_context":"scheduled_daily_news_brief"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
-        ]);
-        let health_monitor_steps = serde_json::json!([
-            {"tool_name":"neo4j_query","arguments":{"cypher":"MATCH (j:AgentJob) WHERE j.created_at >= toString(datetime() - duration('P1D')) RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"dead_letter","arguments":{"action":"list","limit":20},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"list_tasks","arguments":{"status":"failed","limit":10},"priority":1,"max_attempts":2,"provider_hint":"ollama"},
-            {"tool_name":"reason","arguments":{"question":"Job status counts from the past 24 h, dead-letter queue, and recent failed tasks: {{_prev}}\n\nSummarise the current health of the brain. Note any failure patterns, queue backlogs, or regressions compared to previous health snapshots.","store_inference":true},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"store_note","arguments":{"content":"Health monitor cycle complete — see inference note for analysis.","note_type":"outcome","source_context":"health_monitor"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
-        ]);
-        let weekly_news_steps = serde_json::json!([
-            {"tool_name":"search_web","arguments":{"query":"major world news events this week AP Reuters BBC","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"search_web","arguments":{"query":"AI technology breakthroughs this week TechCrunch Wired","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"search_web","arguments":{"query":"business economy politics week Financial Times Bloomberg","count":10},"priority":1,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"reason","arguments":{"question":"Write a weekly news synthesis with top 3 stories per category (world, technology, business/politics), emerging themes across categories, and one trend to watch next week. Cite sources with URLs.","context":"{{_prev}}","store_inference":false},"priority":2,"max_attempts":3,"provider_hint":"ollama"},
-            {"tool_name":"store_note","arguments":{"content":"{{_prev}}","note_type":"news","source_context":"scheduled_weekly_news_brief"},"priority":1,"max_attempts":2,"provider_hint":"ollama"}
-        ]);
-
-        // Todo review: query outstanding todos → reason over them → open a dedicated chat
-        // session pre-loaded with the agent's message → notify the user to join.
-        //
-        // Step flow and {{_prev}} chain:
-        //   1. neo4j_query  → raw todo rows JSON
-        //   2. reason       → agent opening message (markdown)     [returns {"answer":"..."}]
-        //   3. notify_user  → delivers message, opens "todos-{{date}}" session
-        //                     [returns {"answer":"[msg]"} so next step gets clean text]
-        //   4. push_context → seeds "todos-{{date}}" session with the agent message
-        //                     so it appears as chat history when user clicks "Continue"
-        let todo_review_steps = serde_json::json!([
-            {
-                "tool_name": "neo4j_query",
-                "arguments": {
-                    "cypher": "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] RETURN t.id AS id, t.title AS title, t.description AS description, t.priority AS priority, t.status AS status, t.due_at AS due_at ORDER BY t.priority ASC, t.created_at ASC LIMIT 15"
-                },
-                "priority": 1, "max_attempts": 2, "provider_hint": "ollama"
-            },
-            {
-                "tool_name": "reason",
-                "arguments": {
-                    "question": "You are reviewing the user's outstanding todos for {{date}}. Here is the current list:\n\n{{_prev}}\n\nWrite a friendly, concise message to the user (under 250 words) that:\n1. Opens with a brief summary of what's on their plate (number of items, any urgent/overdue ones).\n2. Picks the 1-2 highest-priority or most unclear todos and asks a specific clarifying question for each — e.g. what does completion look like, are there blockers, should you start on it now?\n3. Closes with an offer to help with any of them.\n\nIf there are no outstanding todos, say so warmly and ask if the user wants to add anything.\n\nWrite directly to the user (second person). Do not use bullet-point headers for the questions — keep it conversational.",
-                    "context": "{{_prev}}",
-                    "store_inference": false
-                },
-                "priority": 2, "max_attempts": 3, "provider_hint": "ollama"
-            },
-            {
-                "tool_name": "notify_user",
-                "arguments": {
-                    "message": "{{_prev}}",
-                    "context": "Todo Review {{date}}",
-                    "related_session_id": "todos-{{date}}"
-                },
-                "priority": 2, "max_attempts": 2, "provider_hint": "ollama"
-            },
-            {
-                "tool_name": "push_context",
-                "arguments": {
-                    "session_id": "todos-{{date}}",
-                    "content": "{{_prev}}",
-                    "role": "assistant"
-                },
-                "priority": 1, "max_attempts": 2, "provider_hint": "ollama"
-            }
-        ]);
-
-        let seeds: &[(&str, Option<&str>, i64, &serde_json::Value)] = &[
-            (
-                "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing",
-                Some(
-                    "Aggregates headlines from multiple sources daily and stores a structured news briefing.",
-                ),
-                86400,
-                &daily_news_steps,
-            ),
-            (
-                "Brain health monitor: review scheduler state, queue metrics, and failure patterns",
-                Some(
-                    "Periodic brain health check — reviews scheduler state, queue depth, and failure trends.",
-                ),
-                43200,
-                &health_monitor_steps,
-            ),
-            (
-                "Weekly news briefing and analysis: synthesize major world, tech, business, and international stories from the past week",
-                Some(
-                    "Weekly synthesis of major news themes across world, technology, and business.",
-                ),
-                604800,
-                &weekly_news_steps,
-            ),
-            (
-                "Daily todo review: check outstanding todos and open a chat session to discuss progress, blockers, and next steps with the user",
-                Some(
-                    "Reviews pending todos daily, asks the user clarifying questions, and opens a dedicated chat session for follow-up.",
-                ),
-                86400,
-                &todo_review_steps,
-            ),
-        ];
-
-        for (name, description, interval, steps) in seeds {
-            let steps_str = serde_json::to_string(steps).unwrap_or_default();
-            match neo4j
-                .seed_scheduled_task_if_absent(name, *description, *interval, &steps_str)
-                .await
-            {
-                Ok((id, true)) => info!(name = *name, id = %id, "Seeded ScheduledTask"),
-                Ok((_, false)) => {
-                    debug!(name = *name, "ScheduledTask already exists — skipped");
-                    // Force-update steps for tasks whose chain definition has changed.
-                    // This patches live tasks that were seeded before the change.
-                    let steps_str2 = serde_json::to_string(steps).unwrap_or_default();
-                    match neo4j.update_scheduled_task_steps(name, &steps_str2).await {
-                        Ok(true) => debug!(name = *name, "Updated ScheduledTask steps"),
-                        Ok(false) => {}
-                        Err(e) => {
-                            warn!(name = *name, error = %e, "Failed to update ScheduledTask steps")
-                        }
-                    }
-                }
-                Err(e) => warn!(name = *name, error = %e, "Failed to seed ScheduledTask"),
+        match crate::services::schedule_seeder::seed_schedules_from_dir(neo4j, &schedules_dir).await
+        {
+            Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
+            Err(e) => {
+                error!(
+                    dir = %schedules_dir.display(),
+                    error = %e,
+                    "Failed to read schedules directory. Refusing to start."
+                );
+                std::process::exit(1);
             }
         }
     }

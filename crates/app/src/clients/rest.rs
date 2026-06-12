@@ -516,6 +516,8 @@ pub async fn handle_create_scheduled_task(
             interval_seconds,
             &steps,
             &next_run_at,
+            // API-created tasks are runtime-owned: the YAML seeder never touches them.
+            body["managed_by"].as_str().unwrap_or("runtime"),
         )
         .await
     {
@@ -576,6 +578,7 @@ pub async fn handle_update_scheduled_task(
             interval_seconds,
             steps_string.as_deref(),
             next_run_at,
+            body["managed_by"].as_str(),
         )
         .await
     {
