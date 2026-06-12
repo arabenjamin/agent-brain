@@ -1,42 +1,17 @@
 name: "Doc update: review recent git changes and sync project-docs"
-description: "Summarises recent git commits into a dated digest and writes it into the '## Recent Changes (auto)' section of project-docs/STATUS.md. Section mode confines the LLM output to that one section — it can never touch the rest of the document. (Redesigned 2026-06-12: the previous whole-file regeneration chain could not produce guard-compliant output with the local model and had ratcheted the docs into hallucinated content.)"
+description: "Writes a dated, commit-grounded changelog digest into the '## Recent Changes (auto)' section of project-docs/STATUS.md. Fully deterministic: get_git_log format=digest renders the markdown directly from commit history and section mode confines the write to that one section. (Redesigned 2026-06-12 — no LLM in the loop after the local model proved unable to produce grounded doc content.)"
 interval_seconds: 43200
 steps:
   # Step flow and {{_prev}} chain:
-  #   1. get_git_log        → recent commit JSON (last 20 commits)
-  #   2. reason             → short dated digest (markdown bullets)
-  #   3. write_codebase_doc → replaces '## Recent Changes (auto)' section in STATUS.md
+  #   1. get_git_log format=digest → dated markdown changelog from the last 15 commits
+  #   2. write_codebase_doc        → replaces '## Recent Changes (auto)' section in STATUS.md
 
   - tool_name: get_git_log
     arguments:
-      n: 20
+      n: 15
+      format: digest
     priority: 1
     max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: reason
-    arguments:
-      question: |
-        Below are the most recent git commits to the agent-brain codebase.
-
-        {{_prev}}
-
-        Write a changelog digest of these commits. Format, exactly:
-
-        ### {{date}}
-
-        - <one-line summary of a change>
-        - <one-line summary of a change>
-
-        Rules:
-        - 3 to 6 bullets, each a single line.
-        - Every bullet must be grounded in one or more of the commit messages above.
-          Do not add analysis, opinions, or anything not stated in a commit.
-        - Group related commits into one bullet where natural.
-        - Output ONLY the markdown above — no preamble, no explanation, no code fences.
-      store_inference: false
-    priority: 2
-    max_attempts: 3
     provider_hint: ollama
 
   - tool_name: write_codebase_doc

@@ -176,6 +176,39 @@ fn upsert_doc_section(old: &str, section_heading: &str, content: &str) -> String
     format!("{}\n", new_text.trim_end())
 }
 
+/// Format `git log` output (lines of `hash|date|subject`) as a dated markdown
+/// changelog digest, grouped by commit date:
+///
+/// ```markdown
+/// ### 2026-06-12
+///
+/// - redesign doc-update chain around section-confined writes (`6ddd9ad`)
+/// ```
+///
+/// Deterministic and 100% commit-grounded — used by the doc-update schedule so
+/// no LLM sits between git history and the published changelog.
+fn format_git_digest(raw: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut current_date = "";
+    for line in raw.lines() {
+        let mut parts = line.splitn(3, '|');
+        let (Some(hash), Some(date), Some(subject)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if date != current_date {
+            if !out.is_empty() {
+                out.push(String::new());
+            }
+            out.push(format!("### {}", date));
+            out.push(String::new());
+            current_date = date;
+        }
+        out.push(format!("- {} (`{}`)", subject.trim(), hash));
+    }
+    out.join("\n")
+}
+
 /// Codebase Skill — read-only filesystem access to the agent's own source code,
 /// plus workspace write tools and a write_proposal tool for staging fix proposals.
 pub struct CodebaseSkill {
@@ -363,7 +396,7 @@ impl CodebaseSkill {
     fn get_git_log_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_git_log".to_string(),
-            description: "Get recent git commit history for the codebase.".to_string(),
+            description: "Get recent git commit history for the codebase. Pass format='digest' for a dated markdown changelog (### date headings + commit-subject bullets), ready to write into a doc section.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -374,6 +407,10 @@ impl CodebaseSkill {
                     "path": {
                         "type": "string",
                         "description": "Limit to commits affecting this path (relative to codebase root)"
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Optional output format: 'digest' = dated markdown changelog grouped by commit date (deterministic, commit-grounded)."
                     }
                 }
             }),
@@ -882,6 +919,8 @@ impl CodebaseSkill {
         struct Args {
             n: Option<u32>,
             path: Option<String>,
+            #[serde(default)]
+            format: Option<String>,
         }
         let args: Args = match parse_args(arguments) {
             Ok(a) => a,
@@ -892,12 +931,17 @@ impl CodebaseSkill {
             Err(e) => return e,
         };
         let n = args.n.unwrap_or(10).min(50);
+        let digest = args.format.as_deref() == Some("digest");
 
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&root);
         cmd.arg("log");
         cmd.arg(format!("-{n}"));
-        cmd.arg("--format=%h %ad %an: %s");
+        if digest {
+            cmd.arg("--format=%h|%ad|%s");
+        } else {
+            cmd.arg("--format=%h %ad %an: %s");
+        }
         cmd.arg("--date=short");
         if let Some(ref p) = args.path {
             cmd.arg("--").arg(p);
@@ -906,8 +950,11 @@ impl CodebaseSkill {
         match cmd.output().await {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout).to_string();
-                ToolCallResult::success_text(if text.trim().is_empty() {
-                    "No commits found".to_string()
+                if text.trim().is_empty() {
+                    return ToolCallResult::success_text("No commits found".to_string());
+                }
+                ToolCallResult::success_text(if digest {
+                    format_git_digest(text.trim())
                 } else {
                     format!("Recent commits:\n{}", text.trim())
                 })
@@ -1764,7 +1811,29 @@ pub fn detect_repo_root() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{upsert_doc_section, validate_doc_rewrite};
+    use super::{format_git_digest, upsert_doc_section, validate_doc_rewrite};
+
+    #[test]
+    fn git_digest_groups_by_date() {
+        let raw = "abc1234|2026-06-12|redesign doc-update chain\n\
+def5678|2026-06-12|guard write_codebase_doc\n\
+0123abc|2026-06-11|graph hygiene sweep";
+        let out = format_git_digest(raw);
+        assert_eq!(
+            out,
+            "### 2026-06-12\n\n\
+- redesign doc-update chain (`abc1234`)\n\
+- guard write_codebase_doc (`def5678`)\n\n\
+### 2026-06-11\n\n\
+- graph hygiene sweep (`0123abc`)"
+        );
+    }
+
+    #[test]
+    fn git_digest_skips_malformed_lines() {
+        let out = format_git_digest("not a digest line\nabc1234|2026-06-12|real commit");
+        assert_eq!(out, "### 2026-06-12\n\n- real commit (`abc1234`)");
+    }
 
     const DOC: &str = "\
 # Brain Status
