@@ -49,15 +49,33 @@ pub async fn sync_self_model(
     for (skill_name, tools) in skills_with_tools {
         for t in tools {
             tool_names.push(t.name.clone());
+            // Argument names from the JSON schema — the Agent Constructor
+            // grounds its plans in these (and validates required ones).
+            let arg_names: Vec<String> = t.input_schema["properties"]
+                .as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default();
+            let required_args: Vec<String> = t.input_schema["required"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
             neo4j
                 .run(
                     neo4rs::query(
                         "MERGE (d:ToolDef {name: $name}) \
-                         SET d.description = $description, d.skill = $skill, d.synced_at = $now",
+                         SET d.description = $description, d.skill = $skill, \
+                             d.arg_names = $arg_names, d.required_args = $required_args, \
+                             d.synced_at = $now",
                     )
                     .param("name", t.name.as_str())
                     .param("description", t.description.as_str())
                     .param("skill", skill_name.as_str())
+                    .param("arg_names", arg_names)
+                    .param("required_args", required_args)
                     .param("now", now.as_str()),
                 )
                 .await?;

@@ -126,27 +126,56 @@ impl ConstructorSkill {
     }
 
     /// Fetch the self-model blocks the planner prompt is grounded in.
-    async fn self_model_blocks(&self) -> Result<(String, String, Vec<String>), String> {
-        // Tools: name + skill + description (truncated — descriptions are long).
+    /// Returns (tools block, profiles block, known tool names, required-args map).
+    async fn self_model_blocks(
+        &self,
+    ) -> Result<
+        (
+            String,
+            String,
+            Vec<String>,
+            std::collections::HashMap<String, Vec<String>>,
+        ),
+        String,
+    > {
+        // Tools: name + skill + args + description (truncated).
         let rows = self
             .neo4j
             .execute(neo4rs::query(
                 "MATCH (t:ToolDef) RETURN t.name AS name, t.skill AS skill, \
+                 t.arg_names AS arg_names, t.required_args AS required_args, \
                  left(t.description, 160) AS description ORDER BY t.skill, t.name",
             ))
             .await
             .map_err(|e| format!("Self-model unavailable (ToolDef query failed): {e}"))?;
 
         let mut tool_names: Vec<String> = Vec::new();
+        let mut required_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let mut tools_block = String::new();
         for row in &rows {
             let name: String = row.get("name").unwrap_or_default();
             let skill: String = row.get("skill").unwrap_or_default();
             let desc: String = row.get("description").unwrap_or_default();
+            let arg_names: Vec<String> = row.get("arg_names").unwrap_or_default();
+            let required: Vec<String> = row.get("required_args").unwrap_or_default();
             if DENYLISTED_TOOLS.contains(&name.as_str()) {
                 continue;
             }
-            tools_block.push_str(&format!("- {name} [{skill}]: {desc}\n"));
+            // Required args marked with * — the planner must use these EXACT names.
+            let args_list = arg_names
+                .iter()
+                .map(|a| {
+                    if required.contains(a) {
+                        format!("{a}*")
+                    } else {
+                        a.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tools_block.push_str(&format!("- {name} [{skill}] (args: {args_list}): {desc}\n"));
+            required_map.insert(name.clone(), required);
             tool_names.push(name);
         }
         if tool_names.is_empty() {
@@ -168,7 +197,7 @@ impl ConstructorSkill {
             profiles_block.push_str(&format!("- {name}: {desc}\n"));
         }
 
-        Ok((tools_block, profiles_block, tool_names))
+        Ok((tools_block, profiles_block, tool_names, required_map))
     }
 
     fn planning_prompt(
@@ -188,6 +217,8 @@ impl ConstructorSkill {
              AVAILABLE CONTEXT PROFILES (optional per-step persona):\n{profiles_block}\n\
              HARD RULES:\n\
              1. At most {max_steps} steps. Fewer is better.\n\
+             0. Use the EXACT argument names listed for each tool (args marked * are \
+             required). Inventing argument names makes the step fail.\n\
              2. Each step's output is passed to the next step ONLY via the literal string \
              {{{{_prev}}}} in its arguments. Earlier steps' outputs are NOT available — \
              sequence accordingly.\n\
@@ -232,10 +263,11 @@ impl ConstructorSkill {
         let dispatch = args["dispatch"].as_bool().unwrap_or(false);
 
         // 1. Ground the planner in the self-model.
-        let (tools_block, profiles_block, known_tools) = match self.self_model_blocks().await {
-            Ok(v) => v,
-            Err(e) => return ToolCallResult::error(e),
-        };
+        let (tools_block, profiles_block, known_tools, required_map) =
+            match self.self_model_blocks().await {
+                Ok(v) => v,
+                Err(e) => return ToolCallResult::error(e),
+            };
 
         // Phase 3: reuse-before-construct. A proven AgentSpec (avg PERFORMED
         // score >= 3.5) whose goal closely matches is re-dispatched instead of
@@ -246,7 +278,7 @@ impl ConstructorSkill {
             // Re-validate the stored steps against the CURRENT tool inventory —
             // tools may have changed since the spec was planned.
             let wrapped = format!("{{\"steps\": {}}}", hit.steps_json);
-            match parse_and_validate_plan(&wrapped, &known_tools, HARD_MAX_STEPS) {
+            match parse_and_validate_plan(&wrapped, &known_tools, &required_map, HARD_MAX_STEPS) {
                 Ok(plan) => {
                     return self
                         .finish(
@@ -306,7 +338,7 @@ impl ConstructorSkill {
         };
 
         // 3. Parse + validate against the self-model.
-        let plan = match parse_and_validate_plan(&raw, &known_tools, max_steps) {
+        let plan = match parse_and_validate_plan(&raw, &known_tools, &required_map, max_steps) {
             Ok(p) => p,
             Err(e) => {
                 // Capability gap (red-run takeaway #4): the planner wanted a
@@ -649,6 +681,7 @@ struct ValidatedPlan {
 fn parse_and_validate_plan(
     raw: &str,
     known_tools: &[String],
+    required_args: &std::collections::HashMap<String, Vec<String>>,
     max_steps: usize,
 ) -> Result<ValidatedPlan, String> {
     let text = raw.trim();
@@ -687,6 +720,19 @@ fn parse_and_validate_plan(
             v @ Value::Object(_) => Some(v.clone()),
             _ => return Err(format!("step {i} arguments must be a JSON object")),
         };
+        // Enforce required argument names — planners love inventing synonyms
+        // (observed live: store_note called with `text`/`title` instead of
+        // `content`, dead-lettering the chain).
+        if let Some(req) = required_args.get(tool) {
+            for r in req {
+                let present = arguments.as_ref().and_then(|a| a.get(r)).is_some();
+                if !present {
+                    return Err(format!(
+                        "step {i} ({tool}) is missing required argument `{r}`"
+                    ));
+                }
+            }
+        }
         let required_capabilities: Option<Vec<String>> = s["required_capabilities"]
             .as_array()
             .map(|a| {
@@ -757,6 +803,12 @@ mod tests {
             .collect()
     }
 
+    fn reqs() -> std::collections::HashMap<String, Vec<String>> {
+        let mut m = std::collections::HashMap::new();
+        m.insert("store_note".to_string(), vec!["content".to_string()]);
+        m
+    }
+
     #[test]
     fn valid_plan_parses() {
         let raw = r#"{"name":"test","rationale":"because","steps":[
@@ -764,7 +816,7 @@ mod tests {
             {"tool_name":"reason","arguments":{"question":"x","context":"{{_prev}}"},"required_capabilities":["reasoning"]},
             {"tool_name":"store_note","arguments":{"content":"{{_prev}}","note_type":"semantic"}}
         ]}"#;
-        let plan = parse_and_validate_plan(raw, &tools(), 6).unwrap();
+        let plan = parse_and_validate_plan(raw, &tools(), &reqs(), 6).unwrap();
         assert_eq!(plan.steps.len(), 3);
         assert_eq!(plan.name.as_deref(), Some("test"));
         assert_eq!(
@@ -776,14 +828,14 @@ mod tests {
     #[test]
     fn unknown_tool_rejected() {
         let raw = r#"{"steps":[{"tool_name":"rm_rf_everything","arguments":{}}]}"#;
-        let err = parse_and_validate_plan(raw, &tools(), 6).unwrap_err();
+        let err = parse_and_validate_plan(raw, &tools(), &reqs(), 6).unwrap_err();
         assert!(err.contains("unknown tool"));
     }
 
     #[test]
     fn denylisted_tool_rejected() {
         let raw = r#"{"steps":[{"tool_name":"manage_scheduled_task","arguments":{}}]}"#;
-        let err = parse_and_validate_plan(raw, &tools(), 6).unwrap_err();
+        let err = parse_and_validate_plan(raw, &tools(), &reqs(), 6).unwrap_err();
         assert!(err.contains("denylisted"));
     }
 
@@ -791,14 +843,14 @@ mod tests {
     fn step_budget_enforced() {
         let step = r#"{"tool_name":"reason","arguments":{}}"#;
         let raw = format!(r#"{{"steps":[{0},{0},{0}]}}"#, step);
-        let err = parse_and_validate_plan(&raw, &tools(), 2).unwrap_err();
+        let err = parse_and_validate_plan(&raw, &tools(), &reqs(), 2).unwrap_err();
         assert!(err.contains("budget"));
     }
 
     #[test]
     fn markdown_fenced_json_still_parses() {
         let raw = "```json\n{\"steps\":[{\"tool_name\":\"reason\",\"arguments\":{\"question\":\"q\"}}]}\n```";
-        let plan = parse_and_validate_plan(raw, &tools(), 6).unwrap();
+        let plan = parse_and_validate_plan(raw, &tools(), &reqs(), 6).unwrap();
         assert_eq!(plan.steps.len(), 1);
     }
 
@@ -812,8 +864,15 @@ mod tests {
     }
 
     #[test]
+    fn missing_required_arg_rejected() {
+        let raw = r#"{"steps":[{"tool_name":"store_note","arguments":{"text":"wrong name"}}]}"#;
+        let err = parse_and_validate_plan(raw, &tools(), &reqs(), 6).unwrap_err();
+        assert!(err.contains("missing required argument `content`"), "{err}");
+    }
+
+    #[test]
     fn zero_steps_rejected() {
-        let err = parse_and_validate_plan(r#"{"steps":[]}"#, &tools(), 6).unwrap_err();
+        let err = parse_and_validate_plan(r#"{"steps":[]}"#, &tools(), &reqs(), 6).unwrap_err();
         assert!(err.contains("zero steps"));
     }
 }
