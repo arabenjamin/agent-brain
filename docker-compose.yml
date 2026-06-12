@@ -34,7 +34,7 @@ services:
       - LLM_PROVIDER=ollama-cloud
       - OLLAMA_URL=https://ollama.com
       - OLLAMA_LOCAL_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=minimax-m2.7:cloud
+      - OLLAMA_MODEL=gemma4:31b-cloud
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       - MCP_TOOL_PROFILE=general    # Limit tools/list to this profile for smaller MCP clients (e.g. Open WebUI)
       - CONTEXTS_DIR=/home/agent/agent-brain/contexts  # Use volume-mounted contexts so profile changes take effect without rebuild

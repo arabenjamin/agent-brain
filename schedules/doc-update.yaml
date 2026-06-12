@@ -11,7 +11,6 @@ steps:
   #   6. read_codebase_file → git log prepended to STATUS.md content
   #   7. reason             → complete updated STATUS.md markdown
   #   8. write_codebase_doc → writes project-docs/STATUS.md
-  #   9. store_note         → records the update cycle
 
   - tool_name: get_git_log
     arguments:
@@ -108,15 +107,6 @@ steps:
     arguments:
       path: "project-docs/STATUS.md"
       content: "{{_prev}}"
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: store_note
-    arguments:
-      content: "Doc update cycle complete on {{date}}. Updated project-docs/TODO.md and project-docs/STATUS.md based on last 20 git commits."
-      note_type: episodic
-      source_context: scheduled_doc_update
     priority: 1
     max_attempts: 2
     provider_hint: ollama

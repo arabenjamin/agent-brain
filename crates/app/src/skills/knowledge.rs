@@ -75,8 +75,10 @@ impl KnowledgeSkill {
             name: "search_notes".to_string(),
             description: "Search stored notes. Provide `query` for hybrid BM25+semantic search with \
                          optional graph expansion. Provide `entity_name` instead to find notes that \
-                         mention a specific named entity (case-insensitive). At least one of `query` \
-                         or `entity_name` must be supplied."
+                         mention a specific named entity (case-insensitive). Use `note_type` to filter \
+                         by type (semantic, episodic, reflection, consolidated, news, news_raw, outcome) \
+                         — when set without a `query`, lists all notes of that type ordered by date. \
+                         At least one of `query`, `entity_name`, or `note_type` must be supplied."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -92,6 +94,10 @@ impl KnowledgeSkill {
                     "entity_type": {
                         "type": "string",
                         "description": "Optional entity type filter when using entity_name (e.g. technology, organisation)"
+                    },
+                    "note_type": {
+                        "type": "string",
+                        "description": "Filter by note type: semantic, episodic, reflection, consolidated, news, news_raw, outcome. Without a query, lists all notes of this type by date."
                     },
                     "limit": {
                         "type": "integer",
@@ -306,20 +312,44 @@ impl KnowledgeSkill {
             };
         }
 
-        let query = match input.query.as_deref() {
-            Some(q) if !q.is_empty() => q,
-            _ => return ToolCallResult::error("Provide `query` or `entity_name`".to_string()),
-        };
+        // note_type-only path: list all notes of that type ordered by date
+        if input.query.as_deref().is_none_or(str::is_empty) {
+            if let Some(ref nt) = input.note_type {
+                info!(note_type = %nt, "Listing notes by type");
+                return match self.svc.list_notes(input.limit, Some(nt.as_str())).await {
+                    Ok(notes) => ToolCallResult::success_json(json!({
+                        "count": notes.len(),
+                        "note_type": nt,
+                        "notes": notes
+                    })),
+                    Err(e) => ToolCallResult::error(format!("list_notes failed: {}", e)),
+                };
+            }
+            return ToolCallResult::error(
+                "Provide `query`, `entity_name`, or `note_type`".to_string(),
+            );
+        }
 
-        info!(query = %query, "Searching notes");
+        let query = input.query.as_deref().unwrap();
+        info!(query = %query, note_type = ?input.note_type, "Searching notes");
 
         let results = if input.entity_expansion {
             self.svc
-                .search_notes_with_entity_expansion(query, input.limit, input.graph_hops)
+                .search_notes_with_entity_expansion(
+                    query,
+                    input.limit,
+                    input.graph_hops,
+                    input.note_type.as_deref(),
+                )
                 .await
         } else {
             self.svc
-                .search_notes(query, input.limit, input.graph_hops)
+                .search_notes(
+                    query,
+                    input.limit,
+                    input.graph_hops,
+                    input.note_type.as_deref(),
+                )
                 .await
         };
         match results {
@@ -654,7 +684,7 @@ Respond with a JSON object only (no markdown, no explanation):
         // avoid repeating already-known failure patterns and build on prior learning.
         let past_patterns = self
             .svc
-            .search_notes("adversarial review plan failure scenario", 3, 0)
+            .search_notes("adversarial review plan failure scenario", 3, 0, None)
             .await
             .unwrap_or_default();
 
@@ -840,6 +870,8 @@ struct SearchNotesInput {
     entity_name: Option<String>,
     #[serde(default)]
     entity_type: Option<String>,
+    #[serde(default)]
+    note_type: Option<String>,
     #[serde(default = "agent_brain_protocol::default_limit_5")]
     limit: usize,
     #[serde(default = "agent_brain_protocol::default_graph_hops")]

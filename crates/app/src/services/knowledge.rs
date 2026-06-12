@@ -745,8 +745,9 @@ impl KnowledgeService {
         query_text: &str,
         limit: usize,
         graph_hops: usize,
+        note_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, false)
+        self.search_notes_inner(query_text, limit, graph_hops, false, note_type)
             .await
     }
 
@@ -756,8 +757,9 @@ impl KnowledgeService {
         query_text: &str,
         limit: usize,
         graph_hops: usize,
+        note_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, true)
+        self.search_notes_inner(query_text, limit, graph_hops, true, note_type)
             .await
     }
 
@@ -767,8 +769,17 @@ impl KnowledgeService {
         limit: usize,
         graph_hops: usize,
         entity_expansion: bool,
+        note_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
         let fetch_limit = (limit * 3).max(10);
+        // With a type filter active, carry the larger candidate pool through every
+        // stage and only cut down to `limit` after the filter — otherwise the filter
+        // runs on an already-truncated list and can return far fewer hits than exist.
+        let pool_limit = if note_type.is_some() {
+            fetch_limit
+        } else {
+            limit
+        };
 
         // 1. Vector search (if LLM available)
         let mut vec_hits: Vec<(String, String)> = Vec::new();
@@ -832,7 +843,7 @@ impl KnowledgeService {
 
             let q = neo4rs::query(cypher)
                 .param("query", query_text)
-                .param("limit", limit as i64);
+                .param("limit", pool_limit as i64);
 
             self.neo4j
                 .execute(q)
@@ -849,7 +860,7 @@ impl KnowledgeService {
                 })
                 .collect()
         } else {
-            let rrf_ranked = Self::rrf_merge(vec_hits, bm25_hits, 60.0, limit);
+            let rrf_ranked = Self::rrf_merge(vec_hits, bm25_hits, 60.0, pool_limit);
             self.apply_freshness_boost(rrf_ranked).await
         };
 
@@ -889,7 +900,7 @@ impl KnowledgeService {
                     }
                 }
                 merged = resolved;
-                merged.truncate(limit);
+                merged.truncate(pool_limit);
             }
         }
 
@@ -908,7 +919,7 @@ impl KnowledgeService {
                             merged.push((nb_id, nb_content));
                         }
                     }
-                    merged.truncate(limit);
+                    merged.truncate(pool_limit);
                 }
                 Err(e) => warn!("Graph expansion failed: {}", e),
             }
@@ -942,9 +953,36 @@ impl KnowledgeService {
                         merged.push((id, content));
                     }
                 }
-                merged.truncate(limit);
+                merged.truncate(pool_limit);
             }
         }
+
+        // 4.75 Type filter: keep only notes of the requested type, then cut the
+        // pool down to the caller's limit. Runs before access tracking so
+        // spaced-repetition stats are only bumped on notes actually returned.
+        if let Some(nt) = note_type {
+            let ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
+            if !ids.is_empty() {
+                let q = neo4rs::query(
+                    "MATCH (n:Note) WHERE n.id IN $ids \
+                       AND COALESCE(n.note_type, 'semantic') = $nt \
+                     RETURN n.id AS id",
+                )
+                .param("ids", ids)
+                .param("nt", nt);
+                match self.neo4j.execute(q).await {
+                    Ok(rows) => {
+                        let keep: std::collections::HashSet<String> = rows
+                            .into_iter()
+                            .filter_map(|r| r.get::<String>("id").ok())
+                            .collect();
+                        merged.retain(|(id, _)| keep.contains(id));
+                    }
+                    Err(e) => warn!("note_type filter query failed: {}", e),
+                }
+            }
+        }
+        merged.truncate(limit);
 
         // 5. Access tracking with spaced-repetition update
         let hit_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
@@ -1203,6 +1241,7 @@ impl KnowledgeService {
                 .first()
                 .and_then(|r| r.get::<i64>("total").ok())
                 .unwrap_or(0) as usize;
+            self.prune_stale_entities().await;
             return Ok(deleted);
         }
 
@@ -1230,7 +1269,40 @@ impl KnowledgeService {
             .first()
             .and_then(|r| r.get::<i64>("total").ok())
             .unwrap_or(0) as usize;
+        self.prune_stale_entities().await;
         Ok(deleted)
+    }
+
+    /// Delete stale entities after a note prune: any entity with no remaining
+    /// MENTIONS edges, plus single-mention entities older than 30 days. Entity
+    /// extraction over-generates (most entities are mentioned exactly once);
+    /// a single-mention entity can never act as a MENTIONS→Entity←MENTIONS
+    /// bridge in graph-expanded search, so past the 30-day grace window it is
+    /// pure noise. Best-effort: failures are logged, never propagated.
+    async fn prune_stale_entities(&self) {
+        let cypher = r#"
+        MATCH (e:Entity)
+        OPTIONAL MATCH (n:Note)-[:MENTIONS]->(e)
+        WITH e, count(n) AS mentions
+        WHERE mentions = 0
+           OR (mentions = 1
+               AND (e.created_at IS NULL
+                    OR e.created_at < datetime() - duration({days: 30})))
+        DETACH DELETE e
+        RETURN count(e) AS n
+        "#;
+        match self.neo4j.execute(neo4rs::query(cypher)).await {
+            Ok(rows) => {
+                let n = rows
+                    .first()
+                    .and_then(|r| r.get::<i64>("n").ok())
+                    .unwrap_or(0);
+                if n > 0 {
+                    info!(deleted = n, "Pruned stale entities");
+                }
+            }
+            Err(e) => warn!("Stale entity pruning failed (non-fatal): {}", e),
+        }
     }
 
     /// Find notes that mention a given entity name.
@@ -1496,11 +1568,13 @@ impl KnowledgeService {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
+            // source_context is a short provenance tag for grouping/analytics, not a
+            // payload field — the full question is already in the note content above.
             match self
                 .store_note_raw(
                     &inference_content,
                     Some("inference"),
-                    Some(question),
+                    Some("reason"),
                     None,
                     Some(ProvenanceFlag::SynthesisInference),
                 )
@@ -1678,11 +1752,13 @@ impl KnowledgeService {
                     .collect::<Vec<_>>()
                     .join("\n")
             );
+            // source_context is a short provenance tag for grouping/analytics, not a
+            // payload field — the full question is already in the note content above.
             match self
                 .store_note_raw(
                     &inference_content,
                     Some("inference"),
-                    Some(question),
+                    Some("reason"),
                     None,
                     Some(ProvenanceFlag::SynthesisInference),
                 )
@@ -2215,7 +2291,7 @@ impl KnowledgeService {
         let embed_dim = embedding.len() as i64;
         let source_cypher = r#"
         MATCH (n:Note)
-        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw']
+        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome']
           AND n.embedding IS NOT NULL
           AND size(n.embedding) = $dim
         WITH n, vector.similarity.cosine(n.embedding, $embedding) AS score
@@ -2542,8 +2618,9 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         query: &str,
         limit: usize,
         graph_hops: usize,
+        note_type: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        KnowledgeService::search_notes(self, query, limit, graph_hops).await
+        KnowledgeService::search_notes(self, query, limit, graph_hops, note_type).await
     }
 
     async fn search_notes_with_entity_expansion(
@@ -2551,8 +2628,12 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         query: &str,
         limit: usize,
         graph_hops: usize,
+        note_type: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        KnowledgeService::search_notes_with_entity_expansion(self, query, limit, graph_hops).await
+        KnowledgeService::search_notes_with_entity_expansion(
+            self, query, limit, graph_hops, note_type,
+        )
+        .await
     }
 
     async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>> {

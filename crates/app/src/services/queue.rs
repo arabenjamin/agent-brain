@@ -665,13 +665,22 @@ impl QueueService {
     // Cleanup
     // =========================================================================
 
-    /// Clean up old completed and dead jobs.
+    /// Clean up old completed, failed, dead, and dead-letter jobs.
     pub async fn cleanup_old_jobs(&self) -> Result<usize, String> {
-        // Default: keep completed for 1 day, dead for 7 days.
-        self.neo4j
+        // Default: keep completed for 1 day; failed/dead for 7 days.
+        let mut total = self
+            .neo4j
             .cleanup_old_jobs(24 * 3600, 7 * 24 * 3600)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // Dead-letter entries are kept longer (30 days) since they carry
+        // failure forensics, but must not accumulate forever either.
+        total += self
+            .neo4j
+            .cleanup_old_dead_letter(30 * 24 * 3600)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(total)
     }
 
     // =========================================================================

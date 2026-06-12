@@ -115,6 +115,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _query: &str,
         _limit: usize,
         _graph_hops: usize,
+        _note_type: Option<&str>,
     ) -> anyhow::Result<Vec<Value>> {
         self.search_result
             .clone()
@@ -126,6 +127,7 @@ impl KnowledgeStore for MockKnowledgeStore {
         _query: &str,
         _limit: usize,
         _graph_hops: usize,
+        _note_type: Option<&str>,
     ) -> anyhow::Result<Vec<Value>> {
         self.search_result
             .clone()

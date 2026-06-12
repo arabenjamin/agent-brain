@@ -25,19 +25,12 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
+  # The reason step stores the analysis as an inference note; no separate
+  # boilerplate outcome note is needed (it only added graph noise).
   - tool_name: reason
     arguments:
       question: "Job status counts from the past 24 h, dead-letter queue, and recent failed tasks: {{_prev}}\n\nSummarise the current health of the brain. Note any failure patterns, queue backlogs, or regressions compared to previous health snapshots."
       store_inference: true
     priority: 1
     max_attempts: 3
-    provider_hint: ollama
-
-  - tool_name: store_note
-    arguments:
-      content: "Health monitor cycle complete — see inference note for analysis."
-      note_type: outcome
-      source_context: health_monitor
-    priority: 1
-    max_attempts: 2
     provider_hint: ollama

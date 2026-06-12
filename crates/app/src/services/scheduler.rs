@@ -259,28 +259,19 @@ impl SchedulerService {
     // =========================================================================
 
     async fn do_tick(&self) -> Result<TickResult, String> {
-        // On the first tick, auto-seed SchedulerChain nodes from chains/ if none exist.
-        // This is a safety net for deployments that skipped `init-db`.
+        // On the first tick, seed/refresh SchedulerChain nodes from chains/.
+        // seed_chains_from_dir is an idempotent MERGE that force-updates pattern,
+        // steps, priority, and description — running it unconditionally means YAML
+        // chain edits propagate on restart (matching ScheduledTask seeding), instead
+        // of silently requiring a manual `init-db`.
         if !self.chains_seeded.swap(true, Ordering::Relaxed) {
-            let count: i64 = self
-                .neo4j
-                .execute(neo4rs::query(
-                    "MATCH (c:SchedulerChain) RETURN count(c) AS n",
-                ))
-                .await
-                .ok()
-                .and_then(|rows| rows.first()?.get("n").ok())
-                .unwrap_or(0);
-
-            if count == 0 {
-                let chains_dir = std::path::PathBuf::from(
-                    std::env::var("CHAINS_DIR").unwrap_or_else(|_| "chains".into()),
-                );
-                if chains_dir.exists() {
-                    match chain_seeder::seed_chains_from_dir(&self.neo4j, &chains_dir).await {
-                        Ok(n) => info!(count = n, "Auto-seeded SchedulerChains on first tick"),
-                        Err(e) => warn!(error = %e, "Auto-seed chains failed (non-fatal)"),
-                    }
+            let chains_dir = std::path::PathBuf::from(
+                std::env::var("CHAINS_DIR").unwrap_or_else(|_| "chains".into()),
+            );
+            if chains_dir.exists() {
+                match chain_seeder::seed_chains_from_dir(&self.neo4j, &chains_dir).await {
+                    Ok(n) => info!(count = n, "Seeded/refreshed SchedulerChains on first tick"),
+                    Err(e) => warn!(error = %e, "Chain seeding failed (non-fatal)"),
                 }
             }
         }
@@ -525,12 +516,14 @@ impl SchedulerService {
         }
 
         // 4. Auto-append update_task so the Task node is marked completed when the chain finishes.
+        // No `note` here: update_task stores any note as an outcome Note, and a fixed
+        // "completed" string per run floods the graph with boilerplate (the Task status
+        // change is already the durable record).
         steps.push(ChainStep {
             tool_name: "update_task".to_string(),
             arguments: Some(json!({
                 "task_id": task_id,
-                "status": "completed",
-                "note": format!("ScheduledTask '{}' completed", st.name)
+                "status": "completed"
             })),
             priority: Some(1),
             max_attempts: Some(3),
@@ -775,10 +768,12 @@ impl SchedulerService {
         let mut consolidation_queued = open_consolidation_exists().await;
 
         // Trigger 1: many overdue spaced-repetition notes.
+        // Outcome notes are boilerplate completion records ("Task completed: …"); reviewing
+        // or consolidating them adds noise, so they don't count toward the backlog.
         let due_check = neo4rs::query(
             "MATCH (n:Note) \
              WHERE n.next_review_at <= datetime() \
-               AND n.note_type <> 'consolidated' \
+               AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'outcome'] \
              RETURN count(n) AS cnt",
         );
         let due_count: i64 = self
@@ -816,7 +811,7 @@ impl SchedulerService {
                 let bump = neo4rs::query(
                     "MATCH (n:Note) \
                      WHERE n.next_review_at <= datetime() \
-                       AND COALESCE(n.note_type, 'semantic') <> 'consolidated' \
+                       AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'outcome'] \
                      SET n.next_review_at = datetime() + duration({days: 14}), \
                          n.review_interval_days = CASE \
                              WHEN COALESCE(n.review_interval_days, 1) < 14 THEN 14 \
@@ -1077,27 +1072,43 @@ impl SchedulerService {
             }
         }
 
-        // Trigger 6: queue backlog — many jobs stuck queued/parked with none running
+        // Trigger 6: queue backlog — many jobs stuck *queued* with nothing running
         // may indicate the coordinator is blocked or a semaphore is exhausted.
+        // Parked jobs are deliberately excluded: parked is the normal state for chain
+        // steps 2..N awaiting their parent, so counting them fires on healthy busy
+        // periods (this trigger previously created 153 duplicate investigation tasks).
         let backlog_check = neo4rs::query(
-            "MATCH (j:AgentJob) \
-             WHERE j.status IN ['queued', 'parked'] \
-             RETURN count(j) AS n",
+            "MATCH (j:AgentJob {status: 'queued'}) \
+             WITH count(j) AS queued \
+             OPTIONAL MATCH (r:AgentJob {status: 'running'}) \
+             RETURN queued, count(r) AS running",
         );
-        let backlog_count: i64 = self
+        let (backlog_count, running_count): (i64, i64) = self
             .neo4j
             .execute(backlog_check)
             .await
             .ok()
-            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("n").ok()))
-            .unwrap_or(0);
+            .and_then(|rows| {
+                rows.first().map(|r| {
+                    (
+                        r.get::<i64>("queued").unwrap_or(0),
+                        r.get::<i64>("running").unwrap_or(0),
+                    )
+                })
+            })
+            .unwrap_or((0, 0));
 
-        if backlog_count >= 20 {
+        if backlog_count >= 20 && running_count == 0 {
+            // Dedup against open investigations AND a 24h cooldown on completed/failed
+            // ones — investigating cannot itself drain the queue, so re-creating the
+            // task every tick while the backlog persists just multiplies noise.
+            // created_at is stored as an ISO-8601 string; lexicographic compare is safe.
             let check_existing = neo4rs::query(
                 "MATCH (t:Task) \
                  WHERE toLower(t.goal) CONTAINS 'queue' \
                    AND toLower(t.goal) CONTAINS 'backlog' \
-                   AND t.status IN ['created', 'in_progress'] \
+                   AND (t.status IN ['created', 'in_progress'] \
+                        OR t.created_at >= toString(datetime() - duration({hours: 24}))) \
                  RETURN count(t) AS cnt",
             );
             let existing: i64 = self

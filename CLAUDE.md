@@ -86,7 +86,7 @@ Copy `.env.example` to `.env` and configure:
 | `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
 | `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
-| `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and auto-seeded on the first scheduler tick if no chains exist in Neo4j |
+| `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and force-refreshed on the first scheduler tick after every startup (YAML edits propagate on restart) |
 | `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup (force-updates existing steps) |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |
@@ -328,7 +328,7 @@ The `adversarial_plan_review` tool is also callable directly (in KnowledgeSkill)
 
 ### Externalized Agent Chains
 
-All scheduler routing chains are defined as YAML files in `chains/` and seeded into Neo4j as `(:SchedulerChain)` nodes by `init-db` (or auto-seeded on first scheduler tick). The `goal_to_steps()` function is now ~20 lines — it queries Neo4j first, falls back to `build_diagnosis_chain()` if nothing matches.
+All scheduler routing chains are defined as YAML files in `chains/` and seeded into Neo4j as `(:SchedulerChain)` nodes by `init-db` and force-refreshed on the first scheduler tick after every startup, so YAML edits propagate on restart. The `goal_to_steps()` function is now ~20 lines — it queries Neo4j first, falls back to `build_diagnosis_chain()` if nothing matches.
 
 **Chain YAML schema** (`chains/*.yaml`):
 ```yaml

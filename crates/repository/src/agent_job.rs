@@ -738,12 +738,35 @@ impl Neo4jClient {
             .and_then(|r| r.get::<i64>("n").ok())
             .unwrap_or(0);
 
-        let total = (completed_count + dead_count + cancelled_count) as usize;
+        // Delete old failed jobs (same retention window as dead). A job that has sat
+        // in `failed` past the retry horizon is never coming back; without this branch
+        // failed jobs accumulate forever. `completed_at` may be absent on failures,
+        // so fall back through updated_at/created_at.
+        let dead_cutoff = (chrono::Utc::now()
+            - chrono::Duration::seconds(dead_retention_secs as i64))
+        .to_rfc3339();
+        let q_failed = query(
+            "MATCH (j:AgentJob {status: 'failed'}) \
+             WHERE datetime(COALESCE(j.completed_at, j.updated_at, j.created_at)) \
+                   <= datetime($cutoff) \
+             DETACH DELETE j \
+             RETURN count(j) AS n",
+        )
+        .param("cutoff", dead_cutoff);
+
+        let rows = self.execute(q_failed).await?;
+        let failed_count = rows
+            .first()
+            .and_then(|r| r.get::<i64>("n").ok())
+            .unwrap_or(0);
+
+        let total = (completed_count + dead_count + cancelled_count + failed_count) as usize;
         if total > 0 {
             info!(
                 completed = completed_count,
                 dead = dead_count,
                 cancelled = cancelled_count,
+                failed = failed_count,
                 total,
                 "Cleaned up old jobs"
             );
