@@ -1,0 +1,40 @@
+name: "Todo snapshot: summarise active todos into a reviewable knowledge note"
+description: "Daily snapshot of active todos summarised into a semantic note so the brain can reference current work priorities during reasoning."
+interval_seconds: 86400
+steps:
+  # Step flow and {{_prev}} chain:
+  #   1. neo4j_query → active todos as JSON rows
+  #   2. reason      → markdown summary grouped by priority
+  #                    (context carries the todos so the RAG path is bypassed —
+  #                     prevents contamination from previously stored snapshots)
+  #   3. store_note  → persists the summary as a semantic note
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] RETURN t.title AS title, t.description AS description, t.priority AS priority, t.status AS status, t.due_at AS due_at, t.tags AS tags ORDER BY t.priority ASC, t.due_at ASC"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        Today is {{date}}. The CONTEXT contains the user's current active todos as JSON rows.
+        Write a concise markdown summary of these todos grouped by priority, including due
+        dates where present. Base the summary ONLY on the todos in the CONTEXT.
+        This will be stored as a knowledge note so the brain can reference the user's
+        current work priorities during future reasoning.
+        If the CONTEXT contains no todos, say there are no active todos.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "## Todo Snapshot ({{date}})\n\n{{_prev}}"
+      note_type: semantic
+      source_context: todo_snapshot
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

@@ -4,7 +4,9 @@ interval_seconds: 43200
 steps:
   - tool_name: neo4j_query
     arguments:
-      cypher: "MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration('P1D') RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
+      # created_at is stored as an RFC3339 string — convert before comparing, or the
+      # string >= datetime comparison is null and the query always returns 0 rows.
+      cypher: "MATCH (j:AgentJob) WHERE datetime(j.created_at) >= datetime() - duration('P1D') RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
     priority: 1
     max_attempts: 2
     provider_hint: ollama
@@ -27,9 +29,13 @@ steps:
 
   # The reason step stores the analysis as an inference note; no separate
   # boilerplate outcome note is needed (it only added graph noise).
+  # context carries the live data so the RAG path is bypassed — without it,
+  # reason retrieves previous health notes and critiques them instead of
+  # analysing the fresh metrics.
   - tool_name: reason
     arguments:
-      question: "Job status counts from the past 24 h, dead-letter queue, and recent failed tasks: {{_prev}}\n\nSummarise the current health of the brain. Note any failure patterns, queue backlogs, or regressions compared to previous health snapshots."
+      question: "The CONTEXT contains recent failed tasks from the previous chain step. Summarise the current health of the brain based ONLY on the CONTEXT. Note any failure patterns, queue backlogs, or regressions."
+      context: "{{_prev}}"
       store_inference: true
     priority: 1
     max_attempts: 3

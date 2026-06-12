@@ -1,0 +1,42 @@
+name: "Overdue TODO review: check for overdue todos and offer agent assistance"
+description: "Twice-daily review of overdue todos — reasons over the live todo list and stores a structured note on where an agent could help."
+interval_seconds: 43200
+steps:
+  # Step flow and {{_prev}} chain:
+  #   1. neo4j_query → overdue pending/in-progress todos as JSON rows
+  #   2. reason      → per-todo agent-assistance assessment
+  #                    (context carries the todos so the RAG path is bypassed —
+  #                     without it, reason retrieves its own previous review notes
+  #                     and critiques those instead of answering)
+  #   3. store_note  → persists the review as an episodic note
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] AND t.due_at IS NOT NULL AND t.due_at < toString(date()) RETURN t.id AS id, t.title AS title, t.description AS description, t.due_at AS due_at ORDER BY t.due_at ASC LIMIT 20"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        Today is {{date}}. The CONTEXT contains the user's overdue todos as JSON rows.
+        For each todo, decide whether an AI agent could realistically help, and how.
+        Base your answer ONLY on the todos in the CONTEXT — do not invent todos or
+        discuss anything not present there.
+        Return a JSON array in the answer field:
+        [{"id":"...","title":"...","can_help":true,"offer":"one sentence describing the concrete help"}]
+        If the CONTEXT contains no todos, return an empty array [].
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: "## Overdue Todo Agent Review ({{date}})\n\n{{_prev}}"
+      note_type: episodic
+      source_context: overdue_todo_review
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
