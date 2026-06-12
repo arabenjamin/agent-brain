@@ -183,6 +183,7 @@ agent-brain/
 │       │   ├── skills/           # Pluggable MCP skill implementations
 │       │   │   ├── mod.rs        # Skill trait definition
 │       │   │   ├── agent.rs      # Agent Job Queue skill (8 tools)
+│       │   │   ├── constructor.rs # Agent Constructor skill (construct_agent)
 │       │   │   ├── dynamic.rs    # Dynamic Tool Builder skill (4 tools + runtime tools)
 │       │   │   ├── knowledge.rs  # Knowledge Manager skill (16 tools)
 │       │   │   ├── model.rs      # Model Registry skill (5 tools)

@@ -153,6 +153,14 @@ Fix scope:
   capability-routed cloud call runs under the ollama semaphore.
 - **2. `construct_agent` tool** — LLM-planned AgentSpec constrained to
   the self-model; Tier 1 model for the planning call itself.
+  ✅ implemented 2026-06-13 (`skills/constructor.rs`). Plans are validated
+  against the live ToolDef inventory (unknown tools rejected, self-modifying
+  tools denylisted, step budget capped at 10); specs persist as
+  `(:AgentSpec)` with a `CONSTRUCTED_FOR` edge to the dispatched Task;
+  dispatch always prepends adversarial review at min_robustness 3.0 and
+  appends the evaluator when success_criteria is set. Phase 2 limitation:
+  an adversarial abort retries through the standard keyword pipeline,
+  not the constructed spec (reuse-before-construct is Phase 3).
 - **3. Learning loop** — PERFORMED edges, reuse-before-construct,
   capability-gap tasks, usage-aware tier escalation proposals.
 

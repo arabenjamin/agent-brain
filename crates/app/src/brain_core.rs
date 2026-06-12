@@ -31,11 +31,11 @@ use crate::services::{
     ContextBuilderService, KnowledgeService, LlmConfig, LlmProviderType, SharedLlm, SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, codebase::CodebaseSkill, context::ContextSkill,
-    dynamic::DynamicSkill, git::GitSkill, http::HttpSkill, knowledge::KnowledgeSkill,
-    model::ModelSkill, query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill,
-    search::SearchSkill, sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
-    ws::WsSkill,
+    Skill, agent::AgentSkill, codebase::CodebaseSkill, constructor::ConstructorSkill,
+    context::ContextSkill, dynamic::DynamicSkill, git::GitSkill, http::HttpSkill,
+    knowledge::KnowledgeSkill, model::ModelSkill, query::QuerySkill, resource::ResourceSkill,
+    scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill, task::TaskSkill,
+    working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -667,6 +667,16 @@ impl BrainCore {
             registry.register_skill(Box::new(ContextSkill::new(Arc::clone(cb))));
         }
 
+        // Agent Constructor (needs the self-model in Neo4j + queue for dispatch)
+        if let Some(ref neo4j) = self.storage.neo4j {
+            registry.register_skill(Box::new(ConstructorSkill::new(
+                neo4j.clone(),
+                queue_arc.clone(),
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                self.storage.telemetry.clone(),
+            )));
+        }
+
         // WebSocket Skill
         registry.register_skill(Box::new(WsSkill::new()));
 
@@ -789,6 +799,15 @@ impl BrainCore {
 
         if let Some(ref cb) = context_builder_arc {
             skills.push(Box::new(ContextSkill::new(Arc::clone(cb))));
+        }
+
+        if let Some(ref neo4j) = self.storage.neo4j {
+            skills.push(Box::new(ConstructorSkill::new(
+                neo4j.clone(),
+                queue_arc.clone(),
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                self.storage.telemetry.clone(),
+            )));
         }
 
         skills.push(Box::new(WsSkill::new()));
