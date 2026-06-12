@@ -94,6 +94,13 @@ impl TelemetryClient {
             ",
         )?;
 
+        // Containers are killed, not gracefully stopped, so DuckDB may never get
+        // to checkpoint on close — the WAL then grows across deploys until a
+        // mid-write kill leaves a tail that fails replay and bricks telemetry
+        // (observed 2026-06-12: 16 MB WAL, main file untouched for six weeks).
+        // Checkpointing right after open bounds the WAL to one process lifetime.
+        conn.execute_batch("CHECKPOINT;")?;
+
         info!("Telemetry (DuckDB) schema initialized");
         Ok(())
     }
