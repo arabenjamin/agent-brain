@@ -46,6 +46,9 @@ steps:
         - Remove items that are stale, obsolete, or already superseded by later work.
         - Do NOT change the document structure (headings, P0/P1/P2/P3 sections).
         - Do NOT invent items that are not grounded in the commits or existing backlog.
+        - Preserve every existing heading line EXACTLY as written.
+        - Change as few lines as possible. If nothing needs updating, output the
+          document exactly as it is. The write is rejected if most lines change.
         - Output ONLY the raw markdown content of the updated file — no explanation, no code fences.
       context: "{{_prev}}"
       store_inference: false
@@ -96,6 +99,9 @@ steps:
         - Update the Skill Registry table if skills are added, removed, or have tool count changes.
         - Do NOT change the document structure or headings.
         - Do NOT invent capabilities that are not in the commits or current content.
+        - Preserve every existing heading line EXACTLY as written.
+        - Change as few lines as possible. If nothing needs updating, output the
+          document exactly as it is. The write is rejected if most lines change.
         - Output ONLY the raw markdown content of the updated file — no explanation, no code fences.
       context: "{{_prev}}"
       store_inference: false

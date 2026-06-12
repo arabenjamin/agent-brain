@@ -23,7 +23,7 @@
 
 ## P0 — Critical (fix before next deployment)
 
-- [ ] **Harden the doc-update schedule against hallucination drift** — the 12h `schedules/doc-update.yaml` chain regenerates TODO.md/STATUS.md whole-file via a local model and ratcheted both files into generic fiction (restored 2026-06-11). Add a validation step before `write_codebase_doc` (required headings present, diff ratio cap) or switch the chain to targeted edits / proposal notes instead of full-file rewrites.
+- [x] **Harden the doc-update schedule against hallucination drift** — the 12h `schedules/doc-update.yaml` chain regenerated TODO.md/STATUS.md whole-file via a local model and ratcheted both files into generic fiction (restored 2026-06-11). Fixed: `write_codebase_doc` now guards overwrites of existing docs (≥75% heading retention, ≥50% line retention, ≤60% shrink; `force=true` to override) and the chain prompts instruct minimal-diff edits. Schedule re-enabled.
 
 ---
 

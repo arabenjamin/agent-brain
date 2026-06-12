@@ -24,6 +24,106 @@ use crate::skills::Skill;
 use agent_brain_models::ProvenanceFlag;
 use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, parse_args};
 
+/// Guard for `write_codebase_doc` overwrites of existing docs.
+///
+/// LLM-driven whole-file regeneration has previously replaced grounded docs with
+/// generic hallucinated content, and each scheduled cycle then fed the
+/// hallucination back in as ground truth (a one-way ratchet). This validates that
+/// a rewrite is an *incremental update* of the existing document rather than a
+/// from-scratch regeneration:
+///
+/// 1. **Heading retention** — ≥ 75% of the old markdown headings must still be
+///    present (compared case-insensitively on letters only, so counts/dates in
+///    headings may legitimately change).
+/// 2. **Line retention** — ≥ 50% of the old non-empty lines must appear verbatim
+///    in the new content.
+/// 3. **Shrink cap** — the new content must be at least 40% of the old length.
+///
+/// Errors describe exactly which check failed so a calling LLM can correct
+/// course (or a human can pass `force: true` for an intentional full rewrite).
+fn validate_doc_rewrite(old: &str, new: &str) -> Result<(), String> {
+    // Letters-only normalisation: stable against count/date churn in headings.
+    fn normalize_heading(line: &str) -> String {
+        line.chars()
+            .filter(|c| c.is_alphabetic() || c.is_whitespace())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    let old_headings: Vec<String> = old
+        .lines()
+        .filter(|l| l.trim_start().starts_with('#'))
+        .map(normalize_heading)
+        .filter(|h| !h.is_empty())
+        .collect();
+    if !old_headings.is_empty() {
+        let new_headings: std::collections::HashSet<String> = new
+            .lines()
+            .filter(|l| l.trim_start().starts_with('#'))
+            .map(normalize_heading)
+            .collect();
+        let kept = old_headings
+            .iter()
+            .filter(|h| new_headings.contains(*h))
+            .count();
+        let ratio = kept as f64 / old_headings.len() as f64;
+        if ratio < 0.75 {
+            let missing: Vec<&str> = old_headings
+                .iter()
+                .filter(|h| !new_headings.contains(*h))
+                .map(|s| s.as_str())
+                .take(5)
+                .collect();
+            return Err(format!(
+                "rewrite drops {}/{} existing headings (e.g. {:?}). Updates must preserve \
+                 the document structure — edit sections in place instead of regenerating \
+                 the file from scratch.",
+                old_headings.len() - kept,
+                old_headings.len(),
+                missing
+            ));
+        }
+    }
+
+    let old_lines: Vec<&str> = old
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if !old_lines.is_empty() {
+        let new_lines: std::collections::HashSet<&str> = new
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let kept = old_lines.iter().filter(|l| new_lines.contains(*l)).count();
+        let ratio = kept as f64 / old_lines.len() as f64;
+        if ratio < 0.5 {
+            return Err(format!(
+                "rewrite keeps only {:.0}% of the existing content lines (minimum 50%). \
+                 This looks like a from-scratch regeneration, not an update — make \
+                 targeted edits grounded in the existing document.",
+                ratio * 100.0
+            ));
+        }
+    }
+
+    if new.len() < old.len() * 2 / 5 {
+        return Err(format!(
+            "new content is {} bytes vs {} existing ({}% — minimum 40%). Updates must \
+             not discard most of the document.",
+            new.len(),
+            old.len(),
+            new.len() * 100 / old.len().max(1)
+        ));
+    }
+
+    Ok(())
+}
+
 /// Codebase Skill — read-only filesystem access to the agent's own source code,
 /// plus workspace write tools and a write_proposal tool for staging fix proposals.
 pub struct CodebaseSkill {
@@ -101,7 +201,7 @@ impl CodebaseSkill {
     fn write_codebase_doc_def() -> ToolDefinition {
         ToolDefinition {
             name: "write_codebase_doc".to_string(),
-            description: "Write or overwrite a Markdown (.md) file in the codebase. Restricted to .md files only — cannot modify source code. Use this to update project-docs/, CLAUDE.md, README.md, schedules/, chains/, or contexts/ after the brain has reasoned about the correct new content.".to_string(),
+            description: "Write or overwrite a Markdown (.md) file in the codebase. Restricted to .md files only — cannot modify source code. Use this to update project-docs/, CLAUDE.md, README.md, schedules/, chains/, or contexts/ after the brain has reasoned about the correct new content. Overwrites of existing docs are guarded: the new content must preserve the document's headings and at least half of its existing lines (incremental update, not from-scratch regeneration). Pass force=true only for an intentional full rewrite.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -112,6 +212,10 @@ impl CodebaseSkill {
                     "content": {
                         "type": "string",
                         "description": "Complete new file content to write."
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Bypass the incremental-update guard for an intentional full rewrite of an existing doc (default: false)."
                     }
                 },
                 "required": ["path", "content"]
@@ -517,6 +621,8 @@ impl CodebaseSkill {
         struct Args {
             path: String,
             content: String,
+            #[serde(default)]
+            force: bool,
         }
         let args: Args = match parse_args(arguments) {
             Ok(a) => a,
@@ -533,6 +639,21 @@ impl CodebaseSkill {
             Ok(p) => p,
             Err(e) => return e,
         };
+
+        // Guard overwrites of existing docs against from-scratch LLM regeneration.
+        // Trivially small existing files (< 200 bytes) are not worth guarding.
+        if !args.force
+            && let Ok(old) = tokio::fs::read_to_string(&full_path).await
+            && old.len() >= 200
+            && let Err(reason) = validate_doc_rewrite(&old, &args.content)
+        {
+            warn!(path = %args.path, %reason, "write_codebase_doc: rejected by doc guard");
+            return ToolCallResult::error(format!(
+                "Refusing to overwrite '{}': {} (Pass force=true to override for an \
+                 intentional full rewrite.)",
+                args.path, reason
+            ));
+        }
 
         if let Some(parent) = full_path.parent()
             && let Err(e) = tokio::fs::create_dir_all(parent).await
@@ -1552,5 +1673,86 @@ pub fn detect_repo_root() -> Option<PathBuf> {
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_doc_rewrite;
+
+    const DOC: &str = "\
+# Brain Status
+
+**Build:** passing
+**Tool count:** 64 static registered across 16 skills
+
+## Architecture Overview
+
+| Layer | Technology | Status |
+|-------|-----------|--------|
+| Protocol | MCP via stdio + HTTP/SSE | Live |
+| Graph DB | Neo4j via `neo4rs` | Live |
+
+## Skill Registry (64 tools static + N runtime)
+
+| Skill | Tools |
+|-------|-------|
+| KnowledgeSkill | 7 |
+| TaskSkill | 7 |
+
+## Known Issues / Backlog
+
+- SSE push for job results on stdio transport
+- Rhai scripting in procedure steps
+";
+
+    #[test]
+    fn incremental_update_passes() {
+        // Change a count in a heading + a table cell, add a new backlog line.
+        let updated = DOC
+            .replace(
+                "(64 tools static + N runtime)",
+                "(65 tools static + N runtime)",
+            )
+            .replace("| KnowledgeSkill | 7 |", "| KnowledgeSkill | 8 |")
+            + "- New backlog item from recent commits\n";
+        assert!(validate_doc_rewrite(DOC, &updated).is_ok());
+    }
+
+    #[test]
+    fn from_scratch_regeneration_rejected() {
+        let hallucinated = "\
+# Project Status Report
+
+## Key Objectives Status
+
+| Objective | Status |
+|-----------|--------|
+| Authentication & Authorization | On Track |
+| Data Pipeline Reliability | At Risk |
+
+## Issues & Risks Log
+
+Rate limiting on the external data source is causing batch failures.
+";
+        let err = validate_doc_rewrite(DOC, hallucinated).unwrap_err();
+        assert!(err.contains("headings"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn heavy_shrink_rejected() {
+        let stub = "# Brain Status\n\n## Architecture Overview\n\n## Skill Registry\n\n## Known Issues / Backlog\n";
+        assert!(validate_doc_rewrite(DOC, stub).is_err());
+    }
+
+    #[test]
+    fn identical_content_passes() {
+        assert!(validate_doc_rewrite(DOC, DOC).is_ok());
+    }
+
+    #[test]
+    fn new_file_has_no_old_content_to_check() {
+        // Guard is only invoked for existing files, but empty old must not panic.
+        assert!(validate_doc_rewrite("", "# Anything\nnew content\n").is_ok());
     }
 }
