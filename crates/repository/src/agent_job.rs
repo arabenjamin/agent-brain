@@ -171,89 +171,119 @@ impl Neo4jClient {
     }
 
     /// Mark a job as running and increment attempt_count.
-    pub async fn set_job_started(&self, id: &str) -> Result<(), RepositoryError> {
+    ///
+    /// Guarded on `status = 'queued'` so a job cancelled (or already picked up) between
+    /// heap-pop and start cannot be revived into `running`.  Returns `true` if the job
+    /// transitioned to running, `false` if it was no longer queued.
+    pub async fn set_job_started(&self, id: &str) -> Result<bool, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
+            "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'queued' \
              SET j.status = 'running', \
                  j.started_at = $now, \
                  j.updated_at = $now, \
-                 j.attempt_count = j.attempt_count + 1",
+                 j.attempt_count = j.attempt_count + 1 \
+             RETURN count(j) AS n",
         )
         .param("id", id)
         .param("now", now);
-        self.run(q).await
+        self.count_updated(q).await
     }
 
     /// Mark a job as completed and store the result JSON.
+    ///
+    /// Guarded on `status = 'running'` so a job cancelled while executing is not
+    /// overwritten back to `completed` (which would also unpark its chain children).
+    /// Returns `true` if the job was still running and is now completed.
     pub async fn set_job_completed(
         &self,
         id: &str,
         result_json: &str,
-    ) -> Result<(), RepositoryError> {
+    ) -> Result<bool, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
+            "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'completed', \
                  j.completed_at = $now, \
                  j.updated_at = $now, \
                  j.result_json = $result, \
-                 j.duration_ms = duration.between(datetime(j.started_at), datetime($now)).milliseconds",
+                 j.duration_ms = duration.between(datetime(j.started_at), datetime($now)).milliseconds \
+             RETURN count(j) AS n",
         )
         .param("id", id)
         .param("now", now)
         .param("result", result_json);
-        self.run(q).await
+        self.count_updated(q).await
     }
 
     /// Re-queue a failed job for automatic retry (attempt_count already incremented).
     /// Sets status back to 'queued' so the coordinator picks it up again.
-    pub async fn requeue_for_retry(&self, id: &str, error: &str) -> Result<(), RepositoryError> {
+    ///
+    /// Guarded on `status = 'running'`; returns `true` if the job was re-queued.
+    pub async fn requeue_for_retry(&self, id: &str, error: &str) -> Result<bool, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
+            "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'queued', \
                  j.updated_at = $now, \
-                 j.error = $error",
+                 j.error = $error \
+             RETURN count(j) AS n",
         )
         .param("id", id)
         .param("now", now)
         .param("error", error);
-        self.run(q).await
+        self.count_updated(q).await
     }
 
     /// Mark a job as failed (can still be retried manually).
-    pub async fn set_job_failed(&self, id: &str, error: &str) -> Result<(), RepositoryError> {
+    ///
+    /// Guarded on `status = 'running'`; returns `true` if the job was marked failed.
+    pub async fn set_job_failed(&self, id: &str, error: &str) -> Result<bool, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
+            "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'failed', \
                  j.completed_at = $now, \
                  j.updated_at = $now, \
-                 j.error = $error",
+                 j.error = $error \
+             RETURN count(j) AS n",
         )
         .param("id", id)
         .param("now", now)
         .param("error", error);
-        self.run(q).await
+        self.count_updated(q).await
     }
 
     /// Mark a job as dead (exhausted all retries) and move to dead letter queue.
-    pub async fn set_job_dead(&self, id: &str, last_error: &str) -> Result<(), RepositoryError> {
+    ///
+    /// Guarded on `status = 'running'`; returns `true` if the job was dead-lettered.
+    pub async fn set_job_dead(&self, id: &str, last_error: &str) -> Result<bool, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
+            "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'dead_letter', \
                  j.completed_at = $now, \
                  j.updated_at = $now, \
                  j.error = $error, \
                  j.dead_lettered_at = $now, \
-                 j.dead_letter_reason = $error",
+                 j.dead_letter_reason = $error \
+             RETURN count(j) AS n",
         )
         .param("id", id)
         .param("now", now)
         .param("error", last_error);
-        self.run(q).await
+        self.count_updated(q).await
+    }
+
+    /// Run a status-guarded write that ends in `RETURN count(j) AS n` and report whether
+    /// any row was updated.
+    async fn count_updated(&self, q: neo4rs::Query) -> Result<bool, RepositoryError> {
+        let rows = self.execute(q).await?;
+        Ok(rows
+            .first()
+            .and_then(|r| r.get::<i64>("n").ok())
+            .unwrap_or(0)
+            > 0)
     }
 
     /// Reset a failed/dead/cancelled job back to queued so it can be retried.

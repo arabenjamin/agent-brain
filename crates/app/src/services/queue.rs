@@ -903,9 +903,18 @@ impl QueueService {
     async fn execute_job(self: Arc<Self>, job: AgentJob) {
         info!(job_id = %job.id, tool = %job.tool_name, priority = job.priority, "Executing AgentJob");
 
-        if let Err(e) = self.neo4j.set_job_started(&job.id).await {
-            error!(job_id = %job.id, "Failed to mark job running: {}", e);
-            return;
+        match self.neo4j.set_job_started(&job.id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                // The job left 'queued' between heap-pop and start — cancelled, or already
+                // taken by a concurrent path. Do not execute it.
+                info!(job_id = %job.id, "Job no longer queued (cancelled or already started) — skipping execution");
+                return;
+            }
+            Err(e) => {
+                error!(job_id = %job.id, "Failed to mark job running: {}", e);
+                return;
+            }
         }
 
         let handler_guard = self.tool_handler.read().await;
@@ -981,137 +990,146 @@ impl QueueService {
         let result_text = extract_result_text(&result);
 
         if !is_error {
-            if let Err(e) = self.neo4j.set_job_completed(&job.id, &result_json).await {
-                error!(job_id = %job.id, "Failed to store completed result: {}", e);
-            } else {
-                info!(job_id = %job.id, "AgentJob completed");
+            match self.neo4j.set_job_completed(&job.id, &result_json).await {
+                Err(e) => {
+                    error!(job_id = %job.id, "Failed to store completed result: {}", e);
+                }
+                Ok(false) => {
+                    // The job was cancelled while executing: set_job_completed's
+                    // status='running' guard matched nothing. Do NOT unpark chain children
+                    // or emit a completion event for a job the user cancelled.
+                    info!(job_id = %job.id, "Job cancelled during execution — chain children not promoted");
+                }
+                Ok(true) => {
+                    info!(job_id = %job.id, "AgentJob completed");
 
-                // Evaluator step: parse score and re-queue the parent task if below threshold.
-                // When score fails, cancel parked children (e.g. update_task) so the task is
-                // not prematurely marked completed — the retry task created by
-                // handle_evaluator_requeue will drive the next attempt.
-                let evaluator_blocked = if let Some(min_score) = job
-                    .arguments
-                    .as_ref()
-                    .and_then(|a| a.get("__evaluator_min_score"))
-                    .and_then(|v| v.as_f64())
-                {
-                    let task_id = job
+                    // Evaluator step: parse score and re-queue the parent task if below threshold.
+                    // When score fails, cancel parked children (e.g. update_task) so the task is
+                    // not prematurely marked completed — the retry task created by
+                    // handle_evaluator_requeue will drive the next attempt.
+                    let evaluator_blocked = if let Some(min_score) = job
                         .arguments
                         .as_ref()
-                        .and_then(|a| a.get("__evaluator_task_id"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
+                        .and_then(|a| a.get("__evaluator_min_score"))
+                        .and_then(|v| v.as_f64())
+                    {
+                        let task_id = job
+                            .arguments
+                            .as_ref()
+                            .and_then(|a| a.get("__evaluator_task_id"))
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
 
-                    match parse_evaluator_score(&result_text) {
-                        None => {
-                            // No parseable score or verdict keyword. Treating this as a
-                            // failing 3.0 (the old behaviour) burned up to 3 retry chains on
-                            // mere format drift from the local model. Treat unparseable output
-                            // as a pass, and do NOT grade the AgentSpec with an invented number.
-                            warn!(
-                                job_id = %job.id,
-                                "Evaluator output unparseable (no Score line or verdict) — treating as pass"
-                            );
-                            false
-                        }
-                        Some(score) => {
-                            // Phase 3 learning edge: if this task was built by the Agent
-                            // Constructor, record the graded outcome on its AgentSpec —
-                            // pass AND fail (failures are the more valuable signal).
-                            if let Some(tid) = &task_id {
-                                match self
-                                    .neo4j
-                                    .record_agent_spec_performance(
-                                        tid,
-                                        score as f64,
-                                        score >= min_score as f32,
-                                    )
-                                    .await
-                                {
-                                    Ok(true) => {
-                                        info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
-                                    }
-                                    Ok(false) => {} // not a constructed task — nothing to learn onto
-                                    Err(e) => {
-                                        warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
-                                    }
-                                }
-                            }
-
-                            if score < min_score as f32 {
+                        match parse_evaluator_score(&result_text) {
+                            None => {
+                                // No parseable score or verdict keyword. Treating this as a
+                                // failing 3.0 (the old behaviour) burned up to 3 retry chains on
+                                // mere format drift from the local model. Treat unparseable output
+                                // as a pass, and do NOT grade the AgentSpec with an invented number.
                                 warn!(
                                     job_id = %job.id,
-                                    score = score,
-                                    min_score = min_score,
-                                    "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
+                                    "Evaluator output unparseable (no Score line or verdict) — treating as pass"
                                 );
-                                let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                                if let Some(tid) = &task_id {
-                                    self.handle_evaluator_requeue(tid, score, &result_text)
-                                        .await;
-                                }
-                                true
-                            } else {
-                                info!(job_id = %job.id, score = score, "Evaluator: score passed");
                                 false
                             }
-                        }
-                    }
-                } else {
-                    false
-                };
+                            Some(score) => {
+                                // Phase 3 learning edge: if this task was built by the Agent
+                                // Constructor, record the graded outcome on its AgentSpec —
+                                // pass AND fail (failures are the more valuable signal).
+                                if let Some(tid) = &task_id {
+                                    match self
+                                        .neo4j
+                                        .record_agent_spec_performance(
+                                            tid,
+                                            score as f64,
+                                            score >= min_score as f32,
+                                        )
+                                        .await
+                                    {
+                                        Ok(true) => {
+                                            info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
+                                        }
+                                        Ok(false) => {} // not a constructed task — nothing to learn onto
+                                        Err(e) => {
+                                            warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
+                                        }
+                                    }
+                                }
 
-                // Adversarial pre-flight: parse overall_robustness and abort the chain
-                // if the plan is too risky.  Mirrors the evaluator gate but fires on
-                // the first step rather than the last.
-                let adversarial_blocked = if let Some(min_robustness) = job
-                    .arguments
-                    .as_ref()
-                    .and_then(|a| a.get("__adversarial_min_robustness"))
-                    .and_then(|v| v.as_f64())
-                {
-                    let robustness = parse_adversarial_robustness(&result_text);
-                    let task_id = job
+                                if score < min_score as f32 {
+                                    warn!(
+                                        job_id = %job.id,
+                                        score = score,
+                                        min_score = min_score,
+                                        "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
+                                    );
+                                    let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                                    if let Some(tid) = &task_id {
+                                        self.handle_evaluator_requeue(tid, score, &result_text)
+                                            .await;
+                                    }
+                                    true
+                                } else {
+                                    info!(job_id = %job.id, score = score, "Evaluator: score passed");
+                                    false
+                                }
+                            }
+                        }
+                    } else {
+                        false
+                    };
+
+                    // Adversarial pre-flight: parse overall_robustness and abort the chain
+                    // if the plan is too risky.  Mirrors the evaluator gate but fires on
+                    // the first step rather than the last.
+                    let adversarial_blocked = if let Some(min_robustness) = job
                         .arguments
                         .as_ref()
-                        .and_then(|a| a.get("__adversarial_task_id"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
+                        .and_then(|a| a.get("__adversarial_min_robustness"))
+                        .and_then(|v| v.as_f64())
+                    {
+                        let robustness = parse_adversarial_robustness(&result_text);
+                        let task_id = job
+                            .arguments
+                            .as_ref()
+                            .and_then(|a| a.get("__adversarial_task_id"))
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
 
-                    if robustness < min_robustness as f32 {
-                        warn!(
-                            job_id = %job.id,
-                            robustness,
-                            min_robustness,
-                            "Adversarial: robustness below threshold — cancelling chain and re-queuing task"
-                        );
-                        let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                        if let Some(tid) = &task_id {
-                            self.handle_adversarial_requeue(tid, robustness, &result_text)
-                                .await;
+                        if robustness < min_robustness as f32 {
+                            warn!(
+                                job_id = %job.id,
+                                robustness,
+                                min_robustness,
+                                "Adversarial: robustness below threshold — cancelling chain and re-queuing task"
+                            );
+                            let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                            if let Some(tid) = &task_id {
+                                self.handle_adversarial_requeue(tid, robustness, &result_text)
+                                    .await;
+                            }
+                            true
+                        } else {
+                            info!(job_id = %job.id, robustness, "Adversarial: robustness passed — proceeding");
+                            false
                         }
-                        true
                     } else {
-                        info!(job_id = %job.id, robustness, "Adversarial: robustness passed — proceeding");
                         false
-                    }
-                } else {
-                    false
-                };
+                    };
 
-                // Promote any chained children waiting on this job, unless the evaluator
-                // or adversarial gate already cancelled them.
-                if !evaluator_blocked && !adversarial_blocked {
-                    self.unpark_and_enqueue_children(&job.id, &result_text)
-                        .await;
+                    // Promote any chained children waiting on this job, unless the evaluator
+                    // or adversarial gate already cancelled them.
+                    if !evaluator_blocked && !adversarial_blocked {
+                        self.unpark_and_enqueue_children(&job.id, &result_text)
+                            .await;
+                    }
+                    self.emit_job_event(BrainEvent::JobCompleted {
+                        job_id: job.id.clone(),
+                        tool_name: job.tool_name.clone(),
+                        session_id: job.session_id.clone(),
+                        result_preview: Some(result_text.chars().take(200).collect()),
+                    });
                 }
-                self.emit_job_event(BrainEvent::JobCompleted {
-                    job_id: job.id.clone(),
-                    tool_name: job.tool_name.clone(),
-                    session_id: job.session_id.clone(),
-                    result_preview: Some(result_text.chars().take(200).collect()),
-                });
             }
         } else {
             let error_text = result
@@ -1135,7 +1153,19 @@ impl QueueService {
             };
 
             if attempt >= max {
-                let _ = self.neo4j.set_job_dead(&job.id, &error_text).await;
+                match self.neo4j.set_job_dead(&job.id, &error_text).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        // Cancelled while executing: the status='running' guard matched
+                        // nothing. Don't dead-letter, reflect, or meta-learn a cancelled job.
+                        info!(job_id = %job.id, "Job cancelled during execution — not dead-lettering");
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(job_id = %job.id, error = %e, "Failed to mark job dead");
+                        return;
+                    }
+                }
                 warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
                 // Parent chain is broken — cancel any waiting children.
                 let _ = self.neo4j.cancel_parked_children(&job.id).await;
@@ -1242,15 +1272,25 @@ impl QueueService {
                 // Re-queue for automatic retry: set status back to 'queued' so the
                 // coordinator picks it up again.  Children remain parked and will be
                 // unparked when the retry eventually succeeds.
-                let _ = self.neo4j.requeue_for_retry(&job.id, &error_text).await;
-                warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed — re-queued for retry");
-                self.notify.notify_one(); // wake coordinator immediately
-                self.emit_job_event(BrainEvent::JobFailed {
-                    job_id: job.id.clone(),
-                    tool_name: job.tool_name.clone(),
-                    session_id: job.session_id.clone(),
-                    error: error_text.clone(),
-                });
+                match self.neo4j.requeue_for_retry(&job.id, &error_text).await {
+                    Ok(true) => {
+                        warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed — re-queued for retry");
+                        self.notify.notify_one(); // wake coordinator immediately
+                        self.emit_job_event(BrainEvent::JobFailed {
+                            job_id: job.id.clone(),
+                            tool_name: job.tool_name.clone(),
+                            session_id: job.session_id.clone(),
+                            error: error_text.clone(),
+                        });
+                    }
+                    Ok(false) => {
+                        // Cancelled while executing — leave it cancelled, don't re-queue.
+                        info!(job_id = %job.id, "Job cancelled during execution — not re-queuing for retry");
+                    }
+                    Err(e) => {
+                        warn!(job_id = %job.id, error = %e, "Failed to re-queue job for retry");
+                    }
+                }
             }
         }
     }
