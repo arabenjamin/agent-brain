@@ -43,6 +43,11 @@ impl Neo4jClient {
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
             "CREATE CONSTRAINT scheduler_chain_id IF NOT EXISTS FOR (c:SchedulerChain) REQUIRE c.id IS UNIQUE",
+            // Note and Task are the hottest by-id lookups (get_note, per-search access-stat
+            // updates, SUMMARIZED_BY linking, update_task_status every scheduler tick).
+            // Without these, every `MATCH (n:Note {id: $id})` is a full label scan.
+            "CREATE CONSTRAINT note_id IF NOT EXISTS FOR (n:Note) REQUIRE n.id IS UNIQUE",
+            "CREATE CONSTRAINT task_id IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS UNIQUE",
             // Note: ModelSpec nodes removed — model registry now lives in DuckDB model_registry table
         ];
 
@@ -63,6 +68,10 @@ impl Neo4jClient {
             "CREATE INDEX agent_job_status IF NOT EXISTS FOR (j:AgentJob) ON (j.status)",
             "CREATE INDEX agent_job_priority IF NOT EXISTS FOR (j:AgentJob) ON (j.priority)",
             "CREATE INDEX agent_job_created IF NOT EXISTS FOR (j:AgentJob) ON (j.created_at)",
+            // parent_job_id drives unpark_children / cancel_parked_children on every chain step.
+            "CREATE INDEX agent_job_parent IF NOT EXISTS FOR (j:AgentJob) ON (j.parent_job_id)",
+            // Task.status is scanned every scheduler tick via list_tasks(status='created').
+            "CREATE INDEX task_status IF NOT EXISTS FOR (t:Task) ON (t.status)",
             "CREATE INDEX todo_status IF NOT EXISTS FOR (t:Todo) ON (t.status)",
             "CREATE INDEX todo_priority IF NOT EXISTS FOR (t:Todo) ON (t.priority)",
             // AgentNotification index

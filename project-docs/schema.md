@@ -272,6 +272,9 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `entity_name` | `Entity` | `name` | UNIQUE |
 | `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
+| `todo_id` | `Todo` | `id` | UNIQUE |
+| `scheduler_chain_id` | `SchedulerChain` | `id` | UNIQUE |
+| `note_id` | `Note` | `id` | UNIQUE |
 | `task_id` | `Task` | `id` | UNIQUE |
 
 ### Indexes
@@ -289,3 +292,4 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `agent_job_status` | `AgentJob` | `status` | RANGE | Queue coordinator polling |
 | `agent_job_priority` | `AgentJob` | `priority` | RANGE | Priority-ordered dispatch |
 | `agent_job_created` | `AgentJob` | `created_at` | RANGE | FIFO ordering within priority |
+| `agent_job_parent` | `AgentJob` | `parent_job_id` | RANGE | Chain unpark / cancel-children lookups |
