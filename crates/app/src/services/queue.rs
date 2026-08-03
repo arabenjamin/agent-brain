@@ -1517,22 +1517,96 @@ fn extract_result_text(result: &ToolCallResult) -> String {
     }
 }
 
+/// Recursively replace `{{key}}` placeholders in every string value of a JSON Value tree.
+///
+/// Operating at the Value level (rather than on serialized JSON text) means replacement
+/// values containing quotes, backslashes, or newlines are inserted safely and can never
+/// corrupt the surrounding JSON structure.  This is the substitution primitive shared by
+/// `substitute_prev` (chain `{{_prev}}` results) and the scheduler's chain/scheduled-task
+/// template expansion (`{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}`).
+pub fn substitute_template_vars(
+    val: &serde_json::Value,
+    vars: &[(&str, &str)],
+) -> serde_json::Value {
+    match val {
+        serde_json::Value::String(s) => {
+            let mut out = s.clone();
+            for (key, replacement) in vars {
+                let placeholder = ["{{", key, "}}"].concat();
+                out = out.replace(&placeholder, replacement);
+            }
+            serde_json::Value::String(out)
+        }
+        serde_json::Value::Object(obj) => serde_json::Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), substitute_template_vars(v, vars)))
+                .collect(),
+        ),
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .map(|v| substitute_template_vars(v, vars))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Recursively replace `{{_prev}}` and its alias `{{result}}` in all string values of a JSON
 /// Value tree.  Operates at the Value level so there is no risk of JSON injection.
 fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Value {
-    match val {
-        serde_json::Value::String(s) => serde_json::Value::String(
-            s.replace("{{_prev}}", prev_text)
-                .replace("{{result}}", prev_text),
-        ),
-        serde_json::Value::Object(obj) => serde_json::Value::Object(
-            obj.iter()
-                .map(|(k, v)| (k.clone(), substitute_prev(v, prev_text)))
-                .collect(),
-        ),
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(|v| substitute_prev(v, prev_text)).collect())
-        }
-        other => other.clone(),
+    substitute_template_vars(val, &[("_prev", prev_text), ("result", prev_text)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn substitute_template_vars_preserves_quotes_and_backslashes() {
+        // A goal containing a quote, backslash, and newline must not corrupt the JSON:
+        // substitution happens on the parsed Value, so these are inserted verbatim.
+        let raw = json!([{
+            "tool_name": "reason",
+            "arguments": { "question": "{{goal}}" }
+        }]);
+        let goal = "say \"hello\" \\ world\nnext line";
+        let out = substitute_template_vars(&raw, &[("goal", goal)]);
+        let steps: Vec<ChainStep> = serde_json::from_value(out).expect("must deserialize");
+        assert_eq!(steps.len(), 1);
+        let q = steps[0]
+            .arguments
+            .as_ref()
+            .unwrap()
+            .get("question")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(q, goal);
+    }
+
+    #[test]
+    fn substitute_template_vars_replaces_multiple_keys_and_nested() {
+        let raw = json!({
+            "a": "{{task_id}}",
+            "b": ["{{goal}}", { "c": "{{date}}" }],
+            "d": 42
+        });
+        let out = substitute_template_vars(
+            &raw,
+            &[("task_id", "t-1"), ("goal", "do X"), ("date", "2026-08-03")],
+        );
+        assert_eq!(out["a"], json!("t-1"));
+        assert_eq!(out["b"][0], json!("do X"));
+        assert_eq!(out["b"][1]["c"], json!("2026-08-03"));
+        assert_eq!(out["d"], json!(42)); // non-strings untouched
+    }
+
+    #[test]
+    fn substitute_prev_handles_both_aliases() {
+        let raw = json!({ "x": "{{_prev}}", "y": "{{result}}" });
+        let out = substitute_prev(&raw, "PREV");
+        assert_eq!(out["x"], json!("PREV"));
+        assert_eq!(out["y"], json!("PREV"));
     }
 }

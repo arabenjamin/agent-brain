@@ -348,7 +348,7 @@ evaluation_rubric: null # overrides task success_criteria in evaluator step
 steps: [...]            # array of ChainStep-compatible objects
 ```
 
-Template variables in step `arguments`: `{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}` (slug derived from goal, used by UI chain for workspace file path).
+Template variables in step `arguments`: `{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}` (slug derived from goal, used by UI chain for workspace file path). Substitution is **value-level, not text-level**: the stored JSON is parsed first, then `substitute_template_vars()` (in `services/queue.rs`) walks the parsed tree and replaces placeholders inside string values only. This keeps substitution quote/backslash/newline-safe — a `{{goal}}` containing `"` can never corrupt the chain JSON. The same primitive backs chain `{{_prev}}`/`{{result}}` resolution.
 
 **Per-step model routing (Phase 1):** a step may declare `required_capabilities: ["reasoning", ...]`. At execution the model router (`services/model_router.rs`) picks the cheapest catalog model satisfying them within `CLOUD_TIER` (ties broken by largest context window) and the job's LLM calls route to it via the `SELECTED_LLM` task-local (precedence: capability-selected > `USE_LOCAL_LLM` background pin > active config). Cloud calls keep the 429→local fallback and land in the usage ledger. If no catalog model qualifies the step silently keeps normal routing. Metadata travels as `__required_capabilities` in job args (serde-ignored by tools).
 

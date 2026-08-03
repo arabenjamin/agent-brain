@@ -494,15 +494,17 @@ impl SchedulerService {
             .await
             .map_err(|e| e.to_string())?;
 
-        // 2. Deserialise steps, substituting template vars.
+        // 2. Deserialise steps, substituting template vars at the Value level so quotes or
+        //    newlines in the substituted values can't corrupt the JSON (see
+        //    substitute_template_vars).
         let date = Utc::now().format("%Y-%m-%d").to_string();
-        let steps_json = st
-            .steps
-            .replace("{{task_id}}", &task_id)
-            .replace("{{goal}}", &st.name)
-            .replace("{{date}}", &date);
-
-        let mut steps: Vec<ChainStep> = serde_json::from_str(&steps_json)
+        let raw: serde_json::Value = serde_json::from_str(&st.steps)
+            .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
+        let substituted = crate::services::queue::substitute_template_vars(
+            &raw,
+            &[("task_id", &task_id), ("goal", &st.name), ("date", &date)],
+        );
+        let mut steps: Vec<ChainStep> = serde_json::from_value(substituted)
             .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
 
         // 3. Auto-assign context profile if available.
@@ -1262,12 +1264,27 @@ impl SchedulerService {
             .collect::<Vec<_>>()
             .join("-");
         let file_slug = file_slug.chars().take(50).collect::<String>();
-        let substituted = steps_json
-            .replace("{{task_id}}", task_id)
-            .replace("{{goal}}", goal)
-            .replace("{{date}}", &date)
-            .replace("{{file_slug}}", &file_slug);
-        match serde_json::from_str::<Vec<ChainStep>>(&substituted) {
+        // Parse the raw (valid) JSON first, then substitute template vars at the Value
+        // level.  Substituting into the serialized string before parsing would corrupt
+        // the JSON whenever a value like {{goal}} contains a quote, backslash, or newline
+        // (common in LLM-generated goals) — see substitute_template_vars.
+        let raw: serde_json::Value = match serde_json::from_str(&steps_json) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(goal = %goal, error = %e, "SchedulerChain steps are not valid JSON — falling back to heuristics");
+                return None;
+            }
+        };
+        let substituted = crate::services::queue::substitute_template_vars(
+            &raw,
+            &[
+                ("task_id", task_id),
+                ("goal", goal),
+                ("date", &date),
+                ("file_slug", &file_slug),
+            ],
+        );
+        match serde_json::from_value::<Vec<ChainStep>>(substituted) {
             Ok(steps) => {
                 info!(goal = %goal, steps = steps.len(), "Scheduler: routing via SchedulerChain from Neo4j");
                 Some((steps, rubric, no_evaluator, no_adversarial))
