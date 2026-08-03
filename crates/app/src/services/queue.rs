@@ -996,7 +996,6 @@ impl QueueService {
                     .and_then(|a| a.get("__evaluator_min_score"))
                     .and_then(|v| v.as_f64())
                 {
-                    let score = parse_evaluator_score(&result_text);
                     let task_id = job
                         .arguments
                         .as_ref()
@@ -1004,45 +1003,60 @@ impl QueueService {
                         .and_then(|v| v.as_str())
                         .map(String::from);
 
-                    // Phase 3 learning edge: if this task was built by the Agent
-                    // Constructor, record the graded outcome on its AgentSpec —
-                    // pass AND fail (failures are the more valuable signal).
-                    if let Some(tid) = &task_id {
-                        match self
-                            .neo4j
-                            .record_agent_spec_performance(
-                                tid,
-                                score as f64,
-                                score >= min_score as f32,
-                            )
-                            .await
-                        {
-                            Ok(true) => {
-                                info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
-                            }
-                            Ok(false) => {} // not a constructed task — nothing to learn onto
-                            Err(e) => {
-                                warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
-                            }
+                    match parse_evaluator_score(&result_text) {
+                        None => {
+                            // No parseable score or verdict keyword. Treating this as a
+                            // failing 3.0 (the old behaviour) burned up to 3 retry chains on
+                            // mere format drift from the local model. Treat unparseable output
+                            // as a pass, and do NOT grade the AgentSpec with an invented number.
+                            warn!(
+                                job_id = %job.id,
+                                "Evaluator output unparseable (no Score line or verdict) — treating as pass"
+                            );
+                            false
                         }
-                    }
+                        Some(score) => {
+                            // Phase 3 learning edge: if this task was built by the Agent
+                            // Constructor, record the graded outcome on its AgentSpec —
+                            // pass AND fail (failures are the more valuable signal).
+                            if let Some(tid) = &task_id {
+                                match self
+                                    .neo4j
+                                    .record_agent_spec_performance(
+                                        tid,
+                                        score as f64,
+                                        score >= min_score as f32,
+                                    )
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
+                                    }
+                                    Ok(false) => {} // not a constructed task — nothing to learn onto
+                                    Err(e) => {
+                                        warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
+                                    }
+                                }
+                            }
 
-                    if score < min_score as f32 {
-                        warn!(
-                            job_id = %job.id,
-                            score = score,
-                            min_score = min_score,
-                            "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
-                        );
-                        let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                        if let Some(tid) = &task_id {
-                            self.handle_evaluator_requeue(tid, score, &result_text)
-                                .await;
+                            if score < min_score as f32 {
+                                warn!(
+                                    job_id = %job.id,
+                                    score = score,
+                                    min_score = min_score,
+                                    "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
+                                );
+                                let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                                if let Some(tid) = &task_id {
+                                    self.handle_evaluator_requeue(tid, score, &result_text)
+                                        .await;
+                                }
+                                true
+                            } else {
+                                info!(job_id = %job.id, score = score, "Evaluator: score passed");
+                                false
+                            }
                         }
-                        true
-                    } else {
-                        info!(job_id = %job.id, score = score, "Evaluator: score passed");
-                        false
                     }
                 } else {
                     false
@@ -1395,25 +1409,30 @@ impl QueueService {
 ///
 /// Looks for an explicit `Score: N/5` line first; falls back to verdict keywords
 /// ("FULLY MET" → 5, "PARTIALLY MET" → 3, "NOT MET" → 1).
-fn parse_evaluator_score(text: &str) -> f32 {
+///
+/// Returns `None` when neither a score line nor a verdict keyword is present.
+/// The caller treats `None` as a pass rather than inventing a mid-scale score:
+/// a fabricated 3.0 sits below the default `min_score` of 3.5, so format drift
+/// from the local model would otherwise fail the task and burn retry chains.
+fn parse_evaluator_score(text: &str) -> Option<f32> {
     for line in text.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("Score:")
             && let Some(n_str) = rest.trim().split('/').next()
             && let Ok(n) = n_str.trim().parse::<f32>()
         {
-            return n.clamp(1.0, 5.0);
+            return Some(n.clamp(1.0, 5.0));
         }
     }
     let lower = text.to_lowercase();
     if lower.contains("fully met") {
-        5.0
+        Some(5.0)
     } else if lower.contains("partially met") {
-        3.0
+        Some(3.0)
     } else if lower.contains("not met") {
-        1.0
+        Some(1.0)
     } else {
-        3.0
+        None
     }
 }
 
@@ -1608,5 +1627,38 @@ mod tests {
         let out = substitute_prev(&raw, "PREV");
         assert_eq!(out["x"], json!("PREV"));
         assert_eq!(out["y"], json!("PREV"));
+    }
+
+    #[test]
+    fn parse_evaluator_score_explicit_line() {
+        assert_eq!(parse_evaluator_score("Score: 4/5\nGood."), Some(4.0));
+        assert_eq!(parse_evaluator_score("  Score: 2 / 5"), Some(2.0));
+    }
+
+    #[test]
+    fn parse_evaluator_score_verdict_keywords() {
+        assert_eq!(parse_evaluator_score("The goal was FULLY MET."), Some(5.0));
+        assert_eq!(
+            parse_evaluator_score("partially met, needs work"),
+            Some(3.0)
+        );
+        assert_eq!(parse_evaluator_score("This was NOT MET at all"), Some(1.0));
+    }
+
+    #[test]
+    fn parse_evaluator_score_unparseable_is_none() {
+        // Format drift / prose with no score line and no verdict keyword must be None,
+        // so the caller treats it as a pass instead of a failing fabricated 3.0.
+        assert_eq!(
+            parse_evaluator_score("Here is my assessment of the work done so far."),
+            None
+        );
+        assert_eq!(parse_evaluator_score(""), None);
+    }
+
+    #[test]
+    fn parse_evaluator_score_clamps_out_of_range() {
+        assert_eq!(parse_evaluator_score("Score: 9/5"), Some(5.0));
+        assert_eq!(parse_evaluator_score("Score: 0/5"), Some(1.0));
     }
 }

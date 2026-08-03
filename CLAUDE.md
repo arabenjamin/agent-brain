@@ -305,6 +305,7 @@ Inspired by the Anthropic harness design article. When a `Task` has a `success_c
 3. If score < `min_score` (default 3.5), the coordinator marks the original task `failed` and creates a new `Task` with the critique injected into `context`, so the scheduler re-dispatches it on the next tick
 4. If score passes, the chain continues normally
 5. **Retry cap:** `handle_evaluator_requeue` counts `"RETRY —"` occurrences already in the task context. If >= 3, it marks the task as terminal failure and stops re-queuing to prevent infinite loops.
+6. **Unparseable output = pass:** `parse_evaluator_score` returns `Option<f32>` — `None` when the output has no `Score: N/5` line *and* no verdict keyword (`FULLY/PARTIALLY/NOT MET`). The coordinator treats `None` as a pass and does **not** grade the AgentSpec. Previously it fabricated a 3.0, which sits below the default 3.5 threshold and failed the task on mere format drift from the local model, burning the full retry budget.
 
 `ChainStep` evaluator fields: `is_evaluator: bool`, `min_score: Option<f32>`, `evaluator_task_id: Option<String>`. Evaluator metadata is embedded in the job's `args_json` as `__evaluator_min_score` and `__evaluator_task_id` (serde ignores them in the tool handler).
 
