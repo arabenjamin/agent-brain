@@ -78,6 +78,45 @@ impl Neo4jClient {
         Ok(count)
     }
 
+    /// Delete completed/cancelled tasks older than `days`, in batches, to keep
+    /// the Task label from growing unboundedly (the scheduler scans it every tick).
+    ///
+    /// Tasks referenced by an AgentSpec (`PERFORMED` / `CONSTRUCTED_FOR`) are kept —
+    /// they are the constructor's learning history. Returns total deleted.
+    pub async fn delete_old_completed_tasks(&self, days: u32) -> Result<usize, RepositoryError> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let mut total = 0usize;
+        loop {
+            let q = query(
+                "MATCH (t:Task) \
+                 WHERE t.status IN ['completed', 'cancelled'] \
+                   AND coalesce(t.updated_at, t.created_at) <> '' \
+                   AND datetime(coalesce(t.updated_at, t.created_at)) \
+                       < datetime() - duration({days: $days}) \
+                   AND NOT EXISTS { MATCH (:AgentSpec)-[:PERFORMED|CONSTRUCTED_FOR]->(t) } \
+                 WITH t LIMIT 1000 \
+                 DETACH DELETE t \
+                 RETURN count(*) AS n",
+            )
+            .param("days", days as i64);
+            let rows = self.execute(q).await?;
+            let n = rows
+                .first()
+                .and_then(|r| r.get::<i64>("n").ok())
+                .unwrap_or(0) as usize;
+            total += n;
+            if n < 1000 {
+                break;
+            }
+        }
+        if total > 0 {
+            info!(total, days, "Deleted old completed/cancelled tasks");
+        }
+        Ok(total)
+    }
+
     /// Get a task by ID.
     pub async fn get_task(&self, id: &str) -> Result<Option<Task>, RepositoryError> {
         let q = query("MATCH (t:Task {id: $id}) RETURN t").param("id", id);

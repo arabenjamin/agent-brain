@@ -89,6 +89,7 @@ Copy `.env.example` to `.env` and configure:
 | `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
 | `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and force-refreshed on the first scheduler tick after every startup (YAML edits propagate on restart) |
 | `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup. A missing/unreadable directory is a **fatal startup error**. See "ScheduledTask ownership" below |
+| `SOURCES_DIR` | `./sources` | Directory containing `*.yaml` SourceList definitions (approved-domain lists for `search_web`). Seeded **ON CREATE only** — the graph owns each list after first creation; runtime edits via `neo4j_query` persist across restarts. Delete a node to re-seed it from YAML. Missing directory is non-fatal |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |
 | `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
@@ -364,6 +365,10 @@ Ownership can be transferred explicitly: `manage_scheduled_task` upsert accepts 
 
 **`manage_chain` tool** now accepts `name`, `patterns` (list), `no_evaluator`, and `no_adversarial` fields in addition to `pattern`.
 
+### SourceLists (approved-domain lists for `search_web`)
+
+`(:SourceList {name, domains, description})` nodes restrict `search_web` results to approved domains (the tool adds `site:` operators and post-filters results). Definitions live in `sources/*.yaml` (`name`, `description`, `domains`) and are seeded by `source_seeder` **ON CREATE only** — unlike schedules, the graph owns each list after first creation, so runtime edits (`neo4j_query` with `readonly=false`: `MATCH (s:SourceList {name:'news'}) SET s.domains = [...]`) persist across restarts. Delete a node to re-seed it from its YAML. A `source_list` name that doesn't resolve degrades gracefully: the search runs unrestricted. Built-ins: `news` (national/world outlets), `michigan-news` (metro Detroit and Michigan outlets).
+
 ### Context Profiles
 
 YAML profiles in `contexts/` (default `./contexts`) define tool allowlists and system prompts for different agent personas. `boot.yaml` runs every startup; `init.yaml` runs when the graph is empty. The `ContextBuilderService` loads profiles and supports `auto_assign(goal)` keyword-matching to pick the best profile.
@@ -391,7 +396,7 @@ See `project-docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadm
 
 **Initialization order:** `SchedulerService::new()` must be called AFTER `QueueService::new()`. `QueueService::spawn_coordinator()` must be called AFTER the tool handler is set (end of `build_skills`).
 
-**Consolidation loop:** Uses `[Memory N]` labels (not `Note N:`), instructs LLM not to echo them. Auto-generated consolidation topics use `"recent experiences and knowledge"`. Source notes get `next_review_at = now + 30 days` after consolidation.
+**Consolidation loop:** Uses `[Memory N]` labels (not `Note N:`), instructs LLM not to echo them. Auto-generated consolidation topics use `"recent experiences and knowledge"`. Source notes get `next_review_at = now + 30 days` after consolidation. Source selection excludes LLM-generated note types (`consolidated`, `reflection`, `news`, `news_raw`, `outcome`, `inference`, `meta_learning_result`) and only considers notes whose `next_review_at` is due — without the due filter the fixed topic embedding deterministically re-selects the same top-K notes every cycle. An empty selection is a no-op success (not an error) so the bedtime chain still reaches `prune_old_notes`.
 
 **`services/mod.rs`:** Must re-export `LlmProviderType`: `pub use llm::{LlmClient, LlmConfig, LlmProviderType};`
 

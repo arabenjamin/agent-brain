@@ -1064,42 +1064,15 @@ impl BrainCore {
             }
         }
 
-        // ── Seed built-in SourceList for news ────────────────────────────
-        let news_domains: Vec<String> = vec![
-            "apnews.com".into(),
-            "reuters.com".into(),
-            "bbc.com".into(),
-            "bbc.co.uk".into(),
-            "theguardian.com".into(),
-            "nytimes.com".into(),
-            "washingtonpost.com".into(),
-            "wsj.com".into(),
-            "ft.com".into(),
-            "economist.com".into(),
-            "bloomberg.com".into(),
-            "politico.com".into(),
-            "techcrunch.com".into(),
-            "wired.com".into(),
-            "arstechnica.com".into(),
-            "theatlantic.com".into(),
-            "axios.com".into(),
-            "npr.org".into(),
-            "pbs.org".into(),
-            "aljazeera.com".into(),
-        ];
-        if let Err(e) = neo4j
-            .upsert_source_list(
-                "news",
-                &news_domains,
-                "Approved news sources for scheduled news briefings. \
-                 Edit via neo4j_query: MATCH (s:SourceList {name:'news'}) SET s.domains = [...]",
-            )
-            .await
-        {
-            warn!(error = %e, "Failed to upsert news SourceList");
-        } else {
-            debug!("Upserted news SourceList ({} domains)", news_domains.len());
-        }
+        // ── Seed SourceLists from sources/*.yaml ──────────────────────────
+        // ON CREATE only — the graph owns each list after first creation, so
+        // runtime edits via neo4j_query persist across restarts. A missing
+        // directory is non-fatal: search_web runs unrestricted when a
+        // source_list name does not resolve.
+        let sources_dir =
+            PathBuf::from(std::env::var("SOURCES_DIR").unwrap_or_else(|_| "sources".into()));
+        let n = crate::services::source_seeder::seed_sources_from_dir(neo4j, &sources_dir).await;
+        debug!(created = n, "Seeded SourceLists from sources/");
 
         // ── Seed built-in ScheduledTasks ──────────────────────────────────
         // schedules/*.yaml is the single source of truth for yaml-owned task

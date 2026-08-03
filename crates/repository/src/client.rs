@@ -222,26 +222,36 @@ impl Neo4jClient {
         Ok(domains)
     }
 
-    /// Upsert a SourceList node (MERGE on name, SET domains + description).
-    pub async fn upsert_source_list(
+    /// Seed a SourceList node if absent (MERGE on name, ON CREATE SET only).
+    /// The graph owns the node after creation — runtime edits to `domains`
+    /// persist across restarts. Returns true when the node was created.
+    pub async fn seed_source_list_if_absent(
         &self,
         name: &str,
         domains: &[String],
         description: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let now = chrono::Utc::now().to_rfc3339();
-        self.run(
-            neo4rs::query(
-                "MERGE (s:SourceList {name: $name}) \
-                 ON CREATE SET s.created_at = $now \
-                 SET s.domains = $domains, s.description = $description, s.updated_at = $now",
+        let rows = self
+            .execute(
+                neo4rs::query(
+                    "MERGE (s:SourceList {name: $name}) \
+                     ON CREATE SET s.domains = $domains, s.description = $description, \
+                                   s.created_at = $now, s.updated_at = $now \
+                     RETURN s.created_at = $now AS created",
+                )
+                .param("name", name)
+                .param("domains", domains.to_vec())
+                .param("description", description)
+                .param("now", now.as_str()),
             )
-            .param("name", name)
-            .param("domains", domains.to_vec())
-            .param("description", description)
-            .param("now", now.as_str()),
-        )
-        .await
+            .await?;
+        let created = rows
+            .into_iter()
+            .next()
+            .and_then(|row| row.get::<bool>("created").ok())
+            .unwrap_or(false);
+        Ok(created)
     }
 }
 

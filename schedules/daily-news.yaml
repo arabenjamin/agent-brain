@@ -1,51 +1,200 @@
+# Daily news briefing — expanded coverage (metro Detroit, Michigan, national,
+# world, tech, business, markets, weather).
+#
+# Pattern note: {{_prev}} only carries the IMMEDIATELY PRECEDING step's output,
+# so each search_web step is followed by a push_context step that banks the
+# results into the date-scoped working-memory session "news-raw-{{date}}".
+# A neo4j_query step then collects every section at once and hands the full
+# bundle to the reason step. The final step deletes the raw session entries.
+#
+# The `name` is the Neo4j MERGE key — do not change it without deleting the
+# old (:ScheduledTask) node, or the old chain keeps running alongside this one.
 name: "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing"
-description: "Aggregates headlines from multiple sources daily and stores a structured news briefing."
+description: "Aggregates metro Detroit, Michigan, national, world, tech, and business headlines plus a stock-market recap and Detroit weather, then writes and stores a structured daily briefing."
 interval_seconds: 86400
 steps:
+  # ── Collect: search each topic, bank results in working memory ──────────
   - tool_name: search_web
     arguments:
-      query: "top world news headlines {{date}}"
-      count: 10
+      query: "metro Detroit news headlines"
+      count: 6
+      source_list: michigan-news
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## METRO DETROIT — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "Michigan state news headlines"
+      count: 6
+      source_list: michigan-news
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## MICHIGAN — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "top US national news headlines"
+      count: 8
       source_list: news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
 
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## NATIONAL — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
   - tool_name: search_web
     arguments:
-      query: "AI technology science news {{date}}"
-      count: 10
+      query: "top world news headlines"
+      count: 8
       source_list: news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
 
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## WORLD — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
   - tool_name: search_web
     arguments:
-      query: "business economy politics news {{date}}"
-      count: 10
+      query: "AI technology science news"
+      count: 6
       source_list: news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
 
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## TECHNOLOGY & AI — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "business economy politics news"
+      count: 6
+      source_list: news
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## BUSINESS & POLITICS — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "stock market today S&P 500 Dow Jones Nasdaq close summary"
+      count: 5
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## MARKETS — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "Detroit Michigan weather forecast today"
+      count: 4
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## WEATHER — raw search results\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # ── Assemble: pull every banked section out of working memory ───────────
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  # ── Write the briefing from the assembled sections ──────────────────────
   - tool_name: reason
     arguments:
       question: |
         Write a structured daily news brief for {{date}} with the following sections:
         ## EXECUTIVE SUMMARY
+        ## METRO DETROIT
+        ## MICHIGAN
+        ## NATIONAL
         ## WORLD NEWS
         ## TECHNOLOGY & AI
         ## BUSINESS & POLITICS
+        ## MARKETS
+        ## WEATHER
         ## STORY TO WATCH
 
-        3-4 bullets per section. Cite sources with URLs. Flag notable spin or framing with ⚠️.
+        2-3 bullets per section, drawn only from the raw search results in the
+        context (the context contains one "## <SECTION> — raw search results"
+        block per topic). Cite sources with URLs. Flag notable spin or framing
+        with ⚠️. For MARKETS, lead with index levels/direction if present. For
+        WEATHER, give today's Detroit forecast in one or two bullets.
+        If a section has no usable results, write "No results collected today."
         Do not output JSON or any code fences. Write in plain prose with Markdown headings only.
       context: "{{_prev}}"
       store_inference: false
     priority: 2
     max_attempts: 3
-    provider_hint: ollama
+    # Write the brief with the cloud model (gemma4:31b-cloud, $0-cost tier).
+    # Any provider_hint other than "ollama" uses the active config instead of
+    # the weak local OLLAMA_LOCAL_MODEL. Searches/cleanup stay local below.
+    provider_hint: ollama-cloud
 
   - tool_name: store_note
     arguments:
@@ -71,5 +220,14 @@ steps:
       content: "{{_prev}}"
       role: assistant
     priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # ── Clean up the raw working-memory session ──────────────────────────────
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
     max_attempts: 2
     provider_hint: ollama

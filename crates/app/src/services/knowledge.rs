@@ -436,12 +436,28 @@ impl KnowledgeService {
         Ok(results)
     }
 
+    /// Spawn entity extraction as a fire-and-forget background task.
+    ///
+    /// The LLM call takes 10–70s on local models; running it inline made every
+    /// `store_note` (and thus every chain ending in one) block for that long.
+    /// Failures were already swallowed on the inline path, so detaching loses
+    /// nothing but the latency.
+    fn spawn_extract_entities(&self, note_id: String, content: String) {
+        let Some(llm) = self.llm.clone() else { return };
+        let neo4j = self.neo4j.clone();
+        tokio::spawn(async move {
+            if let Err(e) = Self::extract_entities(neo4j, &note_id, &content, llm).await {
+                warn!("Background entity extraction failed for {}: {}", note_id, e);
+            }
+        });
+    }
+
     /// Extract named entities from note content and persist them to the graph.
     async fn extract_entities(
-        &self,
+        neo4j: Neo4jClient,
         note_id: &str,
         content: &str,
-        llm: &Arc<dyn LlmProvider>,
+        llm: Arc<dyn LlmProvider>,
     ) -> Result<usize> {
         let prompt = format!(
             "Extract named entities from the text. Classify each into one of: \
@@ -484,9 +500,11 @@ impl KnowledgeService {
             "object", "type", "name", "list", "set", "get", "this", "that", "the", "a", "an",
         ];
 
-        let mut count = 0usize;
         let timestamp = Utc::now().to_rfc3339();
 
+        // Collect valid entities, then persist them in one UNWIND round-trip
+        // instead of one query per entity.
+        let mut batch: Vec<neo4rs::BoltType> = Vec::new();
         for entity in &entities {
             let name = match entity.get("name").and_then(|v| v.as_str()) {
                 Some(n) if !n.trim().is_empty() => n.trim().to_lowercase(),
@@ -501,34 +519,37 @@ impl KnowledgeService {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let entity_id = Uuid::new_v4().to_string();
 
-            let cypher = r#"
-            MERGE (e:Entity {name: $name})
-            ON CREATE SET e.id = $entity_id, e.entity_type = $entity_type, e.created_at = datetime($ts)
-            WITH e
-            MATCH (n:Note {id: $note_id})
-            MERGE (n)-[r:MENTIONS]->(e)
-            ON CREATE SET r.count = 1
-            ON MATCH SET r.count = r.count + 1
-            "#;
-
-            match self
-                .neo4j
-                .run(
-                    neo4rs::query(cypher)
-                        .param("name", name.clone())
-                        .param("entity_id", entity_id)
-                        .param("entity_type", entity_type)
-                        .param("ts", timestamp.clone())
-                        .param("note_id", note_id),
-                )
-                .await
-            {
-                Ok(_) => count += 1,
-                Err(e) => warn!("Failed to store entity '{}': {}", name, e),
-            }
+            let mut row = std::collections::HashMap::new();
+            row.insert("name".to_string(), neo4rs::BoltType::from(name));
+            row.insert("entity_id".to_string(), Uuid::new_v4().to_string().into());
+            row.insert("entity_type".to_string(), entity_type.into());
+            batch.push(neo4rs::BoltType::from(row));
         }
+
+        if batch.is_empty() {
+            return Ok(0);
+        }
+        let count = batch.len();
+
+        let cypher = r#"
+        MATCH (n:Note {id: $note_id})
+        UNWIND $entities AS ent
+        MERGE (e:Entity {name: ent.name})
+        ON CREATE SET e.id = ent.entity_id, e.entity_type = ent.entity_type, e.created_at = datetime($ts)
+        MERGE (n)-[r:MENTIONS]->(e)
+        ON CREATE SET r.count = 1
+        ON MATCH SET r.count = r.count + 1
+        "#;
+
+        neo4j
+            .run(
+                neo4rs::query(cypher)
+                    .param("entities", batch)
+                    .param("ts", timestamp)
+                    .param("note_id", note_id),
+            )
+            .await?;
 
         Ok(count)
     }
@@ -602,10 +623,8 @@ impl KnowledgeService {
                 }
             }
 
-            // Entity extraction on the full parent content
-            if let Some(llm) = &self.llm {
-                let _ = self.extract_entities(&parent_id, content, llm).await;
-            }
+            // Entity extraction on the full parent content (background, non-blocking)
+            self.spawn_extract_entities(parent_id.clone(), content.to_string());
 
             return Ok((parent_id, total_links));
         }
@@ -626,9 +645,7 @@ impl KnowledgeService {
             0
         };
 
-        if let Some(llm) = &self.llm {
-            let _ = self.extract_entities(&note_id, content, llm).await;
-        }
+        self.spawn_extract_entities(note_id.clone(), content.to_string());
 
         Ok((note_id, links_created))
     }
@@ -2321,15 +2338,21 @@ impl KnowledgeService {
         };
 
         // Pre-filter by type so consolidated/reflection notes never crowd out source material.
+        // 'inference' and 'meta_learning_result' are excluded for the same reason: they are
+        // LLM-generated abstractions (e.g. health-monitor `reason` output), not observations.
         // The vector index approach (queryNodes) posts the filter *after* ANN selection, which
         // causes consolidated notes to dominate the top-K results for generic topics like
         // "recent experiences and knowledge". Using vector.similarity.cosine() on a pre-filtered
         // MATCH scans only the eligible notes (~1k) and is fast enough at this scale.
         // The size() guard handles the handful of legacy notes with mismatched dimensions.
+        // The next_review_at filter makes the post-consolidation +30d bump (step 7) effective:
+        // without it the topic embedding is deterministic and the same top-K notes are
+        // re-summarized every cycle (observed: single notes summarized 1500+ times).
         let embed_dim = embedding.len() as i64;
         let source_cypher = r#"
         MATCH (n:Note)
-        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome']
+        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result']
+          AND (n.next_review_at IS NULL OR n.next_review_at <= datetime())
           AND n.embedding IS NOT NULL
           AND size(n.embedding) = $dim
         WITH n, vector.similarity.cosine(n.embedding, $embedding) AS score
@@ -2359,9 +2382,18 @@ impl KnowledgeService {
         }
 
         if notes.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No source notes found for topic '{}' (consolidated/reflection types excluded)",
-                topic
+            // With the next_review_at filter, "nothing due" is a normal steady state
+            // (every candidate was recently consolidated and bumped +30d). Return a
+            // no-op success so chain callers (e.g. the bedtime chain) proceed to their
+            // next step instead of recording a failed job every idle cycle.
+            return Ok((
+                String::new(),
+                0,
+                format!(
+                    "No notes due for consolidation on topic '{}' — all eligible \
+                     candidates are within their review interval.",
+                    topic
+                ),
             ));
         }
 

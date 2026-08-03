@@ -15,6 +15,7 @@ pub mod self_model;
 pub mod shared_llm;
 pub mod sleep;
 pub mod snapshot;
+pub mod source_seeder;
 pub mod store_impls;
 pub mod traits;
 

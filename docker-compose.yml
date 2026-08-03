@@ -55,6 +55,7 @@ services:
       - CODEBASE_DIR=/home/agent/agent-brain
       - CHAINS_DIR=/home/agent/agent-brain/chains
       - SCHEDULES_DIR=/home/agent/agent-brain/schedules
+      - SOURCES_DIR=/home/agent/agent-brain/sources
       # GitHub access is via the seeded `github` ApiContext + `http_request` tool.
       # GITHUB_TOKEN is auto-injected by http_request when context_name="github".
       # It is also used by entrypoint.sh to configure HTTPS push credentials.

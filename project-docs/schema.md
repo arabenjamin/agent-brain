@@ -272,12 +272,15 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `entity_name` | `Entity` | `name` | UNIQUE |
 | `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
+| `task_id` | `Task` | `id` | UNIQUE |
 
 ### Indexes
 
 | Name | Node | Property | Type | Notes |
 |------|------|----------|------|-------|
 | `note_embeddings` | `Note` | `embedding` | VECTOR | 1024-dim cosine similarity (bge-m3) |
+| `task_status` | `Task` | `status` | RANGE | Scheduler polls `status='created'` every tick |
+| `task_created` | `Task` | `created_at` | RANGE | Recency ordering in `list_tasks` |
 | `note_content_fulltext` | `Note` | `content` | FULLTEXT | BM25 hybrid search |
 | `note_next_review` | `Note` | `next_review_at` | RANGE | Spaced repetition query |
 | `working_memory_session` | `WorkingMemory` | `session_id` | RANGE | Session context lookup |

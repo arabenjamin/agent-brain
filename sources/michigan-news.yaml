@@ -1,0 +1,21 @@
+# Bootstrap definition for the `michigan-news` SourceList.
+# Seeded ON CREATE only — once the node exists, the graph owns it and runtime
+# edits (neo4j_query readonly=false: MATCH (s:SourceList {name:'michigan-news'})
+# SET s.domains = [...]) persist across restarts. Delete the node to re-seed.
+name: michigan-news
+description: >
+  Approved metro Detroit and Michigan news sources for scheduled news
+  briefings. Graph-owned after first seed — edit via neo4j_query; delete the
+  node to re-seed from sources/michigan-news.yaml.
+domains:
+  - freep.com
+  - detroitnews.com
+  - mlive.com
+  - clickondetroit.com
+  - wxyz.com
+  - fox2detroit.com
+  - crainsdetroit.com
+  - bridgemi.com
+  - michiganadvance.com
+  - metrotimes.com
+  - michiganpublic.org

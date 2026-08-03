@@ -594,6 +594,17 @@ impl SchedulerService {
             return;
         }
 
+        // Housekeeping: drop old completed/cancelled tasks so the Task label
+        // stays small (the scheduler scans it every tick). Runs at most once
+        // per sleep entry, gated by the same 6-hour cooldown above.
+        let retention_days: u32 = std::env::var("TASK_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        if let Err(e) = self.neo4j.delete_old_completed_tasks(retention_days).await {
+            warn!("Old-task cleanup on sleep entry failed: {}", e);
+        }
+
         let (session_id, timestamp) = {
             let cfg = self.config.read().await;
             (cfg.session_id.clone(), chrono::Utc::now().to_rfc3339())
@@ -768,12 +779,14 @@ impl SchedulerService {
         let mut consolidation_queued = open_consolidation_exists().await;
 
         // Trigger 1: many overdue spaced-repetition notes.
-        // Outcome notes are boilerplate completion records ("Task completed: …"); reviewing
-        // or consolidating them adds noise, so they don't count toward the backlog.
+        // The exclusion list MUST match consolidate_memories' source filter: any type counted
+        // here but refused as a source stays overdue forever and re-triggers consolidation
+        // tasks that can never consume it (reflection notes drove ~10 consolidations/day).
         let due_check = neo4rs::query(
             "MATCH (n:Note) \
              WHERE n.next_review_at <= datetime() \
-               AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'outcome'] \
+               AND NOT COALESCE(n.note_type, 'semantic') \
+                   IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome'] \
              RETURN count(n) AS cnt",
         );
         let due_count: i64 = self
@@ -811,7 +824,8 @@ impl SchedulerService {
                 let bump = neo4rs::query(
                     "MATCH (n:Note) \
                      WHERE n.next_review_at <= datetime() \
-                       AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'outcome'] \
+                       AND NOT COALESCE(n.note_type, 'semantic') \
+                           IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome'] \
                      SET n.next_review_at = datetime() + duration({days: 14}), \
                          n.review_interval_days = CASE \
                              WHEN COALESCE(n.review_interval_days, 1) < 14 THEN 14 \

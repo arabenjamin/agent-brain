@@ -125,11 +125,23 @@
 
 ## Recent Changes (auto)
 
-### 2026-06-11
+### 2026-06-12
 
-- Graph hygiene sweep: stale failed-job purge, outcome-note exclusions, scheduler trigger fixes
-- write_codebase_doc guarded against from-scratch doc regeneration; section mode added
-- Doc-update schedule redesigned to write a commit-grounded digest into this section only
+- fix: ground constructor plans in tool argument schemas (`fe77e9f`)
+- feat: constructor learning loop — Phase 3 of the Agent Constructor plan (`778e884`)
+- feat: construct_agent tool — Phase 2 of the Agent Constructor plan (`939ff7c`)
+- fix: learn observed cloud-model availability from failures; fall back on 403 (`3ac0596`)
+- feat: per-step model routing within cloud tiers — Phase 1 of Agent Constructor (`489d8f5`)
+- feat: self-model meta-graph — Phase 0b of the Agent Constructor plan (`900284a`)
+- fix: ground every chain reason step in context — sweep chains/ for the RAG bug (`80f20db`)
+- fix: read OllamaCloud stream past finish_reason to capture usage chunk (`a056f1b`)
+- fix: request usage block in OllamaCloud chat stream (`635798f`)
+- fix: checkpoint DuckDB WAL at startup — deploys kill, never close (`2894a01`)
+- fix: windowed usage stats — compute cutoff in Rust, not DuckDB interval math (`966e6cd`)
+- feat: honest model-usage accounting + Agent Constructor design plan (`f7afa15`)
+- feat: todo page sort/filter/clear-done; weekly brain-exercise schedule (`f0d57ba`)
+- feat: explicit ScheduledTask ownership via managed_by; remove hardcoded seeds (`7c24492`)
+- fix: stop reason-step RAG self-contamination in scheduled tasks (`3233d1f`)
 
 ## Known Issues / Backlog
 

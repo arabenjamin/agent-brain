@@ -107,11 +107,54 @@ pub struct RestoreStats {
     pub dry_run: bool,
 }
 
+/// Retention policy for snapshot files, enforced after every `take_snapshot`.
+///
+/// A file is deleted when it exceeds `max_files` (counting newest-first) or is
+/// older than `max_age_days` — except the `min_keep` newest files, which are
+/// never deleted regardless of age. Setting `max_age_days` or `max_files` to 0
+/// disables that dimension.
+#[derive(Debug, Clone)]
+pub struct RetentionPolicy {
+    pub max_age_days: u32,
+    pub max_files: usize,
+    pub min_keep: usize,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_age_days: 14,
+            max_files: 50,
+            min_keep: 5,
+        }
+    }
+}
+
+impl RetentionPolicy {
+    /// Read `SNAPSHOT_RETENTION_DAYS` and `SNAPSHOT_MAX_FILES` from the
+    /// environment, falling back to defaults on missing or unparsable values.
+    pub fn from_env() -> Self {
+        let d = Self::default();
+        Self {
+            max_age_days: std::env::var("SNAPSHOT_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.max_age_days),
+            max_files: std::env::var("SNAPSHOT_MAX_FILES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.max_files),
+            min_keep: d.min_keep,
+        }
+    }
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 pub struct SnapshotService {
     neo4j: Neo4jClient,
     snapshot_dir: PathBuf,
+    retention: RetentionPolicy,
 }
 
 impl SnapshotService {
@@ -119,6 +162,7 @@ impl SnapshotService {
         Self {
             neo4j,
             snapshot_dir,
+            retention: RetentionPolicy::from_env(),
         }
     }
 
@@ -201,7 +245,77 @@ impl SnapshotService {
             "Knowledge snapshot taken"
         );
 
+        // Retention is best-effort: a failed prune must never fail the snapshot.
+        if let Err(e) = Self::apply_retention(&self.snapshot_dir, &self.retention).await {
+            warn!("Snapshot retention pass failed: {}", e);
+        }
+
         Ok((file_path, meta))
+    }
+
+    /// Delete snapshot files that fall outside the retention policy.
+    ///
+    /// Files are ordered newest-first by modification time. The `min_keep`
+    /// newest are always kept; beyond that, a file is deleted when its index
+    /// exceeds `max_files` or its age exceeds `max_age_days`. Returns the
+    /// number of files deleted.
+    pub async fn apply_retention(dir: &Path, policy: &RetentionPolicy) -> Result<usize> {
+        let mut entries = match tokio::fs::read_dir(dir).await {
+            Ok(d) => d,
+            Err(_) => return Ok(0), // dir doesn't exist yet — nothing to prune
+        };
+
+        let mut files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .context("Failed to read snapshot dir")?
+        {
+            let path = entry.path();
+            if !path.to_string_lossy().ends_with(".json.gz") {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .await
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            files.push((path, modified));
+        }
+
+        // Newest first.
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let cutoff = (policy.max_age_days > 0).then(|| {
+            std::time::SystemTime::now()
+                - std::time::Duration::from_secs(u64::from(policy.max_age_days) * 86_400)
+        });
+
+        let mut deleted = 0usize;
+        for (idx, (path, modified)) in files.iter().enumerate() {
+            if idx < policy.min_keep {
+                continue;
+            }
+            let over_count = policy.max_files > 0 && idx >= policy.max_files;
+            let over_age = cutoff.is_some_and(|c| *modified < c);
+            if !(over_count || over_age) {
+                continue;
+            }
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => deleted += 1,
+                Err(e) => warn!("Failed to delete old snapshot {}: {}", path.display(), e),
+            }
+        }
+
+        if deleted > 0 {
+            info!(
+                deleted,
+                remaining = files.len() - deleted,
+                "Pruned old knowledge snapshots"
+            );
+        }
+
+        Ok(deleted)
     }
 
     /// Restore a knowledge graph snapshot from a file.
@@ -568,5 +682,113 @@ impl SnapshotService {
             }
         }
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    fn make_snapshot_file(dir: &Path, name: &str, age: Duration) {
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_modified(SystemTime::now() - age).unwrap();
+    }
+
+    #[tokio::test]
+    async fn retention_deletes_beyond_max_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..8 {
+            make_snapshot_file(
+                dir.path(),
+                &format!("snapshot_{i}.json.gz"),
+                Duration::from_secs(i * 60),
+            );
+        }
+        let policy = RetentionPolicy {
+            max_age_days: 0,
+            max_files: 3,
+            min_keep: 1,
+        };
+        let deleted = SnapshotService::apply_retention(dir.path(), &policy)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 5);
+
+        // The 3 newest (smallest age) survive.
+        for i in 0..3 {
+            assert!(dir.path().join(format!("snapshot_{i}.json.gz")).exists());
+        }
+        for i in 3..8 {
+            assert!(!dir.path().join(format!("snapshot_{i}.json.gz")).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn retention_deletes_by_age_but_keeps_min_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        // All files are 30 days old — well past a 14-day cutoff.
+        for i in 0..6 {
+            make_snapshot_file(
+                dir.path(),
+                &format!("snapshot_{i}.json.gz"),
+                Duration::from_secs(30 * 86_400 + i * 60),
+            );
+        }
+        let policy = RetentionPolicy {
+            max_age_days: 14,
+            max_files: 0,
+            min_keep: 2,
+        };
+        let deleted = SnapshotService::apply_retention(dir.path(), &policy)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 4);
+        assert!(dir.path().join("snapshot_0.json.gz").exists());
+        assert!(dir.path().join("snapshot_1.json.gz").exists());
+    }
+
+    #[tokio::test]
+    async fn retention_disabled_deletes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..4 {
+            make_snapshot_file(
+                dir.path(),
+                &format!("snapshot_{i}.json.gz"),
+                Duration::from_secs(365 * 86_400),
+            );
+        }
+        let policy = RetentionPolicy {
+            max_age_days: 0,
+            max_files: 0,
+            min_keep: 5,
+        };
+        let deleted = SnapshotService::apply_retention(dir.path(), &policy)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn retention_ignores_non_snapshot_files_and_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        make_snapshot_file(dir.path(), "notes.txt", Duration::from_secs(365 * 86_400));
+        let policy = RetentionPolicy {
+            max_age_days: 1,
+            max_files: 1,
+            min_keep: 0,
+        };
+        let deleted = SnapshotService::apply_retention(dir.path(), &policy)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0);
+        assert!(dir.path().join("notes.txt").exists());
+
+        let missing = dir.path().join("does-not-exist");
+        let deleted = SnapshotService::apply_retention(&missing, &policy)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0);
     }
 }

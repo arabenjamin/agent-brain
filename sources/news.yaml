@@ -1,0 +1,30 @@
+# Bootstrap definition for the `news` SourceList.
+# Seeded ON CREATE only — once the node exists, the graph owns it and runtime
+# edits (neo4j_query readonly=false: MATCH (s:SourceList {name:'news'})
+# SET s.domains = [...]) persist across restarts. Delete the node to re-seed.
+name: news
+description: >
+  Approved national and world news sources for scheduled news briefings.
+  Graph-owned after first seed — edit via neo4j_query; delete the node to
+  re-seed from sources/news.yaml.
+domains:
+  - apnews.com
+  - reuters.com
+  - bbc.com
+  - bbc.co.uk
+  - theguardian.com
+  - nytimes.com
+  - washingtonpost.com
+  - wsj.com
+  - ft.com
+  - economist.com
+  - bloomberg.com
+  - politico.com
+  - techcrunch.com
+  - wired.com
+  - arstechnica.com
+  - theatlantic.com
+  - axios.com
+  - npr.org
+  - pbs.org
+  - aljazeera.com
