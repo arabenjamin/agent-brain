@@ -5,7 +5,7 @@
      this file wholesale; make targeted, commit-grounded edits only. -->
 
 **Build:** passing
-**Tool count:** 69 static registered across 17 skills + N runtime (DynamicSkill)
+**Tool count:** 70 static registered across 17 skills + N runtime (DynamicSkill)
 **LLM Providers:** Ollama (local), Ollama Cloud, Anthropic, Gemini
 **Last updated:** 2026-06-11
 
@@ -29,7 +29,7 @@
 
 ---
 
-## Skill Registry (69 tools static + N runtime)
+## Skill Registry (70 tools static + N runtime)
 | Skill | Path | Tools | Notes |
 |-------|------|-------|-------|
 | HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
@@ -47,9 +47,9 @@
 | WsSkill | `src/skills/ws.rs` | 4 | WebSocket connection management |
 | ResourceSkill | `src/skills/resource.rs` | 1 | Shared resource/token registry |
 | SearchSkill | `src/skills/search.rs` | 1 | Web search integration |
-| MediaSkill | `src/skills/media.rs` | 5 | Watch/summarize videos (yt-dlp captions), channel watchlist, autonomous RSS polling |
+| MediaSkill | `src/skills/media.rs` | 6 | Watch/summarize videos (yt-dlp captions), channel watchlist, autonomous RSS polling |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
-| **Total** | | **64** | |
+| **Total** | | **70** | |
 
 **KnowledgeSkill tools (7):** `store_note`, `search_notes`, `prune_old_notes`, `consolidate_memories`, `reason`, `synthesize_knowledge`, `adversarial_plan_review`
 

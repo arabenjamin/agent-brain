@@ -194,7 +194,7 @@ agent-brain/
 │       │   │   ├── constructor.rs # Agent Constructor skill (construct_agent)
 │       │   │   ├── dynamic.rs    # Dynamic Tool Builder skill (4 tools + runtime tools)
 │       │   │   ├── knowledge.rs  # Knowledge Manager skill (16 tools)
-│       │   │   ├── media.rs      # Media Learning skill (5 tools: ingest_media, fetch_transcript, list_channel_videos, poll_media_sources, manage_media_source)
+│       │   │   ├── media.rs      # Media Learning skill (6 tools: ingest_media, fetch_transcript, list_channel_videos, poll_media_sources, manage_media_source, spawn_gap_tasks)
 │       │   │   ├── model.rs      # Model Registry skill (5 tools)
 │       │   │   ├── procedure.rs  # Procedural Memory skill (2 tools)
 │       │   │   ├── scheduler.rs  # Autonomous Scheduler skill (5 tools)

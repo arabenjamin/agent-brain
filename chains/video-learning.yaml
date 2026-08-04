@@ -79,6 +79,18 @@ steps:
     required_capabilities: ["reasoning"]
     description: "New-vs-known comparison"
 
+  # 4b. Fan the '## FOLLOW UP' concepts out into 'fill knowledge gap:' Tasks
+  #     (feeds the curiosity engine). Pure side-effect: echoes the analysis text
+  #     back unchanged, so {{_prev}} still carries it into the banking step below.
+  - tool_name: spawn_gap_tasks
+    arguments:
+      text: "{{_prev}}"
+      max: 4
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Spawn gap tasks from FOLLOW UP concepts"
+
   # 5. Bank the analysis alongside the summary.
   - tool_name: push_context
     arguments:

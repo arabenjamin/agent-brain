@@ -56,8 +56,6 @@ pub struct VideoMeta {
     pub url: String,
     pub published_at: String,
     pub duration_secs: i64,
-    /// Caption track URL (already normalized to `fmt=json3`), if any.
-    pub caption_url: Option<String>,
 }
 
 pub struct MediaService {
@@ -68,6 +66,8 @@ pub struct MediaService {
     window_chars: usize,
     /// `none` disables Whisper fallback (Phase 4).
     whisper_provider: String,
+    /// Scratch dir for yt-dlp subtitle downloads (cleaned per call).
+    media_dir: std::path::PathBuf,
     http: reqwest::Client,
 }
 
@@ -82,6 +82,9 @@ impl MediaService {
                 .unwrap_or(10800),
             window_chars: 6000,
             whisper_provider: std::env::var("WHISPER_PROVIDER").unwrap_or_else(|_| "none".into()),
+            media_dir: std::env::var("MEDIA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::env::temp_dir()),
             http: reqwest::Client::new(),
         }
     }
@@ -131,8 +134,7 @@ impl MediaService {
             .map_err(|e| anyhow::anyhow!("yt-dlp returned unparseable JSON: {e}"))
     }
 
-    /// Parse the `yt-dlp -J` blob into [`VideoMeta`], selecting the best caption
-    /// track for `self.caption_lang` (manual subs preferred over auto-captions).
+    /// Parse the `yt-dlp -J` blob into [`VideoMeta`].
     fn parse_meta(&self, v: &Value) -> anyhow::Result<VideoMeta> {
         let id = v
             .get("id")
@@ -148,7 +150,6 @@ impl MediaService {
         let url = first_nonempty(&[str_field(v, "webpage_url"), str_field(v, "original_url")]);
         let duration_secs = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) as i64;
         let published_at = format_upload_date(&str_field(v, "upload_date"));
-        let caption_url = select_caption_url(v, &self.caption_lang);
 
         Ok(VideoMeta {
             id,
@@ -158,20 +159,76 @@ impl MediaService {
             url,
             published_at,
             duration_secs,
-            caption_url,
         })
     }
 
-    async fn fetch_caption_text(&self, caption_url: &str) -> anyhow::Result<String> {
-        let body = self
-            .http
-            .get(caption_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        Ok(parse_json3(&body))
+    /// Download the caption track via `yt-dlp` itself (into a per-call scratch
+    /// dir) and parse it to plain text. Letting yt-dlp fetch the subtitle file
+    /// is far more robust than fetching the timedtext URL directly — auto-
+    /// captions in particular require yt-dlp's session handling. Returns `None`
+    /// when the video has no caption track. Human subs are preferred over
+    /// auto-captions (yt-dlp writes `<id>.<lang>.json3`, auto to the same name;
+    /// we pass `--write-subs` before `--write-auto-subs` so manual wins).
+    async fn download_captions(&self, url: &str, id: &str) -> anyhow::Result<Option<String>> {
+        let dir = self
+            .media_dir
+            .join(format!("brain-media-{id}-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            anyhow::anyhow!("could not create media scratch dir {}: {e}", dir.display())
+        })?;
+
+        // Match the exact lang plus regional variants (en, en-US, en-orig, …).
+        let lang_pat = format!("{lang},{lang}-.*,{lang}.*", lang = self.caption_lang);
+        let out = tokio::process::Command::new(&self.yt_dlp_path)
+            .args([
+                "--skip-download",
+                "--no-warnings",
+                "--no-playlist",
+                "--write-subs",
+                "--write-auto-subs",
+                "--sub-langs",
+                &lang_pat,
+                "--sub-format",
+                "json3",
+                "-o",
+                "%(id)s",
+                "-P",
+                &dir.to_string_lossy(),
+                url,
+            ])
+            .output()
+            .await;
+
+        let text = self.read_first_json3(&dir).await;
+        // Best-effort cleanup regardless of outcome.
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        match out {
+            Ok(o) if !o.status.success() => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                warn!(video = %id, stderr = %stderr.trim(), "yt-dlp subtitle download reported failure");
+            }
+            Err(e) => anyhow::bail!(
+                "failed to run yt-dlp ('{}') for captions: {e}",
+                self.yt_dlp_path
+            ),
+            _ => {}
+        }
+        Ok(text.filter(|t| !t.trim().is_empty()))
+    }
+
+    /// Read and parse the first `*.json3` subtitle file in `dir`, if any.
+    async fn read_first_json3(&self, dir: &std::path::Path) -> Option<String> {
+        let mut rd = tokio::fs::read_dir(dir).await.ok()?;
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json3")
+                && let Ok(body) = tokio::fs::read_to_string(&path).await
+            {
+                return Some(parse_json3(&body));
+            }
+        }
+        None
     }
 
     /// Fetch metadata + transcript. Returns `(meta, transcript, source)`.
@@ -182,13 +239,9 @@ impl MediaService {
         let raw = self.run_yt_dlp_json(url).await?;
         let meta = self.parse_meta(&raw)?;
 
-        if let Some(ref cap_url) = meta.caption_url {
-            debug!(video = %meta.id, "fetching caption track");
-            let text = self.fetch_caption_text(cap_url).await?;
-            if !text.trim().is_empty() {
-                return Ok((meta, text, "captions".to_string()));
-            }
-            warn!(video = %meta.id, "caption track was empty, falling through");
+        debug!(video = %meta.id, "downloading caption track via yt-dlp");
+        if let Some(text) = self.download_captions(url, &meta.id).await? {
+            return Ok((meta, text, "captions".to_string()));
         }
 
         // No usable captions — Whisper fallback (Phase 4).
@@ -354,41 +407,6 @@ fn format_upload_date(s: &str) -> String {
     }
 }
 
-/// Select a caption track URL from yt-dlp metadata, preferring human
-/// `subtitles` over `automatic_captions`, and normalize it to `fmt=json3`.
-fn select_caption_url(v: &Value, lang: &str) -> Option<String> {
-    for field in ["subtitles", "automatic_captions"] {
-        let Some(map) = v.get(field).and_then(|m| m.as_object()) else {
-            continue;
-        };
-        // Exact lang match first, then any track whose key starts with `lang`
-        // (e.g. "en" matching "en-US").
-        let key = map
-            .keys()
-            .find(|k| k.as_str() == lang)
-            .or_else(|| map.keys().find(|k| k.starts_with(lang)))?;
-        let tracks = map.get(key).and_then(|t| t.as_array())?;
-        // Prefer an existing json3 track, else take the first and force json3.
-        let chosen = tracks
-            .iter()
-            .find(|t| t.get("ext").and_then(|e| e.as_str()) == Some("json3"))
-            .or_else(|| tracks.first())?;
-        let base = chosen.get("url").and_then(|u| u.as_str())?;
-        return Some(force_fmt_json3(base));
-    }
-    None
-}
-
-/// Rewrite a timedtext caption URL to request the `json3` format.
-fn force_fmt_json3(url: &str) -> String {
-    // Drop any existing fmt= parameter, then append fmt=json3.
-    let re = Regex::new(r"([?&])fmt=[^&]*").unwrap();
-    let stripped = re.replace_all(url, "$1").to_string();
-    let stripped = stripped.trim_end_matches(['?', '&']);
-    let sep = if stripped.contains('?') { '&' } else { '?' };
-    format!("{stripped}{sep}fmt=json3")
-}
-
 /// Parse a YouTube `json3` caption body into plain text.
 fn parse_json3(body: &str) -> String {
     let v: Value = match serde_json::from_str(body) {
@@ -552,22 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn force_json3_fmt() {
-        assert_eq!(
-            force_fmt_json3("https://x/api/timedtext?v=1"),
-            "https://x/api/timedtext?v=1&fmt=json3"
-        );
-        assert_eq!(
-            force_fmt_json3("https://x/api/timedtext?v=1&fmt=vtt"),
-            "https://x/api/timedtext?v=1&fmt=json3"
-        );
-        assert_eq!(
-            force_fmt_json3("https://x/api/timedtext"),
-            "https://x/api/timedtext?fmt=json3"
-        );
-    }
-
-    #[test]
     fn parses_json3_captions() {
         let body = r#"{"events":[
             {"segs":[{"utf8":"Hello"},{"utf8":" world"}]},
@@ -580,39 +582,6 @@ mod tests {
     #[test]
     fn json3_garbage_is_empty() {
         assert_eq!(parse_json3("not json"), "");
-    }
-
-    #[test]
-    fn selects_manual_caption_over_auto() {
-        let v: Value = serde_json::from_str(
-            r#"{
-                "subtitles": {"en": [{"ext": "vtt", "url": "https://s/manual?fmt=vtt"}]},
-                "automatic_captions": {"en": [{"ext": "json3", "url": "https://s/auto?fmt=json3"}]}
-            }"#,
-        )
-        .unwrap();
-        let url = select_caption_url(&v, "en").unwrap();
-        assert!(
-            url.starts_with("https://s/manual"),
-            "should prefer manual subs: {url}"
-        );
-        assert!(url.ends_with("fmt=json3"));
-    }
-
-    #[test]
-    fn selects_lang_prefix_match() {
-        let v: Value = serde_json::from_str(
-            r#"{"automatic_captions": {"en-US": [{"ext": "json3", "url": "https://s/x"}]}}"#,
-        )
-        .unwrap();
-        assert!(select_caption_url(&v, "en").is_some());
-    }
-
-    #[test]
-    fn no_caption_returns_none() {
-        let v: Value =
-            serde_json::from_str(r#"{"subtitles": {}, "automatic_captions": {}}"#).unwrap();
-        assert!(select_caption_url(&v, "en").is_none());
     }
 
     #[test]

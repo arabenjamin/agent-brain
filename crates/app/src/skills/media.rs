@@ -8,6 +8,8 @@
 //! - `poll_media_sources` — autonomous watch: fan out new videos into
 //!   `"watch video: <url>"` Tasks (gated by `MEDIA_WATCH_ENABLED`).
 //! - `manage_media_source` — runtime CRUD for the `:MediaSource` watchlist.
+//! - `spawn_gap_tasks` — fan `## FOLLOW UP` concepts out into `fill knowledge
+//!   gap:` Tasks (pass-through side-effect for the video-learning chain).
 
 use std::sync::Arc;
 
@@ -141,6 +143,26 @@ impl MediaSkill {
                     "description": {"type": "string"},
                     "active": {"type": "boolean", "description": "Whether the watch loop polls it (default true)"}
                 }
+            }),
+        }
+    }
+
+    fn spawn_gap_tasks_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "spawn_gap_tasks".to_string(),
+            description:
+                "Parse the '## FOLLOW UP' bullets out of a new-vs-known analysis and create a \
+                 'fill knowledge gap: <concept>' Task for each (deduped against open tasks), \
+                 feeding the curiosity engine. Side-effect only: echoes `text` back unchanged so \
+                 it is safe to drop into a chain without disturbing the {{_prev}} flow."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Analysis text containing a '## FOLLOW UP' section"},
+                    "max": {"type": "integer", "description": "Max gap tasks to create (default 5)"}
+                },
+                "required": ["text"]
             }),
         }
     }
@@ -440,6 +462,50 @@ impl MediaSkill {
         }
     }
 
+    /// Create `fill knowledge gap:` Tasks from the `## FOLLOW UP` bullets of a
+    /// new-vs-known analysis. Pure side-effect: echoes `text` back unchanged so
+    /// the chain's `{{_prev}}` still carries the analysis for the next step.
+    async fn handle_spawn_gap_tasks(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: GapInput = match parse_args(arguments) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let max = input.max.unwrap_or(5);
+        let concepts = extract_follow_up(&input.text);
+        let mut created = 0usize;
+        for concept in concepts.iter().take(max) {
+            let concept = truncate(concept, 160);
+            let goal = format!("fill knowledge gap: {concept}");
+            if self
+                .neo4j
+                .open_task_exists_for_goal(&goal)
+                .await
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            match self
+                .neo4j
+                .create_task(
+                    &goal,
+                    Some("Auto-generated from a video-learning FOLLOW UP concept."),
+                    None,
+                )
+                .await
+            {
+                Ok(_) => created += 1,
+                Err(e) => warn!(error = %e, "spawn_gap_tasks: create_task failed"),
+            }
+        }
+        info!(
+            created,
+            candidates = concepts.len(),
+            "spawn_gap_tasks complete"
+        );
+        // Pass-through: return the analysis unchanged so downstream steps see it.
+        ToolCallResult::success_text(input.text)
+    }
+
     /// Resolve `(kind, ref)` from a MediaSource name, explicit kind+ref, or a
     /// bare channel/playlist id (inferred from its prefix).
     async fn resolve_source(&self, input: &ListInput) -> Result<(String, String), String> {
@@ -496,6 +562,7 @@ impl Skill for MediaSkill {
             Self::list_channel_videos_def(),
             Self::poll_media_sources_def(),
             Self::manage_media_source_def(),
+            Self::spawn_gap_tasks_def(),
         ]
     }
 
@@ -506,8 +573,57 @@ impl Skill for MediaSkill {
             "list_channel_videos" => Some(self.handle_list_channel_videos(arguments).await),
             "poll_media_sources" => Some(self.handle_poll_media_sources().await),
             "manage_media_source" => Some(self.handle_manage_media_source(arguments).await),
+            "spawn_gap_tasks" => Some(self.handle_spawn_gap_tasks(arguments).await),
             _ => None,
         }
+    }
+}
+
+/// Extract the bullet lines under a `## FOLLOW UP` heading (until the next
+/// heading). Tolerates `-`, `*`, `•`, and numbered bullets.
+fn extract_follow_up(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("##") {
+            in_section = rest.to_uppercase().contains("FOLLOW UP");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let cleaned = strip_bullet(t);
+        if !cleaned.is_empty() {
+            out.push(cleaned.to_string());
+        }
+    }
+    out
+}
+
+/// Strip a leading bullet marker (`-`/`*`/`•`) or `1.`/`1)` numbering.
+fn strip_bullet(line: &str) -> &str {
+    let s = line.trim_start_matches(['-', '*', '•']).trim_start();
+    // Numbered: drop a leading run of digits followed by '.' or ')'.
+    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let rest = &s[digits.len()..];
+        if let Some(after) = rest.strip_prefix('.').or_else(|| rest.strip_prefix(')')) {
+            return after.trim_start();
+        }
+    }
+    s
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars()
+            .take(max)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
     }
 }
 
@@ -531,6 +647,13 @@ struct IngestInput {
 #[derive(Debug, Deserialize)]
 struct UrlInput {
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GapInput {
+    text: String,
+    #[serde(default)]
+    max: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,5 +694,43 @@ mod tests {
         assert_eq!(infer_kind("PLabcdef"), Some("youtube_playlist"));
         assert_eq!(infer_kind("UUabcdef"), Some("youtube_playlist"));
         assert_eq!(infer_kind("randomthing"), None);
+    }
+
+    #[test]
+    fn extracts_follow_up_bullets_only() {
+        let text = "\
+## NEW
+- something new
+## CHANGED
+- a change
+## FOLLOW UP
+- Mixture-of-experts routing
+* Sparse attention
+3. Distillation economics
+## OTHER
+- ignored";
+        let got = extract_follow_up(text);
+        assert_eq!(
+            got,
+            vec![
+                "Mixture-of-experts routing".to_string(),
+                "Sparse attention".to_string(),
+                "Distillation economics".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_follow_up_section_is_empty() {
+        assert!(extract_follow_up("## NEW\n- x\n## CHANGED\n- y").is_empty());
+    }
+
+    #[test]
+    fn strip_bullet_handles_markers_and_numbers() {
+        assert_eq!(strip_bullet("- foo"), "foo");
+        assert_eq!(strip_bullet("* foo"), "foo");
+        assert_eq!(strip_bullet("12) foo"), "foo");
+        assert_eq!(strip_bullet("3. foo"), "foo");
+        assert_eq!(strip_bullet("plain"), "plain");
     }
 }
