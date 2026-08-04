@@ -132,9 +132,10 @@ impl ApiKeyAuth {
             return Err(AuthError::UnsupportedType);
         }
 
-        // Check against expected key
+        // Check against expected key using a constant-time comparison so a timing
+        // side-channel can't be used to recover the key byte by byte.
         match &self.config.api_key {
-            Some(expected) if expected == token => Ok(()),
+            Some(expected) if constant_time_eq(expected.as_bytes(), token.as_bytes()) => Ok(()),
             Some(_) => Err(AuthError::InvalidKey),
             None => Ok(()), // Auth disabled
         }
@@ -167,6 +168,22 @@ impl ApiKeyAuth {
     pub fn config(&self) -> &AuthConfig {
         &self.config
     }
+}
+
+/// Compare two byte slices in constant time relative to their contents.
+///
+/// Returns `false` immediately on a length mismatch (length is not secret here), and
+/// otherwise accumulates a XOR difference over all bytes so the loop's timing does not
+/// depend on where the first mismatch occurs.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Axum middleware layer for API key authentication.

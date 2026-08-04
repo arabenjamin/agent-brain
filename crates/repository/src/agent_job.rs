@@ -7,7 +7,10 @@ use crate::{Neo4jClient, RepositoryError};
 use agent_brain_models::{AgentJob, AgentJobStatus};
 
 impl Neo4jClient {
-    /// Create a new AgentJob node in Neo4j and return its ID.
+    /// Create a new AgentJob node in Neo4j and return the created record.
+    ///
+    /// The CREATE returns the node so callers get the full `AgentJob` without a second
+    /// round-trip to reload it.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_agent_job(
         &self,
@@ -21,7 +24,7 @@ impl Neo4jClient {
         context_profile: Option<&str>,
         description: Option<&str>,
         ttl_secs: Option<u64>,
-    ) -> Result<String, RepositoryError> {
+    ) -> Result<AgentJob, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let args_json = arguments.map(|a| a.to_string()).unwrap_or_default();
@@ -51,7 +54,7 @@ impl Neo4jClient {
                 progress_percent: null,
                 progress_message: null,
                 duration_ms: null
-            })",
+            }) RETURN j",
         )
         .param("id", id.clone())
         .param("tool_name", tool_name)
@@ -67,9 +70,16 @@ impl Neo4jClient {
         .param("ttl_secs", ttl_secs.map(|v| v as i64).unwrap_or(0i64))
         .param("expires_at", expires_at.unwrap_or_default());
 
-        self.run(q).await?;
-        info!(id = %id, tool = %tool_name, "Created AgentJob");
-        Ok(id)
+        let rows = self.execute(q).await?;
+        let node: Node = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| RepositoryError::InvalidData("CREATE returned no AgentJob".into()))?
+            .get("j")
+            .map_err(|e| RepositoryError::InvalidData(e.to_string()))?;
+        let job = node_to_agent_job(&node);
+        info!(id = %job.id, tool = %tool_name, "Created AgentJob");
+        Ok(job)
     }
 
     /// Fetch a single AgentJob by ID.

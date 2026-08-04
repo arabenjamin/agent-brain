@@ -264,7 +264,7 @@ impl QueueService {
         parent_job_id: Option<&str>,
         provider_hint: Option<&str>,
     ) -> Result<String, String> {
-        let id = self
+        let job = self
             .neo4j
             .create_agent_job(
                 tool_name,
@@ -281,15 +281,14 @@ impl QueueService {
             .await
             .map_err(|e| e.to_string())?;
 
-        // Reload full record so the heap entry has all fields.
-        if let Ok(Some(job)) = self.neo4j.get_agent_job(&id).await {
-            self.heap.lock().await.push(PrioritizedJob {
-                priority: job.priority,
-                created_at: job.created_at.clone(),
-                job,
-            });
-            self.notify.notify_one();
-        }
+        // create_agent_job returns the full record — no reload needed.
+        let id = job.id.clone();
+        self.heap.lock().await.push(PrioritizedJob {
+            priority: job.priority,
+            created_at: job.created_at.clone(),
+            job,
+        });
+        self.notify.notify_one();
 
         Ok(id)
     }
@@ -314,6 +313,7 @@ impl QueueService {
 
         let mut ids: Vec<String> = Vec::with_capacity(steps.len());
         let mut prev_id: Option<String> = None;
+        let mut first_job: Option<AgentJob> = None;
 
         for (i, step) in steps.iter().enumerate() {
             let priority = step.priority.unwrap_or(1);
@@ -371,7 +371,8 @@ impl QueueService {
             };
 
             let id = if i == 0 {
-                self.neo4j
+                let job = self
+                    .neo4j
                     .create_agent_job(
                         &step.tool_name,
                         effective_args.as_ref(),
@@ -385,7 +386,10 @@ impl QueueService {
                         step.ttl_secs,
                     )
                     .await
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                let id = job.id.clone();
+                first_job = Some(job); // reuse the created record for the heap push below
+                id
             } else {
                 self.neo4j
                     .create_agent_job_parked(
@@ -408,8 +412,8 @@ impl QueueService {
             ids.push(id);
         }
 
-        // Push the first job to the in-memory heap.
-        if let Ok(Some(job)) = self.neo4j.get_agent_job(&ids[0]).await {
+        // Push the first job to the in-memory heap — no reload needed.
+        if let Some(job) = first_job {
             self.heap.lock().await.push(PrioritizedJob {
                 priority: job.priority,
                 created_at: job.created_at.clone(),
@@ -486,22 +490,48 @@ impl QueueService {
         Ok(true)
     }
 
-    /// Cancel all queued (in-memory) jobs.  Returns the number cancelled.
+    /// Cancel all queued jobs. Returns the number cancelled.
+    ///
+    /// Drains the in-memory heap *and* cancels any `queued` job in Neo4j that was never
+    /// loaded into the heap (e.g. added directly to the DB) — otherwise the next periodic
+    /// reload would resurrect it right after a drain.
     pub async fn drain(&self) -> Result<usize, String> {
+        // 1. Drain the heap and tombstone those ids so any in-flight pop skips them.
         let jobs: Vec<AgentJob> = {
             let mut heap = self.heap.lock().await;
             heap.drain().map(|pj| pj.job).collect()
         };
-        let count = jobs.len();
-        for job in &jobs {
-            let _ = self
-                .neo4j
-                .update_agent_job_status(&job.id, AgentJobStatus::Cancelled)
-                .await;
-            // Cancel parked children of each drained job.
-            let _ = self.neo4j.cancel_parked_children(&job.id).await;
+        {
+            let mut set = self.cancelled_ids.lock().await;
+            for job in &jobs {
+                set.insert(job.id.clone());
+            }
         }
-        Ok(count)
+
+        // 2. Cancel every queued job in Neo4j (covers heap jobs and any queued job missing
+        //    from the heap), collecting ids so their parked chain children can be cancelled.
+        let now = chrono::Utc::now().to_rfc3339();
+        let cypher = "MATCH (j:AgentJob {status: 'queued'}) \
+                      SET j.status = 'cancelled', j.updated_at = $now \
+                      RETURN collect(j.id) AS ids";
+        let cancelled_ids: Vec<String> = match self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("now", now))
+            .await
+        {
+            Ok(rows) => rows
+                .first()
+                .and_then(|r| r.get::<Vec<String>>("ids").ok())
+                .unwrap_or_default(),
+            Err(e) => return Err(e.to_string()),
+        };
+
+        // 3. Cascade-cancel parked children of every cancelled job.
+        for id in &cancelled_ids {
+            let _ = self.neo4j.cancel_parked_children(id).await;
+        }
+
+        Ok(cancelled_ids.len())
     }
 
     /// Fetch a single job record from Neo4j.
