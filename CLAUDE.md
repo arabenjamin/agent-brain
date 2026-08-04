@@ -90,6 +90,13 @@ Copy `.env.example` to `.env` and configure:
 | `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and force-refreshed on the first scheduler tick after every startup (YAML edits propagate on restart) |
 | `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup. A missing/unreadable directory is a **fatal startup error**. See "ScheduledTask ownership" below |
 | `SOURCES_DIR` | `./sources` | Directory containing `*.yaml` SourceList definitions (approved-domain lists for `search_web`). Seeded **ON CREATE only** — the graph owns each list after first creation; runtime edits via `neo4j_query` persist across restarts. Delete a node to re-seed it from YAML. Missing directory is non-fatal |
+| `SOURCES_MEDIA_DIR` | `./sources-media` | Directory containing `*.yaml` MediaSource watchlist definitions (channels/playlists to watch). Seeded **ON CREATE only** — graph-owned after first creation, like SourceLists. Missing directory is non-fatal |
+| `YT_DLP_PATH` | `yt-dlp` | Path to the `yt-dlp` binary used by the Media Learning skill for metadata + caption extraction |
+| `FFMPEG_PATH` | `ffmpeg` | Path to `ffmpeg` (audio extraction for the Whisper fallback — Phase 4, not yet wired) |
+| `MEDIA_CAPTION_LANG` | `en` | Preferred caption language for `ingest_media` / `fetch_transcript` |
+| `MEDIA_MAX_DURATION_SECS` | `10800` | Skip videos longer than this (cost guard; `0` = unlimited) |
+| `MEDIA_WATCH_ENABLED` | `false` | Enable autonomous channel polling. When unset/false, `poll_media_sources` is a no-op (the `media-watch` schedule is inert) |
+| `WHISPER_PROVIDER` | `none` | Whisper transcription provider for caption-less media (`none`/`whisper-local`/`openai`/`groq`). Phase 4 — audio transcription not yet implemented; caption-less videos currently error cleanly |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |
 | `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
@@ -187,6 +194,7 @@ agent-brain/
 │       │   │   ├── constructor.rs # Agent Constructor skill (construct_agent)
 │       │   │   ├── dynamic.rs    # Dynamic Tool Builder skill (4 tools + runtime tools)
 │       │   │   ├── knowledge.rs  # Knowledge Manager skill (16 tools)
+│       │   │   ├── media.rs      # Media Learning skill (5 tools: ingest_media, fetch_transcript, list_channel_videos, poll_media_sources, manage_media_source)
 │       │   │   ├── model.rs      # Model Registry skill (5 tools)
 │       │   │   ├── procedure.rs  # Procedural Memory skill (2 tools)
 │       │   │   ├── scheduler.rs  # Autonomous Scheduler skill (5 tools)
@@ -373,6 +381,19 @@ Ownership can be transferred explicitly: `manage_scheduled_task` upsert accepts 
 ### SourceLists (approved-domain lists for `search_web`)
 
 `(:SourceList {name, domains, description})` nodes restrict `search_web` results to approved domains (the tool adds `site:` operators and post-filters results). Definitions live in `sources/*.yaml` (`name`, `description`, `domains`) and are seeded by `source_seeder` **ON CREATE only** — unlike schedules, the graph owns each list after first creation, so runtime edits (`neo4j_query` with `readonly=false`: `MATCH (s:SourceList {name:'news'}) SET s.domains = [...]`) persist across restarts. Delete a node to re-seed it from its YAML. A `source_list` name that doesn't resolve degrades gracefully: the search runs unrestricted. Built-ins: `news` (national/world outlets), `michigan-news` (metro Detroit and Michigan outlets).
+
+### Media Learning (watch & summarize videos)
+
+The brain watches and summarizes videos to learn new concepts and stay current on topics it already knows. `MediaSkill` (`skills/media.rs`) + `MediaService` (`services/media.rs`) own the pipeline; `project-docs/VIDEO_LEARNING_PLAN.md` is the full spec.
+
+- **Transcript acquisition (captions-first):** `MediaService` shells out to `yt-dlp -J` for metadata + caption-track discovery (human subs preferred over auto-captions), fetches the `json3` caption track directly, and parses it to plain text. Whisper fallback for caption-less media is a **Phase 4 seam** — `WHISPER_PROVIDER=none` (default) makes caption-less videos error cleanly rather than half-work. Subprocess safety: `yt-dlp` is always invoked with an **arg array**, and URLs are scheme-validated (`http`/`https` only).
+- **Map-reduce summarization happens *inside* `ingest_media`,** not as chain steps — chains are fixed-length but transcripts aren't. Short transcripts are single-pass; long ones are chunked on sentence boundaries ("map"), then synthesized via `generate_json` into `{summary, key_concepts}` ("reduce").
+- **On-demand:** `ingest_media(url)` (accepts a bare URL or a goal like `"watch video: <url>"`) and `fetch_transcript(url)`. A Task whose goal starts with `watch video:` routes to `chains/video-learning.yaml` (ingest → bank/reassemble in a `video-{{task_id}}` WorkingMemory session → new-vs-known `reason` → `store_note` → cleanup).
+- **Autonomous watch:** `poll_media_sources` iterates active `:MediaSource` nodes, lists new videos from YouTube's **free per-channel RSS feed** (`youtube.com/feeds/videos.xml?channel_id=…`), and fans each new upload out into a `"watch video: <url>"` Task (chains can't loop a dynamic list, so we create Tasks). Gated by `MEDIA_WATCH_ENABLED` — a no-op when unset, so `schedules/media-watch.yaml` (6h) is safe to seed everywhere. Dedup: a video is skipped if a `:Media` node exists **or** an open Task already targets it.
+- **Watchlist ownership:** `(:MediaSource {name, kind, ref, description, active, managed_by})` — `kind` ∈ `youtube_channel`/`youtube_playlist`/`podcast_rss`. Seeded from `sources-media/*.yaml` **ON CREATE only** (`managed_by='yaml'`), graph-owned afterwards; `manage_media_source` upserts set `managed_by='runtime'`. Mirrors the SourceList model.
+- **Phase status:** Phases 1–3 (captions, on-demand, autonomous YouTube watch, learning loop) are implemented. Whisper (Phase 4) and podcasts/local files (Phase 5) are stubbed seams that error cleanly.
+
+New nodes: `:MediaSource` (watchlist) and `:Media` (`{id, url, title, channel, channel_id, published_at, duration_secs, transcript_source, ingested_at, source_media_name}` — dedup/provenance ledger; `id` is the platform video id). New relationships: `(:Media)-[:FROM_SOURCE]->(:MediaSource)`, `(:Note)-[:SUMMARIZES]->(:Media)` (created on the `ingest_media` `store=true` path), and the reused `(:Note)-[:MENTIONS]->(:Entity)` from `store_note` so video concepts become entities automatically.
 
 ### Context Profiles
 

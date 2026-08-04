@@ -6,6 +6,7 @@ pub mod dynamic;
 pub mod git;
 pub mod http;
 pub mod knowledge;
+pub mod media;
 pub mod model;
 pub mod query;
 pub mod resource;

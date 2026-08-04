@@ -1,0 +1,133 @@
+# chains/video-learning.yaml
+#
+# Watch/ingest a video and learn from it: fetch transcript, summarize,
+# compare against existing knowledge (NEW vs KNOWN vs CHANGED), and store a
+# sourced note linked to a :Media dedup node.
+#
+# {{_prev}} only carries the PREVIOUS step's output, so intermediate outputs are
+# banked in the WorkingMemory session "video-{{task_id}}" and reassembled with a
+# neo4j_query step before any step that needs more than one of them. The final
+# step deletes the scratch session (same idiom as chains/daily-news.yaml).
+name: video-learning
+pattern: "watch video:"
+patterns:
+  - "summarize video"
+  - "ingest video"
+  - "watch this video"
+priority: 40
+no_adversarial: true       # ingestion isn't high-stakes planning — skip pre-flight
+description: "Watch/ingest a video: fetch transcript, map-reduce summarize, compare against existing knowledge, and store a sourced semantic note linked to its :Media node."
+steps:
+  # 1. Fetch metadata + transcript (captions) and map-reduce summarize INSIDE
+  #    the tool (chains are fixed-length; transcripts are not). `url` accepts the
+  #    raw goal ("watch video: <url>"); the tool extracts the first http(s) URL
+  #    and upserts a :Media node (dedup). Returns structured JSON:
+  #    { video_id, title, channel, url, summary, key_concepts, ... }.
+  - tool_name: ingest_media
+    arguments:
+      url: "{{goal}}"
+      source_context: video_learning
+      store: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch transcript + map-reduce summary"
+
+  # 2. Bank the summary so it survives past the reason step below.
+  - tool_name: push_context
+    arguments:
+      session_id: "video-{{task_id}}"
+      content: "## VIDEO SUMMARY\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the summary in working memory"
+
+  # 3. Reassemble the banked summary so it can be passed as `context` (not the
+  #    push confirmation that {{_prev}} now holds).
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble summary for the reason step"
+
+  # 4. Compare the new material against what the brain already knows. context =
+  #    the summary (NEVER restate it inside `question` — scheduled reason RAGs the
+  #    graph off the question and would eat its own output → garbage loop). The
+  #    reason tool's internal RAG surfaces topically-related existing notes.
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains a summary of a video the brain just watched.
+        Compare it against what is already known and write three sections:
+        ## NEW — concepts/claims genuinely new to the brain
+        ## CHANGED — where this updates or contradicts prior understanding
+        ## FOLLOW UP — important concepts that are thinly covered and worth
+        researching further (one concise line each; these seed gap tasks)
+        Ground every point in the CONTEXT. If nothing is new, say so plainly.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    # Synthesis benefits from a stronger model; router picks the best catalog
+    # match within CLOUD_TIER. Any hint other than "ollama" uses the active
+    # config instead of the weak local model.
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+    description: "New-vs-known comparison"
+
+  # 5. Bank the analysis alongside the summary.
+  - tool_name: push_context
+    arguments:
+      session_id: "video-{{task_id}}"
+      content: "## NEW vs KNOWN ANALYSIS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the analysis in working memory"
+
+  # 6. Reassemble summary + analysis into one blob for the stored note.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble summary + analysis for storage"
+
+  # 7. Persist the durable semantic note. store_note's async pipeline runs entity
+  #    extraction + similarity linking, so key concepts become :Entity nodes and
+  #    connect to existing knowledge automatically.
+  - tool_name: store_note
+    arguments:
+      content: "# Video learning: {{goal}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: video_learning
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the sourced summary note"
+
+  # 8. Mark the video Task done.
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Complete the task"
+
+  # 9. Clean up the scratch working-memory session.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

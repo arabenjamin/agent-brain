@@ -28,14 +28,15 @@ use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::queue::QueueService;
 use crate::services::resource_registry::ResourceRegistry;
 use crate::services::{
-    ContextBuilderService, KnowledgeService, LlmConfig, LlmProviderType, SharedLlm, SnapshotService,
+    ContextBuilderService, KnowledgeService, LlmConfig, LlmProviderType, MediaService, SharedLlm,
+    SnapshotService,
 };
 use crate::skills::{
     Skill, agent::AgentSkill, codebase::CodebaseSkill, constructor::ConstructorSkill,
     context::ContextSkill, dynamic::DynamicSkill, git::GitSkill, http::HttpSkill,
-    knowledge::KnowledgeSkill, model::ModelSkill, query::QuerySkill, resource::ResourceSkill,
-    scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill, task::TaskSkill,
-    working_memory::WorkingMemorySkill, ws::WsSkill,
+    knowledge::KnowledgeSkill, media::MediaSkill, model::ModelSkill, query::QuerySkill,
+    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
+    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -541,6 +542,10 @@ impl BrainCore {
             self.storage.telemetry.clone(),
         );
 
+        // Media service (yt-dlp captions + map-reduce summarization). Shared by
+        // both the registry (tools/list) and handler (tools/call) skill passes.
+        let media_svc = Arc::new(MediaService::from_env());
+
         let mut registry = self.tool_registry.write().await;
 
         // Clear registry to allow safe re-registration on reload.
@@ -592,6 +597,19 @@ impl BrainCore {
 
         // HTTP Skill (generic http_request + ApiContext management)
         registry.register_skill(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+
+        // Media Learning Skill (video/podcast ingestion + watchlist). The
+        // registry copy only supplies tool definitions; execution goes through
+        // the handler copy below, which carries the KnowledgeStore.
+        if let Some(neo4j) = &self.storage.neo4j {
+            registry.register_skill(Box::new(MediaSkill::new(
+                Arc::clone(&media_svc),
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                neo4j.clone(),
+                None,
+                self.storage.telemetry.clone(),
+            )));
+        }
 
         // Codebase Skill
         {
@@ -733,6 +751,23 @@ impl BrainCore {
         )));
 
         skills.push(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+
+        // Media Learning Skill (handler copy — carries the KnowledgeStore used
+        // by the ingest_media store=true path).
+        if let Some(neo4j) = &self.storage.neo4j {
+            let media_knowledge: Arc<dyn crate::services::KnowledgeStore> =
+                Arc::new(KnowledgeService::new(
+                    neo4j.clone(),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
+                ));
+            skills.push(Box::new(MediaSkill::new(
+                Arc::clone(&media_svc),
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                neo4j.clone(),
+                Some(media_knowledge),
+                self.storage.telemetry.clone(),
+            )));
+        }
 
         {
             let knowledge_store2: Option<Arc<dyn crate::services::KnowledgeStore>> =
@@ -1073,6 +1108,19 @@ impl BrainCore {
             PathBuf::from(std::env::var("SOURCES_DIR").unwrap_or_else(|_| "sources".into()));
         let n = crate::services::source_seeder::seed_sources_from_dir(neo4j, &sources_dir).await;
         debug!(created = n, "Seeded SourceLists from sources/");
+
+        // ── Seed MediaSource watchlist from sources-media/*.yaml ───────────
+        // ON CREATE only — graph-owned after first creation (same as SourceList).
+        // A missing directory is non-fatal.
+        let sources_media_dir = PathBuf::from(
+            std::env::var("SOURCES_MEDIA_DIR").unwrap_or_else(|_| "sources-media".into()),
+        );
+        let mn = crate::services::media_source_seeder::seed_media_sources_from_dir(
+            neo4j,
+            &sources_media_dir,
+        )
+        .await;
+        debug!(created = mn, "Seeded MediaSources from sources-media/");
 
         // ── Seed built-in ScheduledTasks ──────────────────────────────────
         // schedules/*.yaml is the single source of truth for yaml-owned task

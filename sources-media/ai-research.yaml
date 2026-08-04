@@ -1,0 +1,23 @@
+# MediaSource watchlist — AI/ML research channels.
+#
+# Seeded ON CREATE only. Once a node exists the graph owns it: edit via
+# `manage_media_source` (or neo4j_query) and the change persists across
+# restarts. Delete a node to re-seed it from this file. Each entry becomes a
+# (:MediaSource) node named "{group}-{ref}" unless it sets an explicit `name`.
+#
+# Autonomous polling of these is gated by MEDIA_WATCH_ENABLED — until you set
+# it, these are inert definitions. Edit the refs to the channels you follow.
+name: ai-research
+description: Channels covering AI/ML research and engineering.
+sources:
+  - name: two-minute-papers
+    kind: youtube_channel
+    ref: UCbfYPyITQ-7l4upoX8nvctg   # channel_id (find via a channel's page source: "channelId")
+    description: Two Minute Papers — bite-size AI research summaries.
+
+  # Example playlist form (disabled until you set a real playlist_id):
+  # - name: some-course
+  #   kind: youtube_playlist
+  #   ref: PLxxxxxxxxxxxxxxxx
+  #   description: A curated course playlist.
+  #   active: false
