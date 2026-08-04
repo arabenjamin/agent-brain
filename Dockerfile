@@ -55,6 +55,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
+# yt-dlp for the Media Learning skill (video metadata + caption extraction).
+# Standalone Linux build — self-contained, no python runtime needed. Pinned by
+# rebuild: `docker compose build` fetches the current release. ffmpeg (for the
+# Phase 4 Whisper audio fallback) is intentionally omitted until that path ships.
+ADD https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux /usr/local/bin/yt-dlp
+RUN chmod 0755 /usr/local/bin/yt-dlp
+
 # Create non-root user
 RUN useradd -m -u 1000 agent
 
