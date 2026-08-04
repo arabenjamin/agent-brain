@@ -296,6 +296,8 @@ The `SchedulerService` runs a background Tokio task that:
 
 The `QueueService` coordinator runs jobs serially per provider (Ollama/Anthropic/Gemini semaphores), retrying on transient failures, and unparks dependent jobs on success.
 
+**Dead-job meta-learning:** when a job exhausts its retries, the coordinator stores a reflection note and — for non-infrastructure tools (`should_meta_learn`) — enqueues an Analyze→Hypothesize→Test→Integrate chain. Two guards keep this from burning cycles: `is_transient_infra_error` skips the chain for quota/rate-limit/timeout/5xx errors the brain can't fix (e.g. SerpApi 429), and `recently_meta_learned` dedupes to at most once per tool per 24h.
+
 ### Evaluator Loop (Generator-Evaluator Pattern)
 
 Inspired by the Anthropic harness design article. When a `Task` has a `success_criteria` field set, `goal_to_steps()` automatically appends a `reflect_on_work` evaluator step to the chain. The evaluator step:

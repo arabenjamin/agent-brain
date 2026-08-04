@@ -919,6 +919,37 @@ impl QueueService {
         }
     }
 
+    /// Returns true if a meta-learning result note for `tool_name` was stored within the
+    /// last 24 hours. Used to dedupe the dead-job meta-learning chain so a repeatedly
+    /// failing tool doesn't spawn a fresh Analyze→Hypothesize→Integrate chain every time.
+    async fn recently_meta_learned(&self, tool_name: &str) -> bool {
+        let ctx = format!("dead_job:{}", tool_name);
+        let cypher = "MATCH (n:Note) \
+                      WHERE n.note_type = 'meta_learning_result' \
+                        AND n.source_context = $ctx \
+                        AND n.created_at >= datetime() - duration({hours: 24}) \
+                      RETURN count(n) AS c";
+        match self
+            .neo4j
+            .execute(neo4rs::query(cypher).param("ctx", ctx))
+            .await
+        {
+            Ok(rows) => {
+                rows.first()
+                    .and_then(|r| r.get::<i64>("c").ok())
+                    .unwrap_or(0)
+                    > 0
+            }
+            Err(e) => {
+                warn!(
+                    "recently_meta_learned check failed (proceeding without dedupe): {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+
     async fn execute_job(self: Arc<Self>, job: AgentJob) {
         info!(job_id = %job.id, tool = %job.tool_name, priority = job.priority, "Executing AgentJob");
 
@@ -1209,7 +1240,19 @@ impl QueueService {
                 // Enqueue a targeted meta-learning chain for non-infrastructure tools.
                 // This triggers the Analyze→Hypothesize→Test→Integrate cycle immediately
                 // rather than waiting for perception_scan to accumulate 3+ failures.
-                if should_meta_learn(&job.tool_name) {
+                // Skip it for transient/infra errors (quota, rate limits, timeouts) the
+                // brain can't fix, and dedupe to at most once per tool per 24h.
+                let do_meta_learn = should_meta_learn(&job.tool_name)
+                    && if is_transient_infra_error(&error_text) {
+                        info!(job_id = %job.id, tool = %job.tool_name, "Dead job is a transient/infra error — skipping meta-learning");
+                        false
+                    } else if self.recently_meta_learned(&job.tool_name).await {
+                        info!(job_id = %job.id, tool = %job.tool_name, "Meta-learning already ran for this tool in the last 24h — skipping");
+                        false
+                    } else {
+                        true
+                    };
+                if do_meta_learn {
                     let search_query = format!("failure {} root cause error", job.tool_name);
                     let hypothesis_question = format!(
                         "You are a meta-learning system. Respond in English only.\n\
@@ -1555,6 +1598,30 @@ fn should_meta_learn(tool_name: &str) -> bool {
     !EXCLUDED.contains(&tool_name)
 }
 
+/// Returns `true` if a dead-job error looks like a transient or infrastructure failure
+/// (rate limit, quota exhaustion, timeout, upstream 5xx) rather than a logic error the
+/// brain could fix. Meta-learning on these just burns LLM cycles hypothesising about a
+/// billing limit or a flaky network — e.g. repeated "SerpApi 429: run out of searches".
+fn is_transient_infra_error(error_text: &str) -> bool {
+    let lower = error_text.to_lowercase();
+    const NEEDLES: &[&str] = &[
+        "429",
+        "too many requests",
+        "rate limit",
+        "quota",
+        "run out of searches",
+        "timed out",
+        "timeout",
+        "connection refused",
+        "502",
+        "503",
+        "504",
+        "service unavailable",
+        "temporarily unavailable",
+    ];
+    NEEDLES.iter().any(|n| lower.contains(n))
+}
+
 // ---------------------------------------------------------------------------
 // {{_prev}} template substitution helpers
 // ---------------------------------------------------------------------------
@@ -1719,5 +1786,25 @@ mod tests {
     fn parse_evaluator_score_clamps_out_of_range() {
         assert_eq!(parse_evaluator_score("Score: 9/5"), Some(5.0));
         assert_eq!(parse_evaluator_score("Score: 0/5"), Some(1.0));
+    }
+
+    #[test]
+    fn transient_infra_errors_detected() {
+        assert!(is_transient_infra_error(
+            "SerpApi failed: 429 Too Many Requests - Your account has run out of searches."
+        ));
+        assert!(is_transient_infra_error(
+            "upstream returned 503 Service Unavailable"
+        ));
+        assert!(is_transient_infra_error("request timed out after 120s"));
+        assert!(is_transient_infra_error("RATE LIMIT exceeded"));
+    }
+
+    #[test]
+    fn logic_errors_are_not_transient() {
+        assert!(!is_transient_infra_error(
+            "tool 'decompose_goal' returned invalid JSON: missing field `steps`"
+        ));
+        assert!(!is_transient_infra_error("task not found"));
     }
 }
