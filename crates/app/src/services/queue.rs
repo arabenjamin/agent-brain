@@ -5,7 +5,8 @@
 //! - **Durability**: jobs are persisted to Neo4j so they survive server restarts.
 //! - **Priority**: an in-memory `BinaryHeap` orders jobs by priority (0–3) then FIFO.
 //! - **Concurrency**: a `tokio::sync::Semaphore` limits concurrent executions.
-//! - **Wakeup**: a `Notify` wakes the coordinator immediately when a new job arrives.
+//! - **Wakeup**: a `Notify` wakes the coordinator immediately when a new job arrives or
+//!   when a running job finishes and frees a provider concurrency slot.
 //! - **Recovery**: on startup, `recover()` resets crashed `running` jobs to `queued`
 //!   and reloads all `queued` jobs into the heap.
 //!
@@ -784,7 +785,11 @@ impl QueueService {
                 }
             }
 
-            // Drain the heap while capacity is available.
+            // Drain the heap while capacity is available. Jobs whose provider semaphore is
+            // saturated are set aside (not pushed back immediately) so a job for a different
+            // provider queued behind them can still be dispatched this pass — no head-of-line
+            // blocking across providers. Set-aside jobs return to the heap after the scan.
+            let mut blocked: Vec<PrioritizedJob> = Vec::new();
             loop {
                 if !self.config.read().await.enabled {
                     break;
@@ -817,17 +822,31 @@ impl QueueService {
                 let permit = match semaphore.try_acquire_owned() {
                     Ok(p) => p,
                     Err(_) => {
-                        // At capacity — put the job back and wait for the next wakeup.
-                        self.heap.lock().await.push(pjob);
-                        break;
+                        // This provider is at capacity — set the job aside and keep scanning
+                        // so other providers with free slots are not blocked behind it.
+                        blocked.push(pjob);
+                        continue;
                     }
                 };
 
                 let svc = Arc::clone(&self);
                 tokio::spawn(async move {
-                    let _permit = permit; // released when this task finishes
+                    let notify = Arc::clone(&svc.notify);
+                    let permit_guard = permit; // holds the concurrency slot
                     svc.execute_job(pjob.job).await;
+                    // Release the slot, then wake the coordinator so a queued job can take the
+                    // freed slot immediately instead of waiting for the poll interval.
+                    drop(permit_guard);
+                    notify.notify_one();
                 });
+            }
+
+            // Return set-aside jobs to the heap for the next wakeup / permit release.
+            if !blocked.is_empty() {
+                let mut heap = self.heap.lock().await;
+                for pjob in blocked {
+                    heap.push(pjob);
+                }
             }
         }
     }
