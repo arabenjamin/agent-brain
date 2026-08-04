@@ -307,6 +307,24 @@ impl QueueService {
         steps: &[ChainStep],
         session_id: Option<&str>,
     ) -> Result<Vec<String>, String> {
+        self.enqueue_chain_owned(steps, session_id, None).await
+    }
+
+    /// Like [`enqueue_chain`](Self::enqueue_chain), but stamps every job with the
+    /// id of the `Task` node that owns the chain (`__owner_task_id` in args,
+    /// serde-ignored by tools like the other `__`-prefixed metadata fields).
+    ///
+    /// When any step later dies, the coordinator reads this id and marks the
+    /// owning task `failed` with the real error — so a scheduled run no longer
+    /// gets stuck `in_progress` until the stale reaper flips it with no reason.
+    /// Callers with no owning task (chat-dispatched chains, bedtime chains) use
+    /// [`enqueue_chain`](Self::enqueue_chain) which passes `None`.
+    pub async fn enqueue_chain_owned(
+        &self,
+        steps: &[ChainStep],
+        session_id: Option<&str>,
+        owner_task_id: Option<&str>,
+    ) -> Result<Vec<String>, String> {
         if steps.is_empty() {
             return Err("Chain must contain at least one step".to_string());
         }
@@ -368,6 +386,19 @@ impl QueueService {
                     Some(a)
                 }
                 _ => effective_args,
+            };
+
+            // Stamp the owning task id onto every step so the coordinator can
+            // attribute a chain death back to its Task and fail it with a reason.
+            let effective_args: Option<serde_json::Value> = match owner_task_id {
+                Some(tid) => {
+                    let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                    if let serde_json::Value::Object(ref mut m) = a {
+                        m.insert("__owner_task_id".to_string(), serde_json::json!(tid));
+                    }
+                    Some(a)
+                }
+                None => effective_args,
             };
 
             let id = if i == 0 {
@@ -1249,6 +1280,39 @@ impl QueueService {
                 warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
                 // Parent chain is broken — cancel any waiting children.
                 let _ = self.neo4j.cancel_parked_children(&job.id).await;
+
+                // If this job belongs to a scheduler-dispatched task chain, fail
+                // that Task now with the real error instead of leaving it stuck
+                // in_progress until the 6-hour stale reaper flips it blind. This
+                // is the concrete failure signal capability-mining reasons over.
+                if let Some(owner_task_id) = job
+                    .arguments
+                    .as_ref()
+                    .and_then(|a| a.get("__owner_task_id"))
+                    .and_then(|v| v.as_str())
+                {
+                    let reason = format!(
+                        "Chain step '{}' died after {}/{} attempts. Last error: {}",
+                        job.tool_name,
+                        attempt,
+                        max,
+                        error_text.chars().take(500).collect::<String>(),
+                    );
+                    match self
+                        .neo4j
+                        .fail_task_with_reason(owner_task_id, &reason)
+                        .await
+                    {
+                        Ok(true) => {
+                            info!(task_id = %owner_task_id, tool = %job.tool_name, "Marked owning task failed with error context")
+                        }
+                        // Already terminal (e.g. completed, or failed via evaluator) — leave it.
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(task_id = %owner_task_id, error = %e, "Failed to record chain-death reason on owning task")
+                        }
+                    }
+                }
                 // Store a reflection note so the brain can learn from this failure.
                 let reflection_content = format!(
                     "Dead job: tool '{}' (job_id: {}) exhausted {}/{} attempts and was marked dead.\n\

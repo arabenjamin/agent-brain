@@ -1719,31 +1719,46 @@ impl KnowledgeService {
             question, notes_block
         );
 
-        let response = llm
-            .generate(&prompt, None)
-            .await
-            .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?;
-
-        let text = response.trim();
-        let json_start = text.find('{').unwrap_or(0);
-        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-        let json_str = &text[json_start..json_end];
-
-        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap_or_else(|_| {
-            serde_json::json!({
-                "answer": text,
-                "inferences": [],
-                "confidence": 0.5,
-                "gaps": [],
-                "caveats": [],
-                "follow_up_questions": []
-            })
-        });
+        // Strict-JSON structured output with self-correcting retries. If the
+        // model still can't produce valid JSON after retries, fall back to
+        // wrapping its raw prose as the answer so reasoning degrades gracefully.
+        let (parsed, text): (serde_json::Value, String) =
+            match llm.generate_json(&prompt, None, &["answer"], 2).await {
+                Ok(value) => {
+                    let answer_text = value
+                        .get("answer")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    (value, answer_text)
+                }
+                Err(e) => {
+                    info!(
+                        "Structured reasoning self-correction failed, using raw text: {}",
+                        e
+                    );
+                    let raw = llm
+                        .generate(&prompt, None)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?
+                        .trim()
+                        .to_string();
+                    let fallback = serde_json::json!({
+                        "answer": raw,
+                        "inferences": [],
+                        "confidence": 0.5,
+                        "gaps": [],
+                        "caveats": [],
+                        "follow_up_questions": []
+                    });
+                    (fallback, raw)
+                }
+            };
 
         let answer = parsed
             .get("answer")
             .and_then(|v| v.as_str())
-            .unwrap_or(text)
+            .unwrap_or(&text)
             .to_string();
         let inferences: Vec<String> = parsed
             .get("inferences")

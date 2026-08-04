@@ -1,0 +1,82 @@
+# schedules/capability-mining.yaml
+#
+# Weekly capability mining. Reframed to mine REAL signal instead of an empty
+# `(:Todo)` set: the previous query matched `(:Todo)` nodes, of which there are
+# none, so the local model received no grounding and free-associated generic
+# "an LLM agent should have..." suggestions the brain already implements.
+#
+# The durable capability-gap signal is repeatedly-FAILING tasks: when the same
+# capability (goal prefix) fails or blocks over and over, that is a concrete,
+# grounded gap worth building for. Their `context` carries the reason WHY: an
+# evaluator/adversarial critique when the task had success_criteria, and — for
+# scheduler-dispatched chains that simply died — a "[FAILURE]" line written by
+# the queue coordinator (fail_task_with_reason) naming the dead step and its
+# last error. Earlier, a died chain left the run stuck in_progress until the
+# 6-hour stale reaper flipped it to 'failed' with only boilerplate context, so
+# this step reasoned over nothing and free-associated; that gap is now closed.
+#
+# NOTE: the name is kept byte-for-byte identical to the pre-existing node. The
+# seeder only force-syncs yaml-owned (or legacy) nodes — a runtime-owned node is
+# skipped — so the live node's `managed_by` was flipped to 'yaml' once to hand
+# ownership to this file. From then on the seeder force-syncs these steps on
+# every startup.
+name: "Capability mining: identify agent/tool candidates from todos and repeated patterns"
+description: "Weekly self-improvement scan. Aggregates repeatedly-failing/blocked Tasks by capability (goal prefix) plus a sample of their failure context, then reasons over that REAL signal to propose ScheduledTask, dynamic-tool, or skill-gap candidates. Result is stored as a capability_mining reflection note."
+interval_seconds: 604800
+steps:
+  # Step flow and {{_prev}} chain:
+  #   1. neo4j_query → capabilities (goal prefixes) that fail/block repeatedly,
+  #                    with counts + a sample of each one's failure context.
+  #   2. reason      → grounded ONLY on {{_prev}} (passed via `context`, NOT the
+  #                    question — passing it in the question triggers the RAG
+  #                    self-contamination loop where reason retrieves its own
+  #                    prior capability_mining notes). Emits JSON candidates.
+  #   3. store_note  → persists the candidates as a reflection for review.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (t:Task) WHERE t.status IN ['failed','blocked'] WITH split(t.goal, ':')[0] AS capability, t ORDER BY t.updated_at DESC WITH capability, count(*) AS failures, collect(DISTINCT t.status) AS statuses, collect(substring(coalesce(t.context,''), 0, 600))[0..3] AS sample_context WHERE failures >= 2 RETURN capability, failures, statuses, sample_context ORDER BY failures DESC LIMIT 20"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT lists this agent's own capabilities that have FAILED or
+        BLOCKED repeatedly, ranked by failure count. Each carries samples of the
+        most recent failure context. A line beginning "[FAILURE]" is the actual
+        error that killed the run (which chain step died and its last error);
+        an evaluator or adversarial critique may also appear. Read these — they
+        say WHY the capability keeps failing.
+
+        A capability that keeps failing is a concrete signal of a missing tool,
+        a missing ScheduledTask, or a skill gap — NOT a reason to restate generic
+        best practices. Base every candidate ONLY on the CONTEXT, quoting the
+        "[FAILURE]" error or critique that justifies it; do not invent gaps the
+        data does not show, and do not propose things the brain already has
+        (durable job queue, knowledge graph, RAG, retry logic, evaluator and
+        adversarial loops all already exist). This is a Rust codebase — never
+        propose Python-specific libraries (e.g. Pydantic); prefer Rust crates
+        or concrete changes to existing tools/chains.
+
+        Return ONLY a JSON array, at most 5 items, most impactful first:
+        [{"type":"scheduled_task|dynamic_tool|skill|fix","name":"...","failing_capability":"<verbatim capability from CONTEXT>","rationale":"why this repeatedly fails, citing the context","proposal":"the concrete thing to build or change"}]
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: |
+        ## Capability Mining Results ({{date}})
+
+        Grounded in repeatedly-failing/blocked tasks (see failure counts in the reasoning below).
+
+        {{_prev}}
+      note_type: reflection
+      source_context: capability_mining
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

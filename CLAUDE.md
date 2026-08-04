@@ -298,6 +298,8 @@ The `QueueService` coordinator runs jobs serially per provider (Ollama/Anthropic
 
 **Dead-job meta-learning:** when a job exhausts its retries, the coordinator stores a reflection note and — for non-infrastructure tools (`should_meta_learn`) — enqueues an Analyze→Hypothesize→Test→Integrate chain. Two guards keep this from burning cycles: `is_transient_infra_error` skips the chain for quota/rate-limit/timeout/5xx errors the brain can't fix (e.g. SerpApi 429), and `recently_meta_learned` dedupes to at most once per tool per 24h.
 
+**Chain-death task attribution:** scheduler-dispatched chains are enqueued via `enqueue_chain_owned(steps, session_id, Some(&task_id))`, which stamps `__owner_task_id` (serde-ignored, like the other `__`-prefixed job metadata) onto every step. When a step dies, the coordinator reads it and calls `fail_task_with_reason(task_id, reason)` — flipping the run Task to `failed` immediately with a `[FAILURE] Chain step '<tool>' died … Last error: …` line appended to its `context`. Previously a died chain left the run stuck `in_progress` until the 6-hour stale reaper (`reset_stale_in_progress_tasks`) flipped it with no diagnosis, so `capability-mining` reasoned over boilerplate context and free-associated generic advice. The write is guarded to `status IN ['created','in_progress']`, so it never clobbers a task already resolved (completed, or failed via the evaluator/adversarial path). `enqueue_chain` remains the no-owner wrapper used by chat/bedtime/meta-learning chains.
+
 ### Evaluator Loop (Generator-Evaluator Pattern)
 
 Inspired by the Anthropic harness design article. When a `Task` has a `success_criteria` field set, `goal_to_steps()` automatically appends a `reflect_on_work` evaluator step to the chain. The evaluator step:
@@ -390,6 +392,8 @@ See `project-docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadm
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.
+
+**Structured LLM output:** For tool outputs that must be strict JSON, call `LlmProvider::generate_json(prompt, system, required_keys, max_retries)` (default method on the trait in `services/traits.rs`) instead of hand-rolling `generate` + `extract_json` + `serde_json::from_str().unwrap_or_else(fallback)`. It runs the "targeted self-correction" loop: on a parse error or a missing required key it re-prompts the model with the specific error, up to `max_retries` extra attempts. Wired in `reason` `clarify` and `reason_structured`. `extract_json` (in `services/llm.rs`) now picks the **earliest-opening** delimiter, so a top-level `[{...}]` array is no longer mis-extracted to its first object — pass `&[]` for `required_keys` to accept any valid JSON (arrays/scalars).
 
 **Skill registration:** Register to BOTH `tool_registry` (for `tools/list`) AND `skills` vec (for `tools/call`). Forgetting either causes invisible tools or dispatch failures.
 

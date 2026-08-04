@@ -477,23 +477,15 @@ Respond with a JSON object only (no markdown, no explanation):
   "recommended_approach": "brief description of how to proceed"
 }"#,
                 );
-                match self.llm.generate(&prompt, None).await {
-                    Ok(text_resp) => {
-                        let text = text_resp.trim();
-                        let json_start = text.find('{').unwrap_or(0);
-                        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-                        let parsed: Value = serde_json::from_str(&text[json_start..json_end])
-                            .unwrap_or_else(|_| {
-                                json!({
-                                    "needs_clarification": true,
-                                    "ambiguities": [],
-                                    "clarifying_questions": [text],
-                                    "assumptions": [],
-                                    "recommended_approach": "Seek clarification before proceeding"
-                                })
-                            });
-                        ToolCallResult::success_json(parsed)
-                    }
+                match self
+                    .llm
+                    .generate_json(&prompt, None, &["needs_clarification"], 2)
+                    .await
+                {
+                    Ok(parsed) => ToolCallResult::success_json(parsed),
+                    // The LLM was unavailable, or still couldn't produce valid
+                    // JSON after self-correcting retries — surface the error
+                    // rather than fabricate a clarification result.
                     Err(e) => {
                         ToolCallResult::error(format!("Clarification analysis failed: {}", e))
                     }

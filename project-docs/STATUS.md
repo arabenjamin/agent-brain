@@ -125,6 +125,19 @@
 
 ## Recent Changes (auto)
 
+### 2026-08-03
+
+- chore: auth timing, enqueue round trips, drain completeness, dead code (`9e7f198`)
+- fix: cascade chain cancellation to all descendants (`2280639`)
+- fix: skip meta-learning on transient infra errors; daily dedup (`9e87409`)
+- fix: sanitize Lucene queries; surface hybrid-search failures (`191c54d`)
+- fix: per-provider skip and permit-release wakeup in coordinator (`cd06ba3`)
+- fix: guard job finalizers against cancel race (`9f81892`)
+- fix: treat unparseable evaluator output as explicit non-score (`d2e6f25`)
+- perf: unique constraints and indexes for Note/Task/AgentJob lookups (`27a465b`)
+- fix: value-level template substitution in chain loading (`4284186`)
+- chore: baseline in-progress work before code-review fixes (`3c32d52`)
+
 ### 2026-06-12
 
 - fix: ground constructor plans in tool argument schemas (`fe77e9f`)
@@ -132,16 +145,6 @@
 - feat: construct_agent tool — Phase 2 of the Agent Constructor plan (`939ff7c`)
 - fix: learn observed cloud-model availability from failures; fall back on 403 (`3ac0596`)
 - feat: per-step model routing within cloud tiers — Phase 1 of Agent Constructor (`489d8f5`)
-- feat: self-model meta-graph — Phase 0b of the Agent Constructor plan (`900284a`)
-- fix: ground every chain reason step in context — sweep chains/ for the RAG bug (`80f20db`)
-- fix: read OllamaCloud stream past finish_reason to capture usage chunk (`a056f1b`)
-- fix: request usage block in OllamaCloud chat stream (`635798f`)
-- fix: checkpoint DuckDB WAL at startup — deploys kill, never close (`2894a01`)
-- fix: windowed usage stats — compute cutoff in Rust, not DuckDB interval math (`966e6cd`)
-- feat: honest model-usage accounting + Agent Constructor design plan (`f7afa15`)
-- feat: todo page sort/filter/clear-done; weekly brain-exercise schedule (`f0d57ba`)
-- feat: explicit ScheduledTask ownership via managed_by; remove hardcoded seeds (`7c24492`)
-- fix: stop reason-step RAG self-contamination in scheduled tasks (`3233d1f`)
 
 ## Known Issues / Backlog
 

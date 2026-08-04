@@ -393,14 +393,21 @@ pub fn extract_json(text: &str) -> &str {
         }
     }
 
-    // Look for JSON object
-    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        return &trimmed[start..=end];
-    }
-
-    // Look for JSON array
-    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
-        return &trimmed[start..=end];
+    // Look for a bare JSON object or array. Pick whichever structure OPENS
+    // first, so a top-level array of objects (`[{...}]`) isn't mis-extracted to
+    // its first inner object (previously '{' was always preferred).
+    let obj = (trimmed.find('{'), trimmed.rfind('}'));
+    let arr = (trimmed.find('['), trimmed.rfind(']'));
+    match (obj, arr) {
+        ((Some(os), Some(oe)), (Some(ars), Some(are))) => {
+            if ars < os {
+                return &trimmed[ars..=are];
+            }
+            return &trimmed[os..=oe];
+        }
+        ((Some(os), Some(oe)), _) => return &trimmed[os..=oe],
+        (_, (Some(ars), Some(are))) => return &trimmed[ars..=are],
+        _ => {}
     }
 
     trimmed

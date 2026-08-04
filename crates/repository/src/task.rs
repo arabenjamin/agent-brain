@@ -312,6 +312,37 @@ impl Neo4jClient {
         Ok(())
     }
 
+    /// Mark a task `failed` and append a diagnostic reason to its `context`.
+    ///
+    /// Only transitions tasks still in a non-terminal state (`created` or
+    /// `in_progress`), so a task that already completed (or failed via the
+    /// evaluator/adversarial path) is left untouched — the guard makes this
+    /// safe to call from the coordinator's dead-job path even if a sibling
+    /// step already resolved the task. Returns `true` when a task was updated.
+    ///
+    /// This is what turns a stuck-`in_progress` scheduled run into a `failed`
+    /// task with a real error, instead of leaving it for the 6-hour stale
+    /// reaper to flip with no diagnosis attached.
+    pub async fn fail_task_with_reason(
+        &self,
+        id: &str,
+        reason: &str,
+    ) -> Result<bool, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (t:Task {id: $id}) WHERE t.status IN ['created', 'in_progress'] \
+             SET t.status = 'failed', t.updated_at = $updated_at, \
+                 t.context = coalesce(t.context, '') + '\n\n[FAILURE] ' + $reason \
+             RETURN t.id AS id",
+        )
+        .param("id", id)
+        .param("reason", reason)
+        .param("updated_at", now);
+
+        let rows = self.execute(q).await?;
+        Ok(!rows.is_empty())
+    }
+
     /// Link a child task as a subtask of a parent via SUBTASK_OF edge.
     pub async fn link_subtask(
         &self,

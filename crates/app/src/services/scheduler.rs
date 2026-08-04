@@ -351,7 +351,7 @@ impl SchedulerService {
 
             match self
                 .queue
-                .enqueue_chain(&steps, session_id.as_deref())
+                .enqueue_chain_owned(&steps, session_id.as_deref(), Some(&task_id))
                 .await
             {
                 Ok(ids) => {
@@ -546,9 +546,10 @@ impl SchedulerService {
             warn!(id = %st.id, error = %e, "Failed to record ScheduledTask run timestamps");
         }
 
-        // 6. Enqueue the chain.
+        // 6. Enqueue the chain, tagged with the run Task id so a chain death is
+        //    attributed back to this task and fails it with the real error.
         self.queue
-            .enqueue_chain(&steps, session_id)
+            .enqueue_chain_owned(&steps, session_id, Some(&task_id))
             .await
             .map_err(|e| e.to_string())?;
 
