@@ -452,31 +452,48 @@ impl Neo4jClient {
         Ok(count)
     }
 
-    /// Cancel all parked children of a failed/dead job.
-    /// Returns the number of jobs cancelled.
+    /// Cancel all parked descendants of a failed/dead job — the whole downstream chain,
+    /// not just the immediate children.
+    ///
+    /// `parent_job_id` links each parked step to its predecessor, so cancellation must
+    /// cascade: cancelling step 2 makes it a terminal parent for step 3, and so on.
+    /// Iterate generation by generation until no more parked jobs point at the frontier
+    /// (capped to avoid an unbounded loop on unexpected cycles). Previously only the
+    /// immediate generation was cancelled and the rest waited for the 5-minute orphan
+    /// audit — one generation per pass. Returns the total number of jobs cancelled.
     pub async fn cancel_parked_children(
         &self,
         parent_job_id: &str,
     ) -> Result<usize, RepositoryError> {
-        let now = Utc::now().to_rfc3339();
-        let q = query(
-            "MATCH (j:AgentJob {parent_job_id: $parent_id, status: 'parked'})
-             SET j.status = 'cancelled', j.updated_at = $now
-             RETURN count(j) AS n",
-        )
-        .param("parent_id", parent_job_id)
-        .param("now", now);
+        let mut total = 0usize;
+        let mut frontier = vec![parent_job_id.to_string()];
+        let mut iterations = 0;
 
-        let rows = self.execute(q).await?;
-        let count = rows
-            .first()
-            .and_then(|r| r.get::<i64>("n").ok())
-            .unwrap_or(0) as usize;
+        while !frontier.is_empty() && iterations < 64 {
+            iterations += 1;
+            let now = Utc::now().to_rfc3339();
+            let q = query(
+                "MATCH (j:AgentJob {status: 'parked'}) WHERE j.parent_job_id IN $parents \
+                 SET j.status = 'cancelled', j.updated_at = $now \
+                 RETURN collect(j.id) AS ids",
+            )
+            .param("parents", frontier.clone())
+            .param("now", now);
 
-        if count > 0 {
-            info!(count, parent = %parent_job_id, "Cancelled parked chain jobs (parent failed)");
+            let rows = self.execute(q).await?;
+            let ids: Vec<String> = rows
+                .first()
+                .and_then(|r| r.get::<Vec<String>>("ids").ok())
+                .unwrap_or_default();
+
+            total += ids.len();
+            frontier = ids; // next generation: children of what we just cancelled
         }
-        Ok(count)
+
+        if total > 0 {
+            info!(count = total, parent = %parent_job_id, "Cancelled parked chain jobs (parent failed)");
+        }
+        Ok(total)
     }
 
     /// Return a per-status count map plus a total.
