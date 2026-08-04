@@ -813,14 +813,17 @@ impl KnowledgeService {
                 .param("embedding", query_embedding)
                 .param("limit", fetch_limit as i64);
 
-            if let Ok(rows) = self.neo4j.execute(q).await {
-                for row in rows {
-                    if let (Ok(id), Ok(content)) =
-                        (row.get::<String>("id"), row.get::<String>("content"))
-                    {
-                        vec_hits.push((id, content));
+            match self.neo4j.execute(q).await {
+                Ok(rows) => {
+                    for row in rows {
+                        if let (Ok(id), Ok(content)) =
+                            (row.get::<String>("id"), row.get::<String>("content"))
+                        {
+                            vec_hits.push((id, content));
+                        }
                     }
                 }
+                Err(e) => warn!("Vector search failed (continuing with BM25): {}", e),
             }
         }
 
@@ -833,18 +836,23 @@ impl KnowledgeService {
             RETURN node.id AS id, node.content AS content
             "#;
 
+            // Sanitize: raw query text with Lucene special chars (URLs, colons, brackets)
+            // would throw and silently drop BM25 from the hybrid merge.
             let q = neo4rs::query(cypher)
-                .param("query", query_text)
+                .param("query", sanitize_lucene_query(query_text))
                 .param("limit", fetch_limit as i64);
 
-            if let Ok(rows) = self.neo4j.execute(q).await {
-                for row in rows {
-                    if let (Ok(id), Ok(content)) =
-                        (row.get::<String>("id"), row.get::<String>("content"))
-                    {
-                        bm25_hits.push((id, content));
+            match self.neo4j.execute(q).await {
+                Ok(rows) => {
+                    for row in rows {
+                        if let (Ok(id), Ok(content)) =
+                            (row.get::<String>("id"), row.get::<String>("content"))
+                        {
+                            bm25_hits.push((id, content));
+                        }
                     }
                 }
+                Err(e) => warn!("BM25 full-text search failed (continuing): {}", e),
             }
         }
 
@@ -1403,14 +1411,17 @@ impl KnowledgeService {
             let q = neo4rs::query(cypher)
                 .param("embedding", query_embedding)
                 .param("limit", fetch_limit as i64);
-            if let Ok(rows) = self.neo4j.execute(q).await {
-                for row in rows {
-                    if let (Ok(id), Ok(content)) =
-                        (row.get::<String>("id"), row.get::<String>("content"))
-                    {
-                        vec_hits.push((id, content));
+            match self.neo4j.execute(q).await {
+                Ok(rows) => {
+                    for row in rows {
+                        if let (Ok(id), Ok(content)) =
+                            (row.get::<String>("id"), row.get::<String>("content"))
+                        {
+                            vec_hits.push((id, content));
+                        }
                     }
                 }
+                Err(e) => warn!("Vector search failed (continuing with BM25): {}", e),
             }
         }
 
@@ -1422,16 +1433,19 @@ impl KnowledgeService {
             RETURN node.id AS id, node.content AS content
             "#;
             let q = neo4rs::query(cypher)
-                .param("query", query_text)
+                .param("query", sanitize_lucene_query(query_text))
                 .param("limit", fetch_limit as i64);
-            if let Ok(rows) = self.neo4j.execute(q).await {
-                for row in rows {
-                    if let (Ok(id), Ok(content)) =
-                        (row.get::<String>("id"), row.get::<String>("content"))
-                    {
-                        bm25_hits.push((id, content));
+            match self.neo4j.execute(q).await {
+                Ok(rows) => {
+                    for row in rows {
+                        if let (Ok(id), Ok(content)) =
+                            (row.get::<String>("id"), row.get::<String>("content"))
+                        {
+                            bm25_hits.push((id, content));
+                        }
                     }
                 }
+                Err(e) => warn!("BM25 full-text search failed (continuing): {}", e),
             }
         }
 
@@ -2841,5 +2855,51 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         triggering_note_id: &str,
     ) -> anyhow::Result<Vec<String>> {
         KnowledgeService::create_gap_tasks(self, gaps, triggering_note_id).await
+    }
+}
+
+/// Escape Lucene query-syntax special characters so arbitrary query text is treated as
+/// literal terms by `db.index.fulltext.queryNodes`. Without this, characters like `:`,
+/// `/`, `[`, or an unbalanced `"` (common in a graph full of URLs) make the fulltext
+/// call throw and hybrid search silently degrades to the slow CONTAINS fallback.
+fn sanitize_lucene_query(q: &str) -> String {
+    // The Lucene classic-parser reserved set, plus `&`/`|` handled individually so the
+    // `&&`/`||` operators are neutralised too.
+    const SPECIAL: &[char] = &[
+        '\\', '+', '-', '!', '(', ')', ':', '^', '[', ']', '"', '{', '}', '~', '*', '?', '|', '&',
+        '/',
+    ];
+    let mut out = String::with_capacity(q.len() + 8);
+    for c in q.chars() {
+        if SPECIAL.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod lucene_tests {
+    use super::sanitize_lucene_query;
+
+    #[test]
+    fn escapes_url_and_colon() {
+        let out = sanitize_lucene_query("https://example.com/path: [test]");
+        assert_eq!(out, "https\\:\\/\\/example.com\\/path\\: \\[test\\]");
+    }
+
+    #[test]
+    fn escapes_boolean_operators_and_quotes() {
+        assert_eq!(sanitize_lucene_query("a && b"), "a \\&\\& b");
+        assert_eq!(sanitize_lucene_query("say \"hi\""), "say \\\"hi\\\"");
+    }
+
+    #[test]
+    fn plain_text_unchanged() {
+        assert_eq!(
+            sanitize_lucene_query("rust async runtime"),
+            "rust async runtime"
+        );
     }
 }
