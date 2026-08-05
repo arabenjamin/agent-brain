@@ -20,6 +20,7 @@ pub mod snapshot;
 pub mod source_seeder;
 pub mod store_impls;
 pub mod traits;
+pub mod transcribe;
 
 pub use context_builder::ContextBuilderService;
 pub use knowledge::{KnowledgeService, ReasonOutput, SourceRef};

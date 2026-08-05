@@ -60,6 +60,9 @@ services:
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
       - MEDIA_WATCH_MAX_PER_SOURCE=2                             # first-poll stampede guard: max new videos/source/poll
+      - WHISPER_PROVIDER=http                                    # caption-less fallback via self-hosted Whisper sidecar
+      - WHISPER_BASE_URL=http://whisper:8000/v1                  # OpenAI-compatible endpoint (faster-whisper-server)
+      - WHISPER_MODEL=Systran/faster-whisper-base
       # GitHub access is via the seeded `github` ApiContext + `http_request` tool.
       # GITHUB_TOKEN is auto-injected by http_request when context_name="github".
       # It is also used by entrypoint.sh to configure HTTPS push credentials.
@@ -85,6 +88,28 @@ services:
       - ai-network
     restart: unless-stopped
 
+  # Local, self-hosted Whisper transcription (OpenAI-compatible API) for the
+  # Media Learning skill's caption-less fallback. No external services, no API
+  # cost. Runs on CPU with a small int8 model + idle unload (TTL) — captions
+  # cover the majority of videos, so Whisper runs only occasionally.
+  #
+  # NOTE: GPU (cuda) is blocked on this host: driver 525.125.06 caps at CUDA
+  # 12.0, the -cuda image ships 12.2, and GeForce cards can't do CUDA
+  # forward-compat. To move to GPU, upgrade the host NVIDIA driver (>=535) and
+  # switch back to the :latest-cuda image with a `deploy.resources` GPU block.
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    environment:
+      - WHISPER__MODEL=Systran/faster-whisper-base
+      - WHISPER__INFERENCE_DEVICE=cpu
+      - WHISPER__COMPUTE_TYPE=int8
+      - WHISPER__TTL=300   # unload the model after 5 min idle to free RAM
+    volumes:
+      - whisper_cache:/root/.cache/huggingface
+    networks:
+      - brain-internal
+    restart: unless-stopped
+
   hbi-frontend:
     build:
       context: ./hbi-frontend
@@ -103,6 +128,7 @@ networks:
     external: true
 
 volumes:
+  whisper_cache:
   neo4j_data:
   neo4j_logs:
   brain_snapshots:

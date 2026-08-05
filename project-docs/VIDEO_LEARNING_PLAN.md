@@ -248,13 +248,17 @@ always use this path.
 
 ## 8. Phased implementation
 
-> **Status (implemented):** Phases 1–3 are built and unit-tested (`MediaService`,
-> `MediaSkill` with 5 tools, `:Media`/`:MediaSource` nodes + schema, the
-> `media_source_seeder`, `chains/video-learning.yaml`, `schedules/media-watch.yaml`,
-> `sources-media/ai-research.yaml`, all wired into `build_skills`). Phase 4
-> (Whisper) and Phase 5 (podcasts/local files) are **stubbed seams** — caption-less
-> media errors cleanly and non-YouTube feed kinds return a "not supported yet"
-> error, rather than half-working. Requires `yt-dlp` on PATH at runtime.
+> **Status (implemented):** Phases 1–4 are built and verified live. Phase 1–3:
+> `MediaService`, `MediaSkill` (6 tools incl. `spawn_gap_tasks`), `:Media`/`:MediaSource`
+> nodes + schema, `media_source_seeder`, `chains/video-learning.yaml`,
+> `schedules/media-watch.yaml`, a 13-channel watchlist, all wired into `build_skills`
+> with a `MEDIA_WATCH_MAX_PER_SOURCE` first-poll guard. **Phase 4 (Whisper):**
+> `services/transcribe.rs` (`Transcriber` trait → `HttpTranscriber`) POSTs best-audio
+> (via `yt-dlp -f bestaudio`) to a **self-hosted, OpenAI-compatible** Whisper endpoint;
+> the `whisper` compose sidecar runs `faster-whisper-server` on **CPU** (GPU blocked by
+> the host's CUDA-12.0 driver vs the image's 12.2 on a GeForce card). Requires `yt-dlp`
+> on PATH. Phase 5 (podcasts/local files) is still a stubbed seam that reuses the
+> Phase-4 transcriber once wired.
 
 **Phase 1 — Captions MVP, on-demand (highest value, lowest cost).**
 `services/media.rs` (metadata + caption fetch + map-reduce summary), `MediaSkill`

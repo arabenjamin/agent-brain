@@ -64,9 +64,9 @@ pub struct MediaService {
     max_duration_secs: i64,
     /// Transcript window size (chars) for the map pass.
     window_chars: usize,
-    /// `none` disables Whisper fallback (Phase 4).
-    whisper_provider: String,
-    /// Scratch dir for yt-dlp subtitle downloads (cleaned per call).
+    /// Whisper backend for caption-less media; `None` disables the fallback.
+    transcriber: Option<Arc<dyn crate::services::transcribe::Transcriber>>,
+    /// Scratch dir for yt-dlp subtitle/audio downloads (cleaned per call).
     media_dir: std::path::PathBuf,
     http: reqwest::Client,
 }
@@ -81,7 +81,7 @@ impl MediaService {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10800),
             window_chars: 6000,
-            whisper_provider: std::env::var("WHISPER_PROVIDER").unwrap_or_else(|_| "none".into()),
+            transcriber: crate::services::transcribe::from_env(),
             media_dir: std::env::var("MEDIA_DIR")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::env::temp_dir()),
@@ -232,8 +232,8 @@ impl MediaService {
     }
 
     /// Fetch metadata + transcript. Returns `(meta, transcript, source)`.
-    /// Falls back to Whisper only when captions are absent (Phase 4 — errors
-    /// cleanly unless `WHISPER_PROVIDER` is configured).
+    /// Prefers captions; falls back to Whisper (self-hosted) when captions are
+    /// absent and a `Transcriber` is configured, else errors cleanly.
     pub async fn fetch_transcript(&self, url: &str) -> anyhow::Result<(VideoMeta, String, String)> {
         Self::validate_url(url)?;
         let raw = self.run_yt_dlp_json(url).await?;
@@ -244,19 +244,80 @@ impl MediaService {
             return Ok((meta, text, "captions".to_string()));
         }
 
-        // No usable captions — Whisper fallback (Phase 4).
-        if self.whisper_provider == "none" {
+        // No usable captions — Whisper fallback.
+        let Some(ref transcriber) = self.transcriber else {
             anyhow::bail!(
                 "no captions available for '{}' and Whisper transcription is disabled \
-                 (set WHISPER_PROVIDER to enable audio transcription)",
+                 (set WHISPER_PROVIDER + WHISPER_BASE_URL to enable audio transcription)",
                 meta.id
             );
+        };
+        // Guard here (not just in the skill): transcription is far costlier than
+        // caption fetch, so reject over-long audio before downloading it.
+        if self.max_duration_secs > 0 && meta.duration_secs > self.max_duration_secs {
+            anyhow::bail!(
+                "no captions for '{}' and it is {}s long, exceeding MEDIA_MAX_DURATION_SECS={} \
+                 (too long to transcribe)",
+                meta.id,
+                meta.duration_secs,
+                self.max_duration_secs
+            );
         }
-        anyhow::bail!(
-            "Whisper provider '{}' is configured but audio transcription is not yet \
-             implemented (Phase 4)",
-            self.whisper_provider
-        )
+        debug!(video = %meta.id, backend = transcriber.label(), "no captions; transcribing audio");
+        let (audio, dir) = self.download_audio(url, &meta.id).await?;
+        let result = transcriber.transcribe(&audio).await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let text = result?;
+        if text.trim().is_empty() {
+            anyhow::bail!("Whisper returned an empty transcript for '{}'", meta.id);
+        }
+        Ok((meta, normalize_ws(&text), "whisper".to_string()))
+    }
+
+    /// Download the best audio-only stream via yt-dlp (no `-x`/ffmpeg — the
+    /// Whisper server decodes the container itself). Returns `(audio_path,
+    /// scratch_dir)`; the caller removes the dir.
+    async fn download_audio(
+        &self,
+        url: &str,
+        id: &str,
+    ) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+        let dir = self
+            .media_dir
+            .join(format!("brain-audio-{id}-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            anyhow::anyhow!("could not create audio scratch dir {}: {e}", dir.display())
+        })?;
+        let out = tokio::process::Command::new(&self.yt_dlp_path)
+            .args([
+                "-f",
+                "bestaudio/best",
+                "--no-warnings",
+                "--no-playlist",
+                "-o",
+                "%(id)s.%(ext)s",
+                "-P",
+                &dir.to_string_lossy(),
+                url,
+            ])
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to run yt-dlp for audio: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            anyhow::bail!("yt-dlp audio download failed: {}", stderr.trim());
+        }
+        // Find the downloaded audio file (extension varies: m4a/webm/opus).
+        let mut rd = tokio::fs::read_dir(&dir).await?;
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                return Ok((path, dir));
+            }
+        }
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        anyhow::bail!("yt-dlp produced no audio file for '{id}'")
     }
 
     // ========================================================================
