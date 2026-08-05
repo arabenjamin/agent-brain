@@ -96,6 +96,7 @@ Copy `.env.example` to `.env` and configure:
 | `MEDIA_CAPTION_LANG` | `en` | Preferred caption language for `ingest_media` / `fetch_transcript` |
 | `MEDIA_MAX_DURATION_SECS` | `10800` | Skip videos longer than this (cost guard; `0` = unlimited) |
 | `MEDIA_WATCH_ENABLED` | `false` | Enable autonomous channel polling. When unset/false, `poll_media_sources` is a no-op (the `media-watch` schedule is inert) |
+| `MEDIA_WATCH_MAX_PER_SOURCE` | `3` | Max new videos enqueued per source per poll (first-poll stampede guard). A fresh channel's RSS carries ~15 recent uploads; this caps how many become tasks at once |
 | `WHISPER_PROVIDER` | `none` | Whisper transcription provider for caption-less media (`none`/`whisper-local`/`openai`/`groq`). Phase 4 — audio transcription not yet implemented; caption-less videos currently error cleanly |
 | `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
 | `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |

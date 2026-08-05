@@ -120,7 +120,8 @@ impl MediaSkill {
             name: "poll_media_sources".to_string(),
             description:
                 "Autonomous watch: check every active :MediaSource for new videos and create a \
-                 'watch video: <url>' Task for each. No-op unless MEDIA_WATCH_ENABLED is set."
+                 'watch video: <url>' Task for each (newest first, at most \
+                 MEDIA_WATCH_MAX_PER_SOURCE per source per poll). No-op unless MEDIA_WATCH_ENABLED is set."
                     .to_string(),
             input_schema: json!({"type": "object", "properties": {}}),
         }
@@ -349,6 +350,15 @@ impl MediaSkill {
             Err(e) => return ToolCallResult::error(format!("Could not list media sources: {e}")),
         };
 
+        // Per-source cap: enqueue at most this many NEW videos per source per
+        // poll. Prevents a stampede on the first poll of a fresh channel (whose
+        // RSS feed carries ~15 recent uploads). Steady-state polls rarely hit
+        // it, since 12h yields at most a video or two per channel.
+        let max_per_source: usize = std::env::var("MEDIA_WATCH_MAX_PER_SOURCE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+
         let mut polled = 0usize;
         let mut created = 0usize;
         let mut goals = Vec::new();
@@ -361,7 +371,12 @@ impl MediaSkill {
                     continue;
                 }
             };
+            // Feed items are newest-first; take the newest un-ingested ones.
+            let mut per_source = 0usize;
             for item in items {
+                if per_source >= max_per_source {
+                    break;
+                }
                 let goal = format!("watch video: {}", item.url);
                 if self
                     .neo4j
@@ -386,17 +401,22 @@ impl MediaSkill {
                 match self.neo4j.create_task(&goal, Some(&ctx), None).await {
                     Ok(_) => {
                         created += 1;
+                        per_source += 1;
                         goals.push(goal);
                     }
                     Err(e) => warn!(error = %e, "poll_media_sources: create_task failed"),
                 }
             }
         }
-        info!(polled, created, "poll_media_sources complete");
+        info!(
+            polled,
+            created, max_per_source, "poll_media_sources complete"
+        );
         ToolCallResult::success_json(json!({
             "enabled": true,
             "sources_polled": polled,
             "tasks_created": created,
+            "max_per_source": max_per_source,
             "goals": goals,
         }))
     }

@@ -10,8 +10,8 @@
 # The `name` is the Neo4j MERGE key — do not change it without deleting the old
 # (:ScheduledTask) node.
 name: "Media watch: poll subscribed channels for new videos to learn from"
-description: "Polls the active :MediaSource watchlist for new uploads and enqueues a video-learning Task per new video. Gated by MEDIA_WATCH_ENABLED."
-interval_seconds: 21600   # 6 hours
+description: "Polls the active :MediaSource watchlist for new uploads and enqueues a video-learning Task per new video. Gated by MEDIA_WATCH_ENABLED; capped per source by MEDIA_WATCH_MAX_PER_SOURCE."
+interval_seconds: 43200   # 12 hours
 steps:
   - tool_name: poll_media_sources
     arguments: {}

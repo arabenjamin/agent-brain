@@ -1,0 +1,59 @@
+# MediaSource watchlist — user-curated channels (news, commentary, tech).
+#
+# Seeded ON CREATE only (graph-owned after first seed). To tweak later: edit via
+# `manage_media_source` (persists) or delete a node to re-seed it from here.
+# Autonomous polling is gated by MEDIA_WATCH_ENABLED and capped per source by
+# MEDIA_WATCH_MAX_PER_SOURCE (the first-poll stampede guard).
+#
+# channel_id (ref) values resolved from the channel URLs via yt-dlp.
+name: watchlist
+description: User-curated channels for the autonomous watch loop.
+sources:
+  - name: johnny-harris
+    kind: youtube_channel
+    ref: UCmGSJVG3mCRXVOP4yZrU1Dw
+    description: Johnny Harris — geopolitics/explainer journalism.
+  - name: vice-news
+    kind: youtube_channel
+    ref: UCZaT_X_mc0BI-djXOlfhqWQ
+    description: VICE News — documentary news.
+  - name: hasan-minhaj
+    kind: youtube_channel
+    ref: UCarEovlrD9QY-fy-Z6apIDQ
+    description: Hasan Minhaj — political comedy/commentary.
+  - name: cappy-army
+    kind: youtube_channel
+    ref: UCwrpo8z3IgJln2ZidqBUiMA
+    description: Chris Cappy (Cappy Army) — military conflict analysis.
+  - name: news-nation
+    kind: youtube_channel
+    ref: UCCjG8NtOig0USdrT5D1FpxQ
+    description: NewsNation — national news.
+  - name: louis-rossmann
+    kind: youtube_channel
+    ref: UCl2mFZoRqjw_ELax4Yisf6w
+    description: Louis Rossmann — right-to-repair / consumer tech.
+  - name: ibm-technology
+    kind: youtube_channel
+    ref: UCKWaEZ-_VweaEx1j62do_vQ
+    description: IBM Technology — enterprise tech / AI explainers.
+  - name: c-span
+    kind: youtube_channel
+    ref: UCb--64Gl51jIEVE-GLDAVTg
+    description: C-SPAN — US government proceedings.
+  - name: 60-minutes
+    kind: youtube_channel
+    ref: UCsN32BtMd0IoByjJRNF12cw
+    description: 60 Minutes — investigative news.
+  - name: channel-5
+    kind: youtube_channel
+    ref: UC-AQKm7HUNMmxjdS371MSwg
+    description: Channel 5 with Andrew Callaghan — gonzo field journalism.
+  - name: julian-dorey
+    kind: youtube_channel
+    ref: UC0A-v_DL-h76F75xik8h03Q
+    description: Julian Dorey — long-form interview podcast.
+  - name: adam-kinzinger
+    kind: youtube_channel
+    ref: UCQR48yfPOO656Y9SxHhZU5Q
+    description: Adam Kinzinger — politics / commentary.

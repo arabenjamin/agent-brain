@@ -58,7 +58,8 @@ services:
       - SOURCES_DIR=/home/agent/agent-brain/sources
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
-      # MEDIA_WATCH_ENABLED defaults false — poll_media_sources is a no-op until enabled.
+      - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
+      - MEDIA_WATCH_MAX_PER_SOURCE=2                             # first-poll stampede guard: max new videos/source/poll
       # GitHub access is via the seeded `github` ApiContext + `http_request` tool.
       # GITHUB_TOKEN is auto-injected by http_request when context_name="github".
       # It is also used by entrypoint.sh to configure HTTPS push credentials.
