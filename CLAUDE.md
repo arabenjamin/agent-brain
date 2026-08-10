@@ -232,7 +232,7 @@ See `project-docs/architecture_context.md` for skill registry table, initializat
 
 **Nodes:**
 - `Task` - High-level goals with `id`, `goal`, `context`, `success_criteria` (measurable definition of done — used by evaluator step), `status` (created/in_progress/completed/failed/blocked)
-- `Note` - Stored text memories with optional vector `embedding`, `access_count`, `last_accessed_at`, `note_type` (`semantic`/`episodic`/`reflection`/`consolidated`/`outcome`/`inference`), `next_review_at`, `review_interval_days`, `source_context`, `event_at`
+- `Note` - Stored text memories with optional vector `embedding`, `access_count`, `last_accessed_at`, `note_type` (`semantic`/`episodic`/`reflection`/`consolidated`/`outcome`/`inference`/`claim`/`source_record`/`news`), `next_review_at`, `review_interval_days`, `source_context`, `event_at`
 - `Procedure` - Named multi-step workflows with `id`, `name`, `description`, `steps` (JSON array), `created_at`
 - `WorkingMemory` - Session-scoped scratchpad entries with `id`, `session_id`, `content`, `role`, `turn_index`, `created_at`
 - `Entity` - Named entities extracted from notes with `id`, `name` (unique, lowercased), `entity_type`, `created_at`
@@ -447,6 +447,26 @@ The two watch schedules each run three `search_web` sweeps, bank every result in
 Gap tasks (`"fill knowledge gap: …"`) are spawned by `spawn_gap_tasks` from a video's `## FOLLOW UP` section and by the daily news-analysis schedule. The chain searches **both** the graph (`search_notes`) and the web (`search_web`), banks each result set into a `gap-{{task_id}}` WorkingMemory session, reassembles them with `neo4j_query`, and answers the gap from the union under three headings: `## ANSWER` (cited), `## WHAT THIS ADDS` (vs. what was already stored), `## STILL UNKNOWN` (specific enough to re-search).
 
 Before 2026-08-10 this chain searched *only* internal notes, which cannot fill a knowledge gap by construction — a gap is precisely what the graph does not contain. It produced self-referential "Gap synthesis" notes that re-chewed prior notes and drifted into meta-commentary about the source material. Two changes fixed it: adding the `search_web` step, and dropping the chain's priority to 15 so it stops losing its own tasks to `learn.yaml` (see the pattern-priority note above). Search steps use `{{goal_topic}}`, not `{{goal}}`.
+
+### Epistemics: claims, source records, and retrieval labelling
+
+The brain ingests from sources of wildly varying reliability. Until 2026-08-10 it stored them identically — a CRS report and a late-night cable segment both became `semantic` notes — so retrieval handed them to `reason` indistinguishably and an assertion made once on a talk show came back out phrased as established fact. Observed directly: asked to summarise the evidence on a UAP topic, `reason` answered *"clear evidence of government agencies… deeply engaged"*.
+
+The response is deliberately **not** to filter sources. Dropping fringe material at ingest also destroys the record needed to notice a narrative being pushed — you cannot detect a coordinated shift in messaging you never stored. Instead the type system distinguishes three things it previously conflated:
+
+| Type | Means |
+|---|---|
+| `semantic` | knowledge the brain has established |
+| `source_record` | a record of what an external source *said* (video summaries, and `news` for briefs) |
+| `claim` | a single checkable proposition, with evidentiary status |
+
+- **`(:Note {note_type:'claim', claim_status, asserted_by, asserted_at})`** with `-[:ASSERTED_IN]->`, `-[:CORROBORATED_BY]->`, `-[:CONTRADICTED_BY]->` edges. Status is **derived** from the edges (`recompute_status`), never asserted, so it cannot drift from its evidence. Verification never edits a claim — evidence is attached and status recomputed; the assertion is preserved exactly as made. Support *and* contradiction stays `disputed` rather than collapsing to a verdict, and absence of evidence leaves a claim `unverified`, never refuted.
+- **Retrieval labelling is the load-bearing piece.** `label_claims` in `services/knowledge.rs` prefixes claims with `[CLAIM · status · asserted by X · date]` and source records with `[SOURCE RECORD — what a source said, not verified · … ]`. It runs in **both** retrieval paths — miss one and the unlabelled copy of the same assertion still reaches the context window, which is exactly what happened when only claims were labelled and `reason` kept reading the unlabelled video note. After labelling both, the same query returned *"highly speculative"*, *"the narrative suggests"*.
+- **`claim` and `source_record` are excluded from consolidation source selection.** Consolidation rewrites its sources into a settled summary, which would strip the status and launder an unverified assertion into semantic knowledge.
+- **Corroboration is described, not ranked.** `classify_domains` splits corroborating domains into `primary sources` (institutional — `.gov`/`.mil`/`.edu`/`.gov.uk`, decided mechanically from the domain, no editorial judgement), `established sources` (on a curated `:SourceList`), and `unclassified`. The tier rides in the label: `[CLAIM · corroborated · primary sources · …]` vs `[CLAIM · corroborated · unclassified sources only · …]`. Verification is **never gated** on tier — doing so would encode "mainstream equals true" and make niche-but-accurate sources permanently unverifiable, which is its own censorship. `unclassified` means "not on our list", not "unreliable". Note the first version tiered on `:SourceList` alone and labelled a Congressional-hearing claim corroborated by `congress.gov`/`house.gov` as "unclassified sources only" — the lists were curated for *search restriction*, not classification, and a mislabel like that is worse than no label.
+- **Independence is checked, not assumed.** `check_independence` requires `MIN_INDEPENDENT_DOMAINS` (2) distinct non-self-referential domains before support counts. It rejects the circular case — a claim about Skywatcher "corroborated" by `skywatcher.ai`. **It does not solve source independence**: five topic-aligned outlets republishing one origin pass any count-based test, observed live. Corroborating domains are recorded on the edge so this stays inspectable rather than hidden behind a status word. Contradiction is deliberately *not* gated — gating it would bias the system toward belief.
+
+Known gaps: extraction does not distinguish "X was asserted" from "X is true"; chain-extracted claims carry `source_context`/`asserted_by` but no `ASSERTED_IN` edge (`store_note` hands content, not its id, to `{{_prev}}`); `learn_chain` notes (248) are still typed `semantic`.
 
 ### Web Search: engine failover ladder + usage ledger
 

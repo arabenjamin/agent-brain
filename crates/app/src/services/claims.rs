@@ -92,8 +92,14 @@ pub fn label_claim(
     status: &str,
     asserted_by: Option<&str>,
     at: Option<&str>,
+    tier: Option<&str>,
 ) -> String {
     let mut parts = vec![format!("CLAIM · {status}")];
+    // The tier is what separates "two wire services agree" from "five aligned
+    // outlets repeat one origin" — both of which read as plain "corroborated".
+    if let Some(t) = tier.filter(|t| !t.is_empty() && *t != "none") {
+        parts.push(t.to_string());
+    }
     if let Some(by) = asserted_by.filter(|s| !s.is_empty()) {
         parts.push(format!("asserted by {by}"));
     }
@@ -207,6 +213,94 @@ pub async fn store_claim(
     Ok(id)
 }
 
+/// Institutional/primary-source suffixes, identified mechanically.
+///
+/// A claim about a Congressional hearing corroborated by `congress.gov` is
+/// qualitatively different from the same claim corroborated by a blog, and that
+/// difference is decidable from the domain alone — no editorial judgement about
+/// which outlets are "good" required.
+const PRIMARY_SUFFIXES: &[&str] = &[
+    ".gov",
+    ".mil",
+    ".edu",
+    ".int",
+    ".gov.uk",
+    ".ac.uk",
+    ".europa.eu",
+    ".who.int",
+];
+
+/// True when a domain is an institutional or primary source.
+pub fn is_primary_source(domain: &str) -> bool {
+    PRIMARY_SUFFIXES.iter().any(|suf| domain.ends_with(suf))
+}
+
+/// Classify corroborating domains into primary, established, and unclassified.
+///
+/// **`unclassified` does not mean unreliable.** The curated lists are sets of
+/// large general-interest outlets; a specialist journal, a regional paper, or a
+/// trade publication sits outside them and is often the *better* source on its
+/// subject. This describes the character of a corroboration, never its quality —
+/// gating verification on list membership would encode "mainstream equals true"
+/// and would make niche-but-accurate sources permanently unverifiable, which is
+/// its own kind of censorship.
+///
+/// The `:SourceList` nodes alone were not enough: they were curated for search
+/// restriction, not source classification, so `congress.gov` and `c-span.org`
+/// fell outside them and a well-sourced claim about a Congressional hearing was
+/// labelled "unclassified sources only" — a mislabel worse than no label.
+pub async fn classify_domains(
+    neo4j: &Neo4jClient,
+    domains: &[String],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    if domains.is_empty() {
+        return (vec![], vec![], vec![]);
+    }
+    let listed: Vec<String> = neo4j
+        .execute(neo4rs::query(
+            "MATCH (s:SourceList) UNWIND s.domains AS d RETURN collect(DISTINCT d) AS listed",
+        ))
+        .await
+        .ok()
+        .and_then(|rows| {
+            rows.first()
+                .and_then(|r| r.get::<Vec<String>>("listed").ok())
+        })
+        .unwrap_or_default();
+
+    let mut primary = Vec::new();
+    let mut established = Vec::new();
+    let mut unclassified = Vec::new();
+    for d in domains {
+        if is_primary_source(d) {
+            primary.push(d.clone());
+        } else if listed
+            .iter()
+            .any(|l| l == d || d.ends_with(&format!(".{l}")))
+        {
+            established.push(d.clone());
+        } else {
+            unclassified.push(d.clone());
+        }
+    }
+    (primary, established, unclassified)
+}
+
+/// How to describe the character of a claim's corroboration.
+///
+/// Recorded alongside the status because "corroborated" alone hides the thing
+/// that matters most when a narrative is being pushed: *who* agreed. Five
+/// topic-aligned outlets republishing one origin and two government primary
+/// sources both read as "corroborated" without this.
+pub fn corroboration_tier(primary: usize, established: usize, unclassified: usize) -> &'static str {
+    match (primary, established, unclassified) {
+        (0, 0, 0) => "none",
+        (p, _, _) if p > 0 => "primary sources",
+        (_, e, _) if e > 0 => "established sources",
+        _ => "unclassified sources only",
+    }
+}
+
 /// Recompute a claim's status from its evidence edges and persist it.
 ///
 /// Status is a *view* of the edges, so this is the single writer. Called after
@@ -236,22 +330,47 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
         .unwrap_or((0, 0));
 
     let status = ClaimStatus::from_evidence(cor, con);
+
+    // Describe WHO corroborated, not just how many. Collected from the domains
+    // recorded on the supporting edges.
+    let domains: Vec<String> = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (c:Note {id: $id})-[r:CORROBORATED_BY]->() \
+                 UNWIND COALESCE(r.domains, []) AS d \
+                 RETURN collect(DISTINCT d) AS domains",
+            )
+            .param("id", claim_id),
+        )
+        .await
+        .ok()
+        .and_then(|rows| {
+            rows.first()
+                .and_then(|r| r.get::<Vec<String>>("domains").ok())
+        })
+        .unwrap_or_default();
+    let (primary, established, unclassified) = classify_domains(neo4j, &domains).await;
+    let tier = corroboration_tier(primary.len(), established.len(), unclassified.len());
+
     neo4j
         .run(
             neo4rs::query(
                 "MATCH (c:Note {id: $id}) \
                  SET c.claim_status = $status, c.verified_at = $now, \
-                     c.corroborating_count = $cor, c.contradicting_count = $con",
+                     c.corroborating_count = $cor, c.contradicting_count = $con, \
+                     c.corroboration_tier = $tier, c.corroborating_domains = $domains",
             )
             .param("id", claim_id)
             .param("status", status.as_str())
             .param("now", chrono::Utc::now().to_rfc3339())
             .param("cor", cor as i64)
-            .param("con", con as i64),
+            .param("con", con as i64)
+            .param("tier", tier)
+            .param("domains", domains.clone()),
         )
         .await?;
 
-    info!(claim_id = %claim_id, status = status.as_str(), corroborating = cor, contradicting = con, "Claim status recomputed");
+    info!(claim_id = %claim_id, status = status.as_str(), corroborating = cor, contradicting = con, tier, "Claim status recomputed");
     Ok(status)
 }
 
@@ -575,6 +694,57 @@ mod tests {
     }
 
     #[test]
+    fn institutional_domains_are_recognised_as_primary() {
+        // The observed mislabel: congress.gov corroborating a claim about a
+        // Congressional hearing was tagged "unclassified", because the curated
+        // SourceList was built for search restriction, not classification.
+        for d in [
+            "congress.gov",
+            "house.gov",
+            "nasa.gov",
+            "mit.edu",
+            "defense.mil",
+            "parliament.gov.uk",
+        ] {
+            assert!(is_primary_source(d), "{d} should be primary");
+        }
+        for d in ["nbcnews.com", "psionicresearch.com", "medium.com"] {
+            assert!(!is_primary_source(d), "{d} should not be primary");
+        }
+    }
+
+    #[test]
+    fn corroboration_tier_describes_who_agreed() {
+        assert_eq!(corroboration_tier(0, 0, 0), "none");
+        assert_eq!(corroboration_tier(0, 2, 0), "established sources");
+        assert_eq!(corroboration_tier(0, 1, 4), "established sources");
+        assert_eq!(corroboration_tier(0, 0, 5), "unclassified sources only");
+        // Primary outranks the rest: congress.gov on a claim about Congress is
+        // the source, not a report about it.
+        assert_eq!(corroboration_tier(1, 0, 9), "primary sources");
+    }
+
+    #[test]
+    fn tier_appears_in_the_label_so_the_distinction_is_visible() {
+        // "corroborated" alone cannot distinguish two wire services agreeing
+        // from five aligned outlets repeating one origin.
+        let out = label_claim(
+            "Skywatchers demonstrated psionic summoning.",
+            "corroborated",
+            Some("NewsNation"),
+            Some("2026-08-10"),
+            Some("unclassified sources only"),
+        );
+        assert!(out.starts_with("[CLAIM · corroborated · unclassified sources only · asserted by NewsNation · 2026-08-10]"), "{out}");
+    }
+
+    #[test]
+    fn a_none_tier_is_omitted_rather_than_rendered() {
+        let out = label_claim("x", "unverified", None, None, Some("none"));
+        assert_eq!(out, "[CLAIM · unverified]\nx");
+    }
+
+    #[test]
     fn status_is_derived_from_evidence_counts() {
         assert_eq!(ClaimStatus::from_evidence(0, 0), ClaimStatus::Unverified);
         assert_eq!(ClaimStatus::from_evidence(3, 0), ClaimStatus::Corroborated);
@@ -598,6 +768,7 @@ mod tests {
             "unverified",
             Some("NewsNation"),
             Some("2026-08-10T16:00:00Z"),
+            None,
         );
         assert!(out.starts_with("[CLAIM · unverified · asserted by NewsNation · 2026-08-10]\n"));
         assert!(out.contains("The DoD uses TFRs"));
@@ -605,10 +776,10 @@ mod tests {
 
     #[test]
     fn label_degrades_gracefully_without_attribution() {
-        let out = label_claim("Something was asserted.", "disputed", None, None);
+        let out = label_claim("Something was asserted.", "disputed", None, None, None);
         assert_eq!(out, "[CLAIM · disputed]\nSomething was asserted.");
         // An empty attribution must not render as "asserted by ".
-        let out = label_claim("x", "unverified", Some(""), Some(""));
+        let out = label_claim("x", "unverified", Some(""), Some(""), Some(""));
         assert_eq!(out, "[CLAIM · unverified]\nx");
     }
 

@@ -1629,10 +1629,15 @@ impl KnowledgeService {
             .neo4j
             .execute(
                 neo4rs::query(
-                    "MATCH (n:Note) WHERE n.id IN $ids AND n.note_type = 'claim' \
-                     RETURN n.id AS id, COALESCE(n.claim_status, 'unverified') AS status, \
+                    "MATCH (n:Note) WHERE n.id IN $ids \
+                       AND COALESCE(n.note_type,'semantic') IN ['claim','source_record','news'] \
+                     RETURN n.id AS id, COALESCE(n.note_type,'semantic') AS note_type, \
+                            COALESCE(n.claim_status, 'unverified') AS status, \
                             COALESCE(n.asserted_by, '') AS asserted_by, \
-                            COALESCE(n.asserted_at, '') AS asserted_at",
+                            COALESCE(n.asserted_at, '') AS asserted_at, \
+                            COALESCE(n.source_context, '') AS source_context, \
+                            COALESCE(n.corroboration_tier, '') AS tier, \
+                            toString(n.created_at) AS created_at",
                 )
                 .param("ids", ids),
             )
@@ -1640,24 +1645,52 @@ impl KnowledgeService {
         {
             Ok(r) => r,
             Err(e) => {
-                warn!(error = %e, "Claim labelling lookup failed — returning unlabelled notes");
+                warn!(error = %e, "Provenance labelling lookup failed — returning unlabelled notes");
                 return merged;
             }
         };
 
-        let mut labels: std::collections::HashMap<String, (String, String, String)> =
+        let mut labels: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         for row in &rows {
-            if let Ok(id) = row.get::<String>("id") {
-                labels.insert(
-                    id,
-                    (
-                        row.get::<String>("status").unwrap_or_default(),
-                        row.get::<String>("asserted_by").unwrap_or_default(),
-                        row.get::<String>("asserted_at").unwrap_or_default(),
-                    ),
-                );
-            }
+            let Ok(id) = row.get::<String>("id") else {
+                continue;
+            };
+            let note_type = row.get::<String>("note_type").unwrap_or_default();
+            let prefix = match note_type.as_str() {
+                "claim" => crate::services::claims::label_claim(
+                    "",
+                    &row.get::<String>("status").unwrap_or_default(),
+                    Some(&row.get::<String>("asserted_by").unwrap_or_default()),
+                    Some(&row.get::<String>("asserted_at").unwrap_or_default()),
+                    Some(&row.get::<String>("tier").unwrap_or_default()),
+                ),
+                // A record of what an external source said is not the brain's own
+                // knowledge, and typing it 'semantic' told every consumer it was.
+                // 656 video summaries and 94 news briefs sat unlabelled next to
+                // established facts, which is why extracting claims alone did not
+                // change how `reason` read the material — the unlabelled copy of
+                // the same assertion was still in the context window.
+                _ => {
+                    let src = row.get::<String>("source_context").unwrap_or_default();
+                    let at: String = row
+                        .get::<String>("created_at")
+                        .unwrap_or_default()
+                        .chars()
+                        .take(10)
+                        .collect();
+                    let mut parts =
+                        vec!["SOURCE RECORD — what a source said, not verified".to_string()];
+                    if !src.is_empty() {
+                        parts.push(src);
+                    }
+                    if !at.is_empty() {
+                        parts.push(at);
+                    }
+                    format!("[{}]\n", parts.join(" · "))
+                }
+            };
+            labels.insert(id, prefix);
         }
         if labels.is_empty() {
             return merged;
@@ -1666,15 +1699,7 @@ impl KnowledgeService {
         merged
             .into_iter()
             .map(|(id, content)| match labels.get(&id) {
-                Some((status, by, at)) => {
-                    let labelled = crate::services::claims::label_claim(
-                        &content,
-                        status,
-                        Some(by.as_str()),
-                        Some(at.as_str()),
-                    );
-                    (id, labelled)
-                }
+                Some(prefix) => (id, format!("{prefix}{content}")),
                 None => (id, content),
             })
             .collect()
@@ -2611,7 +2636,7 @@ impl KnowledgeService {
         // labelled, and are summarised only once their evidence says something.
         let source_cypher = r#"
         MATCH (n:Note)
-        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result', 'claim']
+        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result', 'claim', 'source_record']
           AND (n.next_review_at IS NULL OR n.next_review_at <= datetime())
           AND n.embedding IS NOT NULL
           AND size(n.embedding) = $dim

@@ -127,7 +127,11 @@ steps:
   - tool_name: store_note
     arguments:
       content: "# Video learning: {{goal}}\n\n{{_prev}}"
-      note_type: semantic
+      # source_record, NOT semantic: this is a record of what one channel said,
+      # not knowledge the brain has established. Typing it 'semantic' put it in
+      # the context window indistinguishable from a verified fact, which is why
+      # `reason` synthesised credulously from single-source video content.
+      note_type: source_record
       source_context: video_learning
     priority: 1
     max_attempts: 3
