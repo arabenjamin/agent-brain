@@ -134,6 +134,22 @@ steps:
     provider_hint: ollama
     description: "Store the sourced summary note"
 
+  # Extract checkable assertions from the stored note into individual claims.
+  # {{_prev}} is store_note's echo of the note content. The extractor reads
+  # attribution out of the text itself (the summary names the channel), so the
+  # claims carry who asserted them. Pure side-effect on the chain: this is the
+  # last content step, so nothing downstream depends on its output.
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_context: video_learning
+      limit: 5
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract checkable claims from the video"
+
   # 8. Mark the video Task done.
   - tool_name: update_task
     arguments:

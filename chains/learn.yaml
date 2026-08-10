@@ -64,6 +64,17 @@ steps:
     max_attempts: 3
     provider_hint: ollama
 
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_context: learn_chain
+      limit: 4
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract checkable claims from the research findings"
+
   - tool_name: update_task
     arguments:
       task_id: "{{task_id}}"

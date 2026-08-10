@@ -205,6 +205,19 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
+  # Extract checkable assertions from the brief before it is presented. News is
+  # the highest-volume external source the brain ingests, and a daily brief that
+  # reads as settled fact is exactly how framing becomes belief.
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_context: daily_news
+      limit: 6
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
   - tool_name: notify_user
     arguments:
       message: "{{_prev}}"

@@ -32,11 +32,11 @@ use crate::services::{
     SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, codebase::CodebaseSkill, constructor::ConstructorSkill,
-    context::ContextSkill, dynamic::DynamicSkill, git::GitSkill, http::HttpSkill,
-    knowledge::KnowledgeSkill, media::MediaSkill, model::ModelSkill, query::QuerySkill,
-    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
-    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
+    Skill, agent::AgentSkill, claims::ClaimSkill, codebase::CodebaseSkill,
+    constructor::ConstructorSkill, context::ContextSkill, dynamic::DynamicSkill, git::GitSkill,
+    http::HttpSkill, knowledge::KnowledgeSkill, media::MediaSkill, model::ModelSkill,
+    query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill,
+    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -607,6 +607,15 @@ impl BrainCore {
             self.storage.neo4j.clone(),
         )));
 
+        // Claim Skill — epistemic status for ingested assertions.
+        if let Some(ref neo4j) = self.storage.neo4j {
+            registry.register_skill(Box::new(ClaimSkill::new(
+                neo4j.clone(),
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                self.storage.telemetry.clone(),
+            )));
+        }
+
         // Query Skill (generic Neo4j + DuckDB primitives)
         registry.register_skill(Box::new(QuerySkill::new(
             self.storage.neo4j.clone(),
@@ -762,6 +771,14 @@ impl BrainCore {
             self.storage.telemetry.clone(),
             self.storage.neo4j.clone(),
         )));
+
+        if let Some(ref neo4j) = self.storage.neo4j {
+            skills.push(Box::new(ClaimSkill::new(
+                neo4j.clone(),
+                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                self.storage.telemetry.clone(),
+            )));
+        }
 
         skills.push(Box::new(QuerySkill::new(
             self.storage.neo4j.clone(),

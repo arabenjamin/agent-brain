@@ -1,4 +1,5 @@
 pub mod chain_seeder;
+pub mod claims;
 pub mod context_builder;
 pub mod knowledge;
 pub mod llm;
@@ -9,6 +10,7 @@ pub mod model_config;
 pub mod model_router;
 pub mod procedure_executor;
 pub mod queue;
+pub mod repair;
 pub mod resource_registry;
 pub mod schedule_seeder;
 pub mod scheduler;

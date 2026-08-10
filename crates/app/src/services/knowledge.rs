@@ -202,6 +202,108 @@ impl KnowledgeService {
     }
 
     /// Auto-link a note to similar existing notes via RELATES_TO edges.
+    /// Replace a note's content in place, refreshing everything derived from it.
+    ///
+    /// Used by the envelope repair (`services/repair.rs`). Unlike `store_note`,
+    /// this preserves the node: `id`, `created_at`, and inbound edges such as
+    /// `SUMMARIZED_BY` (consolidations) and `DERIVED_FROM` (inference provenance)
+    /// survive, so repairing a note does not orphan the conclusions built on it
+    /// or reset its spaced-repetition schedule.
+    ///
+    /// Everything *derived from the old text* is rebuilt: the embedding, the
+    /// `RELATES_TO` similarity edges (which otherwise still encode similarity
+    /// between the old, wrong content), the chunk sub-notes, and the entity
+    /// mentions. Returns `(chunks_removed, chunks_created)`.
+    pub async fn rewrite_note_in_place(
+        &self,
+        note_id: &str,
+        content: &str,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+    ) -> Result<(usize, usize)> {
+        // 1. New embedding for the corrected text.
+        let embedding: Option<Vec<f32>> = match &self.llm {
+            Some(llm) => match llm.embed(content).await {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    warn!(note_id = %note_id, error = %e, "Repair: embedding failed, storing text only");
+                    None
+                }
+            },
+            None => None,
+        };
+
+        // 2. Content + embedding, leaving id/created_at/inbound edges alone.
+        let mut q = neo4rs::query(
+            "MATCH (n:Note {id: $id}) SET n.content = $content, n.embedding = $embedding",
+        )
+        .param("id", note_id)
+        .param("content", content);
+        q = match &embedding {
+            Some(e) => q.param("embedding", e.clone()),
+            None => q.param("embedding", Vec::<f32>::new()),
+        };
+        self.neo4j.run(q).await?;
+
+        // 3. Drop stale derived edges. RELATES_TO and MENTIONS were both computed
+        //    from the polluted text and are actively misleading until rebuilt.
+        self.neo4j
+            .run(
+                neo4rs::query("MATCH (n:Note {id: $id})-[r:RELATES_TO|MENTIONS]->() DELETE r")
+                    .param("id", note_id),
+            )
+            .await?;
+
+        // 4. Remove the old chunks — they are fragments of the old text.
+        let removed = self
+            .neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (c:Note)-[:PART_OF]->(p:Note {id: $id}) \
+                     WITH c, count(*) AS _x DETACH DELETE c RETURN count(*) AS removed",
+                )
+                .param("id", note_id),
+            )
+            .await?
+            .first()
+            .and_then(|r| r.get::<i64>("removed").ok())
+            .unwrap_or(0) as usize;
+
+        // 5. Re-link the parent against the refreshed vector.
+        if let Some(ref emb) = embedding {
+            let _ = self.link_similar_notes(note_id, emb).await;
+        }
+
+        // 6. Regenerate chunks exactly as store_note would.
+        let mut created = 0usize;
+        if content.len() > CHUNK_THRESHOLD_CHARS
+            && let Some(chunks) = Self::chunk_by_boundaries(content)
+            && chunks.len() > 1
+        {
+            for chunk in &chunks {
+                let (child_id, child_emb) = self
+                    .store_note_raw(chunk, note_type, source_context, None, None)
+                    .await?;
+                let link_q = neo4rs::query(
+                    "MATCH (child:Note {id: $child_id}), (parent:Note {id: $parent_id}) \
+                     MERGE (child)-[:PART_OF]->(parent)",
+                )
+                .param("child_id", child_id.clone())
+                .param("parent_id", note_id);
+                let _ = self.neo4j.run(link_q).await;
+                if let Some(ref emb) = child_emb {
+                    let _ = self.link_similar_notes(&child_id, emb).await;
+                }
+                created += 1;
+            }
+        }
+
+        // 7. Re-extract entities from the corrected text (background).
+        self.spawn_extract_entities(note_id.to_string(), content.to_string());
+
+        Ok((removed, created))
+    }
+
     async fn link_similar_notes(&self, note_id: &str, embedding: &[f32]) -> Result<usize> {
         let cypher = r#"
         CALL db.index.vector.queryNodes('note_embeddings', 10, $embedding)
@@ -1009,6 +1111,12 @@ impl KnowledgeService {
         }
         merged.truncate(limit);
 
+        // Label claims before they leave retrieval. This is the second of two
+        // retrieval paths (the other is search_notes_with_ids, feeding reason's
+        // internal RAG); both must label, because a claim that reaches a context
+        // window unlabelled is indistinguishable from an established fact.
+        let merged = self.label_claims(merged).await;
+
         // 5. Access tracking with spaced-repetition update
         let hit_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
         if !hit_ids.is_empty() {
@@ -1497,7 +1605,79 @@ impl KnowledgeService {
             }
         }
 
+        let merged = self.label_claims(merged).await;
         Ok(merged)
+    }
+
+    /// Prefix any retrieved `claim` note with its epistemic status.
+    ///
+    /// Retrieval is the only place this can be enforced. A claim that reaches the
+    /// context window looking like every other note *is* every other note as far
+    /// as the model is concerned, and it will restate it as fact — which is the
+    /// exact failure the claim type exists to prevent. Labelling here covers every
+    /// consumer of retrieval (`reason`, chains, chat) without each having to
+    /// remember to do it.
+    ///
+    /// Non-claim notes pass through untouched, and a lookup failure degrades to
+    /// unlabelled content rather than dropping the note.
+    async fn label_claims(&self, merged: Vec<(String, String)>) -> Vec<(String, String)> {
+        if merged.is_empty() {
+            return merged;
+        }
+        let ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
+        let rows = match self
+            .neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (n:Note) WHERE n.id IN $ids AND n.note_type = 'claim' \
+                     RETURN n.id AS id, COALESCE(n.claim_status, 'unverified') AS status, \
+                            COALESCE(n.asserted_by, '') AS asserted_by, \
+                            COALESCE(n.asserted_at, '') AS asserted_at",
+                )
+                .param("ids", ids),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "Claim labelling lookup failed — returning unlabelled notes");
+                return merged;
+            }
+        };
+
+        let mut labels: std::collections::HashMap<String, (String, String, String)> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            if let Ok(id) = row.get::<String>("id") {
+                labels.insert(
+                    id,
+                    (
+                        row.get::<String>("status").unwrap_or_default(),
+                        row.get::<String>("asserted_by").unwrap_or_default(),
+                        row.get::<String>("asserted_at").unwrap_or_default(),
+                    ),
+                );
+            }
+        }
+        if labels.is_empty() {
+            return merged;
+        }
+
+        merged
+            .into_iter()
+            .map(|(id, content)| match labels.get(&id) {
+                Some((status, by, at)) => {
+                    let labelled = crate::services::claims::label_claim(
+                        &content,
+                        status,
+                        Some(by.as_str()),
+                        Some(at.as_str()),
+                    );
+                    (id, labelled)
+                }
+                None => (id, content),
+            })
+            .collect()
     }
 
     // =========================================================================
@@ -2424,9 +2604,14 @@ impl KnowledgeService {
         // without it the topic embedding is deterministic and the same top-K notes are
         // re-summarized every cycle (observed: single notes summarized 1500+ times).
         let embed_dim = embedding.len() as i64;
+        // 'claim' is excluded deliberately: consolidation rewrites its sources into
+        // a single settled summary, which would strip an unverified assertion of its
+        // status and launder it into semantic knowledge — the precise failure the
+        // claim type exists to prevent. Claims reach reasoning through retrieval,
+        // labelled, and are summarised only once their evidence says something.
         let source_cypher = r#"
         MATCH (n:Note)
-        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result']
+        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result', 'claim']
           AND (n.next_review_at IS NULL OR n.next_review_at <= datetime())
           AND n.embedding IS NOT NULL
           AND size(n.embedding) = $dim

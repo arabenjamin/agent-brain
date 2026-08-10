@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
             api_key,
         }) => run_serve(&config, transport, &bind, api_key, log_buffer).await,
         Some(Command::Todo { action, url }) => run_todo(&url, action).await,
+        Some(Command::RepairNotes { dry_run }) => run_repair_notes(&config, dry_run).await,
         None => {
             // Default to stdio transport when no command specified
             run_serve(
@@ -189,6 +190,46 @@ fn build_chat_llm_config(config: &Config) -> LlmConfig {
         base = base.with_base_url(url.clone());
     }
     base
+}
+
+/// One-off repair of notes that persisted a query envelope instead of its content.
+///
+/// Runs standalone (no MCP server) so it can be executed against a live deployment
+/// with the scheduler paused. Embeddings route through the same LLM config the
+/// server uses, so vectors are computed with the configured embed model.
+async fn run_repair_notes(config: &Config, dry_run: bool) -> Result<()> {
+    use agent_brain::services::repair;
+    use std::sync::Arc;
+
+    let client = connect_neo4j(config).await?;
+    // SharedLlm is the LlmProvider impl; it reads a live config handle, so wrap
+    // the static config the same way the server does.
+    let llm_config = build_llm_config(config);
+    let shared = Arc::new(tokio::sync::RwLock::new(Some(llm_config)));
+    let llm: Arc<dyn agent_brain::services::traits::LlmProvider> =
+        agent_brain::services::shared_llm::SharedLlm::new(shared);
+    let knowledge =
+        agent_brain::services::knowledge::KnowledgeService::new(client.clone(), Some(llm));
+
+    if dry_run {
+        info!("Repair running in DRY-RUN mode — nothing will be written");
+    }
+    let stats = repair::repair_envelope_notes(&client, &knowledge, dry_run).await?;
+
+    info!(
+        examined = stats.examined,
+        repaired = stats.repaired,
+        skipped = stats.skipped_unparseable,
+        chunks_removed = stats.chunks_removed,
+        chunks_created = stats.chunks_created,
+        "Repair finished"
+    );
+    if !dry_run && stats.repaired > 0 {
+        // Entity extraction is spawned per note and outlives the repair loop.
+        info!("Waiting for background entity extraction to drain...");
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+    }
+    Ok(())
 }
 
 async fn run_init_db(config: &Config) -> Result<()> {

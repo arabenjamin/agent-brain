@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod claims;
 pub mod codebase;
 pub mod constructor;
 pub mod context;

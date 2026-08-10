@@ -2023,6 +2023,45 @@ fn is_quota_exhausted_error(error_text: &str) -> bool {
 /// markdown instead of a JSON wrapper. Falls back to the full serialised result so
 /// `{{_prev}}` is never left unreplaced when a tool returns structured data without
 /// a human-readable answer field (e.g. `duckdb_query`, `search_web`).
+/// Unwrap a `{"count": N, "rows": [{"col": "…"}, …]}` query result into its
+/// concatenated column values, when every row has exactly one column.
+///
+/// This is the "banking idiom" payoff: chains stash intermediate output in a
+/// `WorkingMemory` session and reassemble it with
+/// `neo4j_query … RETURN w.content AS content ORDER BY w.turn_index`, because
+/// `{{_prev}}` carries only the previous step's output. Without unwrapping, the
+/// *envelope* is what flows onward — `chains/video-learning.yaml` stored notes
+/// that began `{"count":2,"rows":[{"content":"## VIDEO SUMMARY\n{…escaped…}"`,
+/// so the brain's durable semantic knowledge was JSON scaffolding with the real
+/// content escaped inside it, then chunked and embedded that way.
+///
+/// Multi-column results are left alone: there the shape is the information
+/// (a table of tasks, models, usage rows), and flattening it would destroy the
+/// association between columns.
+pub fn unwrap_single_column_rows(parsed: &serde_json::Value) -> Option<String> {
+    let rows = parsed.get("rows")?.as_array()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let obj = row.as_object()?;
+        if obj.len() != 1 {
+            return None;
+        }
+        let value = obj.values().next()?;
+        match value {
+            // Strings pass through as-is — this is the content case.
+            serde_json::Value::String(s) => out.push(s.clone()),
+            // A single non-string column (counts, ids) is still more useful
+            // unwrapped than wrapped, but must not lose its representation.
+            serde_json::Value::Null => out.push(String::new()),
+            other => out.push(other.to_string()),
+        }
+    }
+    Some(out.join("\n\n"))
+}
+
 fn extract_result_text(result: &ToolCallResult) -> String {
     let text = result
         .content
@@ -2037,13 +2076,18 @@ fn extract_result_text(result: &ToolCallResult) -> String {
         .unwrap_or("");
 
     if !text.is_empty() {
-        // When the text is a JSON object with an "answer" key (reason tool output),
-        // return just the answer so {{_prev}} in store_note steps gets clean markdown.
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text)
-            && let Some(answer) = parsed.get("answer").and_then(|a| a.as_str())
-            && !answer.is_empty()
-        {
-            return answer.to_string();
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
+            // When the text is a JSON object with an "answer" key (reason tool output),
+            // return just the answer so {{_prev}} in store_note steps gets clean markdown.
+            if let Some(answer) = parsed.get("answer").and_then(|a| a.as_str())
+                && !answer.is_empty()
+            {
+                return answer.to_string();
+            }
+            // Single-column query results unwrap to their concatenated values.
+            if let Some(unwrapped) = unwrap_single_column_rows(&parsed) {
+                return unwrapped;
+            }
         }
         text.to_string()
     } else {
@@ -2128,6 +2172,59 @@ fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Valu
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn single_column_rows_unwrap_to_their_content() {
+        // The banking idiom: neo4j_query reassembles WorkingMemory into one
+        // column. Storing the envelope is what polluted video_learning notes.
+        let v = serde_json::json!({
+            "count": 2,
+            "rows": [
+                {"content": "## VIDEO SUMMARY\nsomething"},
+                {"content": "## NEW vs KNOWN\nsomething else"}
+            ]
+        });
+        assert_eq!(
+            unwrap_single_column_rows(&v).unwrap(),
+            "## VIDEO SUMMARY\nsomething\n\n## NEW vs KNOWN\nsomething else"
+        );
+    }
+
+    #[test]
+    fn multi_column_rows_are_left_as_json() {
+        // Here the shape IS the information — flattening would sever the
+        // association between a task's id, goal and status.
+        let v = serde_json::json!({
+            "count": 1,
+            "rows": [{"id": "abc", "goal": "do a thing", "status": "created"}]
+        });
+        assert!(unwrap_single_column_rows(&v).is_none());
+    }
+
+    #[test]
+    fn empty_or_shapeless_results_are_left_alone() {
+        assert!(unwrap_single_column_rows(&serde_json::json!({"count":0,"rows":[]})).is_none());
+        assert!(unwrap_single_column_rows(&serde_json::json!({"answer":"hi"})).is_none());
+        assert!(unwrap_single_column_rows(&serde_json::json!([1, 2, 3])).is_none());
+    }
+
+    #[test]
+    fn extract_result_text_unwraps_a_reassembly_envelope() {
+        let payload = serde_json::json!({
+            "count": 1,
+            "rows": [{"content": "clean prose"}]
+        })
+        .to_string();
+        let result = ToolCallResult::success_text(payload);
+        assert_eq!(extract_result_text(&result), "clean prose");
+    }
+
+    #[test]
+    fn extract_result_text_still_prefers_the_answer_field() {
+        let payload = serde_json::json!({"answer": "the answer", "rows": [{"c": "x"}]}).to_string();
+        let result = ToolCallResult::success_text(payload);
+        assert_eq!(extract_result_text(&result), "the answer");
+    }
 
     #[test]
     fn goal_topic_strips_a_routing_prefix() {

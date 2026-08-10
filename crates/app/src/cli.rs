@@ -59,6 +59,18 @@ pub enum Command {
     /// Initialize the Neo4j database schema
     InitDb,
 
+    /// Repair notes that stored a query envelope instead of its content.
+    ///
+    /// One-off migration for notes written before the `extract_result_text`
+    /// unwrap fix (2026-08-10). Rewrites content in place and rebuilds the
+    /// embedding, similarity edges, chunks, and entity mentions. Idempotent.
+    /// Run with the scheduler paused.
+    RepairNotes {
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Manage todo items (requires server to be running)
     Todo {
         #[command(subcommand)]

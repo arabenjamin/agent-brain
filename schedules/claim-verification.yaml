@@ -1,0 +1,55 @@
+# Claim verification sweep — work through the unverified claim backlog.
+#
+# Claim extraction (video-learning, daily-news, learn) is cheap and runs at
+# ingest; verification costs a web search plus an assessment call per claim, so
+# it runs here in bounded batches rather than inline. That keeps ingestion fast
+# and spends the search budget deliberately.
+#
+# `claim(action=verify)` searches for independent coverage, records the evidence
+# as its own note, judges support/contradiction from that evidence alone, and
+# recomputes status from the resulting edges. It never rewrites a claim: the
+# assertion is preserved exactly as made, and only what surrounds it changes.
+#
+# Absence of evidence leaves a claim UNVERIFIED, never refuted. A niche claim
+# nobody else has covered is not thereby false, and treating silence as
+# refutation would quietly mark true-but-unreported things wrong.
+#
+# The `name` is the Neo4j MERGE key — do not change it without deleting the old
+# (:ScheduledTask) node.
+name: "Claim verification: gather evidence for unverified claims and record what it says"
+description: "Works through the unverified claim backlog in batches: searches for independent evidence, records it, and recomputes each claim's status from the evidence found. Never edits the claim itself."
+interval_seconds: 21600   # every 6h
+
+steps:
+  # 1. Verify a batch. Small by design — six hourly batches of 8 clears ~32
+  #    claims a day, which comfortably outpaces ingest without dominating the
+  #    search ladder's budget.
+  - tool_name: claim
+    arguments:
+      action: verify
+      limit: 8
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # 2. Report what the sweep found, so a run that verified nothing is visible
+  #    rather than silent.
+  - tool_name: push_context
+    arguments:
+      session_id: "claims-{{date}}"
+      content: "## CLAIM VERIFICATION SWEEP\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # 3. Per-source breakdown. Not a trust score and not a filter — a source whose
+  #    claims nothing independently corroborates is a pattern worth a human
+  #    looking at, and it reads the same whether the cause is fabrication or
+  #    simply being early to a story nobody else has covered yet.
+  - tool_name: claim
+    arguments:
+      action: sources
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
