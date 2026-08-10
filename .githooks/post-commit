@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# Post-commit hook: refresh agent-brain's self-knowledge after every commit.
-# Runs in the background so it never blocks the commit.
-# Set BRAIN_URL env var to override the default (http://localhost:3001).
+# Post-commit hook: rebuild and redeploy so the running brain matches the commit.
+#
+# Self-knowledge refresh is NOT done here. The brain introspects itself on every
+# startup — services/self_model.rs syncs :ToolDef/:ContextProfile/:ModelDef from
+# the live registry, and sync_code_version() records the commit it is running as
+# (:BrainVersion {id:'current'}), writing an episodic note when the sha changes.
+#
+# This used to call scripts/self_update.py, which re-derived the same facts over
+# HTTP and got them wrong: it parsed a Markdown response as JSON inside a bare
+# `except: pass` and so reported "tools at runtime: 0" on every commit, and it
+# recorded the new sha before the rebuild it had just triggered finished — so
+# the note described code that was not yet running. Both problems disappear
+# when the process that owns the facts reports them.
 
-SCRIPT_DIR="$(git rev-parse --show-toplevel)/scripts"
-BRAIN_URL="${BRAIN_URL:-http://localhost:3001}"
-
-# Rebuild and deploy
 docker compose up -d --build
-
-# Wait for brain to become healthy (up to 60 s) before refreshing self-knowledge.
-echo "[post-commit] waiting for brain to be healthy..."
-for i in $(seq 1 30); do
-    if curl -sf "${BRAIN_URL}/health" > /dev/null 2>&1; then
-        break
-    fi
-    sleep 2
-done
-
-python3 "$SCRIPT_DIR/self_update.py" --base-url "$BRAIN_URL" &

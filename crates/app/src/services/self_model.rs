@@ -19,11 +19,184 @@
 //! Sync is a full refresh: current entries are MERGEd, entries that no longer
 //! exist in their source are deleted (DETACH, so stale ALLOWS edges go too).
 
+use std::path::Path;
+
+use tokio::process::Command;
 use tracing::{info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::context_builder::ContextProfile;
 use agent_brain_protocol::ToolDefinition;
+
+/// The running code version, read from git at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeVersion {
+    pub sha: String,
+    pub subject: String,
+    pub branch: String,
+    /// True when the working tree has uncommitted changes — the running binary
+    /// may not correspond to `sha` alone.
+    pub dirty: bool,
+}
+
+/// Run a git command in `dir`, returning trimmed stdout, or `None` on failure.
+async fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    for a in args {
+        cmd.arg(a);
+    }
+    match cmd.output().await {
+        Ok(out) if out.status.success() => {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        Ok(out) => {
+            warn!(
+                args = ?args,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "Self-model: git command failed"
+            );
+            None
+        }
+        Err(e) => {
+            warn!(args = ?args, error = %e, "Self-model: could not run git");
+            None
+        }
+    }
+}
+
+/// Read the running code version from the codebase working copy.
+pub async fn read_code_version(codebase_dir: &Path) -> Option<CodeVersion> {
+    let sha = git(codebase_dir, &["rev-parse", "--short", "HEAD"]).await?;
+    let subject = git(codebase_dir, &["log", "-1", "--pretty=%s"])
+        .await
+        .unwrap_or_default();
+    let branch = git(codebase_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .unwrap_or_else(|| "unknown".to_string());
+    // `--quiet` exits 1 when there are unstaged changes; an error here is the
+    // signal, not a failure, so this deliberately does not use `git()`.
+    let dirty = Command::new("git")
+        .arg("-C")
+        .arg(codebase_dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .await
+        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false);
+    Some(CodeVersion {
+        sha,
+        subject,
+        branch,
+        dirty,
+    })
+}
+
+/// Record which commit this process is running, and note it when it changes.
+///
+/// This replaces the `post-commit` → `scripts/self_update.py` round-trip. That
+/// script fired on `git commit`, so it recorded a sha the running process did
+/// not yet contain, it re-counted tools over HTTP (reporting 0 — it parsed a
+/// Markdown document as JSON inside a bare `except: pass`), and it raced the
+/// rebuild it was triggered by. Reading HEAD here, in-process at startup, means
+/// the recorded version is the code that is *actually loaded*, and it works for
+/// every deploy path rather than only a local `git commit`.
+///
+/// `(:BrainVersion {id:'current'})` is a singleton — always "what is running".
+/// An episodic note is written ONLY when the sha changes, so restarts are free;
+/// the old hook wrote one note per commit regardless (44 accumulated).
+pub async fn sync_code_version(
+    neo4j: &Neo4jClient,
+    codebase_dir: &Path,
+) -> anyhow::Result<Option<CodeVersion>> {
+    let Some(version) = read_code_version(codebase_dir).await else {
+        // Not a git checkout (a released image, say). Absence of git is normal,
+        // not an error — the rest of the self-model is unaffected.
+        return Ok(None);
+    };
+
+    let previous: Option<String> = neo4j
+        .execute(neo4rs::query(
+            "MATCH (v:BrainVersion {id: 'current'}) RETURN v.sha AS sha",
+        ))
+        .await?
+        .first()
+        .and_then(|r| r.get::<String>("sha").ok());
+
+    let changed = previous.as_deref() != Some(version.sha.as_str());
+    let now = chrono::Utc::now().to_rfc3339();
+
+    neo4j
+        .run(
+            neo4rs::query(
+                "MERGE (v:BrainVersion {id: 'current'}) \
+                 SET v.sha = $sha, v.subject = $subject, v.branch = $branch, \
+                     v.dirty = $dirty, v.seen_at = $now \
+                 FOREACH (_ IN CASE WHEN $changed THEN [1] ELSE [] END | \
+                     SET v.deployed_at = $now)",
+            )
+            .param("sha", version.sha.as_str())
+            .param("subject", version.subject.as_str())
+            .param("branch", version.branch.as_str())
+            .param("dirty", version.dirty)
+            .param("now", now.as_str())
+            .param("changed", changed),
+        )
+        .await?;
+
+    if !changed {
+        info!(sha = %version.sha, branch = %version.branch, "Running code version unchanged");
+        return Ok(Some(version));
+    }
+
+    // Changed files are what make the note useful to reason over later.
+    let files = git(
+        codebase_dir,
+        &["diff-tree", "--no-commit-id", "-r", "--name-only", "HEAD"],
+    )
+    .await
+    .unwrap_or_default();
+    let file_list: String = files.lines().take(40).collect::<Vec<_>>().join("\n");
+    let extra = files.lines().count().saturating_sub(40);
+
+    let note = format!(
+        "Now running commit {} on branch {}{}.\nSubject: {}\nChanged files:\n{}{}",
+        version.sha,
+        version.branch,
+        if version.dirty {
+            " (working tree dirty — running binary may include uncommitted changes)"
+        } else {
+            ""
+        },
+        version.subject,
+        if file_list.is_empty() {
+            "(none reported)".to_string()
+        } else {
+            file_list
+        },
+        if extra > 0 {
+            format!("\n… and {extra} more")
+        } else {
+            String::new()
+        },
+    );
+
+    match neo4j
+        .store_episodic_note(&note, Some(&format!("code_version {}", version.sha)))
+        .await
+    {
+        Ok(_) => info!(
+            sha = %version.sha,
+            previous = previous.as_deref().unwrap_or("<none>"),
+            branch = %version.branch,
+            dirty = version.dirty,
+            "Running code version CHANGED — recorded"
+        ),
+        Err(e) => warn!(error = %e, "Failed to store code-version note"),
+    }
+
+    Ok(Some(version))
+}
 
 /// Counts reported after a sync, for the startup log.
 #[derive(Debug, Default)]

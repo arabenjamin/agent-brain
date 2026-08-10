@@ -902,6 +902,14 @@ impl BrainCore {
             {
                 warn!(error = %e, "Self-model sync failed (continuing without it)");
             }
+
+            // Record which commit this process is actually running. Same
+            // non-fatal contract as the sync above.
+            if let Some(ref dir) = self.codebase.codebase_dir
+                && let Err(e) = crate::services::self_model::sync_code_version(neo4j, dir).await
+            {
+                warn!(error = %e, "Code-version sync failed (continuing without it)");
+            }
         }
     }
 
