@@ -248,17 +248,23 @@ always use this path.
 
 ## 8. Phased implementation
 
-> **Status (implemented):** Phases 1–4 are built and verified live. Phase 1–3:
+> **Status (implemented):** Phases 1–5 are built. Phase 1–3:
 > `MediaService`, `MediaSkill` (6 tools incl. `spawn_gap_tasks`), `:Media`/`:MediaSource`
 > nodes + schema, `media_source_seeder`, `chains/video-learning.yaml`,
 > `schedules/media-watch.yaml`, a 13-channel watchlist, all wired into `build_skills`
 > with a `MEDIA_WATCH_MAX_PER_SOURCE` first-poll guard. **Phase 4 (Whisper):**
 > `services/transcribe.rs` (`Transcriber` trait → `HttpTranscriber`) POSTs best-audio
 > (via `yt-dlp -f bestaudio`) to a **self-hosted, OpenAI-compatible** Whisper endpoint;
-> the `whisper` compose sidecar runs `faster-whisper-server` on **CPU** (GPU blocked by
-> the host's CUDA-12.0 driver vs the image's 12.2 on a GeForce card). Requires `yt-dlp`
-> on PATH. Phase 5 (podcasts/local files) is still a stubbed seam that reuses the
-> Phase-4 transcriber once wired.
+> the `whisper` compose sidecar runs `faster-whisper-server` on **GPU** (`:latest-cuda`,
+> `float16`) — host driver 535.261.03 / CUDA 12.2 satisfies the image; falls back to
+> `:latest-cpu` if the driver ever lags. Requires `yt-dlp` on PATH. **Phase 5
+> (podcasts + local files):** `fetch_transcript` classifies its input (`MediaInput`
+> enum) and dispatches — yt-dlp URLs (captions-first), direct audio URLs (podcast
+> enclosures / hosted `.mp3`/`.mp4` → reqwest download + Whisper), and `file://` local
+> files (canonicalized + confined to `MEDIA_DIR`, symlink-escape safe → Whisper).
+> `kind: podcast_rss` sources are polled like YouTube channels (`parse_rss_feed` reads
+> RSS 2.0 `<enclosure>` URLs) and fan out into `watch video:` Tasks; dedup ids for
+> non-yt-dlp media are a stable FNV-1a hash of the URL/path.
 
 **Phase 1 — Captions MVP, on-demand (highest value, lowest cost).**
 `services/media.rs` (metadata + caption fetch + map-reduce summary), `MediaSkill`

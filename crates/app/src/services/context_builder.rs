@@ -77,6 +77,32 @@ pub struct Protocol {
     pub steps: Vec<ProtocolStep>,
 }
 
+/// Whether a `pre_load_query` should run as Cypher rather than as a keyword.
+///
+/// True only for read-shaped queries: it must open with a read clause *and*
+/// contain no write clause. Profiles are editable at runtime via the `context`
+/// tool, so a pre-load must never be able to mutate the graph.
+fn is_read_cypher(query: &str) -> bool {
+    let upper = query.trim().to_uppercase();
+
+    const READ_OPENERS: [&str; 6] = ["MATCH", "OPTIONAL", "WITH", "UNWIND", "CALL", "RETURN"];
+    let opens_read = READ_OPENERS.iter().any(|kw| {
+        upper.starts_with(kw) && upper[kw.len()..].starts_with(|c: char| !c.is_alphanumeric())
+    });
+    if !opens_read {
+        return false;
+    }
+
+    const WRITE_CLAUSES: [&str; 8] = [
+        "CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "DROP", "FOREACH",
+    ];
+    let has_write = upper
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|tok| WRITE_CLAUSES.contains(&tok));
+
+    !has_write
+}
+
 // ============================================================================
 // Service
 // ============================================================================
@@ -201,19 +227,36 @@ impl ContextBuilderService {
         let mut pre_loaded_notes = Vec::new();
 
         if let (Some(neo4j), Some(query)) = (&self.neo4j, &profile.pre_load_query) {
-            // Simple keyword search via Neo4j full-text.
-            let q = neo4rs::query(
-                "MATCH (n:Note) \
-                 WHERE toLower(n.content) CONTAINS toLower($q) \
-                 RETURN n.content AS content ORDER BY n.updated_at DESC LIMIT 10",
-            )
-            .param("q", query.as_str());
-            if let Ok(rows) = neo4j.execute(q).await {
-                for row in rows {
-                    if let Ok(content) = row.get::<String>("content") {
-                        pre_loaded_notes.push(content);
+            // A profile may pre-load context two ways:
+            //   1. Cypher — the query runs verbatim and every `content` column
+            //      it returns is injected. Lets a profile inject live self-state
+            //      (model catalog, chain inventory) rather than only notes.
+            //   2. Plain text — treated as a keyword and matched against note
+            //      content, the original behaviour.
+            let q = if is_read_cypher(query) {
+                neo4rs::query(query.as_str())
+            } else {
+                neo4rs::query(
+                    "MATCH (n:Note) \
+                     WHERE toLower(n.content) CONTAINS toLower($q) \
+                     RETURN n.content AS content ORDER BY n.updated_at DESC LIMIT 10",
+                )
+                .param("q", query.as_str())
+            };
+            match neo4j.execute(q).await {
+                Ok(rows) => {
+                    for row in rows {
+                        if let Ok(content) = row.get::<String>("content") {
+                            pre_loaded_notes.push(content);
+                        }
                     }
                 }
+                // A bad pre-load must never break the profile — warn and carry on.
+                Err(e) => warn!(
+                    profile = %profile_name,
+                    error = %e,
+                    "pre_load_query failed; continuing without pre-loaded context"
+                ),
             }
         }
 
@@ -361,7 +404,20 @@ impl ContextBuilderService {
                 let handler_opt = tool_handler.read().await.clone();
                 if let Some(handler) = handler_opt {
                     let result = handler.execute(tool, Some(args.clone())).await;
-                    debug!(tool = %tool, is_error = ?result.is_error, "Protocol step: tool_call");
+                    // A failed protocol step must be loud. `boot.yaml` called
+                    // `scheduler_control{action:"status"}` — an action that does
+                    // not exist — on every startup for months, and the only trace
+                    // was this line at debug level while the surrounding `log`
+                    // steps cheerfully printed "Scheduler status obtained".
+                    if result.is_error == Some(true) {
+                        warn!(
+                            tool = %tool,
+                            error = %protocol_result_text(&result),
+                            "Protocol step: tool_call FAILED"
+                        );
+                    } else {
+                        debug!(tool = %tool, "Protocol step: tool_call");
+                    }
                 } else {
                     warn!(tool = %tool, "Protocol step: tool_call — handler not ready");
                 }
@@ -427,7 +483,14 @@ impl ContextBuilderService {
             ProtocolStep::ToolCall { tool, args } => {
                 let handler_opt = tool_handler.read().await.clone();
                 if let Some(handler) = handler_opt {
-                    let _ = handler.execute(tool, Some(args.clone())).await;
+                    let result = handler.execute(tool, Some(args.clone())).await;
+                    if result.is_error == Some(true) {
+                        warn!(
+                            tool = %tool,
+                            error = %protocol_result_text(&result),
+                            "Protocol sub-step: tool_call FAILED"
+                        );
+                    }
                     debug!(tool = %tool, "Protocol sub-step: tool_call");
                 }
             }
@@ -470,5 +533,84 @@ impl ContextBuilderService {
                 false
             }
         }
+    }
+}
+
+/// Extract readable error text from a failed protocol tool call, for logging.
+fn protocol_result_text(result: &agent_brain_protocol::ToolCallResult) -> String {
+    result
+        .content
+        .first()
+        .and_then(|c| {
+            if let agent_brain_protocol::Content::Text { text } = c {
+                Some(text.chars().take(300).collect::<String>())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "<no error text>".to_string())
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_cypher_is_detected() {
+        assert!(is_read_cypher("MATCH (n:Note) RETURN n.content AS content"));
+        assert!(is_read_cypher(
+            "  match (m:ModelDef) return m.name as content  "
+        ));
+        assert!(is_read_cypher(
+            "OPTIONAL MATCH (t:Todo) RETURN t.title AS content"
+        ));
+        assert!(is_read_cypher(
+            "CALL db.labels() YIELD label RETURN label AS content"
+        ));
+        assert!(is_read_cypher(
+            "UNWIND [1,2] AS x RETURN toString(x) AS content"
+        ));
+    }
+
+    #[test]
+    fn plain_keywords_are_not_cypher() {
+        // Free-text pre-loads keep the legacy note-keyword behaviour.
+        assert!(!is_read_cypher("supply chain intelligence"));
+        assert!(!is_read_cypher(""));
+        // Substring-only matches must not trip the opener check.
+        assert!(!is_read_cypher("matching notes about withdrawals"));
+        assert!(!is_read_cypher("callbacks"));
+    }
+
+    #[test]
+    fn write_clauses_are_rejected() {
+        // A read opener is not enough — any write clause disqualifies the query
+        // so a runtime-edited profile can never mutate the graph on pre-load.
+        assert!(!is_read_cypher(
+            "MATCH (n:Note) SET n.x = 1 RETURN n AS content"
+        ));
+        assert!(!is_read_cypher("MATCH (n:Note) DETACH DELETE n"));
+        assert!(!is_read_cypher(
+            "MATCH (n:Note) MERGE (m:Note {id:'x'}) RETURN m AS content"
+        ));
+        assert!(!is_read_cypher(
+            "WITH 1 AS x CREATE (n:Note) RETURN n AS content"
+        ));
+        assert!(!is_read_cypher(
+            "MATCH (n:Note) REMOVE n.x RETURN n AS content"
+        ));
+    }
+
+    #[test]
+    fn write_words_inside_strings_are_conservatively_rejected() {
+        // Keyword scanning is deliberately blunt: a false negative degrades to
+        // "no pre-load", which is safe. A false positive would allow a write.
+        assert!(!is_read_cypher(
+            "MATCH (n:Note) WHERE n.c = 'create' RETURN n AS content"
+        ));
     }
 }

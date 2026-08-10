@@ -89,6 +89,20 @@ pub struct LlmConfig {
 
     /// Maximum tokens to generate.
     pub max_tokens: Option<u32>,
+
+    /// Ollama-only: how long the model stays resident in VRAM after a request
+    /// (Go duration string, e.g. `30m`; a negative duration pins it indefinitely).
+    /// Ignored by every non-Ollama provider. `None` = Ollama's own default.
+    pub keep_alive: Option<String>,
+
+    /// Ollama-only context window override (`options.num_ctx`).
+    ///
+    /// Ollama defaults this to **4096 tokens regardless of what the model
+    /// supports** — `gemma4:latest` advertises a 131 072-token context but is
+    /// served at 4096 unless asked otherwise, and input past that is silently
+    /// truncated. `None` keeps Ollama's default; raise it only for calls that
+    /// genuinely need to read a large payload, since the window costs VRAM.
+    pub num_ctx: Option<u32>,
 }
 
 impl Default for LlmConfig {
@@ -103,6 +117,8 @@ impl Default for LlmConfig {
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             temperature: 0.7,
             max_tokens: None,
+            keep_alive: None,
+            num_ctx: None,
         }
     }
 }
@@ -151,6 +167,20 @@ impl LlmConfig {
     /// When set, embed() calls are routed to this URL instead of `base_url`.
     pub fn with_embed_base_url(mut self, url: impl Into<String>) -> Self {
         self.embed_base_url = Some(url.into());
+        self
+    }
+
+    /// Set the Ollama `keep_alive` residency window (Go duration string).
+    /// No-op for non-Ollama providers, which never serialize the field.
+    pub fn with_keep_alive(mut self, keep_alive: impl Into<String>) -> Self {
+        self.keep_alive = Some(keep_alive.into());
+        self
+    }
+
+    /// Override Ollama's context window (`options.num_ctx`) for this config.
+    /// See [`LlmConfig::num_ctx`] — Ollama's 4096 default truncates silently.
+    pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
+        self.num_ctx = Some(num_ctx);
         self
     }
 
@@ -249,6 +279,8 @@ impl LlmClient {
             timeout: config.timeout,
             temperature: config.temperature,
             max_tokens: config.max_tokens,
+            keep_alive: config.keep_alive.clone(),
+            num_ctx: config.num_ctx,
         };
 
         let provider: Arc<dyn crate::services::llm_providers::LlmProvider> = match config.provider {
@@ -273,6 +305,11 @@ impl LlmClient {
                 timeout: config.timeout,
                 temperature: 0.0,
                 max_tokens: None,
+                // The embedding model is reloaded far more often than the
+                // generation model (every search_notes / store_note), so it
+                // benefits from residency at least as much.
+                keep_alive: config.keep_alive.clone(),
+                num_ctx: None, // embeddings don't use a generation context window
             };
             // Embeddings always use local Ollama regardless of the active generation provider.
             Arc::new(OllamaProvider::new(embed_config))
@@ -293,6 +330,8 @@ impl LlmClient {
                 timeout: config.timeout,
                 temperature: 0.0,
                 max_tokens: None,
+                keep_alive: config.keep_alive.clone(),
+                num_ctx: None,
             };
             Arc::new(OllamaProvider::new(embed_config))
                 as Arc<dyn crate::services::llm_providers::LlmProvider>

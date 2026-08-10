@@ -33,6 +33,12 @@ pub struct ProviderConfig {
     pub timeout: Duration,
     pub temperature: f32,
     pub max_tokens: Option<u32>,
+    /// Ollama-only model residency window (Go duration string). Other providers
+    /// ignore it — only `OllamaProvider` serializes it onto the request.
+    pub keep_alive: Option<String>,
+    /// Ollama-only context window override. `None` leaves Ollama's 4096 default,
+    /// which silently truncates longer prompts.
+    pub num_ctx: Option<u32>,
 }
 
 #[async_trait]

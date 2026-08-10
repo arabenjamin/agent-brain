@@ -1,0 +1,42 @@
+# Autonomous watchlist curation — the brain proposes NEW channels/podcasts to
+# watch, based on the topics it studies, and stages them for human review.
+#
+# Flow: reason over what this knowledge base focuses on to build a search query
+# -> web-search for channels/podcasts on those topics -> discover_media_sources
+# picks the good ones, resolves them (YouTube URL -> channel_id; podcast feed
+# validated), and upserts each as an INACTIVE :MediaSource (active:false).
+# Nothing is polled or transcribed until a human activates it via
+# manage_media_source (action=upsert, active=true) or the frontend.
+#
+# Self-gating: discover_media_sources is a no-op unless MEDIA_DISCOVERY_ENABLED
+# =true, so this schedule is safe to seed everywhere. Capped per run by
+# MEDIA_DISCOVERY_MAX (default 3).
+#
+# The `name` is the Neo4j MERGE key — do not change it without deleting the old
+# (:ScheduledTask) node.
+name: "Discover media sources: propose new channels and podcasts to watch"
+description: "Weekly: reasons about the brain's own topics, searches for channels/podcasts on them, and stages the best as INACTIVE :MediaSource nodes for human review. Gated by MEDIA_DISCOVERY_ENABLED; capped by MEDIA_DISCOVERY_MAX."
+interval_seconds: 604800   # weekly
+steps:
+  - tool_name: reason
+    arguments:
+      question: "Based on the subjects this knowledge base focuses on, produce a single web-search query (keywords only, no punctuation, no preamble) to find high-quality YouTube channels and podcasts worth following to stay current on those subjects. Output ONLY the query text."
+      store_inference: false
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "high quality YouTube channels and podcasts to follow about {{_prev}}"
+      count: 15
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: discover_media_sources
+    arguments:
+      text: "{{_prev}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama

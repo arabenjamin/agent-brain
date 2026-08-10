@@ -99,16 +99,16 @@ impl MediaSkill {
         ToolDefinition {
             name: "list_channel_videos".to_string(),
             description:
-                "List recent, not-yet-ingested videos from a YouTube channel or playlist via its \
-                 free RSS feed. Pass `source` (a MediaSource name, or a channel_id/playlist_id) or \
-                 explicit `kind`+`ref`."
+                "List recent, not-yet-ingested items from a YouTube channel/playlist (free RSS \
+                 feed) or a podcast RSS feed. Pass `source` (a MediaSource name, a \
+                 channel_id/playlist_id, or a podcast feed URL) or explicit `kind`+`ref`."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "source": {"type": "string", "description": "MediaSource name, or a channel_id/playlist_id"},
-                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist"], "description": "Explicit source kind"},
-                    "ref": {"type": "string", "description": "Explicit channel_id / playlist_id"},
+                    "source": {"type": "string", "description": "MediaSource name, a channel_id/playlist_id, or a podcast feed URL"},
+                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss"], "description": "Explicit source kind"},
+                    "ref": {"type": "string", "description": "Explicit channel_id / playlist_id / podcast feed URL"},
                     "limit": {"type": "integer", "description": "Max items to return (default 15)"}
                 }
             }),
@@ -162,6 +162,27 @@ impl MediaSkill {
                 "properties": {
                     "text": {"type": "string", "description": "Analysis text containing a '## FOLLOW UP' section"},
                     "max": {"type": "integer", "description": "Max gap tasks to create (default 5)"}
+                },
+                "required": ["text"]
+            }),
+        }
+    }
+
+    fn discover_media_sources_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "discover_media_sources".to_string(),
+            description:
+                "Autonomous watchlist curation: from web-search results (pass as `text`), pick \
+                 new YouTube channels or podcasts worth following, resolve them, and stage each as \
+                 an INACTIVE :MediaSource (active:false) for human review — nothing is polled or \
+                 transcribed until you activate it. Deduped against existing sources; capped by \
+                 MEDIA_DISCOVERY_MAX. No-op unless MEDIA_DISCOVERY_ENABLED is set."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Web-search results (or candidate list) to select sources from"},
+                    "max": {"type": "integer", "description": "Max new sources to stage this run (default MEDIA_DISCOVERY_MAX or 3)"}
                 },
                 "required": ["text"]
             }),
@@ -421,6 +442,190 @@ impl MediaSkill {
         }))
     }
 
+    async fn handle_discover_media_sources(&self, arguments: Option<Value>) -> ToolCallResult {
+        if !discovery_enabled() {
+            return ToolCallResult::success_json(json!({
+                "enabled": false,
+                "message": "Source discovery disabled (set MEDIA_DISCOVERY_ENABLED=true to enable)."
+            }));
+        }
+        let input: GapInput = match parse_args(arguments) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let max = input
+            .max
+            .or_else(|| {
+                std::env::var("MEDIA_DISCOVERY_MAX")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(3)
+            .max(1);
+
+        // Existing sources → dedup set (names + refs, lowercased).
+        let existing = self
+            .neo4j
+            .list_media_sources(false)
+            .await
+            .unwrap_or_default();
+        let mut taken: std::collections::HashSet<String> = existing
+            .iter()
+            .flat_map(|s| [s.name.to_lowercase(), s.reference.to_lowercase()])
+            .collect();
+        let existing_names = existing
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // LLM selects structured candidates from the search results.
+        let prompt = format!(
+            "From the web-search results below (titles + snippets), identify up to {max} NEW \
+             sources genuinely worth adding to a self-learning media watch list — authoritative, \
+             active, on-topic. Results are often listicles/threads that NAME channels and podcasts \
+             in their snippets; extract those named sources.\n\n\
+             The watch list ALREADY contains these, do NOT repeat them: {existing_names}.\n\n\
+             For each pick set `ref`:\n\
+             - kind 'youtube_channel': the channel's exact name (e.g. \"Machine Learning Street \
+               Talk\") OR its channel URL if one appears in the results.\n\
+             - kind 'podcast_rss': the podcast's RSS FEED URL — only if a real feed URL (usually \
+               ending .rss/.xml or on a podcast host) appears in the results; otherwise skip it \
+               (a bare podcast name is not enough).\n\
+             Only use names/URLs that actually appear in the results — do not invent sources.\n\n\
+             Return JSON: {{\"sources\": [{{\"name\": \"...\", \"kind\": \"youtube_channel|podcast_rss\", \
+             \"ref\": \"...\", \"reason\": \"why it's worth watching\"}}]}}\n\n\
+             SEARCH RESULTS:\n{}",
+            truncate(&input.text, 8000)
+        );
+        let v = match self
+            .llm
+            .generate_json(
+                &prompt,
+                Some("Output strict JSON only — no prose, no markdown fences."),
+                &["sources"],
+                2,
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return ToolCallResult::error(format!("discovery selection failed: {e}")),
+        };
+        let candidates = v
+            .get("sources")
+            .and_then(|s| s.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut staged = Vec::new();
+        let mut skipped = Vec::new();
+        for c in candidates {
+            if staged.len() >= max {
+                break;
+            }
+            let kind = c.get("kind").and_then(|x| x.as_str()).unwrap_or_default();
+            // Prompt asks for `ref` (channel name/URL or feed URL); accept `url` too.
+            let reference = c
+                .get("ref")
+                .or_else(|| c.get("url"))
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .trim();
+            let raw_name = c.get("name").and_then(|x| x.as_str()).unwrap_or_default();
+            let reason = c.get("reason").and_then(|x| x.as_str()).unwrap_or_default();
+            if reference.is_empty() || raw_name.is_empty() {
+                continue;
+            }
+
+            // Resolve to a (kind, ref) the poll loop can consume.
+            let (ref_val, resolved_name) = match kind {
+                "youtube_channel" => {
+                    match self.svc.resolve_youtube_channel_id(reference).await {
+                        Ok((id, name)) => (id, name),
+                        Err(e) => {
+                            skipped.push(json!({"name": raw_name, "reason": format!("unresolved channel: {e}")}));
+                            continue;
+                        }
+                    }
+                }
+                "podcast_rss" => {
+                    // Only a real feed URL can be watched; a bare name is not enough.
+                    if !(reference.starts_with("http://") || reference.starts_with("https://")) {
+                        skipped.push(
+                            json!({"name": raw_name, "reason": "no podcast feed URL in results"}),
+                        );
+                        continue;
+                    }
+                    // Validate the feed actually parses to items before staging.
+                    match self.svc.list_feed_videos("podcast_rss", reference).await {
+                        Ok(items) if !items.is_empty() => {
+                            (reference.to_string(), raw_name.to_string())
+                        }
+                        Ok(_) => {
+                            skipped.push(json!({"name": raw_name, "reason": "feed had no items"}));
+                            continue;
+                        }
+                        Err(e) => {
+                            skipped.push(json!({"name": raw_name, "reason": format!("bad podcast feed: {e}")}));
+                            continue;
+                        }
+                    }
+                }
+                other => {
+                    skipped.push(
+                        json!({"name": raw_name, "reason": format!("unsupported kind '{other}'")}),
+                    );
+                    continue;
+                }
+            };
+
+            // Dedup on ref (and name), including sources staged earlier this run.
+            if taken.contains(&ref_val.to_lowercase()) {
+                skipped.push(json!({"name": raw_name, "reason": "already in watchlist"}));
+                continue;
+            }
+            // Prefer the resolver's real channel name over the LLM's guess.
+            let display_name = if resolved_name.is_empty() {
+                raw_name
+            } else {
+                &resolved_name
+            };
+            let name = unique_slug(display_name, &taken);
+            let description = truncate(reason, 200);
+            match self
+                .neo4j
+                .upsert_media_source_runtime(&name, kind, &ref_val, &description, false)
+                .await
+            {
+                Ok(()) => {
+                    taken.insert(name.to_lowercase());
+                    taken.insert(ref_val.to_lowercase());
+                    staged.push(json!({
+                        "name": name, "kind": kind, "ref": ref_val,
+                        "active": false, "reason": description,
+                    }));
+                }
+                Err(e) => {
+                    warn!(name = %name, error = %e, "discover_media_sources: upsert failed");
+                    skipped
+                        .push(json!({"name": raw_name, "reason": format!("upsert failed: {e}")}));
+                }
+            }
+        }
+
+        info!(
+            staged = staged.len(),
+            skipped = skipped.len(),
+            "discover_media_sources complete (staged inactive for review)"
+        );
+        ToolCallResult::success_json(json!({
+            "enabled": true,
+            "staged": staged,
+            "skipped": skipped,
+            "note": "Staged sources are INACTIVE. Activate with manage_media_source (action=upsert, active=true) to start watching.",
+        }))
+    }
+
     async fn handle_manage_media_source(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: ManageInput = match parse_args(arguments) {
             Ok(i) => i,
@@ -555,7 +760,42 @@ fn watch_enabled() -> bool {
     )
 }
 
-/// Infer a YouTube source kind from a bare id prefix.
+fn discovery_enabled() -> bool {
+    matches!(
+        std::env::var("MEDIA_DISCOVERY_ENABLED").as_deref(),
+        Ok("true") | Ok("1") | Ok("yes")
+    )
+}
+
+/// Slugify a proposed source name (lowercase, hyphenated, alnum only) and make
+/// it unique against `taken` (lowercased names/refs) by appending `-2`, `-3`, ….
+fn unique_slug(name: &str, taken: &std::collections::HashSet<String>) -> String {
+    let mut base: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    while base.contains("--") {
+        base = base.replace("--", "-");
+    }
+    let base = base.trim_matches('-').to_string();
+    let base = if base.is_empty() {
+        "source".to_string()
+    } else {
+        base
+    };
+    if !taken.contains(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|s| !taken.contains(s))
+        .unwrap_or(base)
+}
+
+/// Infer a source kind from a bare reference: a YouTube id prefix, or an
+/// http(s) URL (a podcast feed). YouTube *watch/channel* page URLs are left
+/// unresolved — those belong in `ingest_media`, not a feed listing.
 fn infer_kind(reference: &str) -> Option<&'static str> {
     if reference.starts_with("UC") {
         Some("youtube_channel")
@@ -564,6 +804,11 @@ fn infer_kind(reference: &str) -> Option<&'static str> {
         .any(|p| reference.starts_with(p))
     {
         Some("youtube_playlist")
+    } else if (reference.starts_with("http://") || reference.starts_with("https://"))
+        && !reference.contains("youtube.com")
+        && !reference.contains("youtu.be")
+    {
+        Some("podcast_rss")
     } else {
         None
     }
@@ -583,6 +828,7 @@ impl Skill for MediaSkill {
             Self::poll_media_sources_def(),
             Self::manage_media_source_def(),
             Self::spawn_gap_tasks_def(),
+            Self::discover_media_sources_def(),
         ]
     }
 
@@ -594,6 +840,7 @@ impl Skill for MediaSkill {
             "poll_media_sources" => Some(self.handle_poll_media_sources().await),
             "manage_media_source" => Some(self.handle_manage_media_source(arguments).await),
             "spawn_gap_tasks" => Some(self.handle_spawn_gap_tasks(arguments).await),
+            "discover_media_sources" => Some(self.handle_discover_media_sources(arguments).await),
             _ => None,
         }
     }
@@ -714,6 +961,32 @@ mod tests {
         assert_eq!(infer_kind("PLabcdef"), Some("youtube_playlist"));
         assert_eq!(infer_kind("UUabcdef"), Some("youtube_playlist"));
         assert_eq!(infer_kind("randomthing"), None);
+    }
+
+    #[test]
+    fn unique_slug_dedups_and_sanitizes() {
+        let mut taken = std::collections::HashSet::new();
+        assert_eq!(
+            unique_slug("Two Minute Papers!", &taken),
+            "two-minute-papers"
+        );
+        taken.insert("two-minute-papers".to_string());
+        assert_eq!(
+            unique_slug("Two Minute Papers", &taken),
+            "two-minute-papers-2"
+        );
+        assert_eq!(unique_slug("   ***   ", &taken), "source");
+    }
+
+    #[test]
+    fn infers_podcast_feed_url() {
+        assert_eq!(
+            infer_kind("https://feeds.example.com/show.xml"),
+            Some("podcast_rss")
+        );
+        // YouTube URLs are not feed refs — they belong in ingest_media.
+        assert_eq!(infer_kind("https://www.youtube.com/watch?v=x"), None);
+        assert_eq!(infer_kind("https://youtu.be/x"), None);
     }
 
     #[test]

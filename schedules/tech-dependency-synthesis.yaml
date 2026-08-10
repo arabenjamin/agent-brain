@@ -1,0 +1,183 @@
+# schedules/tech-dependency-synthesis.yaml
+#
+# The correlation layer of the Critical Tech Dependency Mapping project: read the
+# accumulated "Hard layer" (hardware-tripwire.yaml) and "Soft layer"
+# (slm-benchmark-watch.yaml) reports and test the standing hypothesis that
+# hardware scarcity is what drives small-model adoption.
+#
+# This schedule performs NO web search by design — it is a correlation pass over
+# evidence the other two schedules already gathered. If those have not run, it
+# says so instead of inventing a correlation.
+#
+# Retrieval keys: source_context 'hardware_tripwire' and 'slm_benchmark_watch'.
+# Changing those in the other two files breaks this one.
+name: "Monthly tech dependency synthesis: correlate hardware scarcity against small-model adoption"
+description: "Monthly correlation pass over accumulated hardware tripwire and SLM benchmark reports. Tests the asymmetric-advantage hypothesis, records a verdict with its confidence, and spawns a research task on the weakest link in the argument."
+interval_seconds: 2592000
+
+steps:
+  # 1. Hard layer — the last ~4 weekly tripwire reports (one month of signal).
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'hardware_tripwire' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 4"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch hard-layer reports"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "synthesis-{{task_id}}"
+      content: "## HARD LAYER — HARDWARE TRIPWIRE REPORTS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank hard-layer evidence"
+
+  # 2. Soft layer — the last ~2 bi-weekly benchmark reports (one month).
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'slm_benchmark_watch' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch soft-layer reports"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "synthesis-{{task_id}}"
+      content: "## SOFT LAYER — SLM BENCHMARK REPORTS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank soft-layer evidence"
+
+  # 3. Prior synthesis, so the verdict can move rather than reset each month.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'tech_dependency_synthesis' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch prior synthesis verdict"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "synthesis-{{task_id}}"
+      content: "## PRIOR SYNTHESIS VERDICT (may be empty on first run)\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank prior verdict"
+
+  # 4. Reassemble all three layers.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'synthesis-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble hard + soft + prior verdict"
+
+  # 5. The correlation pass. Evidence goes in `context`, never in `question`.
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains three blocks: HARD LAYER supply-chain tripwire
+        reports, SOFT LAYER small-model benchmark reports, and the PRIOR
+        SYNTHESIS VERDICT.
+
+        The standing hypothesis under test is:
+        "Scarcity in AI accelerator hardware is a primary driver of adoption of
+        small, efficient models — creating an asymmetric advantage for operators
+        who can run capable models on constrained hardware."
+
+        Write a synthesis with exactly these sections:
+
+        ## EVIDENCE FOR
+        Specific, dated observations from the CONTEXT that support the
+        hypothesis. Each must cite which report it came from.
+
+        ## EVIDENCE AGAINST
+        Observations that undercut it, including cases where small-model progress
+        is clearly driven by something other than scarcity (architecture,
+        distillation, training data, licensing). Do not leave this section empty
+        for the sake of a tidy story — if you found nothing, say what you looked
+        for and did not find.
+
+        ## CORRELATION OR COINCIDENCE
+        State plainly whether the CONTEXT actually establishes a causal link, a
+        mere correlation, or neither. Name the confound that would most likely
+        explain the pattern without the hypothesis being true.
+
+        ## VERDICT
+        One of: SUPPORTED / PARTIALLY SUPPORTED / NOT SUPPORTED / INSUFFICIENT
+        EVIDENCE — followed by a confidence level (low/medium/high) and one
+        sentence of justification. If the CONTEXT has few or no reports, the
+        verdict is INSUFFICIENT EVIDENCE; do not reason from general knowledge
+        about the AI industry to fill the gap.
+
+        ## MOVEMENT SINCE PRIOR VERDICT
+        How and why the verdict changed, or "unchanged" with the reason.
+
+        ## WEAKEST LINK
+        The single question whose answer would most change this verdict. Write it
+        as one concise, specific, researchable phrase.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+    description: "Correlate hard vs soft layer, issue verdict"
+
+  # 6. Persist the synthesis — this is the note step 3 reads next month.
+  - tool_name: store_note
+    arguments:
+      content: "# Tech dependency synthesis — {{date}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: tech_dependency_synthesis
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the synthesis verdict"
+
+  # 7. Turn the WEAKEST LINK into a research goal string. Kept as its own step so
+  #    the extraction stays mechanical — the same idiom as schedules/news-analysis.yaml.
+  - tool_name: reason
+    arguments:
+      question: |
+        From this synthesis, find the "WEAKEST LINK" section.
+        Output a single line in exactly this format:
+        fill knowledge gap: <the weakest link question>
+
+        Output nothing else — no explanation, no punctuation around it, just that one line.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract the research goal"
+
+  # 8. Spawn it. The fill-knowledge-gap chain picks the task up on the next tick.
+  - tool_name: create_task
+    arguments:
+      goal: "{{_prev}}"
+      context: "Auto-generated from the monthly tech dependency synthesis. Research this and store findings as semantic knowledge — it is the weakest link in the asymmetric-advantage hypothesis."
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Spawn research task on the weakest link"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'synthesis-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

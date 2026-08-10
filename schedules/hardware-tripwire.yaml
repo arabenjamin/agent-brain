@@ -1,0 +1,168 @@
+# schedules/hardware-tripwire.yaml
+#
+# The "Hard layer" of the Critical Tech Dependency Mapping project: watch the AI
+# accelerator supply chain for disruption signals before they reach mainstream news.
+#
+# {{_prev}} only carries the PREVIOUS step's output, so each search_web result is
+# banked into the WorkingMemory session "tripwire-{{task_id}}" and reassembled with
+# a neo4j_query step before the reason step (same idiom as chains/video-learning.yaml).
+# The prior run's note is banked first so the reason step performs a DELTA against
+# it rather than re-describing the world from scratch.
+name: "Weekly hardware tripwire: scan the AI accelerator supply chain for disruption signals"
+description: "Weekly scan of HBM3e/memory, CoWoS/advanced packaging, and raw-material + geopolitical signals. Compares fresh findings against the previous run's baseline and stores a delta report."
+interval_seconds: 604800
+
+steps:
+  # 1. Pull the previous tripwire report (or the original hand-written BASELINE
+  #    note on the very first run) so this run can diff against it.
+  #    `NOT (n)-[:PART_OF]->()` excludes store_note's semantic chunks: chunks
+  #    inherit source_context from their parent, so without this filter the
+  #    "prior baseline" can come back as a 300-char fragment of one section.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE (n.source_context = 'hardware_tripwire' OR n.content STARTS WITH 'BASELINE: State of AI Accelerator Hardware') AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch prior baseline for delta analysis"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "tripwire-{{task_id}}"
+      content: "## PRIOR BASELINE (may be empty on first run)\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank prior baseline"
+
+  # 2-4. Three independent signal sweeps, each banked immediately.
+  - tool_name: search_web
+    arguments:
+      query: "HBM3e HBM4 supply SK Hynix Micron Samsung memory yield capacity allocation"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Signal sweep: memory / HBM"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "tripwire-{{task_id}}"
+      content: "## SIGNAL — MEMORY / HBM\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank memory signal"
+
+  - tool_name: search_web
+    arguments:
+      query: "CoWoS advanced packaging TSMC capacity expansion substrate constraint AI accelerator"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Signal sweep: packaging"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "tripwire-{{task_id}}"
+      content: "## SIGNAL — ADVANCED PACKAGING\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank packaging signal"
+
+  - tool_name: search_web
+    arguments:
+      query: "semiconductor raw materials export controls gallium neon ABF substrate rare earth supply disruption"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Signal sweep: raw materials / geopolitics"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "tripwire-{{task_id}}"
+      content: "## SIGNAL — RAW MATERIALS / GEOPOLITICS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank materials signal"
+
+  # 5. Reassemble baseline + all three sweeps into one blob for the reason step.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'tripwire-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble baseline + signals"
+
+  # 6. Delta analysis. The material goes in `context`, never in `question` — a
+  #    scheduled reason step RAGs the graph off the question text and would
+  #    otherwise retrieve its own prior output into its input (garbage loop).
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains a PRIOR BASELINE for the AI accelerator supply chain
+        followed by three fresh signal sweeps (memory/HBM, advanced packaging,
+        raw materials/geopolitics).
+
+        Write a tripwire report with exactly these sections:
+
+        ## STATUS
+        One line per bottleneck (memory, packaging, materials): STABLE,
+        TIGHTENING, or EASING — and the single piece of evidence that decides it.
+
+        ## DELTA vs BASELINE
+        What has actually CHANGED since the prior baseline. If the CONTEXT
+        contains no prior baseline, say so plainly and treat this run as the
+        new baseline instead of inventing a comparison.
+
+        ## TRIPWIRES FIRED
+        Any signal that crosses from normal variance into genuine disruption —
+        named supplier, named constraint, and why it matters. Write "None this
+        period." if nothing qualifies. Do not manufacture an alarm to fill space.
+
+        ## WATCH NEXT
+        Two specific things to check next week.
+
+        Ground every claim in the CONTEXT and cite source URLs where present.
+        If the sweeps returned nothing usable, say that explicitly rather than
+        answering from general knowledge.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    # Synthesis benefits from a stronger model; the router picks the best catalog
+    # match within CLOUD_TIER. Any hint other than "ollama" uses the active config.
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+    description: "Delta analysis vs prior baseline"
+
+  # 7. Persist. `source_context` is the retrieval key for the next run's step 1
+  #    and for the monthly synthesis audit — do not rename it casually.
+  - tool_name: store_note
+    arguments:
+      content: "# Hardware tripwire — {{date}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: hardware_tripwire
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the tripwire report"
+
+  # 8. Clean up the scratch session.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'tripwire-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

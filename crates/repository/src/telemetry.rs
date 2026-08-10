@@ -91,6 +91,17 @@ impl TelemetryClient {
             );
 
             ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS error_kind TEXT;
+
+            CREATE TABLE IF NOT EXISTS search_usage (
+                id           TEXT PRIMARY KEY,
+                engine       TEXT NOT NULL,
+                query        TEXT,
+                success      BOOLEAN,
+                result_count INTEGER,
+                duration_ms  INTEGER,
+                error_kind   TEXT,
+                created_at   TIMESTAMPTZ DEFAULT current_timestamp
+            );
             ",
         )?;
 
@@ -456,6 +467,192 @@ impl TelemetryClient {
         )?;
         let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    // =========================================================================
+    // Search usage ledger
+    // =========================================================================
+
+    /// Record a single `search_web` engine attempt.
+    ///
+    /// One row per *engine attempt*, not per tool call — a failover that tries
+    /// searxng then google writes two rows. That is deliberate: quota accounting
+    /// needs to know what each engine was actually asked to do.
+    ///
+    /// `error_kind` marks notable failure classes — `"quota_exhausted"` is the
+    /// one that matters, since it is how the free tier dying becomes queryable
+    /// instead of an opaque 429 buried in a dead job's error text.
+    pub fn record_search_usage(
+        &self,
+        engine: &str,
+        query: &str,
+        success: bool,
+        result_count: Option<i64>,
+        duration_ms: Option<i64>,
+        error_kind: Option<&str>,
+    ) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        // Queries can be whole reasoning prompts on gap-fill chains; the ledger
+        // only needs enough to identify the search, not to reproduce it.
+        let truncated: String = query.chars().take(500).collect();
+        conn.execute(
+            "INSERT INTO search_usage
+             (id, engine, query, success, result_count, duration_ms, error_kind)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                engine,
+                truncated,
+                success,
+                result_count,
+                duration_ms,
+                error_kind
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Engines that recorded a given `error_kind` within the last `hours`.
+    ///
+    /// The failover ladder uses this to *deprioritise* (never to permanently
+    /// exclude) an engine whose quota just died — retrying an exhausted key on
+    /// every step of an 8-search news chain wastes a round-trip each time.
+    pub fn search_engines_with_recent_errors(
+        &self,
+        error_kind: &str,
+        hours: i64,
+    ) -> Result<Vec<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let cutoff = (Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT engine FROM search_usage
+             WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
+        )?;
+        let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Aggregated search usage: per-engine totals plus a per-day breakdown.
+    ///
+    /// The daily rollup is the part that answers the question that actually
+    /// matters — "am I about to blow a monthly cap" — which per-engine
+    /// all-time totals cannot.
+    pub fn get_search_stats(&self, window_hours: Option<i64>) -> Result<serde_json::Value> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+
+        // Cutoff computed in Rust for the same reason as get_model_stats:
+        // DuckDB's TIMESTAMPTZ-minus-INTERVAL binding is version-dependent.
+        let cutoff = window_hours.map(|h| (Utc::now() - chrono::Duration::hours(h)).to_rfc3339());
+        let window_clause = if cutoff.is_some() {
+            "created_at >= CAST(? AS TIMESTAMPTZ)"
+        } else {
+            "1 = 1"
+        };
+
+        let engine_sql = format!(
+            "SELECT
+               engine,
+               COUNT(*) AS total,
+               SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+               SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
+               SUM(CASE WHEN error_kind = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted,
+               SUM(result_count) AS total_results,
+               AVG(duration_ms)  AS avg_duration_ms
+             FROM search_usage
+             WHERE {window_clause}
+             GROUP BY engine
+             ORDER BY total DESC"
+        );
+        let mut stmt = conn.prepare(&engine_sql)?;
+        let map_engine = |row: &duckdb::Row<'_>| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<f64>>(6)?,
+            ))
+        };
+        let engine_rows: Vec<_> = if let Some(ref c) = cutoff {
+            stmt.query_map(params![c], map_engine)?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map([], map_engine)?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        let engines: Vec<serde_json::Value> = engine_rows
+            .into_iter()
+            .map(|(engine, total, succ, fail, quota, results, avg_ms)| {
+                serde_json::json!({
+                    "engine":          engine,
+                    "total_searches":  total,
+                    "successes":       succ.unwrap_or(0),
+                    "failures":        fail.unwrap_or(0),
+                    "quota_exhausted": quota.unwrap_or(0),
+                    "total_results":   results.unwrap_or(0),
+                    "avg_duration_ms": avg_ms,
+                })
+            })
+            .collect();
+
+        let daily_sql = format!(
+            "SELECT
+               -- strftime, not CAST(... AS DATE): DuckDB has no direct
+               -- TIMESTAMPTZ -> DATE cast, and the string form is what the
+               -- row mapper reads anyway. The inner cast to TIMESTAMP is
+               -- required too — strftime has no TIMESTAMPTZ overload.
+               strftime(CAST(created_at AS TIMESTAMP), '%Y-%m-%d') AS day,
+               engine,
+               COUNT(*) AS total
+             FROM search_usage
+             WHERE {window_clause}
+             GROUP BY day, engine
+             ORDER BY day DESC, total DESC"
+        );
+        let mut stmt = conn.prepare(&daily_sql)?;
+        let map_day = |row: &duckdb::Row<'_>| {
+            Ok((
+                row.get::<_, String>(0)
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        };
+        let daily_rows: Vec<_> = if let Some(ref c) = cutoff {
+            stmt.query_map(params![c], map_day)?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map([], map_day)?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        let by_day: Vec<serde_json::Value> = daily_rows
+            .into_iter()
+            .map(|(day, engine, total)| {
+                serde_json::json!({ "day": day, "engine": engine, "searches": total })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "window_hours": window_hours,
+            "engines":      engines,
+            "by_day":       by_day,
+        }))
     }
 
     /// Get aggregated usage statistics for a model.

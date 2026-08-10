@@ -1,13 +1,25 @@
+# Boot protocol — runs after every build_skills(), on every startup.
+#
+# Keep every `tool` name and `action` here valid against the live registry.
+# A protocol tool_call that errors does not abort the protocol, and the
+# surrounding `log` steps print regardless of the call's outcome — so a wrong
+# action name reads as success in the logs. This file called
+# `scheduler_control{action: status}` for months; that action does not exist
+# (start/stop/configure only), and every boot logged "Scheduler status obtained"
+# over a failed call. Failures now log at WARN (`ProtocolStep::ToolCall` in
+# services/context_builder.rs), so grep for "tool_call FAILED" after editing.
 name: boot
 steps:
   - type: log
     message: "Agent Brain starting up — running boot protocol"
+  # Inventory the recurring work this brain is committed to. A project's
+  # implementation usually lives in ScheduledTasks rather than in notes.
   - type: tool_call
-    tool: scheduler_control
+    tool: manage_scheduled_task
     args:
-      action: status
+      action: list
   - type: log
-    message: "Scheduler status obtained — auditing scheduled task steps"
+    message: "Scheduled task inventory loaded — auditing scheduled task steps"
   - type: tool_call
     tool: manage_scheduled_task
     args:

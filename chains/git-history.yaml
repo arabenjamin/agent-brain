@@ -30,6 +30,15 @@ steps:
     priority: 1
     max_attempts: 3
     provider_hint: ollama
+    # Distilled handoff: a 10-commit diff routinely runs to tens of thousands of
+    # characters, most of it unchanged context lines and whitespace. The local
+    # model reads a change summary instead of the raw patch.
+    distill_prev: true
+    distill_max_chars: 3000
+    distill_focus: >-
+      which files changed and what changed in each — new/removed functions,
+      types, and behaviour — keeping identifiers and file paths verbatim;
+      drop unchanged context lines and pure formatting churn
 
   - tool_name: synthesize_knowledge
     arguments:

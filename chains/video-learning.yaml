@@ -77,6 +77,16 @@ steps:
     # config instead of the weak local model.
     provider_hint: ollama-cloud
     required_capabilities: ["reasoning"]
+    # Distilled handoff: this is the one cloud-routed step in the chain, and its
+    # {{_prev}} is the full reassembled transcript summary. Safe to compress here
+    # because the *durable* note (step 7) reassembles from working memory again,
+    # so the stored artifact keeps full fidelity — only the prompt shrinks.
+    distill_prev: true
+    distill_max_chars: 3000
+    distill_focus: >-
+      the concepts, claims, and technical specifics the video actually asserts,
+      with names, tools, versions, and figures kept verbatim; drop narration,
+      asides, and sponsor/housekeeping segments
     description: "New-vs-known comparison"
 
   # 4b. Fan the '## FOLLOW UP' concepts out into 'fill knowledge gap:' Tasks

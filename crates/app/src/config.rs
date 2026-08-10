@@ -37,10 +37,57 @@ pub struct LlmProviderConfig {
     pub ollama_local_model: String,
     pub ollama_embed_model: Option<String>,
     pub ollama_api_key: Option<String>,
+    /// How long Ollama keeps a model resident in VRAM after a request, as a Go
+    /// duration string (`30m`, `2h`).  A negative duration (`-1m`) pins the model
+    /// indefinitely.  `None` leaves Ollama's own default (5m) in place.
+    ///
+    /// Chain steps run serially with gaps between them, so on a shared GPU the
+    /// model can be evicted between consecutive steps of the same chain and pay a
+    /// full reload each time.  Env var: `OLLAMA_KEEP_ALIVE`.
+    pub ollama_keep_alive: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: Option<String>,
     pub gemini_api_key: Option<String>,
     pub gemini_model: Option<String>,
+}
+
+/// Validate a Go duration string (`30m`, `2h`, `-1m`, `1h30m`) before it is sent
+/// to Ollama as `keep_alive`.
+///
+/// Ollama rejects a malformed `keep_alive` with a 400, and `keep_alive` rides on
+/// *every* generate/chat/embeddings request — so a typo in the env var would take
+/// down all LLM calls rather than degrade one. This fails closed: anything that
+/// doesn't parse is dropped with a warning and Ollama keeps its own default.
+///
+/// Note the bare-number case is deliberately rejected. Ollama accepts a raw JSON
+/// *number* as seconds, but we serialize the value as a string, and `"30"` is not
+/// a valid Go duration — so requiring a unit suffix keeps the two representations
+/// from diverging.
+pub(crate) fn validate_go_duration(s: &str) -> Option<String> {
+    const UNITS: [&str; 6] = ["ns", "us", "ms", "s", "m", "h"];
+
+    let valid = !s.is_empty() && {
+        // Must end in a known unit, and every character must be part of a
+        // number/unit sequence (covers compound forms like "1h30m").
+        let ends_in_unit = UNITS.iter().any(|u| s.ends_with(u));
+        let body_ok = s
+            .strip_prefix('-')
+            .unwrap_or(s)
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c.is_ascii_alphabetic());
+        let has_digit = s.chars().any(|c| c.is_ascii_digit());
+        ends_in_unit && body_ok && has_digit
+    };
+
+    if valid {
+        Some(s.to_string())
+    } else {
+        tracing::warn!(
+            value = %s,
+            "OLLAMA_KEEP_ALIVE is not a valid Go duration (e.g. '30m', '2h', '-1m' for indefinite) — ignoring"
+        );
+        None
+    }
 }
 
 /// Optional LLM overrides for the human-facing chat adapter.
@@ -174,6 +221,9 @@ impl Config {
                     .unwrap_or_else(|_| "gemma4:latest".to_string()),
                 ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
                 ollama_api_key: env::var("OLLAMA_API_KEY").ok(),
+                ollama_keep_alive: env::var("OLLAMA_KEEP_ALIVE")
+                    .ok()
+                    .and_then(|s| validate_go_duration(s.trim())),
                 anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
                 anthropic_model: env::var("ANTHROPIC_MODEL").ok(),
                 gemini_api_key: env::var("GEMINI_API_KEY").ok(),
@@ -246,6 +296,7 @@ impl Config {
                 ollama_local_model: "gemma4:latest".to_string(),
                 ollama_embed_model: None,
                 ollama_api_key: None,
+                ollama_keep_alive: None,
                 anthropic_api_key: None,
                 anthropic_model: None,
                 gemini_api_key: None,
@@ -284,6 +335,22 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn go_duration_accepts_valid_forms() {
+        for s in ["30m", "2h", "1h30m", "500ms", "-1m", "1.5h"] {
+            assert_eq!(validate_go_duration(s), Some(s.to_string()), "rejected {s}");
+        }
+    }
+
+    #[test]
+    fn go_duration_rejects_malformed_values() {
+        // A bad keep_alive rides on every request, so anything questionable must
+        // fail closed to None rather than 400 the whole LLM path.
+        for s in ["", "30", "forever", "5 minutes", "m", "30x"] {
+            assert_eq!(validate_go_duration(s), None, "accepted {s:?}");
+        }
+    }
 
     #[test]
     fn test_config_defaults() {

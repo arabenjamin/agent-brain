@@ -511,6 +511,15 @@ impl BrainCore {
             if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
                 local_llm_config = local_llm_config.with_embed_model(em);
             }
+            // Keep the background model resident between chain steps. This config
+            // serves exactly the serial, gap-separated workload that would
+            // otherwise pay a reload per step on a shared GPU.
+            if let Some(ka) = std::env::var("OLLAMA_KEEP_ALIVE")
+                .ok()
+                .and_then(|s| crate::config::validate_go_duration(s.trim()))
+            {
+                local_llm_config = local_llm_config.with_keep_alive(ka);
+            }
             Arc::new(RwLock::new(Some(local_llm_config)))
         };
 
@@ -534,6 +543,15 @@ impl BrainCore {
         // Local-only LLM for internal knowledge ops (entity extraction, etc.)
         // Always routes to local Ollama regardless of the active provider.
         let local_llm = SharedLlm::new(Arc::clone(&local_config_arc));
+
+        // Give the queue the local config for distilled chain handoffs. It builds
+        // its own client from this so it can raise num_ctx without affecting any
+        // other consumer. Re-applied on every build_skills() so a reload refreshes it.
+        if let Some(qs) = &queue_arc
+            && let Some(cfg) = local_config_arc.read().await.clone()
+        {
+            qs.set_distill_config(cfg).await;
+        }
 
         // Shared LLM provider (wraps live Arc<RwLock<Option<LlmConfig>>>)
         let shared_llm = SharedLlm::new_with_local(
@@ -1018,16 +1036,40 @@ impl BrainCore {
             ),
             (
                 "list_tasks",
-                "List tasks from the graph ordered by creation date, including parent_id for sub-tasks. \
-                 For status filtering use neo4j_query directly.",
+                "List tasks, OPEN WORK FIRST (created/in_progress/blocked, then failed, then \
+                 completed), including parent_id for sub-tasks. Every row also carries \
+                 whole-graph status totals (total_tasks, status_failed, …). This is a 20-row \
+                 WINDOW, not the full set — judge overall state from the totals, never from \
+                 the rows. For other filtering use neo4j_query directly.",
                 r#"{"type":"object","properties":{}}"#,
+                // Ordering and totals both exist to prevent one specific failure:
+                // asked "where did we leave off", the brain called this tool, got
+                // 20 recently-completed rows, and reported a "clean slate" while
+                // 210 tasks sat failed. Newest-first hid the open work; no totals
+                // meant the window looked like the whole picture.
                 "MATCH (t:Task) \
-                 OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
-                 RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                        t.context AS context, toString(t.created_at) AS created_at, \
-                        parent.id AS parent_id \
-                 ORDER BY t.created_at DESC LIMIT 20",
-                "List all tasks ordered by creation date",
+                 WITH count(t) AS total_tasks, \
+                      sum(CASE WHEN t.status = 'created'     THEN 1 ELSE 0 END) AS status_created, \
+                      sum(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS status_in_progress, \
+                      sum(CASE WHEN t.status = 'blocked'     THEN 1 ELSE 0 END) AS status_blocked, \
+                      sum(CASE WHEN t.status = 'failed'      THEN 1 ELSE 0 END) AS status_failed, \
+                      sum(CASE WHEN t.status = 'completed'   THEN 1 ELSE 0 END) AS status_completed \
+                 MATCH (t2:Task) \
+                 OPTIONAL MATCH (t2)-[:SUBTASK_OF]->(parent:Task) \
+                 WITH total_tasks, status_created, status_in_progress, status_blocked, \
+                      status_failed, status_completed, t2, parent \
+                 ORDER BY CASE \
+                            WHEN t2.status IN ['created', 'in_progress', 'blocked'] THEN 0 \
+                            WHEN t2.status = 'failed' THEN 1 \
+                            ELSE 2 END, \
+                          t2.created_at DESC \
+                 LIMIT 20 \
+                 RETURN t2.id AS id, t2.goal AS goal, t2.status AS status, \
+                        t2.context AS context, toString(t2.created_at) AS created_at, \
+                        parent.id AS parent_id, \
+                        total_tasks, status_created, status_in_progress, \
+                        status_blocked, status_failed, status_completed",
+                "List tasks with open work first, plus whole-graph status totals",
             ),
             (
                 "list_notes",

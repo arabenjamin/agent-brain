@@ -1,32 +1,132 @@
+# chains/fill-knowledge-gap.yaml
+#
+# The curiosity engine. Gap tasks are spawned by `spawn_gap_tasks` (from a
+# video's "## FOLLOW UP" section) and by the daily news-analysis schedule.
+#
+# This chain searches BOTH the graph and the web, then answers the gap from the
+# union of the two. Searching only internal notes — which is what this chain did
+# before 2026-08-10 — cannot fill a knowledge gap by definition: a gap is
+# precisely the thing the graph does not contain. The result was self-referential
+# "Gap synthesis" notes that re-chewed prior notes and drifted into meta-
+# commentary about the source material instead of answering anything.
+#
+# {{_prev}} only carries the PREVIOUS step's output, so the two search results
+# are banked in the WorkingMemory session "gap-{{task_id}}" and reassembled with
+# a neo4j_query step before the reason step (same idiom as chains/daily-news.yaml
+# and chains/video-learning.yaml).
+#
+# {{goal_topic}} is {{goal}} with the "fill knowledge gap:" prefix stripped — the
+# prefix is for chain routing and is noise inside a search query.
 name: fill-knowledge-gap
 pattern: "fill knowledge gap:"
-priority: 100
-description: "Curiosity engine: search for information to fill a specific knowledge gap, reason over findings, then store a synthesis note."
+# Below learn's 50: gap goals routinely read "fill knowledge gap: Research the
+# specific impact of ..." and the substring "research" made chains/learn.yaml
+# (priority 50) win, so this chain rarely ran on its own tasks.
+priority: 15
+description: "Curiosity engine: search existing knowledge AND the web to fill a specific knowledge gap, reason over both, then store a sourced synthesis note."
 steps:
+  # 1. What does the brain already know? Establishes the baseline the web
+  #    results are judged against.
   - tool_name: search_notes
     arguments:
-      query: "{{goal}}"
+      query: "{{goal_topic}}"
       limit: 10
     priority: 1
     max_attempts: 3
     provider_hint: ollama
     description: "Gap fill: search existing knowledge"
 
-  - tool_name: reason
+  - tool_name: push_context
     arguments:
-      # action=structured has no context support — use the default grounded path.
-      question: "{{goal}}\n\nThe CONTEXT contains existing notes related to this gap. Synthesize what is known, state what remains unknown, and answer the gap as concretely as the evidence allows."
-      context: "{{_prev}}"
-      store_inference: false
+      session_id: "gap-{{task_id}}"
+      content: "## ALREADY KNOWN — existing notes from the graph\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Gap fill: bank existing knowledge"
+
+  # 2. External evidence. search_web walks the engine failover ladder, so an
+  #    exhausted free tier degrades this step rather than killing the chain.
+  - tool_name: search_web
+    arguments:
+      query: "{{goal_topic}}"
+      count: 8
     priority: 1
     max_attempts: 3
     provider_hint: ollama
-    description: "Gap fill: structured reasoning over findings"
+    description: "Gap fill: search the web for external evidence"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "gap-{{task_id}}"
+      content: "## WEB SEARCH RESULTS — external evidence\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Gap fill: bank web results"
+
+  # 3. Reassemble both sections so `context` carries them together rather than
+  #    only the push confirmation that {{_prev}} currently holds.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Gap fill: reassemble known + web evidence"
+
+  # 4. Answer the gap. The goal goes in `question`, the evidence in `context` —
+  #    never restate the evidence inside `question`, or the scheduled reason step
+  #    RAGs the graph off its own text and eats its own output (garbage loop).
+  - tool_name: reason
+    arguments:
+      question: |
+        Knowledge gap to fill: {{goal_topic}}
+
+        The CONTEXT contains two sections: "## ALREADY KNOWN" (notes the brain
+        has stored) and "## WEB SEARCH RESULTS" (external evidence gathered for
+        this gap). Using ONLY the CONTEXT, write:
+
+        ## ANSWER
+        The concrete, verifiable answer to the gap. State facts, not process.
+        Cite a source URL for every claim drawn from the web results.
+
+        ## WHAT THIS ADDS
+        What the web evidence establishes that the stored notes did not.
+
+        ## STILL UNKNOWN
+        What remains unresolved, stated specifically enough to search for later.
+        If the evidence is insufficient, say exactly what is missing rather than
+        speculating.
+
+        Do not describe the source material or comment on the nature of the
+        task — answer the gap itself.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    # Synthesis over mixed evidence benefits from a stronger model; the router
+    # picks the best catalog match within CLOUD_TIER. Any hint other than
+    # "ollama" uses the active config instead of the weak local model.
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+    # Distilled handoff: raw SERP payloads are mostly boilerplate and this is the
+    # cloud-routed step. URLs are preserved because the prompt requires citations.
+    distill_prev: true
+    distill_max_chars: 3000
+    distill_focus: >-
+      every factual claim with its source URL attached, plus dates, figures,
+      names, and the substance of the existing notes; drop ranking metadata
+      and duplicated snippets
+    description: "Gap fill: answer the gap from known + web evidence"
 
   - tool_name: store_note
     arguments:
-      content: "## Gap synthesis: {{goal}}\n\n{{_prev}}"
+      content: "## Gap synthesis: {{goal_topic}}\n\n{{_prev}}"
       note_type: semantic
+      source_context: fill_knowledge_gap
       provenance: synthesis_inference
     priority: 1
     max_attempts: 3
@@ -40,3 +140,14 @@ steps:
     priority: 1
     max_attempts: 3
     provider_hint: ollama
+    description: "Gap fill: complete the task"
+
+  # 5. Clean up the scratch working-memory session.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Gap fill: delete scratch session"

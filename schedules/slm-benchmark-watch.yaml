@@ -1,0 +1,169 @@
+# schedules/slm-benchmark-watch.yaml
+#
+# The "Soft layer" of the Critical Tech Dependency Mapping project: track small
+# language models (roughly 1B-7B) that reach frontier-equivalent capability on a
+# task class, and keep a current "Tier 2" recommendation list.
+#
+# This one has teeth for agent-brain specifically: the models it surfaces are
+# candidates for OLLAMA_LOCAL_MODEL and for the models.yaml catalog, so the final
+# section is written as an actionable recommendation rather than a news summary.
+#
+# Same banking idiom as hardware-tripwire.yaml — {{_prev}} carries only the
+# previous step, so sweeps are banked in "slmwatch-{{task_id}}" and reassembled.
+name: "Bi-weekly SLM benchmark watch: track frontier-equivalent small models in the 1B-7B range"
+description: "Bi-weekly sweep of new small-model releases and benchmark results, compared against the previous run, ending in an updated Tier 2 recommendation list for local deployment."
+interval_seconds: 1209600
+
+steps:
+  # 1. Prior run (or the original hand-written BASELINE note on the first run).
+  #    `NOT (n)-[:PART_OF]->()` excludes store_note's semantic chunks, which
+  #    inherit source_context and would otherwise return a partial section.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE (n.source_context = 'slm_benchmark_watch' OR n.content STARTS WITH 'BASELINE: State of SLMs') AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch prior Tier 2 list for delta analysis"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "slmwatch-{{task_id}}"
+      content: "## PRIOR TIER 2 LIST (may be empty on first run)\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank prior list"
+
+  # 2-4. Release sweep, benchmark sweep, quantization/serving sweep.
+  - tool_name: search_web
+    arguments:
+      query: "new small language model release 1B 3B 7B parameters Qwen Phi Gemma DeepSeek Mistral weights open"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: new releases"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "slmwatch-{{task_id}}"
+      content: "## SWEEP — NEW RELEASES\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank releases sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "small language model benchmark results MMLU GPQA coding math arXiv evaluation 7B frontier parity"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: benchmark results"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "slmwatch-{{task_id}}"
+      content: "## SWEEP — BENCHMARKS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank benchmark sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "quantization GGUF local inference VRAM requirements small model Ollama llama.cpp throughput"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: local deployability"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "slmwatch-{{task_id}}"
+      content: "## SWEEP — LOCAL DEPLOYABILITY\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank deployability sweep"
+
+  # 5. Reassemble everything for the reason step.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'slmwatch-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble prior list + sweeps"
+
+  # 6. Material goes in `context`, not `question` (RAG contamination guard).
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains a PRIOR TIER 2 MODEL LIST followed by three fresh
+        sweeps: new small-model releases, benchmark results, and local
+        deployability notes.
+
+        Write a benchmark watch report with exactly these sections:
+
+        ## MOVERS
+        Models that newly qualify as frontier-equivalent on a specific task
+        class. Name the model, the parameter count, the task class, and the
+        benchmark evidence. A model with no benchmark evidence in the CONTEXT
+        does not belong here — put it under WATCH instead.
+
+        ## DELTA vs PRIOR LIST
+        What changed since the prior list: additions, removals, and demotions,
+        each with a reason. If the CONTEXT contains no prior list, say so and
+        treat this run as the initial list.
+
+        ## UPDATED TIER 2 LIST
+        The current recommendation, one line per model:
+        `<model> — <params> — <best task class> — <VRAM/quant note>`
+        Only include models that can plausibly run on a single consumer GPU.
+
+        ## RELEVANCE TO THIS BRAIN
+        Whether any listed model is a better candidate than the current
+        OLLAMA_LOCAL_MODEL for background jobs, and why. Say "no change
+        warranted" if that is the honest answer.
+
+        ## WATCH
+        Promising but unproven models to re-check next cycle.
+
+        Ground every claim in the CONTEXT and cite source URLs where present.
+        If the sweeps returned nothing usable, say so rather than answering from
+        general knowledge or repeating the prior list as if it were fresh.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+    description: "Delta analysis + updated Tier 2 list"
+
+  # 7. Persist under the retrieval key used by the next run and the monthly audit.
+  - tool_name: store_note
+    arguments:
+      content: "# SLM benchmark watch — {{date}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: slm_benchmark_watch
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the benchmark watch report"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'slmwatch-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

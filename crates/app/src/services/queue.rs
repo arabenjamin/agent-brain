@@ -145,7 +145,58 @@ pub struct ChainStep {
     /// When nothing qualifies the step falls back to normal routing.
     #[serde(default)]
     pub required_capabilities: Option<Vec<String>>,
+    /// When `true`, the previous step's output is compressed by the local model
+    /// before it is substituted into this step's `{{_prev}}` / `{{result}}`.
+    ///
+    /// This is the "distilled handoff": a chain step usually needs the prior
+    /// step's *conclusions*, not its full text, but `{{_prev}}` pastes the whole
+    /// thing into the prompt.  Opt in on the **consuming** step, since only the
+    /// consumer knows whether it can tolerate a lossy handoff.  Never set it on a
+    /// step that persists `{{_prev}}` verbatim (`store_note`, `write_workspace_file`) —
+    /// that would truncate the durable artifact rather than just the prompt.
+    ///
+    /// Stored as `__distill_prev` in the job args; tools ignore it via serde.
+    #[serde(default)]
+    pub distill_prev: bool,
+    /// Skip distillation when the previous output is already at or under this many
+    /// characters.  Defaults to [`DEFAULT_DISTILL_MAX_CHARS`].
+    ///
+    /// Also the length budget handed to the distiller, but a **soft** one — models
+    /// cannot count characters, and overshoot of ~50% is normal (measured: a 3000
+    /// budget produced 4898 chars from a 195 000-char diff, still a 97.5%
+    /// reduction).  The only hard guarantee is that a distilled handoff is never
+    /// longer than the raw one; otherwise the raw text is used.
+    #[serde(default)]
+    pub distill_max_chars: Option<usize>,
+    /// What the consuming step actually needs kept — e.g. "preserve every source
+    /// URL and any numbers".  Injected into the distiller prompt so the compression
+    /// is aimed at this step rather than generic.
+    #[serde(default)]
+    pub distill_focus: Option<String>,
 }
+
+/// Default length budget for a distilled handoff, and the threshold under which
+/// distillation is skipped entirely.  Sized so a typical multi-paragraph analysis
+/// survives untouched and only genuinely bulky payloads (raw SERP JSON, git diffs,
+/// full transcript summaries) pay for a compression call.
+pub const DEFAULT_DISTILL_MAX_CHARS: usize = 2000;
+
+/// Hard cap on how much text is fed *into* the distiller.  Input above this is
+/// reduced to a head + tail window: conclusions usually live at the end, so
+/// head-only truncation would discard exactly what the next step needs.
+///
+/// Sized to fit inside [`DISTILL_NUM_CTX`] with room for the instructions and the
+/// generated output (~4 chars/token).
+const DISTILL_INPUT_CAP_CHARS: usize = 24_000;
+
+/// Context window requested for the distillation call.
+///
+/// Ollama serves 4096 tokens by default *regardless of the model's real limit*,
+/// and silently truncates beyond it — a 24 000-char payload sent at the default
+/// arrives as a fragment with the trailing instruction cut off, and the model
+/// answers the fragment instead of compressing it. Distillation is the one call
+/// whose purpose is reading a large payload, so it asks for a real window.
+const DISTILL_NUM_CTX: u32 = 16_384;
 
 impl ChainStep {
     pub fn new(tool_name: impl Into<String>) -> Self {
@@ -176,6 +227,13 @@ pub struct QueueService {
     coordinator_last_heartbeat: Arc<AtomicI64>,
     /// Result of the last orphan-chain audit: count of orphaned parked jobs found (and cancelled).
     last_orphan_audit_count: Arc<AtomicI64>,
+    /// Local-Ollama config used to compress chain handoffs (`distill_prev`).
+    ///
+    /// Held as a config rather than a provider because distillation needs its own
+    /// `num_ctx` — it is the one call in the brain whose whole point is reading a
+    /// large payload, and the shared local provider is pinned to Ollama's 4096
+    /// default. `None` disables distillation rather than failing the step.
+    distill_config: Arc<RwLock<Option<crate::services::LlmConfig>>>,
 }
 
 impl QueueService {
@@ -204,7 +262,18 @@ impl QueueService {
             coordinator_alive: Arc::new(AtomicBool::new(false)),
             coordinator_last_heartbeat: Arc::new(AtomicI64::new(-1)),
             last_orphan_audit_count: Arc::new(AtomicI64::new(-1)),
+            distill_config: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Install the LLM config used for distilled handoffs.
+    ///
+    /// Takes `&self` (not `self`) because the queue is already behind an `Arc` by
+    /// the time the local config is built, and is re-applied on every
+    /// `build_skills()` so a reload refreshes it.  Pass the *local* config:
+    /// distillation is an optimization and must never spend cloud quota.
+    pub async fn set_distill_config(&self, config: crate::services::LlmConfig) {
+        *self.distill_config.write().await = Some(config);
     }
 
     // =========================================================================
@@ -386,6 +455,27 @@ impl QueueService {
                     Some(a)
                 }
                 _ => effective_args,
+            };
+
+            // Inject distilled-handoff metadata. Read by execute_job before
+            // {{_prev}} substitution; tools ignore it via serde defaults.
+            let effective_args: Option<serde_json::Value> = if step.distill_prev {
+                let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut m) = a {
+                    m.insert("__distill_prev".to_string(), serde_json::json!(true));
+                    m.insert(
+                        "__distill_max_chars".to_string(),
+                        serde_json::json!(
+                            step.distill_max_chars.unwrap_or(DEFAULT_DISTILL_MAX_CHARS)
+                        ),
+                    );
+                    if let Some(focus) = &step.distill_focus {
+                        m.insert("__distill_focus".to_string(), serde_json::json!(focus));
+                    }
+                }
+                Some(a)
+            } else {
+                effective_args
             };
 
             // Stamp the owning task id onto every step so the coordinator can
@@ -1011,6 +1101,177 @@ impl QueueService {
         }
     }
 
+    /// Raise a user-facing notification that an external API's quota is spent.
+    ///
+    /// Deduped to once per tool per 24h against existing `:AgentNotification`
+    /// nodes — the daily news chain alone would otherwise fire eight identical
+    /// alerts the moment a search quota dies.
+    async fn notify_quota_exhausted(&self, tool_name: &str, error_text: &str) {
+        let context = format!("quota_exhausted:{tool_name}");
+        let dedupe = "MATCH (n:AgentNotification) \
+                      WHERE n.context = $ctx \
+                        AND datetime(n.created_at) >= datetime() - duration({hours: 24}) \
+                      RETURN count(n) AS c";
+        let already = match self
+            .neo4j
+            .execute(neo4rs::query(dedupe).param("ctx", context.clone()))
+            .await
+        {
+            Ok(rows) => {
+                rows.first()
+                    .and_then(|r| r.get::<i64>("c").ok())
+                    .unwrap_or(0)
+                    > 0
+            }
+            Err(e) => {
+                warn!("quota notification dedupe check failed (notifying anyway): {e}");
+                false
+            }
+        };
+        if already {
+            debug!(tool = %tool_name, "Quota-exhaustion notification already raised in the last 24h");
+            return;
+        }
+
+        let message = format!(
+            "⚠️ External API quota exhausted — `{tool_name}` is failing and dependent \
+             scheduled work (news briefs, research chains) will keep dying until it is \
+             restored.\n\nLast error:\n{}\n\nRun `get_search_usage` to see per-engine burn \
+             rate, then either restore the quota or reorder `SEARCH_ENGINE_ORDER`.",
+            error_text.chars().take(500).collect::<String>()
+        );
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Err(e) = self
+            .neo4j
+            .create_notification(
+                &id,
+                &message,
+                Some(&context),
+                None,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await
+        {
+            warn!(tool = %tool_name, error = %e, "Failed to create quota-exhaustion notification");
+            return;
+        }
+        warn!(tool = %tool_name, notification_id = %id, "Raised quota-exhaustion notification");
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(BrainEvent::AgentChatInitiated {
+                notification_id: id,
+                message,
+                related_session_id: None,
+            });
+        }
+    }
+
+    /// Compress the previous step's output into a compact handoff for this step,
+    /// or return `None` to use the raw text unchanged.
+    ///
+    /// Every failure mode falls back to the raw text: distillation is a token
+    /// optimization, and losing it must never fail a job. Runs on the local model
+    /// only, so the compression call itself is free.
+    async fn maybe_distill_prev(&self, job: &AgentJob, prev_text: &str) -> Option<String> {
+        let args = job.arguments.as_ref()?;
+        if args.get("__distill_prev").and_then(|v| v.as_bool()) != Some(true) {
+            return None;
+        }
+
+        let max_chars = args
+            .get("__distill_max_chars")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(DEFAULT_DISTILL_MAX_CHARS);
+
+        // Character counts throughout — byte length would misjudge non-ASCII
+        // transcripts, which this path sees regularly via the media chains.
+        let prev_chars = prev_text.chars().count();
+
+        // Already compact enough — don't spend a generation call to save nothing.
+        if prev_chars <= max_chars {
+            return None;
+        }
+
+        let cfg = self.distill_config.read().await.clone()?;
+        let llm = match crate::services::LlmClient::with_config(
+            cfg.with_num_ctx(DISTILL_NUM_CTX).with_temperature(0.2),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(job_id = %job.id, "Distiller client build failed — passing raw output: {}", e);
+                return None;
+            }
+        };
+
+        // Cap the distiller's own input. Keep the head and the tail: conclusions
+        // usually sit at the end, so head-only truncation drops the payload.
+        let input: String = if prev_chars > DISTILL_INPUT_CAP_CHARS {
+            let head_len = DISTILL_INPUT_CAP_CHARS * 2 / 3;
+            let tail_len = DISTILL_INPUT_CAP_CHARS - head_len;
+            let head: String = prev_text.chars().take(head_len).collect();
+            let tail: String = prev_text
+                .chars()
+                .skip(prev_chars.saturating_sub(tail_len))
+                .collect();
+            format!("{head}\n\n[… middle omitted …]\n\n{tail}")
+        } else {
+            prev_text.to_string()
+        };
+
+        let focus = args
+            .get("__distill_focus")
+            .and_then(|v| v.as_str())
+            .unwrap_or("the findings, claims, and specifics the next step must reason over");
+
+        let system = "You are a text compressor in a data pipeline. You are not a \
+chat assistant and you are not talking to a person. You receive one pipeline \
+step's output and emit a shorter version of that same content for the next step \
+to read. Keep concrete specifics — names, numbers, URLs, identifiers, file \
+paths, error strings — verbatim; never round or paraphrase them. Drop preamble, \
+repetition, and formatting scaffolding. Never add facts or commentary that are \
+not in the input. Never address the reader, never describe what you did, and \
+never ask a question. Emit only the compressed content.";
+
+        // The instruction is repeated *after* the payload as well as before it.
+        // A small local model that reads a large blob first will otherwise answer
+        // the blob instead of compressing it — observed as a chatty "I have
+        // processed the updates, how can I help?" response during development.
+        let prompt = format!(
+            "Compress the following pipeline output to at most {max_chars} characters.\n\
+Keep only what the next step (`{tool}`) needs: {focus}\n\n\
+--- BEGIN PIPELINE OUTPUT ---\n{input}\n--- END PIPELINE OUTPUT ---\n\n\
+Now emit the compressed version of the text between the markers above, in at \
+most {max_chars} characters, keeping: {focus}\n\
+Output the compressed content only — no greeting, no preamble, no offer to help.",
+            tool = job.tool_name,
+        );
+
+        let distilled = match llm.generate_with_system(&prompt, Some(system)).await {
+            Ok(r) => r.text.trim().to_string(),
+            Err(e) => {
+                warn!(job_id = %job.id, "Handoff distillation failed — passing raw output: {}", e);
+                return None;
+            }
+        };
+
+        // A distiller that returned nothing, or that somehow grew the payload,
+        // has produced no saving worth the fidelity loss.
+        let distilled_chars = distilled.chars().count();
+        if distilled.is_empty() || distilled_chars >= prev_chars {
+            debug!(job_id = %job.id, "Handoff distillation produced no saving — passing raw output");
+            return None;
+        }
+
+        info!(
+            job_id = %job.id,
+            tool = %job.tool_name,
+            before = prev_chars,
+            after = distilled_chars,
+            "Distilled chain handoff"
+        );
+        Some(distilled)
+    }
+
     async fn execute_job(self: Arc<Self>, job: AgentJob) {
         info!(job_id = %job.id, tool = %job.tool_name, priority = job.priority, "Executing AgentJob");
 
@@ -1048,9 +1309,15 @@ impl QueueService {
                     s.contains("{{_prev}}") || s.contains("{{result}}")
                 }) =>
             {
+                // Distilled handoff: when the step opted in, compress the upstream
+                // output down to what this step needs before it lands in the prompt.
+                // Returns None (use the raw text) whenever distillation is off, the
+                // payload is already small, or the compression call fails.
+                let distilled = self.maybe_distill_prev(&job, prev_text).await;
+                let effective_prev = distilled.as_deref().unwrap_or(prev_text.as_str());
                 job.arguments
                     .as_ref()
-                    .map(|a| substitute_prev(a, prev_text))
+                    .map(|a| substitute_prev(a, effective_prev))
             }
             _ => job.arguments.clone(),
         };
@@ -1336,6 +1603,14 @@ impl QueueService {
                 // rather than waiting for perception_scan to accumulate 3+ failures.
                 // Skip it for transient/infra errors (quota, rate limits, timeouts) the
                 // brain can't fix, and dedupe to at most once per tool per 24h.
+                // A spent quota is transient for meta-learning purposes but not
+                // for the operator: it needs a human to restore or reroute it,
+                // so it gets a notification even though the chain below skips.
+                if is_quota_exhausted_error(&error_text) {
+                    self.notify_quota_exhausted(&job.tool_name, &error_text)
+                        .await;
+                }
+
                 let do_meta_learn = should_meta_learn(&job.tool_name)
                     && if is_transient_infra_error(&error_text) {
                         info!(job_id = %job.id, tool = %job.tool_name, "Dead job is a transient/infra error — skipping meta-learning");
@@ -1716,6 +1991,27 @@ fn is_transient_infra_error(error_text: &str) -> bool {
     NEEDLES.iter().any(|n| lower.contains(n))
 }
 
+/// Returns `true` if a dead-job error means an external API's quota is spent.
+///
+/// This is a strict subset of `is_transient_infra_error`, and the two serve
+/// opposite purposes. Meta-learning is still skipped — the brain cannot reason
+/// its way out of a billing cap — but a spent quota is *not* the kind of blip
+/// that should be swallowed silently. An exhausted SerpApi free tier stopped
+/// the daily news brief for two days while the coordinator logged nothing but
+/// "skipping meta-learning", because "run out of searches" was classified as
+/// transient and therefore ignorable. It needs a human.
+fn is_quota_exhausted_error(error_text: &str) -> bool {
+    let lower = error_text.to_lowercase();
+    const NEEDLES: &[&str] = &[
+        "run out of searches",
+        "quota",
+        "insufficient credits",
+        "billing",
+        "exceeded your current",
+    ];
+    NEEDLES.iter().any(|n| lower.contains(n))
+}
+
 // ---------------------------------------------------------------------------
 // {{_prev}} template substitution helpers
 // ---------------------------------------------------------------------------
@@ -1756,13 +2052,45 @@ fn extract_result_text(result: &ToolCallResult) -> String {
     }
 }
 
+/// The subject of a goal, with any routing prefix (`"fill knowledge gap:"`,
+/// `"watch video:"`, …) stripped — exposed to chains as `{{goal_topic}}`.
+///
+/// Routing prefixes exist to match a chain, not to be searched for. Passing the
+/// raw `{{goal}}` to `search_web` produced queries like *"fill knowledge gap:
+/// Research the specific impact of ALPRs…"*, where the first three words are
+/// noise that no search engine can do anything useful with.
+///
+/// Conservative by construction: it strips only up to the *first* colon, only
+/// when that colon appears early enough to be a prefix rather than punctuation
+/// mid-sentence, and only when something non-empty follows. Anything else is
+/// returned unchanged, so a goal that is an ordinary sentence is never mangled.
+pub fn goal_topic(goal: &str) -> &str {
+    /// A prefix is a short label. Beyond this, a colon is sentence punctuation.
+    const MAX_PREFIX_LEN: usize = 40;
+
+    match goal.find(':') {
+        Some(idx) if idx < MAX_PREFIX_LEN => {
+            let rest = goal[idx + 1..].trim();
+            // A URL ("https://…") colon must not be treated as a prefix, and a
+            // trailing colon with nothing after it leaves nothing to search.
+            if rest.is_empty() || rest.starts_with("//") {
+                goal.trim()
+            } else {
+                rest
+            }
+        }
+        _ => goal.trim(),
+    }
+}
+
 /// Recursively replace `{{key}}` placeholders in every string value of a JSON Value tree.
 ///
 /// Operating at the Value level (rather than on serialized JSON text) means replacement
 /// values containing quotes, backslashes, or newlines are inserted safely and can never
 /// corrupt the surrounding JSON structure.  This is the substitution primitive shared by
 /// `substitute_prev` (chain `{{_prev}}` results) and the scheduler's chain/scheduled-task
-/// template expansion (`{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}`).
+/// template expansion (`{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}`,
+/// `{{goal_topic}}`).
 pub fn substitute_template_vars(
     val: &serde_json::Value,
     vars: &[(&str, &str)],
@@ -1800,6 +2128,141 @@ fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Valu
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn goal_topic_strips_a_routing_prefix() {
+        assert_eq!(
+            goal_topic("fill knowledge gap: Research the impact of ALPRs on privacy"),
+            "Research the impact of ALPRs on privacy"
+        );
+        assert_eq!(goal_topic("watch video: some talk"), "some talk");
+    }
+
+    #[test]
+    fn goal_topic_leaves_an_ordinary_sentence_alone() {
+        let goal = "Analyze the status of the deal between Iran and Oman";
+        assert_eq!(goal_topic(goal), goal);
+    }
+
+    #[test]
+    fn goal_topic_ignores_a_colon_that_is_sentence_punctuation() {
+        // Past the prefix-length bound, a colon introduces a clause rather than
+        // labelling the goal — stripping there would discard the actual subject.
+        let goal = "Compare the two leading approaches to caching and explain: \
+                    which one wins under write-heavy load";
+        assert_eq!(goal_topic(goal), goal);
+    }
+
+    #[test]
+    fn goal_topic_does_not_decapitate_a_bare_url() {
+        // "https://…" — the scheme colon is at index 5, well inside the prefix
+        // bound, so the naive rule would hand a search engine "//youtu.be/x".
+        let goal = "https://youtu.be/abc123";
+        assert_eq!(goal_topic(goal), goal);
+    }
+
+    #[test]
+    fn goal_topic_keeps_the_goal_when_nothing_follows_the_colon() {
+        assert_eq!(goal_topic("fill knowledge gap:"), "fill knowledge gap:");
+    }
+
+    #[test]
+    fn spent_search_quota_is_both_transient_and_alertable() {
+        // These two classifiers deliberately overlap: meta-learning is skipped
+        // (the brain cannot fix a billing cap) but the operator is still told.
+        let err = "SerpApi failed: 429 Too Many Requests - \
+                   {\"error\": \"Your account has run out of searches.\"}";
+        assert!(is_transient_infra_error(err));
+        assert!(is_quota_exhausted_error(err));
+    }
+
+    #[test]
+    fn ordinary_transient_errors_do_not_raise_a_quota_alert() {
+        // A timeout or a 503 resolves on its own; waking the operator for one
+        // would make the quota alert worthless through noise.
+        for err in [
+            "Request timed out after 30s",
+            "Upstream returned 503 Service Unavailable",
+            "connection refused",
+        ] {
+            assert!(is_transient_infra_error(err), "{err} should be transient");
+            assert!(
+                !is_quota_exhausted_error(err),
+                "{err} should not alert as a spent quota"
+            );
+        }
+    }
+
+    /// Every step in every seeded `chains/*.yaml` and `schedules/*.yaml` must
+    /// deserialize into `ChainStep`. The seeder stores steps as opaque JSON and
+    /// they are only parsed at dispatch time, so a typo in a step key would
+    /// otherwise surface as a runtime chain failure hours later.
+    #[test]
+    fn seeded_yaml_steps_deserialize_as_chain_steps() {
+        #[derive(serde::Deserialize)]
+        struct StepsOnly {
+            steps: Vec<serde_json::Value>,
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+
+        let mut checked = 0;
+        for dir in ["chains", "schedules"] {
+            let path = root.join(dir);
+            let entries = std::fs::read_dir(&path).unwrap_or_else(|e| panic!("{dir}: {e}"));
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).expect("read yaml");
+                let file: StepsOnly =
+                    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+                for (i, step) in file.steps.iter().enumerate() {
+                    serde_json::from_value::<ChainStep>(step.clone())
+                        .unwrap_or_else(|e| panic!("{} step {i}: {e}", p.display()));
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no steps found to validate");
+    }
+
+    #[test]
+    fn chain_step_distill_fields_default_off() {
+        // Existing chain YAML has no distill keys — they must default to "off"
+        // so seeded chains keep passing {{_prev}} through verbatim.
+        let step: ChainStep = serde_yaml::from_str(
+            r#"
+tool_name: reason
+arguments:
+  context: "{{_prev}}"
+"#,
+        )
+        .expect("must deserialize");
+        assert!(!step.distill_prev);
+        assert!(step.distill_max_chars.is_none());
+        assert!(step.distill_focus.is_none());
+    }
+
+    #[test]
+    fn chain_step_parses_distill_fields() {
+        let step: ChainStep = serde_yaml::from_str(
+            r#"
+tool_name: reason
+distill_prev: true
+distill_max_chars: 1200
+distill_focus: "keep every source URL"
+"#,
+        )
+        .expect("must deserialize");
+        assert!(step.distill_prev);
+        assert_eq!(step.distill_max_chars, Some(1200));
+        assert_eq!(step.distill_focus.as_deref(), Some("keep every source URL"));
+    }
 
     #[test]
     fn substitute_template_vars_preserves_quotes_and_backslashes() {

@@ -1,0 +1,64 @@
+# SearXNG configuration for the agent brain's `search_web` tool.
+#
+# This instance is private to the compose network (never published to a host
+# port) and is queried only by the brain, so it is tuned for machine use rather
+# than for humans: JSON output on, bot limiter off, no rate limiting of itself.
+#
+# The upstream default settings.yml enables `html` only — leaving `json` out of
+# `search.formats` makes /search?format=json answer 403, which is the single
+# most common reason a SearXNG-backed integration silently fails.
+
+use_default_settings: true
+
+general:
+  instance_name: "agent-brain-search"
+  # No public UI, so no need to advertise contact/donation links.
+  enable_metrics: false
+
+search:
+  # `json` is the load-bearing entry — see header note.
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+server:
+  # Overridden by SEARXNG_SECRET in docker-compose; this value is never used
+  # in the deployed instance but must be present for a valid config file.
+  secret_key: "change-me-in-compose"
+  # The limiter is bot detection for public instances. On a private network it
+  # only ever fires against our own brain, so it stays off.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+outgoing:
+  # SearXNG fans out to upstream engines in parallel; this bounds how long the
+  # slowest one can hold up a response. Kept under the client-side
+  # SEARXNG_TIMEOUT_SECS (20s) in skills/search.rs so the client isn't the one
+  # that gives up first.
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+
+engines:
+  # Engines that require an API key, are rate-limited into uselessness from a
+  # datacenter IP, or return non-text results the brain can't read.
+  - name: wikidata
+    disabled: false
+  - name: currency
+    disabled: true
+  - name: wikibooks
+    disabled: true
+  - name: wikiquote
+    disabled: true
+  - name: wikisource
+    disabled: true
+  - name: wikiversity
+    disabled: true
+  - name: wikivoyage
+    disabled: true

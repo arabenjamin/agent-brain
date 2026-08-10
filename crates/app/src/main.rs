@@ -146,6 +146,14 @@ fn build_llm_config(config: &Config) -> LlmConfig {
             }
         }
     }
+
+    // Applied for every provider: the embedding endpoint is always local Ollama,
+    // so even an Anthropic/Gemini deployment has a local model worth keeping
+    // resident. Non-Ollama providers never serialize the field.
+    if let Some(ka) = &llm.ollama_keep_alive {
+        base = base.with_keep_alive(ka);
+    }
+
     base
 }
 

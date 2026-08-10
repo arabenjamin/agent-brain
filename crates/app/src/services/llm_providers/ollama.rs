@@ -52,6 +52,10 @@ struct GenerateRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a str>,
     options: GenerateOptions,
+    /// How long Ollama keeps the model in VRAM after this request. Omitted when
+    /// unset so Ollama applies its own default (5m).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +63,9 @@ struct GenerateOptions {
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_predict: Option<u32>,
+    /// Context window. Omitted when unset so Ollama keeps its 4096 default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +85,8 @@ struct ChatRequest<'a> {
     messages: &'a [ChatMessage],
     stream: bool,
     options: GenerateOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +104,8 @@ struct ChatResponse {
 struct EmbeddingsRequest<'a> {
     model: &'a str,
     prompt: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,7 +134,9 @@ impl LlmProvider for OllamaProvider {
             options: GenerateOptions {
                 temperature: self.config.temperature,
                 num_predict: self.config.max_tokens,
+                num_ctx: self.config.num_ctx,
             },
+            keep_alive: self.config.keep_alive.as_deref(),
         };
 
         let response = self.post(&url).json(&request).send().await?;
@@ -154,6 +167,7 @@ impl LlmProvider for OllamaProvider {
         let request = EmbeddingsRequest {
             model: &self.config.model,
             prompt: text,
+            keep_alive: self.config.keep_alive.as_deref(),
         };
 
         let response = self.post(&url).json(&request).send().await?;
@@ -181,7 +195,9 @@ impl LlmProvider for OllamaProvider {
             options: GenerateOptions {
                 temperature: self.config.temperature,
                 num_predict: self.config.max_tokens,
+                num_ctx: self.config.num_ctx,
             },
+            keep_alive: self.config.keep_alive.as_deref(),
         };
 
         let response = self.post(&url).json(&request).send().await?;

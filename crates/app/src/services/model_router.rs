@@ -131,6 +131,11 @@ pub fn resolve_model_config(
                     .unwrap_or_else(|_| "http://localhost:11434".to_string()),
             );
             cfg.api_key = None;
+            // The router is called with `LlmConfig::default()` as base, so
+            // keep_alive has to be sourced here like base_url and api_key are.
+            cfg.keep_alive = std::env::var("OLLAMA_KEEP_ALIVE")
+                .ok()
+                .and_then(|s| crate::config::validate_go_duration(s.trim()));
         }
     }
 

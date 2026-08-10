@@ -134,4 +134,31 @@ impl TelemetryClient {
     ) -> anyhow::Result<Vec<String>> {
         Ok(vec![])
     }
+
+    pub fn record_search_usage(
+        &self,
+        _engine: &str,
+        _query: &str,
+        _success: bool,
+        _result_count: Option<i64>,
+        _duration_ms: Option<i64>,
+        _error_kind: Option<&str>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    pub fn search_engines_with_recent_errors(
+        &self,
+        _error_kind: &str,
+        _hours: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(vec![])
+    }
+
+    pub fn get_search_stats(
+        &self,
+        _window_hours: Option<i64>,
+    ) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({ "engines": [], "by_day": [] }))
+    }
 }

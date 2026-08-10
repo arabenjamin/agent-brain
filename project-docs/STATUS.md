@@ -46,10 +46,10 @@
 | GitSkill | `src/skills/git.rs` | 6 | git status/commit/push/branch/PR + codebase file writes |
 | WsSkill | `src/skills/ws.rs` | 4 | WebSocket connection management |
 | ResourceSkill | `src/skills/resource.rs` | 1 | Shared resource/token registry |
-| SearchSkill | `src/skills/search.rs` | 1 | Web search integration |
+| SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger |
 | MediaSkill | `src/skills/media.rs` | 6 | Watch/summarize videos (yt-dlp captions), channel watchlist, autonomous RSS polling |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
-| **Total** | | **70** | |
+| **Total** | | **71** | |
 
 **KnowledgeSkill tools (7):** `store_note`, `search_notes`, `prune_old_notes`, `consolidate_memories`, `reason`, `synthesize_knowledge`, `adversarial_plan_review`
 
@@ -126,6 +126,18 @@
 
 ## Recent Changes (auto)
 
+### 2026-08-05
+
+- feat: Phase 4 — self-hosted Whisper fallback for caption-less media (`0a1a821`)
+- feat: enable media watch with 13-channel watchlist + per-source guard (`85c1167`)
+
+### 2026-08-04
+
+- fix: robust caption download + gap-task spawning for Media Learning (`23b16d1`)
+- chore: install yt-dlp in the agent-brain image for Media Learning (`26da1b4`)
+- feat: media learning — watch & summarize videos to learn and stay current (`65fd8cf`)
+- feat: attribute chain-death to tasks, structured LLM output, capability-mining reframe (`5fe2fe4`)
+
 ### 2026-08-03
 
 - chore: auth timing, enqueue round trips, drain completeness, dead code (`9e7f198`)
@@ -137,15 +149,6 @@
 - fix: treat unparseable evaluator output as explicit non-score (`d2e6f25`)
 - perf: unique constraints and indexes for Note/Task/AgentJob lookups (`27a465b`)
 - fix: value-level template substitution in chain loading (`4284186`)
-- chore: baseline in-progress work before code-review fixes (`3c32d52`)
-
-### 2026-06-12
-
-- fix: ground constructor plans in tool argument schemas (`fe77e9f`)
-- feat: constructor learning loop — Phase 3 of the Agent Constructor plan (`778e884`)
-- feat: construct_agent tool — Phase 2 of the Agent Constructor plan (`939ff7c`)
-- fix: learn observed cloud-model availability from failures; fall back on 403 (`3ac0596`)
-- feat: per-step model routing within cloud tiers — Phase 1 of Agent Constructor (`489d8f5`)
 
 ## Known Issues / Backlog
 

@@ -3,12 +3,16 @@
 //! Owns the `yt-dlp` subprocess boundary and the summarization loop. Pure
 //! logic, no MCP types. Phase 1 covers YouTube **captions** (human subs
 //! preferred over auto-captions) discovered from `yt-dlp -J` metadata and
-//! fetched directly as `json3`. Whisper transcription for caption-less media
-//! (Phase 4) and podcast/local ingestion (Phase 5) are stubbed with clean
-//! errors so the seams exist without half-working behavior.
+//! fetched directly as `json3`. Phase 4 adds a self-hosted **Whisper** fallback
+//! for caption-less YouTube videos. Phase 5 adds two more input kinds that ride
+//! the same Whisper path: **podcast RSS enclosures** (direct audio URLs) and
+//! **local files** (`file://` allow-listed to `MEDIA_DIR`).
 //!
-//! Subprocess safety: `yt-dlp` is always invoked with an **argument array**
-//! (never a shell string), and URLs are scheme-validated before use.
+//! `fetch_transcript` classifies its input (`MediaInput`) and dispatches:
+//! yt-dlp URLs try captions first (Whisper fallback); direct audio URLs and
+//! local files always transcribe. Subprocess safety: `yt-dlp` is always invoked
+//! with an **argument array** (never a shell string), URLs are scheme-validated,
+//! and `file://` inputs are canonicalized and confined to `MEDIA_DIR`.
 
 use std::sync::Arc;
 
@@ -58,6 +62,18 @@ pub struct VideoMeta {
     pub duration_secs: i64,
 }
 
+/// How a transcript target must be acquired, chosen by [`MediaService::classify_input`].
+enum MediaInput {
+    /// http(s) URL handled by yt-dlp (YouTube and the many sites it supports):
+    /// metadata + captions, Whisper only as a fallback.
+    YtDlp(String),
+    /// http(s) URL pointing directly at an audio/video file (a podcast
+    /// enclosure, a hosted `.mp3`/`.mp4`, …). No captions; always transcribed.
+    DirectMedia(String),
+    /// A local file confined to `MEDIA_DIR`. No captions; always transcribed.
+    LocalFile(std::path::PathBuf),
+}
+
 pub struct MediaService {
     yt_dlp_path: String,
     caption_lang: String,
@@ -93,22 +109,85 @@ impl MediaService {
     // URL helpers
     // ========================================================================
 
-    /// Extract the first `http(s)` URL from arbitrary text (e.g. a goal like
-    /// `"watch video: https://youtu.be/abc"`). Returns the whole trimmed string
-    /// if it is already a bare URL.
+    /// Extract the first `http(s)` or `file://` URL from arbitrary text (e.g. a
+    /// goal like `"watch video: https://youtu.be/abc"` or a local
+    /// `"file:///home/agent/media/talk.mp4"`). Returns the whole trimmed string
+    /// if it is already a bare URL. (Local paths must not contain spaces or be
+    /// percent-encoded — the match stops at the first whitespace.)
     pub fn extract_first_url(text: &str) -> Option<String> {
-        let re = Regex::new(r"https?://[^\s)>\]]+").ok()?;
+        let re = Regex::new(r"(?:https?|file)://[^\s)>\]]+").ok()?;
         re.find(text)
             .map(|m| m.as_str().trim_end_matches(['.', ',', ')']).to_string())
     }
 
-    /// Reject anything that isn't an `http`/`https` URL (no `file://`, no shell
-    /// metacharacters reaching the subprocess as a "URL").
+    /// Reject anything that isn't an `http`/`https` URL. Used for feed URLs and
+    /// the yt-dlp subprocess boundary, where `file://` and shell metacharacters
+    /// must never reach the network/subprocess as a "URL". Local-file ingestion
+    /// goes through [`classify_input`](Self::classify_input) instead.
     fn validate_url(url: &str) -> anyhow::Result<()> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             anyhow::bail!("unsupported or missing URL (only http/https are allowed): {url}");
         }
         Ok(())
+    }
+
+    /// Classify a raw ingest target into the acquisition path it needs.
+    ///
+    /// - `file://…` → [`MediaInput::LocalFile`] after canonicalizing and
+    ///   confirming the path is inside `MEDIA_DIR` (symlink-escape safe).
+    /// - an `http(s)` URL whose path ends in a known audio/video extension (a
+    ///   podcast enclosure, a hosted `.mp3`/`.mp4`, …) → [`MediaInput::DirectMedia`].
+    /// - any other `http(s)` URL → [`MediaInput::YtDlp`] (YouTube et al.).
+    fn classify_input(&self, raw: &str) -> anyhow::Result<MediaInput> {
+        if let Some(rest) = raw.strip_prefix("file://") {
+            return Ok(MediaInput::LocalFile(self.resolve_local_file(rest)?));
+        }
+        Self::validate_url(raw)?;
+        if is_direct_media_url(raw) {
+            Ok(MediaInput::DirectMedia(raw.to_string()))
+        } else {
+            Ok(MediaInput::YtDlp(raw.to_string()))
+        }
+    }
+
+    /// Resolve the path component of a `file://` URL against the `MEDIA_DIR`
+    /// allowlist. `canonicalize` resolves `..` and symlinks, so a link pointing
+    /// outside the root is rejected rather than followed.
+    fn resolve_local_file(&self, rest: &str) -> anyhow::Result<std::path::PathBuf> {
+        // `file:///abs/path` → rest = "/abs/path"; `file://localhost/abs` too.
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        let requested = std::path::Path::new(rest);
+        let root = self.media_dir.canonicalize().map_err(|e| {
+            anyhow::anyhow!(
+                "MEDIA_DIR ('{}') is not accessible, cannot resolve local files: {e}",
+                self.media_dir.display()
+            )
+        })?;
+        let canon = requested
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("local file not found or unreadable ('{}'): {e}", rest))?;
+        if !canon.starts_with(&root) {
+            anyhow::bail!(
+                "local file '{}' is outside the allowed MEDIA_DIR ('{}')",
+                canon.display(),
+                root.display()
+            );
+        }
+        Ok(canon)
+    }
+
+    /// Borrow the configured transcriber or produce a clear "enable Whisper"
+    /// error — the shared gate for every caption-less path.
+    fn require_transcriber(
+        &self,
+        what: &str,
+    ) -> anyhow::Result<&Arc<dyn crate::services::transcribe::Transcriber>> {
+        self.transcriber.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{what} requires Whisper transcription, which is disabled \
+                 (set WHISPER_PROVIDER + WHISPER_BASE_URL to enable audio transcription)"
+            )
+        })
     }
 
     // ========================================================================
@@ -132,6 +211,75 @@ impl MediaService {
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|e| anyhow::anyhow!("yt-dlp returned unparseable JSON: {e}"))
+    }
+
+    /// Resolve a YouTube channel to its `(channel_id, channel_name)` from either
+    /// a **URL/handle** (`https://youtube.com/@handle`, `/channel/UC…`) or a
+    /// bare **channel name** (`"Machine Learning Street Talk"`). Used by the
+    /// autonomous source-discovery flow: web search usually names channels in
+    /// snippets without giving their canonical URL, so a name resolves via
+    /// `ytsearch1:` (one search hit → its channel). The RSS watch feed needs the
+    /// `UC…` id. Reads one entry — cheap, no video download.
+    pub async fn resolve_youtube_channel_id(
+        &self,
+        input: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let input = input.trim();
+        if input.is_empty() {
+            anyhow::bail!("empty channel reference");
+        }
+        let is_url = input.starts_with("http://") || input.starts_with("https://");
+        // URL: a channel/tab page — the flat playlist carries the channel_id at
+        // top level. Name: search YouTube; the (non-flat) top hit carries the
+        // channel_id on its entry.
+        let target = if is_url {
+            input.to_string()
+        } else {
+            format!("ytsearch1:{input}")
+        };
+        let mut args = vec!["-J", "--no-warnings"];
+        if is_url {
+            args.push("--flat-playlist");
+        }
+        args.push("--playlist-items");
+        args.push("1");
+        args.push(&target);
+        let output = tokio::process::Command::new(&self.yt_dlp_path)
+            .args(&args)
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to run yt-dlp for channel resolution: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("yt-dlp channel resolution failed: {}", stderr.trim());
+        }
+        let v: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| anyhow::anyhow!("yt-dlp returned unparseable JSON: {e}"))?;
+        // The channel id lives at the top level for a channel/tab URL; fall back
+        // to the first entry, and to `id` when it looks like a `UC…` id.
+        let entry0 = v
+            .get("entries")
+            .and_then(|e| e.as_array())
+            .and_then(|a| a.first());
+        let channel_id = [
+            str_field(&v, "channel_id"),
+            entry0
+                .map(|e| str_field(e, "channel_id"))
+                .unwrap_or_default(),
+            str_field(&v, "id"),
+        ]
+        .into_iter()
+        .find(|s| s.starts_with("UC") && s.len() >= 10)
+        .unwrap_or_default();
+        if channel_id.is_empty() {
+            anyhow::bail!("could not resolve a channel_id (UC…) from '{input}'");
+        }
+        let name = first_nonempty(&[
+            str_field(&v, "channel"),
+            str_field(&v, "uploader"),
+            str_field(&v, "title"),
+        ]);
+        Ok((channel_id, name))
     }
 
     /// Parse the `yt-dlp -J` blob into [`VideoMeta`].
@@ -232,10 +380,19 @@ impl MediaService {
     }
 
     /// Fetch metadata + transcript. Returns `(meta, transcript, source)`.
-    /// Prefers captions; falls back to Whisper (self-hosted) when captions are
-    /// absent and a `Transcriber` is configured, else errors cleanly.
+    /// Dispatches on [`classify_input`](Self::classify_input): yt-dlp URLs prefer
+    /// captions (Whisper fallback); direct audio URLs (podcast enclosures) and
+    /// local files always transcribe via Whisper.
     pub async fn fetch_transcript(&self, url: &str) -> anyhow::Result<(VideoMeta, String, String)> {
-        Self::validate_url(url)?;
+        match self.classify_input(url)? {
+            MediaInput::YtDlp(u) => self.fetch_via_ytdlp(&u).await,
+            MediaInput::DirectMedia(u) => self.fetch_via_direct_media(&u).await,
+            MediaInput::LocalFile(p) => self.fetch_via_local_file(&p).await,
+        }
+    }
+
+    /// Captions-first path for yt-dlp-extractable URLs (YouTube et al.).
+    async fn fetch_via_ytdlp(&self, url: &str) -> anyhow::Result<(VideoMeta, String, String)> {
         let raw = self.run_yt_dlp_json(url).await?;
         let meta = self.parse_meta(&raw)?;
 
@@ -245,13 +402,8 @@ impl MediaService {
         }
 
         // No usable captions — Whisper fallback.
-        let Some(ref transcriber) = self.transcriber else {
-            anyhow::bail!(
-                "no captions available for '{}' and Whisper transcription is disabled \
-                 (set WHISPER_PROVIDER + WHISPER_BASE_URL to enable audio transcription)",
-                meta.id
-            );
-        };
+        let transcriber =
+            self.require_transcriber(&format!("'{}' has no captions and", meta.id))?;
         // Guard here (not just in the skill): transcription is far costlier than
         // caption fetch, so reject over-long audio before downloading it.
         if self.max_duration_secs > 0 && meta.duration_secs > self.max_duration_secs {
@@ -272,6 +424,82 @@ impl MediaService {
             anyhow::bail!("Whisper returned an empty transcript for '{}'", meta.id);
         }
         Ok((meta, normalize_ws(&text), "whisper".to_string()))
+    }
+
+    /// Podcast/direct-audio path: download the file over HTTP and transcribe it.
+    /// There is no caption track and usually no duration up front, so the
+    /// `MEDIA_MAX_DURATION_SECS` guard does not apply here.
+    async fn fetch_via_direct_media(
+        &self,
+        url: &str,
+    ) -> anyhow::Result<(VideoMeta, String, String)> {
+        let transcriber = self.require_transcriber("transcribing this audio URL")?;
+        let meta = meta_from_media_url(url);
+        debug!(id = %meta.id, backend = transcriber.label(), "transcribing direct media URL");
+        let (audio, dir) = self.download_http_media(url, &meta.id).await?;
+        let result = transcriber.transcribe(&audio).await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        let text = result?;
+        if text.trim().is_empty() {
+            anyhow::bail!("Whisper returned an empty transcript for '{url}'");
+        }
+        Ok((meta, normalize_ws(&text), "whisper".to_string()))
+    }
+
+    /// Local-file path: transcribe a file already on disk under `MEDIA_DIR`.
+    async fn fetch_via_local_file(
+        &self,
+        path: &std::path::Path,
+    ) -> anyhow::Result<(VideoMeta, String, String)> {
+        let transcriber = self.require_transcriber("transcribing this local file")?;
+        let meta = meta_from_local_file(path);
+        debug!(id = %meta.id, backend = transcriber.label(), "transcribing local file");
+        let text = transcriber.transcribe(path).await?;
+        if text.trim().is_empty() {
+            anyhow::bail!(
+                "Whisper returned an empty transcript for '{}'",
+                path.display()
+            );
+        }
+        Ok((meta, normalize_ws(&text), "whisper".to_string()))
+    }
+
+    /// Download an HTTP(S) media file (e.g. a podcast enclosure) into a per-call
+    /// scratch dir. Returns `(file_path, scratch_dir)`; the caller removes the
+    /// dir. The Whisper server decodes the container, so no ffmpeg is needed.
+    async fn download_http_media(
+        &self,
+        url: &str,
+        id: &str,
+    ) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+        let dir = self
+            .media_dir
+            .join(format!("brain-media-dl-{id}-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            anyhow::anyhow!("could not create media scratch dir {}: {e}", dir.display())
+        })?;
+        let ext = url_media_ext(url).unwrap_or("bin");
+        let path = dir.join(format!("{id}.{ext}"));
+        let fetch = async {
+            let bytes = self
+                .http
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            tokio::fs::write(&path, &bytes).await?;
+            anyhow::Ok(())
+        }
+        .await;
+        if let Err(e) = fetch {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(anyhow::anyhow!(
+                "failed to download audio from '{url}': {e}"
+            ));
+        }
+        Ok((path, dir))
     }
 
     /// Download the best audio-only stream via yt-dlp (no `-x`/ffmpeg — the
@@ -403,8 +631,9 @@ impl MediaService {
     // Feed listing (RSS/Atom) for the watch loop
     // ========================================================================
 
-    /// Build the free YouTube RSS feed URL for a source (no API key required).
-    /// Returns `None` for kinds without a supported feed yet (e.g. podcasts).
+    /// Build the feed URL to poll for a source. YouTube channels/playlists get
+    /// their free RSS feed (no API key); a `podcast_rss` source's `reference`
+    /// *is* the feed URL, returned as-is. Returns `None` for kinds with no feed.
     pub fn feed_url(kind: &str, reference: &str) -> Option<String> {
         match kind {
             "youtube_channel" => Some(format!(
@@ -413,21 +642,25 @@ impl MediaService {
             "youtube_playlist" => Some(format!(
                 "https://www.youtube.com/feeds/videos.xml?playlist_id={reference}"
             )),
+            "podcast_rss" => Some(reference.to_string()),
             _ => None,
         }
     }
 
-    /// Fetch and parse the recent items from a channel/playlist feed.
+    /// Fetch and parse the recent items from a channel/playlist/podcast feed.
+    /// YouTube feeds are Atom; podcast feeds are RSS 2.0 with `<enclosure>`
+    /// audio URLs — each parser yields the same [`FeedItem`] shape.
     pub async fn list_feed_videos(
         &self,
         kind: &str,
         reference: &str,
     ) -> anyhow::Result<Vec<FeedItem>> {
         let Some(url) = Self::feed_url(kind, reference) else {
-            anyhow::bail!(
-                "feed listing for kind '{kind}' is not supported yet (Phase 5: podcasts/local)"
-            );
+            anyhow::bail!("feed listing for kind '{kind}' is not supported");
         };
+        // A podcast `reference` is a user/graph-supplied URL — scheme-guard it
+        // before fetching. YouTube feed URLs are built above and always https.
+        Self::validate_url(&url)?;
         let body = self
             .http
             .get(&url)
@@ -436,7 +669,10 @@ impl MediaService {
             .error_for_status()?
             .text()
             .await?;
-        Ok(parse_youtube_feed(&body))
+        Ok(match kind {
+            "podcast_rss" => parse_rss_feed(&body),
+            _ => parse_youtube_feed(&body),
+        })
     }
 }
 
@@ -536,6 +772,141 @@ fn unescape_xml(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
+}
+
+/// Audio/video file extensions that mark a URL as a direct media file (a
+/// podcast enclosure, a hosted clip) rather than a page yt-dlp should scrape.
+const MEDIA_EXTS: &[&str] = &[
+    "mp3", "m4a", "aac", "ogg", "oga", "opus", "wav", "flac", "mp4", "m4v", "mov", "webm", "mkv",
+];
+
+/// The lowercased file extension of a URL's path (ignoring `?query`/`#frag`),
+/// if it is a known media extension.
+fn url_media_ext(url: &str) -> Option<&'static str> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    MEDIA_EXTS.iter().copied().find(|e| *e == ext)
+}
+
+/// True when an http(s) URL points directly at a media file (see [`MEDIA_EXTS`]).
+fn is_direct_media_url(url: &str) -> bool {
+    url_media_ext(url).is_some()
+}
+
+/// Deterministic 64-bit FNV-1a hash — stable across builds/Rust versions, so a
+/// derived `:Media` id dedups the same URL/path on every run (unlike
+/// `DefaultHasher`, whose output is not guaranteed stable).
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// The last path segment of a URL/path with its extension dropped, prettified
+/// into a rough title. Empty → `"Untitled"`.
+fn title_from_path(path: &str) -> String {
+    let seg = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path);
+    let stem = seg.rsplit_once('.').map(|(s, _)| s).unwrap_or(seg);
+    let pretty = stem.replace(['_', '-'], " ");
+    let pretty = normalize_ws(&pretty);
+    if pretty.is_empty() {
+        "Untitled".to_string()
+    } else {
+        pretty
+    }
+}
+
+/// The host of an http(s) URL (for `channel`/provenance), or `""`.
+fn host_of(url: &str) -> String {
+    url.split_once("://")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Synthesize [`VideoMeta`] for a direct audio URL (podcast enclosure). The id
+/// is a stable hash of the URL so re-ingesting the same episode dedups.
+fn meta_from_media_url(url: &str) -> VideoMeta {
+    VideoMeta {
+        id: format!("pod-{:016x}", fnv1a(url)),
+        title: title_from_path(url),
+        channel: host_of(url),
+        channel_id: String::new(),
+        url: url.to_string(),
+        published_at: String::new(),
+        duration_secs: 0,
+    }
+}
+
+/// Synthesize [`VideoMeta`] for a local file. The id hashes the canonical path.
+fn meta_from_local_file(path: &std::path::Path) -> VideoMeta {
+    let path_str = path.to_string_lossy();
+    VideoMeta {
+        id: format!("file-{:016x}", fnv1a(&path_str)),
+        title: title_from_path(&path_str),
+        channel: "local".to_string(),
+        channel_id: String::new(),
+        url: format!("file://{path_str}"),
+        published_at: String::new(),
+        duration_secs: 0,
+    }
+}
+
+/// Parse an RSS 2.0 podcast feed into [`FeedItem`]s (feed order, newest first).
+/// Each item's `url` is its `<enclosure>` audio URL and its `video_id` is the
+/// same stable hash [`meta_from_media_url`] derives, so poll-time dedup lines up
+/// with ingest-time `:Media` ids. Items without an audio enclosure are skipped.
+fn parse_rss_feed(xml: &str) -> Vec<FeedItem> {
+    let enclosure_re =
+        Regex::new(r#"<enclosure\b[^>]*\burl\s*=\s*["']([^"']+)["'][^>]*>"#).unwrap();
+    let title_re = Regex::new(r"(?s)<title>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))</title>").unwrap();
+    let pub_re = Regex::new(r"<pubDate>([^<]+)</pubDate>").unwrap();
+
+    let mut items = Vec::new();
+    for item in xml.split("<item>").skip(1) {
+        let item = item.split("</item>").next().unwrap_or(item);
+        let Some(enclosure_url) = enclosure_re
+            .captures(item)
+            .map(|c| unescape_xml(c[1].trim()))
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        else {
+            continue;
+        };
+        let title = title_re
+            .captures(item)
+            .map(|c| {
+                let raw = c
+                    .get(1)
+                    .or_else(|| c.get(2))
+                    .map(|m| m.as_str())
+                    .unwrap_or("");
+                unescape_xml(raw.trim())
+            })
+            .unwrap_or_default();
+        let published_at = pub_re
+            .captures(item)
+            .map(|c| c[1].trim().to_string())
+            .unwrap_or_default();
+        items.push(FeedItem {
+            video_id: format!("pod-{:016x}", fnv1a(&enclosure_url)),
+            url: enclosure_url,
+            title,
+            published_at,
+            channel_id: String::new(),
+        });
+    }
+    items
 }
 
 /// Greedily pack a transcript into windows of ~`window_chars`, breaking on
@@ -681,9 +1052,85 @@ mod tests {
             Some("https://www.youtube.com/feeds/videos.xml?playlist_id=PL9".into())
         );
         assert_eq!(
-            MediaService::feed_url("podcast_rss", "https://x/feed"),
-            None
+            MediaService::feed_url("podcast_rss", "https://x/feed.xml"),
+            Some("https://x/feed.xml".into())
         );
+        assert_eq!(MediaService::feed_url("local_file", "x"), None);
+    }
+
+    #[test]
+    fn extracts_file_url_from_goal() {
+        assert_eq!(
+            MediaService::extract_first_url("watch video: file:///home/agent/media/talk.mp4 now"),
+            Some("file:///home/agent/media/talk.mp4".to_string())
+        );
+    }
+
+    #[test]
+    fn direct_media_url_detection() {
+        assert!(is_direct_media_url("https://cdn.example.com/ep/42.mp3"));
+        assert!(is_direct_media_url(
+            "https://cdn.example.com/a.MP4?token=x&y=1"
+        ));
+        assert!(is_direct_media_url("https://x/audio.m4a#t=10"));
+        // yt-dlp targets — no media extension on the path.
+        assert!(!is_direct_media_url("https://www.youtube.com/watch?v=abc"));
+        assert!(!is_direct_media_url("https://youtu.be/abc123"));
+        assert!(!is_direct_media_url(
+            "https://example.com/podcasts/episode-42"
+        ));
+    }
+
+    #[test]
+    fn stable_media_id_for_url() {
+        // Deterministic across calls (dedup relies on this).
+        let a = meta_from_media_url("https://cdn.example.com/ep/42.mp3");
+        let b = meta_from_media_url("https://cdn.example.com/ep/42.mp3");
+        assert_eq!(a.id, b.id);
+        assert!(a.id.starts_with("pod-"));
+        assert_eq!(a.title, "42");
+        assert_eq!(a.channel, "cdn.example.com");
+        // Different URL → different id.
+        assert_ne!(
+            a.id,
+            meta_from_media_url("https://cdn.example.com/ep/43.mp3").id
+        );
+    }
+
+    #[test]
+    fn local_file_meta() {
+        let m = meta_from_local_file(std::path::Path::new("/home/agent/media/My_Talk.m4a"));
+        assert!(m.id.starts_with("file-"));
+        assert_eq!(m.title, "My Talk");
+        assert_eq!(m.channel, "local");
+        assert_eq!(m.url, "file:///home/agent/media/My_Talk.m4a");
+    }
+
+    #[test]
+    fn parses_rss_podcast_feed() {
+        let xml = r#"<rss><channel>
+          <item>
+            <title>Episode One</title>
+            <enclosure url="https://cdn.example.com/ep/1.mp3" type="audio/mpeg" length="123"/>
+            <pubDate>Wed, 02 Oct 2024 10:00:00 GMT</pubDate>
+          </item>
+          <item>
+            <title><![CDATA[Episode & Two]]></title>
+            <enclosure length="99" type="audio/mpeg" url="https://cdn.example.com/ep/2.mp3"/>
+            <pubDate>Thu, 03 Oct 2024 10:00:00 GMT</pubDate>
+          </item>
+          <item>
+            <title>No enclosure, skipped</title>
+          </item>
+        </channel></rss>"#;
+        let items = parse_rss_feed(xml);
+        assert_eq!(items.len(), 2, "items without an enclosure are skipped");
+        assert_eq!(items[0].title, "Episode One");
+        assert_eq!(items[0].url, "https://cdn.example.com/ep/1.mp3");
+        assert_eq!(items[1].title, "Episode & Two");
+        assert_eq!(items[1].url, "https://cdn.example.com/ep/2.mp3");
+        // Feed id must match the ingest-time id so dedup lines up.
+        assert_eq!(items[0].video_id, meta_from_media_url(&items[0].url).id);
     }
 
     #[test]

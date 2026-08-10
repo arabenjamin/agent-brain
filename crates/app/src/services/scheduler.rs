@@ -500,9 +500,15 @@ impl SchedulerService {
         let date = Utc::now().format("%Y-%m-%d").to_string();
         let raw: serde_json::Value = serde_json::from_str(&st.steps)
             .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
+        let topic = crate::services::queue::goal_topic(&st.name);
         let substituted = crate::services::queue::substitute_template_vars(
             &raw,
-            &[("task_id", &task_id), ("goal", &st.name), ("date", &date)],
+            &[
+                ("task_id", &task_id),
+                ("goal", &st.name),
+                ("goal_topic", topic),
+                ("date", &date),
+            ],
         );
         let mut steps: Vec<ChainStep> = serde_json::from_value(substituted)
             .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
@@ -1276,11 +1282,15 @@ impl SchedulerService {
                 return None;
             }
         };
+        // goal_topic = the goal minus its routing prefix ("fill knowledge gap:"),
+        // for steps that feed the goal to a search engine rather than to an LLM.
+        let topic = crate::services::queue::goal_topic(goal);
         let substituted = crate::services::queue::substitute_template_vars(
             &raw,
             &[
                 ("task_id", task_id),
                 ("goal", goal),
+                ("goal_topic", topic),
                 ("date", &date),
                 ("file_slug", &file_slug),
             ],

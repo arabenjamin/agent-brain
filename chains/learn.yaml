@@ -17,7 +17,9 @@ steps:
   #                   success_criteria ("concrete, verifiable facts")
   - tool_name: search_web
     arguments:
-      query: "{{goal}}"
+      # goal_topic, not goal: strips any routing prefix so the query carries the
+      # subject alone. Identical to {{goal}} for goals with no prefix.
+      query: "{{goal_topic}}"
       count: 8
     priority: 1
     max_attempts: 3
@@ -43,6 +45,15 @@ steps:
     # model. The router picks the best catalog match within CLOUD_TIER
     # (tier 1 default → free Ollama Cloud models; tier 0 → largest local).
     required_capabilities: ["reasoning"]
+    # Distilled handoff: raw SERP payloads are mostly boilerplate (ranks, snippet
+    # duplication, tracking params) and this is the step that routes to a cloud
+    # model — so it is where compressing {{_prev}} actually buys something. The
+    # focus keeps URLs intact because the prompt above requires citations.
+    distill_prev: true
+    distill_max_chars: 3000
+    distill_focus: >-
+      every factual claim with its source URL attached, plus any dates, figures,
+      version numbers, and names; drop ranking metadata and duplicated snippets
 
   - tool_name: store_note
     arguments:

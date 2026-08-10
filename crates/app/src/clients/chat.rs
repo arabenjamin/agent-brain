@@ -61,7 +61,58 @@ Key tools: `search_web` (fetch current info), `search_notes` (knowledge graph), 
 Only call tools that exist — do not invent tool names. \
 Never output XML tags like <invoke> — use only the provided function-call tools.";
 
-fn build_system_prompt() -> String {
+/// Compose the effective system prompt for one chat turn.
+///
+/// Layered so the most specific guidance sits closest to the conversation:
+/// the shared base rules, then the active context profile's `system_prompt`,
+/// then whatever its `pre_load_query` returned. The profile layers are dropped
+/// when no profile applies (explicit tool allowlists, or no context builder).
+/// Cap a tool result for the model, appending an explicit marker when content
+/// was dropped.
+///
+/// Silent truncation is worse than a short answer: the model cannot distinguish
+/// "the list ends here" from "the list was cut here" and states the former as
+/// fact. Observed 2026-08-10 — `manage_scheduled_task(action=list)` returned all
+/// 16 schedules, the tail was silently cut, and the model reported the three
+/// schedules that had been cut off as not existing at all. The marker turns an
+/// invisible loss into something the model can react to by narrowing its query.
+fn truncate_tool_result(text: &str, limit: usize) -> String {
+    // chars().count() is O(n) but tool results are bounded and this runs once
+    // per tool call, not per token.
+    let total = text.chars().count();
+    if total <= limit {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(limit).collect();
+    format!(
+        "{kept}\n\n[TRUNCATED: showing the first {limit} of {total} characters. \
+         This result is INCOMPLETE — do not conclude that something is absent \
+         because it does not appear above. Narrow the query (filters, limits, \
+         or a more specific query string) and call the tool again.]"
+    )
+}
+
+fn build_system_prompt(profile_prompt: Option<&str>, pre_loaded: &[String]) -> String {
+    let mut prompt = build_base_system_prompt();
+
+    if let Some(p) = profile_prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        prompt.push_str("\n\n");
+        prompt.push_str(p);
+    }
+
+    if !pre_loaded.is_empty() {
+        prompt.push_str(
+            "\n\n# LIVE SELF-STATE — read from your own graph just now. \
+             This is authoritative: prefer it over any recollection, and do not \
+             contradict it.\n\n",
+        );
+        prompt.push_str(&pre_loaded.join("\n\n"));
+    }
+
+    prompt
+}
+
+fn build_base_system_prompt() -> String {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let codebase_dir = std::env::var("CODEBASE_DIR").unwrap_or_default();
     let workspace_dir = std::env::var("WORKSPACE_DIR").unwrap_or_default();
@@ -250,7 +301,7 @@ impl ChatService {
             None
         };
 
-        let (tools, _profile_system_prompt, _profile_notes) = if has_explicit_tools {
+        let (tools, profile_system_prompt, profile_notes) = if has_explicit_tools {
             let names = request.tools.as_deref().unwrap_or_default();
             (filter_tools(all_tools, names), None, Vec::new())
         } else if let (Some(profile_name), Some(ref cb)) = (&resolved_profile, cb_opt) {
@@ -269,6 +320,9 @@ impl ChatService {
         } else {
             (all_tools, None, Vec::new())
         };
+
+        // Compose once here so every provider loop runs the same prompt.
+        let system_prompt = build_system_prompt(profile_system_prompt.as_deref(), &profile_notes);
 
         let handler = self.tool_handler.read().await.clone();
 
@@ -319,7 +373,7 @@ impl ChatService {
             let _ = inner_tx
                 .send(ChatEvent::Thinking {
                     content: format!(
-                        "⚙ provider={} | model={} | profile={} | tools={} | mode={}",
+                        "⚙ provider={} | model={} | profile={} | tools={} | prompt={} | preload={} | mode={}",
                         provider_str,
                         config
                             .as_ref()
@@ -327,6 +381,12 @@ impl ChatService {
                             .unwrap_or("unknown"),
                         resolved_profile.as_deref().unwrap_or("general"),
                         tools.len(),
+                        if profile_system_prompt.is_some() {
+                            "profile"
+                        } else {
+                            "base"
+                        },
+                        profile_notes.len(),
                         mode,
                     ),
                 })
@@ -335,20 +395,48 @@ impl ChatService {
 
         match config {
             Some(cfg) if cfg.provider == LlmProviderType::Anthropic => {
-                self.run_anthropic_loop(cfg, tools, handler.clone(), request, inner_tx)
-                    .await;
+                self.run_anthropic_loop(
+                    cfg,
+                    tools,
+                    handler.clone(),
+                    request,
+                    system_prompt,
+                    inner_tx,
+                )
+                .await;
             }
             Some(cfg) if cfg.provider == LlmProviderType::Ollama => {
-                self.run_ollama_tool_loop(cfg, tools, handler.clone(), request, inner_tx)
-                    .await;
+                self.run_ollama_tool_loop(
+                    cfg,
+                    tools,
+                    handler.clone(),
+                    request,
+                    system_prompt,
+                    inner_tx,
+                )
+                .await;
             }
             Some(cfg) if cfg.provider == LlmProviderType::OllamaCloud => {
-                self.run_ollama_cloud_loop(cfg, tools, handler.clone(), request, inner_tx)
-                    .await;
+                self.run_ollama_cloud_loop(
+                    cfg,
+                    tools,
+                    handler.clone(),
+                    request,
+                    system_prompt,
+                    inner_tx,
+                )
+                .await;
             }
             Some(cfg) => {
-                self.run_text_loop(cfg, tools, handler.clone(), request, inner_tx)
-                    .await;
+                self.run_text_loop(
+                    cfg,
+                    tools,
+                    handler.clone(),
+                    request,
+                    system_prompt,
+                    inner_tx,
+                )
+                .await;
             }
             None => {
                 let _ = inner_tx
@@ -421,6 +509,7 @@ impl ChatService {
         tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
+        system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
     ) {
         let api_key = match &config.api_key {
@@ -468,7 +557,7 @@ impl ChatService {
             let body = json!({
                 "model": model,
                 "max_tokens": 4096,
-                "system": build_system_prompt(),
+                "system": system_prompt,
                 "tools": anthropic_tools,
                 "messages": messages,
             });
@@ -640,7 +729,7 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
+                let preview: String = truncate_tool_result(&result_text, MAX_TOOL_RESULT_CHARS);
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
@@ -682,6 +771,7 @@ impl ChatService {
         tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
+        system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
     ) {
         let do_synthesis = request.synthesis_provider.is_some();
@@ -707,8 +797,7 @@ impl ChatService {
             .collect();
 
         // Build the initial messages list.
-        let mut messages: Vec<Value> =
-            vec![json!({ "role": "system", "content": build_system_prompt() })];
+        let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": system_prompt })];
         for h in &request.history {
             messages.push(json!({ "role": h.role, "content": h.content }));
         }
@@ -954,7 +1043,7 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
+                let preview: String = truncate_tool_result(&result_text, MAX_TOOL_RESULT_CHARS);
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
@@ -995,6 +1084,7 @@ impl ChatService {
         tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
+        system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
     ) {
         let base_url = config.base_url.as_deref().unwrap_or("https://ollama.com");
@@ -1017,8 +1107,7 @@ impl ChatService {
             .collect();
 
         // Initial messages.
-        let mut messages: Vec<Value> =
-            vec![json!({ "role": "system", "content": build_system_prompt() })];
+        let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": system_prompt })];
         for h in &request.history {
             messages.push(json!({ "role": h.role, "content": h.content }));
         }
@@ -1323,7 +1412,7 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = result_text.chars().take(MAX_TOOL_RESULT_CHARS).collect();
+                let preview: String = truncate_tool_result(&result_text, MAX_TOOL_RESULT_CHARS);
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
@@ -1336,7 +1425,7 @@ impl ChatService {
                 // Use CLOUD_TOOL_RESULT_CHARS (smaller cap) because tool schemas are resent
                 // every round; combined context grows quickly and causes 500s.
                 let cloud_preview: String =
-                    result_text.chars().take(CLOUD_TOOL_RESULT_CHARS).collect();
+                    truncate_tool_result(&result_text, CLOUD_TOOL_RESULT_CHARS);
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_id,
@@ -1553,6 +1642,7 @@ impl ChatService {
         tools: Vec<agent_brain_protocol::ToolDefinition>,
         handler: Option<ToolHandler>,
         request: ChatRequest,
+        system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
     ) {
         let model = config.model.clone();
@@ -1583,8 +1673,7 @@ impl ChatService {
              Use the key \"tool\" (not \"name\"). \
              You may call multiple tools in sequence — one <tool_call> block at a time. \
              When you have a final answer write it as plain text with no <tool_call> tag.",
-            build_system_prompt(),
-            tools_str
+            system_prompt, tools_str
         );
 
         // Build initial chat message list.
@@ -1865,5 +1954,96 @@ fn extract_tool_call(text: &str) -> Option<(String, Value, String)> {
             warn!("Failed to parse tool_call JSON: {} — {}", json_str, e);
             None
         }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_prompt_is_used_when_no_profile_applies() {
+        let p = build_system_prompt(None, &[]);
+        assert!(p.contains("You are agent-brain"));
+        assert!(!p.contains("LIVE SELF-STATE"));
+    }
+
+    #[test]
+    fn profile_prompt_is_appended_after_the_base_rules() {
+        let p = build_system_prompt(Some("Profile rule: inspect yourself first."), &[]);
+        let base = p.find("You are agent-brain").unwrap();
+        let profile = p.find("Profile rule").unwrap();
+        // Profile guidance must sit after the base so the specific layer wins.
+        assert!(profile > base);
+    }
+
+    #[test]
+    fn empty_profile_prompt_adds_no_layer() {
+        assert_eq!(
+            build_system_prompt(Some("   "), &[]),
+            build_system_prompt(None, &[])
+        );
+    }
+
+    #[test]
+    fn pre_loaded_state_lands_last_and_is_marked_authoritative() {
+        let p = build_system_prompt(
+            Some("Profile rule."),
+            &[
+                "## CATALOG\n- gemma4:latest".to_string(),
+                "## CHAINS\n- learn".to_string(),
+            ],
+        );
+        assert!(p.contains("LIVE SELF-STATE"));
+        assert!(p.contains("gemma4:latest"));
+        assert!(p.contains("- learn"));
+        // Live state is the final layer, closest to the conversation.
+        assert!(p.find("LIVE SELF-STATE").unwrap() > p.find("Profile rule.").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+
+    #[test]
+    fn short_results_pass_through_untouched() {
+        let text = r#"{"count":2,"scheduled_tasks":[]}"#;
+        assert_eq!(truncate_tool_result(text, 6000), text);
+    }
+
+    #[test]
+    fn oversized_results_are_marked_as_incomplete() {
+        let text = "x".repeat(3000);
+        let out = truncate_tool_result(&text, 2000);
+        assert!(out.starts_with(&"x".repeat(2000)));
+        assert!(out.contains("[TRUNCATED:"));
+        // The model must be told the result is partial, or it reports the
+        // missing tail as nonexistent — which is exactly what happened to the
+        // three long-cadence schedules on 2026-08-10.
+        assert!(out.contains("INCOMPLETE"));
+        assert!(out.contains("3000"));
+    }
+
+    #[test]
+    fn a_result_exactly_at_the_limit_is_not_marked() {
+        let text = "y".repeat(2000);
+        let out = truncate_tool_result(&text, 2000);
+        assert_eq!(out, text);
+        assert!(!out.contains("TRUNCATED"));
+    }
+
+    #[test]
+    fn multibyte_content_is_cut_on_char_boundaries() {
+        // Naive byte slicing panics here; tool results carry em-dashes and
+        // emoji routinely (note content, news briefs).
+        let text = "🧠é—".repeat(50);
+        let out = truncate_tool_result(&text, 10);
+        assert!(out.starts_with("🧠é—🧠"));
+        assert!(out.contains("[TRUNCATED:"));
     }
 }

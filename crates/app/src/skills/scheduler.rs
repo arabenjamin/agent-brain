@@ -1,7 +1,9 @@
 //! Scheduler Skill — controls the autonomous self-improvement loop.
 //!
 //! 4 tools: `scheduler_control`, `run_scheduler_tick`, `manage_chain`, `manage_scheduled_task`
-//! Status and chain listing are served by REST: GET /api/scheduler/status, /api/scheduler/chains
+//! Scheduler status and chain listing are served by REST: GET /api/scheduler/status,
+//! /api/scheduler/chains. Scheduled-task listing is deliberately NOT REST-only —
+//! see `manage_scheduled_task(action=list)`.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -214,7 +216,11 @@ impl SchedulerSkill {
     // =========================================================================
 
     // list_scheduler_chains is served by GET /api/scheduler/chains (REST API)
-    // list_scheduled_tasks is served by GET /api/scheduled-tasks (REST API)
+    // Listing scheduled tasks is `manage_scheduled_task(action=list)`, NOT just
+    // GET /api/scheduled-tasks. It lived only in REST during the tool-reduction
+    // refactor, which left the chat agent with no way to see its own recurring
+    // work — it answered project-status questions from :Note alone and reported
+    // running schedules as unbuilt plans. REST keeps its endpoint for the UI.
 
     fn manage_chain_def() -> ToolDefinition {
         ToolDefinition {
@@ -281,7 +287,11 @@ impl SchedulerSkill {
     fn manage_scheduled_task_def() -> ToolDefinition {
         ToolDefinition {
             name: "manage_scheduled_task".to_string(),
-            description: "Create/update, delete, or audit ScheduledTasks. \
+            description: "List, create/update, delete, or audit ScheduledTasks. \
+                action=list: return every scheduled task with its name, description, enabled flag, \
+                interval, last run and next run. USE THIS to answer any question about what the brain \
+                is scheduled to do, what recurring work exists, or the status of an ongoing project — \
+                a project's implementation usually lives in ScheduledTasks, not in notes. \
                 action=upsert: if a task with `name` exists it is updated in-place, otherwise created. \
                 Steps are ChainStep objects (tool_name, arguments, priority?, max_attempts?, provider_hint?). \
                 Template vars: {{task_id}}, {{goal}}, {{date}}. Do NOT include update_task — appended automatically. \
@@ -297,8 +307,20 @@ impl SchedulerSkill {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["upsert", "delete", "audit"],
-                        "description": "upsert: create or update. delete: remove by id. audit: validate all task steps."
+                        "enum": ["list", "upsert", "delete", "audit"],
+                        "description": "list: show all scheduled tasks and when they last/next run. upsert: create or update. delete: remove by id. audit: validate all task steps."
+                    },
+                    "enabled_only": {
+                        "type": "boolean",
+                        "description": "list only: return only enabled tasks (default false — disabled tasks are usually the interesting ones)."
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "list only: case-insensitive substring matched against name and description. Use it when looking for a specific project's schedules — the full list can be truncated before it reaches you."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "list only: include id, description, managed_by and step_count. Default false keeps the list compact enough to survive result truncation; set true only when narrowed by `filter`."
                     },
                     "disable_broken": {
                         "type": "boolean",
@@ -478,6 +500,103 @@ impl SchedulerSkill {
         };
 
         match action.as_str() {
+            // Listing was originally left to `GET /api/scheduled-tasks`, which the
+            // chat agent cannot call. The result: asked "where are we on project X",
+            // the brain searched :Note, found only the design discussion, and
+            // reported live recurring work as an unbuilt plan. A project's actual
+            // implementation lives in ScheduledTasks, so listing them must be a tool.
+            "list" => {
+                let enabled_only = args["enabled_only"].as_bool().unwrap_or(false);
+                let filter = args["filter"].as_str().map(|s| s.to_lowercase());
+                let verbose = args["verbose"].as_bool().unwrap_or(false);
+                let all = match neo4j.list_scheduled_tasks(enabled_only).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return ToolCallResult::error(format!(
+                            "Failed to list scheduled tasks: {e}"
+                        ));
+                    }
+                };
+                let total = all.len();
+                let names: Vec<String> = all.iter().map(|t| t.name.clone()).collect();
+                let tasks: Vec<_> = match filter {
+                    Some(ref f) => all
+                        .into_iter()
+                        .filter(|t| {
+                            t.name.to_lowercase().contains(f)
+                                || t.description
+                                    .as_deref()
+                                    .is_some_and(|d| d.to_lowercase().contains(f))
+                        })
+                        .collect(),
+                    None => all,
+                };
+                // The payload is kept deliberately lean. Chat truncates tool
+                // results to as little as 2000 chars, and the repository orders
+                // by next_run_at ASC — so long-cadence schedules (exactly the
+                // strategic, project-level ones) sort last and are the first to
+                // be cut. A verbose row here means those get silently dropped.
+                let rows: Vec<Value> = tasks
+                    .iter()
+                    .map(|t| {
+                        let mut row = json!({
+                            "name":           t.name,
+                            "enabled":        t.enabled,
+                            "every":          humanize_interval(t.interval_seconds),
+                            // Date only: the time-of-day of a weekly job is noise
+                            // next to whether it ran at all.
+                            "last_run":       t.last_run_at.as_deref()
+                                                  .map(|d| &d[..10.min(d.len())]),
+                            "next_run":       &t.next_run_at[..10.min(t.next_run_at.len())],
+                        });
+                        if verbose {
+                            row["id"] = json!(t.id);
+                            row["description"] = json!(t.description);
+                            row["managed_by"] = json!(t.managed_by);
+                            row["interval_seconds"] = json!(t.interval_seconds);
+                            row["step_count"] = json!(
+                                serde_json::from_str::<Vec<Value>>(&t.steps)
+                                    .map(|s| s.len())
+                                    .unwrap_or(0)
+                            );
+                        }
+                        row
+                    })
+                    .collect();
+                // A filter that matches nothing is the single most misleading
+                // result this tool can return: asked about the "Niche
+                // Intelligence Agency", the model filtered on that phrase, got
+                // an empty list, and reported three live schedules as
+                // nonexistent — they are filed under their internal name
+                // ("hardware tripwire", "SLM benchmark watch"). So an empty
+                // filtered result always carries every name back with it. The
+                // model cannot conclude "none exist" while looking at the list.
+                if filter.is_some() && rows.is_empty() && total > 0 {
+                    return ToolCallResult::success_json(json!({
+                        "count":           0,
+                        "total_scheduled": total,
+                        "filter":          filter,
+                        "warning": format!(
+                            "No scheduled task NAME or DESCRIPTION matched that filter. \
+                             This does NOT mean none exist — {total} scheduled tasks are \
+                             active. A project is usually filed under an internal/technical \
+                             name rather than the name the user calls it. Every name is \
+                             listed below: re-run with a filter drawn from these, or with \
+                             no filter at all."
+                        ),
+                        "all_scheduled_task_names": names,
+                    }));
+                }
+                let enabled_count = tasks.iter().filter(|t| t.enabled).count();
+                ToolCallResult::success_json(json!({
+                    "count":           rows.len(),
+                    "total_scheduled": total,
+                    "enabled_count":   enabled_count,
+                    "disabled_count":  rows.len() - enabled_count,
+                    "filter":          filter,
+                    "scheduled_tasks": rows,
+                }))
+            }
             "upsert" => {
                 let name = match args["name"].as_str() {
                     Some(v) => v.to_string(),
@@ -738,6 +857,26 @@ where
     }
 }
 
+/// Render a recurrence period as a human phrase ("weekly", "every 6h").
+///
+/// The raw `interval_seconds` is what the scheduler needs; `604800` is not what
+/// a reader needs in order to judge whether a project is ticking over.
+fn humanize_interval(secs: i64) -> String {
+    const HOUR: i64 = 3600;
+    const DAY: i64 = 86_400;
+    match secs {
+        s if s <= 0 => "invalid".to_string(),
+        s if s % (30 * DAY) == 0 && s / (30 * DAY) == 1 => "monthly".to_string(),
+        s if s % (7 * DAY) == 0 && s / (7 * DAY) == 1 => "weekly".to_string(),
+        s if s % (7 * DAY) == 0 => format!("every {} weeks", s / (7 * DAY)),
+        s if s == DAY => "daily".to_string(),
+        s if s % DAY == 0 => format!("every {} days", s / DAY),
+        s if s % HOUR == 0 => format!("every {}h", s / HOUR),
+        s if s % 60 == 0 => format!("every {}m", s / 60),
+        s => format!("every {s}s"),
+    }
+}
+
 // =========================================================================
 // Skill implementation
 // =========================================================================
@@ -769,5 +908,33 @@ impl Skill for SchedulerSkill {
             _ => return None,
         };
         Some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanize_interval_names_the_common_cadences() {
+        assert_eq!(humanize_interval(86_400), "daily");
+        assert_eq!(humanize_interval(604_800), "weekly");
+        assert_eq!(humanize_interval(2_592_000), "monthly");
+    }
+
+    #[test]
+    fn humanize_interval_handles_multiples_and_sub_day_periods() {
+        // The three "Critical Tech Dependency Mapping" schedules use exactly
+        // these cadences; "every 2 weeks" is what makes a bi-weekly job legible.
+        assert_eq!(humanize_interval(1_209_600), "every 2 weeks");
+        assert_eq!(humanize_interval(21_600), "every 6h");
+        assert_eq!(humanize_interval(300), "every 5m");
+        assert_eq!(humanize_interval(172_800), "every 2 days");
+    }
+
+    #[test]
+    fn humanize_interval_rejects_a_nonsense_period() {
+        assert_eq!(humanize_interval(0), "invalid");
+        assert_eq!(humanize_interval(-1), "invalid");
     }
 }

@@ -77,7 +77,12 @@ cargo run --release -- serve
 `use_model`, `reload_models`
 
 ### Other
-`search_web`, `resource`, `context`, `digest_experiences`, `analyze_gaps`
+`search_web`, `get_search_usage`, `resource`, `context`, `digest_experiences`, `analyze_gaps`
+
+`search_web` walks an engine failover ladder (`SEARCH_ENGINE_ORDER`, default
+`searxng,google,serpapi,brave`) so one exhausted free tier cannot fail the call.
+The self-hosted SearXNG sidecar leads because it has no key and no quota;
+`get_search_usage` reports per-engine burn rate against the keyed fallbacks.
 
 ## Connect via HTTP
 

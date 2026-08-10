@@ -2018,6 +2018,14 @@ impl KnowledgeService {
     /// `min_score > 0` to compensate for filtered-out low-quality hits).
     /// `min_score` — drop notes below this cosine similarity (0.0 = no filter).
     /// Results are capped at `limit`.
+    ///
+    /// Degrades to BM25 full-text when embedding is unavailable, mirroring
+    /// `search_notes_inner`. Embedding is not reliably available per-input: Ollama
+    /// returns `500 … json: unsupported value: NaN` for certain inputs when the model
+    /// emits NaN in the vector, and it does so *deterministically* for that exact
+    /// string — retrying never clears it. Hard-failing here used to kill the whole
+    /// `synthesize_knowledge` call, dead-letter the job, and take the owning chain
+    /// (and its Task) down with it. Retrieval quality degrades; the tool still works.
     async fn fetch_similar_notes(
         &self,
         topic: &str,
@@ -2025,19 +2033,53 @@ impl KnowledgeService {
         fetch_limit: usize,
         min_score: f64,
     ) -> Result<Vec<(String, String, String)>> {
-        let llm = self.llm.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("LLM required for vector search but is not configured")
-        })?;
+        // 1. Vector search — only when an LLM is configured AND the embed succeeds.
+        let embedding = match self.llm.as_ref() {
+            Some(llm) => match llm.embed(topic).await {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    warn!("Failed to embed topic (falling back to BM25): {}", e);
+                    None
+                }
+            },
+            None => {
+                warn!("LLM not configured for vector search (falling back to BM25)");
+                None
+            }
+        };
 
-        let embedding = llm
-            .embed(topic)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to embed topic: {}", e))?;
+        if let Some(embedding) = embedding {
+            let cypher = r#"
+            CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
+            YIELD node, score
+            WHERE score > $min_score
+            RETURN node.id AS id, node.content AS content, node.note_type AS note_type
+            ORDER BY score DESC
+            "#;
 
+            let rows = self
+                .neo4j
+                .execute(
+                    neo4rs::query(cypher)
+                        .param("embedding", embedding)
+                        .param("limit", fetch_limit as i64)
+                        .param("min_score", min_score),
+                )
+                .await?;
+
+            let notes = Self::collect_note_rows(rows, limit);
+            if !notes.is_empty() {
+                return Ok(notes);
+            }
+        }
+
+        // 2. BM25 fallback. `min_score` is a cosine threshold and has no analogue
+        //    here, so ranking is left to the full-text index. Sanitizing is required:
+        //    an unescaped ':' or '/' in the topic makes queryNodes throw (see
+        //    sanitize_lucene_query), which would turn the fallback into a second failure.
         let cypher = r#"
-        CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
+        CALL db.index.fulltext.queryNodes('note_content_fulltext', $query, {limit: $limit})
         YIELD node, score
-        WHERE score > $min_score
         RETURN node.id AS id, node.content AS content, node.note_type AS note_type
         ORDER BY score DESC
         "#;
@@ -2046,12 +2088,17 @@ impl KnowledgeService {
             .neo4j
             .execute(
                 neo4rs::query(cypher)
-                    .param("embedding", embedding)
-                    .param("limit", fetch_limit as i64)
-                    .param("min_score", min_score),
+                    .param("query", sanitize_lucene_query(topic))
+                    .param("limit", fetch_limit as i64),
             )
             .await?;
 
+        Ok(Self::collect_note_rows(rows, limit))
+    }
+
+    /// Collect `(id, note_type, content)` triples from a note query, capped at `limit`.
+    /// Rows missing `id`/`content` are skipped; a missing `note_type` defaults to `semantic`.
+    fn collect_note_rows(rows: Vec<neo4rs::Row>, limit: usize) -> Vec<(String, String, String)> {
         let mut notes = Vec::new();
         for row in rows {
             if let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content")) {
@@ -2064,8 +2111,7 @@ impl KnowledgeService {
                 }
             }
         }
-
-        Ok(notes)
+        notes
     }
 
     /// Synthesize semantic knowledge from recent notes and inferences about a topic.
