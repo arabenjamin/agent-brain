@@ -1637,6 +1637,7 @@ impl KnowledgeService {
                             COALESCE(n.asserted_at, '') AS asserted_at, \
                             COALESCE(n.source_context, '') AS source_context, \
                             COALESCE(n.corroboration_tier, '') AS tier, \
+                            COALESCE(n.claim_kind, '') AS kind, \
                             toString(n.created_at) AS created_at",
                 )
                 .param("ids", ids),
@@ -1664,6 +1665,7 @@ impl KnowledgeService {
                     Some(&row.get::<String>("asserted_by").unwrap_or_default()),
                     Some(&row.get::<String>("asserted_at").unwrap_or_default()),
                     Some(&row.get::<String>("tier").unwrap_or_default()),
+                    Some(&row.get::<String>("kind").unwrap_or_default()),
                 ),
                 // A record of what an external source said is not the brain's own
                 // knowledge, and typing it 'semantic' told every consumer it was.

@@ -79,6 +79,9 @@ pub struct ExtractedClaim {
     /// Who asserted it, as identified in the source.
     #[serde(default)]
     pub asserted_by: Option<String>,
+    /// `event` | `attribution` | `mechanism` — see `kind_qualifier`.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// Render a claim for inclusion in an LLM context window.
@@ -87,14 +90,38 @@ pub struct ExtractedClaim {
 /// reaches `reason` looking like any other note *is* any other note as far as the
 /// model is concerned — the type would be cosmetic. The label travels with the
 /// text so the model cannot restate the claim without also seeing its standing.
+/// How to read a corroborated claim of this kind.
+///
+/// The distinction that "corroborated" alone destroys: confirming that a group
+/// *demonstrated a technique* is not confirming that the technique *works*.
+/// Reporting can establish the former and says nothing about the latter, yet
+/// both render as "corroborated" without this qualifier.
+pub fn kind_qualifier(kind: &str, status: &str) -> Option<String> {
+    if status != "corroborated" {
+        return None;
+    }
+    match kind {
+        "attribution" => Some("corroborates that it was asserted, not that it is true".to_string()),
+        "mechanism" => Some("corroborates the causal claim itself".to_string()),
+        _ => None,
+    }
+}
+
 pub fn label_claim(
     content: &str,
     status: &str,
     asserted_by: Option<&str>,
     at: Option<&str>,
     tier: Option<&str>,
+    kind: Option<&str>,
 ) -> String {
     let mut parts = vec![format!("CLAIM · {status}")];
+    if let Some(k) = kind.filter(|k| !k.is_empty()) {
+        parts.push(k.to_string());
+        if let Some(q) = kind_qualifier(k, status) {
+            parts.push(q);
+        }
+    }
     // The tier is what separates "two wire services agree" from "five aligned
     // outlets repeat one origin" — both of which read as plain "corroborated".
     if let Some(t) = tier.filter(|t| !t.is_empty() && *t != "none") {
@@ -133,10 +160,25 @@ pub async fn extract_claims(
          claim is recorded the same way as a mundane one.\n\n\
          Set asserted_by to whoever the SOURCE attributes the claim to (a person, \
          outlet, agency, or study). Use null when the source does not attribute it.\n\n\
+         Classify each claim's kind by asking ONE question: if this claim were \
+         fully confirmed, would that settle whether the underlying phenomenon is \
+         real?\n\
+         - \"attribution\": NO — confirming it establishes only that a named party \
+         said, claimed, demonstrated, or showcased something. Use this whenever \
+         the claim is about someone asserting or exhibiting a disputed or \
+         extraordinary capability, even though their doing so is itself an event. \
+         Example: \"Group G demonstrated a technique to summon UAPs\" is \
+         attribution — confirming G did a demonstration says nothing about \
+         whether the technique works.\n\
+         - \"mechanism\": the claim IS the causal or efficacy assertion itself \
+         (X causes Y; technique T produces effect E).\n\
+         - \"event\": YES — a plain occurrence, publication, decision, or quantity \
+         with nothing contested behind it (a hearing was held, a report was \
+         released, a budget was N dollars).\n\n\
          Return at most {max_claims} claims, most significant first. If the source \
          contains no checkable factual assertions, return an empty array.\n\n\
          Respond with JSON only:\n\
-         {{\"claims\": [{{\"claim\": \"...\", \"asserted_by\": \"...\"}}]}}\n\n\
+         {{\"claims\": [{{\"claim\": \"...\", \"asserted_by\": \"...\", \"kind\": \"event|attribution|mechanism\"}}]}}\n\n\
          SOURCE:\n{text}"
     );
 
@@ -177,6 +219,7 @@ pub async fn store_claim(
     let mut q = neo4rs::query(
         "CREATE (n:Note {id: $id, content: $content, note_type: 'claim', \
          claim_status: 'unverified', asserted_by: $asserted_by, asserted_at: $asserted_at, \
+         claim_kind: $claim_kind, \
          source_context: $source_context, provenance: 'user_input', \
          created_at: datetime($ts), last_accessed_at: datetime($ts), access_count: 0, \
          next_review_at: datetime($ts) + duration({days: 1}), review_interval_days: 1, \
@@ -185,6 +228,10 @@ pub async fn store_claim(
     .param("id", id.clone())
     .param("content", claim.claim.as_str())
     .param("asserted_by", claim.asserted_by.clone().unwrap_or_default())
+    .param(
+        "claim_kind",
+        claim.kind.clone().unwrap_or_else(|| "event".to_string()),
+    )
     .param("asserted_at", asserted_at)
     .param(
         "source_context",
@@ -694,6 +741,50 @@ mod tests {
     }
 
     #[test]
+    fn an_attribution_claim_says_what_corroboration_actually_established() {
+        // The failure this exists for: "corroborated" next to a claim about
+        // psionic summoning reads as endorsement of efficacy, when all that was
+        // corroborated is that a group said they did it.
+        let out = label_claim(
+            "A group demonstrated psionic summoning.",
+            "corroborated",
+            Some("NewsNation"),
+            Some("2026-08-10"),
+            Some("unclassified sources only"),
+            Some("attribution"),
+        );
+        assert!(
+            out.contains("corroborates that it was asserted, not that it is true"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_event_claim_needs_no_qualifier() {
+        // "Congress held hearings" corroborated means the hearings happened.
+        assert!(kind_qualifier("event", "corroborated").is_none());
+        let out = label_claim(
+            "Congress held hearings.",
+            "corroborated",
+            None,
+            None,
+            Some("primary sources"),
+            Some("event"),
+        );
+        assert!(!out.contains("not that it is true"), "{out}");
+        assert!(out.contains("event"), "{out}");
+    }
+
+    #[test]
+    fn qualifiers_only_apply_to_corroborated_claims() {
+        // An unverified attribution has nothing to qualify, and adding the
+        // phrase would imply a verification that never happened.
+        assert!(kind_qualifier("attribution", "unverified").is_none());
+        assert!(kind_qualifier("attribution", "refuted").is_none());
+        assert!(kind_qualifier("mechanism", "corroborated").is_some());
+    }
+
+    #[test]
     fn institutional_domains_are_recognised_as_primary() {
         // The observed mislabel: congress.gov corroborating a claim about a
         // Congressional hearing was tagged "unclassified", because the curated
@@ -734,13 +825,14 @@ mod tests {
             Some("NewsNation"),
             Some("2026-08-10"),
             Some("unclassified sources only"),
+            None,
         );
         assert!(out.starts_with("[CLAIM · corroborated · unclassified sources only · asserted by NewsNation · 2026-08-10]"), "{out}");
     }
 
     #[test]
     fn a_none_tier_is_omitted_rather_than_rendered() {
-        let out = label_claim("x", "unverified", None, None, Some("none"));
+        let out = label_claim("x", "unverified", None, None, Some("none"), None);
         assert_eq!(out, "[CLAIM · unverified]\nx");
     }
 
@@ -769,6 +861,7 @@ mod tests {
             Some("NewsNation"),
             Some("2026-08-10T16:00:00Z"),
             None,
+            None,
         );
         assert!(out.starts_with("[CLAIM · unverified · asserted by NewsNation · 2026-08-10]\n"));
         assert!(out.contains("The DoD uses TFRs"));
@@ -776,10 +869,17 @@ mod tests {
 
     #[test]
     fn label_degrades_gracefully_without_attribution() {
-        let out = label_claim("Something was asserted.", "disputed", None, None, None);
+        let out = label_claim(
+            "Something was asserted.",
+            "disputed",
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(out, "[CLAIM · disputed]\nSomething was asserted.");
         // An empty attribution must not render as "asserted by ".
-        let out = label_claim("x", "unverified", Some(""), Some(""), Some(""));
+        let out = label_claim("x", "unverified", Some(""), Some(""), Some(""), Some(""));
         assert_eq!(out, "[CLAIM · unverified]\nx");
     }
 
