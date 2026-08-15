@@ -107,6 +107,10 @@ pub fn kind_qualifier(kind: &str, status: &str) -> Option<String> {
     }
 }
 
+/// `age` is a pre-rendered relative age ("11 months ago") supplied by the
+/// caller rather than computed here, so this stays a pure function of its
+/// inputs and its tests stay deterministic. An absolute date alone does not
+/// tell a model whether a figure is current — see `services/clock.rs`.
 pub fn label_claim(
     content: &str,
     status: &str,
@@ -114,6 +118,7 @@ pub fn label_claim(
     at: Option<&str>,
     tier: Option<&str>,
     kind: Option<&str>,
+    age: Option<&str>,
 ) -> String {
     let mut parts = vec![format!("CLAIM · {status}")];
     if let Some(k) = kind.filter(|k| !k.is_empty()) {
@@ -132,6 +137,9 @@ pub fn label_claim(
     }
     if let Some(at) = at.filter(|s| !s.is_empty()) {
         parts.push(at.chars().take(10).collect());
+    }
+    if let Some(age) = age.filter(|s| !s.is_empty()) {
+        parts.push(age.to_string());
     }
     format!("[{}]\n{content}", parts.join(" · "))
 }
@@ -752,6 +760,7 @@ mod tests {
             Some("2026-08-10"),
             Some("unclassified sources only"),
             Some("attribution"),
+            None,
         );
         assert!(
             out.contains("corroborates that it was asserted, not that it is true"),
@@ -770,6 +779,7 @@ mod tests {
             None,
             Some("primary sources"),
             Some("event"),
+            None,
         );
         assert!(!out.contains("not that it is true"), "{out}");
         assert!(out.contains("event"), "{out}");
@@ -826,13 +836,14 @@ mod tests {
             Some("2026-08-10"),
             Some("unclassified sources only"),
             None,
+            None,
         );
         assert!(out.starts_with("[CLAIM · corroborated · unclassified sources only · asserted by NewsNation · 2026-08-10]"), "{out}");
     }
 
     #[test]
     fn a_none_tier_is_omitted_rather_than_rendered() {
-        let out = label_claim("x", "unverified", None, None, Some("none"), None);
+        let out = label_claim("x", "unverified", None, None, Some("none"), None, None);
         assert_eq!(out, "[CLAIM · unverified]\nx");
     }
 
@@ -862,6 +873,7 @@ mod tests {
             Some("2026-08-10T16:00:00Z"),
             None,
             None,
+            None,
         );
         assert!(out.starts_with("[CLAIM · unverified · asserted by NewsNation · 2026-08-10]\n"));
         assert!(out.contains("The DoD uses TFRs"));
@@ -876,10 +888,19 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(out, "[CLAIM · disputed]\nSomething was asserted.");
         // An empty attribution must not render as "asserted by ".
-        let out = label_claim("x", "unverified", Some(""), Some(""), Some(""), Some(""));
+        let out = label_claim(
+            "x",
+            "unverified",
+            Some(""),
+            Some(""),
+            Some(""),
+            Some(""),
+            Some(""),
+        );
         assert_eq!(out, "[CLAIM · unverified]\nx");
     }
 

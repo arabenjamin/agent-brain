@@ -473,7 +473,7 @@ impl ConstructorSkill {
         };
 
         let mut steps = plan.steps;
-        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let date = crate::services::clock::today();
         for s in &mut steps {
             if let Some(a) = &s.arguments {
                 let substituted = a

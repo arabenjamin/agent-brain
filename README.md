@@ -176,6 +176,7 @@ status   Show brain status
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind |
 | `MCP_API_KEY` | — | HTTP auth |
 | `SANDBOX_URL` | — | Code-execution sandbox endpoint. Unset ⇒ `execute_code` is not registered |
+| `TZ` | — (⇒ UTC) | Wall-clock timezone (e.g. `America/Detroit`). What the brain **says** about time is local; what it **stores** stays UTC. Unset means its "today" is UTC's, which is a different day for part of every day outside UTC |
 
 ## Development
 

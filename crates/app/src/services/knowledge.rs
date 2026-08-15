@@ -1658,6 +1658,13 @@ impl KnowledgeService {
                 continue;
             };
             let note_type = row.get::<String>("note_type").unwrap_or_default();
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            // How old the material is, in the label. A date alone requires the
+            // model to know today's date and do the subtraction; a relative age
+            // does not. This is the missing half of the ToRA-7B failure — a
+            // Sept-2023 benchmark result was relayed as a current standing
+            // because nothing in the context window said it was two years old.
+            let age = crate::services::clock::age_from_iso(&created_at);
             let prefix = match note_type.as_str() {
                 "claim" => crate::services::claims::label_claim(
                     "",
@@ -1666,6 +1673,7 @@ impl KnowledgeService {
                     Some(&row.get::<String>("asserted_at").unwrap_or_default()),
                     Some(&row.get::<String>("tier").unwrap_or_default()),
                     Some(&row.get::<String>("kind").unwrap_or_default()),
+                    age.as_deref(),
                 ),
                 // A record of what an external source said is not the brain's own
                 // knowledge, and typing it 'semantic' told every consumer it was.
@@ -1675,12 +1683,7 @@ impl KnowledgeService {
                 // the same assertion was still in the context window.
                 _ => {
                     let src = row.get::<String>("source_context").unwrap_or_default();
-                    let at: String = row
-                        .get::<String>("created_at")
-                        .unwrap_or_default()
-                        .chars()
-                        .take(10)
-                        .collect();
+                    let at: String = created_at.chars().take(10).collect();
                     let mut parts =
                         vec!["SOURCE RECORD — what a source said, not verified".to_string()];
                     if !src.is_empty() {
@@ -1688,6 +1691,9 @@ impl KnowledgeService {
                     }
                     if !at.is_empty() {
                         parts.push(at);
+                    }
+                    if let Some(age) = &age {
+                        parts.push(age.clone());
                     }
                     format!("[{}]\n", parts.join(" · "))
                 }

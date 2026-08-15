@@ -191,6 +191,7 @@
 
 ### Fixed (recent)
 
+- ~~Brain believed it was tomorrow for four hours a day~~ — the container ran with no `TZ` and every date came from `Utc::now()`, so from 20:00 America/Detroit onward `{{date}}`, the chat prompt, and every dated note were a day ahead. `TZ` now set in compose and `services/clock.rs` owns local-vs-UTC: display is local, storage stays UTC. Verified in-container (host and container agree) and end-to-end via `/chat`. The prompt also gained a full local instant + zone, `{{now}}`/`{{weekday}}` template vars, and relative note ages on retrieval
 - ~~`graph_query_endpoint` CONTAINS fallback~~ — embeddings auto-generated at ingest time
 - ~~Parent task stuck `in_progress` after subtasks complete~~ — `update_task` auto-completes parent when all subtasks done
 - ~~DynamicSkill load on stdio~~ — `build_skills()` is async; `load_from_neo4j().await` called at startup

@@ -44,8 +44,14 @@ const DEFAULT_SYSTEM_PROMPT_TEMPLATE: &str = "\
 You are agent-brain, an autonomous AI assistant backed by a persistent Neo4j \
 knowledge graph. Always think step-by-step before acting and use the available \
 tools to give the most accurate, grounded answer possible.\n\
-Today's date is {DATE}. When searching for recent content, always include the \
-current date in your queries (e.g. \"daily news brief {DATE}\").\n\
+TIME: right now it is {NOW}. That is local wall-clock time, and it is read \
+fresh at the start of every turn — treat it as authoritative over anything you \
+remember about the date. Resolve \"today\", \"tonight\", \"this week\", and \
+\"recent\" against it. When searching for recent content, include the current \
+date in your queries (e.g. \"daily news brief {DATE}\"). Timestamps stored in \
+the graph are UTC, which is {UTC_NOW} right now — convert before quoting one to \
+a person, and note that a UTC timestamp can carry a different calendar date \
+than the local one above.\n\
 {PATHS_SECTION}\
 CRITICAL — interactive chat rules:\n\
 1. Always deliver the actual result. Never describe what you are about to do \
@@ -112,8 +118,14 @@ fn build_system_prompt(profile_prompt: Option<&str>, pre_loaded: &[String]) -> S
     prompt
 }
 
+/// Compose the shared base prompt for one turn.
+///
+/// Called per turn (from `run`), not cached, so the clock in the prompt stays
+/// correct across a long session and across a local midnight.
 fn build_base_system_prompt() -> String {
-    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let date = crate::services::clock::today();
+    let now = crate::services::clock::now_stamp();
+    let utc_now = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let codebase_dir = std::env::var("CODEBASE_DIR").unwrap_or_default();
     let workspace_dir = std::env::var("WORKSPACE_DIR").unwrap_or_default();
     let paths_section = match (codebase_dir.is_empty(), workspace_dir.is_empty()) {
@@ -131,6 +143,8 @@ fn build_base_system_prompt() -> String {
     };
     DEFAULT_SYSTEM_PROMPT_TEMPLATE
         .replace("{DATE}", &date)
+        .replace("{NOW}", &now)
+        .replace("{UTC_NOW}", &utc_now)
         .replace("{PATHS_SECTION}", &paths_section)
 }
 

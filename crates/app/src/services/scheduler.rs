@@ -497,7 +497,9 @@ impl SchedulerService {
         // 2. Deserialise steps, substituting template vars at the Value level so quotes or
         //    newlines in the substituted values can't corrupt the JSON (see
         //    substitute_template_vars).
-        let date = Utc::now().format("%Y-%m-%d").to_string();
+        let date = crate::services::clock::today();
+        let now = crate::services::clock::now_stamp();
+        let weekday = crate::services::clock::weekday();
         let raw: serde_json::Value = serde_json::from_str(&st.steps)
             .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
         let topic = crate::services::queue::goal_topic(&st.name);
@@ -508,6 +510,8 @@ impl SchedulerService {
                 ("goal", &st.name),
                 ("goal_topic", topic),
                 ("date", &date),
+                ("now", &now),
+                ("weekday", &weekday),
             ],
         );
         let mut steps: Vec<ChainStep> = serde_json::from_value(substituted)
@@ -1259,7 +1263,11 @@ impl SchedulerService {
         let rubric: Option<String> = first.get("rubric").ok().flatten();
         let no_evaluator: bool = first.get::<bool>("no_evaluator").unwrap_or(false);
         let no_adversarial: bool = first.get::<bool>("no_adversarial").unwrap_or(false);
-        let date = Utc::now().format("%Y-%m-%d").to_string();
+        // Local, not UTC: a step that writes "the news for {{date}}" or searches
+        // for it means the user's day. See services/clock.rs.
+        let date = crate::services::clock::today();
+        let now = crate::services::clock::now_stamp();
+        let weekday = crate::services::clock::weekday();
         // Compute file_slug for UI chain template substitution.
         let file_slug: String = goal
             .to_lowercase()
@@ -1292,6 +1300,8 @@ impl SchedulerService {
                 ("goal", goal),
                 ("goal_topic", topic),
                 ("date", &date),
+                ("now", &now),
+                ("weekday", &weekday),
                 ("file_slug", &file_slug),
             ],
         );

@@ -230,7 +230,8 @@ impl SchedulerSkill {
                 action=define: store or update a chain — when a task goal matches `pattern` \
                 or any entry in `patterns` (case-insensitive CONTAINS) the scheduler dispatches \
                 `steps` instead of the built-in fallback. Use pattern=\"\" with priority=9999 for a \
-                default chain. Template vars in steps: {{task_id}}, {{goal}}, {{date}}, {{file_slug}}. \
+                default chain. Template vars in steps: {{task_id}}, {{goal}}, {{goal_topic}}, {{date}} (local date), \
+                {{now}} (local date+time+zone), {{weekday}}, {{file_slug}}. \
                 action=remove: delete a chain by its `id`."
                 .to_string(),
             input_schema: json!({
@@ -257,7 +258,7 @@ impl SchedulerSkill {
                     "steps": {
                         "type": "array",
                         "description": "ChainStep array (tool_name, arguments, priority?, provider_hint?, etc.). \
-                                        Template vars: {{task_id}}, {{goal}}, {{date}}, {{file_slug}}. (required for define)"
+                                        Template vars: {{task_id}}, {{goal}}, {{goal_topic}}, {{date}} (local date), {{now}} (local date+time+zone), {{weekday}}, {{file_slug}}. (required for define)"
                     },
                     "priority": {
                         "type": "integer",
@@ -295,7 +296,7 @@ impl SchedulerSkill {
                 a project's implementation usually lives in ScheduledTasks, not in notes. \
                 action=upsert: if a task with `name` exists it is updated in-place, otherwise created. \
                 Steps are ChainStep objects (tool_name, arguments, priority?, max_attempts?, provider_hint?). \
-                Template vars: {{task_id}}, {{goal}}, {{date}}. Do NOT include update_task — appended automatically. \
+                Template vars: {{task_id}}, {{goal}}, {{goal_topic}}, {{date}} (local date), {{now}} (local date+time+zone), {{weekday}}. Do NOT include update_task — appended automatically. \
                 Ownership: tasks created here are managed_by='runtime' (the seeder never touches them). \
                 Tasks managed_by='yaml' are force-synced from schedules/*.yaml on every startup — \
                 runtime edits to them are overwritten unless you pass managed_by='runtime' to take ownership. \

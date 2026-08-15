@@ -1,5 +1,6 @@
 pub mod chain_seeder;
 pub mod claims;
+pub mod clock;
 pub mod context_builder;
 pub mod knowledge;
 pub mod llm;
