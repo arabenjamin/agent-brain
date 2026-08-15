@@ -380,20 +380,26 @@ impl Neo4jClient {
     /// Stamps `parent_result_text` onto each child as `prev_result_json` so the
     /// coordinator can substitute `{{_prev}}` in the child's arguments at execution time.
     /// Returns the newly-queued jobs so the coordinator can push them onto the heap.
+    /// `parent_result_raw` carries the structured envelope when the plain-text
+    /// extraction discarded structure (see `AgentJob::prev_result_raw`); pass an
+    /// empty string when there is nothing to preserve.
     pub async fn unpark_children(
         &self,
         parent_job_id: &str,
         parent_result_text: &str,
+        parent_result_raw: &str,
     ) -> Result<Vec<AgentJob>, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (j:AgentJob {parent_job_id: $parent_id, status: 'parked'})
-             SET j.status = 'queued', j.updated_at = $now, j.prev_result_json = $prev
+             SET j.status = 'queued', j.updated_at = $now, j.prev_result_json = $prev,
+                 j.prev_result_raw_json = $prev_raw
              RETURN j",
         )
         .param("parent_id", parent_job_id)
         .param("now", now)
-        .param("prev", parent_result_text);
+        .param("prev", parent_result_text)
+        .param("prev_raw", parent_result_raw);
 
         let rows = self.execute(q).await?;
         let jobs = rows
@@ -930,6 +936,7 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
     let provider_hint: String = node.get("provider_hint").unwrap_or_default();
     let context_profile: String = node.get("context_profile").unwrap_or_default();
     let prev_result: String = node.get("prev_result_json").unwrap_or_default();
+    let prev_result_raw: String = node.get("prev_result_raw_json").unwrap_or_default();
 
     // Progress tracking fields
     let progress_percent: Option<i64> = node.get("progress_percent").unwrap_or(None);
@@ -987,6 +994,11 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
             None
         } else {
             Some(prev_result)
+        },
+        prev_result_raw: if prev_result_raw.is_empty() {
+            None
+        } else {
+            Some(prev_result_raw)
         },
         // Progress tracking
         progress_percent: progress_percent.map(|v| v as u8),

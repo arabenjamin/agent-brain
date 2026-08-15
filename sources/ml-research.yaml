@@ -1,0 +1,53 @@
+# Bootstrap definition for the `ml-research` SourceList.
+#
+# Exists because of a specific failure: the 2026-08-08 SLM benchmark watch ran
+# unrestricted, and its single source for promoting ToRA-7B to "MOVERS" was a
+# post in a Facebook group. The model was real but nearly three years old
+# (arXiv 2309.17452, Sept 2023), and its headline "+22% over the top open-source
+# model" was a Sept-2023 comparison quoted as if it were current. A watch whose
+# whole job is spotting *new* efficiency gains cannot take model releases from
+# social feeds — reposts there carry no date and rank by engagement.
+#
+# Restricting to primary and near-primary publication venues is not a quality
+# judgement about other sites; it is a scope judgement. A model release has a
+# paper, a weights repo, or a registry entry. If it has none of those, the watch
+# has nothing to verify and the item belongs under WATCH, not MOVERS.
+#
+# Seeded ON CREATE only — the graph owns it after first creation. Edit at
+# runtime via neo4j_query (readonly=false):
+#   MATCH (s:SourceList {name:'ml-research'}) SET s.domains = [...]
+# Delete the node to re-seed from this file.
+name: ml-research
+description: >
+  Primary sources for model releases, benchmarks, and local-inference
+  characteristics: preprints, weights registries, evaluation leaderboards, and
+  the inference runtimes themselves. Used by the SLM benchmark watch so that a
+  "MOVER" is always traceable to a paper, a weights repo, or a registry entry.
+domains:
+  # Preprints and papers
+  - arxiv.org
+  - openreview.net
+  - aclanthology.org
+  - paperswithcode.com
+  # Weights, model cards, registries
+  - huggingface.co
+  - ollama.com
+  - github.com
+  - modelscope.cn
+  # Evaluation and leaderboards
+  - lmarena.ai
+  - epoch.ai
+  - artificialanalysis.ai
+  # Inference runtimes and quantization (the local-deployability sweep)
+  - llama.cpp.ai
+  - ggml.ai
+  - lmstudio.ai
+  - vllm.ai
+  # First-party lab announcements — release notes carry dates and model cards
+  - ai.meta.com
+  - qwen.ai
+  - deepseek.com
+  - mistral.ai
+  - ai.google.dev
+  - microsoft.com
+  - allenai.org

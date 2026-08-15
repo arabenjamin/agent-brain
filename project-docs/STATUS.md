@@ -5,9 +5,15 @@
      this file wholesale; make targeted, commit-grounded edits only. -->
 
 **Build:** passing
-**Tool count:** 70 static registered across 17 skills + N runtime (DynamicSkill)
+**Tool count:** 79 static registered across 20 skills + N runtime (DynamicSkill)
 **LLM Providers:** Ollama (local), Ollama Cloud, Anthropic, Gemini
-**Last updated:** 2026-06-11
+**Last updated:** 2026-08-10
+
+> Tool counts below are read from the live `(:ToolDef)` meta-graph
+> (`MATCH (t:ToolDef) RETURN t.skill, count(*)`), which `services/self_model.rs`
+> re-derives from the registry on every `build_skills()`. Re-run that query
+> rather than incrementing these by hand — the previous figures (70/17) had
+> drifted three skills behind the code.
 
 ---
 
@@ -29,27 +35,30 @@
 
 ---
 
-## Skill Registry (70 tools static + N runtime)
+## Skill Registry (79 tools static + N runtime)
 | Skill | Path | Tools | Notes |
 |-------|------|-------|-------|
-| HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
-| KnowledgeSkill | `src/skills/knowledge.rs` | 7 | RAG, reasoning, consolidation, adversarial plan review |
-| TaskSkill | `src/skills/task.rs` | 7 | Goal tracking, decomposition, outcomes, reflection |
-| AgentSkill | `src/skills/agent.rs` | 5 | Background job queue + sequential chaining |
-| QuerySkill | `src/skills/query.rs` | 2 | Generic Neo4j (Cypher) and DuckDB (SQL) primitives |
-| ModelSkill | `src/skills/model.rs` | 2 | Model registry + selection |
-| SchedulerSkill | `src/skills/scheduler.rs` | 4 | Autonomous background scheduler |
-| ContextSkill | `src/skills/context.rs` | 1 | Context profile management |
-| DynamicSkill | `src/skills/dynamic.rs` | 3 | Runtime tool definition and procedures |
-| WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad and summarisation |
 | CodebaseSkill | `src/skills/codebase.rs` | 14 | Codebase analysis, git logs/diffs, proposals, workspace files |
+| DynamicSkill | `src/skills/dynamic.rs` | 8 | Runtime tool definition and procedures |
+| KnowledgeSkill | `src/skills/knowledge.rs` | 7 | RAG, reasoning, consolidation, adversarial plan review |
+| MediaSkill | `src/skills/media.rs` | 7 | Watch/summarize videos (yt-dlp captions), watchlist, RSS polling, discovery |
 | GitSkill | `src/skills/git.rs` | 6 | git status/commit/push/branch/PR + codebase file writes |
+| TaskSkill | `src/skills/task.rs` | 5 | Goal tracking, decomposition, outcomes, reflection |
+| AgentSkill | `src/skills/agent.rs` | 5 | Background job queue + sequential chaining |
+| SchedulerSkill | `src/skills/scheduler.rs` | 4 | Autonomous background scheduler |
 | WsSkill | `src/skills/ws.rs` | 4 | WebSocket connection management |
-| ResourceSkill | `src/skills/resource.rs` | 1 | Shared resource/token registry |
+| ModelSkill | `src/skills/model.rs` | 3 | Model registry + selection |
+| WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad and summarisation |
+| HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
+| QuerySkill | `src/skills/query.rs` | 2 | Generic Neo4j (Cypher) and DuckDB (SQL) primitives |
 | SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger |
-| MediaSkill | `src/skills/media.rs` | 6 | Watch/summarize videos (yt-dlp captions), channel watchlist, autonomous RSS polling |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
-| **Total** | | **71** | |
+| ClaimSkill | `src/skills/claims.rs` | 1 | Claim extraction, verification, corroboration tiering |
+| ConstructorSkill | `src/skills/constructor.rs` | 1 | Agent construction and reuse |
+| ContextSkill | `src/skills/context.rs` | 1 | Context profile management |
+| ExecSkill | `src/skills/exec.rs` | 1 | Sandboxed Python execution (`execute_code`) — tool-integrated reasoning |
+| ResourceSkill | `src/skills/resource.rs` | 1 | Shared resource/token registry |
+| **Total** | | **79** | |
 
 **KnowledgeSkill tools (7):** `store_note`, `search_notes`, `prune_old_notes`, `consolidate_memories`, `reason`, `synthesize_knowledge`, `adversarial_plan_review`
 
@@ -125,6 +134,29 @@
 ---
 
 ## Recent Changes (auto)
+
+### 2026-08-10
+
+- feat: `execute_code` + isolated `sandbox` sidecar — tool-integrated reasoning.
+  Python runs in a container on an `internal: true` network (no egress,
+  verified), read-only root, dropped caps, no credentials, no bind mounts.
+  A failed run returns its traceback as a *successful* tool call so it cannot
+  burn a retry or dead-letter the owning Task.
+- feat: `computation` capability in `models.yaml`, held by `qwen2.5-coder:7b`
+  alone — a second $0 holder would silently win on context-window tiebreak.
+- fix: chain-extracted claims now get an `ASSERTED_IN` edge. `extract_result_text`
+  unwraps a result envelope's `answer` before stamping it on the next job, which
+  discarded `store_note`'s id upstream of substitution; `AgentJob.prev_result_raw`
+  keeps the envelope and `{{_prev.<path>}}` reaches into it. Verified live:
+  0/25 edges before, 1/1 after.
+- fix: `claim` echoes its input as `answer`, so a claim step is transparent
+  mid-chain. It had been seeded into daily-news between `store_note` and
+  `notify_user`; the next run would have delivered `{"stored":N,…}` to the user
+  as the daily brief.
+- fix: SLM benchmark watch stored unverified benchmark numbers as `semantic`
+  and had no recency gate, so a Sept-2023 model sourced from a Facebook group
+  post was reported in chat as a current finding. Now `source_record` + claim
+  extraction + the new `ml-research` SourceList + a dated MOVERS gate.
 
 ### 2026-08-05
 

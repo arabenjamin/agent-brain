@@ -106,7 +106,13 @@ impl ClaimSkill {
             return ToolCallResult::error("`text` is required for action=extract");
         };
         let max = args["limit"].as_u64().unwrap_or(5) as usize;
-        let source_note_id = args["source_note_id"].as_str();
+        // An unresolved `{{_prev.id}}` substitutes to the empty string. Treat
+        // that as "no source note" rather than passing it down to a MATCH that
+        // silently finds nothing — the ASSERTED_IN edge is optional, and a
+        // blank id should read as absent at the boundary where it arrives.
+        let source_note_id = args["source_note_id"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty());
         let source_context = args["source_context"].as_str();
         let fallback_by = args["asserted_by"].as_str();
 
@@ -119,6 +125,7 @@ impl ClaimSkill {
             return ToolCallResult::success_json(json!({
                 "stored": 0,
                 "claims": [],
+                "answer": text,
                 "note": "No independently checkable factual assertions found in this source."
             }));
         }
@@ -153,9 +160,16 @@ impl ClaimSkill {
         }
 
         info!(count = stored.len(), "Extracted and stored claims");
+        // "answer" echoes the source text so extraction is TRANSPARENT to a
+        // chain: `{{_prev}}` in the next step yields the same content this step
+        // received, exactly as store_note and notify_user already do. Without
+        // it, inserting a claim step mid-chain silently replaces the payload
+        // with claim metadata — which is what would have shipped the daily news
+        // brief to the user as `{"stored":6,"claims":[…]}`.
         ToolCallResult::success_json(json!({
             "stored": stored.len(),
             "claims": stored,
+            "answer": text,
             "note": "Stored as unverified. Run claim(action=verify) to gather evidence."
         }))
     }

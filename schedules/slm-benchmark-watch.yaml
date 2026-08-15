@@ -41,6 +41,7 @@ steps:
     arguments:
       query: "new small language model release 1B 3B 7B parameters Qwen Phi Gemma DeepSeek Mistral weights open"
       count: 10
+      source_list: ml-research
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -60,6 +61,7 @@ steps:
     arguments:
       query: "small language model benchmark results MMLU GPQA coding math arXiv evaluation 7B frontier parity"
       count: 10
+      source_list: ml-research
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -79,6 +81,7 @@ steps:
     arguments:
       query: "quantization GGUF local inference VRAM requirements small model Ollama llama.cpp throughput"
       count: 10
+      source_list: ml-research
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -114,10 +117,26 @@ steps:
         Write a benchmark watch report with exactly these sections:
 
         ## MOVERS
-        Models that newly qualify as frontier-equivalent on a specific task
-        class. Name the model, the parameter count, the task class, and the
-        benchmark evidence. A model with no benchmark evidence in the CONTEXT
-        does not belong here — put it under WATCH instead.
+        Models that NEWLY qualify as frontier-equivalent on a specific task
+        class. Name the model, the parameter count, the task class, the
+        benchmark evidence, and — required — the model's RELEASE DATE.
+
+        Apply these gates before listing anything here. They exist because a
+        prior run promoted a model released in September 2023 as a new mover,
+        quoting its original launch comparison as if it were current:
+
+        1. RECENCY. Today is {{date}}. A model whose release or publication
+           date is more than 12 months before today is NOT a mover, however
+           good its numbers. It has already been absorbed by the field.
+        2. DATE OR DEMOTE. If you cannot establish a release date from the
+           CONTEXT, it does not go here — put it under WATCH and say the date
+           is unknown. Never infer a date from the fact that a source
+           mentioned it recently; reposts of old releases are common.
+        3. COMPARISONS AGE. A claim like "beats the top open-source model by
+           N%" is relative to the date it was written. Report it as
+           "+N% vs. the SOTA of <date>", never as a current standing.
+        4. EVIDENCE. A model with no benchmark evidence in the CONTEXT belongs
+           under WATCH, not here.
 
         ## DELTA vs PRIOR LIST
         What changed since the prior list: additions, removals, and demotions,
@@ -148,16 +167,66 @@ steps:
     required_capabilities: ["reasoning"]
     description: "Delta analysis + updated Tier 2 list"
 
-  # 7. Persist under the retrieval key used by the next run and the monthly audit.
+  # 7. Bank the report, then re-query it alone. store_note returns a JSON blob
+  #    ({"id":…,"answer":…}), so a step chained directly off it receives that
+  #    wrapper rather than the report. Banking and re-reading keeps both the
+  #    stored note and the claim extractor on clean report text.
+  - tool_name: push_context
+    arguments:
+      session_id: "slmwatch-{{task_id}}"
+      content: "## REPORT\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the finished report"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'slmwatch-{{task_id}}'}) WHERE w.content STARTS WITH '## REPORT' RETURN w.content AS content ORDER BY w.turn_index DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Re-read the report alone"
+
+  # 8. Persist under the retrieval key used by the next run and the monthly audit.
+  #
+  #    note_type is `source_record`, not `semantic`. Nothing in this report is
+  #    knowledge the brain established — every figure in it is a benchmark
+  #    number some external page asserted, unverified. Typed `semantic` it came
+  #    back out of retrieval unlabelled and was relayed in chat as settled fact
+  #    ("ToRA-7B has emerged as a powerhouse"). As `source_record`, label_claims
+  #    prefixes it on retrieval with an explicit not-verified marker.
   - tool_name: store_note
     arguments:
       content: "# SLM benchmark watch — {{date}}\n\n{{_prev}}"
-      note_type: semantic
+      note_type: source_record
       source_context: slm_benchmark_watch
     priority: 1
     max_attempts: 3
     provider_hint: ollama
     description: "Store the benchmark watch report"
+
+  # 9. Break the report into individually checkable claims. A benchmark score is
+  #    exactly the shape the claims layer exists for: attributable, dated, and
+  #    corroborable against an independent domain. Without this the whole report
+  #    is one undifferentiated blob that retrieval can only accept or reject.
+  #
+  #    Chained directly off store_note: `{{_prev}}` is the stored report and
+  #    `{{_prev.id}}` is that note's id, so every claim carries an ASSERTED_IN
+  #    edge back to the run that produced it.
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_note_id: "{{_prev.id}}"
+      source_context: slm_benchmark_watch
+      asserted_by: "SLM benchmark watch"
+      limit: 8
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract benchmark claims as checkable, attributed propositions"
 
   - tool_name: neo4j_query
     arguments:

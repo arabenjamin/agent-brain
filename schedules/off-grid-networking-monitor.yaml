@@ -1,0 +1,243 @@
+# schedules/off-grid-networking-monitor.yaml
+#
+# Standing watch on off-grid / decentralized mesh networking (Meshtastic,
+# Reticulum, LoRa, and adjacent protocols), backing the "Off Grid Decentralized
+# network" todo.
+#
+# This schedule was originally created at runtime from a chat session on
+# 2026-08-12 and was structurally broken in three ways. Its first and only run
+# is the documentation for why each rule below exists:
+#
+#   1. The `reason` step passed no `context`, so the search results it had just
+#      fetched were discarded and it answered from RAG over the graph:
+#      "there is no information regarding new hardware releases or specific
+#      protocol updates" — written moments after a search returned 5 results.
+#   2. The `store_note` content was the literal string
+#      "Updates on off-grid networking research for {{date}}." with no
+#      {{_prev}}, so the stored note WAS that sentence. The findings were
+#      thrown away every run.
+#   3. It stored `semantic` with no `source_context`, so the placeholder
+#      accumulated as "knowledge the brain established" and no future run
+#      could retrieve its predecessor to perform a delta.
+#
+# Same banking idiom as slm-benchmark-watch.yaml — {{_prev}} carries only the
+# previous step's output, so consecutive searches would discard all but the
+# last. Each sweep is banked into "offgrid-{{task_id}}" and reassembled.
+name: "Off-Grid Networking Monitor"
+description: "Weekly sweep of off-grid and decentralized mesh networking developments (Meshtastic, Reticulum, LoRa, and alternatives), compared against the previous run, ending in an actionable delta and a hardware/setup note."
+interval_seconds: 604800
+
+steps:
+  # 1. Prior run, for delta rather than re-describing the field from scratch.
+  #    `NOT (n)-[:PART_OF]->()` excludes store_note's chunks, which inherit
+  #    source_context and would otherwise return a partial section.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'off_grid_networking_watch' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch prior report for delta analysis"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "offgrid-{{task_id}}"
+      content: "## PRIOR REPORT (may be empty on first run)\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank prior report"
+
+  # 2-4. Three sweeps: protocol/software, hardware, and the adjacent field.
+  - tool_name: search_web
+    arguments:
+      query: "Meshtastic Reticulum firmware release protocol update mesh networking news"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: protocol and firmware"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "offgrid-{{task_id}}"
+      content: "## SWEEP — PROTOCOL AND FIRMWARE\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank protocol sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "LoRa mesh node hardware release Heltec T-Beam RNode board comparison price range"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: hardware"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "offgrid-{{task_id}}"
+      content: "## SWEEP — HARDWARE\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank hardware sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "decentralized off-grid communication protocol alternative Briar MeshCore APRS ham packet radio"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: adjacent and alternative protocols"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "offgrid-{{task_id}}"
+      content: "## SWEEP — ALTERNATIVES\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank alternatives sweep"
+
+  # 5. Reassemble everything for the reason step.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'offgrid-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble prior report + sweeps"
+
+  # 6. Material goes in `context`, not `question`. This is the specific bug the
+  #    runtime version had: `reason` with a question alone runs RAG over the
+  #    graph and never sees the sweeps.
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains a PRIOR REPORT followed by three fresh sweeps:
+        protocol/firmware, hardware, and alternative protocols, covering
+        off-grid and decentralized mesh networking.
+
+        Write a watch report with exactly these sections:
+
+        ## DELTA vs PRIOR REPORT
+        What actually changed since the prior report: firmware or protocol
+        releases, new hardware, notable project news. If the CONTEXT contains
+        no prior report, say so and treat this as the initial baseline.
+
+        ## MOVERS
+        Developments that change what someone building an off-grid network
+        should do. Name the project or device, what changed, and — required —
+        the DATE of the change.
+
+        Apply these gates before listing anything here:
+
+        1. RECENCY. Today is {{date}}. Anything dated more than 12 months
+           before today is not a mover; it is established context. Put it
+           under REFERENCE instead.
+        2. DATE OR DEMOTE. If you cannot establish a date from the CONTEXT, it
+           does not go here — put it under WATCH and say the date is unknown.
+           Do not infer a date from the fact that a source mentioned it
+           recently; reposts of old releases are common in this space.
+        3. SOURCE QUALITY. This field is heavy on forum posts, subreddits, and
+           vendor marketing. Say where each item came from. A project's own
+           release notes or repository outranks a roundup post; note when your
+           only source is a forum or social thread.
+
+        ## HARDWARE PICTURE
+        Current entry-level options with approximate price and what they are
+        good for, one line each:
+        `<device> — <approx price> — <band/region note> — <best use>`
+
+        ## RELEVANCE TO THE OFF-GRID TODO
+        The open todo is to learn what mesh networks like Meshtastic and
+        Reticulum can do, what else is out there, and what setup takes. State
+        what this run changes about that answer, and name the single most
+        useful next step. Say "no change since last run" if that is honest.
+
+        ## WATCH
+        Promising but unproven or undated items to re-check next cycle.
+
+        Ground every claim in the CONTEXT and cite source URLs where present.
+        Include the URL for any video or guide worth watching — a bare search
+        term is not a citation and cannot be acted on. If the sweeps returned
+        nothing usable, say so rather than answering from general knowledge or
+        restating the prior report as if it were fresh.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+    description: "Delta analysis + actionable off-grid report"
+
+  # 7. Bank the report, then re-read it alone. store_note returns
+  #    {"id":…,"answer":…}, so a step chained directly off it would receive that
+  #    wrapper rather than the report text.
+  - tool_name: push_context
+    arguments:
+      session_id: "offgrid-{{task_id}}"
+      content: "## REPORT\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the finished report"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'offgrid-{{task_id}}'}) WHERE w.content STARTS WITH '## REPORT' RETURN w.content AS content ORDER BY w.turn_index DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Re-read the report alone"
+
+  # 8. Persist under the retrieval key step 1 reads back.
+  #
+  #    note_type is `source_record`, not `semantic`. Nothing here is knowledge
+  #    the brain established — every figure is something an external page
+  #    asserted, and this field's sources skew to forums and vendor pages.
+  #    As `source_record`, label_claims prefixes it on retrieval with an
+  #    explicit not-verified marker instead of letting it be relayed as fact.
+  - tool_name: store_note
+    arguments:
+      content: "# Off-grid networking watch — {{date}}\n\n{{_prev}}"
+      note_type: source_record
+      source_context: off_grid_networking_watch
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the off-grid watch report"
+
+  # 9. Break the report into individually checkable claims. Chained directly
+  #    off store_note: {{_prev}} is the report text and {{_prev.id}} is that
+  #    note's id, so each claim carries an ASSERTED_IN edge back to this run.
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_note_id: "{{_prev.id}}"
+      source_context: off_grid_networking_watch
+      asserted_by: "Off-grid networking watch"
+      limit: 8
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract off-grid claims as checkable, attributed propositions"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'offgrid-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 0
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

@@ -76,6 +76,19 @@ cargo run --release -- serve
 ### Model
 `use_model`, `reload_models`
 
+### Code Execution
+`execute_code`
+
+Runs Python in an isolated `sandbox` sidecar and returns what it printed, so
+quantitative steps compute their numbers instead of narrating them — prose
+arithmetic fails silently and confidently, and nothing downstream re-derives it.
+The sandbox sits on an `internal: true` Docker network with **no egress**, a
+read-only root filesystem, dropped capabilities, none of the brain's
+credentials, and no bind mounts; every input must be passed inline in the code.
+`numpy`, `sympy`, and `pandas` are available. A failed run returns its traceback
+as a *successful* tool call, so the model can fix the code rather than burn a
+retry. Registered only when `SANDBOX_URL` is set.
+
 ### Other
 `search_web`, `get_search_usage`, `resource`, `context`, `digest_experiences`, `analyze_gaps`
 
@@ -162,6 +175,7 @@ status   Show brain status
 | `MCP_TRANSPORT` | `stdio` | Transport type |
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind |
 | `MCP_API_KEY` | — | HTTP auth |
+| `SANDBOX_URL` | — | Code-execution sandbox endpoint. Unset ⇒ `execute_code` is not registered |
 
 ## Development
 

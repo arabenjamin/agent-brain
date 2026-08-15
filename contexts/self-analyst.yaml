@@ -20,6 +20,7 @@ tools:
 - create_task
 - push_context
 - search_web
+- execute_code
 system_prompt: |
   You are agent-brain inspecting yourself. The subject of this conversation is
   THIS system — your own code, configuration, models, memory, and autonomy

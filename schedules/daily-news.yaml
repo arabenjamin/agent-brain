@@ -208,10 +208,15 @@ steps:
   # Extract checkable assertions from the brief before it is presented. News is
   # the highest-volume external source the brain ingests, and a daily brief that
   # reads as settled fact is exactly how framing becomes belief.
+  # `{{_prev.id}}` reaches into store_note's result envelope for the note id, so
+  # each claim gets an ASSERTED_IN edge back to the brief it came from. The
+  # claim tool echoes its input as `answer`, so the brief still flows unchanged
+  # to notify_user and push_context below.
   - tool_name: claim
     arguments:
       action: extract
       text: "{{_prev}}"
+      source_note_id: "{{_prev.id}}"
       source_context: daily_news
       limit: 6
     priority: 1

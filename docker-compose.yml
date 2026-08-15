@@ -55,6 +55,9 @@ services:
       # Reorder here to change preference without a rebuild.
       - SEARCH_ENGINE_ORDER=searxng,google,serpapi,brave
       - SEARXNG_URL=http://searxng:8080
+      # Sandboxed code execution. Unset => execute_code is not registered at
+      # all, so a deployment without the sandbox service degrades cleanly.
+      - SANDBOX_URL=http://sandbox:8000
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
       - PROPOSALS_DIR=/home/agent/proposals
@@ -97,8 +100,11 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
+      sandbox:
+        condition: service_started
     networks:
       - brain-internal
+      - sandbox-net
       - ai-network
     restart: unless-stopped
 
@@ -156,6 +162,38 @@ services:
       - brain-internal
     restart: unless-stopped
 
+  # Sandboxed Python execution for the `execute_code` tool — the substrate for
+  # tool-integrated reasoning (a step computes its numbers instead of narrating
+  # them). Everything about this service is about containing LLM-written code:
+  #
+  #   - `sandbox-net` is `internal: true`, so it has NO route off the host.
+  #     This is the only real egress boundary; per-process limits inside the
+  #     container are runaway guards, not a security boundary.
+  #   - No env_file and no secrets: the brain's NEO4J_PASSWORD, OLLAMA_API_KEY
+  #     and GITHUB_TOKEN must never be reachable from submitted code.
+  #   - No bind mounts. The repo and workspace are deliberately absent; a run
+  #     gets a fresh scratch dir on tmpfs and nothing else.
+  #   - read_only root + dropped capabilities + no-new-privileges.
+  #
+  # Do NOT put this service on brain-internal or add a `ports:` mapping — either
+  # one restores the egress this design exists to remove.
+  sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 2g
+    pids_limit: 128
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+
   hbi-frontend:
     build:
       context: ./hbi-frontend
@@ -170,6 +208,11 @@ services:
 
 networks:
   brain-internal:
+  # Carries only agent-brain <-> sandbox. `internal: true` removes the default
+  # gateway, which is what actually denies the sandbox any egress. agent-brain
+  # keeps its own internet access via brain-internal/ai-network.
+  sandbox-net:
+    internal: true
   ai-network:
     external: true
 

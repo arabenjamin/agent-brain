@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::repository::Neo4jClient;
+use crate::services::queue::ChainStep;
 use crate::services::scheduler::SchedulerService;
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
@@ -298,9 +299,16 @@ impl SchedulerSkill {
                 Ownership: tasks created here are managed_by='runtime' (the seeder never touches them). \
                 Tasks managed_by='yaml' are force-synced from schedules/*.yaml on every startup — \
                 runtime edits to them are overwritten unless you pass managed_by='runtime' to take ownership. \
+                Steps are enqueued VERBATIM at run time — no chain matching, no evaluator, no \
+                validation — so a chain that discards its own inputs runs forever without erroring. \
+                upsert lints for this and returns `step_warnings`; if it does, FIX AND RE-UPSERT \
+                before reporting the schedule as working. Two rules cover most of it: a `reason` step \
+                needs `context: \"{{_prev}}\"` or it ignores the step before it, and any step meant to \
+                save the result must contain `{{_prev}}` in its arguments or it saves a fixed string. \
                 action=delete: permanently remove a task by `id` (use upsert with enabled=false to pause instead). \
                 action=audit: scan all ScheduledTask steps against the live tool registry and return a report \
-                of broken tool names, plus optionally disable tasks that reference only dead tools."
+                of broken tool names and of `degraded` tasks whose steps run but discard their inputs, \
+                plus optionally disable tasks that reference only dead tools."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -622,10 +630,15 @@ impl SchedulerSkill {
                         );
                     }
                 };
-                use crate::services::queue::ChainStep;
-                if let Err(e) = serde_json::from_str::<Vec<ChainStep>>(&steps_json) {
-                    return ToolCallResult::error(format!("steps JSON invalid: {e}"));
-                }
+                // Shape validation only — this proves the JSON is a legal chain,
+                // not that the chain does anything. `lint_chain_steps` below
+                // covers the difference.
+                let parsed_steps = match serde_json::from_str::<Vec<ChainStep>>(&steps_json) {
+                    Ok(s) => s,
+                    Err(e) => return ToolCallResult::error(format!("steps JSON invalid: {e}")),
+                };
+                let step_warnings =
+                    lint_chain_steps(&parsed_steps, &self.live_tools.read().await.clone());
 
                 let description = args["description"].as_str();
                 let enabled = args["enabled"].as_bool().unwrap_or(true);
@@ -715,6 +728,21 @@ impl SchedulerSkill {
                         if let Some(w) = yaml_owned_warning {
                             response["warning"] = json!(w);
                         }
+                        // Loud, and phrased as unfinished work. The task IS
+                        // saved — silently, these read as "done" and get
+                        // reported to the user as a working schedule.
+                        if !step_warnings.is_empty() {
+                            response["step_warnings"] = json!(step_warnings);
+                            response["needs_fix"] = json!(true);
+                            response["action_required"] = json!(
+                                "This schedule is SAVED BUT LIKELY BROKEN. Nothing validates a \
+                                 schedule at run time — its steps are enqueued verbatim — so these \
+                                 defects will not surface as errors, they will surface as a job \
+                                 that runs forever and produces nothing. Re-upsert with the fixes \
+                                 before telling the user it is set up, and tell them what you \
+                                 corrected."
+                            );
+                        }
                         ToolCallResult::success_json(response)
                     }
                     Ok(None) => ToolCallResult::error("Task not found after update".to_string()),
@@ -772,6 +800,9 @@ impl SchedulerSkill {
         let disable_broken = args["disable_broken"].as_bool().unwrap_or(false);
 
         let mut healthy: Vec<Value> = Vec::new();
+        // Every tool name resolves, but the chain discards its own inputs —
+        // the failure mode that produces no error and no output, forever.
+        let mut degraded: Vec<Value> = Vec::new();
         let mut broken: Vec<Value> = Vec::new();
         let mut disabled_ids: Vec<String> = Vec::new();
 
@@ -798,8 +829,25 @@ impl SchedulerSkill {
                 .filter(|t| !live_tools.is_empty() && !live_tools.contains(t))
                 .collect();
 
+            // A live tool name only means the step will run. Whether it does
+            // anything is a separate question — `live_tools` is passed empty
+            // here so the lint does not re-report what `dead_tools` covers.
+            let lint = serde_json::from_str::<Vec<ChainStep>>(&steps_json)
+                .map(|cs| lint_chain_steps(&cs, &[]))
+                .unwrap_or_default();
+
             if dead.is_empty() {
-                healthy.push(json!({ "id": id, "name": name, "step_count": steps.len() }));
+                if lint.is_empty() {
+                    healthy.push(json!({ "id": id, "name": name, "step_count": steps.len() }));
+                } else {
+                    degraded.push(json!({
+                        "id": id,
+                        "name": name,
+                        "enabled": enabled,
+                        "step_count": steps.len(),
+                        "warnings": lint,
+                    }));
+                }
             } else {
                 let all_dead = dead.len() == steps.len();
                 broken.push(json!({
@@ -808,6 +856,7 @@ impl SchedulerSkill {
                     "enabled": enabled,
                     "dead_tools": dead,
                     "all_steps_dead": all_dead,
+                    "warnings": lint,
                 }));
 
                 if disable_broken && all_dead && enabled {
@@ -831,9 +880,11 @@ impl SchedulerSkill {
         ToolCallResult::success_json(json!({
             "live_tool_count": live_tool_count,
             "healthy_count": healthy.len(),
+            "degraded_count": degraded.len(),
             "broken_count": broken.len(),
             "disabled_count": disabled_ids.len(),
             "healthy": healthy,
+            "degraded": degraded,
             "broken": broken,
             "disabled_ids": disabled_ids,
         }))
@@ -855,6 +906,153 @@ where
         Some(Value::String(s)) => Ok(Some(Some(s))), // string → set
         _ => Ok(None),
     }
+}
+
+/// Tools whose entire purpose is to persist or hand on the material they are
+/// given. Mid-chain, one of these with no `{{_prev}}` anywhere in its arguments
+/// stores a fixed literal and silently drops the upstream step's output.
+const PERSISTING_TOOLS: &[&str] = &[
+    "store_note",
+    "push_context",
+    "write_workspace_file",
+    "create_task",
+    "notify_user",
+];
+
+/// True when a step's arguments reference the previous step's output in any
+/// form — `{{_prev}}`, a dotted `{{_prev.id}}` path, or the `{{result…}}` alias.
+fn references_prev(args: Option<&Value>) -> bool {
+    args.is_some_and(|v| {
+        let s = v.to_string();
+        s.contains("{{_prev") || s.contains("{{result")
+    })
+}
+
+/// Lint a chain for steps that are structurally valid but discard their own
+/// inputs. Returns human-readable warnings, most severe first; empty means clean.
+///
+/// This exists because `dispatch_one_scheduled_task` enqueues `steps` verbatim —
+/// no `goal_to_steps()`, no adversarial pre-flight, no evaluator. Deserializing
+/// as `Vec<ChainStep>` proves the shape is legal and nothing more, so a chain
+/// authored from chat could be accepted, dispatched, and run weekly while doing
+/// nothing at all. `Off-Grid Networking Monitor` (created 2026-08-12) did
+/// exactly that: a `reason` step with no `context` answered "there is no
+/// information" seconds after its own `search_web` returned five results, and a
+/// `store_note` whose content was a fixed sentence stored 55 characters a week,
+/// forever. Every rule below is one of those three defects.
+///
+/// Warnings, never rejections. A first step may legitimately store a literal,
+/// and a `reason` step may legitimately stand alone — the caller knows which.
+/// A false positive that blocks a valid schedule is worse than a warning the
+/// author reads and dismisses.
+fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let has_search = steps.iter().any(|s| s.tool_name == "search_web");
+
+    for (i, step) in steps.iter().enumerate() {
+        let n = i + 1;
+        let tool = step.tool_name.as_str();
+        let args = step.arguments.as_ref();
+
+        if !live_tools.is_empty() && !live_tools.contains(&step.tool_name) {
+            warnings.push(format!(
+                "step {n} (`{tool}`): no such tool is registered — this step will fail every run."
+            ));
+        }
+
+        // `reason` reads its retrieval context from `context`. Given only a
+        // `question`, it runs RAG over the graph and never sees the upstream
+        // step, however carefully that step was written.
+        if tool == "reason"
+            && i > 0
+            && args
+                .and_then(|a| a.get("context"))
+                .and_then(|c| c.as_str())
+                .is_none_or(str::is_empty)
+        {
+            let prev = &steps[i - 1].tool_name;
+            warnings.push(format!(
+                "step {n} (`reason`): no `context` argument, so it will reason over the \
+                 knowledge graph and never see step {} (`{prev}`) output. Pass \
+                 `context: \"{{{{_prev}}}}\"` to hand the upstream result in.",
+                i
+            ));
+        }
+
+        if PERSISTING_TOOLS.contains(&tool) && i > 0 && !references_prev(args) {
+            warnings.push(format!(
+                "step {n} (`{tool}`): arguments contain no `{{{{_prev}}}}`, so it will \
+                 persist a fixed literal and discard step {} output.",
+                i
+            ));
+        }
+
+        // A note with no retrieval key cannot be found by the next run, which
+        // is what makes a watch schedule a watch rather than a weekly restatement.
+        if tool == "store_note" {
+            if args
+                .and_then(|a| a.get("source_context"))
+                .and_then(|c| c.as_str())
+                .is_none_or(str::is_empty)
+            {
+                warnings.push(format!(
+                    "step {n} (`store_note`): no `source_context`, so a later run has no key \
+                     to retrieve this note by and cannot build on it."
+                ));
+            }
+            // Web-derived material is what a source asserted, not what the brain
+            // established. Typed `semantic` it comes back out of retrieval
+            // unlabelled and gets relayed as settled fact.
+            if has_search
+                && args
+                    .and_then(|a| a.get("note_type"))
+                    .and_then(|c| c.as_str())
+                    .is_none_or(|t| t == "semantic")
+            {
+                warnings.push(format!(
+                    "step {n} (`store_note`): this chain searches the web, so its output is \
+                     what sources asserted, not established knowledge. Use \
+                     `note_type: \"source_record\"` so retrieval labels it as unverified."
+                ));
+            }
+        }
+    }
+
+    // A chain whose FINAL step only computes has nowhere to put its result.
+    //
+    // Deliberately narrow. The first version of this rule asked whether any step
+    // was in PERSISTING_TOOLS, and flagged five of six live schedules: three
+    // persist through their own side effects (`poll_media_sources` creates
+    // Tasks, `discover_media_sources` creates MediaSource nodes,
+    // `write_codebase_doc` writes a file) and one ends in `reason` with
+    // `store_inference: true`. An enumerate-the-persisters rule cannot see any
+    // of that, and a lint that is wrong five times out of six is one the next
+    // author learns to skip past. So: only the two terminal-compute tools that
+    // actually occur, and `reason` only when it is not storing.
+    if let Some(last) = steps.last() {
+        let computes_only = match last.tool_name.as_str() {
+            "search_web" => true,
+            "reason" => {
+                last.arguments
+                    .as_ref()
+                    .and_then(|a| a.get("store_inference"))
+                    .and_then(|v| v.as_bool())
+                    != Some(true)
+            }
+            _ => false,
+        };
+        if computes_only {
+            warnings.push(format!(
+                "final step (`{}`) only computes — the chain's result is not stored, \
+                 handed on, or notified anywhere, so every run throws its output away. \
+                 Add a `store_note`/`notify_user` step, or set `store_inference: true`.",
+                last.tool_name
+            ));
+        }
+    }
+
+    warnings
 }
 
 /// Render a recurrence period as a human phrase ("weekly", "every 6h").
@@ -936,5 +1134,188 @@ mod tests {
     fn humanize_interval_rejects_a_nonsense_period() {
         assert_eq!(humanize_interval(0), "invalid");
         assert_eq!(humanize_interval(-1), "invalid");
+    }
+
+    fn step(tool: &str, args: Value) -> ChainStep {
+        serde_json::from_value(json!({ "tool_name": tool, "arguments": args })).unwrap()
+    }
+
+    /// The exact chain `Off-Grid Networking Monitor` was created with from a
+    /// chat session. It deserialized cleanly, was accepted, dispatched, and ran
+    /// — producing a 55-character placeholder note. All three defects must be
+    /// named, because "it saved fine" is what the author reported to the user.
+    #[test]
+    fn lint_catches_the_off_grid_monitor_as_authored() {
+        let steps = vec![
+            step(
+                "search_web",
+                json!({ "query": "Meshtastic Reticulum LoRa news" }),
+            ),
+            step(
+                "reason",
+                json!({ "question": "Based on the latest search results, what is new?" }),
+            ),
+            step(
+                "store_note",
+                json!({ "content": "Updates on off-grid networking research for {{date}}." }),
+            ),
+        ];
+
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            w.iter()
+                .any(|s| s.contains("step 2") && s.contains("no `context`")),
+            "reason-without-context not caught: {w:?}"
+        );
+        assert!(
+            w.iter()
+                .any(|s| s.contains("step 3") && s.contains("fixed literal")),
+            "store_note-without-prev not caught: {w:?}"
+        );
+        assert!(
+            w.iter().any(|s| s.contains("source_context")),
+            "missing retrieval key not caught: {w:?}"
+        );
+        assert!(
+            w.iter().any(|s| s.contains("source_record")),
+            "web-derived note typed semantic not caught: {w:?}"
+        );
+    }
+
+    /// The rewritten chain must come back clean, or the lint is noise the next
+    /// author learns to ignore.
+    #[test]
+    fn lint_passes_the_repaired_chain() {
+        let steps = vec![
+            step(
+                "search_web",
+                json!({ "query": "Meshtastic firmware release" }),
+            ),
+            step(
+                "push_context",
+                json!({ "session_id": "offgrid-{{task_id}}", "content": "## SWEEP\n{{_prev}}" }),
+            ),
+            step(
+                "neo4j_query",
+                json!({ "cypher": "MATCH (w:WorkingMemory) RETURN w.content AS content" }),
+            ),
+            step(
+                "reason",
+                json!({ "question": "Write the watch report.", "context": "{{_prev}}" }),
+            ),
+            step(
+                "store_note",
+                json!({
+                    "content": "# Off-grid networking watch\n\n{{_prev}}",
+                    "note_type": "source_record",
+                    "source_context": "off_grid_networking_watch"
+                }),
+            ),
+        ];
+
+        assert!(
+            lint_chain_steps(&steps, &[]).is_empty(),
+            "repaired chain should lint clean: {:?}",
+            lint_chain_steps(&steps, &[])
+        );
+    }
+
+    /// `{{_prev.id}}` is how a claim step links provenance back to the note it
+    /// came from. It is a reference to the previous step like any other, and
+    /// flagging it would push authors to delete the thing that makes the edge.
+    #[test]
+    fn lint_accepts_a_dotted_prev_path_as_a_reference() {
+        let steps = vec![
+            step(
+                "store_note",
+                json!({ "content": "report", "source_context": "x" }),
+            ),
+            step(
+                "create_task",
+                json!({ "goal": "follow up", "context": "{{_prev.id}}" }),
+            ),
+        ];
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            !w.iter().any(|s| s.contains("step 2")),
+            "dotted path should count as referencing prev: {w:?}"
+        );
+    }
+
+    /// A first step has nothing upstream to discard, so a literal is correct
+    /// there — this is why the rules are indexed from step 2.
+    #[test]
+    fn lint_does_not_fault_a_literal_first_step() {
+        let steps = vec![
+            step(
+                "push_context",
+                json!({ "session_id": "s", "content": "## BASELINE" }),
+            ),
+            step(
+                "store_note",
+                json!({ "content": "{{_prev}}", "source_context": "x" }),
+            ),
+        ];
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            !w.iter().any(|s| s.contains("step 1")),
+            "first step should not be faulted: {w:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_dead_tool_names() {
+        let steps = vec![
+            step("search_web", json!({ "query": "x" })),
+            step("frobnicate", json!({})),
+        ];
+        let w = lint_chain_steps(&steps, &["search_web".to_string()]);
+        assert!(w.iter().any(|s| s.contains("no such tool")), "{w:?}");
+    }
+
+    #[test]
+    fn lint_flags_a_chain_that_ends_by_computing_and_discarding() {
+        let steps = vec![
+            step("neo4j_query", json!({ "cypher": "MATCH (n) RETURN n" })),
+            step(
+                "reason",
+                json!({ "question": "how healthy?", "context": "{{_prev}}" }),
+            ),
+        ];
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            w.iter().any(|s| s.contains("throws its output away")),
+            "{w:?}"
+        );
+    }
+
+    /// Every one of these was a false positive from the first version of the
+    /// rule, taken from live `schedules/*.yaml`. A tool that persists through
+    /// its own side effects is invisible to any enumerate-the-persisters check,
+    /// and `reason` with `store_inference: true` does store its output.
+    #[test]
+    fn lint_does_not_fault_chains_that_persist_via_side_effects() {
+        let side_effect_endings = [
+            step("poll_media_sources", json!({})),
+            step("discover_media_sources", json!({ "max": 3 })),
+            step("write_codebase_doc", json!({ "content": "{{_prev}}" })),
+            step(
+                "reason",
+                json!({ "question": "q", "context": "{{_prev}}", "store_inference": true }),
+            ),
+        ];
+
+        for last in side_effect_endings {
+            let tool = last.tool_name.clone();
+            let steps = vec![
+                step("neo4j_query", json!({ "cypher": "MATCH (n) RETURN n" })),
+                last,
+            ];
+            let w = lint_chain_steps(&steps, &[]);
+            assert!(
+                !w.iter().any(|s| s.contains("throws its output away")),
+                "`{tool}` ending should not be faulted: {w:?}"
+            );
+        }
     }
 }

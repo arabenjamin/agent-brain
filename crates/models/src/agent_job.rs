@@ -92,6 +92,17 @@ pub struct AgentJob {
     /// Plain-text result from the preceding chain step, injected at unpark time.
     /// Available via `{{_prev}}` template substitution in this job's arguments.
     pub prev_result: Option<String>,
+    /// The preceding step's *structured* result, when it was a JSON envelope that
+    /// `extract_result_text` unwrapped into something different.
+    ///
+    /// `prev_result` is deliberately lossy — it unwraps `{"id":…,"answer":…}` down
+    /// to the answer so `{{_prev}}` yields clean markdown. That unwrapping threw
+    /// the note id away before substitution could see it, which is why chain-
+    /// extracted claims had no `ASSERTED_IN` edge back to their source note.
+    /// This field keeps the envelope so `{{_prev.id}}` can reach it. `None` when
+    /// the result was not JSON or the unwrap was a no-op (nothing to recover).
+    #[serde(default)]
+    pub prev_result_raw: Option<String>,
 
     // =========================================================================
     // Progress tracking

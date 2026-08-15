@@ -64,10 +64,15 @@ steps:
     max_attempts: 3
     provider_hint: ollama
 
+  # Chained directly off store_note. `{{_prev}}` is the note body (the queue
+  # unwraps the result envelope's `answer`); `{{_prev.id}}` reaches into that
+  # same envelope for the note id, giving each claim an ASSERTED_IN edge back
+  # to the note it was extracted from.
   - tool_name: claim
     arguments:
       action: extract
       text: "{{_prev}}"
+      source_note_id: "{{_prev.id}}"
       source_context: learn_chain
       limit: 4
     priority: 1

@@ -1044,14 +1044,17 @@ impl QueueService {
     /// Promote any parked children of `parent_id` to queued and push them onto the heap.
     /// `prev_result_text` is the plain-text output of the completing job; it is stamped
     /// onto each child so `{{_prev}}` can be resolved when the child executes.
+    /// `prev_result_raw` is the structured envelope the plain-text extraction
+    /// discarded, so `{{_prev.<path>}}` can reach it; `""` when there is none.
     async fn unpark_and_enqueue_children(
         self: &Arc<Self>,
         parent_id: &str,
         prev_result_text: &str,
+        prev_result_raw: &str,
     ) {
         match self
             .neo4j
-            .unpark_children(parent_id, prev_result_text)
+            .unpark_children(parent_id, prev_result_text, prev_result_raw)
             .await
         {
             Ok(children) if !children.is_empty() => {
@@ -1302,24 +1305,51 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         // Resolve {{_prev}} / {{result}} in arguments if the job carries a prior step result.
         // {{result}} is treated as an alias for {{_prev}} — brain-generated chains often use
         // the more natural name.
+        //
+        // Two forms, resolved in order of specificity:
+        //   {{_prev.id}}  — a path into the previous output parsed as JSON
+        //   {{_prev}}     — the previous output pasted whole
+        // The two can never collide: "{{_prev}}" is not a substring of
+        // "{{_prev.id}}" (the char after `_prev` is `.`, not `}`).
         let resolved_args = match &job.prev_result {
-            Some(prev_text)
-                if job.arguments.as_ref().is_some_and(|a| {
-                    let s = a.to_string();
-                    s.contains("{{_prev}}") || s.contains("{{result}}")
-                }) =>
-            {
+            Some(prev_text) => {
+                let (wants_whole, wants_path) = job
+                    .arguments
+                    .as_ref()
+                    .map(|a| {
+                        let s = a.to_string();
+                        (
+                            s.contains("{{_prev}}") || s.contains("{{result}}"),
+                            s.contains("{{_prev.") || s.contains("{{result."),
+                        )
+                    })
+                    .unwrap_or((false, false));
+
+                let mut args = job.arguments.clone();
+
+                // Paths first, and always against the structured envelope, never
+                // the extracted text: `{{_prev}}` is the *unwrapped* result (the
+                // note body), so the sibling fields a path wants — `id` above all
+                // — exist only in `prev_result_raw`. Distillation is skipped here
+                // too, since it rewrites prose and would destroy the structure.
+                if wants_path {
+                    let root = job.prev_result_raw.as_deref().unwrap_or(prev_text);
+                    args = args.map(|a| substitute_prev_paths(&a, root));
+                }
+
                 // Distilled handoff: when the step opted in, compress the upstream
                 // output down to what this step needs before it lands in the prompt.
                 // Returns None (use the raw text) whenever distillation is off, the
                 // payload is already small, or the compression call fails.
-                let distilled = self.maybe_distill_prev(&job, prev_text).await;
-                let effective_prev = distilled.as_deref().unwrap_or(prev_text.as_str());
-                job.arguments
-                    .as_ref()
-                    .map(|a| substitute_prev(a, effective_prev))
+                if wants_whole {
+                    let distilled = self.maybe_distill_prev(&job, prev_text).await;
+                    let effective_prev = distilled.as_deref().unwrap_or(prev_text.as_str());
+                    args = args.map(|a| substitute_prev(&a, effective_prev));
+                }
+
+                args
             }
-            _ => job.arguments.clone(),
+            None => job.arguments.clone(),
         };
 
         // Per-step model routing: when the step declared required_capabilities,
@@ -1498,7 +1528,8 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
                     // Promote any chained children waiting on this job, unless the evaluator
                     // or adversarial gate already cancelled them.
                     if !evaluator_blocked && !adversarial_blocked {
-                        self.unpark_and_enqueue_children(&job.id, &result_text)
+                        let raw = structured_prev_to_preserve(&result, &result_text);
+                        self.unpark_and_enqueue_children(&job.id, &result_text, &raw)
                             .await;
                     }
                     self.emit_job_event(BrainEvent::JobCompleted {
@@ -2062,6 +2093,41 @@ pub fn unwrap_single_column_rows(parsed: &serde_json::Value) -> Option<String> {
     Some(out.join("\n\n"))
 }
 
+/// The structured envelope worth carrying alongside `extract_result_text`'s output.
+///
+/// `extract_result_text` is deliberately lossy: it unwraps `{"id":…,"answer":…}`
+/// down to the answer so `{{_prev}}` yields clean markdown rather than JSON
+/// scaffolding. That is right for the common case and wrong for the one where a
+/// later step needs a sibling field — `store_note` returns the note's id next to
+/// its content, and discarding it is why chain-extracted claims had no
+/// `ASSERTED_IN` edge back to their source.
+///
+/// Returns `""` (store nothing) when there is nothing to recover: a non-JSON
+/// result, or one where extraction changed nothing. That keeps the duplicate
+/// payload off every job in the queue and confines it to the envelope case.
+fn structured_prev_to_preserve(result: &ToolCallResult, extracted: &str) -> String {
+    let text = result
+        .content
+        .first()
+        .and_then(|c| {
+            if let Content::Text { text } = c {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
+
+    if text.is_empty() || text == extracted {
+        return String::new();
+    }
+    // Only JSON objects are worth keeping — paths cannot index anything else.
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(_)) => text.to_string(),
+        _ => String::new(),
+    }
+}
+
 fn extract_result_text(result: &ToolCallResult) -> String {
     let text = result
         .content
@@ -2166,6 +2232,119 @@ pub fn substitute_template_vars(
 /// Value tree.  Operates at the Value level so there is no risk of JSON injection.
 fn substitute_prev(val: &serde_json::Value, prev_text: &str) -> serde_json::Value {
     substitute_template_vars(val, &[("_prev", prev_text), ("result", prev_text)])
+}
+
+/// Resolve a dotted path against a JSON value: `id`, `answer`, `rows.0.content`.
+///
+/// Numeric segments index arrays; everything else is an object key.  Returns
+/// `None` the moment a segment does not resolve, so a wrong path yields nothing
+/// rather than a partial match.
+fn lookup_json_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut cur = root;
+    for seg in path.split('.') {
+        if seg.is_empty() {
+            return None;
+        }
+        cur = match cur {
+            serde_json::Value::Object(map) => map.get(seg)?,
+            serde_json::Value::Array(arr) => arr.get(seg.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+/// Render a resolved value for insertion into a string argument.
+///
+/// Strings are inserted raw — a `{{_prev.answer}}` holding a note body must not
+/// arrive wrapped in JSON quotes with its newlines escaped.
+fn render_prev_path_value(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Replace `{{_prev.<path>}}` / `{{result.<path>}}` occurrences in one string.
+///
+/// Placeholders that are not path forms (`{{_prev}}`, `{{goal}}`, …) are copied
+/// through untouched for the later substitution passes to handle.
+fn substitute_prev_paths_in_str(s: &str, root: Option<&serde_json::Value>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            // Unclosed placeholder — emit the remainder verbatim.
+            out.push_str(&rest[start..]);
+            return out;
+        };
+
+        let token = after[..end].trim();
+        match token
+            .strip_prefix("_prev.")
+            .or_else(|| token.strip_prefix("result."))
+        {
+            Some(path) => {
+                // An unresolvable path becomes the empty string, never the
+                // literal placeholder: a tool receiving "{{_prev.id}}" as an id
+                // would treat it as a real one, while an empty value is simply
+                // absent and the optional link is skipped.
+                let resolved = root
+                    .and_then(|r| lookup_json_path(r, path))
+                    .map(render_prev_path_value)
+                    .unwrap_or_default();
+                out.push_str(&resolved);
+            }
+            None => out.push_str(&rest[start..start + 2 + end + 2]),
+        }
+        rest = &after[end + 2..];
+    }
+
+    out.push_str(rest);
+    out
+}
+
+/// Recursively resolve `{{_prev.<path>}}` / `{{result.<path>}}` against the
+/// previous step's output parsed as JSON.
+///
+/// This exists because `{{_prev}}` can only paste a step's *entire* output, and
+/// most tool results are JSON envelopes. `store_note` returns
+/// `{"id":…,"answer":…}`, so a downstream step could get the note's text or its
+/// id but never pick one out — which is why chain-extracted claims carried
+/// provenance labels but no `ASSERTED_IN` edge to the note they came from.
+///
+/// Resolution runs against the RAW previous output, never a distilled one:
+/// distillation rewrites prose and would destroy the JSON structure paths need.
+/// When the output is not JSON, `root` is `None` and every path resolves empty.
+fn substitute_prev_paths(val: &serde_json::Value, prev_text: &str) -> serde_json::Value {
+    let root = serde_json::from_str::<serde_json::Value>(prev_text).ok();
+    substitute_prev_paths_inner(val, root.as_ref())
+}
+
+fn substitute_prev_paths_inner(
+    val: &serde_json::Value,
+    root: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    match val {
+        serde_json::Value::String(s) => {
+            serde_json::Value::String(substitute_prev_paths_in_str(s, root))
+        }
+        serde_json::Value::Object(obj) => serde_json::Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), substitute_prev_paths_inner(v, root)))
+                .collect(),
+        ),
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .map(|v| substitute_prev_paths_inner(v, root))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -2407,6 +2586,109 @@ distill_focus: "keep every source URL"
         let out = substitute_prev(&raw, "PREV");
         assert_eq!(out["x"], json!("PREV"));
         assert_eq!(out["y"], json!("PREV"));
+    }
+
+    /// The ASSERTED_IN case: `store_note` returns an envelope, and the claim
+    /// step needs the body from one field and the note id from another.
+    /// The envelope is preserved exactly when extraction was lossy — this is
+    /// the half of the ASSERTED_IN fix that runs at completion time.
+    #[test]
+    fn structured_prev_kept_only_when_extraction_lost_something() {
+        // store_note: extraction unwraps to `answer`, so the id must be kept.
+        let envelope = json!({ "id": "note-1", "answer": "body text" }).to_string();
+        let result = ToolCallResult::success_text(envelope.clone());
+        let extracted = extract_result_text(&result);
+        assert_eq!(extracted, "body text");
+        assert_eq!(structured_prev_to_preserve(&result, &extracted), envelope);
+
+        // A plain-text result loses nothing — storing a copy would be waste.
+        let result = ToolCallResult::success_text("just prose");
+        let extracted = extract_result_text(&result);
+        assert_eq!(structured_prev_to_preserve(&result, &extracted), "");
+
+        // JSON with no `answer` passes through extraction unchanged: identical
+        // text, nothing to recover.
+        let result = ToolCallResult::success_text(r#"{"stored":3}"#);
+        let extracted = extract_result_text(&result);
+        assert_eq!(structured_prev_to_preserve(&result, &extracted), "");
+
+        // A top-level array cannot be path-indexed by field name; not kept.
+        let result = ToolCallResult::success_text(r#"[{"answer":"x"}]"#);
+        let extracted = extract_result_text(&result);
+        assert_eq!(structured_prev_to_preserve(&result, &extracted), "");
+    }
+
+    #[test]
+    fn prev_paths_pick_fields_out_of_a_store_note_envelope() {
+        // r##"…"## because the payload itself contains the sequence `"#`.
+        let prev = r##"{"success":true,"id":"note-123","links_created":2,
+                       "answer":"# Report\n\nLine two.","message":"Note stored successfully"}"##;
+        let raw = json!({
+            "text": "{{_prev.answer}}",
+            "source_note_id": "{{_prev.id}}",
+            "source_context": "slm_benchmark_watch"
+        });
+        let out = substitute_prev_paths(&raw, prev);
+        // Strings are inserted raw — not re-quoted, newlines not escaped.
+        assert_eq!(out["text"], json!("# Report\n\nLine two."));
+        assert_eq!(out["source_note_id"], json!("note-123"));
+        assert_eq!(out["source_context"], json!("slm_benchmark_watch"));
+    }
+
+    #[test]
+    fn prev_paths_leave_the_whole_output_placeholder_alone() {
+        // "{{_prev}}" must survive the path pass so substitute_prev can handle
+        // it — the two forms run in sequence over the same arguments.
+        let raw = json!({ "a": "{{_prev}}", "b": "{{_prev.id}}", "c": "{{goal}}" });
+        let out = substitute_prev_paths(&raw, r#"{"id":"x1"}"#);
+        assert_eq!(out["a"], json!("{{_prev}}"));
+        assert_eq!(out["b"], json!("x1"));
+        assert_eq!(out["c"], json!("{{goal}}"));
+    }
+
+    #[test]
+    fn prev_paths_resolve_empty_rather_than_leaking_the_placeholder() {
+        // A tool handed the literal "{{_prev.id}}" would treat it as a real id.
+        // Non-JSON output, a missing key, and a wrong type must all yield "".
+        for prev in [
+            "not json at all",
+            r#"{"other":"field"}"#,
+            r#"{"id":{"nested":"object"}}"#,
+        ] {
+            let out = substitute_prev_paths(&json!({ "k": "{{_prev.id.deep}}" }), prev);
+            assert_eq!(out["k"], json!(""), "prev={prev}");
+        }
+    }
+
+    #[test]
+    fn prev_paths_index_arrays_and_render_non_strings() {
+        let prev = r#"{"rows":[{"content":"first"},{"content":"second"}],"count":7}"#;
+        let out = substitute_prev_paths(
+            &json!({ "a": "{{_prev.rows.1.content}}", "b": "n={{_prev.count}}" }),
+            prev,
+        );
+        assert_eq!(out["a"], json!("second"));
+        assert_eq!(out["b"], json!("n=7"));
+    }
+
+    #[test]
+    fn prev_paths_alias_and_malformed_placeholders() {
+        let prev = r#"{"id":"abc"}"#;
+        // `result.` is the documented alias for `_prev.`.
+        let out = substitute_prev_paths(&json!({ "a": "{{result.id}}" }), prev);
+        assert_eq!(out["a"], json!("abc"));
+        // An unclosed placeholder is emitted verbatim, not silently swallowed.
+        let out = substitute_prev_paths(&json!({ "a": "x {{_prev.id" }), prev);
+        assert_eq!(out["a"], json!("x {{_prev.id"));
+    }
+
+    #[test]
+    fn prev_path_values_cannot_corrupt_surrounding_json() {
+        // Substitution is value-level, so a field holding quotes/backslashes/
+        // newlines lands intact instead of breaking the argument structure.
+        let prev = json!({ "answer": "say \"hi\" \\ then\nnewline" }).to_string();
+        let out = substitute_prev_paths(&json!({ "text": "{{_prev.answer}}" }), &prev);
+        assert_eq!(out["text"], json!("say \"hi\" \\ then\nnewline"));
     }
 
     #[test]

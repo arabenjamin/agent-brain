@@ -33,10 +33,11 @@ use crate::services::{
 };
 use crate::skills::{
     Skill, agent::AgentSkill, claims::ClaimSkill, codebase::CodebaseSkill,
-    constructor::ConstructorSkill, context::ContextSkill, dynamic::DynamicSkill, git::GitSkill,
-    http::HttpSkill, knowledge::KnowledgeSkill, media::MediaSkill, model::ModelSkill,
-    query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill,
-    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
+    constructor::ConstructorSkill, context::ContextSkill, dynamic::DynamicSkill, exec::ExecSkill,
+    git::GitSkill, http::HttpSkill, knowledge::KnowledgeSkill, media::MediaSkill,
+    model::ModelSkill, query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill,
+    search::SearchSkill, sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
+    ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -625,6 +626,12 @@ impl BrainCore {
         // HTTP Skill (generic http_request + ApiContext management)
         registry.register_skill(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
 
+        // Code Execution Skill (sandboxed Python). Absent SANDBOX_URL the tool
+        // is not registered at all, rather than registered and always failing.
+        if let Some(exec_skill) = ExecSkill::from_env() {
+            registry.register_skill(Box::new(exec_skill));
+        }
+
         // Media Learning Skill (video/podcast ingestion + watchlist). The
         // registry copy only supplies tool definitions; execution goes through
         // the handler copy below, which carries the KnowledgeStore.
@@ -786,6 +793,10 @@ impl BrainCore {
         )));
 
         skills.push(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+
+        if let Some(exec_skill) = ExecSkill::from_env() {
+            skills.push(Box::new(exec_skill));
+        }
 
         // Media Learning Skill (handler copy — carries the KnowledgeStore used
         // by the ingest_media store=true path).

@@ -147,10 +147,18 @@ steps:
 
   # 7. Persist. `source_context` is the retrieval key for the next run's step 1
   #    and for the monthly synthesis audit — do not rename it casually.
+  #
+  #    note_type is `source_record`, not `semantic`. Nothing in this report is
+  #    knowledge the brain established — every figure is a lead time, a price,
+  #    or a capacity number that some external page asserted. Typed `semantic`
+  #    it comes back out of retrieval unlabelled and gets relayed as settled
+  #    fact; that is exactly how the sibling SLM watch ended up reporting a
+  #    Sept-2023 benchmark as a current standing. This step was missed when the
+  #    epistemics layer landed and was caught later by `lint_chain_steps`.
   - tool_name: store_note
     arguments:
       content: "# Hardware tripwire — {{date}}\n\n{{_prev}}"
-      note_type: semantic
+      note_type: source_record
       source_context: hardware_tripwire
     priority: 1
     max_attempts: 3

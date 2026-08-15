@@ -72,6 +72,43 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
+  # Tool-integrated computation specialist. Paired with the `execute_code` tool:
+  # a step that declares `required_capabilities: ["computation"]` routes here and
+  # is expected to *emit Python and run it*, not narrate arithmetic in prose.
+  #
+  # `computation` is deliberately held by this model ALONE. `select_models`
+  # orders cost ASC then context_window DESC, and every local/ollama-cloud model
+  # is $0 — so the moment a second $0 model claims `computation`, the one with
+  # the largest context window wins and a 1M-context cloud model silently takes
+  # every computation step. The capability is a routing selector, not a
+  # description of aptitude; widen it only if you also want that reordering.
+  #
+  # VRAM: 4.68 GB (Q4) on an 8 GB card that already holds gemma4 + Whisper, so
+  # this model swaps rather than co-resides. That is the accepted cost of a
+  # correct answer on checkable work; keep computation steps rare and batched.
+  qwen2.5-coder:7b:
+    provider: ollama
+    model: "qwen2.5-coder:7b"
+    context_window: 32768
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    capabilities:
+      - reasoning
+      - code
+      - computation
+    temperature: 0.1
+    system_prompt: |
+      You are agent-brain's computation engine. You solve quantitative problems
+      by WRITING AND RUNNING CODE, never by doing arithmetic in prose.
+
+      For any calculation, projection, unit conversion, or data aggregation:
+      call `execute_code` with a Python program that computes the result and
+      prints it. Read the printed output and report that number. If the code
+      errors, fix it and run again. Never state a figure you have not computed.
+
+      State assumptions as named variables at the top of the program so the
+      inputs behind a result are visible and checkable.
+
   # ── Ollama Cloud (https://ollama.com) ─────────────────────────────────────────
   # Free-tier models: small/open-weight, no subscription required.
   # Models that return 403 "requires a subscription" (kimi-k2.5, minimax-m2.7,
