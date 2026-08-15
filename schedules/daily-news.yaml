@@ -169,7 +169,7 @@ steps:
     arguments:
       question: |
         Write a structured daily news brief for {{date}} with the following sections:
-        ## EXECUTIVE SUMMARY
+        ## EXECUTIVE SUMMARY for {{date}}
         ## METRO DETROIT
         ## MICHIGAN
         ## NATIONAL
@@ -182,7 +182,7 @@ steps:
 
         2-3 bullets per section, drawn only from the raw search results in the
         context (the context contains one "## <SECTION> — raw search results"
-        block per topic). Cite sources with URLs. Flag notable spin or framing
+        block per topic). Cite sources with the URLs from that source not just the site. Flag notable spin or framing
         with ⚠️. For MARKETS, lead with index levels/direction if present. For
         WEATHER, give today's Detroit forecast in one or two bullets.
         If a section has no usable results, write "No results collected today."
