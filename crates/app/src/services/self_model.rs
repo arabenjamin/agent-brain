@@ -131,9 +131,9 @@ pub async fn sync_code_version(
             neo4rs::query(
                 "MERGE (v:BrainVersion {id: 'current'}) \
                  SET v.sha = $sha, v.subject = $subject, v.branch = $branch, \
-                     v.dirty = $dirty, v.seen_at = $now \
+                     v.dirty = $dirty, v.seen_at = datetime($now) \
                  FOREACH (_ IN CASE WHEN $changed THEN [1] ELSE [] END | \
-                     SET v.deployed_at = $now)",
+                     SET v.deployed_at = datetime($now))",
             )
             .param("sha", version.sha.as_str())
             .param("subject", version.subject.as_str())
@@ -242,7 +242,7 @@ pub async fn sync_self_model(
                         "MERGE (d:ToolDef {name: $name}) \
                          SET d.description = $description, d.skill = $skill, \
                              d.arg_names = $arg_names, d.required_args = $required_args, \
-                             d.synced_at = $now",
+                             d.synced_at = datetime($now)",
                     )
                     .param("name", t.name.as_str())
                     .param("description", t.description.as_str())
@@ -273,7 +273,7 @@ pub async fn sync_self_model(
                          c.model_preference = $model_preference, \
                          c.provider_hint = $provider_hint, \
                          c.allows_all = $allows_all, \
-                         c.synced_at = $now",
+                         c.synced_at = datetime($now)",
                 )
                 .param("name", p.name.as_str())
                 .param("description", p.description.as_str())
@@ -337,7 +337,7 @@ pub async fn sync_self_model(
                                      d.cost_per_1k_input = $cin, \
                                      d.cost_per_1k_output = $cout, \
                                      d.capabilities = $capabilities, \
-                                     d.synced_at = $now",
+                                     d.synced_at = datetime($now)",
                             )
                             .param("name", name.as_str())
                             .param("provider", m["provider"].as_str().unwrap_or_default())

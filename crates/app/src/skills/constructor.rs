@@ -374,7 +374,7 @@ impl ConstructorSkill {
                     "CREATE (a:AgentSpec {id: $id, name: $name, goal: $goal, \
                      steps_json: $steps, rationale: $rationale, \
                      success_criteria: $criteria, created_by: 'construct_agent', \
-                     planner_model: $planner_model, created_at: $now})",
+                     planner_model: $planner_model, created_at: datetime($now)})",
                 )
                 .param("id", spec_id.as_str())
                 .param("name", spec_name.as_str())

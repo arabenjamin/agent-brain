@@ -92,6 +92,21 @@ Per-invocation telemetry for every LLM call. Aggregated by `get_model_stats`.
 
 Schema initialised by `Neo4jClient::init_schema()` (run via `cargo run -- init-db`).
 
+### Timestamps: one representation, always
+
+**Every temporal property is a native Neo4j `DATETIME` stored in UTC.** Never write one as a string.
+
+Cypher compares a datetime to a string as **null**, not `false` — the predicate is neither true nor false, so `WHERE` drops the row and the query succeeds with zero results. There is no error and no warning, and zero rows is indistinguishable from "there is no such data". The graph carried both representations until 2026-08-14, which silently broke `find_similar_tasks` (returned 0 instead of 815, disabling task dedup) and made a chat session report an empty memory on a day with 504 new notes.
+
+Practical rules:
+
+- **Writing:** wrap the parameter — `SET t.updated_at = datetime($now)`, `CREATE (t:Task {created_at: datetime($ts)})`. For an optional value that may arrive as `''`, use `CASE WHEN $x = '' THEN null ELSE datetime($x) END`; `datetime('')` throws.
+- **Comparing:** compare against a temporal, never a literal — `WHERE n.created_at >= datetime('2026-08-13')`, `WHERE j.created_at >= datetime() - duration({days: 1})`. Do not wrap the property (`datetime(n.created_at)` is a redundant no-op).
+- **Reading into a `String` model field:** project `toString(prop) AS prop`. Reads that pull a whole node (`RETURN j`) have no such hook and must go through `repository::node_ts`, which accepts either representation and normalises to `…Z`.
+- **Model structs stay `String`** (ISO-8601). The REST and MCP payloads are unchanged by this; only the storage type moved.
+
+Enforced by `Neo4jClient::string_timestamp_violations()` — warned at startup from `main.rs`, asserted empty by the `no_string_timestamps` integration test. Migration: `scripts/migrate_timestamps_to_datetime.cypher`.
+
 ### Node Types
 
 #### `Task`
@@ -104,8 +119,8 @@ High-level goals tracked by the autonomous scheduler.
 | `goal` | String | Human-readable goal statement |
 | `context` | String? | Optional extra context |
 | `status` | String | `created` \| `in_progress` \| `completed` \| `failed` \| `blocked` |
-| `created_at` | String | RFC3339 |
-| `updated_at` | String | RFC3339 |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `Note`
 
@@ -118,12 +133,12 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `note_type` | String | `semantic` \| `episodic` \| `reflection` \| `consolidated` \| `outcome` \| `inference` |
 | `embedding` | Float[] | 1024-dim bge-m3 vector (nullable — absent if no embed model configured) |
 | `access_count` | Integer | Number of times retrieved |
-| `last_accessed_at` | String? | RFC3339 |
-| `next_review_at` | String? | RFC3339 — spaced repetition due date |
+| `last_accessed_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `next_review_at` | DateTime | Native Neo4j `DATETIME`, UTC — spaced repetition due date |
 | `review_interval_days` | Float? | Current review interval |
 | `source_context` | String? | Where/how the note was created |
-| `event_at` | String? | RFC3339 — when the described event occurred (episodic notes) |
-| `created_at` | String | RFC3339 |
+| `event_at` | DateTime | Native Neo4j `DATETIME`, UTC — when the described event occurred (episodic notes) |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `Entity`
 
@@ -134,7 +149,7 @@ Named entities extracted from note content (7 types: `person`, `tool`, `technolo
 | `id` | String | UUID |
 | `name` | String | Lowercased, unique |
 | `entity_type` | String | One of the 7 types above |
-| `created_at` | String | RFC3339 |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `Procedure`
 
@@ -146,7 +161,7 @@ Named multi-step workflows stored as JSON step arrays and executed by `Procedure
 | `name` | String | Unique name |
 | `description` | String? | Human-readable summary |
 | `steps` | String | JSON array of procedure steps |
-| `created_at` | String | RFC3339 |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `WorkingMemory`
 
@@ -159,7 +174,7 @@ Session-scoped scratchpad entries. Each HTTP session or stdio invocation has its
 | `content` | String | Entry body |
 | `role` | String | `user` \| `assistant` \| `system` |
 | `turn_index` | Integer | Ordering within the session |
-| `created_at` | String | RFC3339 |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `DynamicTool`
 
@@ -171,7 +186,7 @@ Runtime-defined MCP tools created and dispatched by `DynamicSkill`.
 | `name` | String | Unique tool name (registered at runtime) |
 | `description` | String | Shown in `tools/list` |
 | `input_schema` | String | JSON schema for tool arguments |
-| `created_at` | String | RFC3339 |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `AgentJob`
 
@@ -191,10 +206,10 @@ Background job records executed by `QueueService`. Supports chaining, retry, and
 | `session_id` | String? | Associated HTTP session (for SSE push notifications) |
 | `parent_job_id` | String? | Predecessor job ID (used for chaining — parked until parent succeeds) |
 | `provider_hint` | String? | `"ollama"` \| `"anthropic"` \| `"gemini"` — selects concurrency semaphore |
-| `created_at` | String | RFC3339 |
-| `updated_at` | String | RFC3339 |
-| `started_at` | String? | RFC3339 |
-| `completed_at` | String? | RFC3339 |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `started_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `completed_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `ScheduledTask`
 
@@ -208,10 +223,10 @@ Recurring job definitions managed by `SchedulerSkill`. The scheduler dispatches 
 | `enabled` | Boolean | Whether the scheduler will dispatch this task |
 | `interval_seconds` | Integer | Recurrence period in seconds (e.g. 86400 = daily) |
 | `steps` | String | JSON-encoded `Vec<ChainStep>` — the job chain to enqueue |
-| `last_run_at` | String? | RFC3339 — timestamp of last successful dispatch |
-| `next_run_at` | String | RFC3339 — next due time |
-| `created_at` | String | RFC3339 |
-| `updated_at` | String | RFC3339 |
+| `last_run_at` | DateTime | Native Neo4j `DATETIME`, UTC — timestamp of last successful dispatch |
+| `next_run_at` | DateTime | Native Neo4j `DATETIME`, UTC — next due time |
+| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `ApiContext`
 
@@ -229,7 +244,7 @@ HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; a
 
 #### `SchedulerChain`
 
-Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. Seeded from `chains/*.yaml` by `init-db` (and auto-seeded on first scheduler tick if none exist). Supports `{{task_id}}`, `{{goal}}`, `{{date}}`, `{{file_slug}}` template substitutions in step arguments.
+Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. Seeded from `chains/*.yaml` by `init-db` (and auto-seeded on first scheduler tick if none exist). Supports `{{task_id}}`, `{{goal}}`, `{{goal_topic}}`, `{{date}}`, `{{now}}`, `{{weekday}}`, `{{file_slug}}` template substitutions in step arguments. The three time vars are **local** wall-clock (`services/clock.rs`), not UTC — stored node timestamps remain UTC.
 
 | Property | Type | Description |
 |----------|------|-------------|

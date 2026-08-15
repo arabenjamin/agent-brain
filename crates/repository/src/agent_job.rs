@@ -3,6 +3,7 @@ use neo4rs::{Node, query};
 use tracing::info;
 use uuid::Uuid;
 
+use crate::temporal::node_ts;
 use crate::{Neo4jClient, RepositoryError};
 use agent_brain_models::{AgentJob, AgentJobStatus};
 
@@ -40,8 +41,8 @@ impl Neo4jClient {
                 args_json: $args_json,
                 priority: $priority,
                 status: 'queued',
-                created_at: $now,
-                updated_at: $now,
+                created_at: datetime($now),
+                updated_at: datetime($now),
                 attempt_count: 0,
                 max_attempts: $max_attempts,
                 session_id: $session_id,
@@ -50,7 +51,7 @@ impl Neo4jClient {
                 context_profile: $context_profile,
                 description: $description,
                 ttl_secs: $ttl_secs,
-                expires_at: $expires_at,
+                expires_at: CASE WHEN $expires_at = '' THEN null ELSE datetime($expires_at) END,
                 progress_percent: null,
                 progress_message: null,
                 duration_ms: null
@@ -154,7 +155,7 @@ impl Neo4jClient {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (j:AgentJob {status: 'running'}) \
-             SET j.status = 'queued', j.updated_at = $now \
+             SET j.status = 'queued', j.updated_at = datetime($now) \
              RETURN count(j) AS n",
         )
         .param("now", now);
@@ -173,10 +174,12 @@ impl Neo4jClient {
         status: AgentJobStatus,
     ) -> Result<(), RepositoryError> {
         let now = Utc::now().to_rfc3339();
-        let q = query("MATCH (j:AgentJob {id: $id}) SET j.status = $status, j.updated_at = $now")
-            .param("id", id)
-            .param("status", status.to_string())
-            .param("now", now);
+        let q = query(
+            "MATCH (j:AgentJob {id: $id}) SET j.status = $status, j.updated_at = datetime($now)",
+        )
+        .param("id", id)
+        .param("status", status.to_string())
+        .param("now", now);
         self.run(q).await
     }
 
@@ -190,8 +193,8 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'queued' \
              SET j.status = 'running', \
-                 j.started_at = $now, \
-                 j.updated_at = $now, \
+                 j.started_at = datetime($now), \
+                 j.updated_at = datetime($now), \
                  j.attempt_count = j.attempt_count + 1 \
              RETURN count(j) AS n",
         )
@@ -214,10 +217,10 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'completed', \
-                 j.completed_at = $now, \
-                 j.updated_at = $now, \
+                 j.completed_at = datetime($now), \
+                 j.updated_at = datetime($now), \
                  j.result_json = $result, \
-                 j.duration_ms = duration.between(datetime(j.started_at), datetime($now)).milliseconds \
+                 j.duration_ms = duration.between(j.started_at, datetime($now)).milliseconds \
              RETURN count(j) AS n",
         )
         .param("id", id)
@@ -235,7 +238,7 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'queued', \
-                 j.updated_at = $now, \
+                 j.updated_at = datetime($now), \
                  j.error = $error \
              RETURN count(j) AS n",
         )
@@ -253,8 +256,8 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'failed', \
-                 j.completed_at = $now, \
-                 j.updated_at = $now, \
+                 j.completed_at = datetime($now), \
+                 j.updated_at = datetime($now), \
                  j.error = $error \
              RETURN count(j) AS n",
         )
@@ -272,10 +275,10 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
              SET j.status = 'dead_letter', \
-                 j.completed_at = $now, \
-                 j.updated_at = $now, \
+                 j.completed_at = datetime($now), \
+                 j.updated_at = datetime($now), \
                  j.error = $error, \
-                 j.dead_lettered_at = $now, \
+                 j.dead_lettered_at = datetime($now), \
                  j.dead_letter_reason = $error \
              RETURN count(j) AS n",
         )
@@ -302,7 +305,7 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) \
              SET j.status = 'queued', \
-                 j.updated_at = $now, \
+                 j.updated_at = datetime($now), \
                  j.error = null, \
                  j.attempt_count = 0",
         )
@@ -341,8 +344,8 @@ impl Neo4jClient {
                 args_json: $args_json,
                 priority: $priority,
                 status: 'parked',
-                created_at: $now,
-                updated_at: $now,
+                created_at: datetime($now),
+                updated_at: datetime($now),
                 attempt_count: 0,
                 max_attempts: $max_attempts,
                 session_id: $session_id,
@@ -351,7 +354,7 @@ impl Neo4jClient {
                 context_profile: $context_profile,
                 description: $description,
                 ttl_secs: $ttl_secs,
-                expires_at: $expires_at,
+                expires_at: CASE WHEN $expires_at = '' THEN null ELSE datetime($expires_at) END,
                 progress_percent: null,
                 progress_message: null,
                 duration_ms: null
@@ -392,7 +395,7 @@ impl Neo4jClient {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (j:AgentJob {parent_job_id: $parent_id, status: 'parked'})
-             SET j.status = 'queued', j.updated_at = $now, j.prev_result_json = $prev,
+             SET j.status = 'queued', j.updated_at = datetime($now), j.prev_result_json = $prev,
                  j.prev_result_raw_json = $prev_raw
              RETURN j",
         )
@@ -451,7 +454,7 @@ impl Neo4jClient {
              WITH child, parent \
              WHERE parent IS NULL \
                 OR parent.status IN ['cancelled', 'dead', 'dead_letter'] \
-             SET child.status = 'cancelled', child.updated_at = $now \
+             SET child.status = 'cancelled', child.updated_at = datetime($now) \
              RETURN count(child) AS n",
         )
         .param("now", now);
@@ -490,7 +493,7 @@ impl Neo4jClient {
             let now = Utc::now().to_rfc3339();
             let q = query(
                 "MATCH (j:AgentJob {status: 'parked'}) WHERE j.parent_job_id IN $parents \
-                 SET j.status = 'cancelled', j.updated_at = $now \
+                 SET j.status = 'cancelled', j.updated_at = datetime($now) \
                  RETURN collect(j.id) AS ids",
             )
             .param("parents", frontier.clone())
@@ -549,8 +552,8 @@ impl Neo4jClient {
              SET j.progress_percent = $percent, \
                  j.progress_message = $message, \
                  j.progress_metadata = $metadata, \
-                 j.progress_updated_at = $now, \
-                 j.updated_at = $now",
+                 j.progress_updated_at = datetime($now), \
+                 j.updated_at = datetime($now)",
         )
         .param("id", id)
         .param("percent", percent_i64)
@@ -570,7 +573,7 @@ impl Neo4jClient {
             "MATCH (j:AgentJob {id: $id}) \
              RETURN j.progress_percent AS percent, \
                     j.progress_message AS message, \
-                    j.progress_updated_at AS updated_at",
+                    toString(j.progress_updated_at) AS updated_at",
         )
         .param("id", id);
 
@@ -608,11 +611,10 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob) \
              WHERE j.expires_at IS NOT NULL \
-               AND j.expires_at <> '' \
-               AND datetime(j.expires_at) <= datetime($now) \
+               AND j.expires_at <= datetime($now) \
                AND j.status IN ['queued', 'running', 'parked'] \
              SET j.status = 'cancelled', \
-                 j.updated_at = $now, \
+                 j.updated_at = datetime($now), \
                  j.error = 'Job expired: TTL reached' \
              RETURN count(j) AS n",
         )
@@ -642,9 +644,9 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id}) \
              SET j.status = 'dead_letter', \
-                 j.dead_lettered_at = $now, \
+                 j.dead_lettered_at = datetime($now), \
                  j.dead_letter_reason = $reason, \
-                 j.updated_at = $now",
+                 j.updated_at = datetime($now)",
         )
         .param("id", id)
         .param("now", now.clone())
@@ -680,7 +682,7 @@ impl Neo4jClient {
         let q = query(
             "MATCH (j:AgentJob {id: $id, status: 'dead_letter'}) \
              SET j.status = 'queued', \
-                 j.updated_at = $now, \
+                 j.updated_at = datetime($now), \
                  j.error = null, \
                  j.attempt_count = 0, \
                  j.dead_lettered_at = null, \
@@ -756,7 +758,7 @@ impl Neo4jClient {
         .to_rfc3339();
         let q_completed = query(
             "MATCH (j:AgentJob {status: 'completed'}) \
-             WHERE datetime(j.completed_at) <= datetime($cutoff) \
+             WHERE j.completed_at <= datetime($cutoff) \
              DELETE j \
              RETURN count(j) AS n",
         )
@@ -774,7 +776,7 @@ impl Neo4jClient {
         .to_rfc3339();
         let q_dead = query(
             "MATCH (j:AgentJob {status: 'dead'}) \
-             WHERE datetime(j.completed_at) <= datetime($cutoff) \
+             WHERE j.completed_at <= datetime($cutoff) \
              DELETE j \
              RETURN count(j) AS n",
         )
@@ -789,7 +791,7 @@ impl Neo4jClient {
         // Delete old cancelled jobs (same retention window as completed).
         let q_cancelled = query(
             "MATCH (j:AgentJob {status: 'cancelled'}) \
-             WHERE datetime(j.updated_at) <= datetime($cutoff) \
+             WHERE j.updated_at <= datetime($cutoff) \
              DELETE j \
              RETURN count(j) AS n",
         )
@@ -810,7 +812,7 @@ impl Neo4jClient {
         .to_rfc3339();
         let q_failed = query(
             "MATCH (j:AgentJob {status: 'failed'}) \
-             WHERE datetime(COALESCE(j.completed_at, j.updated_at, j.created_at)) \
+             WHERE COALESCE(j.completed_at, j.updated_at, j.created_at) \
                    <= datetime($cutoff) \
              DETACH DELETE j \
              RETURN count(j) AS n",
@@ -847,7 +849,7 @@ impl Neo4jClient {
 
         let q = query(
             "MATCH (j:AgentJob {status: 'dead_letter'}) \
-             WHERE datetime(j.dead_lettered_at) <= datetime($cutoff) \
+             WHERE j.dead_lettered_at <= datetime($cutoff) \
              DELETE j \
              RETURN count(j) AS n",
         )
@@ -918,10 +920,10 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
     let status = status_str
         .parse::<AgentJobStatus>()
         .unwrap_or(AgentJobStatus::Queued);
-    let created_at: String = node.get("created_at").unwrap_or_default();
-    let updated_at: String = node.get("updated_at").unwrap_or_default();
-    let started_at: Option<String> = node.get("started_at").unwrap_or(None);
-    let completed_at: Option<String> = node.get("completed_at").unwrap_or(None);
+    let created_at: String = node_ts(node, "created_at").unwrap_or_default();
+    let updated_at: String = node_ts(node, "updated_at").unwrap_or_default();
+    let started_at: Option<String> = node_ts(node, "started_at");
+    let completed_at: Option<String> = node_ts(node, "completed_at");
     let result_json: String = node.get("result_json").unwrap_or_default();
     let result = if result_json.is_empty() {
         None
@@ -942,14 +944,14 @@ fn node_to_agent_job(node: &Node) -> AgentJob {
     let progress_percent: Option<i64> = node.get("progress_percent").unwrap_or(None);
     let progress_message: Option<String> = node.get("progress_message").unwrap_or(None);
     let progress_metadata: String = node.get("progress_metadata").unwrap_or_default();
-    let progress_updated_at: Option<String> = node.get("progress_updated_at").unwrap_or(None);
+    let progress_updated_at: Option<String> = node_ts(node, "progress_updated_at");
 
     // TTL and expiration
-    let expires_at: Option<String> = node.get("expires_at").unwrap_or(None);
+    let expires_at: Option<String> = node_ts(node, "expires_at");
     let ttl_secs: i64 = node.get("ttl_secs").unwrap_or(0);
 
     // Dead letter queue
-    let dead_lettered_at: Option<String> = node.get("dead_lettered_at").unwrap_or(None);
+    let dead_lettered_at: Option<String> = node_ts(node, "dead_lettered_at");
     let dead_letter_reason: String = node.get("dead_letter_reason").unwrap_or_default();
 
     // Description and observability

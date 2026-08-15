@@ -3,6 +3,7 @@ use neo4rs::{BoltNull, BoltType, query};
 use tracing::info;
 use uuid::Uuid;
 
+use crate::temporal::node_ts;
 use crate::{Neo4jClient, RepositoryError};
 use agent_brain_models::ScheduledTask;
 
@@ -17,7 +18,7 @@ fn row_to_scheduled_task(row: &neo4rs::Row) -> Result<ScheduledTask, RepositoryE
 
     let description: Option<String> = node.get("description").ok();
 
-    let last_run_at: Option<String> = node.get("last_run_at").ok();
+    let last_run_at: Option<String> = node_ts(&node, "last_run_at");
 
     Ok(ScheduledTask {
         id: node
@@ -37,15 +38,11 @@ fn row_to_scheduled_task(row: &neo4rs::Row) -> Result<ScheduledTask, RepositoryE
             .get("steps")
             .map_err(|e| RepositoryError::InvalidData(e.to_string()))?,
         last_run_at,
-        next_run_at: node
-            .get("next_run_at")
-            .map_err(|e| RepositoryError::InvalidData(e.to_string()))?,
-        created_at: node
-            .get("created_at")
-            .map_err(|e| RepositoryError::InvalidData(e.to_string()))?,
-        updated_at: node
-            .get("updated_at")
-            .map_err(|e| RepositoryError::InvalidData(e.to_string()))?,
+        next_run_at: node_ts(&node, "next_run_at").ok_or_else(|| {
+            RepositoryError::InvalidData("ScheduledTask is missing next_run_at".into())
+        })?,
+        created_at: node_ts(&node, "created_at").unwrap_or_default(),
+        updated_at: node_ts(&node, "updated_at").unwrap_or_default(),
         managed_by: node.get("managed_by").ok(),
     })
 }
@@ -85,9 +82,9 @@ impl Neo4jClient {
             "CREATE (s:ScheduledTask { \
                id: $id, name: $name, description: $description, \
                enabled: $enabled, interval_seconds: $interval_seconds, \
-               steps: $steps, next_run_at: $next_run_at, \
+               steps: $steps, next_run_at: datetime($next_run_at), \
                managed_by: $managed_by, \
-               created_at: $created_at, updated_at: $updated_at \
+               created_at: datetime($created_at), updated_at: datetime($updated_at) \
              }) \
              RETURN s",
         )
@@ -150,7 +147,7 @@ impl Neo4jClient {
         let rows = self
             .execute(query(
                 "MATCH (s:ScheduledTask {enabled: true}) \
-                 WHERE s.next_run_at <= toString(datetime()) \
+                 WHERE s.next_run_at <= datetime() \
                  RETURN s ORDER BY s.next_run_at ASC",
             ))
             .await?;
@@ -178,7 +175,7 @@ impl Neo4jClient {
 
         let now = Utc::now().to_rfc3339();
         // Build SET clause dynamically.
-        let mut sets: Vec<&str> = vec!["s.updated_at = $now"];
+        let mut sets: Vec<&str> = vec!["s.updated_at = datetime($now)"];
         if name.is_some() {
             sets.push("s.name = $name");
         }
@@ -192,7 +189,7 @@ impl Neo4jClient {
             sets.push("s.steps = $steps");
         }
         if next_run_at.is_some() {
-            sets.push("s.next_run_at = $next_run_at");
+            sets.push("s.next_run_at = datetime($next_run_at)");
         }
         if description.is_some() {
             sets.push("s.description = $description");
@@ -248,7 +245,8 @@ impl Neo4jClient {
         self.run(
             query(
                 "MATCH (s:ScheduledTask {id: $id}) \
-                 SET s.last_run_at = $now, s.next_run_at = $next_run_at, s.updated_at = $now",
+                 SET s.last_run_at = datetime($now), s.next_run_at = datetime($next_run_at), \
+                 s.updated_at = datetime($now)",
             )
             .param("id", id)
             .param("now", now)
@@ -334,7 +332,7 @@ impl Neo4jClient {
                  s.description = $description, \
                  s.interval_seconds = $interval_seconds, \
                  s.managed_by = 'yaml', \
-                 s.updated_at = $now \
+                 s.updated_at = datetime($now) \
              RETURN s.id AS id",
         )
         .param("name", name)

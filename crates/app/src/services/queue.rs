@@ -633,7 +633,7 @@ impl QueueService {
         //    from the heap), collecting ids so their parked chain children can be cancelled.
         let now = chrono::Utc::now().to_rfc3339();
         let cypher = "MATCH (j:AgentJob {status: 'queued'}) \
-                      SET j.status = 'cancelled', j.updated_at = $now \
+                      SET j.status = 'cancelled', j.updated_at = datetime($now) \
                       RETURN collect(j.id) AS ids";
         let cancelled_ids: Vec<String> = match self
             .neo4j

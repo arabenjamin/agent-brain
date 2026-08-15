@@ -6,7 +6,7 @@ steps:
     arguments:
       # created_at is stored as an RFC3339 string — convert before comparing, or the
       # string >= datetime comparison is null and the query always returns 0 rows.
-      cypher: "MATCH (j:AgentJob) WHERE datetime(j.created_at) >= datetime() - duration('P1D') RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
+      cypher: "MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration('P1D') RETURN j.status, count(j) AS cnt ORDER BY cnt DESC"
     priority: 1
     max_attempts: 2
     provider_hint: ollama

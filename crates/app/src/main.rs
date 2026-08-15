@@ -51,6 +51,11 @@ async fn main() -> Result<()> {
         "Starting agent-brain"
     );
 
+    // Report the zone every dated statement will be made in. An accidental UTC
+    // is indistinguishable from a deliberate one at every later call site, so
+    // it gets named once, here, where it can be checked.
+    agent_brain::services::clock::log_resolved_timezone();
+
     // Execute command
     let result = match cli.command {
         Some(Command::InitDb) => run_init_db(&config).await,
@@ -90,7 +95,41 @@ async fn connect_neo4j(config: &Config) -> Result<Neo4jClient> {
     )
     .await?;
     info!("Connected to Neo4j");
+    warn_on_string_timestamps(&client).await;
     Ok(client)
+}
+
+/// Warn when any temporal property is still stored as a string.
+///
+/// Neo4j does not enforce property types, so one missed `SET` silently
+/// reintroduces the mixed-representation split that made date filters match
+/// nothing without erroring. Like the timezone check above, this gets named
+/// once at startup where it can be acted on — at any later call site an empty
+/// result set is indistinguishable from an honest one.
+///
+/// Deliberately non-fatal: the reads tolerate both representations, so a
+/// violation degrades comparisons rather than breaking startup.
+async fn warn_on_string_timestamps(client: &Neo4jClient) {
+    match client.string_timestamp_violations().await {
+        Ok(v) if v.is_empty() => {}
+        Ok(violations) => {
+            let total: i64 = violations.iter().map(|(_, _, c)| c).sum();
+            let detail = violations
+                .iter()
+                .map(|(label, prop, count)| format!("{label}.{prop} ({count})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            warn!(
+                total,
+                properties = %detail,
+                "Temporal properties are stored as STRING, not DATETIME. Cypher \
+                 compares a datetime to a string as null, so date filters over \
+                 these will silently match nothing. Run \
+                 scripts/migrate_timestamps_to_datetime.cypher"
+            );
+        }
+        Err(e) => warn!(error = %e, "Could not check timestamp property types"),
+    }
 }
 
 fn build_llm_config(config: &Config) -> LlmConfig {

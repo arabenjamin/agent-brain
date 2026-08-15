@@ -1,10 +1,42 @@
 use chrono::Utc;
-use neo4rs::{BoltNull, BoltType, Node, query};
+use neo4rs::{BoltNull, BoltType, query};
 use tracing::info;
 use uuid::Uuid;
 
 use crate::{Neo4jClient, RepositoryError};
 use agent_brain_models::{Task, TaskStatus};
+
+/// Column projection for reading a `Task` into the model struct.
+///
+/// Timestamps are stored as native Neo4j `DATETIME` but `Task.created_at` /
+/// `updated_at` are `String`, so they must come back through `toString()`.
+/// This is why these reads project explicit columns instead of `RETURN t`:
+/// `node.get::<String>("created_at")` on a datetime property fails, and the
+/// call sites used `.unwrap_or_default()`, which turns that failure into an
+/// empty string rather than an error.
+const TASK_COLUMNS: &str = "t.id AS id, t.goal AS goal, t.status AS status, \
+     t.context AS context, t.success_criteria AS success_criteria, \
+     toString(t.created_at) AS created_at, toString(t.updated_at) AS updated_at";
+
+/// Build a `Task` from a row projected with [`TASK_COLUMNS`].
+fn task_from_row(row: &neo4rs::Row) -> Task {
+    let status_str: String = row.get("status").unwrap_or_else(|_| "created".to_string());
+    Task {
+        id: row.get("id").unwrap_or_default(),
+        goal: row.get("goal").unwrap_or_default(),
+        context: row.get("context").unwrap_or(None),
+        success_criteria: row.get("success_criteria").unwrap_or(None),
+        status: match status_str.as_str() {
+            "in_progress" => TaskStatus::InProgress,
+            "completed" => TaskStatus::Completed,
+            "failed" => TaskStatus::Failed,
+            "blocked" => TaskStatus::Blocked,
+            _ => TaskStatus::Created,
+        },
+        created_at: row.get("created_at").unwrap_or_default(),
+        updated_at: row.get("updated_at").unwrap_or_default(),
+    }
+}
 
 impl Neo4jClient {
     /// Create a new task in the database.
@@ -19,7 +51,7 @@ impl Neo4jClient {
 
         let mut q = query(
             "CREATE (t:Task {id: $id, goal: $goal, status: 'created', \
-             created_at: $created_at, updated_at: $updated_at}) \
+             created_at: datetime($created_at), updated_at: datetime($updated_at)}) \
              SET t.context = $context, t.success_criteria = $success_criteria \
              RETURN t.id",
         )
@@ -57,9 +89,8 @@ impl Neo4jClient {
         let q = query(
             "MATCH (t:Task {status: 'in_progress'}) \
              WHERE t.updated_at IS NOT NULL \
-               AND t.updated_at <> '' \
-               AND datetime(t.updated_at) < datetime() - duration({hours: $hours}) \
-             SET t.status = 'failed', t.updated_at = $now \
+               AND t.updated_at < datetime() - duration({hours: $hours}) \
+             SET t.status = 'failed', t.updated_at = datetime($now) \
              RETURN count(t) AS n",
         )
         .param("hours", stale_hours as i64)
@@ -92,8 +123,7 @@ impl Neo4jClient {
             let q = query(
                 "MATCH (t:Task) \
                  WHERE t.status IN ['completed', 'cancelled'] \
-                   AND coalesce(t.updated_at, t.created_at) <> '' \
-                   AND datetime(coalesce(t.updated_at, t.created_at)) \
+                   AND coalesce(t.updated_at, t.created_at) \
                        < datetime() - duration({days: $days}) \
                    AND NOT EXISTS { MATCH (:AgentSpec)-[:PERFORMED|CONSTRUCTED_FOR]->(t) } \
                  WITH t LIMIT 1000 \
@@ -119,53 +149,11 @@ impl Neo4jClient {
 
     /// Get a task by ID.
     pub async fn get_task(&self, id: &str) -> Result<Option<Task>, RepositoryError> {
-        let q = query("MATCH (t:Task {id: $id}) RETURN t").param("id", id);
+        let q = query(&format!("MATCH (t:Task {{id: $id}}) RETURN {TASK_COLUMNS}")).param("id", id);
 
-        // Execute returns Vec<Row>
         let rows = self.execute(q).await?;
 
-        if let Some(row) = rows.into_iter().next() {
-            // Neo4rs DeError is basically a deserialization error, so we map it to our Serialization variant
-            // We use a closure to construct the error properly as RepositoryError::Serialization expects serde_json::Error
-            // But we can't easily convert DeError to serde_json::Error.
-            // Let's use InvalidData for now or add a Neo4rs variant.
-            // Actually RepositoryError::Neo4j wraps neo4rs::Error, but DeError is different?
-            // neo4rs::Error contains DeError.
-            // Let's map it to Neo4j error variant if possible, or stringify it.
-
-            let node: Node = row.get("t").map_err(|e| {
-                RepositoryError::InvalidData(format!("Deserialization error: {}", e))
-            })?;
-
-            // Extract fields safely
-            let id: String = node.get("id").unwrap_or_default();
-            let goal: String = node.get("goal").unwrap_or_default();
-            let context: Option<String> = node.get("context").unwrap_or(None);
-            let success_criteria: Option<String> = node.get("success_criteria").unwrap_or(None);
-            let created_at: String = node.get("created_at").unwrap_or_default();
-            let updated_at: String = node.get("updated_at").unwrap_or_default();
-
-            let status_str: String = node.get("status").unwrap_or("created".to_string());
-            let status = match status_str.as_str() {
-                "in_progress" => TaskStatus::InProgress,
-                "completed" => TaskStatus::Completed,
-                "failed" => TaskStatus::Failed,
-                "blocked" => TaskStatus::Blocked,
-                _ => TaskStatus::Created,
-            };
-
-            Ok(Some(Task {
-                id,
-                goal,
-                context,
-                success_criteria,
-                status,
-                created_at,
-                updated_at,
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(rows.first().map(task_from_row))
     }
 
     /// Return recent tasks for duplicate detection by the caller.
@@ -177,47 +165,17 @@ impl Neo4jClient {
         &self,
         days_lookback: u32,
     ) -> Result<Vec<Task>, RepositoryError> {
-        let q = query(
+        let q = query(&format!(
             "MATCH (t:Task) \
-             WHERE t.created_at >= datetime() - duration({days: $days}) \
+             WHERE t.created_at >= datetime() - duration({{days: $days}}) \
                AND t.status IN ['created', 'in_progress', 'failed', 'completed'] \
-             RETURN t \
-             ORDER BY t.created_at DESC LIMIT 30",
-        )
+             RETURN {TASK_COLUMNS} \
+             ORDER BY t.created_at DESC LIMIT 30"
+        ))
         .param("days", days_lookback as i64);
 
         let rows = self.execute(q).await?;
-        let mut tasks = Vec::new();
-        for row in rows {
-            let node: Node = match row.get("t") {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            let id: String = node.get("id").unwrap_or_default();
-            let goal: String = node.get("goal").unwrap_or_default();
-            let context: Option<String> = node.get("context").unwrap_or(None);
-            let success_criteria: Option<String> = node.get("success_criteria").unwrap_or(None);
-            let created_at: String = node.get("created_at").unwrap_or_default();
-            let updated_at: String = node.get("updated_at").unwrap_or_default();
-            let status_str: String = node.get("status").unwrap_or_else(|_| "created".to_string());
-            let status = match status_str.as_str() {
-                "in_progress" => TaskStatus::InProgress,
-                "completed" => TaskStatus::Completed,
-                "failed" => TaskStatus::Failed,
-                "blocked" => TaskStatus::Blocked,
-                _ => TaskStatus::Created,
-            };
-            tasks.push(Task {
-                id,
-                goal,
-                context,
-                success_criteria,
-                status,
-                created_at,
-                updated_at,
-            });
-        }
-        Ok(tasks)
+        Ok(rows.iter().map(task_from_row).collect())
     }
 
     /// Store a reflection note and optionally link it to a Task via REFLECTS_ON.
@@ -302,11 +260,13 @@ impl Neo4jClient {
 
         let now = Utc::now().to_rfc3339();
 
-        let q =
-            query("MATCH (t:Task {id: $id}) SET t.status = $status, t.updated_at = $updated_at")
-                .param("id", id)
-                .param("status", status_str)
-                .param("updated_at", now);
+        let q = query(
+            "MATCH (t:Task {id: $id}) SET t.status = $status, \
+                 t.updated_at = datetime($updated_at)",
+        )
+        .param("id", id)
+        .param("status", status_str)
+        .param("updated_at", now);
 
         self.execute(q).await?;
         Ok(())
@@ -331,7 +291,7 @@ impl Neo4jClient {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (t:Task {id: $id}) WHERE t.status IN ['created', 'in_progress'] \
-             SET t.status = 'failed', t.updated_at = $updated_at, \
+             SET t.status = 'failed', t.updated_at = datetime($updated_at), \
                  t.context = coalesce(t.context, '') + '\n\n[FAILURE] ' + $reason \
              RETURN t.id AS id",
         )
@@ -373,7 +333,7 @@ impl Neo4jClient {
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, \
                         t.context AS context, t.success_criteria AS success_criteria, \
-                        t.created_at AS created_at, parent.id AS parent_id \
+                        toString(t.created_at) AS created_at, parent.id AS parent_id \
                  ORDER BY t.created_at DESC LIMIT $limit",
             )
             .param("status", s)
@@ -385,7 +345,7 @@ impl Neo4jClient {
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, \
                         t.context AS context, t.success_criteria AS success_criteria, \
-                        t.created_at AS created_at, parent.id AS parent_id \
+                        toString(t.created_at) AS created_at, parent.id AS parent_id \
                  ORDER BY t.created_at DESC LIMIT $limit",
             )
             .param("limit", limit as i64);
@@ -452,7 +412,7 @@ impl Neo4jClient {
                    MATCH (other:Task)-[:SUBTASK_OF]->(parent) \
                    WHERE other.status <> 'completed' \
                } \
-             SET parent.status = 'completed', parent.updated_at = $now \
+             SET parent.status = 'completed', parent.updated_at = datetime($now) \
              RETURN parent.id AS parent_id",
         )
         .param("child_id", child_id)
@@ -532,7 +492,8 @@ impl Neo4jClient {
             .execute(
                 query(
                     "MATCH (a:AgentSpec)-[:CONSTRUCTED_FOR]->(t:Task {id: $task_id}) \
-                     CREATE (a)-[:PERFORMED {score: $score, passed: $passed, at: $at}]->(t) \
+                     CREATE (a)-[:PERFORMED {score: $score, passed: $passed, \
+                                             at: datetime($at)}]->(t) \
                      RETURN a.id AS id",
                 )
                 .param("task_id", task_id)

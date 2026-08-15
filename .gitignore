@@ -1,6 +1,7 @@
 #rust
 /target
 /snapshots
+/backups
 Cargo.lock
 
 # Node stuff

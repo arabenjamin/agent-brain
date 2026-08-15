@@ -226,7 +226,7 @@ pub async fn store_claim(
 
     let mut q = neo4rs::query(
         "CREATE (n:Note {id: $id, content: $content, note_type: 'claim', \
-         claim_status: 'unverified', asserted_by: $asserted_by, asserted_at: $asserted_at, \
+         claim_status: 'unverified', asserted_by: $asserted_by, asserted_at: datetime($asserted_at), \
          claim_kind: $claim_kind, \
          source_context: $source_context, provenance: 'user_input', \
          created_at: datetime($ts), last_accessed_at: datetime($ts), access_count: 0, \
@@ -411,7 +411,7 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
         .run(
             neo4rs::query(
                 "MATCH (c:Note {id: $id}) \
-                 SET c.claim_status = $status, c.verified_at = $now, \
+                 SET c.claim_status = $status, c.verified_at = datetime($now), \
                      c.corroborating_count = $cor, c.contradicting_count = $con, \
                      c.corroboration_tier = $tier, c.corroborating_domains = $domains",
             )
@@ -604,7 +604,7 @@ pub async fn attach_evidence(
     let cypher = format!(
         "MATCH (c:Note {{id: $cid}}), (e:Note {{id: $eid}}) \
          MERGE (c)-[r:{rel}]->(e) \
-         ON CREATE SET r.source = $source, r.found_at = $now, r.domains = $domains"
+         ON CREATE SET r.source = $source, r.found_at = datetime($now), r.domains = $domains"
     );
     neo4j
         .run(

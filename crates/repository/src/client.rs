@@ -124,7 +124,7 @@ impl Neo4jClient {
                 neo4rs::query(
                     "CREATE (n:AgentNotification {
                     id: $id, message: $message, context: $context,
-                    related_session_id: $session_id, created_at: $created_at, read: false
+                    related_session_id: $session_id, created_at: datetime($created_at), read: false
                 })",
                 )
                 .param("id", id)
@@ -171,7 +171,9 @@ impl Neo4jClient {
                 );
                 obj.insert(
                     "created_at".into(),
-                    serde_json::Value::String(node.get::<String>("created_at").unwrap_or_default()),
+                    serde_json::Value::String(
+                        crate::temporal::node_ts(&node, "created_at").unwrap_or_default(),
+                    ),
                 );
                 obj.insert(
                     "read".into(),
@@ -188,7 +190,7 @@ impl Neo4jClient {
         self.graph
             .run(
                 neo4rs::query(
-                    "MATCH (n:AgentNotification {id: $id}) SET n.read = true, n.read_at = $ts",
+                    "MATCH (n:AgentNotification {id: $id}) SET n.read = true, n.read_at = datetime($ts)",
                 )
                 .param("id", id)
                 .param("ts", chrono::Utc::now().to_rfc3339().as_str()),
@@ -203,7 +205,7 @@ impl Neo4jClient {
             .run(
                 neo4rs::query(
                     "MATCH (n:AgentNotification {read: false}) \
-                     SET n.read = true, n.read_at = $ts",
+                     SET n.read = true, n.read_at = datetime($ts)",
                 )
                 .param("ts", chrono::Utc::now().to_rfc3339().as_str()),
             )
@@ -258,7 +260,7 @@ impl Neo4jClient {
                 neo4rs::query(
                     "MERGE (s:SourceList {name: $name}) \
                      ON CREATE SET s.domains = $domains, s.description = $description, \
-                                   s.created_at = $now, s.updated_at = $now \
+                                   s.created_at = datetime($now), s.updated_at = datetime($now) \
                      RETURN s.created_at = $now AS created",
                 )
                 .param("name", name)

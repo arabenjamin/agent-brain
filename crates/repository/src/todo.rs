@@ -49,9 +49,9 @@ impl Neo4jClient {
                 status: $status,
                 priority: $priority,
                 tags: $tags,
-                due_at: $due_at,
-                created_at: $created_at,
-                updated_at: $updated_at
+                due_at: CASE WHEN $due_at = '' THEN null ELSE datetime($due_at) END,
+                created_at: datetime($created_at),
+                updated_at: datetime($updated_at)
             }) RETURN t.id AS id",
         )
         .param("id", id.clone())
@@ -87,7 +87,8 @@ impl Neo4jClient {
             "MATCH (t:Todo {id: $id})
              RETURN t.id AS id, t.title AS title, t.description AS description,
                     t.status AS status, t.priority AS priority, t.tags AS tags,
-                    t.due_at AS due_at, t.created_at AS created_at, t.updated_at AS updated_at",
+                    toString(t.due_at) AS due_at, toString(t.created_at) AS created_at, \
+                        toString(t.updated_at) AS updated_at",
         )
         .param("id", id);
 
@@ -105,7 +106,8 @@ impl Neo4jClient {
                 "MATCH (t:Todo) WHERE t.status = $status
                  RETURN t.id AS id, t.title AS title, t.description AS description,
                         t.status AS status, t.priority AS priority, t.tags AS tags,
-                        t.due_at AS due_at, t.created_at AS created_at, t.updated_at AS updated_at
+                        toString(t.due_at) AS due_at, toString(t.created_at) AS created_at, \
+                        toString(t.updated_at) AS updated_at
                  ORDER BY t.priority ASC, t.created_at DESC",
             )
             .param("status", s);
@@ -115,7 +117,8 @@ impl Neo4jClient {
                 "MATCH (t:Todo)
                  RETURN t.id AS id, t.title AS title, t.description AS description,
                         t.status AS status, t.priority AS priority, t.tags AS tags,
-                        t.due_at AS due_at, t.created_at AS created_at, t.updated_at AS updated_at
+                        toString(t.due_at) AS due_at, toString(t.created_at) AS created_at, \
+                        toString(t.updated_at) AS updated_at
                  ORDER BY t.priority ASC, t.created_at DESC",
             );
             self.execute(q).await?
@@ -166,8 +169,8 @@ impl Neo4jClient {
                  t.status = $status,
                  t.priority = $priority,
                  t.tags = $tags,
-                 t.due_at = $due_at,
-                 t.updated_at = $updated_at",
+                 t.due_at = CASE WHEN $due_at = '' THEN null ELSE datetime($due_at) END,
+                 t.updated_at = datetime($updated_at)",
         )
         .param("id", id)
         .param("title", new_title)

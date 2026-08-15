@@ -27,7 +27,7 @@ use axum::{
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use crate::repository::{Neo4jClient, TelemetryClient};
+use crate::repository::{Neo4jClient, TelemetryClient, node_ts};
 use crate::services::LlmConfig;
 use crate::services::context_builder::{ContextBuilderService, ContextProfile};
 use crate::services::scheduler::SchedulerService;
@@ -922,7 +922,7 @@ pub async fn handle_list_scheduler_chains(
                          c.priority AS priority, c.description AS description, \
                          c.no_evaluator AS no_evaluator, \
                          c.evaluation_rubric AS evaluation_rubric, \
-                         c.steps AS steps, c.updated_at AS updated_at \
+                         c.steps AS steps, toString(c.updated_at) AS updated_at \
                   ORDER BY c.priority ASC, c.name ASC";
 
     match neo4j.execute(neo4rs::query(cypher)).await {
@@ -1181,8 +1181,8 @@ pub async fn handle_list_jobs(
                         "args":          args,
                         "error":         node.get::<String>("error").ok().filter(|s| !s.is_empty()),
                         "parent_job_id": node.get::<String>("parent_job_id").ok().filter(|s| !s.is_empty()),
-                        "created_at":    node.get::<String>("created_at").unwrap_or_default(),
-                        "updated_at":    node.get::<String>("updated_at").unwrap_or_default(),
+                        "created_at":    node_ts(&node, "created_at").unwrap_or_default(),
+                        "updated_at":    node_ts(&node, "updated_at").unwrap_or_default(),
                     })
                 })
                 .filter(|v| !v.is_null())

@@ -67,9 +67,11 @@ impl Neo4jClient {
         self.run(
             query(
                 "MERGE (m:Media {id: $id}) \
-                 ON CREATE SET m.ingested_at = $now \
+                 ON CREATE SET m.ingested_at = datetime($now) \
                  SET m.url = $url, m.title = $title, m.channel = $channel, \
-                     m.channel_id = $channel_id, m.published_at = $published_at, \
+                     m.channel_id = $channel_id, \
+                     m.published_at = CASE WHEN $published_at = '' THEN null \
+                                          ELSE datetime($published_at) END, \
                      m.duration_secs = $duration_secs, m.transcript_source = $transcript_source, \
                      m.source_media_name = $source_media_name",
             )
@@ -156,8 +158,8 @@ impl Neo4jClient {
                     "MERGE (s:MediaSource {name: $name}) \
                      ON CREATE SET s.kind = $kind, s.ref = $ref, s.description = $description, \
                                    s.active = $active, s.managed_by = 'yaml', \
-                                   s.created_at = $now, s.updated_at = $now \
-                     RETURN s.created_at = $now AS created",
+                                   s.created_at = datetime($now), s.updated_at = datetime($now) \
+                     RETURN s.created_at = datetime($now) AS created",
                 )
                 .param("name", name)
                 .param("kind", kind)
@@ -189,9 +191,9 @@ impl Neo4jClient {
         self.run(
             query(
                 "MERGE (s:MediaSource {name: $name}) \
-                 ON CREATE SET s.created_at = $now \
+                 ON CREATE SET s.created_at = datetime($now) \
                  SET s.kind = $kind, s.ref = $ref, s.description = $description, \
-                     s.active = $active, s.managed_by = 'runtime', s.updated_at = $now",
+                     s.active = $active, s.managed_by = 'runtime', s.updated_at = datetime($now)",
             )
             .param("name", name)
             .param("kind", kind)

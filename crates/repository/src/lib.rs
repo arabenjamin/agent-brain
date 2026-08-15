@@ -4,6 +4,7 @@ mod error;
 mod media;
 mod scheduled_task;
 mod task;
+mod temporal;
 mod todo;
 
 #[cfg(feature = "telemetry")]
@@ -14,6 +15,7 @@ pub use client::Neo4jClient;
 pub use error::{RepositoryError, Result};
 pub use media::{MediaRecord, MediaSourceRecord};
 pub use scheduled_task::YamlSyncOutcome;
+pub use temporal::node_ts;
 pub use todo::Todo;
 
 #[cfg(feature = "telemetry")]

@@ -186,7 +186,7 @@ impl KnowledgeService {
         }
 
         if let Some(ea) = event_at {
-            let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.event_at = $ea")
+            let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.event_at = datetime($ea)")
                 .param("id", note_id.clone())
                 .param("ea", ea);
             let _ = self.neo4j.run(q).await;
@@ -1634,7 +1634,7 @@ impl KnowledgeService {
                      RETURN n.id AS id, COALESCE(n.note_type,'semantic') AS note_type, \
                             COALESCE(n.claim_status, 'unverified') AS status, \
                             COALESCE(n.asserted_by, '') AS asserted_by, \
-                            COALESCE(n.asserted_at, '') AS asserted_at, \
+                            COALESCE(toString(n.asserted_at), '') AS asserted_at, \
                             COALESCE(n.source_context, '') AS source_context, \
                             COALESCE(n.corroboration_tier, '') AS tier, \
                             COALESCE(n.claim_kind, '') AS kind, \
@@ -2197,7 +2197,7 @@ impl KnowledgeService {
 
             let create_q = neo4rs::query(
                 "CREATE (t:Task {id: $id, goal: $goal, context: $ctx, \
-                 status: 'created', created_at: $ts, updated_at: $ts})",
+                 status: 'created', created_at: datetime($ts), updated_at: datetime($ts)})",
             )
             .param("id", task_id.as_str())
             .param("goal", goal.as_str())
