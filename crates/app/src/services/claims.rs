@@ -619,7 +619,42 @@ pub async fn attach_evidence(
     Ok(true)
 }
 
-/// Fetch claims awaiting verification, oldest first.
+/// Record that a verification attempt was made against a claim.
+///
+/// Stamped *before* the attempt runs, not after, so a claim advances the cursor
+/// even when the attempt dies partway (search failure, assessment error, the job
+/// itself dying). A claim that blocks the sweep is worse than one retried a cycle
+/// early — see [`unverified_claims`].
+pub async fn mark_verify_attempt(neo4j: &Neo4jClient, claim_id: &str) -> Result<()> {
+    neo4j
+        .run(
+            neo4rs::query(
+                "MATCH (c:Note {id: $id, note_type: 'claim'}) \
+                 SET c.last_verify_attempt_at = datetime($now)",
+            )
+            .param("id", claim_id)
+            .param("now", chrono::Utc::now().to_rfc3339()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Fetch claims awaiting verification: never-attempted first, then
+/// least-recently-attempted.
+///
+/// Ordering by `created_at` alone deadlocks the sweep. Finding no evidence
+/// correctly leaves a claim `unverified` (absence of evidence is not refutation),
+/// so the oldest N claims re-qualify on every run and are re-selected forever.
+/// Observed 2026-08-18: twelve 6-hourly sweeps each processed the *same eight*
+/// claim ids, attached zero edges, and reported success, while 465 other claims
+/// were never once attempted — corroboration frozen at 17/482 for weeks with no
+/// error anywhere to show for it.
+///
+/// `last_verify_attempt_at` is the cursor. Neo4j sorts NULL *last* in ascending
+/// order, which is backwards for us — never-attempted claims must go first — so
+/// the COALESCE maps unset to the epoch. Rotation is also the cooldown: at 8
+/// claims per 6h a full backlog cycle takes weeks, so no separate retry gate is
+/// needed.
 pub async fn unverified_claims(neo4j: &Neo4jClient, limit: usize) -> Result<Vec<(String, String)>> {
     let rows = neo4j
         .execute(
@@ -627,7 +662,9 @@ pub async fn unverified_claims(neo4j: &Neo4jClient, limit: usize) -> Result<Vec<
                 "MATCH (c:Note {note_type: 'claim'}) \
                  WHERE COALESCE(c.claim_status, 'unverified') = 'unverified' \
                  RETURN c.id AS id, c.content AS content \
-                 ORDER BY c.created_at ASC LIMIT $limit",
+                 ORDER BY COALESCE(c.last_verify_attempt_at, datetime('1970-01-01T00:00:00Z')) ASC, \
+                          c.created_at ASC \
+                 LIMIT $limit",
             )
             .param("limit", limit as i64),
         )

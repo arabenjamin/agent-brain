@@ -415,6 +415,46 @@ impl MediaSkill {
                 {
                     continue;
                 }
+                // Duration pre-filter: RSS feeds carry no duration, so probe
+                // metadata and skip anything over MEDIA_MAX_DURATION_SECS BEFORE
+                // creating a Task. Otherwise an over-length video fans out into a
+                // chain whose ingest step can only fail 3x, dead-letter, and fail
+                // the owning Task (the top source of media failures in the 2026-08
+                // review). Record a "skipped_too_long" :Media node so media_exists()
+                // dedups it on the next poll and we never re-probe the same video.
+                let max = self.svc.max_duration_secs();
+                if max > 0 {
+                    match self.svc.fetch_meta(&item.url).await {
+                        Ok(meta) if meta.duration_secs > max => {
+                            let record = MediaRecord {
+                                id: item.video_id.clone(),
+                                url: item.url.clone(),
+                                title: item.title.clone(),
+                                channel: meta.channel.clone(),
+                                channel_id: item.channel_id.clone(),
+                                published_at: item.published_at.clone(),
+                                duration_secs: meta.duration_secs,
+                                transcript_source: "skipped_too_long".to_string(),
+                                source_media_name: ms.name.clone(),
+                            };
+                            if let Err(e) = self.neo4j.upsert_media(&record).await {
+                                warn!(error = %e,
+                                    "poll_media_sources: failed to record skipped :Media node");
+                            }
+                            info!(source = %ms.name, url = %item.url,
+                                duration = meta.duration_secs, max,
+                                "poll_media_sources: skipping over-length video");
+                            continue;
+                        }
+                        Ok(_) => {} // within cap — fall through to create the Task
+                        Err(e) => {
+                            // Transient probe failure (yt-dlp/network). Don't drop a
+                            // possibly-good video; let ingest handle it as before.
+                            warn!(source = %ms.name, url = %item.url, error = %e,
+                                "poll_media_sources: duration probe failed; creating task anyway");
+                        }
+                    }
+                }
                 let ctx = format!(
                     "Auto-discovered from MediaSource '{}' ({}). Title: {}. Published: {}.",
                     ms.name, ms.kind, item.title, item.published_at

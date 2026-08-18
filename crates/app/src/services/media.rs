@@ -213,6 +213,15 @@ impl MediaService {
             .map_err(|e| anyhow::anyhow!("yt-dlp returned unparseable JSON: {e}"))
     }
 
+    /// Fetch only a single video's metadata (`yt-dlp -J` → [`VideoMeta`]) — no
+    /// captions, no audio download. Used by `poll_media_sources` to check a
+    /// candidate's duration and filter out over-length videos before they become
+    /// Tasks (RSS feeds carry no duration, so a probe is the only way to know).
+    pub async fn fetch_meta(&self, url: &str) -> anyhow::Result<VideoMeta> {
+        let v = self.run_yt_dlp_json(url).await?;
+        self.parse_meta(&v)
+    }
+
     /// Resolve a YouTube channel to its `(channel_id, channel_name)` from either
     /// a **URL/handle** (`https://youtube.com/@handle`, `/channel/UC…`) or a
     /// bare **channel name** (`"Machine Learning Street Talk"`). Used by the

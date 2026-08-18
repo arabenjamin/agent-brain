@@ -352,6 +352,14 @@ impl ClaimSkill {
 
         let mut results = Vec::new();
         for (id, text) in &targets {
+            // Stamp the attempt before making it. `verify_one` has several early
+            // returns (search unavailable, evidence unstorable, assessment failed)
+            // and none of them change claim_status, so a claim stamped only on
+            // success would be re-selected by every future sweep and block the
+            // backlog behind it — the exact deadlock this cursor exists to break.
+            if let Err(e) = claims::mark_verify_attempt(&self.neo4j, id).await {
+                warn!(claim_id = %id, error = %e, "Could not stamp verification attempt");
+            }
             results.push(self.verify_one(id, text).await);
         }
 

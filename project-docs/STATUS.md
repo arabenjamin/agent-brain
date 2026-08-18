@@ -135,15 +135,40 @@
 
 ## Recent Changes (auto)
 
-### 2026-08-10
+### 2026-08-18
 
+- fix: rotate the claim verification cursor. `unverified_claims` ordered by
+  `created_at` alone, and finding no evidence correctly leaves a claim
+  `unverified` — so the oldest 8 re-qualified on every 6-hourly sweep and were
+  re-selected forever. Twelve consecutive sweeps processed the *same eight* ids,
+  attached zero edges, and reported success while 465 claims went untouched.
+  `last_verify_attempt_at` is now stamped before each attempt and ordered on
+  (nulls first), so the sweep advances through the backlog.
+- fix: `poll_media_sources` probes duration before creating a Task, and records a
+  `skipped_too_long` `:Media` node. Over-length videos were the largest media
+  failure bucket — and because a failed ingest wrote no `:Media` node, each one
+  was re-fanned-out on every subsequent poll (observed: 4 tasks per URL).
+- fix: removed perception_scan Trigger 3. It fired on a premise that was void (a
+  background job's `context_profile` is annotation only, never read at execution),
+  against an absolute threshold of 5 (~0.6% of weekly volume), with a dedup guard
+  that only held while a routing task was open. It produced 40% of all task volume
+  and 666 notes in two days — 146 of them `semantic`.
+
+### 2026-08-15
+
+- Updated the daily news scheduled task to include the date of the report and to use source URLs from the source it finds the news (`39c5d78`)
+- fix: store every timestamp as one type, and stop corrupting multi-line Cypher (`f37fa2e`)
 - feat: `execute_code` + isolated `sandbox` sidecar — tool-integrated reasoning.
   Python runs in a container on an `internal: true` network (no egress,
   verified), read-only root, dropped caps, no credentials, no bind mounts.
   A failed run returns its traceback as a *successful* tool call so it cannot
-  burn a retry or dead-letter the owning Task.
+  burn a retry or dead-letter the owning Task. (`f4c28b9`)
 - feat: `computation` capability in `models.yaml`, held by `qwen2.5-coder:7b`
   alone — a second $0 holder would silently win on context-window tiebreak.
+- feat: give the brain a local sense of time (`c788867`)
+
+### 2026-08-10
+
 - fix: chain-extracted claims now get an `ASSERTED_IN` edge. `extract_result_text`
   unwraps a result envelope's `answer` before stamping it on the next job, which
   discarded `store_note`'s id upstream of substitution; `AgentJob.prev_result_raw`
@@ -157,6 +182,12 @@
   and had no recency gate, so a Sept-2023 model sourced from a Facebook group
   post was reported in chat as a current finding. Now `source_record` + claim
   extraction + the new `ml-research` SourceList + a dated MOVERS gate.
+
+- feat: claim kinds — separate "was asserted" from "is true" (`2af3957`)
+- feat: source records and corroboration tiering (`8f20d24`)
+- feat: claims — epistemic status for ingested assertions (`a9833f6`)
+- refactor: derive self-knowledge in-process, drop the post-commit script (`e6d0db2`)
+- feat: search engine failover, curiosity-engine web grounding, and self-knowledge fixes (`89a5de8`)
 
 ### 2026-08-05
 
