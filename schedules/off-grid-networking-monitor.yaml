@@ -20,6 +20,16 @@
 #      accumulated as "knowledge the brain established" and no future run
 #      could retrieve its predecessor to perform a delta.
 #
+# A fourth failure, from the rewritten version, on 2026-08-19: step 6 is the
+# only cloud-routed step here, and it died 3/3 on a transport error reaching
+# ollama.com, dead-lettering and failing the owning Task. `SharedLlm` only fell
+# back to local on 429/403 at the time, so an unreachable host burned all three
+# attempts while the local model sat idle, and the week's report simply did not
+# exist. `classify_unavailable` now covers transport and 5xx failures too — see
+# the fallback note under Critical Dev Notes in CLAUDE.md. The lesson for this
+# file: a single cloud step is a single point of failure for the whole run, and
+# a missing weekly report looks exactly like a quiet week in the field.
+#
 # Same banking idiom as slm-benchmark-watch.yaml — {{_prev}} carries only the
 # previous step's output, so consecutive searches would discard all but the
 # last. Each sweep is banked into "offgrid-{{task_id}}" and reassembled.

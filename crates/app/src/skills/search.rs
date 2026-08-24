@@ -391,6 +391,19 @@ impl SearchSkill {
 
         let mut failures: Vec<String> = Vec::new();
         let mut result: Option<ToolCallResult> = None;
+        // An engine that answers `200` with zero results is not an answer — it
+        // is a silent outage. SearXNG lost DNS on 2026-08-18 and every upstream
+        // reported "HTTP connection error", so it returned a well-formed empty
+        // result set for three days; because that is not an error the ladder
+        // stopped at the first rung and never tried Google/SerpApi/Brave, and
+        // every daily news brief since came out empty with nothing logged.
+        //
+        // Empty now falls through to the next engine. If every engine comes
+        // back empty we return that empty result rather than an error: "nobody
+        // has anything on this query" is a legitimate outcome, and erroring
+        // would burn the job's retries and fail the owning Task through
+        // chain-death attribution.
+        let mut empty_success: Option<ToolCallResult> = None;
 
         for engine in &ladder {
             let started = Instant::now();
@@ -433,20 +446,45 @@ impl SearchSkill {
                 duration_ms,
                 None,
             );
+
+            if n == 0 {
+                warn!(
+                    engine = %engine,
+                    query = %effective_query,
+                    "Search engine returned zero results — trying next in ladder"
+                );
+                failures.push(format!("{engine}: returned 0 results"));
+                // Keep the first one so an all-empty ladder still returns `[]`
+                // in the engine's own shape rather than an error.
+                empty_success.get_or_insert(attempt);
+                continue;
+            }
+
             result = Some(attempt);
             break;
         }
 
-        let Some(result) = result else {
-            // Every engine is down. Surface all of them — knowing that SerpApi is
-            // out of quota AND Google CSE is disabled is the difference between a
-            // one-line fix and a day of guessing.
-            return ToolCallResult::error(format!(
-                "All search engines failed ({} tried).\n{}",
-                ladder.len(),
-                failures.join("\n")
-            ));
+        let result = match result.or(empty_success) {
+            Some(r) => r,
+            None => {
+                // Every engine is down. Surface all of them — knowing that SerpApi
+                // is out of quota AND Google CSE is disabled is the difference
+                // between a one-line fix and a day of guessing.
+                return ToolCallResult::error(format!(
+                    "All search engines failed ({} tried).\n{}",
+                    ladder.len(),
+                    failures.join("\n")
+                ));
+            }
         };
+
+        if !failures.is_empty() {
+            warn!(
+                query = %effective_query,
+                attempts = ?failures,
+                "Search ladder fell through at least one engine"
+            );
+        }
 
         // Post-filter: drop any result whose URL is not from an approved domain.
         if allowed_domains.is_empty() {
@@ -943,5 +981,28 @@ mod tests {
             classify_search_error("Request failed: error sending request"),
             "network_error"
         );
+    }
+
+    #[test]
+    fn a_zero_result_answer_does_not_count_as_an_answer() {
+        // The signature of the SearXNG DNS outage: HTTP 200, well-formed body,
+        // no results. `is_error` is false, so only the count distinguishes it
+        // from a working engine — and it must not end the ladder.
+        let empty = ToolCallResult::success_text("[]");
+        assert_eq!(SearchSkill::result_count(&empty), 0);
+        assert_ne!(empty.is_error, Some(true));
+
+        let one = ToolCallResult::success_text(
+            r#"[{"title":"t","link":"https://example.com","snippet":"s"}]"#,
+        );
+        assert_eq!(SearchSkill::result_count(&one), 1);
+    }
+
+    #[test]
+    fn unparseable_output_counts_as_zero_so_the_ladder_moves_on() {
+        // A rung that answers with something that is not a result array is no
+        // more useful than one that answers with none.
+        let junk = ToolCallResult::success_text("<html>rate limited</html>");
+        assert_eq!(SearchSkill::result_count(&junk), 0);
     }
 }

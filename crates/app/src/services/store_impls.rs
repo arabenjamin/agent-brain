@@ -80,18 +80,33 @@ impl WorkingMemoryStore for Neo4jClient {
     }
 
     async fn list_sessions(&self, limit: i64) -> anyhow::Result<Vec<Value>> {
+        // `task_goal` is what makes an agent-created session identifiable in the
+        // History list. Chains name their scratch sessions `<kind>-{{task_id}}`
+        // (`gap-`, `video-`, `offgrid-`, `slmwatch-`), so the id after the first
+        // `-` is an indexed Task lookup that yields the actual topic — "fill
+        // knowledge gap: AI Governance and Biosecurity Protocols" instead of a
+        // uuid. Date-scoped sessions (`news-`, `todos-`, `claims-`) match no
+        // Task and return null; the UI labels those from the kind plus the date.
+        //
+        // LIMIT lands before the OPTIONAL MATCHes so the Task lookups run for
+        // the returned page only, not for every session in the graph.
         let cypher = r#"
         MATCH (w:WorkingMemory)
         WHERE w.archived IS NULL OR w.archived = false
         WITH w.session_id AS sid,
              toString(min(w.created_at)) AS started_at,
              count(w) AS msg_count
-        OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0})
-        WHERE first.archived IS NULL OR first.archived = false
-        RETURN sid AS session_id, started_at, msg_count,
-               COALESCE(first.content, sid) AS title
         ORDER BY started_at DESC
         LIMIT $limit
+        OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0})
+        WHERE first.archived IS NULL OR first.archived = false
+        WITH sid, started_at, msg_count, first,
+             substring(sid, size(split(sid, '-')[0]) + 1) AS task_id
+        OPTIONAL MATCH (t:Task {id: task_id})
+        RETURN sid AS session_id, started_at, msg_count,
+               COALESCE(first.content, sid) AS title,
+               t.goal AS task_goal
+        ORDER BY started_at DESC
         "#;
 
         let q = neo4rs::query(cypher).param("limit", limit);
@@ -106,7 +121,9 @@ impl WorkingMemoryStore for Neo4jClient {
                     "session_id": row.get::<String>("session_id").unwrap_or_default(),
                     "started_at": row.get::<String>("started_at").unwrap_or_default(),
                     "msg_count":  row.get::<i64>("msg_count").unwrap_or(0),
-                    "title":      row.get::<String>("title").unwrap_or_default()
+                    "title":      row.get::<String>("title").unwrap_or_default(),
+                    // Null for every session whose id is not `<kind>-<task_id>`.
+                    "task_goal":  row.get::<String>("task_goal").ok()
                 })
             })
             .collect())

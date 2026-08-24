@@ -90,14 +90,12 @@ impl LlmProvider for SharedLlm {
             .map_err(|e| anyhow::anyhow!("{}", e));
         let duration_ms = start.elapsed().as_millis() as i64;
 
-        // If a cloud call was rate-limited OR rejected as subscription-only
-        // (Ollama Cloud's free tier is undocumented — 403 "requires a
-        // subscription" is how we learn a model isn't free), fall back to
-        // local Ollama before giving up. Applies to both the active config
-        // and capability-selected cloud models.
+        // If the cloud call failed in a way that says "this provider cannot
+        // answer right now" — as opposed to "this prompt is bad" — fall back to
+        // local Ollama before giving up. Applies to both the active config and
+        // capability-selected cloud models.
         let unavailable_kind = match &result {
-            Err(e) if is_rate_limited(e) => Some("rate_limited"),
-            Err(e) if is_subscription_required(e) => Some("subscription_required"),
+            Err(e) => classify_unavailable(e),
             _ => None,
         };
         if !is_local_route && let Some(kind) = unavailable_kind {
@@ -187,6 +185,30 @@ impl LlmProvider for SharedLlm {
     }
 }
 
+/// Classify a failed LLM call as a provider-unavailable condition worth
+/// retrying locally, returning the telemetry `error_kind` for it.
+///
+/// The distinction that matters is **"the provider could not answer"** vs
+/// **"the provider answered and rejected this request"**. Only the first is
+/// worth re-running against a different model: falling back on a 400 would
+/// re-send a malformed prompt to a weaker model and get a worse rejection.
+///
+/// Returns `None` for anything unrecognised, which preserves the previous
+/// behaviour of propagating the error.
+fn classify_unavailable(e: &anyhow::Error) -> Option<&'static str> {
+    if is_rate_limited(e) {
+        Some("rate_limited")
+    } else if is_subscription_required(e) {
+        Some("subscription_required")
+    } else if is_transport_failure(e) {
+        Some("transport")
+    } else if is_server_error(e) {
+        Some("server_error")
+    } else {
+        None
+    }
+}
+
 /// Returns true if the error looks like an HTTP 429 / rate-limit / quota error.
 fn is_rate_limited(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
@@ -200,6 +222,40 @@ fn is_subscription_required(e: &anyhow::Error) -> bool {
     msg.contains("requires a subscription") || msg.contains("403 Forbidden")
 }
 
+/// Returns true if the call never reached the provider — DNS failure, refused
+/// connection, TLS error, or a client-side timeout.
+///
+/// This is the case that took down the Off-Grid Networking Monitor on
+/// 2026-08-19: its cloud `reason` step failed 3/3 with
+/// `Provider error: HTTP request failed: error sending request for url
+/// (https://ollama.com/v1/chat/completions)`, dead-lettered, and — via
+/// chain-death attribution — failed the owning Task. Retrying an unreachable
+/// host three times cannot succeed; a local model can. The weekly report was
+/// simply missing, and nothing surfaced why until a human went looking.
+fn is_transport_failure(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("error sending request")
+        || msg.contains("Server not reachable")
+        || msg.contains("operation timed out")
+        || msg.contains("connection refused")
+        || msg.contains("dns error")
+}
+
+/// Returns true if the provider answered with a 5xx — it is up, but not
+/// serving. Every provider formats status codes through `StatusCode`'s
+/// `Display`, so matching the canonical reason phrases covers all four
+/// (`Status 503: …`, `Gemini API Error (Status 503 Service Unavailable): …`).
+///
+/// Matched by phrase rather than by bare number on purpose: `contains("500")`
+/// would fire on a token count or a model name in an unrelated error body.
+fn is_server_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("500 Internal Server Error")
+        || msg.contains("502 Bad Gateway")
+        || msg.contains("503 Service Unavailable")
+        || msg.contains("504 Gateway Timeout")
+}
+
 /// Extract (tokens_in, tokens_out) from a generate result for telemetry.
 fn response_tokens(
     result: &anyhow::Result<crate::services::llm::LlmResponse>,
@@ -210,5 +266,85 @@ fn response_tokens(
             r.tokens_out.map(|t| t as i64),
         ),
         Err(_) => (None, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn err(msg: &str) -> anyhow::Error {
+        anyhow::anyhow!("{}", msg)
+    }
+
+    /// The verbatim error that failed the Off-Grid Networking Monitor run of
+    /// 2026-08-19, read back out of that Task's `context`.
+    #[test]
+    fn classifies_the_off_grid_monitor_failure_as_transport() {
+        let e = err("Reasoning failed: Provider error: HTTP request failed: \
+             error sending request for url (https://ollama.com/v1/chat/completions)");
+        assert_eq!(classify_unavailable(&e), Some("transport"));
+    }
+
+    #[test]
+    fn classifies_rate_limit_and_subscription_first() {
+        assert_eq!(
+            classify_unavailable(&err("HTTP 429 Too Many Requests")),
+            Some("rate_limited")
+        );
+        assert_eq!(
+            classify_unavailable(&err("403 Forbidden: this model requires a subscription")),
+            Some("subscription_required")
+        );
+    }
+
+    #[test]
+    fn classifies_transport_variants() {
+        for msg in [
+            "error sending request for url (https://ollama.com/v1/chat/completions)",
+            "Server not reachable: http://localhost:11434",
+            "operation timed out",
+            "tcp connect error: connection refused",
+            "dns error: failed to lookup address information",
+        ] {
+            assert_eq!(classify_unavailable(&err(msg)), Some("transport"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn classifies_5xx_across_provider_error_formats() {
+        for msg in [
+            "Status 500 Internal Server Error: upstream failure",
+            "OpenAI-compat error (502 Bad Gateway): ",
+            "Gemini API Error (Status 503 Service Unavailable): overloaded",
+            "Anthropic API Error (Status 504 Gateway Timeout): ",
+        ] {
+            assert_eq!(
+                classify_unavailable(&err(msg)),
+                Some("server_error"),
+                "{msg}"
+            );
+        }
+    }
+
+    /// A provider that answered and rejected the request must NOT fall back —
+    /// re-sending a bad prompt to a weaker model only produces a worse error.
+    #[test]
+    fn does_not_fall_back_on_request_rejections() {
+        for msg in [
+            "Status 400 Bad Request: invalid role in messages[2]",
+            "Model not available: qwen3.5:4b",
+            "Failed to parse LLM response: expected value at line 1",
+            "Status 401 Unauthorized: invalid api key",
+        ] {
+            assert_eq!(classify_unavailable(&err(msg)), None, "{msg}");
+        }
+    }
+
+    /// `contains("500")` would fire here; the canonical-phrase match must not.
+    #[test]
+    fn status_like_numbers_in_a_body_are_not_server_errors() {
+        let e = err("Generation failed: prompt exceeds 500 tokens for context window 4096");
+        assert_eq!(classify_unavailable(&e), None);
     }
 }

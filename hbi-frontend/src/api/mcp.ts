@@ -87,9 +87,16 @@ export async function callTool(
   }
 }
 
-/** Reset the singleton (called on disconnect or after settings change). */
+/**
+ * Reset the singleton (called on disconnect or after settings change).
+ *
+ * Deliberately keeps `_notifHandlers`: subscribers hold an unsubscribe closure
+ * and expect delivery to survive a reconnect. Clearing here meant the first
+ * transport hiccup inside `callTool` silently unsubscribed every panel — the
+ * next client sets `fallbackNotificationHandler` again, but there was nobody
+ * left to fan out to, and nothing reported the loss.
+ */
 export function resetMcpClient() {
   _client = null;
   _connecting = null;
-  _notifHandlers.clear();
 }

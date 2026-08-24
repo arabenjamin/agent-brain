@@ -687,7 +687,7 @@ async fn handle_post_mcp(
     State(state): State<Arc<HttpTransportState>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<impl IntoResponse, McpHttpError> {
+) -> Result<Response, McpHttpError> {
     // Accept requests without the protocol version header for compatibility with
     // clients that don't implement it (e.g. OpenWebUI). Log at debug level only.
     let protocol_version = headers
@@ -807,7 +807,7 @@ async fn handle_post_mcp(
                 OutgoingMessage::Error(e) => serde_json::to_value(e).unwrap(),
             };
 
-            Ok((response_headers, Json(json_response)))
+            Ok((response_headers, Json(json_response)).into_response())
         }
         IncomingMessage::Notification(notification) => {
             // Send notification to server core
@@ -822,8 +822,22 @@ async fn handle_post_mcp(
                 .await
                 .map_err(|_| McpHttpError::InternalError("Server unavailable".to_string()))?;
 
-            // Notifications don't get responses
-            Ok((HeaderMap::new(), Json(serde_json::json!(null))))
+            // A notification-only POST gets 202 Accepted with an empty body, per
+            // the Streamable HTTP spec. This is load-bearing, not cosmetic: the
+            // MCP TypeScript SDK opens its standalone GET SSE stream only after
+            // seeing `202` on the `notifications/initialized` POST
+            // (`isInitializedNotification` + `response.status === 202` in
+            // streamableHttp.js). While this returned `200 {"null"}` no browser
+            // client ever opened that stream, so every server-initiated push —
+            // `notifications/agent_chat` from `notify_user`, `notifications/agent_job`
+            // from the queue — was broadcast to zero listeners and the UI could
+            // only discover them by polling.
+            let mut response_headers = HeaderMap::new();
+            response_headers.insert(
+                MCP_SESSION_ID_HEADER,
+                HeaderValue::from_str(&session_id).unwrap(),
+            );
+            Ok((StatusCode::ACCEPTED, response_headers).into_response())
         }
     }
 }

@@ -7,16 +7,8 @@ import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
 import { getBrainUrl, getApiKey } from "../../api/config";
+import type { AgentNotification } from "../../api/notifications";
 import ContextProfileModal from "./ContextProfileModal";
-
-interface AgentNotification {
-  id: string;
-  message: string;
-  context: string;
-  related_session_id: string;
-  created_at: string;
-  read: boolean;
-}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +28,8 @@ interface AssistantMsg {
   reflection?: string;
   ts: string;
   model?: string;
+  /** Working-memory role when it is not "assistant" (e.g. "observation"). */
+  role?: string;
 }
 
 type Msg = UserMsg | AssistantMsg;
@@ -44,7 +38,10 @@ interface Session {
   session_id: string;
   started_at: string;
   msg_count: number;
+  /** turn-0 content — the user's opening message for a chat, boilerplate otherwise. */
   title: string;
+  /** Goal of the Task this session was scratch space for, when it maps to one. */
+  task_goal?: string | null;
 }
 
 interface ModelUsageStat {
@@ -100,6 +97,93 @@ function formatTime(iso: string): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+// ── Session labels ───────────────────────────────────────────────────────────
+//
+// Agent-created sessions all open with the same banner line — every claim sweep
+// starts "## CLAIM VERIFICATION SWEEP", every news sweep "## METRO DETROIT —
+// raw search results" — so labelling the list with turn-0 content rendered all
+// eleven claim sweeps as one repeated string, distinguishable only by the date
+// underneath. The session id already encodes what kind of run it was; that,
+// plus the Task goal or the date, is what actually tells them apart.
+//
+// This list is exactly the set of session ids that chains and schedules create.
+// Keep it in sync with `grep -rhoE 'session_id: *"[^"]+"' schedules/ chains/`,
+// and do NOT add speculative prefixes: a human session that happens to start
+// with one gets its real identity — the user's opening message — replaced by a
+// generic run label. `eval-*` and `verify-*` are hand-made test chats and were
+// mislabelled exactly that way before this list was checked against the source.
+//
+// Longest prefix first: `news-raw-` must be tested before `news-`.
+const SESSION_KINDS: ReadonlyArray<readonly [string, string]> = [
+  ["news-raw-", "News sweep"],
+  ["news-", "News brief"],
+  ["todos-", "Todo review"],
+  ["claims-", "Claim verification"],
+  ["gap-", "Knowledge gap"],
+  ["video-", "Video learning"],
+  ["offgrid-", "Off-grid watch"],
+  ["slmwatch-", "SLM benchmark watch"],
+  ["tripwire-", "Hardware tripwire"],
+  ["synthesis-", "Tech dependency synthesis"],
+];
+
+/** `2026-08-20` → `Aug 20`. Returns null for anything that is not a bare date. */
+function dateSuffixLabel(rest: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(rest);
+  if (!m) return null;
+  const d = new Date(`${rest}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/**
+ * Strip the markdown banner and any JSON body from turn-0 content, leaving the
+ * first line of readable prose. Used only as the last resort.
+ */
+function cleanSnippet(content: string): string {
+  const line = content
+    .split("\n")
+    .map((l) => l.replace(/^#+\s*/, "").trim())
+    .find((l) => l.length > 0 && !/^[[{]/.test(l));
+  return (line ?? content).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Human label for a session, plus whether the date is already part of it (the
+ * meta row omits it when so, rather than printing "Aug 20" twice).
+ */
+function sessionLabel(s: Session): { label: string; datedInLabel: boolean } {
+  const kind = SESSION_KINDS.find(([prefix]) => s.session_id.startsWith(prefix));
+
+  if (kind) {
+    const [prefix, name] = kind;
+    const rest = s.session_id.slice(prefix.length);
+
+    // A Task goal is the most specific thing available — it names the topic,
+    // not just the run type.
+    const goal = s.task_goal?.trim();
+    if (goal) {
+      // Chain-routing prefixes ("fill knowledge gap: X", "watch video: X") are
+      // already conveyed by the kind name; the part after the colon is the
+      // topic. Left intact when it would leave nothing behind.
+      const topic = goal.includes(":") ? goal.slice(goal.indexOf(":") + 1).trim() : goal;
+      return { label: `${name}: ${topic || goal}`, datedInLabel: false };
+    }
+
+    const dated = dateSuffixLabel(rest);
+    if (dated) return { label: `${name} · ${dated}`, datedInLabel: true };
+
+    // Unresolvable suffix (Task deleted, or an id-scoped run) — a short id at
+    // least keeps sibling runs distinguishable.
+    return { label: `${name} · ${rest.slice(0, 8)}`, datedInLabel: false };
+  }
+
+  // Plain chat: turn 0 is the user's own opening message, which is already the
+  // best possible label.
+  const snippet = cleanSnippet(s.title || s.session_id);
+  return { label: snippet || s.session_id, datedInLabel: false };
 }
 
 // ── Event bubble ─────────────────────────────────────────────────────────────
@@ -188,7 +272,7 @@ function NotificationBanner({
   onDismiss,
 }: {
   notifications: AgentNotification[];
-  onResume: (sessionId: string) => void;
+  onResume: (n: AgentNotification) => void;
   onDismiss: (id: string) => void;
 }) {
   if (notifications.length === 0) return null;
@@ -212,7 +296,7 @@ function NotificationBanner({
             <button
               className="btn"
               style={{ fontSize: 11, padding: "3px 10px", marginTop: 6 }}
-              onClick={() => onResume(n.related_session_id)}
+              onClick={() => onResume(n)}
             >
               Continue conversation
             </button>
@@ -370,7 +454,15 @@ function ChatSettingsBar({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCountChange?: (count: number) => void; visible?: boolean }) {
+export default function ChatPanel({
+  notifications,
+  onDismissNotification,
+  visible,
+}: {
+  notifications: AgentNotification[];
+  onDismissNotification: (id: string) => void;
+  visible?: boolean;
+}) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -381,10 +473,13 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
   const [researchProvider] = useState<string | null>(null);
   const [activeModelKey, setActiveModelKey] = useState("");
   const [modelUsage, setModelUsage] = useState<ModelUsageStat[]>([]);
-  const [notifications, setNotifications] = useState<AgentNotification[]>([]);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [profileInfos, setProfileInfos] = useState<Array<{ name: string; description?: string; tools?: string[] }>>([]);
   const [thread, setThread] = useState<ThreadState | null>(null);
+  // Why the transcript is empty after clicking a session, when it is not simply
+  // a new chat. Without this, "loaded and it had nothing" and "the load failed"
+  // both render as the generic new-chat empty state.
+  const [sessionNote, setSessionNote] = useState<string | null>(null);
   const threadAbortRef = useRef<AbortController | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -415,47 +510,34 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     loadSessions();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A scheduled task that ends in `notify_user` also creates the session it
+  // points at (via its `push_context` step). Reload History whenever the
+  // notification set changes so that session is clickable, not just announced.
+  const notifKey = notifications.map((n) => n.id).join(",");
   useEffect(() => {
-    if (!visible) return;
-    const load = async () => {
-      try {
-        const res = await fetch(`${getBrainUrl()}/api/notifications?unread=true`, {
-          headers: { Authorization: `Bearer ${getApiKey()}` },
-        });
-        if (res.ok) {
-          const data = await res.json() as { notifications?: AgentNotification[] };
-          const notifs = data.notifications ?? [];
-          setNotifications(notifs);
-          onNotifCountChange?.(notifs.length);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    load();
-  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const dismissNotification = useCallback(async (id: string) => {
-    setNotifications((prev) => {
-      const next = prev.filter((n) => n.id !== id);
-      onNotifCountChange?.(next.length);
-      return next;
-    });
-    try {
-      await fetch(`${getBrainUrl()}/api/notifications/${id}/read`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
-    } catch {
-      // ignore
-    }
-  }, [onNotifCountChange]);
+    if (!visible || notifications.length === 0) return;
+    loadSessions();
+  }, [notifKey, visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openThread = useCallback(async (n: AgentNotification) => {
     const sid = n.related_session_id;
-    dismissNotification(n.id);
+    onDismissNotification(n.id);
 
-    if (!sid) return;
+    if (!sid) {
+      // No session to continue — surface the message in the main transcript so
+      // acting on the banner always changes something on screen.
+      setMsgs((prev) => [
+        ...prev,
+        {
+          kind: "assistant",
+          id: uid(),
+          events: [{ type: "message", content: n.message }],
+          done: true,
+          ts: n.created_at || new Date().toISOString(),
+        },
+      ]);
+      return;
+    }
 
     const seedMsg: ThreadMsg = {
       id: uid(),
@@ -493,7 +575,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     } catch {
       // keep seed message
     }
-  }, [dismissNotification]);
+  }, [onDismissNotification]);
 
   const sendThreadMessage = useCallback(async () => {
     if (!thread || !thread.input.trim() || thread.streaming) return;
@@ -613,6 +695,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
 
     setSessionId(sid);
     setMsgs([]);
+    setSessionNote(null);
 
     // Restore from cache if available (full events preserved)
     const cached = sessionCacheRef.current.get(sid);
@@ -621,7 +704,13 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
       return;
     }
 
-    // Otherwise fetch from server (text-only fallback)
+    // Otherwise fetch from server (text-only fallback).
+    //
+    // Render EVERY role, not just user/assistant. Agent-written sessions bank
+    // their work under other roles — the daily news chain pushes eight
+    // `role: observation` entries into `news-raw-<date>` — and filtering those
+    // out left History advertising "8 msgs" next to a session that opened
+    // completely blank, with nothing on screen to say why.
     try {
       const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
@@ -630,24 +719,29 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
         entries?: Array<{ role: string; content: string }>;
       };
       const entries = parsed.entries ?? [];
-      const restored: Msg[] = entries
-        .filter((e) => e.role === "user" || e.role === "assistant")
-        .map((e) => {
-          const ts = new Date().toISOString();
-          if (e.role === "user") {
-            return { kind: "user" as const, id: uid(), text: e.content, ts };
-          }
-          return {
-            kind: "assistant" as const,
-            id: uid(),
-            events: [{ type: "message" as const, content: e.content }],
-            done: true,
-            ts,
-          };
-        });
+      const restored: Msg[] = entries.map((e) => {
+        const ts = new Date().toISOString();
+        if (e.role === "user") {
+          return { kind: "user" as const, id: uid(), text: e.content, ts };
+        }
+        return {
+          kind: "assistant" as const,
+          id: uid(),
+          events: [{ type: "message" as const, content: e.content }],
+          done: true,
+          ts,
+          // Labelled in the message meta so an agent observation is not
+          // mistaken for something the assistant said to the user.
+          role: e.role === "assistant" ? undefined : e.role,
+        };
+      });
       setMsgs(restored);
+      if (restored.length === 0) {
+        setSessionNote(`Session "${sid}" has no stored messages.`);
+      }
     } catch {
       setMsgs([]);
+      setSessionNote(`Could not load session "${sid}".`);
     }
   }, [sessionId, msgs]);
 
@@ -675,6 +769,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
     }
     setSessionId(uid());
     setMsgs([]);
+    setSessionNote(null);
     loadSessions();
   }, [msgs, sessionId, loadSessions]);
 
@@ -861,6 +956,7 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
         {m.done && displayText && (
           <div className="chat-msg-meta">
             <span className="chat-msg-ts">{formatTime(m.ts)}</span>
+            {m.role && <span className="chat-msg-model">{m.role}</span>}
             {modelLabel && <span className="chat-msg-model">{modelLabel}</span>}
             {m.reflecting ? (
               <span className="event-muted" style={{ fontSize: 10 }}>Reflecting…</span>
@@ -941,18 +1037,21 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
             {sessions.length === 0 && !loadingSessions && (
               <div className="session-empty">No history yet</div>
             )}
-            {sessions.map((s) => (
+            {sessions.map((s) => {
+              const { label, datedInLabel } = sessionLabel(s);
+              return (
               <div
                 key={s.session_id}
                 className={`session-item${s.session_id === sessionId ? " active" : ""}`}
                 onClick={() => switchSession(s.session_id)}
+                title={`${label}\n${s.session_id}`}
               >
                 <div className="session-item-title">
-                  {truncate(s.title, 32)}
+                  {truncate(label, 38)}
                 </div>
                 <div className="session-item-meta">
-                  {formatDate(s.started_at)}
-                  {s.msg_count > 0 && ` · ${s.msg_count} msgs`}
+                  {!datedInLabel && formatDate(s.started_at)}
+                  {s.msg_count > 0 && `${datedInLabel ? "" : " · "}${s.msg_count} msgs`}
                 </div>
                 <button
                   className="session-archive-btn"
@@ -962,7 +1061,8 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
                   🗄
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -971,16 +1071,17 @@ export default function ChatPanel({ onNotifCountChange, visible }: { onNotifCoun
           <div className="chat-messages">
             <NotificationBanner
               notifications={notifications}
-              onResume={(sid) => {
-                const n = notifications.find((x) => x.related_session_id === sid);
-                if (n) openThread(n);
-              }}
-              onDismiss={dismissNotification}
+              onResume={openThread}
+              onDismiss={onDismissNotification}
             />
             {msgs.length === 0 && notifications.length === 0 && (
               <div className="empty-state" style={{ marginTop: 60 }}>
                 <span className="icon">🤖</span>
-                <span>Send a message to start a conversation</span>
+                {sessionNote ? (
+                  <span>{sessionNote}</span>
+                ) : (
+                  <span>Send a message to start a conversation</span>
+                )}
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   Shift+Enter for newline · Enter to send
                 </span>

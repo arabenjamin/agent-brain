@@ -137,51 +137,16 @@
 
 ### 2026-08-18
 
-- fix: rotate the claim verification cursor. `unverified_claims` ordered by
-  `created_at` alone, and finding no evidence correctly leaves a claim
-  `unverified` — so the oldest 8 re-qualified on every 6-hourly sweep and were
-  re-selected forever. Twelve consecutive sweeps processed the *same eight* ids,
-  attached zero edges, and reported success while 465 claims went untouched.
-  `last_verify_attempt_at` is now stamped before each attempt and ordered on
-  (nulls first), so the sweep advances through the backlog.
-- fix: `poll_media_sources` probes duration before creating a Task, and records a
-  `skipped_too_long` `:Media` node. Over-length videos were the largest media
-  failure bucket — and because a failed ingest wrote no `:Media` node, each one
-  was re-fanned-out on every subsequent poll (observed: 4 tasks per URL).
-- fix: removed perception_scan Trigger 3. It fired on a premise that was void (a
-  background job's `context_profile` is annotation only, never read at execution),
-  against an absolute threshold of 5 (~0.6% of weekly volume), with a dedup guard
-  that only held while a routing task was open. It produced 40% of all task volume
-  and 666 notes in two days — 146 of them `semantic`.
+- fix: stop three autonomous loops that ran clean and produced nothing (`0d26801`)
 
 ### 2026-08-15
 
 - Updated the daily news scheduled task to include the date of the report and to use source URLs from the source it finds the news (`39c5d78`)
 - fix: store every timestamp as one type, and stop corrupting multi-line Cypher (`f37fa2e`)
-- feat: `execute_code` + isolated `sandbox` sidecar — tool-integrated reasoning.
-  Python runs in a container on an `internal: true` network (no egress,
-  verified), read-only root, dropped caps, no credentials, no bind mounts.
-  A failed run returns its traceback as a *successful* tool call so it cannot
-  burn a retry or dead-letter the owning Task. (`f4c28b9`)
-- feat: `computation` capability in `models.yaml`, held by `qwen2.5-coder:7b`
-  alone — a second $0 holder would silently win on context-window tiebreak.
 - feat: give the brain a local sense of time (`c788867`)
+- feat: tool-integrated reasoning via a sandboxed code executor (`f4c28b9`)
 
 ### 2026-08-10
-
-- fix: chain-extracted claims now get an `ASSERTED_IN` edge. `extract_result_text`
-  unwraps a result envelope's `answer` before stamping it on the next job, which
-  discarded `store_note`'s id upstream of substitution; `AgentJob.prev_result_raw`
-  keeps the envelope and `{{_prev.<path>}}` reaches into it. Verified live:
-  0/25 edges before, 1/1 after.
-- fix: `claim` echoes its input as `answer`, so a claim step is transparent
-  mid-chain. It had been seeded into daily-news between `store_note` and
-  `notify_user`; the next run would have delivered `{"stored":N,…}` to the user
-  as the daily brief.
-- fix: SLM benchmark watch stored unverified benchmark numbers as `semantic`
-  and had no recency gate, so a Sept-2023 model sourced from a Facebook group
-  post was reported in chat as a current finding. Now `source_record` + claim
-  extraction + the new `ml-research` SourceList + a dated MOVERS gate.
 
 - feat: claim kinds — separate "was asserted" from "is true" (`2af3957`)
 - feat: source records and corroboration tiering (`8f20d24`)
@@ -199,19 +164,6 @@
 - fix: robust caption download + gap-task spawning for Media Learning (`23b16d1`)
 - chore: install yt-dlp in the agent-brain image for Media Learning (`26da1b4`)
 - feat: media learning — watch & summarize videos to learn and stay current (`65fd8cf`)
-- feat: attribute chain-death to tasks, structured LLM output, capability-mining reframe (`5fe2fe4`)
-
-### 2026-08-03
-
-- chore: auth timing, enqueue round trips, drain completeness, dead code (`9e7f198`)
-- fix: cascade chain cancellation to all descendants (`2280639`)
-- fix: skip meta-learning on transient infra errors; daily dedup (`9e87409`)
-- fix: sanitize Lucene queries; surface hybrid-search failures (`191c54d`)
-- fix: per-provider skip and permit-release wakeup in coordinator (`cd06ba3`)
-- fix: guard job finalizers against cancel race (`9f81892`)
-- fix: treat unparseable evaluator output as explicit non-score (`d2e6f25`)
-- perf: unique constraints and indexes for Note/Task/AgentJob lookups (`27a465b`)
-- fix: value-level template substitution in chain loading (`4284186`)
 
 ## Known Issues / Backlog
 

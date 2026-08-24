@@ -189,6 +189,15 @@ impl ClaimSkill {
     }
 
     /// Gather evidence for one claim and record the verdict.
+    ///
+    /// Every return path carries `claim` — the assertion in words. The happy
+    /// paths always did, but the early returns (no evidence, search down,
+    /// assessment failed) reported a bare `claim_id`, and those are exactly the
+    /// outcomes a human needs to read: the `claims-<date>` sweep report is the
+    /// only surface where verification is visible, and a page of UUIDs against
+    /// "no_evidence_found" cannot be read, chatted about, or acted on. A result
+    /// that says nothing happened must still say what it was that did not
+    /// happen.
     async fn verify_one(&self, claim_id: &str, claim_text: &str) -> Value {
         // 1. Search for independent coverage of the claim.
         let search_result = self
@@ -217,9 +226,11 @@ impl ClaimSkill {
                         _ => None,
                     })
                     .unwrap_or_default();
-                return json!({ "claim_id": claim_id, "error": format!("evidence search failed: {err}") });
+                return json!({ "claim_id": claim_id, "claim": claim_text, "error": format!("evidence search failed: {err}") });
             }
-            None => return json!({ "claim_id": claim_id, "error": "search unavailable" }),
+            None => {
+                return json!({ "claim_id": claim_id, "claim": claim_text, "error": "search unavailable" });
+            }
         };
 
         if evidence_text.trim().is_empty() || evidence_text.trim() == "[]" {
@@ -228,6 +239,7 @@ impl ClaimSkill {
             // mark every niche-but-true claim false.
             return json!({
                 "claim_id": claim_id,
+                "claim": claim_text,
                 "verdict": "no_evidence_found",
                 "status": "unverified"
             });
@@ -242,7 +254,7 @@ impl ClaimSkill {
         {
             Ok(id) => id,
             Err(e) => {
-                return json!({ "claim_id": claim_id, "error": format!("could not store evidence: {e}") });
+                return json!({ "claim_id": claim_id, "claim": claim_text, "error": format!("could not store evidence: {e}") });
             }
         };
 
@@ -252,7 +264,7 @@ impl ClaimSkill {
         {
             Ok(v) => v,
             Err(e) => {
-                return json!({ "claim_id": claim_id, "error": format!("assessment failed: {e}") });
+                return json!({ "claim_id": claim_id, "claim": claim_text, "error": format!("assessment failed: {e}") });
             }
         };
 

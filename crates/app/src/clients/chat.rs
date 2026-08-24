@@ -67,12 +67,6 @@ Key tools: `search_web` (fetch current info), `search_notes` (knowledge graph), 
 Only call tools that exist — do not invent tool names. \
 Never output XML tags like <invoke> — use only the provided function-call tools.";
 
-/// Compose the effective system prompt for one chat turn.
-///
-/// Layered so the most specific guidance sits closest to the conversation:
-/// the shared base rules, then the active context profile's `system_prompt`,
-/// then whatever its `pre_load_query` returned. The profile layers are dropped
-/// when no profile applies (explicit tool allowlists, or no context builder).
 /// Cap a tool result for the model, appending an explicit marker when content
 /// was dropped.
 ///
@@ -98,6 +92,214 @@ fn truncate_tool_result(text: &str, limit: usize) -> String {
     )
 }
 
+/// Tools whose structured output can declare what the call failed to establish.
+/// Keyed by tool name, not by action — `reason` covers `infer`, `structured`,
+/// `explain`, and the rest, and they share the `gaps`/`caveats` shape.
+const LIMIT_DECLARING_TOOLS: &[&str] = &["reason"];
+
+/// Below this, `confidence` is worth naming on its own. Strictly less than, so
+/// the 0.5 that `reason` emits as its parse-failure default does not fire the
+/// marker by itself — a genuinely uncertain answer nearly always also populates
+/// `gaps` or `caveats`, which do.
+const LOW_CONFIDENCE: f64 = 0.5;
+
+/// Keep the marker bounded: it is prepended to a result that is itself capped.
+const MAX_MARKER_ITEMS: usize = 3;
+const MAX_MARKER_ITEM_CHARS: usize = 200;
+
+/// Hoist whatever a tool result needs the model to *act* on to the front of
+/// what the model reads: `reason`'s declared limitations, `search_web`'s source
+/// URLs.
+///
+/// In both cases the information was never missing — it was ignored, and in
+/// both cases a prose rule in `contexts/general.yaml` failed to change that.
+/// Observed 2026-08-23: `reason` reported in five separate fields that it could
+/// not establish an integration, and the reply presented a confident
+/// architecture relaying none of them. Observed 2026-08-24: `search_web`
+/// returned directly relevant sources and the reply cited no URL at all, with
+/// a CITATION RULE already in the prompt telling it to.
+///
+/// This is the `truncate_tool_result` lesson generalised. A signal buried
+/// mid-payload is not a signal the model acts on; a loud marker at position
+/// zero is. Prepended rather than appended so it survives truncation, which
+/// keeps the head — which for search results also means the URLs most likely
+/// to be cut are the ones now guaranteed to be present.
+///
+/// Markers are mutually exclusive by tool, so the first match wins.
+fn annotate_tool_result(tool_name: &str, text: &str) -> String {
+    let marker =
+        reason_limits_marker(tool_name, text).or_else(|| search_sources_marker(tool_name, text));
+    match marker {
+        Some(marker) => format!("{marker}\n\n{text}"),
+        None => text.to_string(),
+    }
+}
+
+/// Tools that return retrieved sources the reply is expected to cite.
+const SOURCE_LISTING_TOOLS: &[&str] = &["search_web"];
+
+/// Cap on sources listed in the marker. `search_web` returns at most 20.
+const MAX_MARKER_SOURCES: usize = 12;
+const MAX_MARKER_TITLE_CHARS: usize = 90;
+
+/// Lift the URLs out of a `search_web` payload into a numbered, citable list at
+/// the front of the result.
+///
+/// The CITATION RULE in `contexts/general.yaml` has asked for this in prose
+/// since it was written, and it does not hold: measured 2026-08-24, two
+/// `search_web` calls returned good sources — including
+/// `github.com/FreeTAKTeam/Reticulum_Meshtastic_Integration`, directly on
+/// point — and the reply cited no URL at all. This is the same shape as the
+/// `reason` limits problem: the information is present in the payload (field
+/// `link` of each of ten results) and the model does not carry it into prose.
+///
+/// So the marker does more than restate the rule — it makes citing *cheap*.
+/// Short `[S1]`-style handles paired with their URLs mean the model copies a
+/// token rather than re-extracting a URL from JSON it has already scrolled
+/// past. Listing them at the head also means the URLs survive truncation:
+/// under `CLOUD_TOOL_RESULT_CHARS` a long result previously lost its tail
+/// entries' links entirely, so the sources most likely to be cut were
+/// uncitable by construction.
+fn search_sources_marker(tool_name: &str, text: &str) -> Option<String> {
+    if !SOURCE_LISTING_TOOLS.contains(&tool_name) {
+        return None;
+    }
+    let parsed: Value = serde_json::from_str(text.trim()).ok()?;
+    let items = parsed.as_array()?;
+
+    let sources: Vec<(String, String)> = items
+        .iter()
+        .filter_map(|item| {
+            // Engines disagree on the field name: SearXNG/SerpApi/Google CSE
+            // are normalised to `link`, Brave still emits `url`.
+            let url = item
+                .get("link")
+                .or_else(|| item.get("url"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|u| !u.is_empty())?;
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .unwrap_or("untitled");
+            let title = if title.chars().count() > MAX_MARKER_TITLE_CHARS {
+                let head: String = title.chars().take(MAX_MARKER_TITLE_CHARS).collect();
+                format!("{head}…")
+            } else {
+                title.to_string()
+            };
+            Some((title, url.to_string()))
+        })
+        .take(MAX_MARKER_SOURCES)
+        .collect();
+
+    if sources.is_empty() {
+        return None;
+    }
+
+    let mut marker = format!(
+        "[SEARCH SOURCES — {} retrieved. Every claim you take from these results \
+         must carry its source as a markdown link, using the URLs below. Naming a \
+         source without its link, or telling the user to go and search for it, \
+         discards the retrieval and leaves nothing they can check.",
+        sources.len()
+    );
+    for (i, (title, url)) in sources.iter().enumerate() {
+        marker.push_str(&format!("\n  [S{}] {title} — {url}", i + 1));
+    }
+    marker.push(']');
+    Some(marker)
+}
+
+/// Build the limits marker, or `None` when the tool declared no limits.
+///
+/// Returns `None` for any non-JSON body so a plain-text or errored result is
+/// passed through untouched — a marker on a result we could not parse would be
+/// a claim we cannot support.
+fn reason_limits_marker(tool_name: &str, text: &str) -> Option<String> {
+    if !LIMIT_DECLARING_TOOLS.contains(&tool_name) {
+        return None;
+    }
+    let parsed: Value = serde_json::from_str(text.trim()).ok()?;
+
+    let gaps = capped_items(&parsed, "gaps");
+    let caveats = capped_items(&parsed, "caveats");
+    let critiques = capped_items(&parsed, "critic_counter_arguments");
+    let confidence = parsed.get("confidence").and_then(Value::as_f64);
+    let low_confidence = confidence.is_some_and(|c| c < LOW_CONFIDENCE);
+
+    if gaps.is_empty() && caveats.is_empty() && critiques.is_empty() && !low_confidence {
+        return None;
+    }
+
+    let mut marker = String::from(
+        "[REASON — LIMITS THE TOOL DECLARED ABOUT ITS OWN ANSWER. \
+         These are things it reported it could NOT establish. Do not present \
+         them as settled, and do not fill them in from general knowledge while \
+         implying the tool supported it. Either state the limitation in your \
+         reply, or resolve it with another tool call first — then say which \
+         part came from where.",
+    );
+    push_marker_section(&mut marker, "NOT ESTABLISHED", &gaps);
+    push_marker_section(&mut marker, "CAVEATS", &caveats);
+    push_marker_section(&mut marker, "THE TOOL'S OWN CRITIQUE", &critiques);
+    if let Some(c) = confidence.filter(|_| low_confidence) {
+        marker.push_str(&format!("\n  CONFIDENCE: {c} — low."));
+    }
+    marker.push(']');
+    Some(marker)
+}
+
+fn push_marker_section(marker: &mut String, heading: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    marker.push_str(&format!("\n  {heading}:"));
+    for item in items {
+        marker.push_str(&format!("\n    - {item}"));
+    }
+}
+
+/// Read a string array, dropping blanks and capping both count and length so a
+/// verbose reasoning step cannot crowd out the result it is annotating.
+fn capped_items(parsed: &Value, key: &str) -> Vec<String> {
+    parsed
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .take(MAX_MARKER_ITEMS)
+                .map(|s| {
+                    if s.chars().count() > MAX_MARKER_ITEM_CHARS {
+                        let head: String = s.chars().take(MAX_MARKER_ITEM_CHARS).collect();
+                        format!("{head}…")
+                    } else {
+                        s.to_string()
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Annotate a tool result with any limits it declared, then cap it for the
+/// model. Every call site goes through this so a new one cannot pick up the
+/// truncation marker while silently dropping the limits marker.
+fn prepare_tool_result(tool_name: &str, text: &str, limit: usize) -> String {
+    truncate_tool_result(&annotate_tool_result(tool_name, text), limit)
+}
+
+/// Compose the effective system prompt for one chat turn.
+///
+/// Layered so the most specific guidance sits closest to the conversation:
+/// the shared base rules, then the active context profile's `system_prompt`,
+/// then whatever its `pre_load_query` returned. The profile layers are dropped
+/// when no profile applies (explicit tool allowlists, or no context builder).
 fn build_system_prompt(profile_prompt: Option<&str>, pre_loaded: &[String]) -> String {
     let mut prompt = build_base_system_prompt();
 
@@ -743,7 +945,8 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = truncate_tool_result(&result_text, MAX_TOOL_RESULT_CHARS);
+                let preview: String =
+                    prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
@@ -1057,7 +1260,8 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = truncate_tool_result(&result_text, MAX_TOOL_RESULT_CHARS);
+                let preview: String =
+                    prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
@@ -1426,7 +1630,8 @@ impl ChatService {
                     (false, "No tool handler available".to_string())
                 };
 
-                let preview: String = truncate_tool_result(&result_text, MAX_TOOL_RESULT_CHARS);
+                let preview: String =
+                    prepare_tool_result(tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
@@ -1439,7 +1644,7 @@ impl ChatService {
                 // Use CLOUD_TOOL_RESULT_CHARS (smaller cap) because tool schemas are resent
                 // every round; combined context grows quickly and causes 500s.
                 let cloud_preview: String =
-                    truncate_tool_result(&result_text, CLOUD_TOOL_RESULT_CHARS);
+                    prepare_tool_result(tool_name, &result_text, CLOUD_TOOL_RESULT_CHARS);
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_id,
@@ -2059,5 +2264,235 @@ mod truncation_tests {
         let out = truncate_tool_result(&text, 10);
         assert!(out.starts_with("🧠é—🧠"));
         assert!(out.contains("[TRUNCATED:"));
+    }
+}
+
+#[cfg(test)]
+mod limits_marker_tests {
+    use super::*;
+
+    /// Trimmed from the real `reason` result of session 42d8ff9b on
+    /// 2026-08-23 — the one whose five limitation signals were all discarded.
+    fn nebula_result() -> String {
+        serde_json::json!({
+            "answer": "Nebula is positioned as a fully open-source, peer-to-peer mesh VPN. \
+                       The provided knowledge does not specify how Nebula integrates with \
+                       Meshtastic or Reticulum.",
+            "caveats": [
+                "The knowledge confirms Nebula's technical advantages over Tailscale but \
+                 does not provide information on its operational synergy with Meshtastic \
+                 or Reticulum."
+            ],
+            "confidence": 0.5,
+            "critic_counter_arguments": [
+                "The answer fails to provide any technical details regarding the \
+                 integration of Nebula with Meshtastic or Reticulum, which were core \
+                 components of the original question."
+            ],
+            "gaps": [
+                "The specific mechanisms of integration between Nebula, Meshtastic, and \
+                 Reticulum are unknown."
+            ],
+            "inferences": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_nebula_result_is_marked_and_the_marker_leads() {
+        let out = prepare_tool_result("reason", &nebula_result(), MAX_TOOL_RESULT_CHARS);
+        assert!(
+            out.starts_with("[REASON — LIMITS"),
+            "marker must lead so truncation cannot drop it: {out}"
+        );
+        assert!(out.contains("NOT ESTABLISHED"));
+        assert!(out.contains("specific mechanisms of integration"));
+        assert!(out.contains("CAVEATS"));
+        assert!(out.contains("THE TOOL'S OWN CRITIQUE"));
+        // 0.5 is not strictly below the threshold, so it is not called out on
+        // its own — gaps and caveats already carry this result.
+        assert!(!out.contains("CONFIDENCE:"));
+        // The original payload must still be there in full.
+        assert!(out.contains("fully open-source, peer-to-peer mesh VPN"));
+    }
+
+    #[test]
+    fn the_marker_survives_a_tight_truncation() {
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&nebula_result()).expect("fixture parses");
+        payload["answer"] = serde_json::json!("z".repeat(20_000));
+        let out = prepare_tool_result("reason", &payload.to_string(), 2000);
+        assert!(out.starts_with("[REASON — LIMITS"));
+        assert!(out.contains("[TRUNCATED:"));
+    }
+
+    #[test]
+    fn a_clean_result_gets_no_marker() {
+        let clean = serde_json::json!({
+            "answer": "Nebula lighthouses accept DNS names in static_host_map.",
+            "gaps": [],
+            "caveats": [],
+            "confidence": 0.9
+        })
+        .to_string();
+        assert_eq!(prepare_tool_result("reason", &clean, 6000), clean);
+    }
+
+    #[test]
+    fn low_confidence_alone_is_enough() {
+        let shaky = serde_json::json!({"answer": "Probably.", "confidence": 0.2}).to_string();
+        let out = prepare_tool_result("reason", &shaky, 6000);
+        assert!(out.contains("CONFIDENCE: 0.2 — low."));
+    }
+
+    /// Only `reason` declares limits this way. A `search_web` payload that
+    /// happens to carry a "gaps" key must not be rewritten.
+    #[test]
+    fn other_tools_are_untouched() {
+        let payload = serde_json::json!({"gaps": ["something"], "confidence": 0.1}).to_string();
+        assert_eq!(prepare_tool_result("search_web", &payload, 6000), payload);
+    }
+
+    /// A marker on a body we could not parse would be a claim we cannot
+    /// support — and errored tool results are plain text.
+    #[test]
+    fn non_json_results_pass_through() {
+        let text = "Reasoning failed: Provider error: HTTP request failed";
+        assert_eq!(prepare_tool_result("reason", text, 6000), text);
+    }
+
+    #[test]
+    fn verbose_limits_cannot_crowd_out_the_result() {
+        let noisy = serde_json::json!({
+            "answer": "ok",
+            "gaps": ["g".repeat(5000), "second", "third", "fourth", "fifth"],
+        })
+        .to_string();
+        let out = prepare_tool_result("reason", &noisy, 100_000);
+        // Assert on the marker alone — the untouched payload below it still
+        // carries every gap, which is the point: the marker is a summary, not
+        // a replacement.
+        let marker = out.split("\n\n").next().expect("marker is the first block");
+        assert!(marker.contains('…'), "long items are elided: {marker}");
+        assert!(
+            !marker.contains("fourth"),
+            "marker keeps at most {MAX_MARKER_ITEMS} items: {marker}"
+        );
+        assert!(marker.contains("second") && marker.contains("third"));
+        assert!(
+            marker.len() < 1500,
+            "marker stays bounded: {}",
+            marker.len()
+        );
+        assert!(out.contains("fourth"), "the raw result is left intact");
+    }
+}
+
+#[cfg(test)]
+mod search_sources_tests {
+    use super::*;
+
+    /// The shape SearXNG / SerpApi / Google CSE are normalised to. Trimmed from
+    /// the real `search_web` result of 2026-08-24 whose sources went uncited.
+    fn serp_results() -> String {
+        serde_json::json!([
+            {
+                "link": "https://www.defined.net/compare/nebula-vs-tailscale/",
+                "snippet": "Managed Nebula and Tailscale are both overlay networking tools…",
+                "title": "Managed Nebula vs Tailscale - Defined Networking"
+            },
+            {
+                "link": "https://github.com/FreeTAKTeam/Reticulum_Meshtastic_Integration",
+                "snippet": "Seamless Integration of Meshtastic and Reticulum via RCH…",
+                "title": "GitHub - FreeTAKTeam/Reticulum_Meshtastic_Integration"
+            }
+        ])
+        .to_string()
+    }
+
+    #[test]
+    fn sources_are_listed_with_citable_handles() {
+        let out = prepare_tool_result("search_web", &serp_results(), MAX_TOOL_RESULT_CHARS);
+        assert!(out.starts_with("[SEARCH SOURCES — 2 retrieved."), "{out}");
+        assert!(out.contains(
+            "[S1] Managed Nebula vs Tailscale - Defined Networking — \
+             https://www.defined.net/compare/nebula-vs-tailscale/"
+        ));
+        assert!(out.contains("[S2] GitHub - FreeTAKTeam/Reticulum_Meshtastic_Integration"));
+        assert!(out.contains("https://github.com/FreeTAKTeam/Reticulum_Meshtastic_Integration"));
+        // The raw payload must survive underneath — snippets are the substance.
+        assert!(out.contains("Seamless Integration of Meshtastic"));
+    }
+
+    /// Brave emits `url`/`description` rather than `link`/`snippet`; the
+    /// post-filter in skills/search.rs already accepts both and so must this,
+    /// or Brave results silently lose their citations.
+    #[test]
+    fn brave_url_field_is_accepted() {
+        let brave = serde_json::json!([
+            {"title": "Nebula docs", "url": "https://nebula.defined.net/docs/", "description": "d"}
+        ])
+        .to_string();
+        let out = prepare_tool_result("search_web", &brave, 6000);
+        assert!(out.contains("[S1] Nebula docs — https://nebula.defined.net/docs/"));
+    }
+
+    /// The whole point is that the links outlive a tight cap.
+    #[test]
+    fn urls_survive_truncation_of_the_body() {
+        let items: Vec<_> = (0..12)
+            .map(|i| {
+                serde_json::json!({
+                    "title": format!("Result {i}"),
+                    "link": format!("https://example.com/{i}"),
+                    "snippet": "z".repeat(2000),
+                })
+            })
+            .collect();
+        let payload = serde_json::Value::Array(items).to_string();
+        let out = prepare_tool_result("search_web", &payload, 2000);
+        assert!(out.contains("https://example.com/0"));
+        assert!(
+            out.contains("https://example.com/11"),
+            "the last source's URL must survive even though its snippet is cut"
+        );
+        assert!(out.contains("[TRUNCATED:"));
+    }
+
+    #[test]
+    fn source_count_is_capped() {
+        let items: Vec<_> = (0..30)
+            .map(|i| serde_json::json!({"title": "t", "link": format!("https://e.com/{i}")}))
+            .collect();
+        let payload = serde_json::Value::Array(items).to_string();
+        let out = prepare_tool_result("search_web", &payload, 100_000);
+        let marker = out.split("\n\n").next().unwrap();
+        assert!(marker.contains(&format!("[S{MAX_MARKER_SOURCES}]")));
+        assert!(!marker.contains(&format!("[S{}]", MAX_MARKER_SOURCES + 1)));
+    }
+
+    /// "Nobody has anything on this query" is a legitimate outcome and must not
+    /// grow a marker telling the model to cite sources it does not have.
+    #[test]
+    fn an_empty_result_set_gets_no_marker() {
+        assert_eq!(prepare_tool_result("search_web", "[]", 6000), "[]");
+    }
+
+    #[test]
+    fn results_without_links_get_no_marker() {
+        let payload = serde_json::json!([{"title": "t", "snippet": "s"}]).to_string();
+        assert_eq!(prepare_tool_result("search_web", &payload, 6000), payload);
+    }
+
+    #[test]
+    fn other_tools_are_untouched() {
+        let payload = serde_json::json!([{"link": "https://example.com"}]).to_string();
+        assert_eq!(prepare_tool_result("search_notes", &payload, 6000), payload);
+    }
+
+    #[test]
+    fn a_search_error_string_passes_through() {
+        let text = "SerpApi failed: 429 Too Many Requests";
+        assert_eq!(prepare_tool_result("search_web", text, 6000), text);
     }
 }

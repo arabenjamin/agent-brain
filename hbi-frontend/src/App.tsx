@@ -1,6 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import "./styles/main.css";
-import { getBrainUrl, getApiKey } from "./api/config";
+import type { AgentNotification } from "./api/notifications";
+import { fetchUnreadNotifications, markNotificationRead } from "./api/notifications";
+import { getMcpClient, onNotification } from "./api/mcp";
 
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
 const TaskPanel          = lazy(() => import("./components/tasks/TaskPanel"));
@@ -34,31 +36,60 @@ function Fallback() {
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
   const [showSettings, setShowSettings] = useState(false);
-  const [notifCount, setNotifCount] = useState(0);
+  // Single source of truth for agent notifications: the nav badge counts this
+  // list and ChatPanel renders it, so the badge can never advertise a message
+  // the chat panel does not display.
+  const [notifications, setNotifications] = useState<AgentNotification[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ids dismissed locally but whose POST /read may not have landed yet — the
+  // poll must not resurrect them.
+  const dismissedRef = useRef<Set<string>>(new Set());
 
-  const fetchNotifCount = useCallback(async () => {
+  const refreshNotifications = useCallback(async () => {
     try {
-      const res = await fetch(`${getBrainUrl()}/api/notifications?unread=true`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
-      if (res.ok) {
-        const data = await res.json() as { notifications?: unknown[] };
-        setNotifCount(data.notifications?.length ?? 0);
-      }
+      const items = await fetchUnreadNotifications();
+      setNotifications(items.filter((n) => !dismissedRef.current.has(n.id)));
     } catch {
-      // brain not reachable — ignore
+      // brain not reachable — keep whatever we last saw
     }
   }, []);
 
-  // Poll for unread notifications every 30 s.
+  // Push: the brain broadcasts `notifications/agent_chat` to every MCP session
+  // when a chain calls `notify_user`. Subscribing makes delivery instant.
+  // `getMcpClient()` is what actually opens the stream — `onNotification` only
+  // registers a handler, and nothing else here would connect the client.
   useEffect(() => {
-    fetchNotifCount();
-    pollRef.current = setInterval(fetchNotifCount, 30_000);
+    const unsub = onNotification((n) => {
+      if (n.method === "notifications/agent_chat") refreshNotifications();
+    });
+    getMcpClient().catch(() => {
+      // brain unreachable — the poll below still covers us
+    });
+    return unsub;
+  }, [refreshNotifications]);
+
+  // Poll every 30 s as the fallback. The push stream does not reconnect on its
+  // own, so this is what keeps notifications arriving after it drops — and it
+  // is the only path when the client failed to connect at all.
+  useEffect(() => {
+    refreshNotifications();
+    pollRef.current = setInterval(refreshNotifications, 30_000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [fetchNotifCount]);
+  }, [refreshNotifications]);
+
+  const dismissNotification = useCallback(async (id: string) => {
+    dismissedRef.current.add(id);
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await markNotificationRead(id);
+    } catch {
+      // ignore — it stays unread server-side and returns on a later poll
+    } finally {
+      dismissedRef.current.delete(id);
+    }
+  }, []);
 
   const handleTabClick = useCallback((id: Tab) => {
     setTab(id);
@@ -76,8 +107,8 @@ export default function App() {
           >
             <span className="icon">{t.icon}</span>
             {t.label}
-            {t.id === "chat" && notifCount > 0 && (
-              <span className="notif-badge">{notifCount}</span>
+            {t.id === "chat" && notifications.length > 0 && (
+              <span className="notif-badge">{notifications.length}</span>
             )}
           </button>
         ))}
@@ -99,7 +130,11 @@ export default function App() {
           ? { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }
           : { display: "none" }}>
           <Suspense fallback={<Fallback />}>
-            <ChatPanel onNotifCountChange={setNotifCount} visible={tab === "chat"} />
+            <ChatPanel
+              notifications={notifications}
+              onDismissNotification={dismissNotification}
+              visible={tab === "chat"}
+            />
           </Suspense>
         </div>
         <Suspense fallback={<Fallback />}>
