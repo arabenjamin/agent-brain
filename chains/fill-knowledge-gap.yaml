@@ -156,11 +156,28 @@ steps:
     description: "Gap fill: complete the task"
 
   # 5. Clean up the scratch working-memory session.
+  #
+  #    priority 1, NOT 0. The queue is a max-heap — `PrioritizedJob`'s Ord sorts
+  #    priority descending, and `repository/src/agent_job.rs` pops with
+  #    `ORDER BY j.priority DESC, j.created_at ASC` — so 0 is the LOWEST
+  #    priority and runs only when nothing at 1 or 2 is waiting. Under a
+  #    continuously-fed queue that resolves to never: measured 2026-08-31, the
+  #    last priority-0 job to complete finished at 06:31Z, ~10 hours earlier,
+  #    with 93 queued behind it (89 of them this cleanup step, oldest 3h38m).
+  #    Cleanup stopped running the moment the media poll began filling the queue
+  #    with priority-1/2 work, and left 203 orphaned WorkingMemory nodes across
+  #    99 abandoned scratch sessions. It does not self-correct while work arrives.
+  #
+  #    Priority 0 was expressing "not urgent", which is true and not the same as
+  #    "skippable" — this step must eventually run or the graph accumulates
+  #    scratch forever. At priority 1 it interleaves with the search steps at
+  #    negligible cost: one Cypher DETACH DELETE, no LLM call, no network.
+  #    Deferring something that costs nothing buys nothing.
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) DETACH DELETE w"
       readonly: false
-    priority: 0
+    priority: 1
     max_attempts: 2
     provider_hint: ollama
     description: "Gap fill: delete scratch session"

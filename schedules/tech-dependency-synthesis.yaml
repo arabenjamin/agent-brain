@@ -177,7 +177,9 @@ steps:
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'synthesis-{{task_id}}'}) DETACH DELETE w"
       readonly: false
-    priority: 0
+    # priority 1, not 0 — the queue is a max-heap, so 0 is the lowest priority
+    # and starves under a fed queue. See chains/fill-knowledge-gap.yaml.
+    priority: 1
     max_attempts: 2
     provider_hint: ollama
     description: "Delete scratch session"

@@ -183,11 +183,14 @@ steps:
     description: "Complete the task"
 
   # 9. Clean up the scratch working-memory session.
+  #    priority 1, not 0 — the queue is a max-heap, so 0 is the lowest priority
+  #    and starves under a fed queue. See the full note on the equivalent step
+  #    in chains/fill-knowledge-gap.yaml.
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) DETACH DELETE w"
       readonly: false
-    priority: 0
+    priority: 1
     max_attempts: 2
     provider_hint: ollama
     description: "Delete scratch session"
