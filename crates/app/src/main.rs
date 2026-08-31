@@ -66,6 +66,11 @@ async fn main() -> Result<()> {
         }) => run_serve(&config, transport, &bind, api_key, log_buffer).await,
         Some(Command::Todo { action, url }) => run_todo(&url, action).await,
         Some(Command::RepairNotes { dry_run }) => run_repair_notes(&config, dry_run).await,
+        Some(Command::EvalRetrieval {
+            fixture,
+            k,
+            bootstrap,
+        }) => run_eval_retrieval(&config, &fixture, k, bootstrap).await,
         None => {
             // Default to stdio transport when no command specified
             run_serve(
@@ -268,6 +273,63 @@ async fn run_repair_notes(config: &Config, dry_run: bool) -> Result<()> {
         info!("Waiting for background entity extraction to drain...");
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
     }
+    Ok(())
+}
+
+/// Score retrieval against a golden set, or bootstrap proposed cases.
+///
+/// Standalone like `run_repair_notes` so it runs against a live deployment
+/// without starting the MCP server. Uses the same LLM config the server uses,
+/// so query embeddings are computed with the configured embed model — the
+/// point of the harness is to measure the *real* pipeline, not a proxy.
+async fn run_eval_retrieval(
+    config: &Config,
+    fixture: &str,
+    k: usize,
+    bootstrap: Option<usize>,
+) -> Result<()> {
+    use agent_brain::services::retrieval_eval;
+    use std::sync::Arc;
+
+    let client = connect_neo4j(config).await?;
+
+    // Bootstrap needs only the graph; skip building the LLM entirely.
+    if let Some(n) = bootstrap {
+        let yaml = retrieval_eval::bootstrap(&client, n).await?;
+        // Proposals go to stdout by design: they are meant to be redirected to a
+        // file, curated (rewrite each query into a real question), and appended
+        // to the fixture. The eval numbers still go through the logger.
+        println!("{yaml}");
+        info!(sampled = n, "Bootstrap proposals written to stdout");
+        return Ok(());
+    }
+
+    let llm_config = build_llm_config(config);
+    let shared = Arc::new(tokio::sync::RwLock::new(Some(llm_config)));
+    let llm: Arc<dyn agent_brain::services::traits::LlmProvider> =
+        agent_brain::services::shared_llm::SharedLlm::new(shared);
+    let knowledge =
+        agent_brain::services::knowledge::KnowledgeService::new(client.clone(), Some(llm));
+
+    let set = retrieval_eval::load_fixture(fixture)?;
+    if set.cases.is_empty() {
+        warn!(
+            %fixture,
+            "Golden set is empty — run `eval-retrieval --bootstrap N` to seed proposals"
+        );
+        return Ok(());
+    }
+
+    let report = retrieval_eval::run_eval(&knowledge, &set, k).await?;
+    // The report is the deliverable; print it rather than log it so the table
+    // reads cleanly regardless of LOG_FORMAT.
+    println!("{}", report.render());
+    info!(
+        k = report.k,
+        recall = report.recall_at_k(),
+        mrr = report.mrr(),
+        "Retrieval eval complete"
+    );
     Ok(())
 }
 
@@ -552,6 +614,29 @@ async fn run_serve(
             // both the brain and the chat session immediately.
             if config.chat_llm.has_overrides() {
                 server = server.with_chat_llm_config(build_chat_llm_config(config));
+            }
+
+            // Fallback ladder for chat, resolved against whichever model chat
+            // actually runs — the active model is skipped inside the resolver,
+            // so this has to be computed from the chat config rather than the
+            // brain's.
+            {
+                let chat_cfg = build_chat_llm_config(config);
+                let ladder = catalog.resolve_chat_fallback_ladder(&chat_cfg, &chat_cfg.model);
+                if ladder.is_empty() {
+                    warn!(
+                        "No chat fallback ladder configured — a chat turn that produces \
+                         nothing will fail rather than retry on another model"
+                    );
+                } else {
+                    info!(
+                        rungs = ladder.len(),
+                        models = %ladder.iter().map(|c| c.model.as_str()).collect::<Vec<_>>().join(", "),
+                        active = %chat_cfg.model,
+                        "Chat fallback ladder resolved"
+                    );
+                }
+                server = server.with_chat_fallback_ladder(ladder);
             }
 
             if let Some(t) = telemetry {

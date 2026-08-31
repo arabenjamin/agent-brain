@@ -191,9 +191,22 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # Write the brief with the cloud model (gemma4:31b-cloud, $0-cost tier).
-    # Any provider_hint other than "ollama" uses the active config instead of
-    # the weak local OLLAMA_LOCAL_MODEL. Searches/cleanup stay local below.
+    # Write the brief on a cloud model; searches/cleanup stay local below.
+    #
+    # `provider_hint: ollama-cloud` alone only means "not the weak local
+    # model" — it selects nothing, it just falls through to the active config
+    # (OLLAMA_MODEL). That was gemma4:31b-cloud, which is the one free-tier
+    # model measured to return EMPTY COMPLETIONS (~25% on a tool-calling
+    # prompt; 1/4 in the catalog's own trial table). The chat loops retry an
+    # empty completion, but a background job has no such guard — SharedLlm
+    # sees a successful call returning "", and this step's output is what
+    # store_note persists and notify_user delivers. An empty brief would read
+    # as a quiet news day.
+    #
+    # `required_capabilities` makes the choice explicit instead of inherited,
+    # so this step routes with the other seven cloud `reason` steps to the
+    # selection_rank winner rather than to whatever OLLAMA_MODEL happens to be.
+    required_capabilities: ["reasoning"]
     provider_hint: ollama-cloud
 
   - tool_name: store_note

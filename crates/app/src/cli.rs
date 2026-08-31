@@ -71,6 +71,30 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Score retrieval quality against a golden set (read-only).
+    ///
+    /// Runs each (query → expected note) case in the fixture through the real
+    /// retrieval pipeline — non-perturbing, so it never bumps access counts —
+    /// and reports recall@k and MRR. This is the number you watch move when you
+    /// change a freshness weight, the RRF `k`, or the embedding model.
+    ///
+    /// `--bootstrap N` instead samples N notes from the graph and prints
+    /// proposed cases to curate; redirect to a file, rewrite the queries into
+    /// real questions, and append to the fixture.
+    EvalRetrieval {
+        /// Path to the golden-set YAML fixture.
+        #[arg(long, default_value = "eval/retrieval_golden.yaml")]
+        fixture: String,
+
+        /// Top-k cutoff for both the search limit and the recall/MRR window.
+        #[arg(long, default_value = "10")]
+        k: usize,
+
+        /// Instead of scoring, sample this many notes and print proposed cases.
+        #[arg(long)]
+        bootstrap: Option<usize>,
+    },
+
     /// Manage todo items (requires server to be running)
     Todo {
         #[command(subcommand)]

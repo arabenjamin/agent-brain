@@ -44,6 +44,7 @@ fn row_to_scheduled_task(row: &neo4rs::Row) -> Result<ScheduledTask, RepositoryE
         created_at: node_ts(&node, "created_at").unwrap_or_default(),
         updated_at: node_ts(&node, "updated_at").unwrap_or_default(),
         managed_by: node.get("managed_by").ok(),
+        paused_reason: node.get("paused_reason").ok(),
     })
 }
 

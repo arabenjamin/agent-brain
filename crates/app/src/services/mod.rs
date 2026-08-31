@@ -13,6 +13,7 @@ pub mod procedure_executor;
 pub mod queue;
 pub mod repair;
 pub mod resource_registry;
+pub mod retrieval_eval;
 pub mod schedule_seeder;
 pub mod scheduler;
 pub mod secrets;

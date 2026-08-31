@@ -8,8 +8,14 @@
 # a neo4j_query step before the reason step (same idiom as chains/video-learning.yaml).
 # The prior run's note is banked first so the reason step performs a DELTA against
 # it rather than re-describing the world from scratch.
+#
+# EVERY step must carry `provider_hint: ollama` except the single synthesis step.
+# `use_local` in queue.rs is `provider_hint == Some("ollama")`, so an OMITTED hint
+# is not "default local" — it routes to the active config, which is a cloud model.
+# The runtime definition that shadowed this file for two weeks omitted the hint on
+# all six of its steps and put four searches and a store_note on cloud for nothing.
 name: "Weekly hardware tripwire: scan the AI accelerator supply chain for disruption signals"
-description: "Weekly scan of HBM3e/memory, CoWoS/advanced packaging, and raw-material + geopolitical signals. Compares fresh findings against the previous run's baseline and stores a delta report."
+description: "Weekly scan of HBM3e/memory, CoWoS/advanced packaging, raw-material + geopolitical signals, and substitution/alternative architectures. Compares fresh findings against the previous run's baseline and stores a delta report."
 interval_seconds: 604800
 
 steps:
@@ -94,7 +100,38 @@ steps:
     provider_hint: ollama
     description: "Bank materials signal"
 
-  # 5. Reassemble baseline + all three sweeps into one blob for the reason step.
+  # 4d. Substitution sweep. The three sweeps above measure how tight a
+  #     bottleneck is; this one measures whether it can be routed around, which
+  #     is a different question and changes what a tightening signal means. A
+  #     constrained input with a maturing substitute is a price event; the same
+  #     constraint with no alternative in sight is a capacity ceiling.
+  #
+  #     This scope arrived via six near-duplicate schedules a chat session
+  #     created on 2026-08-25 (see CLAUDE.md, "A runtime node shadows its YAML
+  #     file"). Folded in here as a fourth sweep rather than widened into the
+  #     raw-materials query above: each sweep is deliberately narrow, and one
+  #     query spanning export controls, memory architectures, and battery
+  #     chemistries returns worse results for all three.
+  - tool_name: search_web
+    arguments:
+      query: "alternative memory architecture 3D X-DRAM HBM substitute, sodium-ion nickel-zinc battery materials, gallium neon substitution qualification timeline"
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Signal sweep: substitution / alternative architectures"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "tripwire-{{task_id}}"
+      content: "## SIGNAL — SUBSTITUTION / ALTERNATIVES\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank substitution signal"
+
+  # 5. Reassemble baseline + all four sweeps into one blob for the reason step.
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'tripwire-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
@@ -110,8 +147,8 @@ steps:
     arguments:
       question: |
         The CONTEXT contains a PRIOR BASELINE for the AI accelerator supply chain
-        followed by three fresh signal sweeps (memory/HBM, advanced packaging,
-        raw materials/geopolitics).
+        followed by four fresh signal sweeps (memory/HBM, advanced packaging,
+        raw materials/geopolitics, and substitution/alternatives).
 
         Write a tripwire report with exactly these sections:
 
@@ -128,6 +165,15 @@ steps:
         Any signal that crosses from normal variance into genuine disruption —
         named supplier, named constraint, and why it matters. Write "None this
         period." if nothing qualifies. Do not manufacture an alarm to fill space.
+
+        ## SUBSTITUTION OUTLOOK
+        For each bottleneck marked TIGHTENING above, say whether a credible
+        substitute exists and how far from production it is — qualified and
+        shipping, in qualification, or still a paper. If the substitution sweep
+        surfaced nothing about a given bottleneck, write "no signal" for it
+        rather than reasoning from general knowledge about the technology. A
+        named alternative with no stated timeline is not a mitigation, and must
+        not be written up as one.
 
         ## WATCH NEXT
         Two specific things to check next week.

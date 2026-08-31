@@ -1,0 +1,148 @@
+# Retrieval golden set — the ground truth for `cargo run -- eval-retrieval`.
+#
+# WHY THIS FILE EXISTS
+#   Every knob in KnowledgeService::search_notes_inner — the 0.7/0.3 freshness
+#   weights, RRF k=60, chunk→parent resolution, the candidate pool size, and the
+#   choice of embedding model — is set by intuition. This file is how a change to
+#   any of them becomes a NUMBER instead of an argument: run the eval, change one
+#   thing, run it again, watch recall@k and MRR move.
+#
+# HOW A CASE IS SCORED
+#   A case is a HIT if ANY of its `expect_ids` or `expect_substrings`
+#   (case-insensitive) appears in the top-k results for its `query`. Each case
+#   below carries BOTH on purpose: the id is exact but churns if the note is ever
+#   re-ingested; the substring survives id churn and re-embeds, which is exactly
+#   the change (e.g. swapping the embedding model) you most want to keep
+#   measuring across.
+#
+# HOW TO GROW / REFRESH IT
+#   `cargo run -- eval-retrieval --bootstrap 25 > /tmp/proposed.yaml`
+#   samples 25 notes and writes proposed cases whose query is a phrase lifted
+#   from the note (that only tests the retrieval FLOOR). Rewrite each `query`
+#   into what a person would actually ask, then paste the good ones below.
+#
+# GROUND TRUTH IS HUMAN. The brain must never generate these labels itself — it
+# would be grading retrieval against what retrieval already surfaced, which is
+# circular and scores 1.0 forever. The cases below were curated against the live
+# graph on 2026-08-31; re-verify ids after any migration that rewrites notes.
+
+cases:
+  # ── Supply-chain / hardware standing reports (source_record) ───────────────
+  - query: "What is the current status of HBM memory and CoWoS advanced packaging supply?"
+    expect_ids: ["0572fc54-e557-4b8b-9190-cbb74246adfe"]
+    expect_substrings: ["Hardware tripwire"]
+    note: "Should surface a hardware-tripwire report, not an unrelated note."
+
+  - query: "What tier-2 and tier-3 supply-chain dependencies are we tracking for AI accelerators?"
+    expect_ids: ["dadd040b-9e96-44ce-a662-6b099598e7f2"]
+    expect_substrings: ["Secondary Supply Chain"]
+
+  - query: "Which small language models are moving on the benchmark leaderboards?"
+    expect_ids: ["3e9a6be6-3e68-469f-aece-e95cf94e59d3"]
+    expect_substrings: ["Intelligence Index"]
+    note: "SLM benchmark watch. Any slm_benchmark_watch note is a valid hit."
+
+  - query: "Is there a proven correlation between HBM/CoWoS shortages and small-model adoption?"
+    expect_substrings: ["INSUFFICIENT EVIDENCE"]
+    note: >
+      The documented failure: the synthesis concluded INSUFFICIENT EVIDENCE, and
+      an unsourced note later inverted it to "clear correlation" at high
+      confidence. Retrieval must surface the sourced synthesis, not the
+      free-associated one. The hard, contested case.
+
+  # ── Off-grid mesh networking (source_record / claim) ───────────────────────
+  - query: "Did Meshtastic patch a cryptographic key-generation vulnerability?"
+    expect_ids: ["c218b8a4-d780-4552-a62e-8195a7f9b7d3"]
+    expect_substrings: ["delays key generation until the LoRa region"]
+
+  - query: "How much does the Heltec V3 LoRa board cost and what bands does it support?"
+    expect_ids: ["232048ee-9a57-4ccc-b12a-bbe2a8b5515c"]
+    expect_substrings: ["Heltec V3 is priced"]
+
+  - query: "Can Reticulum firmware run directly on Meshtastic LoRa radios?"
+    expect_ids: ["77b8c4ed-ebbc-4ec8-a5ed-37bf78dbb757"]
+    expect_substrings: ["Reticulum lacks dedicated LoRa firmware"]
+
+  - query: "What is MeshCore planning with Reticulum for backhaul redundancy?"
+    expect_ids: ["42485d8b-b598-4ba0-a473-5147a61138b0"]
+    expect_substrings: ["backhaul integration using Reticulum"]
+
+  - query: "What are the specs and price of the Heltec Mesh Node T096?"
+    expect_ids: ["f7523d8d-5a4f-4488-a47a-2cc140e9b69d"]
+    expect_substrings: ["T096"]
+
+  # ── Video learning summaries (source_record) ───────────────────────────────
+  - query: "What did the IBM Technology video explain about agentic harnesses for AI models?"
+    expect_ids: ["5d2fda84-8d95-4a39-8d31-3306e330b6a7"]
+    expect_substrings: ["Agentic Harness"]
+
+  - query: "What was the Louis Rossmann video about the data-recovery company legal dispute?"
+    expect_ids: ["ae83bfbc-d1e2-4aa0-84ea-0e4a9c1db8be"]
+    expect_substrings: ["We Recover Data"]
+
+  - query: "What point did the Hasan Minhaj video make about intellect versus wisdom?"
+    expect_ids: ["9f5ece8b-a3ae-4877-97cc-d4e813b57e95"]
+    expect_substrings: ["Intellect vs. Wisdom"]
+
+  - query: "What did the 60 Minutes segment cover about the strategic use of glamour and appearance?"
+    expect_ids: ["adb5ff84-ea13-42d1-a4c7-3d3c92bfeabb"]
+    expect_substrings: ["strategic use of glamour"]
+
+  # ── Claims (mixed status — exercises the label_claims path) ────────────────
+  - query: "Did Caroline Leavitt leave the White House Press Secretary role?"
+    expect_ids: ["7035d313-7a86-49e3-b51f-b593d65647fc"]
+    expect_substrings: ["Caroline Leavitt announced her exit"]
+    note: "corroborated claim"
+
+  - query: "Who are the potential internal candidates to replace the Press Secretary?"
+    expect_ids: ["aa9a3d33-572a-4258-948d-74707825b7b8"]
+    expect_substrings: ["Anna Kelly"]
+    note: "corroborated claim"
+
+  - query: "Did the Democratic Socialists of America hold a commemoration for Fidel Castro?"
+    expect_ids: ["2d1cd4e3-4ff1-4271-b74e-281c3bd46529"]
+    expect_substrings: ["commemoration for Fidel Castro"]
+    note: "unverified claim — the label should say so on retrieval"
+
+  - query: "Is a new data center work session planned in San Angelo, Texas?"
+    expect_ids: ["8c14c5fd-0d04-46bf-b1ef-f6533c70bf36"]
+    expect_substrings: ["San Angelo"]
+    note: "unverified claim"
+
+  - query: "What weaponry has North Korea reportedly been exporting?"
+    expect_ids: ["5f1a38ac-e739-433e-b2e5-413a6d71af99"]
+    expect_substrings: ["120 ballistic missiles"]
+    note: "corroborated claim"
+
+  - query: "What did Kamala Harris say about the U.S. military at the DNC?"
+    expect_ids: ["29749a3a-96a1-43ea-8b6d-054af9db6998"]
+    expect_substrings: ["most lethal fighting force"]
+    note: "corroborated claim"
+
+  - query: "What flavors does the Pup Cup come in?"
+    expect_ids: ["fd2e7b4e-106c-461a-a404-a209a2d7161e"]
+    expect_substrings: ["bacon, peanut butter"]
+    note: "unverified claim — a low-stakes recall probe"
+
+  # ── News briefs (news) ─────────────────────────────────────────────────────
+  - query: "What is the latest on U.S.–Iran tensions?"
+    expect_ids: ["56b75672-3f73-488f-816f-e68e55b27821"]
+    expect_substrings: ["laughable"]
+    note: "2026-08-31 executive summary, led by Iran coverage"
+
+  - query: "What trade proposals has the Trump administration aimed at Canada?"
+    expect_ids: ["745341a5-626f-4683-922f-2314af7f0b4d"]
+    expect_substrings: ["targeting Canada"]
+
+  - query: "Give me the weekly news synthesis report."
+    expect_ids: ["879d726b-58f8-45b6-8793-3854b0d78863"]
+    expect_substrings: ["Weekly News Synthesis"]
+
+  # ── Semantic knowledge ─────────────────────────────────────────────────────
+  - query: "What does our analysis conclude about the normalization of misconduct?"
+    expect_ids: ["0bf58a62-5d5f-4c72-aebe-eeaf2a879339"]
+    expect_substrings: ["normalization of misconduct"]
+
+  - query: "How did the brain assess its own architecture and roadmap progress?"
+    expect_ids: ["82d5c674-7327-474b-a85c-65d516105586"]
+    expect_substrings: ["Agent Brain Self-Assessment"]

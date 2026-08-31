@@ -8,6 +8,39 @@ defaults:
   max_tokens: 4096
   timeout_secs: 120
 
+# ── selection_rank: which model a capability-routed step actually gets ────────
+#
+# `select_models` orders candidates `cost ASC, selection_rank ASC,
+# context_window DESC`, and a step declaring `required_capabilities` takes the
+# first row that survives the CLOUD_TIER filter. Every ollama and ollama-cloud
+# entry below costs $0.0 — so for every routing decision the brain actually
+# makes, cost decides nothing and **selection_rank is the choice**. Lower wins.
+#
+# It exists because the tiebreak used to be `context_window DESC` alone, which
+# is a proxy for nothing anyone was trying to optimise. Adding
+# `minimax-m3:cloud` on 2026-08-25 with a 524288 window therefore handed it
+# every `reasoning` step in the system — the seven cloud-routed steps across
+# chains/ and schedules/ — with no config change, no log line saying so, and no
+# way to see it except in the usage ledger afterwards. It ran them at 20.2s
+# against gemma4:31b-cloud's 5.6s. Nothing was misconfigured; the ordering was
+# just answering a different question than the one being asked.
+#
+# Bands (the gaps are room to insert without renumbering):
+#   10–99    ollama-cloud — the contested band, since these all tie at $0
+#   110–199  ollama local — also $0, so they compete with the above and lose at
+#            tier 1 by design. Ranked anyway: three of them tie at 128000, so
+#            tier 0 was previously picking between them arbitrarily.
+#   210+     paid providers — cost already separates these; rank breaks ties
+#            within a price point (the two gemini flash-lites are both 0.0005).
+#
+# Rank is global, not per-capability, so check every capability a model claims
+# before moving it. The live example: `gemma4:31b-cloud` sits at 30 rather than
+# lower because it is the vision winner, and at 30 the two gpt-oss entries
+# still take `reasoning` ahead of it — which is what we want, since it is the
+# one cloud model measured to return empty completions (1/4).
+#
+# Unranked entries sort behind every ranked one and keep the old
+# widest-window order among themselves, so omitting the field is safe.
 models:
   # ── Ollama Local (http://localhost:11434) ─────────────────────────────────────
   qwen3.5:4b:
@@ -16,6 +49,7 @@ models:
     context_window: 32768
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 140
     capabilities:
       - reasoning
       - code
@@ -31,6 +65,7 @@ models:
     context_window: 128000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 130
     capabilities:
       - reasoning
       - tools
@@ -47,6 +82,7 @@ models:
     context_window: 128000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 120
     capabilities:
       - reasoning
       - code
@@ -62,6 +98,7 @@ models:
     context_window: 128000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 110
     capabilities:
       - reasoning
       - code
@@ -76,12 +113,13 @@ models:
   # a step that declares `required_capabilities: ["computation"]` routes here and
   # is expected to *emit Python and run it*, not narrate arithmetic in prose.
   #
-  # `computation` is deliberately held by this model ALONE. `select_models`
-  # orders cost ASC then context_window DESC, and every local/ollama-cloud model
-  # is $0 — so the moment a second $0 model claims `computation`, the one with
-  # the largest context window wins and a 1M-context cloud model silently takes
-  # every computation step. The capability is a routing selector, not a
-  # description of aptitude; widen it only if you also want that reordering.
+  # `computation` is deliberately held by this model ALONE, which is what makes
+  # its rank of 150 harmless — with one holder there is nothing to tie against.
+  # Widen the capability and `selection_rank` starts deciding, and at 150 this
+  # model loses to every cloud entry: a step meant to run Python would route to
+  # a model that will narrate arithmetic instead. If a second model ever claims
+  # `computation`, rank it above 150 only if you mean it. The capability is a
+  # routing selector, not a description of aptitude.
   #
   # VRAM: 4.68 GB (Q4) on an 8 GB card that already holds gemma4 + Whisper, so
   # this model swaps rather than co-resides. That is the accepted cost of a
@@ -92,6 +130,7 @@ models:
     context_window: 32768
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 150
     capabilities:
       - reasoning
       - code
@@ -110,15 +149,60 @@ models:
       inputs behind a result are visible and checkable.
 
   # ── Ollama Cloud (https://ollama.com) ─────────────────────────────────────────
-  # Free-tier models: small/open-weight, no subscription required.
-  # Models that return 403 "requires a subscription" (kimi-k2.5, minimax-m2.7,
-  # gemma4:31b) are excluded — add them back if you upgrade your Ollama plan.
-  qwen3.5:cloud:
+  # Every model here was verified reachable on the current (free) Ollama plan on
+  # 2026-08-25 — a trial `/api/chat` call returned 200, and `/api/show` supplied
+  # the context window and capabilities below rather than them being guessed.
+  #
+  # Models that answered `403 "this model requires a subscription"` (qwen3.5:cloud,
+  # deepseek-v4-flash:cloud) or `404 "model not found"` (ministral-3:cloud,
+  # nemotron-3-nano:cloud — superseded by nemotron-3-nano:30b-cloud) were removed:
+  # a catalog entry that can only fail is worse than a missing one, because the
+  # router will still pick it.
+  #
+  # `chat_fallback_ladder` at the foot of this file is what /chat walks when a
+  # model produces nothing; order there is deliberate and measured, not the
+  # order of this block.
+  gpt-oss:120b-cloud:
     provider: ollama-cloud
-    model: "qwen3.5:cloud"
-    context_window: 1000000
+    model: "gpt-oss:120b-cloud"
+    context_window: 131072
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 10
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  gpt-oss:20b-cloud:
+    provider: ollama-cloud
+    model: "gpt-oss:20b-cloud"
+    context_window: 131072
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 20
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  nemotron-3-super:cloud:
+    provider: ollama-cloud
+    model: "nemotron-3-super:cloud"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 40
     capabilities:
       - reasoning
       - code
@@ -128,13 +212,66 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
- 
+  nemotron-3-ultra:cloud:
+    provider: ollama-cloud
+    model: "nemotron-3-ultra:cloud"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 60
+    capabilities:
+      - reasoning
+      - code
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  nemotron-3-nano:30b-cloud:
+    provider: ollama-cloud
+    model: "nemotron-3-nano:30b-cloud"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 70
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  # minimax-m3:cloud REMOVED 2026-08-31 — it left the free tier. A trial
+  # /api/chat now answers `402 "this model requires a subscription or extra
+  # usage"`, as do qwen3.5:397b, deepseek-v4-pro, deepseek-v4-flash,
+  # mistral-large-3:675b, and every glm-5.x and kimi-k2/k3 entry that
+  # /api/tags advertises. The seven models in this block are the whole of what
+  # the free tier reaches, re-verified that day.
+  #
+  # Leaving it in the catalog was not neutral. `is_subscription_required` in
+  # shared_llm.rs matches on "requires a subscription", so a 402 classifies as
+  # unavailable and falls back to local gemma4:latest — the chain SUCCEEDS, the
+  # weaker model writes the report, and it is stored as source_record with
+  # nothing anywhere recording that the intended model was never reached. That
+  # is the exact silent degradation scripts/pause_cloud_schedules.sh exists to
+  # prevent, arriving through the catalog instead of through an outage.
+  #
+  # It was also the live routing target: the deployed binary orders candidates
+  # `cost ASC, context_window DESC` with no selection_rank, and at 524288 this
+  # was the widest window among the $0 models — so it won ALL SEVEN
+  # `required_capabilities: ["reasoning"]` steps in chains/ and schedules/.
+
   gemma4:31b-cloud:
     provider: ollama-cloud
     model: "gemma4:31b-cloud"
-    context_window: 1000000
+    context_window: 262144
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
+    selection_rank: 30
     capabilities:
       - reasoning
       - code
@@ -145,57 +282,6 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
-
-
-  ministral-3:cloud:
-    provider: ollama-cloud
-    model: "ministral-3:cloud"
-    context_window: 131072
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-  deepseek-v4-flash:cloud:
-    provider: ollama-cloud
-    model: "deepseek-v4-flash:cloud"
-    context_window: 131072
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-  nemotron-3-nano:cloud:
-    provider: ollama-cloud
-    model: "nemotron-3-nano:cloud"
-    context_window: 131072
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    capabilities:
-      - reasoning
-      - code
-      - fast
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
-
-
   # ── Anthropic (https://www.anthropic.com) ─────────────────────────────────
   claude-sonnet-4-6:
     provider: anthropic
@@ -203,6 +289,7 @@ models:
     context_window: 200000
     cost_per_1k_input: 0.003
     cost_per_1k_output: 0.015
+    selection_rank: 320
     capabilities:
       - reasoning
       - code
@@ -219,6 +306,7 @@ models:
     context_window: 200000
     cost_per_1k_input: 0.0008
     cost_per_1k_output: 0.004
+    selection_rank: 310
     capabilities:
       - reasoning
       - code
@@ -233,6 +321,7 @@ models:
     context_window: 1048576
     cost_per_1k_input: 0.0001
     cost_per_1k_output: 0.0004
+    selection_rank: 220
     capabilities:
       - reasoning
       - code
@@ -249,6 +338,7 @@ models:
     context_window: 1048576
     cost_per_1k_input: 0.0001
     cost_per_1k_output: 0.0004
+    selection_rank: 210
     capabilities:
       - reasoning
       - code
@@ -266,6 +356,7 @@ models:
     context_window: 1048576
     cost_per_1k_input: 0.0002
     cost_per_1k_output: 0.0008
+    selection_rank: 230
     capabilities:
       - reasoning
       - code
@@ -281,3 +372,88 @@ models:
 default_system_prompt: |
   You are agent-brain, an autonomous AI agent backed by a persistent
   knowledge graph. Think step-by-step and use available tools.
+
+# ── /chat fallback ladder ─────────────────────────────────────────────────────
+# Walked in order when a chat turn produces nothing the user can see — an empty
+# completion, a 403/429, a 5xx, an unreachable host. Each name must be a key in
+# `models` above; unknown names are dropped with a warning at startup, and the
+# active chat model is skipped if it appears here (it is always tried first).
+#
+# A model is only tried when the previous one streamed NOTHING. Once any token,
+# tool call, or message has reached the client the turn belongs to that model —
+# switching mid-turn would replay tool calls and duplicate output.
+#
+# Order is measured, not alphabetical. Each entry below ran the same 12k-token
+# tool-calling prompt four times on 2026-08-25:
+#
+#   model                       empty  tool_call  avg latency
+#   gpt-oss:120b-cloud           0/4      4/4        1.8s   ← now the active chat model
+#   nemotron-3-super:cloud       0/4      4/4       12.4s
+#   gpt-oss:20b-cloud            0/4      4/4        8.0s
+#   minimax-m3:cloud             0/4      3/4       11.7s   (1/4 answered in text)
+#   nemotron-3-ultra:cloud       0/4      4/4       19.4s
+#   nemotron-3-nano:30b-cloud    0/4      4/4       23.4s
+#   gemma4:31b-cloud             1/4      3/4        7.0s   ← the empty-completion bug
+#
+# nemotron-3-super sits at #2 rather than gpt-oss:20b so the first fallback is a
+# different model family: gpt-oss:20b shares 120b's chat template, and the
+# failure being escaped is a template-parsing bug, so it is the rung least
+# likely to behave differently.
+#
+# Two rungs were REMOVED on 2026-08-31:
+#
+#   minimax-m3:cloud       left the free tier — answers 402 (see the models
+#                          block above). A rung that can only fail turns one
+#                          failure into two at the moment something is already
+#                          broken, which is the whole point of the ladder.
+#   nemotron-3-ultra:cloud too slow to be a chat rung. Re-measured 2026-08-31
+#                          on a real 7.8k-char watch-report payload: **299s**,
+#                          against this file's own `timeout_secs: 120`. It is
+#                          kept in the catalog — on that same run it was the
+#                          only model to apply the report's date gate
+#                          correctly (see the table below) — but a ladder rung
+#                          that stalls past the timeout is worse than none,
+#                          because the user is already waiting on a turn that
+#                          failed once.
+#
+# ── Second measurement, 2026-08-31: a real `reason` payload, not a chat prompt
+#
+# The table above measures chat tool-calling. The eight cloud steps in chains/
+# and schedules/ are all `reason` over a distilled research payload — different
+# work, so it was measured separately: the live off-grid watch prompt plus its
+# real prior report and three live SearXNG sweeps (7776 chars in), one run each.
+#
+#   model                      sec    out_chars  urls  date gate
+#   nemotron-3-ultra:cloud    299.3      5319     24   PASS
+#   gpt-oss:120b-cloud        276.5      8233     14   fail (passed on a rerun)
+#   nemotron-3-super:cloud    122.5      3584     11   fail
+#   gpt-oss:20b-cloud          75.2      6090     18   fail
+#   nemotron-3-nano:30b-cloud  24.9      5128     14   fail
+#   gemma4:31b-cloud           17.6      2757      7   fail (thinnest output)
+#
+# "date gate" = did MOVERS contain only items dated after the prior report.
+# Read it as a prompt finding, not a model ranking. The prompt states the
+# 12-month recency gate explicitly and EVERY model applied that one correctly;
+# the "newer than the prior report" rule is only implied by the section being
+# called DELTA, and most models did not infer it. Fix the prompt before
+# swapping models over this. Sample size is 1–2 runs per model — enough to
+# rule nemotron-3-ultra out on latency, not enough to rank the rest on quality.
+#
+# Latency here tracks how much each model chose to write far more than raw
+# speed (gpt-oss:120b was slowest-but-one and also longest). Production
+# `reason` calls have historically averaged ~6s, so these are upper bounds on
+# a deliberately long report, not typical step latency.
+#
+# gemma4:31b-cloud is deliberately absent — it is the model that produces the
+# empty completions this ladder exists to survive. It stays in the catalog
+# because it is the only free-tier vision model and may still be chosen
+# explicitly, but it is never a destination for a failed turn.
+#
+# gemma4:latest is last and is local: it is slower and weaker than every cloud
+# rung, and it is the only one that still answers when ollama.com is down.
+chat_fallback_ladder:
+  - gpt-oss:120b-cloud
+  - nemotron-3-super:cloud
+  - gpt-oss:20b-cloud
+  - nemotron-3-nano:30b-cloud
+  - gemma4:latest

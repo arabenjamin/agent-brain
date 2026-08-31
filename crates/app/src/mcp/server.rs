@@ -117,6 +117,11 @@ pub struct McpServerCore {
     /// (e.g. cloud Anthropic) for human chat while keeping brain internals on
     /// local Ollama.
     chat_llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+
+    /// Models `/chat` falls back to, in order, when a turn produces nothing the
+    /// user can see. Resolved from `models.yaml`'s `chat_fallback_ladder` at
+    /// startup; empty means the active chat model is the only one ever tried.
+    chat_fallback_ladder: Vec<LlmConfig>,
 }
 
 impl McpServerCore {
@@ -134,6 +139,7 @@ impl McpServerCore {
             mcp_tool_profile: std::env::var("MCP_TOOL_PROFILE").ok(),
             brain: BrainCore::new(),
             chat_llm_config: None,
+            chat_fallback_ladder: Vec::new(),
         }
     }
 
@@ -208,6 +214,15 @@ impl McpServerCore {
         self
     }
 
+    /// Set the ordered fallback ladder `/chat` walks when a turn produces
+    /// nothing. Unset means no fallback: the active chat model is the only one
+    /// tried, which is the behaviour every deployment had before the ladder
+    /// existed.
+    pub fn with_chat_fallback_ladder(mut self, ladder: Vec<LlmConfig>) -> Self {
+        self.chat_fallback_ladder = ladder;
+        self
+    }
+
     /// Return a live [`ChatService`] wired to the brain's tool registry.
     ///
     /// Uses the dedicated chat LLM config when one was provided via
@@ -225,6 +240,7 @@ impl McpServerCore {
             llm,
             Arc::clone(&self.brain.context_builder_svc),
             self.brain.telemetry(),
+            self.chat_fallback_ladder.clone(),
         )
     }
 

@@ -35,6 +35,16 @@ tokio::task_local! {
     /// Takes precedence over `USE_LOCAL_LLM` in `SharedLlm` — a step that
     /// explicitly requires capabilities has earned its routing.
     pub static SELECTED_LLM: Option<crate::services::LlmConfig>;
+
+    /// Name of the tool whose execution this task is running, so `SharedLlm`
+    /// can attribute its usage rows to it.
+    ///
+    /// Without this every background LLM call lands in the ledger with
+    /// `tool_name IS NULL`. That was 55% of 30 days of cloud spend — the
+    /// majority of it unattributable by the one query you would ask after
+    /// exhausting a quota, which is exactly when you need it. The tool name is
+    /// known right here at dispatch; it just was not being carried down.
+    pub static CURRENT_TOOL: Option<String>;
 }
 
 use serde::Deserialize;
@@ -1385,7 +1395,13 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         let result = SELECTED_LLM
             .scope(
                 selected_llm,
-                USE_LOCAL_LLM.scope(use_local, handler.execute(&job.tool_name, resolved_args)),
+                USE_LOCAL_LLM.scope(
+                    use_local,
+                    CURRENT_TOOL.scope(
+                        Some(job.tool_name.clone()),
+                        handler.execute(&job.tool_name, resolved_args),
+                    ),
+                ),
             )
             .await;
         // Drop the read lock before any awaits below.

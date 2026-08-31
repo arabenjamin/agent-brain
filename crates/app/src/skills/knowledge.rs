@@ -540,6 +540,20 @@ Respond with a JSON object only (no markdown, no explanation):
                             "critic_counter_arguments": output.critic_counter_arguments,
                         });
 
+                        // Emitted only when true, so a normal result is unchanged.
+                        // A consumer reading `confidence`/`gaps`/`caveats` has no
+                        // other way to tell a graded answer from raw prose wearing
+                        // the same field names.
+                        if output.structured_output_failed {
+                            response["structured_output_failed"] = json!(true);
+                            response["caveats"] = json!([
+                                "The model did not return parseable structured output; this \
+                                 answer is raw prose. `confidence`, `gaps` and `caveats` were \
+                                 NOT reported by the model and must not be read as its own \
+                                 assessment."
+                            ]);
+                        }
+
                         if let Some(nid) = &output.inference_note_id {
                             response["inference_note_id"] = json!(nid);
                         }

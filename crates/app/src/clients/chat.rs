@@ -26,6 +26,77 @@ use agent_brain_protocol::Content;
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;
 
+/// How many times to re-send a request that came back as an **empty completion**
+/// — the provider reported generating tokens but the stream carried no text and
+/// no tool call.
+///
+/// This is a provider failure wearing the costume of a finished turn, and the
+/// distinction is the same one [`crate::services::shared_llm`] draws with
+/// `classify_unavailable`: *the provider could not answer* is retryable, *the
+/// provider answered and declined* is not. Treating it as an answer is what
+/// produced the silent dropped turn: the loop exited having emitted nothing,
+/// the user's message was already banked, and the only trace was a WARN.
+///
+/// Measured 2026-08-25 against `gemma4:31b-cloud` on ollama.com — the same
+/// prompt, twelve times, streaming three chunks and 230–290 `eval_count`
+/// tokens every run:
+///
+/// ```text
+/// #1  eval_tok=230  content=0  tool_calls=1
+/// #2  eval_tok=268  content=0  tool_calls=0  <-- EMPTY
+/// #3  eval_tok=259  content=0  tool_calls=0  <-- EMPTY
+/// #4  eval_tok=292  content=0  tool_calls=0  <-- EMPTY
+/// #5..#12                      tool_calls=1
+/// ```
+///
+/// Every run spends its tokens emitting a tool call; ~75% of the time Ollama's
+/// server-side template parser extracts it into `tool_calls`, and ~25% of the
+/// time it fails to parse it but strips it from `content` anyway, leaving both
+/// fields empty with `finish_reason: "stop"`. The native `/api/chat` endpoint
+/// behaves identically (`content`, `thinking`, and `tool_calls` all empty), so
+/// this is not a parsing bug on our side — there is genuinely nothing in the
+/// stream to read.
+///
+/// At a 25% rate one retry takes the user-visible failure to ~6% and two to
+/// ~1.5%. Retries re-send the *identical* message list and therefore consume a
+/// slot from [`MAX_TOOL_ITERATIONS`]; with a cap of 2 that is affordable.
+const MAX_EMPTY_COMPLETION_RETRIES: usize = 2;
+
+/// Shown when every retry above also came back empty.
+///
+/// It has to say that nothing was carried out. An empty completion is
+/// indistinguishable, from the user's seat, from a turn where the assistant
+/// quietly did the work — and the turn that exposed this was a request to go
+/// and change something.
+const EMPTY_COMPLETION_MESSAGE: &str = "The model provider returned an empty response — it reported generating tokens but sent \
+     no text and no tool call — and did so again on every retry. Nothing was saved and no \
+     action you asked for was carried out. Please retry.";
+
+/// Appended for one last pass when a turn has used every tool iteration and
+/// still not written an answer.
+///
+/// Running out of tool rounds used to end the turn with nothing: the `for` loop
+/// simply fell through, sent `Done`, and the dropped-turn detector reported
+/// *"produced no response, and reported no error"* — true, but not the reason,
+/// and useless to a user who watched ten searches go by. Measured 2026-08-25 on
+/// `gpt-oss:120b-cloud`, which is fast and reliable per call but loops: given
+/// this prompt it re-searched `Tech Dependency Synthesis` at four different
+/// `limit` values, spent all ten rounds, and answered nothing — **4 of 8 turns**.
+///
+/// The wrap-up round is offered **no tools at all**, which is what makes it
+/// work: a model that keeps choosing to search cannot choose to search again,
+/// and the gathered results are already in its context. Nudging with the tools
+/// still attached just buys an eleventh search.
+const FINAL_ROUND_NUDGE: &str = "You have used all available tool calls for this turn. Do not \
+     request any more. Write the final answer now, using only what you have already gathered \
+     above. If the information is incomplete, say what you found, say plainly what is still \
+     missing, and stop.";
+
+/// Reported when even the wrap-up round produced nothing.
+const NO_ANSWER_AFTER_TOOLS_MESSAGE: &str = "The assistant used every available tool call for this turn and still did not produce an \
+     answer. Any tool calls above did run, so work may have been done, but nothing was written \
+     back. Please retry — and check anything that looks like it should have been created.";
+
 /// Maximum characters of a tool result fed back to the LLM.
 /// Prevents context-window overflow (OllamaCloud/Ollama models often have 4K–32K token limits).
 /// The display preview uses the same cap so the UI stays consistent.
@@ -230,8 +301,36 @@ fn reason_limits_marker(tool_name: &str, text: &str) -> Option<String> {
     let confidence = parsed.get("confidence").and_then(Value::as_f64);
     let low_confidence = confidence.is_some_and(|c| c < LOW_CONFIDENCE);
 
-    if gaps.is_empty() && caveats.is_empty() && critiques.is_empty() && !low_confidence {
+    // A fallback result is the case where the other four signals are least
+    // trustworthy and most likely to be empty — the model never answered the
+    // question, so it declared no gaps and no caveats. Checked before the
+    // early return: without this the emptiness suppresses the marker entirely,
+    // which is exactly how an unstructured `reason` answer reached a chat reply
+    // on 2026-08-24 and was written up as a graded finding.
+    let structured_failed = parsed
+        .get("structured_output_failed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if gaps.is_empty()
+        && caveats.is_empty()
+        && critiques.is_empty()
+        && !low_confidence
+        && !structured_failed
+    {
         return None;
+    }
+
+    if structured_failed {
+        return Some(String::from(
+            "[REASON — THE TOOL DID NOT PRODUCE A STRUCTURED ANSWER. The model \
+             failed to return parseable output, so what follows is raw prose, \
+             not a graded result. Its `confidence`, `gaps` and `caveats` fields \
+             are placeholders the tool filled in — NOT the model's own \
+             assessment — so do not cite them or describe this answer as \
+             high-confidence, verified, or established. Say in your reply that \
+             this came back unstructured, or re-run the tool.]",
+        ));
     }
 
     let mut marker = String::from(
@@ -292,6 +391,68 @@ fn capped_items(parsed: &Value, key: &str) -> Vec<String> {
 /// truncation marker while silently dropping the limits marker.
 fn prepare_tool_result(tool_name: &str, text: &str, limit: usize) -> String {
     truncate_tool_result(&annotate_tool_result(tool_name, text), limit)
+}
+
+/// Relay every event from a provider loop to the caller, capture the final
+/// assistant text, and guarantee the turn ends with exactly one `Done`.
+///
+/// This owns the only detector for a **dropped turn** — a turn where the user's
+/// message was banked, the provider loop returned, and nothing was ever written
+/// back. Observed 2026-08-24: a user asked the brain to create a scheduled task,
+/// the message was persisted to working memory at 18:49:30, and then nothing —
+/// no reply, no tool call, no error event, and zero ERROR-level log lines all
+/// day. The empty string was dropped by an `!is_empty()` guard on the persist
+/// path that had no else branch, so the failure had no representation anywhere
+/// and the user was left believing the work was underway.
+///
+/// `tx` is moved in here and dropped when this returns, so this is the last
+/// point at which anything can still be said to the client — code after the
+/// provider loops in `run()` cannot reach it.
+async fn forward_chat_events(
+    mut inner_rx: mpsc::Receiver<ChatEvent>,
+    tx: mpsc::Sender<ChatEvent>,
+    result_tx: mpsc::Sender<String>,
+    session_id: Option<String>,
+    user_snippet: String,
+) {
+    let mut final_text = String::new();
+    let mut saw_error = false;
+    while let Some(event) = inner_rx.recv().await {
+        match &event {
+            ChatEvent::Message { content } => final_text = content.clone(),
+            ChatEvent::Error { .. } => saw_error = true,
+            // Held back and re-emitted below. The client closes its reader on
+            // `done`, so an error reported after it would never be displayed —
+            // the turn has to be marked failed *before* it is marked finished.
+            ChatEvent::Done => continue,
+            _ => {}
+        }
+        let _ = tx.send(event).await;
+    }
+
+    // `saw_error` keeps this from double-reporting a turn that already failed
+    // loudly (e.g. no provider configured): that turn has an explanation, and a
+    // second, vaguer error would only obscure it.
+    if final_text.trim().is_empty() && !saw_error {
+        warn!(
+            session_id = session_id.as_deref().unwrap_or("-"),
+            user_message = %user_snippet,
+            "Chat turn produced no assistant message and no error — dropped turn"
+        );
+        let _ = tx
+            .send(ChatEvent::Error {
+                message: "The assistant produced no response for this turn, and reported no \
+                          error explaining why. Nothing was saved. Please retry — and do not \
+                          assume any action you asked for was carried out."
+                    .into(),
+            })
+            .await;
+    }
+
+    // Always terminate the stream, including when a provider loop returned
+    // without sending one.
+    let _ = tx.send(ChatEvent::Done).await;
+    let _ = result_tx.send(final_text).await;
 }
 
 /// Compose the effective system prompt for one chat turn.
@@ -387,7 +548,10 @@ pub struct ChatHistoryMessage {
 }
 
 /// Request body for `POST /chat`.
-#[derive(Debug, Deserialize)]
+///
+/// `Clone` because one turn may be attempted on more than one model — see
+/// [`ChatService::fallback_ladder`].
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatRequest {
     /// The new user message.
     pub message: String,
@@ -409,6 +573,24 @@ pub struct ChatRequest {
     pub synthesis_model: Option<String>,
 }
 
+/// What one model's attempt at a turn amounted to.
+///
+/// The distinction the fallback ladder turns on is not "did it error" but **did
+/// anything reach the client**. A model that streamed a token, a tool call, or
+/// a message owns the turn even if it failed afterwards: re-running the turn on
+/// another model would re-execute its tool calls and emit a second answer after
+/// the first. Only a turn that produced *nothing* is safe to hand onward, and
+/// that is also the only turn worth handing onward.
+#[derive(Debug)]
+enum AttemptOutcome {
+    /// Something reached the client. The turn is this model's, for better or worse.
+    Delivered,
+    /// Nothing reached the client, so another model may still answer this turn.
+    /// `error` is whatever the loop tried to report, held back so the ladder can
+    /// decide whether the user ever sees it.
+    Unanswered { error: Option<String> },
+}
+
 // ============================================================================
 // ChatService
 // ============================================================================
@@ -428,6 +610,10 @@ pub struct ChatService {
     /// Usage ledger. Chat is the main cloud consumer — every LLM call made by
     /// the chat loops must land in `model_usage` or quota accounting is fiction.
     telemetry: Option<crate::repository::TelemetryClient>,
+    /// Models to try, in order, when a turn produces nothing the user can see.
+    /// Resolved from `models.yaml`'s `chat_fallback_ladder` at startup; empty
+    /// means the active model is the only one that will ever be tried.
+    fallback_ladder: Vec<LlmConfig>,
 }
 
 impl ChatService {
@@ -443,6 +629,7 @@ impl ChatService {
             llm_config,
             context_builder: Arc::new(RwLock::new(None)),
             telemetry: None,
+            fallback_ladder: Vec::new(),
         })
     }
 
@@ -454,6 +641,7 @@ impl ChatService {
         llm_config: Arc<RwLock<Option<LlmConfig>>>,
         context_builder: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
         telemetry: Option<crate::repository::TelemetryClient>,
+        fallback_ladder: Vec<LlmConfig>,
     ) -> Arc<Self> {
         Arc::new(Self {
             tool_handler,
@@ -461,7 +649,101 @@ impl ChatService {
             llm_config,
             context_builder,
             telemetry,
+            fallback_ladder,
         })
+    }
+
+    /// Run one turn on one model and report whether the client saw anything.
+    ///
+    /// The provider loops are unchanged and still stream straight through: this
+    /// relays their events to `sink` as they arrive, so a working model's tokens
+    /// are not buffered waiting for a verdict. Two events are treated specially.
+    /// `Done` is swallowed — `forward_chat_events` re-emits exactly one at the
+    /// very end, so a loop that ends early cannot close the stream on a turn the
+    /// ladder intends to continue. `Error` is **held back** until the relay knows
+    /// whether anything else got through: forwarded at the end if the model did
+    /// deliver (its explanation belongs with its output), and returned to the
+    /// caller unsent if it did not, so a recovered turn is not narrated with the
+    /// failure that preceded it.
+    async fn run_one_attempt(
+        &self,
+        cfg: LlmConfig,
+        tools: Vec<agent_brain_protocol::ToolDefinition>,
+        handler: Option<ToolHandler>,
+        request: ChatRequest,
+        system_prompt: String,
+        sink: &mpsc::Sender<ChatEvent>,
+    ) -> AttemptOutcome {
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<ChatEvent>(128);
+
+        let provider_loop = async {
+            match cfg.provider {
+                LlmProviderType::Anthropic => {
+                    self.run_anthropic_loop(cfg, tools, handler, request, system_prompt, attempt_tx)
+                        .await
+                }
+                LlmProviderType::Ollama => {
+                    self.run_ollama_tool_loop(
+                        cfg,
+                        tools,
+                        handler,
+                        request,
+                        system_prompt,
+                        attempt_tx,
+                    )
+                    .await
+                }
+                LlmProviderType::OllamaCloud => {
+                    self.run_ollama_cloud_loop(
+                        cfg,
+                        tools,
+                        handler,
+                        request,
+                        system_prompt,
+                        attempt_tx,
+                    )
+                    .await
+                }
+                _ => {
+                    self.run_text_loop(cfg, tools, handler, request, system_prompt, attempt_tx)
+                        .await
+                }
+            }
+        };
+
+        let relay = async {
+            let mut delivered = false;
+            let mut error: Option<String> = None;
+            while let Some(event) = attempt_rx.recv().await {
+                match &event {
+                    ChatEvent::Done => continue,
+                    ChatEvent::Error { message } => {
+                        // Keep the first: it is the one that describes what
+                        // actually went wrong, before any cleanup reporting.
+                        if error.is_none() {
+                            error = Some(message.clone());
+                        }
+                        continue;
+                    }
+                    _ => delivered = true,
+                }
+                let _ = sink.send(event).await;
+            }
+
+            if delivered {
+                if let Some(message) = error {
+                    let _ = sink.send(ChatEvent::Error { message }).await;
+                }
+                AttemptOutcome::Delivered
+            } else {
+                AttemptOutcome::Unanswered { error }
+            }
+        };
+
+        // The loop owns `attempt_tx`; the relay ends when that drop closes the
+        // channel, so these must run concurrently rather than in sequence.
+        let (_, outcome) = tokio::join!(provider_loop, relay);
+        outcome
     }
 
     /// Record one chat LLM call in the usage ledger (tool_name = "chat").
@@ -559,20 +841,25 @@ impl ChatService {
         // Use an inner channel so we can intercept the final Message event and
         // save the assistant response to working memory without changing the
         // loop functions.
-        let (inner_tx, mut inner_rx) = mpsc::channel::<ChatEvent>(128);
+        let (inner_tx, inner_rx) = mpsc::channel::<ChatEvent>(128);
         let (result_tx, mut result_rx) = mpsc::channel::<String>(1);
 
         // Forwarding task: relay every event to the caller; capture final text.
-        tokio::spawn(async move {
-            let mut final_text = String::new();
-            while let Some(event) = inner_rx.recv().await {
-                if let ChatEvent::Message { content } = &event {
-                    final_text = content.clone();
-                }
-                let _ = tx.send(event).await;
-            }
-            let _ = result_tx.send(final_text).await;
-        });
+        //
+        // It also owns the only detector for a *dropped turn* — a turn where the
+        // user's message was banked, a provider loop returned, and nothing was
+        // ever written back. `tx` is moved in here and dropped when this task
+        // ends, so this is the last point at which anything can still be said to
+        // the client; the code after `.await` on the loops below cannot reach it.
+        let dropped_turn_session = session_id.clone();
+        let dropped_turn_snippet: String = user_message.chars().take(120).collect();
+        tokio::spawn(forward_chat_events(
+            inner_rx,
+            tx,
+            result_tx,
+            dropped_turn_session,
+            dropped_turn_snippet,
+        ));
 
         // Emit a diagnostic context event so the client can see what configuration
         // was active for this turn (provider, profile, tool count, mode).
@@ -610,50 +897,6 @@ impl ChatService {
         }
 
         match config {
-            Some(cfg) if cfg.provider == LlmProviderType::Anthropic => {
-                self.run_anthropic_loop(
-                    cfg,
-                    tools,
-                    handler.clone(),
-                    request,
-                    system_prompt,
-                    inner_tx,
-                )
-                .await;
-            }
-            Some(cfg) if cfg.provider == LlmProviderType::Ollama => {
-                self.run_ollama_tool_loop(
-                    cfg,
-                    tools,
-                    handler.clone(),
-                    request,
-                    system_prompt,
-                    inner_tx,
-                )
-                .await;
-            }
-            Some(cfg) if cfg.provider == LlmProviderType::OllamaCloud => {
-                self.run_ollama_cloud_loop(
-                    cfg,
-                    tools,
-                    handler.clone(),
-                    request,
-                    system_prompt,
-                    inner_tx,
-                )
-                .await;
-            }
-            Some(cfg) => {
-                self.run_text_loop(
-                    cfg,
-                    tools,
-                    handler.clone(),
-                    request,
-                    system_prompt,
-                    inner_tx,
-                )
-                .await;
-            }
             None => {
                 let _ = inner_tx
                     .send(ChatEvent::Error {
@@ -662,9 +905,101 @@ impl ChatService {
                     .await;
                 let _ = inner_tx.send(ChatEvent::Done).await;
             }
+            Some(active) => {
+                // The active model first, then the ladder. Each attempt runs only
+                // if every attempt before it streamed nothing at all.
+                // A rung is identified by where it is *called*, not just by the
+                // model name: the same model on a different endpoint is a
+                // different rung (a local mirror of a cloud model is the case
+                // that matters), and deduping on the name alone would silently
+                // drop it.
+                let rung_id = |c: &LlmConfig| {
+                    (
+                        c.provider,
+                        c.base_url.clone().unwrap_or_default(),
+                        c.model.clone(),
+                    )
+                };
+                let mut candidates = vec![active];
+                for cfg in &self.fallback_ladder {
+                    if !candidates.iter().any(|c| rung_id(c) == rung_id(cfg)) {
+                        candidates.push(cfg.clone());
+                    }
+                }
+
+                let last = candidates.len().saturating_sub(1);
+                let mut last_error: Option<String> = None;
+
+                for (i, cfg) in candidates.into_iter().enumerate() {
+                    if i > 0 {
+                        warn!(
+                            model = %cfg.model,
+                            provider = %cfg.provider,
+                            rung = i,
+                            previous_error = last_error.as_deref().unwrap_or("(none reported)"),
+                            "Chat turn produced nothing — falling back to the next model"
+                        );
+                        // Say so in the stream. A turn that quietly changes model
+                        // is a turn whose answer cannot be attributed later, and
+                        // the ladder is exactly the state a reader needs when the
+                        // reply is slower or worse than usual.
+                        let _ = inner_tx
+                            .send(ChatEvent::Thinking {
+                                content: format!(
+                                    "⚙ no response from the previous model — retrying on {} ({})",
+                                    cfg.model, cfg.provider
+                                ),
+                            })
+                            .await;
+                    }
+
+                    let model = cfg.model.clone();
+                    match self
+                        .run_one_attempt(
+                            cfg,
+                            tools.clone(),
+                            handler.clone(),
+                            request.clone(),
+                            system_prompt.clone(),
+                            &inner_tx,
+                        )
+                        .await
+                    {
+                        AttemptOutcome::Delivered => break,
+                        AttemptOutcome::Unanswered { error } => {
+                            last_error = error.or(last_error);
+                            if i == last {
+                                // Every rung is spent. Report the concrete
+                                // failure rather than letting the dropped-turn
+                                // detector emit its generic one.
+                                warn!(
+                                    model = %model,
+                                    rungs_tried = i + 1,
+                                    "Every chat model produced nothing for this turn"
+                                );
+                                let _ = inner_tx
+                                    .send(ChatEvent::Error {
+                                        message: last_error.clone().unwrap_or_else(|| {
+                                            EMPTY_COMPLETION_MESSAGE.to_string()
+                                        }),
+                                    })
+                                    .await;
+                                let _ = inner_tx.send(ChatEvent::Done).await;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        // inner_tx is dropped here, which closes inner_rx and lets the
-        // forwarding task finish.
+        // Closing `inner_rx` is what lets the forwarding task finish and hand
+        // back the assistant text below, so this drop is load-bearing, not
+        // tidiness. It used to happen implicitly because each match arm *moved*
+        // `inner_tx` into a provider loop; the ladder passes it by reference so
+        // one turn can run several attempts, which left `run()` holding the last
+        // sender and `result_rx.recv()` waiting on a channel that would never
+        // close. The symptom was a chat turn that hung indefinitely — the exact
+        // failure this whole change set exists to remove.
+        drop(inner_tx);
 
         // Wait for the forwarder to return the captured assistant text.
         let final_text = result_rx.recv().await.unwrap_or_default();
@@ -768,6 +1103,8 @@ impl ChatService {
             .base_url
             .as_deref()
             .unwrap_or("https://api.anthropic.com");
+
+        let mut empty_completions = 0usize;
 
         for _iteration in 0..MAX_TOOL_ITERATIONS {
             let body = json!({
@@ -892,6 +1229,34 @@ impl ChatService {
             }
 
             if stop_reason == "end_turn" || tool_use_blocks.is_empty() {
+                // Nothing at all came back: no text and no tool use. Same failure
+                // as the other loops — retry rather than exit silently.
+                // See MAX_EMPTY_COMPLETION_RETRIES.
+                if final_text.is_empty() && tool_use_blocks.is_empty() {
+                    if empty_completions < MAX_EMPTY_COMPLETION_RETRIES {
+                        empty_completions += 1;
+                        warn!(
+                            model = %model,
+                            stop_reason = %stop_reason,
+                            attempt = empty_completions,
+                            "Anthropic returned an empty completion — retrying"
+                        );
+                        continue;
+                    }
+                    warn!(
+                        model = %model,
+                        attempts = empty_completions + 1,
+                        "Anthropic returned an empty completion on every attempt — giving up"
+                    );
+                    let _ = tx
+                        .send(ChatEvent::Error {
+                            message: EMPTY_COMPLETION_MESSAGE.into(),
+                        })
+                        .await;
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
+                }
+
                 // Emit the final message.
                 if !final_text.is_empty() {
                     let _ = tx
@@ -1022,17 +1387,35 @@ impl ChatService {
 
         let client = reqwest::Client::new();
         let mut weak_model_answer = String::new();
+        let mut empty_completions = 0usize;
+        let mut tool_rounds = 0usize;
+        let mut answered = false;
+        let mut final_round = false;
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
-            let body = json!({
+        for _ in 0..=(MAX_TOOL_ITERATIONS + MAX_EMPTY_COMPLETION_RETRIES + 1) {
+            // The wrap-up round: no tools offered, so a model that keeps
+            // choosing to search has to answer instead. See FINAL_ROUND_NUDGE.
+            if !final_round && tool_rounds >= MAX_TOOL_ITERATIONS {
+                final_round = true;
+                warn!(
+                    model = %model,
+                    rounds = tool_rounds,
+                    "Tool budget exhausted without an answer — asking for a final answer with no tools"
+                );
+                messages.push(json!({ "role": "user", "content": FINAL_ROUND_NUDGE }));
+            }
+
+            let mut body = json!({
                 "model": model,
                 "messages": messages,
-                "tools": ollama_tools,
                 "stream": true,
                 "options": {
                     "temperature": config.temperature,
                 }
             });
+            if !final_round {
+                body["tools"] = Value::Array(ollama_tools.clone());
+            }
 
             let mut req = client
                 .post(format!("{}/api/chat", base_url))
@@ -1186,19 +1569,51 @@ impl ChatService {
             };
 
             if tool_calls.is_empty() {
-                // No tool calls — weak model has a final answer.
-                if !content.is_empty() {
-                    if do_synthesis {
-                        // Surface weak model's answer as a thinking event so the
-                        // user can see what was researched before synthesis.
-                        weak_model_answer = content.clone();
-                        let _ = tx.send(ChatEvent::Thinking { content }).await;
-                    } else {
-                        let _ = tx.send(ChatEvent::Message { content }).await;
+                // Nothing at all came back: no text and no tool call, despite the
+                // provider counting generated tokens. That is a failed call, not a
+                // finished turn — re-send the identical request rather than exiting
+                // silently. See MAX_EMPTY_COMPLETION_RETRIES.
+                if content.is_empty() {
+                    if empty_completions < MAX_EMPTY_COMPLETION_RETRIES {
+                        empty_completions += 1;
+                        warn!(
+                            model = %model,
+                            eval_count = ?usage_tokens.1,
+                            attempt = empty_completions,
+                            "Ollama returned an empty completion — retrying"
+                        );
+                        continue;
                     }
+                    warn!(
+                        model = %model,
+                        attempts = empty_completions + 1,
+                        "Ollama returned an empty completion on every attempt — giving up"
+                    );
+                    let _ = tx
+                        .send(ChatEvent::Error {
+                            message: EMPTY_COMPLETION_MESSAGE.into(),
+                        })
+                        .await;
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
+                }
+
+                // No tool calls — weak model has a final answer.
+                answered = true;
+                if do_synthesis {
+                    // Surface weak model's answer as a thinking event so the
+                    // user can see what was researched before synthesis.
+                    weak_model_answer = content.clone();
+                    let _ = tx.send(ChatEvent::Thinking { content }).await;
+                } else {
+                    let _ = tx.send(ChatEvent::Message { content }).await;
                 }
                 break;
             }
+
+            // A tool call is what the budget counts; empty-completion retries
+            // above deliberately do not.
+            tool_rounds += 1;
 
             // Emit thinking text that accompanied the tool calls (if any).
             if !content.trim().is_empty() {
@@ -1282,6 +1697,19 @@ impl ChatService {
         if do_synthesis {
             self.run_synthesis(&request, &messages, &weak_model_answer, tx.clone())
                 .await;
+        } else if !answered {
+            // See the same guard in run_ollama_cloud_loop: the tool calls above
+            // ran, so silence here would hide work that may have happened.
+            warn!(
+                model = %model,
+                tool_rounds,
+                "Chat loop ended without an answer after the wrap-up round"
+            );
+            let _ = tx
+                .send(ChatEvent::Error {
+                    message: NO_ANSWER_AFTER_TOOLS_MESSAGE.into(),
+                })
+                .await;
         }
 
         let _ = tx.send(ChatEvent::Done).await;
@@ -1332,18 +1760,43 @@ impl ChatService {
         messages.push(json!({ "role": "user", "content": request.message }));
 
         let client = reqwest::Client::new();
+        let mut empty_completions = 0usize;
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
-            let body = json!({
+        // Rounds that actually spent a tool call, which is what the budget is
+        // for. Empty-completion retries deliberately do not count against it:
+        // a provider failure is not the model using up its allowance.
+        let mut tool_rounds = 0usize;
+        let mut answered = false;
+        let mut final_round = false;
+
+        // The upper bound only guarantees termination — the loop exits on an
+        // answer, on a hard failure, or after the wrap-up round below.
+        for _ in 0..=(MAX_TOOL_ITERATIONS + MAX_EMPTY_COMPLETION_RETRIES + 1) {
+            // One extra pass beyond the tool budget: the wrap-up round. See
+            // FINAL_ROUND_NUDGE — it is offered no tools, so a looping model
+            // has to answer from what it has instead of searching again.
+            if !final_round && tool_rounds >= MAX_TOOL_ITERATIONS {
+                final_round = true;
+                warn!(
+                    model = %model,
+                    rounds = tool_rounds,
+                    "Tool budget exhausted without an answer — asking for a final answer with no tools"
+                );
+                messages.push(json!({ "role": "user", "content": FINAL_ROUND_NUDGE }));
+            }
+
+            let mut body = json!({
                 "model": model,
                 "messages": messages,
-                "tools": oai_tools,
                 "stream": true,
                 // Ask OpenAI-compat servers to include a usage block in the
                 // final stream chunk — without it token accounting is NULL.
                 "stream_options": { "include_usage": true },
                 "temperature": config.temperature,
             });
+            if !final_round {
+                body["tools"] = Value::Array(oai_tools.clone());
+            }
 
             let mut req = client
                 .post(&url)
@@ -1541,16 +1994,50 @@ impl ChatService {
             }
 
             if tool_calls.is_empty() {
-                // No tool calls — final answer.
-                if !full_content.is_empty() {
+                // Nothing at all came back: no text and no tool call, despite the
+                // usage block counting generated tokens. That is a failed call, not
+                // a finished turn — re-send the identical request rather than
+                // exiting silently. See MAX_EMPTY_COMPLETION_RETRIES.
+                if full_content.is_empty() {
+                    if empty_completions < MAX_EMPTY_COMPLETION_RETRIES {
+                        empty_completions += 1;
+                        warn!(
+                            model = %model,
+                            completion_tokens = ?usage_tokens.1,
+                            attempt = empty_completions,
+                            "OllamaCloud returned an empty completion — retrying"
+                        );
+                        continue;
+                    }
+                    warn!(
+                        model = %model,
+                        attempts = empty_completions + 1,
+                        "OllamaCloud returned an empty completion on every attempt — giving up"
+                    );
                     let _ = tx
-                        .send(ChatEvent::Message {
-                            content: full_content,
+                        .send(ChatEvent::Error {
+                            message: EMPTY_COMPLETION_MESSAGE.into(),
                         })
                         .await;
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
                 }
+
+                // No tool calls — final answer.
+                answered = true;
+                let _ = tx
+                    .send(ChatEvent::Message {
+                        content: full_content,
+                    })
+                    .await;
                 break;
             }
+
+            // A tool call is what the budget counts. The wrap-up round offers no
+            // tools, so reaching here on it means the model smuggled one through
+            // the text channel (`parse_xml_tool_calls`); let it run, but do not
+            // let it buy another round.
+            tool_rounds += 1;
 
             // Emit any reasoning text that accompanied the tool calls.
             if !full_content.trim().is_empty() {
@@ -1660,6 +2147,22 @@ impl ChatService {
                 messages.truncate(2); // system + user
                 messages.extend(tail);
             }
+        }
+
+        // Falling out of the loop having answered nothing is a real outcome and
+        // needs a real explanation: the tool calls above did run, so the user has
+        // to be told work may have happened even though nothing was written back.
+        if !answered {
+            warn!(
+                model = %model,
+                tool_rounds,
+                "Chat loop ended without an answer after the wrap-up round"
+            );
+            let _ = tx
+                .send(ChatEvent::Error {
+                    message: NO_ANSWER_AFTER_TOOLS_MESSAGE.into(),
+                })
+                .await;
         }
 
         let _ = tx.send(ChatEvent::Done).await;
@@ -1905,6 +2408,8 @@ impl ChatService {
         }
         messages.push(ChatMessage::user(&request.message));
 
+        let mut empty_completions = 0usize;
+
         for _iteration in 0..MAX_TOOL_ITERATIONS {
             let call_start = std::time::Instant::now();
             let chat_result = llm.chat(&messages).await;
@@ -2006,11 +2511,36 @@ impl ChatService {
                 };
                 messages.push(ChatMessage::user(tool_result_msg));
             } else {
+                // Nothing at all came back: no text and no tool call. Same failure
+                // as the two streaming loops — retry rather than exit silently.
+                // See MAX_EMPTY_COMPLETION_RETRIES.
+                if text.is_empty() {
+                    if empty_completions < MAX_EMPTY_COMPLETION_RETRIES {
+                        empty_completions += 1;
+                        warn!(
+                            model = %model,
+                            attempt = empty_completions,
+                            "LLM returned an empty completion — retrying"
+                        );
+                        continue;
+                    }
+                    warn!(
+                        model = %model,
+                        attempts = empty_completions + 1,
+                        "LLM returned an empty completion on every attempt — giving up"
+                    );
+                    let _ = tx
+                        .send(ChatEvent::Error {
+                            message: EMPTY_COMPLETION_MESSAGE.into(),
+                        })
+                        .await;
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
+                }
+
                 // No tool call — this is the final response.
                 debug!(text = %text, "Chat: final text response");
-                if !text.is_empty() {
-                    let _ = tx.send(ChatEvent::Message { content: text }).await;
-                }
+                let _ = tx.send(ChatEvent::Message { content: text }).await;
                 break;
             }
         }
@@ -2326,6 +2856,144 @@ mod limits_marker_tests {
         assert!(out.contains("[TRUNCATED:"));
     }
 
+    /// The 2026-08-24 shape: `reason` fell back to raw prose, so every field the
+    /// marker normally keys on came back empty and the early return suppressed
+    /// the marker entirely. The fallback flag has to fire on its own.
+    #[test]
+    fn a_structured_output_failure_is_marked_even_with_every_field_empty() {
+        let fallback = serde_json::json!({
+            "answer": "The user has provided a series of inputs covering multiple domains.",
+            "inferences": [],
+            "confidence": 0.0,
+            "gaps": [],
+            "caveats": [],
+            "follow_up_questions": [],
+            "structured_output_failed": true
+        })
+        .to_string();
+
+        let out = prepare_tool_result("reason", &fallback, MAX_TOOL_RESULT_CHARS);
+        assert!(
+            out.starts_with("[REASON — THE TOOL DID NOT PRODUCE A STRUCTURED ANSWER."),
+            "the fallback marker must lead: {out}"
+        );
+        assert!(out.contains("placeholders"));
+        assert!(out.contains("The user has provided a series of inputs"));
+    }
+
+    /// The fallback marker must not be attached to a real graded answer just
+    /// because confidence happens to be low.
+    #[test]
+    fn a_graded_low_confidence_result_keeps_the_limits_marker() {
+        let graded = serde_json::json!({
+            "answer": "Partially supported.",
+            "gaps": ["no release date for the benchmark"],
+            "caveats": [],
+            "confidence": 0.3
+        })
+        .to_string();
+        let out = prepare_tool_result("reason", &graded, MAX_TOOL_RESULT_CHARS);
+        assert!(out.starts_with("[REASON — LIMITS"), "{out}");
+        assert!(out.contains("CONFIDENCE: 0.3 — low."));
+    }
+
+    /// Drive `forward_chat_events` over a scripted provider-loop output and
+    /// return what the client saw, plus the captured assistant text.
+    async fn drive_forwarder(events: Vec<ChatEvent>) -> (Vec<ChatEvent>, String) {
+        let (inner_tx, inner_rx) = mpsc::channel::<ChatEvent>(64);
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(64);
+        let (result_tx, mut result_rx) = mpsc::channel::<String>(1);
+
+        for e in events {
+            inner_tx.send(e).await.expect("scripted send");
+        }
+        drop(inner_tx);
+
+        forward_chat_events(
+            inner_rx,
+            tx,
+            result_tx,
+            Some("s-1".into()),
+            "create the task".into(),
+        )
+        .await;
+
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seen.push(e);
+        }
+        let final_text = result_rx.try_recv().unwrap_or_default();
+        (seen, final_text)
+    }
+
+    /// The 2026-08-24 failure: the loop returned having emitted nothing at all.
+    #[tokio::test]
+    async fn a_turn_with_no_message_and_no_error_reports_a_dropped_turn() {
+        let (seen, final_text) = drive_forwarder(vec![ChatEvent::Done]).await;
+
+        assert!(final_text.is_empty());
+        assert!(
+            matches!(seen.first(), Some(ChatEvent::Error { message }) if message.contains("no response")),
+            "a dropped turn must surface an error, got: {seen:?}"
+        );
+        assert!(
+            matches!(seen.last(), Some(ChatEvent::Done)),
+            "the error must precede done, or the client never renders it: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|e| matches!(e, ChatEvent::Done)).count(),
+            1,
+            "exactly one done"
+        );
+    }
+
+    /// A turn that already failed loudly keeps its own explanation.
+    #[tokio::test]
+    async fn a_turn_that_reported_an_error_is_not_double_reported() {
+        let (seen, _) = drive_forwarder(vec![
+            ChatEvent::Error {
+                message: "No LLM provider configured.".into(),
+            },
+            ChatEvent::Done,
+        ])
+        .await;
+
+        let errors: Vec<_> = seen
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors, vec!["No LLM provider configured."]);
+    }
+
+    /// A normal turn must be untouched by any of the above.
+    #[tokio::test]
+    async fn a_normal_turn_passes_through_unchanged() {
+        let (seen, final_text) = drive_forwarder(vec![
+            ChatEvent::Token {
+                content: "PO".into(),
+            },
+            ChatEvent::Message {
+                content: "PONG".into(),
+            },
+            ChatEvent::Done,
+        ])
+        .await;
+
+        assert_eq!(final_text, "PONG");
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "no spurious error: {seen:?}"
+        );
+        assert!(matches!(seen.last(), Some(ChatEvent::Done)));
+        assert_eq!(
+            seen.iter().filter(|e| matches!(e, ChatEvent::Done)).count(),
+            1
+        );
+    }
+
     #[test]
     fn a_clean_result_gets_no_marker() {
         let clean = serde_json::json!({
@@ -2494,5 +3162,564 @@ mod search_sources_tests {
     fn a_search_error_string_passes_through() {
         let text = "SerpApi failed: 429 Too Many Requests";
         assert_eq!(prepare_tool_result("search_web", text, 6000), text);
+    }
+}
+
+// ============================================================================
+// Empty completions
+// ============================================================================
+
+#[cfg(test)]
+mod empty_completion_tests {
+    use super::*;
+
+    /// Byte-for-byte the shape ollama.com streamed for the 2026-08-25 dropped
+    /// turn: an empty `content` delta, `finish_reason: "stop"`, and a usage
+    /// block counting 249 generated tokens that never appeared anywhere.
+    pub(super) const EMPTY_COMPLETION_SSE: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},",
+        "\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12100,\"completion_tokens\":249}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    pub(super) const ANSWERED_COMPLETION_SSE: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",",
+        "\"content\":\"Substrates and power.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    pub(super) fn sse(body: &str) -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200).set_body_raw(body.as_bytes(), "text/event-stream")
+    }
+
+    /// A `ChatService` with empty registries — these tests exercise the stream,
+    /// not tool dispatch.
+    pub(super) fn chat_service(fallback_ladder: Vec<LlmConfig>) -> Arc<ChatService> {
+        ChatService::with_context_builder(
+            Arc::new(RwLock::new(None)),
+            Arc::new(RwLock::new(ToolRegistry::new())),
+            Arc::new(RwLock::new(None)),
+            Arc::new(RwLock::new(None)),
+            None,
+            fallback_ladder,
+        )
+    }
+
+    pub(super) fn cloud_config(server: &wiremock::MockServer) -> LlmConfig {
+        LlmConfig {
+            provider: LlmProviderType::OllamaCloud,
+            base_url: Some(server.uri()),
+            timeout: Duration::from_secs(30),
+            ..Default::default()
+        }
+    }
+
+    pub(super) fn test_request() -> ChatRequest {
+        ChatRequest {
+            message: "map the secondary supply chains".into(),
+            history: vec![],
+            session_id: None,
+            tools: None,
+            context_profile: None,
+            synthesis_provider: None,
+            synthesis_model: None,
+        }
+    }
+
+    /// Run `run_ollama_cloud_loop` against a mock server and collect what the
+    /// client saw. Tools and handler are empty — the retry decision depends on
+    /// the stream alone.
+    async fn drive_cloud_loop(server: &wiremock::MockServer) -> Vec<ChatEvent> {
+        let svc = chat_service(vec![]);
+
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(64);
+        svc.run_ollama_cloud_loop(
+            cloud_config(server),
+            vec![],
+            None,
+            test_request(),
+            "sys".into(),
+            tx,
+        )
+        .await;
+
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seen.push(e);
+        }
+        seen
+    }
+
+    /// The provider burning a call on nothing must not end the turn: re-sending
+    /// the same request is what recovers it, ~75% of the time in practice.
+    #[tokio::test]
+    async fn an_empty_completion_is_retried_and_the_next_answer_is_delivered() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(EMPTY_COMPLETION_SSE))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(ANSWERED_COMPLETION_SSE))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let seen = drive_cloud_loop(&server).await;
+
+        let messages: Vec<&String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Message { content } => Some(content),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            messages,
+            vec!["Substrates and power."],
+            "the retry's answer must reach the client, got: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a recovered turn must not also report an error, got: {seen:?}"
+        );
+    }
+
+    /// When every attempt comes back empty the turn has to fail loudly, and say
+    /// that nothing was carried out — an empty completion is indistinguishable
+    /// from silent success from the user's seat.
+    #[tokio::test]
+    async fn an_always_empty_provider_reports_an_error_rather_than_going_quiet() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(EMPTY_COMPLETION_SSE))
+            // One initial call plus every retry, and no more: the retry budget
+            // must be bounded or a persistently empty provider spins.
+            .expect(1 + MAX_EMPTY_COMPLETION_RETRIES as u64)
+            .mount(&server)
+            .await;
+
+        let seen = drive_cloud_loop(&server).await;
+
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Message { .. })),
+            "nothing was generated, so nothing may be presented as an answer: {seen:?}"
+        );
+        let errors: Vec<&String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Error { message } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "expected exactly one error, got: {seen:?}");
+        assert_eq!(errors[0], EMPTY_COMPLETION_MESSAGE);
+        assert!(
+            seen.iter().any(|e| matches!(e, ChatEvent::Done)),
+            "the stream must still terminate: {seen:?}"
+        );
+    }
+}
+
+// ============================================================================
+// The fallback ladder
+// ============================================================================
+
+#[cfg(test)]
+mod fallback_ladder_tests {
+    use super::empty_completion_tests::{
+        ANSWERED_COMPLETION_SSE, EMPTY_COMPLETION_SSE, chat_service, cloud_config, sse,
+        test_request,
+    };
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Run one attempt against `server` and return what reached the sink plus
+    /// the verdict the ladder would act on.
+    async fn attempt(server: &MockServer) -> (Vec<ChatEvent>, AttemptOutcome) {
+        let svc = chat_service(vec![]);
+        let (sink, mut sink_rx) = mpsc::channel::<ChatEvent>(128);
+        let outcome = svc
+            .run_one_attempt(
+                cloud_config(server),
+                vec![],
+                None,
+                test_request(),
+                "sys".into(),
+                &sink,
+            )
+            .await;
+        drop(sink);
+        let mut seen = Vec::new();
+        while let Some(e) = sink_rx.recv().await {
+            seen.push(e);
+        }
+        (seen, outcome)
+    }
+
+    /// The whole ladder turns on this: a turn that produced nothing must report
+    /// `Unanswered`, and must not have leaked its error to the client — another
+    /// model is about to try, and a recovered turn narrated with the previous
+    /// failure is worse than one that just works.
+    #[tokio::test]
+    async fn a_turn_that_produced_nothing_is_unanswered_and_stays_silent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(EMPTY_COMPLETION_SSE))
+            .mount(&server)
+            .await;
+
+        let (seen, outcome) = attempt(&server).await;
+
+        match outcome {
+            AttemptOutcome::Unanswered { error } => {
+                assert_eq!(error.as_deref(), Some(EMPTY_COMPLETION_MESSAGE));
+            }
+            other => panic!("expected Unanswered, got {other:?}"),
+        }
+        assert!(
+            seen.is_empty(),
+            "nothing may reach the client on a turn the ladder will retry: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answered_turn_is_delivered_and_reaches_the_client() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(ANSWERED_COMPLETION_SSE))
+            .mount(&server)
+            .await;
+
+        let (seen, outcome) = attempt(&server).await;
+
+        assert!(
+            matches!(outcome, AttemptOutcome::Delivered),
+            "got {outcome:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|e| matches!(e, ChatEvent::Message { content } if content == "Substrates and power.")),
+            "the answer must reach the client: {seen:?}"
+        );
+    }
+
+    /// A model that streamed something owns the turn even when it fails after.
+    /// Handing it onward would re-execute its tool calls and stream a second
+    /// answer underneath the first, so the failure is reported in place.
+    #[tokio::test]
+    async fn a_turn_that_streamed_before_failing_keeps_the_turn_and_its_error() {
+        let server = MockServer::start().await;
+        // Round 1 emits a tool call, which streams ToolCall/ToolResult events.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",",
+                "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",",
+                "\"function\":{\"name\":\"search_notes\",\"arguments\":\"{}\"}}]},",
+                "\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8}}\n\n",
+                "data: [DONE]\n\n",
+            )))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Round 2 dies.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("upstream down"))
+            .mount(&server)
+            .await;
+
+        let (seen, outcome) = attempt(&server).await;
+
+        assert!(
+            matches!(outcome, AttemptOutcome::Delivered),
+            "a turn that streamed must not be handed to another model: {outcome:?}"
+        );
+        assert!(
+            seen.iter().any(|e| matches!(e, ChatEvent::ToolCall { .. })),
+            "the tool call must have reached the client: {seen:?}"
+        );
+        // Held back during the attempt, but not swallowed — it is this model's
+        // turn, so its explanation is the one the user needs.
+        assert!(
+            seen.iter()
+                .any(|e| matches!(e, ChatEvent::Error { message } if message.contains("503"))),
+            "the failure must still be reported: {seen:?}"
+        );
+    }
+
+    /// `forward_chat_events` re-emits exactly one `Done` for the whole turn. An
+    /// attempt that let its loop's `Done` through would close the client's
+    /// reader while the ladder was still working.
+    #[tokio::test]
+    async fn an_attempt_never_forwards_done() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(ANSWERED_COMPLETION_SSE))
+            .mount(&server)
+            .await;
+
+        let (seen, _) = attempt(&server).await;
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Done)),
+            "Done belongs to the turn, not to one attempt: {seen:?}"
+        );
+    }
+}
+
+// ============================================================================
+// The whole turn
+// ============================================================================
+
+#[cfg(test)]
+mod turn_tests {
+    use super::empty_completion_tests::{
+        ANSWERED_COMPLETION_SSE, EMPTY_COMPLETION_SSE, cloud_config, sse, test_request,
+    };
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    async fn always(server: &MockServer, body: &str) {
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(body))
+            .mount(server)
+            .await;
+    }
+
+    /// Drive the full `run()` path — the one the HTTP handler calls — and fail
+    /// rather than hang if it never terminates.
+    async fn run_turn(active: LlmConfig, ladder: Vec<LlmConfig>) -> Vec<ChatEvent> {
+        let svc = ChatService::with_context_builder(
+            Arc::new(RwLock::new(None)),
+            Arc::new(RwLock::new(ToolRegistry::new())),
+            Arc::new(RwLock::new(Some(active))),
+            Arc::new(RwLock::new(None)),
+            None,
+            ladder,
+        );
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
+        tokio::time::timeout(Duration::from_secs(20), svc.run(test_request(), tx))
+            .await
+            .expect("run() must terminate");
+
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            seen.push(e);
+        }
+        seen
+    }
+
+    /// Regression: `run()` holds the only remaining sender once the ladder
+    /// passes `inner_tx` by reference, so failing to drop it leaves the
+    /// forwarding task waiting on a channel that never closes and the turn
+    /// hangs forever. Caught in a live rebuild — a chat turn banked its user
+    /// message at 17:07:50 and produced nothing for ten minutes.
+    #[tokio::test]
+    async fn a_turn_terminates_and_emits_exactly_one_done() {
+        let server = MockServer::start().await;
+        always(&server, ANSWERED_COMPLETION_SSE).await;
+
+        let seen = run_turn(cloud_config(&server), vec![]).await;
+
+        assert_eq!(
+            seen.iter().filter(|e| matches!(e, ChatEvent::Done)).count(),
+            1,
+            "a turn ends exactly once: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|e| matches!(e, ChatEvent::Message { content } if content == "Substrates and power.")),
+            "the answer must reach the client: {seen:?}"
+        );
+    }
+
+    /// The ladder, end to end: the active model never answers, the next rung
+    /// does, and the user gets the answer rather than an error.
+    #[tokio::test]
+    async fn a_dead_primary_falls_through_to_the_next_rung() {
+        let dead = MockServer::start().await;
+        always(&dead, EMPTY_COMPLETION_SSE).await;
+        let alive = MockServer::start().await;
+        always(&alive, ANSWERED_COMPLETION_SSE).await;
+
+        let seen = run_turn(cloud_config(&dead), vec![cloud_config(&alive)]).await;
+
+        assert!(
+            seen.iter()
+                .any(|e| matches!(e, ChatEvent::Message { content } if content == "Substrates and power.")),
+            "the fallback's answer must reach the client: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a turn the ladder recovered must not also report an error: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(
+                |e| matches!(e, ChatEvent::Thinking { content } if content.contains("retrying on"))
+            ),
+            "a silent model switch is unattributable — it must be announced: {seen:?}"
+        );
+    }
+
+    /// Every rung empty: one error, and it is the specific one.
+    #[tokio::test]
+    async fn an_exhausted_ladder_reports_the_failure_once() {
+        let a = MockServer::start().await;
+        always(&a, EMPTY_COMPLETION_SSE).await;
+        let b = MockServer::start().await;
+        always(&b, EMPTY_COMPLETION_SSE).await;
+
+        let seen = run_turn(cloud_config(&a), vec![cloud_config(&b)]).await;
+
+        let errors: Vec<&String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Error { message } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "expected one error, got: {seen:?}");
+        assert_eq!(errors[0], EMPTY_COMPLETION_MESSAGE);
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Message { .. })),
+            "nothing was generated, so nothing may be presented as an answer: {seen:?}"
+        );
+    }
+}
+
+// ============================================================================
+// Running out of tool calls
+// ============================================================================
+
+#[cfg(test)]
+mod tool_budget_tests {
+    use super::empty_completion_tests::{cloud_config, sse, test_request};
+    use super::*;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer};
+
+    /// One round that asks for a tool call — the model can emit this forever.
+    const TOOL_CALL_SSE: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",",
+        "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",",
+        "\"function\":{\"name\":\"search_notes\",\"arguments\":\"{}\"}}]},",
+        "\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    const WRAP_UP_SSE: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",",
+        "\"content\":\"Here is what I found.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    async fn drive(server: &MockServer) -> Vec<ChatEvent> {
+        let svc = super::empty_completion_tests::chat_service(vec![]);
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(256);
+        svc.run_ollama_cloud_loop(
+            cloud_config(server),
+            vec![],
+            None,
+            test_request(),
+            "sys".into(),
+            tx,
+        )
+        .await;
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seen.push(e);
+        }
+        seen
+    }
+
+    /// The 2026-08-25 regression: `gpt-oss:120b-cloud` spent all ten rounds
+    /// re-searching and never wrote an answer, and the turn ended silently —
+    /// 4 of 8 turns. The wrap-up round is matched on the nudge text, so this
+    /// also asserts the nudge is actually sent rather than merely intended.
+    #[tokio::test]
+    async fn a_model_that_only_calls_tools_is_asked_to_answer_without_them() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains(
+                "You have used all available tool calls",
+            ))
+            .respond_with(sse(WRAP_UP_SSE))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(TOOL_CALL_SSE))
+            .expect(MAX_TOOL_ITERATIONS as u64)
+            .mount(&server)
+            .await;
+
+        let seen = drive(&server).await;
+
+        assert!(
+            seen.iter()
+                .any(|e| matches!(e, ChatEvent::Message { content } if content == "Here is what I found.")),
+            "the wrap-up round's answer must reach the client: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a turn that recovered in the wrap-up round is not a failure: {seen:?}"
+        );
+    }
+
+    /// And when even that produces nothing, say what happened — the tool calls
+    /// ran, so the user has to be told work may have occurred.
+    #[tokio::test]
+    async fn a_turn_that_never_answers_says_the_tool_budget_ran_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(TOOL_CALL_SSE))
+            .mount(&server)
+            .await;
+
+        let seen = drive(&server).await;
+
+        let errors: Vec<&String> = seen
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Error { message } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "expected one error, got: {seen:?}");
+        assert_eq!(errors[0], NO_ANSWER_AFTER_TOOLS_MESSAGE);
+        // The generic dropped-turn line would say "reported no error", which is
+        // both wrong and useless once this fires.
+        assert!(!errors[0].contains("reported no error"));
     }
 }

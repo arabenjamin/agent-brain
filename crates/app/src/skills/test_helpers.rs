@@ -265,6 +265,7 @@ impl KnowledgeStore for MockKnowledgeStore {
             gaps: vec![],
             inference_note_id: None,
             critic_counter_arguments: vec![],
+            structured_output_failed: false,
         })
     }
 

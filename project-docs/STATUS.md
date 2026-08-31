@@ -135,6 +135,10 @@
 
 ## Recent Changes (auto)
 
+### 2026-08-24
+
+- fix: make silent signals loud — LLM fallback, tool-result markers, SSE push (`0005bc8`)
+
 ### 2026-08-18
 
 - fix: stop three autonomous loops that ran clean and produced nothing (`0d26801`)
@@ -163,7 +167,6 @@
 
 - fix: robust caption download + gap-task spawning for Media Learning (`23b16d1`)
 - chore: install yt-dlp in the agent-brain image for Media Learning (`26da1b4`)
-- feat: media learning — watch & summarize videos to learn and stay current (`65fd8cf`)
 
 ## Known Issues / Backlog
 

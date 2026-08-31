@@ -558,6 +558,16 @@ impl SchedulerSkill {
                                                   .map(|d| &d[..10.min(d.len())]),
                             "next_run":       &t.next_run_at[..10.min(t.next_run_at.len())],
                         });
+                        // Emitted only when set, and only for a disabled task,
+                        // so an ordinary listing is byte-identical. "Disabled"
+                        // on its own invites the reader to guess why — and a
+                        // deliberate pause read as a breakage gets "fixed" by
+                        // re-enabling exactly the thing someone turned off.
+                        if !t.enabled
+                            && let Some(ref why) = t.paused_reason
+                        {
+                            row["paused_reason"] = json!(why);
+                        }
                         if verbose {
                             row["id"] = json!(t.id);
                             row["description"] = json!(t.description);
@@ -981,6 +991,27 @@ fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<String> {
             ));
         }
 
+        // Routing by omission. `use_local` in queue.rs is
+        // `provider_hint == Some("ollama")`, so leaving the field out is not
+        // "default to local" — it falls through to the active config, which is
+        // a cloud model. A chat-authored schedule almost never sets the field,
+        // so its every step lands on cloud: six near-duplicate supply-chain
+        // schedules created on 2026-08-25 put four searches and a store_note
+        // each on a cloud model that had no reason to be involved, and the
+        // clobbered hardware tripwire did the same for two weeks.
+        //
+        // Only *omission* is flagged. An explicit `ollama-cloud` is a decision
+        // someone made and is left alone — the failure being caught is the
+        // author who never knew the field existed.
+        if step.provider_hint.is_none() {
+            warnings.push(format!(
+                "step {n} (`{tool}`): no `provider_hint`, so it routes to the active \
+                 model (a cloud model) rather than local. Set `provider_hint: \"ollama\"` \
+                 unless this step genuinely needs the cloud, in which case set it \
+                 explicitly to `\"ollama-cloud\"`."
+            ));
+        }
+
         if PERSISTING_TOOLS.contains(&tool) && i > 0 && !references_prev(args) {
             warnings.push(format!(
                 "step {n} (`{tool}`): arguments contain no `{{{{_prev}}}}`, so it will \
@@ -1137,7 +1168,20 @@ mod tests {
         assert_eq!(humanize_interval(-1), "invalid");
     }
 
+    /// A step pinned local, which is what a schedule step should almost always
+    /// be. Set explicitly so these tests exercise the rule they are named for
+    /// rather than all tripping the missing-`provider_hint` warning; see
+    /// [`step_without_hint`] for that one.
     fn step(tool: &str, args: Value) -> ChainStep {
+        serde_json::from_value(
+            json!({ "tool_name": tool, "arguments": args, "provider_hint": "ollama" }),
+        )
+        .unwrap()
+    }
+
+    /// A step as a chat session typically authors one — no `provider_hint` at
+    /// all, which routes to the active cloud model rather than to local.
+    fn step_without_hint(tool: &str, args: Value) -> ChainStep {
         serde_json::from_value(json!({ "tool_name": tool, "arguments": args })).unwrap()
     }
 
@@ -1318,5 +1362,61 @@ mod tests {
                 "`{tool}` ending should not be faulted: {w:?}"
             );
         }
+    }
+
+    /// The definition that overwrote `schedules/hardware-tripwire.yaml` from a
+    /// chat session on 2026-08-25, reduced to its routing. Not one step named a
+    /// `provider_hint`, so all six ran on the cloud model — including two
+    /// `search_web` calls and a `store_note`, none of which needs an LLM of any
+    /// size. The same omission put six near-duplicate supply-chain schedules on
+    /// cloud the same afternoon. Nothing rejected any of it.
+    #[test]
+    fn lint_flags_every_step_that_routes_to_cloud_by_omission() {
+        let steps = vec![
+            step_without_hint("search_web", json!({ "question": "primary signals" })),
+            step_without_hint("reason", json!({ "question": "q", "context": "{{_prev}}" })),
+            step_without_hint(
+                "store_note",
+                json!({ "content": "{{_prev}}", "source_context": "hardware_tripwire" }),
+            ),
+        ];
+
+        let w = lint_chain_steps(&steps, &[]);
+        for n in 1..=3 {
+            assert!(
+                w.iter()
+                    .any(|s| s.starts_with(&format!("step {n} ")) && s.contains("provider_hint")),
+                "step {n} routing-by-omission not caught: {w:?}"
+            );
+        }
+    }
+
+    /// Only omission is a defect. A step that names the cloud on purpose — the
+    /// one synthesis step these watch schedules are built around — must pass,
+    /// or the warning trains authors to delete the very field it asks for.
+    #[test]
+    fn lint_does_not_fault_a_deliberate_cloud_step() {
+        let deliberate: ChainStep = serde_json::from_value(json!({
+            "tool_name": "reason",
+            "arguments": { "question": "synthesise", "context": "{{_prev}}" },
+            "provider_hint": "ollama-cloud",
+            "required_capabilities": ["reasoning"],
+        }))
+        .unwrap();
+
+        let steps = vec![
+            step("search_web", json!({ "query": "signals" })),
+            deliberate,
+            step(
+                "store_note",
+                json!({ "content": "{{_prev}}", "source_context": "hardware_tripwire" }),
+            ),
+        ];
+
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            !w.iter().any(|s| s.contains("provider_hint")),
+            "an explicit cloud step must not be faulted: {w:?}"
+        );
     }
 }

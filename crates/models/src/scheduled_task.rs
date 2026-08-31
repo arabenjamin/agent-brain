@@ -36,4 +36,16 @@ pub struct ScheduledTask {
     /// otherwise backfilled to `"runtime"`).
     #[serde(default)]
     pub managed_by: Option<String>,
+    /// Why this task is disabled, when it was disabled deliberately rather than
+    /// never enabled. Free text, set alongside `enabled = false`.
+    ///
+    /// A disabled schedule and a *paused* one look identical from the outside,
+    /// and the difference is the whole question a human asks: is this off
+    /// because it is broken, because it was superseded, or because someone
+    /// turned it off on purpose and means to turn it back on? Without a reason
+    /// the honest answer months later is a guess, and the observed failure mode
+    /// in this codebase is that a guess gets reported as a fact. Carried in the
+    /// `list` payload for the same reason.
+    #[serde(default)]
+    pub paused_reason: Option<String>,
 }

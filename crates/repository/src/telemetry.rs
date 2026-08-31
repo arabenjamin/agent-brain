@@ -74,8 +74,11 @@ impl TelemetryClient {
                 temperature    DOUBLE,
                 max_tokens     INTEGER,
                 timeout_secs   INTEGER,
+                selection_rank INTEGER,
                 loaded_at      TIMESTAMPTZ DEFAULT current_timestamp
             );
+
+            ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS selection_rank INTEGER;
 
             CREATE TABLE IF NOT EXISTS model_usage (
                 id             TEXT PRIMARY KEY,
@@ -221,6 +224,7 @@ impl TelemetryClient {
         temperature: Option<f64>,
         max_tokens: Option<i64>,
         timeout_secs: Option<i64>,
+        selection_rank: Option<i64>,
     ) -> Result<()> {
         let conn = self
             .conn
@@ -229,8 +233,9 @@ impl TelemetryClient {
         conn.execute(
             "INSERT OR REPLACE INTO model_registry
              (name, provider, model, context_window, cost_input, cost_output,
-              capabilities, system_prompt, temperature, max_tokens, timeout_secs, loaded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+              capabilities, system_prompt, temperature, max_tokens, timeout_secs,
+              selection_rank, loaded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
             params![
                 name,
                 provider,
@@ -242,7 +247,8 @@ impl TelemetryClient {
                 system_prompt,
                 temperature,
                 max_tokens,
-                timeout_secs
+                timeout_secs,
+                selection_rank
             ],
         )?;
         Ok(())
@@ -309,7 +315,24 @@ impl TelemetryClient {
 
     /// Select models that satisfy capability and cost constraints.
     ///
-    /// Returns rows ordered by total cost ascending, then context_window descending.
+    /// Ordering is **cost ascending, then `selection_rank` ascending, then
+    /// `context_window` descending**.
+    ///
+    /// The middle term is the one that matters. Every local and Ollama-Cloud
+    /// model in the catalog costs `0.0`, so cost decides nothing among them and
+    /// the tiebreak *is* the selection. It used to be `context_window DESC`
+    /// alone — a proxy for nothing anyone cares about, which handed every
+    /// capability-routed step to whichever model declared the biggest window.
+    /// On 2026-08-25 that was `minimax-m3:cloud` (524288), which displaced
+    /// `gemma4:31b-cloud` on every `reasoning` step and ran them at 20.2s
+    /// against the previous 5.6s — measured in the usage ledger, not predicted.
+    ///
+    /// `selection_rank` makes the choice explicit and reviewable in
+    /// `models.yaml` instead of emergent from an unrelated number. Lower wins.
+    /// Unranked rows sort behind every ranked one (`COALESCE(..., 1000)`) and
+    /// keep the old widest-window order among themselves, so a catalog entry
+    /// that omits the field degrades to the previous behaviour rather than
+    /// jumping the queue.
     pub fn select_models(
         &self,
         required_capabilities: &[String],
@@ -326,15 +349,17 @@ impl TelemetryClient {
         let provider_filter = provider_hint.unwrap_or("%");
 
         let sql = if provider_hint.is_some() {
-            "SELECT name, provider, model, context_window, cost_input, cost_output, capabilities
+            "SELECT name, provider, model, context_window, cost_input, cost_output,
+                    capabilities, COALESCE(selection_rank, 1000) AS rank
              FROM model_registry
              WHERE provider = ? AND (cost_input + cost_output) <= ?
-             ORDER BY (cost_input + cost_output) ASC, context_window DESC"
+             ORDER BY (cost_input + cost_output) ASC, rank ASC, context_window DESC"
         } else {
-            "SELECT name, provider, model, context_window, cost_input, cost_output, capabilities
+            "SELECT name, provider, model, context_window, cost_input, cost_output,
+                    capabilities, COALESCE(selection_rank, 1000) AS rank
              FROM model_registry
              WHERE (cost_input + cost_output) <= ?
-             ORDER BY (cost_input + cost_output) ASC, context_window DESC"
+             ORDER BY (cost_input + cost_output) ASC, rank ASC, context_window DESC"
         };
 
         let mut stmt = conn.prepare(sql)?;
@@ -348,6 +373,7 @@ impl TelemetryClient {
                     row.get::<_, f64>(4)?,
                     row.get::<_, f64>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -361,13 +387,14 @@ impl TelemetryClient {
                     row.get::<_, f64>(4)?,
                     row.get::<_, f64>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
         };
 
         let mut out = Vec::new();
-        for (name, provider, model, ctx, cost_in, cost_out, caps_str) in rows {
+        for (name, provider, model, ctx, cost_in, cost_out, caps_str, rank) in rows {
             // Parse capabilities JSON array and filter.
             let caps: Vec<String> = serde_json::from_str(&caps_str).unwrap_or_default();
             if required_capabilities.iter().all(|req| caps.contains(req)) {
@@ -379,6 +406,7 @@ impl TelemetryClient {
                     "cost_per_1k_input":  cost_in,
                     "cost_per_1k_output": cost_out,
                     "capabilities":       caps,
+                    "selection_rank":     rank,
                 }));
             }
         }
@@ -951,5 +979,115 @@ impl TelemetryClient {
             .collect();
 
         Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod selection_order_tests {
+    use super::*;
+
+    /// Register a model with only the fields the ordering reads.
+    fn add(db: &TelemetryClient, name: &str, cost: f64, rank: Option<i64>, ctx: i64, caps: &str) {
+        db.upsert_model(
+            name,
+            "ollama-cloud",
+            name,
+            ctx,
+            cost,
+            0.0,
+            caps,
+            None,
+            None,
+            None,
+            None,
+            rank,
+        )
+        .unwrap();
+    }
+
+    fn client() -> TelemetryClient {
+        TelemetryClient::new(":memory:").unwrap()
+    }
+
+    fn winner(db: &TelemetryClient, cap: &str) -> String {
+        db.select_models(&[cap.to_string()], None, None).unwrap()[0]["model"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn rank_beats_context_window_among_cost_tied_models() {
+        // The regression this whole field exists for: a new $0 entry with a
+        // huge context window must NOT capture the capability just by being
+        // wide. `big` would win under the old `cost ASC, context_window DESC`.
+        let db = client();
+        add(&db, "preferred", 0.0, Some(10), 131_072, r#"["reasoning"]"#);
+        add(&db, "big", 0.0, Some(50), 524_288, r#"["reasoning"]"#);
+        assert_eq!(winner(&db, "reasoning"), "preferred");
+    }
+
+    #[test]
+    fn cost_still_outranks_rank() {
+        // Rank breaks ties; it must never let an expensive model jump a free
+        // one, or a tier-2 deployment starts paying for steps it need not.
+        let db = client();
+        add(
+            &db,
+            "free-but-last",
+            0.0,
+            Some(900),
+            8_192,
+            r#"["reasoning"]"#,
+        );
+        add(
+            &db,
+            "paid-but-first",
+            0.03,
+            Some(1),
+            1_000_000,
+            r#"["reasoning"]"#,
+        );
+        assert_eq!(winner(&db, "reasoning"), "free-but-last");
+    }
+
+    #[test]
+    fn unranked_models_sort_behind_ranked_ones() {
+        // Omitting selection_rank must be safe: an entry that does not opt in
+        // cannot displace one that was deliberately ranked.
+        let db = client();
+        add(&db, "ranked", 0.0, Some(70), 4_096, r#"["reasoning"]"#);
+        add(&db, "unranked", 0.0, None, 999_999, r#"["reasoning"]"#);
+        assert_eq!(winner(&db, "reasoning"), "ranked");
+    }
+
+    #[test]
+    fn unranked_models_keep_widest_window_order_among_themselves() {
+        // Legacy behaviour is preserved where nothing has opted in, so adding
+        // the column does not silently reorder an unranked catalog.
+        let db = client();
+        add(&db, "narrow", 0.0, None, 4_096, r#"["reasoning"]"#);
+        add(&db, "wide", 0.0, None, 262_144, r#"["reasoning"]"#);
+        assert_eq!(winner(&db, "reasoning"), "wide");
+    }
+
+    #[test]
+    fn rank_is_global_so_a_capability_filter_can_change_the_winner() {
+        // Rank is one number across all capabilities; the capability filter is
+        // what makes a lower-ranked model win. This is the `vision` case in
+        // models.yaml — the top-ranked reasoning models have no vision, so the
+        // vision winner is a model ranked below them.
+        let db = client();
+        add(&db, "text-only", 0.0, Some(10), 131_072, r#"["reasoning"]"#);
+        add(
+            &db,
+            "sees",
+            0.0,
+            Some(30),
+            262_144,
+            r#"["reasoning","vision"]"#,
+        );
+        assert_eq!(winner(&db, "reasoning"), "text-only");
+        assert_eq!(winner(&db, "vision"), "sees");
     }
 }

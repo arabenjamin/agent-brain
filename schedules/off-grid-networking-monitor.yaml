@@ -150,10 +150,17 @@ steps:
 
         Apply these gates before listing anything here:
 
-        1. RECENCY. Today is {{date}}. Anything dated more than 12 months
+        1. NEWER THAN THE PRIOR REPORT. This section is a DELTA. An item
+           belongs here only if its date is AFTER the date of the PRIOR
+           REPORT in the CONTEXT. Anything at or before that date was already
+           known — it goes under REFERENCE, however important it is. If that
+           leaves MOVERS empty, write "No items meet the mover criteria" and
+           say so plainly; an empty MOVERS is a valid and useful result, and
+           is much better than restating last cycle's list as if it were new.
+        2. RECENCY. Today is {{date}}. Anything dated more than 12 months
            before today is not a mover; it is established context. Put it
            under REFERENCE instead.
-        2. DATE OR DEMOTE. If you cannot establish a date from the CONTEXT, it
+        3. DATE OR DEMOTE. If you cannot establish a date from the CONTEXT, it
            does not go here — put it under WATCH and say the date is unknown.
            Do not infer a date from the fact that a source mentioned it
            recently; reposts of old releases are common in this space.

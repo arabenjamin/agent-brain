@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::repository::TelemetryClient;
-use crate::services::queue::{SELECTED_LLM, USE_LOCAL_LLM};
+use crate::services::queue::{CURRENT_TOOL, SELECTED_LLM, USE_LOCAL_LLM};
 use crate::services::traits::LlmProvider;
 use crate::services::{LlmClient, LlmConfig};
 
@@ -62,6 +62,11 @@ impl LlmProvider for SharedLlm {
         // local pin (background jobs) > active config.
         let selected = SELECTED_LLM.try_with(|v| v.clone()).unwrap_or(None);
         let use_local = USE_LOCAL_LLM.try_with(|&v| v).unwrap_or(false);
+        // Set by the queue coordinator to the job's tool name. `None` outside a
+        // job (a direct MCP call, a startup protocol step) is honest — those
+        // rows genuinely have no owning tool.
+        let tool = CURRENT_TOOL.try_with(|v| v.clone()).unwrap_or(None);
+        let tool = tool.as_deref();
         let (llm, is_local_route) = if let Some(sel) = selected {
             debug!(model = %sel.model, "SharedLlm: routing generate() to capability-selected model");
             let local = matches!(sel.provider, crate::services::LlmProviderType::Ollama);
@@ -108,7 +113,7 @@ impl LlmProvider for SharedLlm {
             if let Some(ref tc) = self.telemetry {
                 let _ = tc.record_model_usage(
                     &model_name,
-                    None,
+                    tool,
                     false,
                     Some(duration_ms),
                     None,
@@ -131,7 +136,7 @@ impl LlmProvider for SharedLlm {
                     let (tin, tout) = response_tokens(&local_result);
                     let _ = tc.record_model_usage(
                         &local_model,
-                        None,
+                        tool,
                         success,
                         Some(local_duration_ms),
                         tin,
@@ -148,7 +153,7 @@ impl LlmProvider for SharedLlm {
             let (tin, tout) = response_tokens(&result);
             let _ = tc.record_model_usage(
                 &model_name,
-                None,
+                tool,
                 success,
                 Some(duration_ms),
                 tin,

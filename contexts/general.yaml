@@ -254,7 +254,7 @@ system_prompt: |
   The user's current active todos are pre-loaded below. When reasoning or
   planning, consider whether your response addresses or relates to any of them.
   If a todo is something you can help with, offer to do so via write_proposal.
-token_budget: 8000
+token_budget: 10000
 pre_load_query: |-
   MATCH (t:Todo) WHERE t.status IN ['pending','in_progress']
   RETURN '## Active Todo: ' + t.title +
@@ -263,5 +263,5 @@ pre_load_query: |-
     AS content
   ORDER BY t.priority ASC, t.due_at ASC
   LIMIT 15
-model_preference: null
-provider_hint: null
+model_preference: gpt-oss:120b-cloud
+provider_hint: ollama-cloud

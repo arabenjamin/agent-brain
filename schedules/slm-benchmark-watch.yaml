@@ -125,17 +125,23 @@ steps:
         prior run promoted a model released in September 2023 as a new mover,
         quoting its original launch comparison as if it were current:
 
-        1. RECENCY. Today is {{date}}. A model whose release or publication
+        1. NEWER THAN THE PRIOR REPORT. This section is a DELTA. A model
+           belongs here only if its date is AFTER the date of the PRIOR LIST
+           in the CONTEXT. Anything at or before that date was already on the
+           list — it is not a mover, however strong its numbers. If that
+           leaves MOVERS empty, say so plainly; an empty MOVERS is a valid
+           result and is far better than re-promoting last cycle's entries.
+        2. RECENCY. Today is {{date}}. A model whose release or publication
            date is more than 12 months before today is NOT a mover, however
            good its numbers. It has already been absorbed by the field.
-        2. DATE OR DEMOTE. If you cannot establish a release date from the
+        3. DATE OR DEMOTE. If you cannot establish a release date from the
            CONTEXT, it does not go here — put it under WATCH and say the date
            is unknown. Never infer a date from the fact that a source
            mentioned it recently; reposts of old releases are common.
-        3. COMPARISONS AGE. A claim like "beats the top open-source model by
+        4. COMPARISONS AGE. A claim like "beats the top open-source model by
            N%" is relative to the date it was written. Report it as
            "+N% vs. the SOTA of <date>", never as a current standing.
-        4. EVIDENCE. A model with no benchmark evidence in the CONTEXT belongs
+        5. EVIDENCE. A model with no benchmark evidence in the CONTEXT belongs
            under WATCH, not here.
 
         ## DELTA vs PRIOR LIST

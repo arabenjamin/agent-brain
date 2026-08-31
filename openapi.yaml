@@ -11,6 +11,632 @@ servers:
     description: Local development
 
 paths:
+  /todos:
+    get:
+      summary: List TODO items
+      operationId: listTodos
+      responses:
+        '200':
+          description: List of TODOs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      summary: Create a TODO item
+      operationId: createTodo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: TODO created
+          content:
+            application/json:
+              schema:
+                type: object
+  /todos/{id}:
+    get:
+      summary: Get a TODO by ID
+      operationId: getTodo
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TODO item
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      summary: Update a TODO
+      operationId: updateTodo
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated TODO
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      summary: Delete a TODO
+      operationId: deleteTodo
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /scheduled-tasks:
+    get:
+      summary: List scheduled tasks
+      operationId: listScheduledTasks
+      responses:
+        '200':
+          description: List of scheduled tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      summary: Create a scheduled task
+      operationId: createScheduledTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Scheduled task created
+          content:
+            application/json:
+              schema:
+                type: object
+  /scheduled-tasks/{id}:
+    get:
+      summary: Get scheduled task by ID
+      operationId: getScheduledTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Scheduled task
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      summary: Update scheduled task
+      operationId: updateScheduledTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated scheduled task
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      summary: Delete scheduled task
+      operationId: deleteScheduledTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /scheduler-config:
+    get:
+      summary: Get scheduler configuration
+      operationId: getSchedulerConfig
+      responses:
+        '200':
+          description: Scheduler config
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      summary: Update scheduler configuration
+      operationId: putSchedulerConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/graph:
+    get:
+      summary: Get graph overview
+      operationId: getGraph
+      responses:
+        '200':
+          description: Graph data
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/health:
+    get:
+      summary: API health
+      operationId: apiHealth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/scheduler/status:
+    get:
+      summary: Scheduler status
+      operationId: schedulerStatus
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/queue/status:
+    get:
+      summary: Queue status
+      operationId: queueStatus
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/queue/drain:
+    post:
+      summary: Drain the job queue
+      operationId: queueDrain
+      responses:
+        '200':
+          description: Drained
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/scheduler/chains:
+    get:
+      summary: List scheduler chains
+      operationId: listSchedulerChains
+      responses:
+        '200':
+          description: Chains
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/contexts:
+    get:
+      summary: List context profiles
+      operationId: listContexts
+      responses:
+        '200':
+          description: Context list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      summary: Upsert context profile
+      operationId: upsertContext
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Upserted
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/contexts/{name}:
+    get:
+      summary: Get context profile
+      operationId: getContext
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Context
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      summary: Update context profile
+      operationId: putContext
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      summary: Delete context profile
+      operationId: deleteContext
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /api/http-contexts:
+    get:
+      summary: List HTTP contexts
+      operationId: listHttpContexts
+      responses:
+        '200':
+          description: List
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/models:
+    get:
+      summary: List model catalog
+      operationId: listModels
+      responses:
+        '200':
+          description: Models
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/models/usage:
+    get:
+      summary: Model usage statistics
+      operationId: modelUsage
+      responses:
+        '200':
+          description: Usage
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/sessions:
+    get:
+      summary: List sessions
+      operationId: listSessions
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/sessions/{id}/entries:
+    get:
+      summary: Get session entries
+      operationId: getSessionEntries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/sessions/{id}/archive:
+    post:
+      summary: Archive session
+      operationId: archiveSession
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Archived
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/jobs:
+    get:
+      summary: List jobs
+      operationId: listJobs
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/tasks:
+    get:
+      summary: List tasks
+      operationId: listTasks
+      responses:
+        '200':
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/notes:
+    get:
+      summary: List notes
+      operationId: listNotes
+      responses:
+        '200':
+          description: Notes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      summary: Create note
+      operationId: createNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/notes/{id}:
+    get:
+      summary: Get note by ID
+      operationId: getNote
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Note
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      summary: Update note
+      operationId: updateNote
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated note
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      summary: Delete note
+      operationId: deleteNote
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+  /api/notes/{id}/related:
+    get:
+      summary: Get related notes
+      operationId: getRelatedNotes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Related notes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/tools/dynamic:
+    get:
+      summary: List dynamic tools
+      operationId: listDynamicTools
+      responses:
+        '200':
+          description: Tools
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/logs:
+    get:
+      summary: Get logs
+      operationId: getLogs
+      responses:
+        '200':
+          description: Logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/skills:
+    get:
+      summary: List skills
+      operationId: listSkills
+      responses:
+        '200':
+          description: Skills
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/notifications:
+    get:
+      summary: List notifications
+      operationId: listNotifications
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /api/notifications/read-all:
+    post:
+      summary: Mark all notifications read
+      operationId: markAllNotificationsRead
+      responses:
+        '200':
+          description: Marked
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/notifications/{id}/read:
+    post:
+      summary: Mark notification read
+      operationId: markNotificationRead
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Marked
+          content:
+            application/json:
+              schema:
+                type: object
   /health:
     get:
       summary: Health check

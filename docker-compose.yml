@@ -40,7 +40,25 @@ services:
       - LLM_PROVIDER=ollama-cloud
       - OLLAMA_URL=https://ollama.com
       - OLLAMA_LOCAL_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=gemma4:31b-cloud
+      # The brain's default model — what a call with no provider_hint and no
+      # required_capabilities lands on. Moved off gemma4:31b-cloud 2026-08-31.
+      #
+      # gemma4:31b-cloud is the one Ollama Cloud model measured to return EMPTY
+      # completions — tokens counted, nothing in the stream — at ~25% on a
+      # tool-calling prompt (see CLAUDE.md, "An empty completion is retried").
+      # The chat loops retry that; a background job does not, so an empty
+      # completion there is persisted as the step's output. It held this slot
+      # for its `vision` capability, but nothing in chains/ or schedules/
+      # declares `required_capabilities: ["vision"]` — grep before changing
+      # this back. It stays in models.yaml as the free tier's only vision
+      # model, so a future vision step still resolves to it; it is just no
+      # longer what unhinted calls fall through to.
+      - OLLAMA_MODEL=gpt-oss:120b-cloud
+      # Human-facing /chat has its own config handle. Setting any CHAT_LLM_*
+      # var means `use_model` from a chat session retargets the BRAIN only —
+      # unset this to put both back on one model. Same model as the brain
+      # today, but keep the handle: it is what lets the two diverge again.
+      - CHAT_LLM_MODEL=gpt-oss:120b-cloud
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are

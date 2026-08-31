@@ -36,6 +36,13 @@ pub struct ReasonOutput {
     pub inference_note_id: Option<String>,
     /// Counter-arguments from the adversarial critic pass (empty when `run_critic=false`).
     pub critic_counter_arguments: Vec<String>,
+    /// True when the model never produced parseable JSON and `answer` is raw prose.
+    ///
+    /// Everything else on this struct is then a **placeholder, not a measurement**:
+    /// `confidence` was not reported, and empty `caveats`/`gaps` mean "the model
+    /// never answered the question" — not "the model declared no limits". Consumers
+    /// must not read those fields as the model's own assessment when this is set.
+    pub structured_output_failed: bool,
 }
 
 /// Service for managing general knowledge (RAG).
@@ -434,7 +441,18 @@ impl KnowledgeService {
 
     /// Apply freshness boost to a ranked list.
     /// Boosts notes with higher access counts and more recent access.
-    /// Final score = 0.7 * rrf_score + 0.3 * freshness_score (capped at 1.0).
+    /// Final score = `w * rrf_score + (1 - w) * freshness_score` (capped at 1.0),
+    /// where the recency half of `freshness_score` decays as `exp(-days / tau)`.
+    ///
+    /// `w` and `tau` were hardcoded at `0.7` and `30` — intuition constants that
+    /// nothing had ever measured. They are now read from the environment so the
+    /// retrieval eval harness can sweep them without a rebuild; **unset leaves
+    /// the original values, so production behaviour is byte-identical**:
+    /// - `RETRIEVAL_RRF_WEIGHT` (default `0.7`, clamped to `[0,1]`) — `1.0`
+    ///   disables the freshness boost entirely (pure RRF).
+    /// - `RETRIEVAL_RECENCY_TAU_DAYS` (default `30`, must be `> 0`) — larger
+    ///   values decay old notes more gently, so an old-but-relevant note is less
+    ///   likely to be buried (the documented self-assessment miss).
     async fn apply_freshness_boost(
         &self,
         hits: Vec<(String, String, f64)>,
@@ -442,6 +460,17 @@ impl KnowledgeService {
         if hits.is_empty() {
             return Vec::new();
         }
+
+        let rrf_weight = std::env::var("RETRIEVAL_RRF_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|w| (0.0..=1.0).contains(w))
+            .unwrap_or(0.7);
+        let recency_tau = std::env::var("RETRIEVAL_RECENCY_TAU_DAYS")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|t| *t > 0.0)
+            .unwrap_or(30.0);
 
         let ids: Vec<String> = hits.iter().map(|(id, _, _)| id.clone()).collect();
         let cypher = r#"
@@ -480,9 +509,10 @@ impl KnowledgeService {
             .map(|(id, content, rrf)| {
                 let (ac, days) = freshness.get(&id).copied().unwrap_or((0, 30));
                 let access_score = ((ac as f64 + 1.0).ln() / (10.0_f64).ln()).min(1.0);
-                let recency_score = (-days as f64 / 30.0).exp();
+                let recency_score = (-days as f64 / recency_tau).exp();
                 let freshness_score = (access_score * 0.5 + recency_score * 0.5).min(1.0);
-                let final_score = (rrf / max_rrf) * 0.7 + freshness_score * 0.3;
+                let final_score =
+                    (rrf / max_rrf) * rrf_weight + freshness_score * (1.0 - rrf_weight);
                 (id, content, final_score)
             })
             .collect();
@@ -866,7 +896,7 @@ impl KnowledgeService {
         graph_hops: usize,
         note_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, false, note_type)
+        self.search_notes_inner(query_text, limit, graph_hops, false, note_type, true)
             .await
     }
 
@@ -878,7 +908,27 @@ impl KnowledgeService {
         graph_hops: usize,
         note_type: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, true, note_type)
+        self.search_notes_inner(query_text, limit, graph_hops, true, note_type, true)
+            .await
+    }
+
+    /// Like `search_notes` but **non-perturbing**: it does not bump
+    /// `access_count`/`last_accessed_at` or advance the spaced-repetition
+    /// schedule on the notes it returns.
+    ///
+    /// This exists for the retrieval eval harness (`services::retrieval_eval`).
+    /// A normal search writes the freshness signal that `apply_freshness_boost`
+    /// later reads, so an eval loop that called `search_notes` would move the
+    /// very ranking input it is trying to measure — every re-run would score a
+    /// slightly different graph. Measurement must not have side effects.
+    pub async fn search_notes_readonly(
+        &self,
+        query_text: &str,
+        limit: usize,
+        graph_hops: usize,
+        note_type: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.search_notes_inner(query_text, limit, graph_hops, false, note_type, false)
             .await
     }
 
@@ -889,16 +939,24 @@ impl KnowledgeService {
         graph_hops: usize,
         entity_expansion: bool,
         note_type: Option<&str>,
+        track_access: bool,
     ) -> Result<Vec<serde_json::Value>> {
         let fetch_limit = (limit * 3).max(10);
-        // With a type filter active, carry the larger candidate pool through every
-        // stage and only cut down to `limit` after the filter — otherwise the filter
-        // runs on an already-truncated list and can return far fewer hits than exist.
-        let pool_limit = if note_type.is_some() {
-            fetch_limit
-        } else {
-            limit
-        };
+        // Carry the full candidate pool (`fetch_limit`) through every re-ranking
+        // and expansion stage; cut down to the caller's `limit` only at the very
+        // end (after the note_type filter, at the single `merged.truncate(limit)`
+        // below).
+        //
+        // This was previously `limit` unless a note_type filter was active, which
+        // truncated the RRF merge to the top-k *before* `apply_freshness_boost`
+        // (and chunk→parent resolution) ever ran — so re-ranking could only
+        // reorder within the top-k and never lift a rank-15 note into the top-10.
+        // The retrieval eval harness measured that as a hard ceiling: recall@10
+        // was flat across every freshness weight (even freshness fully off),
+        // because the re-rank had nothing below rank-k available to promote,
+        // while recall@100 was 1.0 — the target notes were all retrievable, just
+        // ranked 26–100. Re-ranking now sees all ~fetch_limit candidates.
+        let pool_limit = fetch_limit;
 
         // 1. Vector search (if LLM available)
         let mut vec_hits: Vec<(String, String)> = Vec::new();
@@ -1005,25 +1063,41 @@ impl KnowledgeService {
                 .execute(neo4rs::query(parent_cypher).param("hit_ids", hit_ids))
                 .await
             {
+                // Build a lookup of hit_id -> its parent (if any). The query rows
+                // come back in Neo4j's arbitrary order, so they must NOT be
+                // iterated as the result order — doing so discarded the RRF +
+                // freshness ranking entirely and rebuilt the list in storage
+                // order. That was invisible while the pool going in equalled the
+                // output `limit` (the same members survived a reorder), but once
+                // the re-rank pool was widened to `fetch_limit` it truncated to
+                // an arbitrary top-k. It was also silently depressing MRR: the
+                // top-k order handed to the caller was storage order, not rank.
+                let mut parent_of: std::collections::HashMap<String, (String, String)> =
+                    std::collections::HashMap::new();
+                for row in rows {
+                    let Ok(hid) = row.get::<String>("hit_id") else {
+                        continue;
+                    };
+                    if let (Ok(pid), Ok(pcontent)) = (
+                        row.get::<String>("parent_id"),
+                        row.get::<String>("parent_content"),
+                    ) {
+                        parent_of.insert(hid, (pid, pcontent));
+                    }
+                }
+
+                // Walk `merged` in ranked order, replacing each chunk with its
+                // parent, and dedup (a parent shared by two chunks collapses to
+                // one, keeping the higher-ranked position).
                 let mut resolved = Vec::new();
                 let mut seen_ids = std::collections::HashSet::new();
-
-                for row in rows {
-                    let parent_id = row.get::<String>("parent_id").ok();
-                    let parent_content = row.get::<String>("parent_content").ok();
-
-                    if let (Some(pid), Some(pcontent)) = (parent_id, parent_content) {
-                        if !seen_ids.contains(&pid) {
-                            resolved.push((pid.clone(), pcontent));
-                            seen_ids.insert(pid);
-                        }
-                    } else if let (Ok(hid), Ok(hcontent)) = (
-                        row.get::<String>("hit_id"),
-                        row.get::<String>("hit_content"),
-                    ) && !seen_ids.contains(&hid)
-                    {
-                        resolved.push((hid.clone(), hcontent));
-                        seen_ids.insert(hid);
+                for (id, content) in std::mem::take(&mut merged) {
+                    let (rid, rcontent) = match parent_of.get(&id) {
+                        Some((pid, pcontent)) => (pid.clone(), pcontent.clone()),
+                        None => (id, content),
+                    };
+                    if seen_ids.insert(rid.clone()) {
+                        resolved.push((rid, rcontent));
                     }
                 }
                 merged = resolved;
@@ -1117,9 +1191,11 @@ impl KnowledgeService {
         // window unlabelled is indistinguishable from an established fact.
         let merged = self.label_claims(merged).await;
 
-        // 5. Access tracking with spaced-repetition update
+        // 5. Access tracking with spaced-repetition update.
+        // Skipped when `track_access` is false (the eval harness reads without
+        // perturbing the freshness signal — see `search_notes_readonly`).
         let hit_ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
-        if !hit_ids.is_empty() {
+        if track_access && !hit_ids.is_empty() {
             let now = Utc::now().to_rfc3339();
             let update_cypher = r#"
             MATCH (n:Note) WHERE n.id IN $ids
@@ -1630,7 +1706,7 @@ impl KnowledgeService {
             .execute(
                 neo4rs::query(
                     "MATCH (n:Note) WHERE n.id IN $ids \
-                       AND COALESCE(n.note_type,'semantic') IN ['claim','source_record','news'] \
+                       AND COALESCE(n.note_type,'semantic') IN ['claim','source_record','news','unsourced_synthesis'] \
                      RETURN n.id AS id, COALESCE(n.note_type,'semantic') AS note_type, \
                             COALESCE(n.claim_status, 'unverified') AS status, \
                             COALESCE(n.asserted_by, '') AS asserted_by, \
@@ -1681,6 +1757,33 @@ impl KnowledgeService {
                 // established facts, which is why extracting claims alone did not
                 // change how `reason` read the material — the unlabelled copy of
                 // the same assertion was still in the context window.
+                // The brain's own reasoning, citing nothing. Typed 'semantic'
+                // these read as knowledge the brain established, and there is
+                // no other signal on them that says otherwise — no asserted_by,
+                // no source_context, no URL in the body. The curiosity engine
+                // wrote 380 of them before 2026-08-10, when the gap chain
+                // searched only internal notes and so could not fill a gap by
+                // construction. One of them — asserting a "clear correlation"
+                // between HBM/CoWoS scarcity and SLM adoption — was retrieved
+                // in chat on 2026-08-24 and relayed as a confirmed finding at
+                // "Confidence: High", exactly inverting the synthesis note that
+                // had concluded INSUFFICIENT EVIDENCE and spawned it. The label
+                // has to say the note cites nothing: that absence is the defect,
+                // and it is invisible in the content itself.
+                "unsourced_synthesis" => {
+                    let at: String = created_at.chars().take(10).collect();
+                    let mut parts = vec![
+                        "UNSOURCED SYNTHESIS — the brain's own reasoning, cites no source; not established knowledge"
+                            .to_string(),
+                    ];
+                    if !at.is_empty() {
+                        parts.push(at);
+                    }
+                    if let Some(age) = &age {
+                        parts.push(age.clone());
+                    }
+                    format!("[{}]\n", parts.join(" · "))
+                }
                 _ => {
                     let src = row.get::<String>("source_context").unwrap_or_default();
                     let at: String = created_at.chars().take(10).collect();
@@ -1946,9 +2049,15 @@ impl KnowledgeService {
                     (value, answer_text)
                 }
                 Err(e) => {
-                    info!(
-                        "Structured reasoning self-correction failed, using raw text: {}",
-                        e
+                    // WARN, not INFO: at LOG_LEVEL=info this is the only trace that
+                    // a `reason` result is unstructured prose rather than a graded
+                    // answer. On 2026-08-24 it logged at debug-adjacent volume while
+                    // a chat session built an "intelligence report" on top of the
+                    // fallback, and nothing in the reply or the log level said so.
+                    warn!(
+                        error = %e,
+                        "Structured reasoning fell back to raw prose — confidence/gaps/caveats \
+                         in this result are placeholders, NOT model-reported values"
                     );
                     let raw = llm
                         .generate(&prompt, None)
@@ -1956,13 +2065,19 @@ impl KnowledgeService {
                         .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?
                         .trim()
                         .to_string();
+                    // confidence 0.0, not 0.5. The old 0.5 was a fabricated number
+                    // that read like a measurement, and it sat exactly on the wrong
+                    // side of `LOW_CONFIDENCE` in the chat marker, so a fallback
+                    // answer was presented with no confidence warning at all. The
+                    // same class of bug as the evaluator fabricating a 3.0 score.
                     let fallback = serde_json::json!({
                         "answer": raw,
                         "inferences": [],
-                        "confidence": 0.5,
+                        "confidence": 0.0,
                         "gaps": [],
                         "caveats": [],
-                        "follow_up_questions": []
+                        "follow_up_questions": [],
+                        "structured_output_failed": true
                     });
                     (fallback, raw)
                 }
@@ -2099,6 +2214,10 @@ impl KnowledgeService {
             gaps,
             inference_note_id,
             critic_counter_arguments,
+            structured_output_failed: parsed
+                .get("structured_output_failed")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         })
     }
 
@@ -2642,9 +2761,14 @@ impl KnowledgeService {
         // status and launder it into semantic knowledge — the precise failure the
         // claim type exists to prevent. Claims reach reasoning through retrieval,
         // labelled, and are summarised only once their evidence says something.
+        // 'unsourced_synthesis' is excluded for the same reason one step removed:
+        // consolidation drops the label along with the type, so an uncited note
+        // reappears inside a 'consolidated' summary as settled knowledge with
+        // nothing marking it. That already happened — 71 consolidated notes had
+        // absorbed pre-2026-08-10 gap notes before this filter existed.
         let source_cypher = r#"
         MATCH (n:Note)
-        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result', 'claim', 'source_record']
+        WHERE NOT coalesce(n.note_type, 'semantic') IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome', 'inference', 'meta_learning_result', 'claim', 'source_record', 'unsourced_synthesis']
           AND (n.next_review_at IS NULL OR n.next_review_at <= datetime())
           AND n.embedding IS NOT NULL
           AND size(n.embedding) = $dim

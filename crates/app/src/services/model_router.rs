@@ -12,9 +12,11 @@
 //!   Requires `OLLAMA_API_KEY`; candidates without a usable key are skipped.
 //! - `2` — any provider with a configured API key ("income mode").
 //!
-//! Selection inherits `select_models` ordering: cost ascending, then context
-//! window descending — so among $0-tied candidates the largest-context model
-//! wins, which at tier 1 prefers the big cloud models over local 4B ones.
+//! Selection inherits `select_models` ordering: cost ascending, then
+//! `selection_rank` ascending, then context window descending. Since every
+//! local and Ollama-Cloud entry costs $0, `selection_rank` — set per model in
+//! `models.yaml` — is what actually decides these steps; see the block comment
+//! there for the bands and for the incident that motivated the field.
 //! If no candidate survives the tier filter the caller falls back to normal
 //! routing — a missing model degrades the step, never blocks it.
 
@@ -52,6 +54,54 @@ fn candidate_allowed(
         "gemini" => tier == 2 && has_gemini_key,
         _ => false,
     }
+}
+
+/// Turn a catalog entry's `provider` + `model` into a full [`LlmConfig`].
+///
+/// Endpoint and credentials come from the environment rather than the catalog,
+/// because `models.yaml` is checked in and must never carry a key. Everything
+/// else — embedding settings above all — is inherited from `base`, so a
+/// re-pointed config keeps embeddings local no matter which provider it names.
+///
+/// Shared by capability routing ([`resolve_model_config`]) and by the `/chat`
+/// fallback ladder, which both answer the same question: *this catalog row is
+/// the model now; what does it take to call it?*
+pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -> LlmConfig {
+    let mut cfg = base.clone();
+    cfg.model = model.to_string();
+    match provider {
+        "ollama-cloud" | "ollamacloud" => {
+            cfg.provider = LlmProviderType::OllamaCloud;
+            cfg.base_url = Some(
+                std::env::var("OLLAMA_URL").unwrap_or_else(|_| "https://ollama.com".to_string()),
+            );
+            cfg.api_key = std::env::var("OLLAMA_API_KEY").ok();
+        }
+        "anthropic" => {
+            cfg.provider = LlmProviderType::Anthropic;
+            cfg.base_url = None;
+            cfg.api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        }
+        "gemini" => {
+            cfg.provider = LlmProviderType::Gemini;
+            cfg.base_url = None;
+            cfg.api_key = std::env::var("GEMINI_API_KEY").ok();
+        }
+        _ => {
+            cfg.provider = LlmProviderType::Ollama;
+            cfg.base_url = Some(
+                std::env::var("OLLAMA_LOCAL_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
+            );
+            cfg.api_key = None;
+            // The router is called with `LlmConfig::default()` as base, so
+            // keep_alive has to be sourced here like base_url and api_key are.
+            cfg.keep_alive = std::env::var("OLLAMA_KEEP_ALIVE")
+                .ok()
+                .and_then(|s| crate::config::validate_go_duration(s.trim()));
+        }
+    }
+    cfg
 }
 
 /// Resolve the model config for a step's `required_capabilities`, or `None`
@@ -104,45 +154,22 @@ pub fn resolve_model_config(
 
     // Build a full config for the chosen provider. Embedding settings are
     // inherited from the base config — embeddings always stay local.
-    let mut cfg = base.clone();
-    cfg.model = model.clone();
-    match provider {
-        "ollama-cloud" | "ollamacloud" => {
-            cfg.provider = LlmProviderType::OllamaCloud;
-            cfg.base_url = Some(
-                std::env::var("OLLAMA_URL").unwrap_or_else(|_| "https://ollama.com".to_string()),
-            );
-            cfg.api_key = std::env::var("OLLAMA_API_KEY").ok();
-        }
-        "anthropic" => {
-            cfg.provider = LlmProviderType::Anthropic;
-            cfg.base_url = None;
-            cfg.api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-        }
-        "gemini" => {
-            cfg.provider = LlmProviderType::Gemini;
-            cfg.base_url = None;
-            cfg.api_key = std::env::var("GEMINI_API_KEY").ok();
-        }
-        _ => {
-            cfg.provider = LlmProviderType::Ollama;
-            cfg.base_url = Some(
-                std::env::var("OLLAMA_LOCAL_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            );
-            cfg.api_key = None;
-            // The router is called with `LlmConfig::default()` as base, so
-            // keep_alive has to be sourced here like base_url and api_key are.
-            cfg.keep_alive = std::env::var("OLLAMA_KEEP_ALIVE")
-                .ok()
-                .and_then(|s| crate::config::validate_go_duration(s.trim()));
-        }
-    }
+    let cfg = config_for_catalog_entry(base, provider, &model);
 
+    // `rank` and `runner_up` are logged because the incident that produced
+    // `selection_rank` was invisible at runtime: a new catalog entry captured
+    // every reasoning step and the only evidence was slower jobs. Naming the
+    // winner alongside what it beat makes a silent reorder greppable.
     info!(
         capabilities = ?required_capabilities,
         provider = provider,
         model = %model,
+        rank = chosen["selection_rank"].as_i64().unwrap_or(-1),
+        runner_up = candidates
+            .iter()
+            .find(|c| c["model"].as_str() != Some(model.as_str()))
+            .and_then(|c| c["model"].as_str())
+            .unwrap_or("-"),
         tier = tier,
         "Model routing: resolved step model"
     );
