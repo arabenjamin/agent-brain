@@ -72,11 +72,17 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # Synthesis benefits from a stronger model; router picks the best catalog
-    # match within CLOUD_TIER. Any hint other than "ollama" uses the active
-    # config instead of the weak local model.
-    provider_hint: ollama-cloud
-    required_capabilities: ["reasoning"]
+    # LOCAL, deliberately — see the same note in chains/fill-knowledge-gap.yaml.
+    # This chain runs once per watched video, and `poll_media_sources` produces
+    # up to MEDIA_WATCH_MAX_PER_SOURCE videos from every active source on every
+    # 12-hourly poll (29 tasks in one poll, measured 2026-08-31). It is a
+    # per-item chain, not a standing report, so its cloud cost scales with the
+    # watchlist and nothing bounds it.
+    #
+    # This step also has a second-order cost the others do not: its "## FOLLOW UP"
+    # section is what `spawn_gap_tasks` turns into gap tasks, so every run here
+    # creates up to `max` further chain runs. Keeping it local caps both.
+    provider_hint: ollama
     # Distilled handoff: this is the one cloud-routed step in the chain, and its
     # {{_prev}} is the full reassembled transcript summary. Safe to compress here
     # because the *durable* note (step 7) reassembles from working memory again,
@@ -92,10 +98,17 @@ steps:
   # 4b. Fan the '## FOLLOW UP' concepts out into 'fill knowledge gap:' Tasks
   #     (feeds the curiosity engine). Pure side-effect: echoes the analysis text
   #     back unchanged, so {{_prev}} still carries it into the banking step below.
+  # `max` is a fan-out multiplier, not a quality knob. Each gap task is a full
+  # chains/fill-knowledge-gap.yaml run (2 searches + a reason step), so this
+  # number multiplies against the videos-per-poll cap: 15 active sources x 2
+  # videos x `max` x 2 polls/day. At 4 that is up to 240 gap-fill chains a day,
+  # which is what buried the queue on 2026-08-31 (54 jobs still queued and 18
+  # reason steps parked three hours into the day). Lowered to 2. The follow-up
+  # concepts are ranked, so the ones dropped are the weakest of each video's list.
   - tool_name: spawn_gap_tasks
     arguments:
       text: "{{_prev}}"
-      max: 4
+      max: 2
     priority: 1
     max_attempts: 2
     provider_hint: ollama

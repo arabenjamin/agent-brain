@@ -82,7 +82,7 @@ Copy `.env.example` to `.env` and configure:
 | `AWS_REGION` | `us-east-1` | AWS region for Secrets Manager |
 | `AWS_SECRET_PREFIX` | - | Prefix for AWS secret names |
 | `DATASET_DIR` | `./datasets` | Directory for training data export (`digest_experiences`) |
-| `TELEMETRY_DB_PATH` | - | Path to DuckDB file for interaction logging (enables `SleepSkill`) |
+| `TELEMETRY_DB_PATH` | - | Path to DuckDB file for interaction logging (enables `SleepSkill`). **Reading it from the host: copy the `.wal` alongside the `.duckdb`.** The brain holds the write lock, so analysis runs against a copy — and DuckDB keeps recent commits in `telemetry.duckdb.wal` until a checkpoint, so copying the `.duckdb` alone silently returns a database that is correct but stale by minutes to hours. It does not error; it reports zero rows for the window you are asking about, which is indistinguishable from "nothing ran" and is exactly the reading you take when investigating whether something is still running. Copy both files (same basename) and open the copy `-readonly` |
 | `SEARCH_ENGINE_ORDER` | `searxng,google,serpapi,brave` | Comma-separated `search_web` failover ladder, most-preferred first. Each engine is tried until one answers, so a single exhausted quota no longer fails the call. Reorder to change preference without a rebuild |
 | `SEARXNG_URL` | `http://searxng:8080` | Base URL of the self-hosted SearXNG metasearch sidecar — the default first rung of the ladder. No API key, no quota. Also readable from a `searxng` `ApiContext` node (`base_url` field) |
 | `SERPAPI_KEY` | - | SerpApi key for `search_web` tool. Free tier is **100 searches/month** — far below the brain's ~15/day, so this is a backstop, not a primary |
@@ -539,6 +539,29 @@ Background ran at 29–125 calls and 139–619k tokens **per day for nine days w
 The asymmetry is structural, not incidental: a chat turn carries the full system prompt plus every tool definition and re-sends the whole transcript each iteration (~12k tokens/call measured), while a background `reason` step sends one distilled payload (~4.6k). **One interactive debugging session costs more than a week of autonomous work.** The five standing reports together are 1.4 cloud calls/day.
 
 So the script pauses the cheap thing. Keep it for a genuine *outage* — where the concern is silent degradation, not spend — and for quota, look at `model_usage` grouped by `tool_name` first. Pausing schedules to protect a quota that chat is spending buys ~1% and costs every report.
+
+**Cloud cost lives in the fan-out chains, not the schedules — count calls per *item*, not per run.** The table above splits spend by `tool_name`, which answers "chat or background" and stops there. Split background by *which chain* and a second structural asymmetry appears, one that survived the 08-26 pause and the 08-31 resume because both were reasoning about schedules.
+
+A schedule is fixed-cost: it has one cloud `reason` step and a known interval, so its rate is arithmetic. **All five standing reports together are 1.39 cloud calls/day** (daily-news 1.0, hardware-tripwire 0.14, off-grid 0.14, slm-watch 0.07, tech-dependency 0.03). Audit it with the delimiter query in this section's history — parse `s.steps` as JSON and divide by `interval_seconds`.
+
+A **chain** has no interval. It runs once per *item*, and the item count is set by something else entirely:
+
+```
+poll_media_sources: 15 active sources x MEDIA_WATCH_MAX_PER_SOURCE (2) x 2 polls/day
+  = 60 videos/day        -> 60 x chains/video-learning.yaml
+  each spawn_gap_tasks max=4
+  = 240 gap tasks/day    -> 240 x chains/fill-knowledge-gap.yaml
+```
+
+Both chains had exactly one `provider_hint: ollama-cloud` step, so that is ~300 cloud calls/day against the schedules' 1.39 — **the schedules were 0.5% of background cloud spend.** Measured 2026-08-31: three hours after a single poll, 29 `watch video:` and 59 `fill knowledge gap:` tasks had produced 51 cloud `reason` calls and 263k input tokens, with 18 more reason steps still parked and 54 jobs queued behind them. Prior full days were 47–80 background calls *total*. Nothing was misconfigured and nothing errored; the watchlist had simply grown, and cost scales with it.
+
+Both steps are now `provider_hint: ollama`, and `spawn_gap_tasks` is capped at `max: 2`. Neither needs a frontier model — the gap step summarises search results the chain just fetched into three fixed headings from a payload already distilled locally, and the video step compares one transcript summary against known notes. Background cloud is now the 1.39 scheduled calls/day, which is what leaves the free tier available for chat.
+
+Three rules generalise:
+
+- **A chain's cloud cost is a multiplication, not a rate.** Before putting `ollama-cloud` on a chain step, find what bounds the item count. If the answer is a watchlist, a search result count, or another chain's fan-out, it is unbounded in the sense that matters.
+- **A step that feeds `spawn_gap_tasks` costs more than its own call**, because its output becomes N further chain runs. `max` is a fan-out multiplier, not a quality knob.
+- **Per-tool attribution is not enough on its own.** `CURRENT_TOOL` made background spend attributable to `reason`, and every one of those 51 calls was honestly labelled `reason` — but `reason` is a dozen different callers with cost profiles three orders of magnitude apart. When the ledger says a tool is expensive, the next question is which *chain* invoked it.
 
 **`manage_chain` tool** now accepts `name`, `patterns` (list), `no_evaluator`, and `no_adversarial` fields in addition to `pattern`.
 

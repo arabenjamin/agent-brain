@@ -107,11 +107,24 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # Synthesis over mixed evidence benefits from a stronger model; the router
-    # picks the best catalog match within CLOUD_TIER. Any hint other than
-    # "ollama" uses the active config instead of the weak local model.
-    provider_hint: ollama-cloud
-    required_capabilities: ["reasoning"]
+    # LOCAL, deliberately — this step is the single largest cloud consumer in
+    # the system, and it is the one where per-call quality matters least.
+    #
+    # The cost is not per run, it is per gap task, and gap tasks fan out
+    # multiplicatively: `poll_media_sources` takes MEDIA_WATCH_MAX_PER_SOURCE (2)
+    # videos from each of 15 active sources, and chains/video-learning.yaml calls
+    # `spawn_gap_tasks` with `max` per video. Measured 2026-08-31: one 12-hourly
+    # poll produced 29 `watch video:` tasks and 59 `fill knowledge gap:` tasks in
+    # three hours — 88 cloud `reason` calls at ~5.1k input tokens each, against a
+    # prior baseline of 47-80 cloud calls PER DAY. The five standing weekly
+    # reports together are 1.4 cloud calls/day. This chain, uncapped, is ~99% of
+    # background cloud spend, and every token it takes is a token chat cannot use.
+    #
+    # Nothing about the work needs a frontier model: the step summarises search
+    # results the chain just fetched into three fixed headings, with the payload
+    # already distilled locally below. If a specific gap genuinely needs stronger
+    # synthesis, raise it as a one-shot Task rather than putting every gap on cloud.
+    provider_hint: ollama
     # Distilled handoff: raw SERP payloads are mostly boilerplate and this is the
     # cloud-routed step. URLs are preserved because the prompt requires citations.
     distill_prev: true
