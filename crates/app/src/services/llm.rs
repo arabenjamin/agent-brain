@@ -6,6 +6,47 @@ use thiserror::Error;
 /// Default timeout for LLM requests (2 minutes for slow models).
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// Default timeout for the **local** background model, which needs a much
+/// larger budget than a cloud endpoint.
+///
+/// A cloud model that has not answered in 120s is not going to; a local one on
+/// a shared consumer GPU routinely is. Measured 2026-09-01 on an RTX 3060 Ti
+/// (8 GB) serving `gemma4:latest` — a 9.86 GB model that gets 3.2 GB of VRAM
+/// and runs **32% on GPU** at ~7 tok/s: an unloaded call takes 54–79s, and
+/// under the twice-daily media-watch burst the average climbs to 80–120s.
+/// At a 120s ceiling that burst was pure data loss — one hour recorded 31
+/// calls, **31 failures, average exactly 120.0s** — and each dead job took its
+/// parked chain steps and its owning Task down with it (26 dead jobs, 151
+/// cancelled steps, 26 failed Tasks in 24 hours).
+///
+/// Raising the ceiling costs nothing the GPU was not already spending: the
+/// work is in flight either way, and killing it at 120s throws away the
+/// compute *and* the chain. Daily volume fits comfortably (~445 calls at ~80s
+/// over two concurrent slots is under 20% duty cycle) — only the bursts
+/// overflowed. It is still bounded, because a job holds a queue semaphore
+/// permit for the whole call.
+const DEFAULT_LOCAL_TIMEOUT_SECS: u64 = 600;
+
+/// Resolve the local model's request timeout from `OLLAMA_LOCAL_TIMEOUT_SECS`,
+/// falling back to [`DEFAULT_LOCAL_TIMEOUT_SECS`]. An unparseable or zero
+/// value warns and uses the default rather than disabling the timeout.
+pub fn local_timeout() -> Duration {
+    match std::env::var("OLLAMA_LOCAL_TIMEOUT_SECS") {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(secs) if secs > 0 => Duration::from_secs(secs),
+            _ => {
+                tracing::warn!(
+                    value = %raw,
+                    default_secs = DEFAULT_LOCAL_TIMEOUT_SECS,
+                    "OLLAMA_LOCAL_TIMEOUT_SECS is not a positive integer — using the default"
+                );
+                Duration::from_secs(DEFAULT_LOCAL_TIMEOUT_SECS)
+            }
+        },
+        Err(_) => Duration::from_secs(DEFAULT_LOCAL_TIMEOUT_SECS),
+    }
+}
+
 /// Default Ollama API URL.
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
@@ -14,7 +55,7 @@ const DEFAULT_MODEL: &str = "qwen3.5:4b";
 
 #[derive(Debug, Error)]
 pub enum LlmError {
-    #[error("HTTP request failed: {0}")]
+    #[error("HTTP request failed: {}", crate::services::llm_providers::describe_reqwest(.0))]
     Request(#[from] reqwest::Error),
 
     #[error("JSON serialization error: {0}")]

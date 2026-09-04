@@ -141,7 +141,7 @@ impl LlmProvider for SharedLlm {
                         Some(local_duration_ms),
                         tin,
                         tout,
-                        None,
+                        failure_kind(&local_result),
                     );
                 }
                 return local_result.map(|r| r.text);
@@ -158,7 +158,7 @@ impl LlmProvider for SharedLlm {
                 Some(duration_ms),
                 tin,
                 tout,
-                None,
+                failure_kind(&result),
             );
         }
         result.map(|r| r.text)
@@ -211,6 +211,26 @@ fn classify_unavailable(e: &anyhow::Error) -> Option<&'static str> {
         Some("server_error")
     } else {
         None
+    }
+}
+
+/// Telemetry `error_kind` for a finished call: `None` on success, otherwise the
+/// classified reason, falling back to `"other"`.
+///
+/// The two non-fallback `record_model_usage` sites used to hardcode `None` for
+/// this column, so **every** failed call landed with `error_kind IS NULL` — 124
+/// of them in the 30 hours before 2026-09-01, the exact rows you query first
+/// when asking why a model started failing. `classify_unavailable` was already
+/// being computed one branch away; only the cloud-fallback path recorded it.
+///
+/// `"other"` rather than `None` on an unclassified failure, so the column
+/// separates "we did not classify this" from "this did not fail".
+fn failure_kind(
+    result: &anyhow::Result<crate::services::llm::LlmResponse>,
+) -> Option<&'static str> {
+    match result {
+        Ok(_) => None,
+        Err(e) => Some(classify_unavailable(e).unwrap_or("other")),
     }
 }
 
@@ -351,5 +371,51 @@ mod tests {
     fn status_like_numbers_in_a_body_are_not_server_errors() {
         let e = err("Generation failed: prompt exceeds 500 tokens for context window 4096");
         assert_eq!(classify_unavailable(&e), None);
+    }
+
+    fn ok_response() -> anyhow::Result<crate::services::llm::LlmResponse> {
+        Ok(crate::services::llm::LlmResponse {
+            text: "hi".to_string(),
+            duration_ns: None,
+            tokens_evaluated: None,
+            tokens_in: None,
+            tokens_out: None,
+        })
+    }
+
+    /// A success must leave `error_kind` NULL — the column has to separate
+    /// "did not fail" from "failed, unclassified".
+    #[test]
+    fn successful_calls_record_no_error_kind() {
+        assert_eq!(failure_kind(&ok_response()), None);
+    }
+
+    /// The regression: every failed call used to land with `error_kind IS NULL`,
+    /// so the 26 dead jobs of 2026-09-01 were unattributable by the one query
+    /// you run when a model starts failing.
+    #[test]
+    fn failed_calls_always_record_an_error_kind() {
+        let timeout = Err(anyhow::anyhow!(
+            "Provider error: HTTP request failed: operation timed out: \
+             error sending request for url (http://host.docker.internal:11434/api/generate)"
+        ));
+        assert_eq!(failure_kind(&timeout), Some("transport"));
+
+        // Unclassified failures are labelled, never left NULL.
+        let odd = Err(anyhow::anyhow!("Generation failed: something new"));
+        assert_eq!(failure_kind(&odd), Some("other"));
+    }
+
+    /// A local timeout must classify as `transport`, which is what the enriched
+    /// `describe_reqwest` output guarantees by prefixing "operation timed out".
+    /// The fallback itself is still skipped for local routes (`!is_local_route`),
+    /// so this only affects how the failure is *labelled*.
+    #[test]
+    fn a_local_timeout_is_classified_as_transport() {
+        let e = err(
+            "Summarization failed: Provider error: HTTP request failed: operation timed out: \
+             error sending request for url (http://host.docker.internal:11434/api/generate)",
+        );
+        assert_eq!(classify_unavailable(&e), Some("transport"));
     }
 }

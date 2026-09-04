@@ -135,6 +135,13 @@
 
 ## Recent Changes (auto)
 
+### 2026-08-31
+
+- fix: scratch-session cleanup starved at priority 0 and never ran (`f215c11`)
+- fix: move the fan-out chains off cloud — they were 99% of background spend (`0426218`)
+- Removed scratch.pad as not required (`50345f1`)
+- feat: retrieval eval harness + fix latent ranking bug in note search (`624e3d0`)
+
 ### 2026-08-24
 
 - fix: make silent signals loud — LLM fallback, tool-result markers, SSE push (`0005bc8`)
@@ -158,25 +165,35 @@
 - refactor: derive self-knowledge in-process, drop the post-commit script (`e6d0db2`)
 - feat: search engine failover, curiosity-engine web grounding, and self-knowledge fixes (`89a5de8`)
 
-### 2026-08-05
-
-- feat: Phase 4 — self-hosted Whisper fallback for caption-less media (`0a1a821`)
-- feat: enable media watch with 13-channel watchlist + per-source guard (`85c1167`)
-
-### 2026-08-04
-
-- fix: robust caption download + gap-task spawning for Media Learning (`23b16d1`)
-- chore: install yt-dlp in the agent-brain image for Media Learning (`26da1b4`)
-
 ## Known Issues / Backlog
 
 ### Open
 
+- **The daily news brief cannot get fresh news.** Weather is fixed (`api.weather.gov` via `http_request` — free, no key, no quota), but the other sections still depend on SearXNG, whose only working engines from this IP are encyclopedic or foreign-language and cannot answer a time-sensitive query — three news probes returned 145 results of which **6** were from news outlets (top domains: `en.wikipedia.org`, `handwiki.org`, `rationalwiki.org`, `conservapedia.com`). `search_web`'s ladder only falls through on *zero* results, so junk stops it and SerpApi is never reached; SerpApi's 100/month tier could not carry the brief's 8 searches/day (240/month) anyway, and `brave` is still 429. **Setting `GOOGLE_API_KEY` + `GOOGLE_CX` (Custom Search, 100 free queries/day) is the fix** — needs a key. Re-probe with `scripts/searxng_engine_health.py` (now split into evergreen vs fresh probes, and prints result domains) before assuming the CAPTCHA blocks are permanent; they lifted once already.
+- ~~The background model does not fit the GPU~~ — **swapped to `granite4:latest` 2026-09-01.** Production A/B on the same tool in the same hour: `ingest_media` 81.8s → **4.4s**, `reason` 84.6s → **4.8s**, `claim` 82.1s → **3.8s** (17–22×). Queue throughput ~1.5 → ~5 jobs/min. Kept below for the measurements and the reasoning.
+
+  **The old finding, benchmarked 2026-09-01.** `gemma4:latest` reports 9.86 GB to `/api/ps` and gets 3.2 GB on an 8 GB RTX 3060 Ti shared with `bge-m3` (1.12 GB, pinned by `OLLAMA_KEEP_ALIVE=30m`) and Whisper — **32% on GPU**. Measured with the brain stopped and no model resident (so every candidate got the same uncontended card), on a real 4.5 KB `video_learning` payload:
+
+  | model | size | VRAM | summarize | extract JSON | gen tok/s | out tok |
+  |---|---|---|---|---|---|---|
+  | **granite4:latest** | 1.95 GB | 100% | **5.1s** | **3.4s** | 125.1 | 326 |
+  | gemma3:latest | 3.1 GB | 100% | 6.7s | 4.6s | 103.4 | 324 |
+  | granite3.3:8b | 4.6 GB | 100% | 10.3s | 7.0s | 67.3 | 328 |
+  | nemotron-3-nano:4b | 2.64 GB | 100% | 13.1s | 7.5s ✗ invalid JSON | 106.8 | 1079 |
+  | qwen3:8b | 4.86 GB | 100% | 17.0s | — | 67.5 | 895 |
+  | `gemma4:latest` (current) | 8.94 GB | **32%** | 40.6s | 45.4s | 25.9 | 933 |
+  | qwen3.5:4b | 3.15 GB | 100% | **78.9s** ✗ empty | — | 73.6 | **5263** |
+
+  Three results worth keeping. **Residency is a cliff, not a curve** — everything that fits generates at 67–125 tok/s, `gemma4` at 26. **A "better" model can be the least efficient**: `qwen3.5:4b` generates 3× faster than `gemma4` and still took twice the wall time, because it emitted 5263 tokens into `thinking` and returned an **empty `response`** (`done_reason: stop`) — the local twin of the `gemma4:31b-cloud` empty-completion failure, caused by thinking mode on an extraction task. It is also the code's `DEFAULT_MODEL` in `llm.rs`. And **output quality was indistinguishable** between `granite4`, `gemma3` and `gemma4` on both tasks — same headings, same three concepts, correctly grounded; `granite4` classified claim `kind` correctly (though it duplicated 2 of 5 claims).
+
+  Not swapped yet — it changes the prose of every background note indefinitely, so it is the user's call. `granite4:latest` is the recommendation (already in `models.yaml` at `selection_rank: 120`, 131 072 context, so no catalog change is needed); the swap is one line, `OLLAMA_LOCAL_MODEL` in compose, and `vision` steps keep routing to `gemma4` through the capability router regardless. Note models cannot co-reside on this card — a swap is a replacement, not an addition.
+- **Media-watch fan-out is the burst source.** 15 active sources × `MEDIA_WATCH_MAX_PER_SOURCE` (2) × 2 polls/day ≈ 30 videos per poll, each an `ingest_media` map-reduce (~6 LLM calls) plus `reason` + `claim`, plus up to 2 gap tasks. That is ~7 GPU-hours/day arriving in two piles rather than spread out. Lowering `MEDIA_WATCH_MAX_PER_SOURCE` to 1 halves the burst; spreading the poll interval would smooth it without reducing what the brain learns.
 - **SSE push for job results on stdio transport** — stdio path has no session manager; callers must poll `get_job_result`. No lightweight fix without adding an event bus.
 - **Rhai scripting in procedure steps** — basic `on_failure` and `{{context.steps.N}}` conditionals added; full Rhai embed for dynamic logic still deferred.
 
 ### Fixed (recent)
 
+- ~~Every background job shared the cloud's 120s LLM timeout~~ — `gemma4:latest` (9.86 GB) gets 3.2 GB of VRAM on the 8 GB card and runs **32% on GPU at ~7 tok/s**, so an ordinary call takes 54–79s idle. When `0426218` moved the two fan-out chains to `provider_hint: ollama`, local volume went 39 → 444 calls/day and **27% of them died at exactly 120.0s** — 26 dead jobs, 151 cancelled chain steps, 26 failed `watch video:` Tasks in 24h. It was burst-driven, not load-driven (daily volume is under 20% duty cycle; `poll_media_sources` delivers it in two piles). `OLLAMA_LOCAL_TIMEOUT_SECS` now defaults to 600 for the local path only. Verified live: backlog draining, zero dead-letters since
 - ~~Brain believed it was tomorrow for four hours a day~~ — the container ran with no `TZ` and every date came from `Utc::now()`, so from 20:00 America/Detroit onward `{{date}}`, the chat prompt, and every dated note were a day ahead. `TZ` now set in compose and `services/clock.rs` owns local-vs-UTC: display is local, storage stays UTC. Verified in-container (host and container agree) and end-to-end via `/chat`. The prompt also gained a full local instant + zone, `{{now}}`/`{{weekday}}` template vars, and relative note ages on retrieval
 - ~~`graph_query_endpoint` CONTAINS fallback~~ — embeddings auto-generated at ingest time
 - ~~Parent task stuck `in_progress` after subtasks complete~~ — `update_task` auto-completes parent when all subtasks done

@@ -11,7 +11,25 @@
 # (:ScheduledTask) node.
 name: "Media watch: poll subscribed channels for new videos to learn from"
 description: "Polls the active :MediaSource watchlist for new uploads and enqueues a video-learning Task per new video. Gated by MEDIA_WATCH_ENABLED; capped per source by MEDIA_WATCH_MAX_PER_SOURCE."
-interval_seconds: 43200   # 12 hours
+# 6 hours, paired with MEDIA_WATCH_MAX_PER_SOURCE=1 — this is a burst-shaping
+# pair, and neither half works alone.
+#
+# The daily *cap* is unchanged (15 sources x 1 video x 4 polls = 60/day, the
+# same as the old 15 x 2 x 2), so nothing the brain would have learned is lost.
+# What changes is the delivery: at most 15 videos arrive at once instead of 30,
+# four times a day instead of twice. One burst is ~15 x 19 GPU-minutes = 4.75
+# GPU-hours, which drains across two `semaphore_ollama` permits in ~2.4 wall
+# hours and leaves 3.6 hours of headroom before the next poll. The old 30-video
+# burst needed ~4.8 hours and overlapped everything else on the queue — that
+# saturation is what pinned local calls at the 120s ceiling on 2026-08-31.
+#
+# The cap was never the binding constraint in steady state: measured upstream
+# publishing is ~9-19 videos/day across the whole watchlist, well under 60. It
+# binds during *backlog drain* — a newly activated source's RSS carries ~15
+# recent uploads — which is exactly when the burst hurt. Polling more often
+# with a lower per-source cap also improves freshness: a channel posting twice
+# in a day yields 1+1 across two polls rather than being clipped at the cap.
+interval_seconds: 21600   # 6 hours
 steps:
   - tool_name: poll_media_sources
     arguments: {}

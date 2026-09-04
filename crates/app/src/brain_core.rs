@@ -502,11 +502,18 @@ impl BrainCore {
                 .unwrap_or_else(|_| "http://localhost:11434".to_string());
             let model =
                 std::env::var("OLLAMA_LOCAL_MODEL").unwrap_or_else(|_| "gemma4:latest".to_string());
+            // The local model needs a far larger request budget than the shared
+            // 120s default — see `DEFAULT_LOCAL_TIMEOUT_SECS`. On a shared
+            // consumer GPU a background call takes 54–79s idle and 80–120s
+            // under the media-watch burst, so the default ceiling was killing
+            // in-flight work and dead-lettering the chain around it.
+            let timeout = crate::services::llm::local_timeout();
             let mut local_llm_config = LlmConfig::default()
                 .with_provider(LlmProviderType::Ollama)
                 .with_base_url(local_url.clone())
                 .with_model(model)
-                .with_embed_base_url(local_url);
+                .with_embed_base_url(local_url)
+                .with_timeout(timeout);
             // Pin the embedding model so local knowledge ops use bge-m3 (or whatever
             // OLLAMA_EMBED_MODEL is set to) instead of falling back to the generation model.
             if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
@@ -521,6 +528,11 @@ impl BrainCore {
             {
                 local_llm_config = local_llm_config.with_keep_alive(ka);
             }
+            info!(
+                model = %local_llm_config.model,
+                timeout_secs = timeout.as_secs(),
+                "Local background LLM configured"
+            );
             Arc::new(RwLock::new(Some(local_llm_config)))
         };
 

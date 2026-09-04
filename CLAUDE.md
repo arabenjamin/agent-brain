@@ -63,7 +63,8 @@ Copy `.env.example` to `.env` and configure:
 | `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model to use for text generation |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `OLLAMA_API_KEY` | - | API key for Ollama Cloud authentication. Get one at `ollama.com/settings/keys` |
-| `OLLAMA_LOCAL_MODEL` | `gemma4:latest` | Model used exclusively for all background/scheduled jobs. Always routes to `OLLAMA_LOCAL_URL` — never touches cloud quota |
+| `OLLAMA_LOCAL_MODEL` | `gemma4:latest` (**compose sets `granite4:latest`**) | Model used exclusively for all background/scheduled jobs. Always routes to `OLLAMA_LOCAL_URL` — never touches cloud quota. The code default is stale: it names a model that does not fit this GPU. See "Pick the local model by residency, not by leaderboard" below |
+| `OLLAMA_LOCAL_TIMEOUT_SECS` | `600` | Request timeout for the **local** background model only; every cloud call keeps the shared 120s default. A cloud model that has not answered in 120s is not going to; a local one on a shared consumer GPU routinely is. Non-positive or unparseable values warn and fall back to the default rather than disabling the timeout. See "The local model has its own timeout" below |
 | `OLLAMA_KEEP_ALIVE` | - | How long Ollama keeps a model resident in VRAM after a request, as a **Go duration** (`30m`, `2h`, `1h30m`). A negative duration (`-1m`) pins it indefinitely. Unset leaves Ollama's own 5m default. Sent on every generate/chat/**embeddings** request; ignored by non-Ollama providers. Compose sets `30m`. Malformed values are dropped with a warning (`validate_go_duration` in `config.rs`) rather than 400-ing every LLM call |
 | `TZ` | *(unset ⇒ UTC)* | IANA zone the container runs in (`America/Detroit`). Everything the brain **says** about time is local; everything it **stores** stays UTC. Unset means the brain's "today" is UTC's, which is wrong for part of every day outside UTC — see "The brain's sense of time" below |
 | `BRAIN_TIMEZONE` | *(falls back to `TZ`)* | Overrides `TZ` for the brain's own clock only, when the image's zone must differ from the brain's |
@@ -116,6 +117,8 @@ Copy `.env.example` to `.env` and configure:
 | `CHAT_LLM_MODEL` | *(same as brain)* | Override the model name for chat (e.g. `claude-opus-4-5`). When unset, chat uses the brain's model. |
 | `CHAT_API_KEY` | *(same as brain)* | Override the API key used by the chat LLM. When unset, inherits the brain's key. |
 | `CHAT_LLM_BASE_URL` | *(same as brain)* | Override the base URL for the chat LLM endpoint. |
+| `CHAT_SYNTHESIS_PROVIDER` | - | Enables the **worker/voice split** for `/chat`: the model in `CHAT_LLM_MODEL` runs the tool loop, and this provider composes the final reply from what it gathered. Accepts `ollama`, `ollama-cloud`, `gemini`, `anthropic`. Unset ⇒ the worker also speaks (previous behaviour). See "The worker/voice split" below |
+| `CHAT_SYNTHESIS_MODEL` | `gemma4:31b-cloud` | Model used for the synthesis pass. Only consulted when `CHAT_SYNTHESIS_PROVIDER` is set |
 
 ## Local Development
 
@@ -477,6 +480,28 @@ A chat session on 2026-08-10 asked "where are we on project X" and was told the 
 
 The behavioural half lives in the `PROJECT-STATUS RULE` in `contexts/general.yaml`: check schedules *and* tasks *and* notes, treat an alias found in a note as a lead to re-query rather than an answer, and report running work in the present tense.
 
+### The worker/voice split, and the write guard that had to come with it
+
+One chat turn on 2026-08-31 produced both halves of this section. Asked for technical deep-dives on three mesh technologies, `gpt-oss:120b-cloud` ran **zero** searches — confirmed against the `search_usage` ledger, whose last row that day predates the turn by 25 minutes — and wrote all three from prior. One of the three was **"Metastatic"**, a typo of *Meshtastic* that had been sitting in a Todo snapshot since 08-11. The model did not recognise it as a typo and did not flag it as unknown: it invented a Rust crate, an async API (`Metastatic::new(config).await?`), a Noise XX handshake, and a closing **`Sources:` line citing a GitHub repository that does not exist**. All of it was stored as `note_type: semantic` — the one type `label_claims` deliberately does *not* mark on retrieval, because it means *knowledge the brain established*. The same turn wrote **15 notes for 3 topics** (7 metastatic, 4 reticulum, 4 tailscale) as the tool loop re-issued `store_note` each iteration, then answered the *previous* question in the session and described the notes it had just written as pre-existing discoveries — including reporting one topic as "not yet captured, no dedicated note exists" 90 seconds after creating it.
+
+**Model comparison, from the ledger rather than from impressions.** Per-day `tool_name='chat'` rows: 08-25 gemma4:31b-cloud 97 calls at 8.9s avg; 08-31 gpt-oss:120b-cloud 33 calls at 7.0s. The 08-26 turn that answered *"What would you like to do? I can help you with tasks like…"* — the one that reads as gemma failing badly — was **not** gemma4:31b-cloud: the whole cloud ladder failed at ~450 ms per rung that morning (the quota exhaustion) and it fell to local `gemma4:latest`. Check `model_name` in `model_usage` before attributing a bad answer to a model. The fair comparison is 08-25 19:09, same class of question, where gemma4:31b-cloud returned real note ids with correct types and said plainly *"nothing was added or updated on 2026-08-25"* — and, hitting the same "metastatic" typo, listed it neutrally instead of inventing a product around it.
+
+So the two models fail in opposite directions, which is what makes splitting them worth doing rather than just picking one: gpt-oss is fast, never returns an empty completion, and calls tools willingly, but fills gaps with fluent invention and loops until its budget is gone; gemma is slower with a ~1-in-4 empty-completion rate, but declines to invent.
+
+**`CHAT_SYNTHESIS_PROVIDER` / `CHAT_SYNTHESIS_MODEL` turn on the split.** The worker (`CHAT_LLM_MODEL`) runs the tool loop; its closing prose is emitted as a `Thinking` event rather than as the answer, and the voice model composes the reply from the gathered tool results. Four things to know:
+
+- **The mechanism mostly existed and was unreachable.** `run_synthesis` had been in `clients/chat.rs` for months, but it was callable only from `run_ollama_tool_loop` (the *local* loop), accepted only `gemini`/`anthropic` (both paid), and was driven by a per-request field the UI never sets. All three had to change for it to run in production: an `ollama`/`ollama-cloud` arm via `config_for_catalog_entry` (same primitive the fallback ladder and capability routing use, so endpoint and credentials come from the environment and never from a checked-in file), env-level defaults resolved once in `run()`, and a call from `run_ollama_cloud_loop`.
+- **Synthesis takes the gathered results as an argument, not by scraping the message history.** `run_ollama_cloud_loop` trims history to `MAX_HISTORY_MESSAGES`, so reading `role: "tool"` messages back out would silently lose the earliest ones — on exactly the long research turns synthesis exists to serve.
+- **It also replaces `NO_ANSWER_AFTER_TOOLS_MESSAGE` on the cloud path.** Synthesis runs whether or not the worker produced closing prose, because a worker that looped until its budget ran out is precisely the case where its own summary is least worth relaying and the gathered results are still perfectly good.
+- **It does not fix fabrication, and must not be sold as if it does.** The metastatic notes were written by *tool calls* during the worker phase; a voice model would have narrated the same fabricated content, more gracefully. That needs a separate mechanism, below.
+
+**The write guard (`TurnWriteGuard` in `clients/chat.rs`) is that mechanism.** Two rules, both non-blocking:
+
+- **Grounding.** A `store_note` whose `note_type` is `semantic` or absent (which defaults to semantic) is rewritten to `unsourced_synthesis` when no retrieval tool has succeeded in the turn, and the tool result gains a loud `[GUARD — NOTE TYPE DOWNGRADED …]` notice telling the model to say so. The note is still stored — a chat turn that refuses to write is worse than one that writes with an honest label, and `unsourced_synthesis` already exists for exactly this content, carrying a retrieval-time label and an exclusion from consolidation source selection. Only `semantic` is guarded; every other type either carries its own provenance (`claim`, `source_record`, `inference`) or is a record of the turn itself (`episodic` — note `run()` writes one per chat turn — `reflection`, `outcome`).
+- **Duplicate suppression.** A write tool called twice with byte-identical arguments in one turn runs once; the repeat returns a `[GUARD — DUPLICATE WRITE SUPPRESSED …]` notice with `success = true`, because the earlier call did succeed and reporting failure would invite a retry of the very write being suppressed. Reads are never deduped — searching the same phrase twice is wasteful, not incorrect, and suppressing it would hand the model a fabricated tool result.
+
+Three details are load-bearing. `observe()` runs **after** dispatch, so a tool cannot ground the call that invoked it, and it takes the success flag — a failed `search_web` grounds nothing, which matters because the 2026-08-18 SearXNG outage returned well-formed empty results for three days. The duplicate check runs **before** the downgrade, so a repeat fingerprints the original args rather than the rewritten ones; reversed, the same content would land twice, once as `semantic` and once as `unsourced_synthesis`. And all four provider loops dispatch through one `execute_guarded` helper — wiring a guard into one loop and leaving three is the "labelled in one path, not the other" failure this codebase keeps re-learning. `write_guard_tests` covers all of it, including a regression case asserting the 15-note turn now writes 3.
+
 ### Delivering `notify_user` to the UI (`hbi-frontend`)
 
 A schedule that ends in `notify_user` writes an `(:AgentNotification)` and broadcasts `notifications/agent_chat` over SSE; the UI surfaces it twice — as a count badge on the Chat nav button, and as the in-chat `NotificationBanner` with a **Continue conversation** button that opens the `related_session_id` thread. Until 2026-08-20 those two views ran **independent** fetches of `GET /api/notifications?unread=true`, and only one of them refreshed:
@@ -551,11 +576,22 @@ poll_media_sources: 15 active sources x MEDIA_WATCH_MAX_PER_SOURCE (2) x 2 polls
   = 60 videos/day        -> 60 x chains/video-learning.yaml
   each spawn_gap_tasks max=4
   = 240 gap tasks/day    -> 240 x chains/fill-knowledge-gap.yaml
+
+# as of 2026-09-01 (max_per_source 1, 6h interval, spawn_gap_tasks max 2):
+#   15 x 1 x 4 polls = 60 videos/day cap, but <=15 per burst
+#   x2 gap tasks     = 120 gap tasks/day cap
+# steady state is far below both: ~9-19 new uploads/day across the watchlist.
 ```
 
 Both chains had exactly one `provider_hint: ollama-cloud` step, so that is ~300 cloud calls/day against the schedules' 1.39 — **the schedules were 0.5% of background cloud spend.** Measured 2026-08-31: three hours after a single poll, 29 `watch video:` and 59 `fill knowledge gap:` tasks had produced 51 cloud `reason` calls and 263k input tokens, with 18 more reason steps still parked and 54 jobs queued behind them. Prior full days were 47–80 background calls *total*. Nothing was misconfigured and nothing errored; the watchlist had simply grown, and cost scales with it.
 
 Both steps are now `provider_hint: ollama`, and `spawn_gap_tasks` is capped at `max: 2`. Neither needs a frontier model — the gap step summarises search results the chain just fetched into three fixed headings from a payload already distilled locally, and the video step compares one transcript summary against known notes. Background cloud is now the 1.39 scheduled calls/day, which is what leaves the free tier available for chat.
+
+**Moving that spend to local did not delete it — it relocated it onto a GPU with a much smaller budget, and the shape of the arrival mattered more than the total.** See "The local model has its own timeout" under Critical Dev Notes for what that cost. The burst is now shaped as well as capped: `MEDIA_WATCH_MAX_PER_SOURCE=1` with a **6-hour** interval in `schedules/media-watch.yaml`, which keeps the daily cap at 60 (15 × 1 × 4, same as the old 15 × 2 × 2) while halving the largest simultaneous arrival from 30 videos to 15.
+
+The cap was never the binding constraint in steady state — measured upstream publishing is **~9–19 videos/day** across the whole 15-source watchlist, and roughly half of any given day's ingests are *backlog drain* rather than new uploads (29 fresh vs 26 aged, measured over 36h on 2026-09-01). It binds precisely when a newly activated source's RSS delivers ~15 recent uploads at once, which is also exactly when the burst hurts. Polling twice as often with half the per-source cap also improves freshness rather than costing it: a channel posting twice in a day now yields 1+1 across two polls instead of being clipped.
+
+The general rule: **for a fan-out chain, cap the burst and the daily total separately.** They are different numbers solving different problems — the daily total protects the budget, the burst protects the latency of everything sharing the queue.
 
 Three rules generalise:
 
@@ -729,6 +765,53 @@ This exists because of a concrete outage: on 2026-08-08 the SerpApi free tier hi
 Two lessons, both general. An engine that cannot fail loudly will fail quietly, so "did this rung actually produce anything" has to be part of the success test, not just "did it return". And recreating the container fixed the DNS (its `resolv.conf` points at the host's Tailscale resolver, `100.100.100.100`; the brain container on the same bridge was unaffected) — root cause unresolved, so **it can recur**; the WARN lines above are the detection.
 
 **Right now SearXNG is the only working rung.** Measured 2026-08-20: `google` → `GOOGLE_API_KEY not configured`, `brave` → `BRAVE_API_KEY not configured`, `serpapi` → `429 account has run out of searches`. The ladder is four names deep and one engine wide, so the fall-through has nowhere to fall. Configuring Google CSE (100 free queries/day) is what would make the ladder actually redundant.
+
+**The third outage, 2026-08-31: every default SearXNG engine was bot-blocked.** Not DNS this time — `getent hosts google.com` resolved throughout, which is why the 08-18 playbook found nothing. All four of SearXNG's default `general` engines were refusing this IP: `brave` and `google cse` with *too many requests*, `duckduckgo` and `startpage` with *CAPTCHA*. Every one is bot detection rather than an outage, so none of it recovers on its own. SearXNG returned a well-formed `{"results": []}`, the ladder read rung one as having answered, and the day's ledger showed **124 SearXNG attempts with 37 returning anything**, while SerpApi quietly answered 85 of 87 — a 100/month free tier carrying the entire brain. The visible symptom was a chat turn writing three "technical deep dives" with zero citations.
+
+Two mechanisms are worth carrying forward:
+
+- **`unresponsive_engines` in the JSON response is the diagnostic, not DNS.** Both outages produce an identical empty-but-healthy response; only that field distinguishes "cannot connect" from "connected and was refused". `scripts/searxng_engine_health.py` probes the instance and prints per-engine status, and exits non-zero when nothing contributes at all.
+- **A timing-out engine suppresses the healthy ones.** SearXNG closes the result container on the slowest engine and discards anything that lands after (`add_unresponsive_engine after ResultContainer.close` in the logs). With `google cse` and `mwmbl` both burning the full 10s, engines that *were* working contributed zero to the merged response. So disabling a dead engine is not tidiness — leaving it enabled actively costs results.
+
+**Do not probe a single engine with `&engines=<name>`.** When that names only engines SearXNG considers unavailable it silently falls back to the default set, returning a full page of results that look like they came from the engine you asked about. `marginalia` "returned" 39–49 results that way while contributing nothing: upstream ships it `inactive: true` (it needs an API key now) and no amount of `disabled: false` overrides that. Probe with a plain query and attribute by each result's own `engine` field.
+
+The engine set in `searxng/settings.yml` is now chosen by measurement: `naver`, `seznam`, `zapmeta`, `encyclosearch`, `wiby`, `wikipedia` — 163 results across the four probe queries where the default set returned 0, with SearXNG answering rung one in ~2s. These are weaker individually than Google, which is the point of the ladder: SearXNG is the unlimited first rung and SerpApi is the backstop it stops burning. Google CSE (100 free queries/day, `GOOGLE_API_KEY` still unset) remains the single change that would make the ladder genuinely redundant.
+
+**The fourth failure, 2026-09-01: the engines answered, and the answers were useless.** The three outages above all end in *zero* results. This one does not, which is why every guard built for the others missed it. Symptom: the daily brief rendered **five of eight sections** as "No results collected today" — including WEATHER, which is what a human noticed.
+
+Nothing was broken. All 8 searches returned 4–8 results and were logged as successes; the `reason` step received them and wrote the brief honestly. The results were simply not answers:
+
+```
+search_web "Detroit Michigan weather forecast today"  -> 4 results
+  1. Detroit–Windsor tunnel                      (en.wikipedia.org)
+  2. The Michigan Weather Center                 (last post: January 2023)
+  3. Detroit Memories                            (nostalgia site)
+  4. Počasí - Detroit, předpověď na 10 dní       (Czech)
+```
+
+The cause is the **emergency engine set from 08-31 outliving its emergency.** With the mainstream engines CAPTCHA-blocked, `searxng/settings.yml` was rewritten to the six that still answered — `naver`, `seznam`, `zapmeta`, `encyclosearch`, `wiby`, `wikipedia` — chosen by *result count* on four evergreen technical probes. That set is structurally incapable of answering a time-sensitive general query: `seznam` is Czech, `naver` Korean, `wiby` **deliberately indexes vintage pages**, and `wikipedia`/`encyclosearch` carry no news at all. Re-measured 09-01, the top domains for three news queries were `en.wikipedia.org` (23), `handwiki.org` (17), `rationalwiki.org`, `conservapedia.com` — an encyclopedia farm, with 6 of 145 results from actual news outlets.
+
+Four things to carry forward:
+
+- **A relevance failure cannot be caught by a count, and the ladder's fall-through is a count.** `search_web` advances only on zero results, so 4 junk results stop the ladder exactly as firmly as 40 good ones. SerpApi — which works, 85/88 that week — was never consulted. There is no general fix for this: relevance is not measurable from the response, and the earlier query-rewriting null result (below) is the same lesson from the other direction.
+- **`scripts/searxng_engine_health.py` now probes two shapes**, `EVERGREEN_PROBES` and `FRESH_PROBES`, reported separately and never summed, because a healthy evergreen score is exactly what masked this. It also prints the **top domains** for the fresh queries, since the count cannot discriminate and no recency signal exists either — these engines return **no `publishedDate` at all** (0 of 52 measured). The check is a human glance; the script's job is to put the evidence where that glance lands.
+- **A hand-rolled HTTP 200 is not evidence an engine works.** Probing each blocked engine's public search URL from inside the container with a browser User-Agent returned 200 and no CAPTCHA for `duckduckgo`, `startpage`, `google` and `mojeek` — which reads as "the blocks lifted". Re-enabling all four and asking *SearXNG* the same query showed `duckduckgo: CAPTCHA`, `startpage: Suspended: CAPTCHA`, and 0 results from the other two. SearXNG issues different endpoints, params and headers than a plain GET. Only `unresponsive_engines` plus per-result `engine` attribution counts — the same class of false positive as probing with `&engines=<name>`.
+- **Some questions are not search questions.** Weather is structured, perishable data; a web search returns *links to pages that render it*, and a snippet essentially never contains the numbers. Even a fully healthy Google rung would have been the wrong tool. The step is now `http_request` against **`api.weather.gov`** (US NWS — free, no key, no quota), reading `properties.periods[0..2]`. The gridpoint URL is stable for a fixed location, derived once from `https://api.weather.gov/points/42.3314,-83.0458`; NWS 403s without a descriptive `User-Agent`. Verified end to end: *"This Afternoon: 93 °F, Chance Showers And Thunderstorms, Wind 9 mph WSW, Precipitation 30 %"*.
+
+The brief's prompt also now distinguishes **"no results"** from **"results, none usable"**, naming the reason for the latter. A section that silently renders "No results collected today" is indistinguishable from a quiet news day — the same silent-signal class as the truncation, reason-limits, and citation markers above, arriving through generated prose instead of a tool result.
+
+**Still outstanding:** the news sections themselves. Nothing here fixes them — the working engines cannot serve fresh news, SerpApi's 100/month tier cannot carry the brief's 8 searches/day (240/month), and `brave` is still 429. **Configuring `GOOGLE_API_KEY` + `GOOGLE_CX` (Custom Search, 100 free queries/day) remains the single change that would fix it**, as the 08-20 note already said.
+
+**Query rewriting was investigated and rejected — a null result worth not re-litigating.** Chain-generated queries are often 150+ character natural-language sentences carrying markdown (`**Strategic Objectives:** A deeper dive is needed into…`); `claim(action=verify)` is the highest-volume caller and passes the claim sentence *verbatim*. Measured over 14 days: 1444 searches, mean length 118 chars, 443 over 120, 144 containing markdown. The obvious inference — that these retrieve worse than keywords and should be normalised in `search_web` — **does not survive measurement.**
+
+Four variants were A/B'd over 18 real long queries from the ledger against the live instance: raw; markdown-stripped + whitespace-collapsed; that plus leading-label and leading-verb removal; and that plus stopword reduction to content words. Totals were **255 / 257 / 258 / 258 results with 0/18 zero-result queries in every arm** — no signal at all. Two follow-ups explain why, and both argue against shipping a rewriter:
+
+- **Result count does not measure relevance, and on relevance the aggressive variants are worse.** For *"…core strategic objectives that were supposedly failed during the Iran intervention"*, the raw query's top hit is the exact Reuters story; the keyword-reduced version returns Haenyeo divers and the 1980 Operation Eagle Claw. Dropping stopwords destroyed the phrase `core strategic objectives` that made the raw query work. Modern engines parse natural language; the sentence *is* the signal.
+- **Markdown stripping alone made aggregate counts go down** (226 → 191 over 14 markdown queries), with two collapses — `**"Dolly Incorporated" corporate structure**` went 11 → 0. The cause is not that markdown helps: `**` adjacent to a quoted phrase corrupts the engine's phrase operator, so the raw query runs an accidentally *loose* search and the stripped one runs the strict phrase search the author actually wrote and legitimately finds nothing. Which behaviour is preferable is a question the count cannot answer, and guessing would silently change the meaning of every quoted query in the system.
+
+A claim sentence sent verbatim (121 chars) returns 10 results — identical to its keyword reduction. The queries were never the problem; the blocked engines were. Note also that `apply_source_list` appends the `site:` clause **after** the caller's query, so any future rewriter must run before it — the longest queries in the ledger (411 chars) are entirely legitimate site restrictions and must never be touched.
+
+Two caveats on the measurement itself, for whoever revisits this. SearXNG is deterministic for a given query and engine state (verified 5/5 identical), so differences between arms are real rather than sampling noise — but engine state moves: `naver` degrades to `access denied` and `wikipedia` to `too many requests` under sustained probing, which is exactly what an A/B sweep generates. Re-check `unresponsive_engines` between arms, or a rate-limit induced by the experiment gets attributed to the variable under test.
 - **Quota exhaustion now alerts.** `is_quota_exhausted_error` in `services/queue.rs` is a deliberate subset of `is_transient_infra_error`: meta-learning is still skipped (the brain cannot reason its way out of a billing cap) but the coordinator now raises a deduped `:AgentNotification` (once per tool per 24h) instead of logging "skipping meta-learning" and going quiet. Silence is what turned a spent quota into a two-day outage.
 
 ### SourceLists (approved-domain lists for `search_web`)
@@ -784,6 +867,61 @@ See `project-docs/BRAIN_TO_BRAIN_PLAN.md` for the federated brain-to-brain trans
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.
 
 **Structured LLM output:** For tool outputs that must be strict JSON, call `LlmProvider::generate_json(prompt, system, required_keys, max_retries)` (default method on the trait in `services/traits.rs`) instead of hand-rolling `generate` + `extract_json` + `serde_json::from_str().unwrap_or_else(fallback)`. It runs the "targeted self-correction" loop: on a parse error or a missing required key it re-prompts the model with the specific error, up to `max_retries` extra attempts. Wired in `reason` `clarify` and `reason_structured`. `extract_json` (in `services/llm.rs`) now picks the **earliest-opening** delimiter, so a top-level `[{...}]` array is no longer mis-extracted to its first object — pass `&[]` for `required_keys` to accept any valid JSON (arrays/scalars).
+
+**Pick the local model by VRAM residency, not by leaderboard — and beware thinking models on extraction work.** Benchmarked 2026-09-01 with the brain **stopped** and no model resident, so every candidate got the same uncontended card (contended numbers are worthless here: the same `gemma4` call measured 105s against production and 40.6s clean, the difference being pure queueing). Prompt was a real 4.5 KB `video_learning` payload; the two tasks are the two that dominate background GPU time.
+
+| model | size | VRAM | summarize | extract JSON | gen tok/s | out tok |
+|---|---|---|---|---|---|---|
+| **granite4:latest** | 1.95 GB | 100% | **5.1s** | **3.4s** | 125.1 | 326 |
+| gemma3:latest | 3.1 GB | 100% | 6.7s | 4.6s | 103.4 | 324 |
+| granite3.3:8b | 4.6 GB | 100% | 10.3s | 7.0s | 67.3 | 328 |
+| nemotron-3-nano:4b | 2.64 GB | 100% | 13.1s | 7.5s — **invalid JSON** | 106.8 | 1079 |
+| qwen3:8b | 4.86 GB | 100% | 17.0s | — | 67.5 | 895 |
+| gemma4:latest *(was)* | 8.94 GB | **32%** | 40.6s | 45.4s | 25.9 | 933 |
+| qwen3.5:4b | 3.15 GB | 100% | **78.9s — empty** | — | 73.6 | **5263** |
+
+Four things generalise:
+
+- **Residency is a cliff, not a curve.** Every model that fits generates at 67–125 tok/s; `gemma4:latest` — a 9.86 GB model on an 8 GB card shared with `bge-m3` and Whisper — manages 25.9. No amount of tuning moves a model that does not fit; the only fix is a smaller one. **Models do not co-reside here**, either: a swap is a replacement, and attempting to benchmark two models against a live brain simply starves the challenger (observed — `granite3.3:8b` never got VRAM because production kept `gemma4` pinned).
+- **A "better" model can be the least efficient one.** `qwen3.5:4b` generates 3× faster than `gemma4` and still took **twice the wall time**, because thinking mode emitted **5263 tokens into `thinking` and returned an empty `response`** with `done_reason: stop`. That is the local twin of the `gemma4:31b-cloud` empty-completion failure documented above, and background jobs have no retry ladder — it would simply fail. Note this is `DEFAULT_MODEL` in `llm.rs`; the constant is stale and only harmless because compose always sets `OLLAMA_LOCAL_MODEL`. **Benchmark the thing you actually run**: for extraction and summarization, reasoning traces are tokens you pay for and discard.
+- **Output length is a cost, not a quality signal.** The three fastest models answered in ~325 tokens; `gemma4` used 933 for the same three headings. Measure `eval_count`, not just tok/s.
+- **Speed is worthless unstructured.** `nemotron-3-nano:4b` is fast and returned **unparseable JSON**, which would fail `generate_json` in `claim`. Any candidate must be tested on the structured path too, not just prose.
+
+**Confirmed in production, which beat the benchmark.** The swap landed mid-queue, so the ledger holds a clean A/B on the same tool in the same hour with the same backlog:
+
+| tool | `gemma4:latest` | `granite4:latest` | speedup |
+|---|---|---|---|
+| `ingest_media` | 81.8s (15 calls) | **4.4s** (46 calls) | 18.6× |
+| `reason` | 84.6s | **4.8s** | 17.6× |
+| `claim` | 82.1s | **3.8s** | 21.6× |
+
+Larger than the 8–13× measured on an idle card because the benchmark only removed the *residency* penalty; production also loses the queueing penalty, since jobs that finish in 4s stop contending for the two `semaphore_ollama` permits at all. Queue throughput went from ~1.5 to ~5 jobs/min and the 180-job parked backlog halved in twenty minutes, with zero failures. **Unload the outgoing model after a swap** (`keep_alive: 0`) — `gemma4` sat on 3.2 GB for its full 30m TTL afterwards, leaving only 1 GB free, which is less than `bge-m3` needs to load for embeddings.
+
+Quality was indistinguishable between `granite4`, `gemma3`, and `gemma4` on both tasks — same headings, same three concepts, correctly grounded, with `granite4` classifying claim `kind` correctly (it did duplicate 2 of 5 claims, which is the one regression worth watching). `granite4:latest` was already in `models.yaml` at `selection_rank: 120` with a 131 072 context, so no catalog change was needed and capability-routed steps are untouched — `vision` still resolves to `gemma4:latest` through the router.
+
+**The local model has its own timeout, because it is slow for a reason that is not going away.** Every LLM call shared one 120-second budget (`DEFAULT_TIMEOUT_SECS`). That is right for a cloud endpoint — one that has not answered in two minutes is not going to — and wrong for a local model on a shared consumer GPU, where two minutes is an ordinary call.
+
+The hardware is the whole explanation. `gemma4:latest` reports **9.86 GB** to `/api/ps` and gets **3.2 GB of VRAM** on an 8 GB RTX 3060 Ti already holding `bge-m3` (1.12 GB, pinned by `OLLAMA_KEEP_ALIVE=30m`) and the Whisper sidecar — so it runs **32% on GPU** at roughly **7 tok/s**. Measured 2026-09-01 against the live instance: an unloaded 826-token prompt generating ~450 tokens took **54–79s**. The model does not fit and cannot be made to fit; it will always be this slow.
+
+That was survivable while local carried ~30 calls/day. It stopped being survivable when `0426218` ("move the fan-out chains off cloud") moved the `video-learning` and `fill-knowledge-gap` chain steps to `provider_hint: ollama`. The commit was right about cost — those two chains were 99% of background cloud spend — but nothing measured whether the local path could absorb the volume, and it could not:
+
+| day | local calls | avg latency | failures |
+|---|---|---|---|
+| 08-29 | 19 | 31.7s | 0 |
+| 08-30 | 39 | 34.6s | 0 |
+| **08-31** (commit lands 11:35) | **444** | **81.5s** | **118 (27%)** |
+
+Per tool on the local path: `reason` **40.3%** failed, `claim` 27.8%, `ingest_media` 16.7%. Downstream, 26 jobs dead-lettered, taking **151 parked chain steps** with them via `cancel_parked_children` and **26 Tasks** via chain-death attribution — every one of them a `watch video:` run.
+
+**It is burstiness, not average load, and that is what makes the timeout the right fix rather than a band-aid.** Daily volume fits with room to spare — 445 calls at ~80s over two `semaphore_ollama` permits is under 20% duty cycle. But `poll_media_sources` runs twice a day and fans 15 active sources × `MEDIA_WATCH_MAX_PER_SOURCE` out into ~30 videos at once, so the work arrives in two piles. Hourly, the correlation is exact: at 1–10 calls/hour the average is 24–48s with **zero** failures; at 30–75 calls/hour it climbs to 70–120s and failures track it; one hour recorded **31 calls, 31 failures, average exactly 120.0s** — total collapse, every call clipped at the ceiling.
+
+Killing a call at 120s does not save the GPU any work — the compute is already spent — it only throws away the result *and* the chain built on it. `OLLAMA_LOCAL_TIMEOUT_SECS` (default **600**) applies to the local background config alone, built in `brain_core.rs`; cloud calls keep the 120s default. It is still bounded on purpose: a job holds a queue semaphore permit for the whole call, and there is no separate per-job timeout in the coordinator.
+
+Two things that were checked and are *not* the cause, so nobody re-investigates them: **concurrency is fine** — two simultaneous requests finished in 58s wall against 133s for the same pair run serially, because Ollama batches them; and **Ollama was up the whole time**, serving other requests normally.
+
+**A `reqwest` failure now says what actually went wrong.** `#[error("HTTP request failed: {0}")]` renders `reqwest::Error`'s `Display`, which stops at `error sending request for url (X)` — the part that says *why* (timed out / refused / DNS) lives in its `source()` chain and was dropped. So all 26 dead jobs above carried `error sending request for url (http://host.docker.internal:11434/api/generate)` while Ollama was healthy, and a **timeout was indistinguishable from an unreachable host**; the only way to tell was to notice each job had run for exactly 120 seconds. `describe_reqwest` (in `llm_providers/mod.rs`, used by both `LlmProviderError::Request` and `LlmError::Request`) prefixes the kind — `operation timed out:` / `connection refused:` — then appends the full cause chain. The prefix is deliberate: it survives the truncation applied to job `error` fields, and it uses the exact phrases `classify_unavailable` already matches, so a local timeout classifies as `transport` without touching the classifier. The local route is still excluded from cloud fallback by `!is_local_route`, so this changes the *label*, not the routing.
+
+**Every failed LLM call now records an `error_kind`.** The two non-fallback `record_model_usage` sites in `SharedLlm::generate` hardcoded `None` for that column, so **124 consecutive failures landed with `error_kind IS NULL`** — the exact rows you group by when asking why a model started failing, and the only path that filled it in was the cloud-fallback branch. `failure_kind` reuses `classify_unavailable` and falls back to `"other"` rather than `None`, so the column separates "we did not classify this" from "this did not fail".
 
 **A cloud LLM that cannot answer falls back to local; one that answers and refuses does not.** `SharedLlm::generate` (`services/shared_llm.rs`) retries on the local model when a cloud call fails, and `classify_unavailable` decides which failures qualify. Four kinds do: `rate_limited` (429/quota), `subscription_required` (Ollama Cloud's undocumented free tier answers 403 "requires a subscription"), `transport` (DNS failure, refused connection, TLS error, client-side timeout — the call never reached the provider), and `server_error` (a 5xx — the provider is up but not serving). Anything else propagates unchanged, because the distinction that matters is **"the provider could not answer"** vs **"the provider answered and rejected this request"**: falling back on a 400 or a 401 re-sends a bad request to a weaker model and gets a worse rejection out of it.
 

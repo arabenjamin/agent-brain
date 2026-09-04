@@ -263,5 +263,5 @@ pre_load_query: |-
     AS content
   ORDER BY t.priority ASC, t.due_at ASC
   LIMIT 15
-model_preference: gpt-oss:120b-cloud
+model_preference: gemma4:31b-cloud
 provider_hint: ollama-cloud

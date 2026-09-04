@@ -139,10 +139,33 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  - tool_name: search_web
+  # ── Weather: an API, not a web search ───────────────────────────────────
+  # This was `search_web "Detroit Michigan weather forecast today"` until
+  # 2026-09-01, and it never once produced a forecast. A forecast is
+  # structured, perishable data; a search returns *links to pages that render
+  # it*, and a result snippet almost never contains the numbers. With the
+  # mainstream SearXNG engines CAPTCHA-blocked (see searxng/settings.yml) the
+  # four results on 09-01 were: the Detroit-Windsor tunnel Wikipedia article,
+  # a Michigan weather blog last updated January 2023, a Detroit nostalgia
+  # site, and a Czech forecast page. The model then correctly wrote "No results
+  # collected today" — the brief was honest, the input was junk.
+  #
+  # Because that is 4 results and not 0, `search_web`'s ladder counted rung one
+  # as having answered and never fell through to a keyed engine. Zero-result
+  # fall-through cannot catch this; only using the right source can.
+  #
+  # api.weather.gov (US NWS) is free, needs no key, and has no quota. The
+  # gridpoint URL is stable for a fixed location and was derived once from
+  # https://api.weather.gov/points/42.3314,-83.0458 (Detroit, MI) ->
+  # .properties.forecast. Re-derive it that way if the location changes.
+  # NWS requires a descriptive User-Agent and 403s without one.
+  - tool_name: http_request
     arguments:
-      query: "Detroit Michigan weather forecast today"
-      count: 4
+      method: GET
+      url: "https://api.weather.gov/gridpoints/DTX/66,34/forecast"
+      headers:
+        User-Agent: "agent-brain (ara.benjamin@gmail.com)"
+        Accept: "application/geo+json"
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -150,7 +173,7 @@ steps:
   - tool_name: push_context
     arguments:
       session_id: "news-raw-{{date}}"
-      content: "## WEATHER — raw search results\n{{_prev}}"
+      content: "## WEATHER — NWS api.weather.gov forecast for Detroit, MI (authoritative, not a web search)\n{{_prev}}"
       role: observation
     priority: 1
     max_attempts: 2
@@ -184,8 +207,19 @@ steps:
         context (the context contains one "## <SECTION> — raw search results"
         block per topic). Cite sources with the URLs from that source not just the site. Flag notable spin or framing
         with ⚠️. For MARKETS, lead with index levels/direction if present. For
-        WEATHER, give today's Detroit forecast in one or two bullets.
-        If a section has no usable results, write "No results collected today."
+        WEATHER, the context holds a National Weather Service JSON response,
+        not search results: read `properties.periods` and report the FIRST TWO
+        periods (today and tonight) as one bullet each, giving `name`,
+        `temperature` + `temperatureUnit`, `shortForecast`, `windSpeed`/
+        `windDirection`, and `probabilityOfPrecipitation.value` when non-null.
+        Cite https://api.weather.gov. Ignore the remaining periods.
+
+        If a section's results are missing, or are present but unusable (off
+        topic, or dated well before {{date}}), do not silently write it off as
+        a quiet day — say which it was: "No results collected today." when the
+        section is empty, or "Search returned N results but none were usable
+        for {{date}} — <one-line reason>." when it is not. A reader must be
+        able to tell a slow news day from a broken search.
         Do not output JSON or any code fences. Write in plain prose with Markdown headings only.
       context: "{{_prev}}"
       store_inference: false

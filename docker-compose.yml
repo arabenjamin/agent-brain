@@ -40,6 +40,39 @@ services:
       - LLM_PROVIDER=ollama-cloud
       - OLLAMA_URL=https://ollama.com
       - OLLAMA_LOCAL_URL=http://host.docker.internal:11434
+      # The model every background/scheduled job runs on. Swapped off
+      # gemma4:latest 2026-09-01 on a clean benchmark (brain stopped, no model
+      # resident, real video_learning payload):
+      #
+      #   granite4:latest  1.95GB  100% VRAM  summarize 5.1s   extract 3.4s
+      #   gemma4:latest    8.94GB   32% VRAM  summarize 40.6s  extract 45.4s
+      #
+      # Residency is a cliff, not a curve: gemma4 is a 9.86GB model on an 8GB
+      # card and generates at 25.9 tok/s where anything that fits does 67-125.
+      # Output quality was indistinguishable on both tasks. granite4 is already
+      # in models.yaml (selection_rank 120, 131k context), so capability-routed
+      # steps are unaffected and `vision` still resolves to gemma4.
+      #
+      # Do NOT assume models co-reside — this card holds one generation model
+      # plus bge-m3. A swap is a replacement.
+      #
+      # Written as a LITERAL, not ${OLLAMA_LOCAL_MODEL:-...}. `.env` is
+      # gitignored, so a ${} default here is silently overridden by a stale
+      # value nobody reviews — which is exactly what happened on the first
+      # attempt at this swap: compose said granite4, `.env` line 16 said
+      # gemma4:latest, and the container came up on gemma4 with no warning.
+      # Keep deployment-shaping values literal in this file; reserve ${} for
+      # secrets and per-host paths.
+      - OLLAMA_LOCAL_MODEL=granite4:latest
+      # Request budget for the LOCAL background model, separate from the 120s
+      # default every cloud call keeps. A cloud model that has not answered in
+      # 120s is not going to; a local one on a shared 8 GB GPU routinely is —
+      # gemma4:latest is a 9.86 GB model that gets ~3.2 GB of VRAM and runs 32%
+      # on GPU at ~7 tok/s. At the old shared ceiling the twice-daily media-watch
+      # burst was pure data loss: one hour on 2026-08-31 logged 31 local calls,
+      # 31 failures, average exactly 120.0s. See CLAUDE.md, "The local model has
+      # its own timeout".
+      - OLLAMA_LOCAL_TIMEOUT_SECS=${OLLAMA_LOCAL_TIMEOUT_SECS:-600}
       # The brain's default model — what a call with no provider_hint and no
       # required_capabilities lands on. Moved off gemma4:31b-cloud 2026-08-31.
       #
@@ -59,6 +92,18 @@ services:
       # unset this to put both back on one model. Same model as the brain
       # today, but keep the handle: it is what lets the two diverge again.
       - CHAT_LLM_MODEL=gpt-oss:120b-cloud
+      # Worker/voice split. The worker (CHAT_LLM_MODEL) runs the tool loop; the
+      # voice model composes the reply from what it gathered. They are chosen
+      # for opposite strengths, measured 2026-08-31: gpt-oss:120b-cloud is fast
+      # (1.9s), never returns an empty completion, and is a willing tool caller
+      # — but it fills gaps with fluent invention and loops until its budget is
+      # gone. gemma4:31b-cloud is slower with a ~1-in-4 empty-completion rate,
+      # which is survivable for a single composition call behind a worker that
+      # already did the retrieval, and it says "we did not find that" instead
+      # of inventing. Unset CHAT_SYNTHESIS_PROVIDER to put both jobs back on
+      # the worker.
+      - CHAT_SYNTHESIS_PROVIDER=ollama-cloud
+      - CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are
@@ -96,7 +141,10 @@ services:
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
-      - MEDIA_WATCH_MAX_PER_SOURCE=2                             # first-poll stampede guard: max new videos/source/poll
+      # 1, paired with the 6h interval in schedules/media-watch.yaml — see the
+      # note there. Halves the burst (30 videos at once -> 15) while keeping the
+      # daily cap at 60. Lowered from 2 on 2026-09-01.
+      - MEDIA_WATCH_MAX_PER_SOURCE=1                             # first-poll stampede guard: max new videos/source/poll
       - MEDIA_DISCOVERY_ENABLED=true                             # weekly autonomous watchlist curation (stages INACTIVE sources for review)
       - MEDIA_DISCOVERY_MAX=3                                    # max new sources staged per discovery run
       - WHISPER_PROVIDER=http                                    # caption-less fallback via self-hosted Whisper sidecar

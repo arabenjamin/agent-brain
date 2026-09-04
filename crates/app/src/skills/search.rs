@@ -38,6 +38,43 @@ const SEARXNG_TIMEOUT_SECS: u64 = 20;
 /// because it keeps re-recording the error on each retry.
 const QUOTA_COOLDOWN_HOURS: i64 = 6;
 
+/// Extract `(engine, reason)` pairs from a SearXNG response's
+/// `unresponsive_engines` field.
+///
+/// The field is an array of arrays — `[["naver", "access denied"], …]` — and
+/// entries carry either one or two elements depending on version and failure
+/// kind. Anything unparseable is skipped rather than guessed at: this feeds a
+/// diagnostic log line, and a wrong reason is worse than a missing one.
+fn parse_unresponsive_engines(json: &Value) -> Vec<(String, String)> {
+    json.get("unresponsive_engines")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|e| {
+                    let parts = e.as_array()?;
+                    let name = parts.first()?.as_str()?.to_string();
+                    let reason = parts
+                        .get(1)
+                        .and_then(Value::as_str)
+                        .unwrap_or("unspecified")
+                        .to_string();
+                    Some((name, reason))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Render engine failures for a log line: `naver (access denied), wikipedia (…)`.
+fn format_unresponsive(failures: &[(String, String)]) -> String {
+    failures
+        .iter()
+        .map(|(engine, reason)| format!("{engine} ({reason})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Classify an engine failure for the usage ledger.
 ///
 /// `quota_exhausted` is the load-bearing case — it is what turns "the brain
@@ -594,6 +631,39 @@ impl SearchSkill {
                                 })
                             })
                             .collect::<Vec<_>>();
+
+                        // SearXNG reports per-upstream failures in
+                        // `unresponsive_engines` and still answers 200. Nothing
+                        // read that field, which is the entire reason two
+                        // multi-day outages were invisible: on 2026-08-18 every
+                        // upstream lost DNS, and on 2026-08-31 all four default
+                        // engines were bot-blocked (CAPTCHA / too many
+                        // requests). Both produced a well-formed empty result
+                        // set — indistinguishable, from here, from a genuinely
+                        // obscure query. It is the *reasons* that tell them
+                        // apart, so they are logged verbatim.
+                        let unresponsive = parse_unresponsive_engines(&json);
+                        if !unresponsive.is_empty() {
+                            let detail = format_unresponsive(&unresponsive);
+                            if results.is_empty() {
+                                warn!(
+                                    query = %query,
+                                    failed_engines = %detail,
+                                    "SearXNG returned no results AND every upstream engine failed \
+                                     — this is an outage, not an empty query. Run \
+                                     scripts/searxng_engine_health.py"
+                                );
+                            } else {
+                                warn!(
+                                    query = %query,
+                                    failed_engines = %detail,
+                                    returned = results.len(),
+                                    "SearXNG answered with some upstream engines down — results \
+                                     are degraded"
+                                );
+                            }
+                        }
+
                         // An empty result set is a real answer, not an engine
                         // failure — but it is also the shape a misconfigured
                         // SearXNG returns when every upstream engine is blocked,
@@ -1004,5 +1074,59 @@ mod tests {
         // more useful than one that answers with none.
         let junk = ToolCallResult::success_text("<html>rate limited</html>");
         assert_eq!(SearchSkill::result_count(&junk), 0);
+    }
+}
+
+#[cfg(test)]
+mod unresponsive_engine_tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_engine_and_reason_pairs_searxng_actually_sends() {
+        // Captured verbatim from the instance on 2026-08-31, mid-outage.
+        let json = json!({
+            "results": [],
+            "unresponsive_engines": [
+                ["brave", "too many requests"],
+                ["duckduckgo", "CAPTCHA"],
+                ["google cse", "too many requests"],
+                ["startpage", "CAPTCHA"]
+            ]
+        });
+        let got = parse_unresponsive_engines(&json);
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[1], ("duckduckgo".into(), "CAPTCHA".into()));
+        assert!(format_unresponsive(&got).contains("duckduckgo (CAPTCHA)"));
+    }
+
+    #[test]
+    fn a_healthy_response_reports_nothing() {
+        // Must stay silent on the common path, or the warning becomes noise
+        // and stops being read — which is how the outage stayed invisible.
+        let json = json!({ "results": [{"title": "x"}], "unresponsive_engines": [] });
+        assert!(parse_unresponsive_engines(&json).is_empty());
+        assert!(parse_unresponsive_engines(&json!({ "results": [] })).is_empty());
+    }
+
+    #[test]
+    fn a_single_element_entry_gets_a_placeholder_reason_not_a_guess() {
+        let json = json!({ "unresponsive_engines": [["mwmbl"]] });
+        assert_eq!(
+            parse_unresponsive_engines(&json),
+            vec![("mwmbl".to_string(), "unspecified".to_string())]
+        );
+    }
+
+    #[test]
+    fn malformed_entries_are_skipped_rather_than_panicking() {
+        // The field is version-dependent; a shape change must degrade to a
+        // thinner log line, never take down a search.
+        let json = json!({
+            "unresponsive_engines": [["ok", "reason"], "not-an-array", [], [42], null]
+        });
+        assert_eq!(
+            parse_unresponsive_engines(&json),
+            vec![("ok".to_string(), "reason".to_string())]
+        );
     }
 }

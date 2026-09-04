@@ -97,6 +97,233 @@ const NO_ANSWER_AFTER_TOOLS_MESSAGE: &str = "The assistant used every available 
      answer. Any tool calls above did run, so work may have been done, but nothing was written \
      back. Please retry — and check anything that looks like it should have been created.";
 
+// ============================================================================
+// Turn write guard — grounding and duplicate suppression for chat-authored writes
+// ============================================================================
+
+/// Tools that constitute *retrieval*: after one of these runs, the turn has
+/// consulted something outside the model's own weights.
+///
+/// The list is deliberately narrow. `read_file`/`get_file_tree` are retrieval in
+/// the literal sense but say nothing about the *world*, and the failure this
+/// guards against is a note about an external technology written from prior
+/// alone. Graph reads count because "what do we already know" is a legitimate
+/// grounding for a `semantic` note that consolidates stored knowledge.
+const RETRIEVAL_TOOLS: &[&str] = &[
+    "search_web",
+    "search_notes",
+    "neo4j_query",
+    "fetch_transcript",
+    "ingest_media",
+    "list_channel_videos",
+    "http_request",
+    "get_search_usage",
+    "execute_code",
+];
+
+/// Tools whose effects persist beyond the turn. An identical call to one of
+/// these twice in a single turn is never intentional — see
+/// [`TurnWriteGuard::screen`].
+const WRITE_TOOLS: &[&str] = &[
+    "store_note",
+    "create_task",
+    "write_workspace_file",
+    "notify_user",
+    "claim",
+    "manage_scheduled_task",
+];
+
+/// Appended to a `store_note` result when the guard downgraded its type, so the
+/// model is told what was actually stored rather than silently getting its way.
+const DOWNGRADE_NOTICE: &str = "\n\n[GUARD — NOTE TYPE DOWNGRADED TO `unsourced_synthesis`: \
+     this note was written as `semantic` (knowledge the brain established) but no retrieval \
+     tool ran in this turn, so nothing outside the model's own prior backs it. It is stored \
+     and retrievable, but labelled as unsourced on the way out. Say so in your answer. To \
+     store it as `semantic`, search first and write it from what you found.]";
+
+/// Returned in place of a re-executed duplicate write. See [`TurnWriteGuard::screen`].
+const DUPLICATE_NOTICE: &str = "[GUARD — DUPLICATE WRITE SUPPRESSED: this exact call was \
+     already executed earlier in this turn and was not run again. The earlier call succeeded; \
+     do not repeat it. Move on, or write the final answer.]";
+
+/// Per-turn state for [`TurnWriteGuard::screen`].
+///
+/// Two failures observed on 2026-08-31, both from one chat turn, both silent:
+///
+/// 1. `gpt-oss:120b-cloud` was asked for technical deep-dives on three mesh
+///    technologies. It ran **zero** searches (confirmed against the
+///    `search_usage` ledger) and wrote all three from prior — including one for
+///    "Metastatic", a typo of *Meshtastic* that had been sitting in a Todo since
+///    08-11. It invented a Rust crate, an API, a handshake, and a citation, and
+///    stored it as `note_type: semantic`, the one type `label_claims`
+///    deliberately does *not* mark on retrieval. Fluent invention filed as
+///    established knowledge is the worst cell in the table.
+/// 2. The same turn wrote 15 notes for 3 topics — 7 near-identical `metastatic`
+///    notes, 4 `reticulum`, 4 `tailscale` — as the tool loop re-issued
+///    `store_note` on successive iterations.
+///
+/// Neither is a model-quality problem that a better prompt fixes: the first is a
+/// missing precondition and the second is a missing idempotence check. The guard
+/// is deliberately **non-blocking** — a downgraded note is still stored and a
+/// duplicate still reports success — because a chat turn that refuses to write
+/// is worse than one that writes with an honest label, and because this runs on
+/// every turn where a false positive would otherwise cost the user real work.
+#[derive(Debug, Default)]
+struct TurnWriteGuard {
+    /// Set once any tool in [`RETRIEVAL_TOOLS`] has run this turn.
+    retrieval_ran: bool,
+    /// Fingerprints of write calls already executed this turn.
+    seen_writes: std::collections::HashSet<u64>,
+}
+
+/// Note types exempt from the grounding downgrade.
+///
+/// Only `semantic` claims to be *knowledge the brain established*; every other
+/// type either already carries its provenance (`claim`, `source_record`,
+/// `inference`, `unsourced_synthesis`) or is a record of the turn itself
+/// (`episodic`, `reflection`, `outcome`), which is legitimately unsourced.
+/// `None` is guarded because `store_note` defaults it to `semantic`.
+fn note_type_needs_grounding(note_type: Option<&str>) -> bool {
+    matches!(note_type.map(str::trim), None | Some("") | Some("semantic"))
+}
+
+/// Stable fingerprint of a write call, used for duplicate suppression.
+fn write_fingerprint(tool: &str, args: &Value) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tool.hash(&mut hasher);
+    // Serialising a `Value` is order-stable: serde_json preserves object key
+    // order, and both calls come from the same model emitting the same JSON.
+    serde_json::to_string(args)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What the guard decided about one tool call.
+#[derive(Debug, PartialEq)]
+enum Screened {
+    /// Execute as normal.
+    Pass,
+    /// Execute, but with these args, and append this notice to the result.
+    Rewrite { args: Value, notice: &'static str },
+    /// Do not execute; return this text as the result instead.
+    Suppress { notice: &'static str },
+}
+
+impl TurnWriteGuard {
+    /// Record that `tool` ran, then decide what to do with the *next* call.
+    ///
+    /// Called once per tool call, before dispatch. Ordering inside is
+    /// load-bearing: the duplicate check runs before the downgrade so a repeated
+    /// call is suppressed on its original fingerprint rather than on the
+    /// rewritten one, which would let the same note through twice — once as
+    /// `semantic` and once as `unsourced_synthesis`.
+    fn screen(&mut self, tool: &str, args: &Value) -> Screened {
+        if WRITE_TOOLS.contains(&tool) {
+            let fp = write_fingerprint(tool, args);
+            if !self.seen_writes.insert(fp) {
+                return Screened::Suppress {
+                    notice: DUPLICATE_NOTICE,
+                };
+            }
+        }
+
+        if tool == "store_note" && !self.retrieval_ran {
+            let note_type = args.get("note_type").and_then(Value::as_str);
+            if note_type_needs_grounding(note_type) {
+                let mut rewritten = args.clone();
+                if let Some(obj) = rewritten.as_object_mut() {
+                    obj.insert("note_type".into(), json!("unsourced_synthesis"));
+                    return Screened::Rewrite {
+                        args: rewritten,
+                        notice: DOWNGRADE_NOTICE,
+                    };
+                }
+            }
+        }
+
+        Screened::Pass
+    }
+
+    /// Mark retrieval as having happened. Called *after* dispatch so a tool
+    /// cannot ground the very call that invoked it.
+    fn observe(&mut self, tool: &str, success: bool) {
+        if success && RETRIEVAL_TOOLS.contains(&tool) {
+            self.retrieval_ran = true;
+        }
+    }
+}
+
+/// Execute one tool call through the turn guard, returning `(success, text)`.
+///
+/// **All four provider loops dispatch through here.** Wiring a guard into one
+/// loop and leaving the other three is the "labelled in one path, not the
+/// other" failure this codebase has re-learned repeatedly — most recently when
+/// claim labelling covered one retrieval path and the unlabelled copy of the
+/// same assertion reached the context window anyway.
+///
+/// A suppressed duplicate reports `success = true`: the identical earlier call
+/// did succeed, and reporting failure would invite the model to retry the very
+/// write being suppressed.
+async fn execute_guarded(
+    handler: &Option<ToolHandler>,
+    guard: &mut TurnWriteGuard,
+    tool_name: &str,
+    tool_args: &Value,
+) -> (bool, String) {
+    let (args_to_send, notice) = match guard.screen(tool_name, tool_args) {
+        Screened::Suppress { notice } => {
+            warn!(tool = %tool_name, "Duplicate write suppressed within chat turn");
+            return (true, notice.to_string());
+        }
+        Screened::Rewrite { args, notice } => {
+            warn!(
+                tool = %tool_name,
+                "Ungrounded semantic note downgraded to unsourced_synthesis — no retrieval ran this turn"
+            );
+            (args, Some(notice))
+        }
+        Screened::Pass => (tool_args.clone(), None),
+    };
+
+    let Some(h) = handler else {
+        return (false, "No tool handler available".to_string());
+    };
+
+    let args = if args_to_send.is_object() {
+        Some(args_to_send)
+    } else {
+        None
+    };
+    let result = h.execute(tool_name, args).await;
+    let is_err = result.is_error.unwrap_or(false);
+    let mut text = result
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let Content::Text { text } = c {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    guard.observe(tool_name, !is_err);
+
+    // Only annotate a write that actually happened — appending the downgrade
+    // notice to an error would describe a note that was never stored.
+    if let Some(n) = notice
+        && !is_err
+    {
+        text.push_str(n);
+    }
+
+    (!is_err, text)
+}
+
 /// Maximum characters of a tool result fed back to the LLM.
 /// Prevents context-window overflow (OllamaCloud/Ollama models often have 4K–32K token limits).
 /// The display preview uses the same cap so the UI stays consistent.
@@ -773,6 +1000,25 @@ impl ChatService {
     /// When `request.session_id` is set the user message and the final
     /// assistant response are persisted to Neo4j working memory automatically.
     pub async fn run(&self, request: ChatRequest, tx: mpsc::Sender<ChatEvent>) {
+        // Deployment-level default for the worker/voice split. Without this,
+        // synthesis is reachable only by a caller that sets it per request —
+        // which the UI does not do, so the mechanism sat unreachable in
+        // production while the worker model both gathered and spoke.
+        let mut request = request;
+        if request.synthesis_provider.is_none()
+            && let Ok(p) = std::env::var("CHAT_SYNTHESIS_PROVIDER")
+            && !p.trim().is_empty()
+        {
+            request.synthesis_provider = Some(p.trim().to_string());
+            if request.synthesis_model.is_none()
+                && let Ok(m) = std::env::var("CHAT_SYNTHESIS_MODEL")
+                && !m.trim().is_empty()
+            {
+                request.synthesis_model = Some(m.trim().to_string());
+            }
+        }
+        let request = request;
+
         let config = self.llm_config.read().await.clone();
         let all_tools = self.tool_registry.read().await.list();
         let session_id = request.session_id.clone();
@@ -1106,6 +1352,10 @@ impl ChatService {
 
         let mut empty_completions = 0usize;
 
+        // One guard per turn: grounding state and duplicate fingerprints are
+        // per-turn, and the ladder may run this loop once per rung.
+        let mut write_guard = TurnWriteGuard::default();
+
         for _iteration in 0..MAX_TOOL_ITERATIONS {
             let body = json!({
                 "model": model,
@@ -1285,30 +1535,8 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = if let Some(ref h) = handler {
-                    let args = if tool_input.is_object() {
-                        Some(tool_input)
-                    } else {
-                        None
-                    };
-                    let result = h.execute(&tool_name, args).await;
-                    let is_err = result.is_error.unwrap_or(false);
-                    let text = result
-                        .content
-                        .iter()
-                        .filter_map(|c| {
-                            if let Content::Text { text } = c {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (!is_err, text)
-                } else {
-                    (false, "No tool handler available".to_string())
-                };
+                let (success, result_text) =
+                    execute_guarded(&handler, &mut write_guard, &tool_name, &tool_input).await;
 
                 let preview: String =
                     prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -1357,6 +1585,7 @@ impl ChatService {
         tx: mpsc::Sender<ChatEvent>,
     ) {
         let do_synthesis = request.synthesis_provider.is_some();
+        let mut gathered: Vec<String> = Vec::new();
         let base_url = config
             .base_url
             .as_deref()
@@ -1391,6 +1620,10 @@ impl ChatService {
         let mut tool_rounds = 0usize;
         let mut answered = false;
         let mut final_round = false;
+
+        // One guard per turn: grounding state and duplicate fingerprints are
+        // per-turn, and the ladder may run this loop once per rung.
+        let mut write_guard = TurnWriteGuard::default();
 
         for _ in 0..=(MAX_TOOL_ITERATIONS + MAX_EMPTY_COMPLETION_RETRIES + 1) {
             // The wrap-up round: no tools offered, so a model that keeps
@@ -1650,30 +1883,8 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = if let Some(ref h) = handler {
-                    let args = if tool_args.is_object() {
-                        Some(tool_args)
-                    } else {
-                        None
-                    };
-                    let result = h.execute(&tool_name, args).await;
-                    let is_err = result.is_error.unwrap_or(false);
-                    let text = result
-                        .content
-                        .iter()
-                        .filter_map(|c| {
-                            if let Content::Text { text } = c {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (!is_err, text)
-                } else {
-                    (false, "No tool handler available".to_string())
-                };
+                let (success, result_text) =
+                    execute_guarded(&handler, &mut write_guard, &tool_name, &tool_args).await;
 
                 let preview: String =
                     prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -1685,6 +1896,10 @@ impl ChatService {
                     })
                     .await;
 
+                if do_synthesis && success {
+                    gathered.push(format!("### {tool_name}\n{preview}"));
+                }
+
                 // Append the tool result as a tool message (truncated to avoid context overflow).
                 messages.push(json!({
                     "role": "tool",
@@ -1695,7 +1910,7 @@ impl ChatService {
 
         // Research mode: synthesize gathered findings with a stronger model.
         if do_synthesis {
-            self.run_synthesis(&request, &messages, &weak_model_answer, tx.clone())
+            self.run_synthesis(&request, &gathered, &weak_model_answer, tx.clone())
                 .await;
         } else if !answered {
             // See the same guard in run_ollama_cloud_loop: the tool calls above
@@ -1769,8 +1984,19 @@ impl ChatService {
         let mut answered = false;
         let mut final_round = false;
 
+        // Worker/voice split: when synthesis is configured, this loop is the
+        // *worker*. Its own prose is surfaced as thinking rather than as the
+        // answer, and a second model composes the reply from the tool results.
+        let do_synthesis = request.synthesis_provider.is_some();
+        let mut weak_model_answer = String::new();
+        let mut gathered: Vec<String> = Vec::new();
+
         // The upper bound only guarantees termination — the loop exits on an
         // answer, on a hard failure, or after the wrap-up round below.
+        // One guard per turn: grounding state and duplicate fingerprints are
+        // per-turn, and the ladder may run this loop once per rung.
+        let mut write_guard = TurnWriteGuard::default();
+
         for _ in 0..=(MAX_TOOL_ITERATIONS + MAX_EMPTY_COMPLETION_RETRIES + 1) {
             // One extra pass beyond the tool budget: the wrap-up round. See
             // FINAL_ROUND_NUDGE — it is offered no tools, so a looping model
@@ -2025,11 +2251,22 @@ impl ChatService {
 
                 // No tool calls — final answer.
                 answered = true;
-                let _ = tx
-                    .send(ChatEvent::Message {
-                        content: full_content,
-                    })
-                    .await;
+                if do_synthesis {
+                    // Surface the worker's answer as thinking so the user can
+                    // see what was gathered before the voice model speaks.
+                    weak_model_answer = full_content.clone();
+                    let _ = tx
+                        .send(ChatEvent::Thinking {
+                            content: full_content,
+                        })
+                        .await;
+                } else {
+                    let _ = tx
+                        .send(ChatEvent::Message {
+                            content: full_content,
+                        })
+                        .await;
+                }
                 break;
             }
 
@@ -2092,30 +2329,8 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = if let Some(ref h) = handler {
-                    let args = if tool_args.is_object() {
-                        Some(tool_args.clone())
-                    } else {
-                        None
-                    };
-                    let result = h.execute(tool_name, args).await;
-                    let is_err = result.is_error.unwrap_or(false);
-                    let text = result
-                        .content
-                        .iter()
-                        .filter_map(|c| {
-                            if let Content::Text { text } = c {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (!is_err, text)
-                } else {
-                    (false, "No tool handler available".to_string())
-                };
+                let (success, result_text) =
+                    execute_guarded(&handler, &mut write_guard, tool_name, tool_args).await;
 
                 let preview: String =
                     prepare_tool_result(tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -2126,6 +2341,10 @@ impl ChatService {
                         preview: preview.clone(),
                     })
                     .await;
+
+                if do_synthesis && success {
+                    gathered.push(format!("### {tool_name}\n{preview}"));
+                }
 
                 // OpenAI requires tool results as role="tool" with tool_call_id.
                 // Use CLOUD_TOOL_RESULT_CHARS (smaller cap) because tool schemas are resent
@@ -2149,10 +2368,19 @@ impl ChatService {
             }
         }
 
-        // Falling out of the loop having answered nothing is a real outcome and
-        // needs a real explanation: the tool calls above did run, so the user has
-        // to be told work may have happened even though nothing was written back.
-        if !answered {
+        // Synthesis runs whether or not the worker produced closing prose: the
+        // tool results are what the voice model composes from, and a worker that
+        // looped until its budget ran out is exactly the case where its own
+        // summary is least worth relaying. This also means a turn that would
+        // otherwise report NO_ANSWER_AFTER_TOOLS_MESSAGE still gets an answer.
+        if do_synthesis {
+            self.run_synthesis(&request, &gathered, &weak_model_answer, tx.clone())
+                .await;
+        } else if !answered {
+            // Falling out of the loop having answered nothing is a real outcome
+            // and needs a real explanation: the tool calls above did run, so the
+            // user has to be told work may have happened even though nothing was
+            // written back.
             warn!(
                 model = %model,
                 tool_rounds,
@@ -2172,10 +2400,17 @@ impl ChatService {
     // Synthesis step — called after the tool-use loop in research mode
     // ========================================================================
 
+    /// Compose the turn's reply from what the worker gathered.
+    ///
+    /// `gathered` is passed explicitly rather than scraped back out of the
+    /// message history because `run_ollama_cloud_loop` trims that history to
+    /// `MAX_HISTORY_MESSAGES` to keep the context from overflowing. Reading
+    /// tool results from it would silently lose the earliest ones on exactly
+    /// the long research turns synthesis exists to serve.
     async fn run_synthesis(
         &self,
         request: &ChatRequest,
-        conversation: &[Value],
+        gathered: &[String],
         weak_answer: &str,
         tx: mpsc::Sender<ChatEvent>,
     ) {
@@ -2188,7 +2423,7 @@ impl ChatService {
         // env var isn't set (e.g. key was supplied via use_model, not via env).
         let live_config = self.llm_config.read().await.clone();
 
-        let (provider, default_model, api_key) = match provider_str.as_str() {
+        let (provider, default_model, api_key, base_url) = match provider_str.as_str() {
             "gemini" => {
                 let key = std::env::var("GEMINI_API_KEY")
                     .ok()
@@ -2204,6 +2439,7 @@ impl ChatService {
                     LlmProviderType::Gemini,
                     std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into()),
                     key,
+                    None,
                 )
             }
             "anthropic" | "claude" => {
@@ -2221,13 +2457,40 @@ impl ChatService {
                     LlmProviderType::Anthropic,
                     "claude-haiku-4-5-20251001".to_string(),
                     key,
+                    None,
+                )
+            }
+            // Ollama and Ollama Cloud are the $0 rungs, and the reason this
+            // arm exists: the split is only useful if the *voice* model can be
+            // one we already run. `config_for_catalog_entry` is the same
+            // primitive capability routing and the fallback ladder use to turn
+            // a catalog name into a callable config — endpoint and credentials
+            // come from the environment, never from a checked-in file.
+            "ollama" | "ollama-cloud" | "ollamacloud" => {
+                let model = request
+                    .synthesis_model
+                    .clone()
+                    .or_else(|| std::env::var("CHAT_SYNTHESIS_MODEL").ok())
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| "gemma4:31b-cloud".to_string());
+                let cfg = crate::services::model_router::config_for_catalog_entry(
+                    &LlmConfig::default(),
+                    &provider_str,
+                    &model,
+                );
+                (
+                    cfg.provider,
+                    model,
+                    cfg.api_key.clone(),
+                    cfg.base_url.clone(),
                 )
             }
             other => {
                 let _ = tx
                     .send(ChatEvent::Error {
                         message: format!(
-                            "Unknown synthesis provider: {other}. Use 'gemini' or 'anthropic'."
+                            "Unknown synthesis provider: {other}. \
+                             Use 'ollama', 'ollama-cloud', 'gemini', or 'anthropic'."
                         ),
                     })
                     .await;
@@ -2241,7 +2504,7 @@ impl ChatService {
             provider,
             model: model.clone(),
             api_key,
-            base_url: None,
+            base_url,
             temperature: 0.7,
             timeout: Duration::from_secs(120),
             ..LlmConfig::default()
@@ -2259,18 +2522,11 @@ impl ChatService {
             }
         };
 
-        // Collect tool results from the conversation history.
-        let mut tool_results: Vec<String> = Vec::new();
-        for msg in conversation {
-            if msg["role"].as_str() == Some("tool")
-                && let Some(content) = msg["content"].as_str()
-            {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    tool_results.push(trimmed.to_string());
-                }
-            }
-        }
+        let tool_results: Vec<&str> = gathered
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
 
         let research_block = if tool_results.is_empty() {
             let _ = tx
@@ -2410,6 +2666,10 @@ impl ChatService {
 
         let mut empty_completions = 0usize;
 
+        // One guard per turn: grounding state and duplicate fingerprints are
+        // per-turn, and the ladder may run this loop once per rung.
+        let mut write_guard = TurnWriteGuard::default();
+
         for _iteration in 0..MAX_TOOL_ITERATIONS {
             let call_start = std::time::Instant::now();
             let chat_result = llm.chat(&messages).await;
@@ -2462,30 +2722,8 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = if let Some(ref h) = handler {
-                    let args = if tool_args.is_object() {
-                        Some(tool_args)
-                    } else {
-                        None
-                    };
-                    let result = h.execute(&tool_name, args).await;
-                    let is_err = result.is_error.unwrap_or(false);
-                    let text = result
-                        .content
-                        .iter()
-                        .filter_map(|c| {
-                            if let Content::Text { text } = c {
-                                Some(text.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (!is_err, text)
-                } else {
-                    (false, "No tool handler available".to_string())
-                };
+                let (success, result_text) =
+                    execute_guarded(&handler, &mut write_guard, &tool_name, &tool_args).await;
 
                 let preview: String = result_text.chars().take(4000).collect();
                 let _ = tx
@@ -3721,5 +3959,170 @@ mod tool_budget_tests {
         // The generic dropped-turn line would say "reported no error", which is
         // both wrong and useless once this fires.
         assert!(!errors[0].contains("reported no error"));
+    }
+}
+
+#[cfg(test)]
+mod write_guard_tests {
+    use super::*;
+
+    fn note(note_type: Option<&str>, content: &str) -> Value {
+        match note_type {
+            Some(t) => json!({ "content": content, "note_type": t }),
+            None => json!({ "content": content }),
+        }
+    }
+
+    // --- grounding ---------------------------------------------------------
+
+    #[test]
+    fn ungrounded_semantic_note_is_downgraded() {
+        let mut g = TurnWriteGuard::default();
+        let args = note(Some("semantic"), "Metastatic is a Rust mesh library.");
+        match g.screen("store_note", &args) {
+            Screened::Rewrite { args, notice } => {
+                assert_eq!(args["note_type"], "unsourced_synthesis");
+                // Content must survive untouched — the type is the only repair.
+                assert_eq!(args["content"], "Metastatic is a Rust mesh library.");
+                assert!(notice.contains("unsourced_synthesis"));
+            }
+            other => panic!("expected downgrade, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_note_type_is_downgraded_because_it_defaults_to_semantic() {
+        let mut g = TurnWriteGuard::default();
+        assert!(matches!(
+            g.screen("store_note", &note(None, "x")),
+            Screened::Rewrite { .. }
+        ));
+    }
+
+    #[test]
+    fn retrieval_earlier_in_the_turn_grounds_a_semantic_note() {
+        let mut g = TurnWriteGuard::default();
+        g.observe("search_web", true);
+        assert_eq!(
+            g.screen("store_note", &note(Some("semantic"), "x")),
+            Screened::Pass
+        );
+    }
+
+    #[test]
+    fn a_failed_retrieval_does_not_ground_anything() {
+        // The 2026-08-18 SearXNG outage returned well-formed empty results for
+        // three days. A retrieval that did not retrieve must not license a
+        // note claiming to be established knowledge.
+        let mut g = TurnWriteGuard::default();
+        g.observe("search_web", false);
+        assert!(matches!(
+            g.screen("store_note", &note(Some("semantic"), "x")),
+            Screened::Rewrite { .. }
+        ));
+    }
+
+    #[test]
+    fn non_semantic_types_are_left_alone() {
+        // Every other type either carries its own provenance or is a record of
+        // the turn itself. Notably `episodic`: run() writes one per chat turn.
+        for t in [
+            "episodic",
+            "reflection",
+            "source_record",
+            "claim",
+            "inference",
+            "outcome",
+            "unsourced_synthesis",
+        ] {
+            let mut g = TurnWriteGuard::default();
+            assert_eq!(
+                g.screen("store_note", &note(Some(t), "x")),
+                Screened::Pass,
+                "type {t} should not be downgraded"
+            );
+        }
+    }
+
+    #[test]
+    fn only_store_note_is_grounded() {
+        let mut g = TurnWriteGuard::default();
+        assert_eq!(
+            g.screen("create_task", &json!({ "goal": "do a thing" })),
+            Screened::Pass
+        );
+    }
+
+    // --- duplicate suppression --------------------------------------------
+
+    #[test]
+    fn an_identical_write_runs_once() {
+        let mut g = TurnWriteGuard::default();
+        g.observe("search_web", true);
+        let args = note(Some("semantic"), "same body");
+        assert_eq!(g.screen("store_note", &args), Screened::Pass);
+        assert!(matches!(
+            g.screen("store_note", &args),
+            Screened::Suppress { .. }
+        ));
+    }
+
+    #[test]
+    fn differing_content_is_not_a_duplicate() {
+        let mut g = TurnWriteGuard::default();
+        g.observe("search_notes", true);
+        assert_eq!(g.screen("store_note", &note(None, "a")), Screened::Pass);
+        assert_eq!(g.screen("store_note", &note(None, "b")), Screened::Pass);
+    }
+
+    #[test]
+    fn reads_are_never_deduped() {
+        // Searching the same phrase twice is wasteful, not incorrect, and
+        // suppressing it would hand the model a fabricated tool result.
+        let mut g = TurnWriteGuard::default();
+        let args = json!({ "query": "reticulum" });
+        assert_eq!(g.screen("search_web", &args), Screened::Pass);
+        assert_eq!(g.screen("search_web", &args), Screened::Pass);
+    }
+
+    #[test]
+    fn dedup_runs_before_downgrade_so_one_note_cannot_land_under_two_types() {
+        // Ordering guard: if the downgrade ran first, the second call would
+        // fingerprint the *rewritten* args, miss the original, and store the
+        // same content twice — once semantic, once unsourced_synthesis.
+        let mut g = TurnWriteGuard::default();
+        let args = note(Some("semantic"), "body");
+        assert!(matches!(
+            g.screen("store_note", &args),
+            Screened::Rewrite { .. }
+        ));
+        assert!(matches!(
+            g.screen("store_note", &args),
+            Screened::Suppress { .. }
+        ));
+    }
+
+    #[test]
+    fn the_regression_case_writes_three_notes_not_fifteen() {
+        // 2026-08-31: one turn wrote 7 metastatic + 4 reticulum + 4 tailscale
+        // notes, all as `semantic`, with zero searches in the whole turn.
+        let mut g = TurnWriteGuard::default();
+        let topics = [("metastatic", 7), ("reticulum", 4), ("tailscale", 4)];
+        let mut executed = 0;
+        let mut downgraded = 0;
+        for (topic, repeats) in topics {
+            for _ in 0..repeats {
+                match g.screen("store_note", &note(Some("semantic"), topic)) {
+                    Screened::Rewrite { .. } => {
+                        executed += 1;
+                        downgraded += 1;
+                    }
+                    Screened::Pass => executed += 1,
+                    Screened::Suppress { .. } => {}
+                }
+            }
+        }
+        assert_eq!(executed, 3, "one write per distinct note");
+        assert_eq!(downgraded, 3, "all three ungrounded");
     }
 }

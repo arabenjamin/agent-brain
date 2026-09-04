@@ -46,10 +46,119 @@ outgoing:
   enable_http2: true
 
 engines:
-  # Engines that require an API key, are rate-limited into uselessness from a
-  # datacenter IP, or return non-text results the brain can't read.
-  - name: wikidata
+  # ---------------------------------------------------------------------
+  # Engine selection, rewritten 2026-08-31 after a silent outage. Every name
+  # below was MEASURED from this host with
+  # `scripts/searxng_engine_health.py` — rerun it before changing any of it.
+  #
+  # WHAT HAPPENED: all four of SearXNG's default `general` engines were
+  # refusing this IP outright —
+  #
+  #     brave      -> too many requests      duckduckgo -> CAPTCHA
+  #     google cse -> too many requests      startpage  -> CAPTCHA
+  #
+  # Every one is bot detection, not an outage, so none of it recovers on its
+  # own. SearXNG answered `200 {"results": []}` to everything, and because that
+  # is not an error the `search_web` ladder (skills/search.rs) treated rung one
+  # as having answered and never fell through to the keyed engines behind it.
+  # Measured that day: 124 SearXNG attempts, 37 with any results, while SerpApi
+  # answered 85 of 87 — on a 100/month free tier that was silently carrying the
+  # entire brain.
+  #
+  # Same symptom as the 2026-08-18 DNS outage, different cause: `getent hosts`
+  # resolved fine throughout. The field that distinguishes them is
+  # `unresponsive_engines` in the JSON response — check that first, not DNS.
+  #
+  # A SECOND, SUBTLER FAILURE: an engine that *times out* is worse than one
+  # that fails fast, because SearXNG closes the result container on the slowest
+  # engine and logs `add_unresponsive_engine after ResultContainer.close` —
+  # results arriving late are discarded. With `google cse` and `mwmbl` both
+  # timing out at 10s, the healthy engines contributed ZERO to the merged
+  # response. The disabled block below is not tidiness: leaving a dead engine
+  # enabled actively suppresses the live ones.
+  #
+  # HOW TO MEASURE AN ENGINE, because the obvious way is wrong: do NOT probe
+  # with `&engines=<name>`. When that names only engines SearXNG considers
+  # unavailable, it silently falls back to the default set and hands back a
+  # full page of results that look like they came from the engine you asked
+  # for. `marginalia` "returned" 39-49 results that way and contributes
+  # nothing — upstream ships it `inactive: true` because it now needs an API
+  # key, and no amount of `disabled: false` overrides that. Probe with a plain
+  # query and attribute by each result's own `engine` field instead.
+  # ---------------------------------------------------------------------
+
+  # --- Measured working. Counts are results contributed to a plain query,
+  # summed over the four probes in scripts/searxng_engine_health.py.
+  - name: naver           # 60 — own index, tolerant of server IPs
     disabled: false
+  - name: seznam          # 40 — own index (cz), no bot gate
+    disabled: false
+  - name: zapmeta         # 36 — metasearch, broad mainstream coverage
+    disabled: false
+  - name: encyclosearch   # 28 — encyclopedia aggregator, good for definitions;
+    disabled: false       #      occasionally times out, still net positive
+  - name: wiby            # 11 — hand-curated indie/technical web, small but
+    disabled: false       #      returns pages the mainstream engines bury
+  - name: wikipedia       #  0 on these probes (all too specific) but
+    disabled: false       #      authoritative on any term with an article
+
+  # --- Measured blocked or dead: OFF so they stop suppressing the above.
+  # Not broken engines — engines that will not serve this IP. `search_web`
+  # still reaches Google and Brave through its own keyed rungs, configured in
+  # the environment and unaffected by this file.
+  #
+  # RE-PROBED 2026-09-01 (still blocked), and the way that probe went wrong is
+  # worth keeping. A plain `urllib` GET to each engine's public search URL with
+  # a browser User-Agent, issued FROM INSIDE this container, returned HTTP 200
+  # and no CAPTCHA body for duckduckgo, startpage, google, mojeek and bing —
+  # which looks exactly like "the blocks lifted". Re-enabling all four and
+  # asking SearXNG the same query showed otherwise:
+  #
+  #     unresponsive: [['duckduckgo','CAPTCHA'], ['startpage','Suspended: CAPTCHA']]
+  #     google -> 0 results   mojeek -> 0 results   (no error either way)
+  #
+  # SearXNG does not issue the request you just issued — different endpoints,
+  # params, headers and in some cases POST — so **a hand-rolled 200 is not
+  # evidence an engine works here.** Only `unresponsive_engines` plus per-result
+  # `engine` attribution is. Same class of mistake as probing with
+  # `&engines=<name>`, documented in the header; both produce a confident
+  # false positive.
+  - name: brave           # too many requests (429 to a raw probe as well)
+    disabled: true
+  - name: duckduckgo      # CAPTCHA (re-confirmed 2026-09-01)
+    disabled: true
+  - name: startpage       # Suspended: CAPTCHA (re-confirmed 2026-09-01)
+    disabled: true
+  - name: google          # 0 results, no error (re-confirmed 2026-09-01)
+    disabled: true
+  - name: google cse      # too many requests, and times out (see above)
+    disabled: true
+  - name: qwant           # CAPTCHA
+    disabled: true
+  - name: sogou           # CAPTCHA
+    disabled: true
+  - name: yep             # access denied
+    disabled: true
+  - name: yahoo           # HTTP protocol error
+    disabled: true
+  - name: tusksearch      # HTTP error
+    disabled: true
+  - name: yacy            # timeout (public peers are unreliable)
+    disabled: true
+  - name: mwmbl           # timeout; index too thin to be worth the wait
+    disabled: true
+  - name: wikidata        # 403 at engine init (SPARQL endpoint blocks us)
+    disabled: true
+  - name: marginalia      # upstream `inactive: true` — needs an API key now.
+    disabled: true        # Would be the best fit here if keyed; see header.
+  - name: mojeek          # 0 results, no error — a soft block, the worst kind:
+    disabled: true        # indistinguishable from "no hits for this query"
+  - name: crowdview       # 0 results, no error
+    disabled: true
+  - name: vuhuv           # 0 results, no error
+    disabled: true
+
+  # --- Non-text or narrow results the brain cannot read ----------------
   - name: currency
     disabled: true
   - name: wikibooks
