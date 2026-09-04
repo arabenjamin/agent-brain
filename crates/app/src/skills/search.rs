@@ -66,6 +66,58 @@ fn parse_unresponsive_engines(json: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// Normalize one SerpApi `google_news` story into the `{title, link, snippet,
+/// source, date}` shape the rest of the ladder emits. Returns `None` unless the
+/// story has both a title and a link — a group header with neither is not a
+/// citable result.
+fn normalize_news_item(item: &Value) -> Option<Value> {
+    let title = item.get("title").and_then(Value::as_str)?;
+    let link = item.get("link").and_then(Value::as_str)?;
+    Some(json!({
+        "title":   title,
+        "link":    link,
+        "snippet": item.get("snippet").and_then(Value::as_str).unwrap_or(""),
+        "source":  item.get("source").and_then(|s| s.get("name")).and_then(Value::as_str),
+        "date":    item.get("date").and_then(Value::as_str),
+    }))
+}
+
+/// Flatten a SerpApi `google_news` `news_results` array into a normalized list.
+///
+/// Google News clusters some results: an entry may be a flat story, or carry a
+/// `highlight` featured story and/or a `stories` sub-array (a topic cluster).
+/// All are unrolled so a clustered topic contributes several headlines rather
+/// than one opaque group, then the list is capped at `count`.
+fn flatten_google_news(news_results: &[Value], count: usize) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for entry in news_results {
+        if out.len() >= count {
+            break;
+        }
+        if let Some(n) = normalize_news_item(entry) {
+            out.push(n);
+        }
+        if out.len() < count
+            && let Some(h) = entry.get("highlight")
+            && let Some(n) = normalize_news_item(h)
+        {
+            out.push(n);
+        }
+        if let Some(stories) = entry.get("stories").and_then(Value::as_array) {
+            for s in stories {
+                if out.len() >= count {
+                    break;
+                }
+                if let Some(n) = normalize_news_item(s) {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out.truncate(count);
+    out
+}
+
 /// Render engine failures for a log line: `naver (access denied), wikipedia (…)`.
 fn format_unresponsive(failures: &[(String, String)]) -> String {
     failures
@@ -214,6 +266,9 @@ impl SearchSkill {
             description:
                 "Search the web. Tries engines in a failover ladder (self-hosted SearXNG first, \
                  then Google CSE, SerpApi, Brave) so one exhausted quota does not fail the call. \
+                 Pass engine=\"google_news\" for SerpApi's Google News engine (richer, dated news \
+                 stories with sources) — it is promoted to the head of the ladder and falls back \
+                 through SearXNG when SerpApi's quota is spent. \
                  Pass source_list to restrict results to an approved domain list stored in the graph."
                     .to_string(),
             input_schema: json!({
@@ -227,8 +282,9 @@ impl SearchSkill {
                         "type": "string",
                         "description": "Preferred engine, tried first. Omit to use the configured \
                                         ladder (default: searxng → google → serpapi → brave). \
-                                        Remaining engines are still used as fallbacks.",
-                        "enum": ["searxng", "serpapi", "brave", "google"]
+                                        Remaining engines are still used as fallbacks. \
+                                        'google_news' is SerpApi's Google News engine (news only).",
+                        "enum": ["searxng", "serpapi", "brave", "google", "google_news"]
                     },
                     "count": {
                         "type": "integer",
@@ -337,7 +393,7 @@ impl SearchSkill {
     /// searches of the daily news chain until it does.
     async fn engine_ladder(&self, requested: Option<&str>) -> Vec<String> {
         let configured = std::env::var("SEARCH_ENGINE_ORDER").unwrap_or_default();
-        let exhausted = self
+        let mut exhausted = self
             .telemetry
             .as_ref()
             .and_then(|t| {
@@ -345,6 +401,19 @@ impl SearchSkill {
                     .ok()
             })
             .unwrap_or_default();
+        // `serpapi` (Google organic) and `google_news` are two engines on ONE
+        // SerpApi account, so they share the monthly quota. A quota error is
+        // recorded against whichever was called, but exhausting the account
+        // exhausts both — demote the sibling too, or the ladder keeps hammering
+        // a spent account through the other engine name.
+        let has_serpapi = exhausted.iter().any(|e| e == "serpapi");
+        let has_news = exhausted.iter().any(|e| e == "google_news");
+        if has_serpapi && !has_news {
+            exhausted.push("google_news".to_string());
+        }
+        if has_news && !has_serpapi {
+            exhausted.push("serpapi".to_string());
+        }
         order_engines(&configured, requested, &exhausted)
     }
 
@@ -447,6 +516,7 @@ impl SearchSkill {
             let attempt = match engine.as_str() {
                 "searxng" => self.search_searxng(&effective_query, count).await,
                 "serpapi" => self.search_serpapi(&effective_query, count).await,
+                "google_news" => self.search_serpapi_news(&effective_query, count).await,
                 "brave" => self.search_brave(&effective_query, count).await,
                 "google" => self.search_google(&effective_query, count).await,
                 other => ToolCallResult::error(format!("Unsupported search engine: {other}")),
@@ -769,6 +839,97 @@ impl SearchSkill {
         }
     }
 
+    /// SerpApi's Google News engine — richer, freshly-dated news stories.
+    ///
+    /// Shares the SerpApi account (and its monthly quota) with `search_serpapi`,
+    /// but `engine=google_news` returns curated news results carrying a source
+    /// name and publication date rather than generic organic web results. It is
+    /// deliberately NOT in the default ladder: callers opt in with
+    /// `engine: "google_news"` (the daily news brief does), which promotes it to
+    /// the head and still falls back through SearXNG when the quota is spent.
+    ///
+    /// Google News ignores `num`; it returns a full page, so the result set is
+    /// flattened and capped locally via `flatten_google_news`.
+    async fn search_serpapi_news(&self, query: &str, count: u8) -> ToolCallResult {
+        let api_key = match self.resolve_key("serpapi", "SERPAPI_KEY").await {
+            Some(k) => k,
+            None => {
+                if let Some(ref t) = self.telemetry {
+                    let _ = t.log_knowledge_gap(
+                        query,
+                        Some("search_web:google_news"),
+                        "missing_tool_config",
+                    );
+                }
+                return ToolCallResult::error(
+                    "SerpApi key not configured (set SERPAPI_KEY or define serpapi ApiContext)"
+                        .to_string(),
+                );
+            }
+        };
+
+        let response = self
+            .client
+            .get("https://serpapi.com/search.json")
+            .query(&[
+                ("api_key", api_key.as_str()),
+                ("q", query),
+                ("engine", "google_news"),
+                ("gl", "us"),
+                ("hl", "en"),
+            ])
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if let Some(ref t) = self.telemetry {
+                        let _ =
+                            t.log_knowledge_gap(query, Some("search_web:google_news"), "api_error");
+                    }
+                    return ToolCallResult::error(format!(
+                        "SerpApi Google News failed: {} - {}",
+                        status, text
+                    ));
+                }
+                match resp.json::<Value>().await {
+                    Ok(json) => {
+                        let empty = vec![];
+                        let news = json
+                            .get("news_results")
+                            .and_then(Value::as_array)
+                            .unwrap_or(&empty);
+                        let results = flatten_google_news(news, count as usize);
+                        if results.is_empty()
+                            && let Some(ref t) = self.telemetry
+                        {
+                            let _ = t.log_knowledge_gap(
+                                query,
+                                Some("search_web:google_news"),
+                                "missing_info",
+                            );
+                        }
+                        ToolCallResult::success_json(results)
+                    }
+                    Err(e) => ToolCallResult::error(format!(
+                        "Failed to parse SerpApi Google News response: {}",
+                        e
+                    )),
+                }
+            }
+            Err(e) => {
+                if let Some(ref t) = self.telemetry {
+                    let _ =
+                        t.log_knowledge_gap(query, Some("search_web:google_news"), "network_error");
+                }
+                ToolCallResult::error(format!("Request failed: {}", e))
+            }
+        }
+    }
+
     async fn search_brave(&self, query: &str, count: u8) -> ToolCallResult {
         let api_key =
             match self.resolve_key("brave", "BRAVE_API_KEY").await {
@@ -1074,6 +1235,94 @@ mod tests {
         // more useful than one that answers with none.
         let junk = ToolCallResult::success_text("<html>rate limited</html>");
         assert_eq!(SearchSkill::result_count(&junk), 0);
+    }
+
+    #[test]
+    fn serpapi_quota_demotes_google_news_too_and_vice_versa() {
+        // The two engines share one SerpApi account, so exhausting either must
+        // move both to the back of the ladder (the sibling expansion happens in
+        // engine_ladder; order_engines then demotes both).
+        let ladder = order_engines(
+            "searxng,google,serpapi,brave",
+            Some("google_news"),
+            &v(&["serpapi", "google_news"]),
+        );
+        // Both siblings sink below the unmetered engine even though google_news
+        // was explicitly requested.
+        assert_eq!(ladder[0], "searxng");
+        assert!(
+            ladder.iter().position(|e| e == "serpapi") > ladder.iter().position(|e| e == "searxng")
+        );
+        assert!(
+            ladder.iter().position(|e| e == "google_news")
+                > ladder.iter().position(|e| e == "searxng")
+        );
+    }
+}
+
+#[cfg(test)]
+mod google_news_tests {
+    use super::*;
+
+    #[test]
+    fn flattens_a_flat_story() {
+        let news = vec![json!({
+            "title": "Headline",
+            "link": "https://example.com/a",
+            "snippet": "body",
+            "source": {"name": "Example News"},
+            "date": "09/04/2026, 07:00 AM, +0000 UTC"
+        })];
+        let out = flatten_google_news(&news, 5);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["link"], "https://example.com/a");
+        assert_eq!(out[0]["source"], "Example News");
+        assert_eq!(out[0]["snippet"], "body");
+    }
+
+    #[test]
+    fn unrolls_highlight_and_topic_clusters() {
+        // A single news_results entry with no top-level story of its own, but a
+        // highlight plus a stories cluster, must contribute several headlines.
+        let news = vec![json!({
+            "highlight": {"title": "Featured", "link": "https://example.com/h"},
+            "stories": [
+                {"title": "Story 1", "link": "https://example.com/1"},
+                {"title": "Story 2", "link": "https://example.com/2"}
+            ]
+        })];
+        let out = flatten_google_news(&news, 5);
+        let links: Vec<&str> = out.iter().map(|r| r["link"].as_str().unwrap()).collect();
+        assert_eq!(
+            links,
+            vec![
+                "https://example.com/h",
+                "https://example.com/1",
+                "https://example.com/2"
+            ]
+        );
+    }
+
+    #[test]
+    fn drops_group_headers_with_no_link_and_caps_at_count() {
+        let news = vec![
+            json!({"title": "Topic group with no link of its own"}),
+            json!({"title": "Real 1", "link": "https://example.com/1"}),
+            json!({"title": "Real 2", "link": "https://example.com/2"}),
+            json!({"title": "Real 3", "link": "https://example.com/3"}),
+        ];
+        let out = flatten_google_news(&news, 2);
+        assert_eq!(out.len(), 2);
+        // The header (no link) is skipped; the two real stories come through.
+        assert_eq!(out[0]["title"], "Real 1");
+        assert_eq!(out[1]["title"], "Real 2");
+    }
+
+    #[test]
+    fn missing_snippet_becomes_empty_not_null() {
+        let news = vec![json!({"title": "T", "link": "https://example.com/x"})];
+        let out = flatten_google_news(&news, 5);
+        assert_eq!(out[0]["snippet"], "");
     }
 }
 
