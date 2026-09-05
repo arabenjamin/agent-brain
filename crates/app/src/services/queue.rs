@@ -2196,10 +2196,21 @@ pub fn goal_topic(goal: &str) -> &str {
 
     match goal.find(':') {
         Some(idx) if idx < MAX_PREFIX_LEN => {
+            let prefix = &goal[..idx];
             let rest = goal[idx + 1..].trim();
+            // A routing prefix is a bare label ("fill knowledge gap:",
+            // "watch video:"); it never contains a quote. A quote before the
+            // colon means the subject itself is embedded, and the colon is
+            // sentence punctuation — stripping there decapitates the query
+            // (e.g. "Research the concept of 'knowledge gap': how it forms"
+            // has its colon at index 39 and would search "how it forms …").
             // A URL ("https://…") colon must not be treated as a prefix, and a
             // trailing colon with nothing after it leaves nothing to search.
-            if rest.is_empty() || rest.starts_with("//") {
+            if rest.is_empty()
+                || rest.starts_with("//")
+                || prefix.contains('\'')
+                || prefix.contains('"')
+            {
                 goal.trim()
             } else {
                 rest
@@ -2456,6 +2467,23 @@ mod tests {
     #[test]
     fn goal_topic_keeps_the_goal_when_nothing_follows_the_colon() {
         assert_eq!(goal_topic("fill knowledge gap:"), "fill knowledge gap:");
+    }
+
+    #[test]
+    fn goal_topic_does_not_decapitate_a_quoted_subject_before_a_colon() {
+        // Regression: this self-generated brain-exercise goal has its colon at
+        // index 39 (inside the prefix bound), so the naive rule stripped the
+        // subject and searched "how it forms, its impact on learning …" — with
+        // "knowledge gap" gone — failing the task four times. A quote in the
+        // candidate prefix marks it as an embedded subject, not a routing label.
+        let goal = "Research the concept of 'knowledge gap': \
+                    how it forms, its impact on learning and problem-solving.";
+        assert_eq!(goal_topic(goal), goal);
+        // A double-quoted subject is guarded the same way.
+        assert_eq!(
+            goal_topic("Investigate the \"dead man's switch\": how it triggers"),
+            "Investigate the \"dead man's switch\": how it triggers"
+        );
     }
 
     #[test]
