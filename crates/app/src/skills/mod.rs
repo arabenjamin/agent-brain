@@ -14,6 +14,7 @@ pub mod query;
 pub mod resource;
 pub mod scheduler;
 pub mod search;
+pub mod serde_flex;
 pub mod sleep;
 pub mod task;
 #[cfg(test)]

@@ -943,15 +943,24 @@ struct ReasonInput {
     context: Option<String>,
     #[serde(default = "default_reason_limit")]
     limit: usize,
-    #[serde(default = "default_store_inference")]
+    #[serde(
+        default = "default_store_inference",
+        deserialize_with = "crate::skills::serde_flex::deserialize_flex_bool"
+    )]
     store_inference: bool,
     #[serde(default)]
     task_id: Option<String>,
     #[serde(default)]
     available_tools: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::deserialize_flex_bool"
+    )]
     run_critic: bool,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::deserialize_flex_bool"
+    )]
     create_gap_tasks: bool,
 }
 
