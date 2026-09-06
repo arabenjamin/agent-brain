@@ -95,16 +95,16 @@ services:
       # locked out by real cost. On a 429 those steps fall back to gpt-oss:120b-
       # cloud, then local — see build_fallback_chain in services/shared_llm.rs.
       - CLOUD_TIER=2
-      # Human-facing /chat has its own config handle. gemini-3-flash runs the
+      # Human-facing /chat has its own config handle. gemini-3.8-flash runs the
       # whole turn — it drives the tool loop AND writes the reply. A 429 (or any
       # turn that streams nothing) falls down chat_fallback_ladder, led by
       # gpt-oss:120b-cloud — "what we were doing before". CHAT_API_KEY is
       # required: the provider override does NOT reset the inherited Ollama key,
       # so without it chat would call Gemini with the wrong credential.
       - CHAT_LLM_PROVIDER=gemini
-      - CHAT_LLM_MODEL=gemini-3-flash
+      - CHAT_LLM_MODEL=gemini-3.8-flash
       - CHAT_API_KEY=${GEMINI_API_KEY:-}
-      # Worker/voice split DISABLED for chat: gemini-3-flash is a strong single
+      # Worker/voice split DISABLED for chat: gemini-3.8-flash is a strong single
       # model that both gathers and speaks, so the split (which existed to keep
       # gpt-oss's fluent invention out of the final prose) is not needed. Re-set
       # CHAT_SYNTHESIS_PROVIDER/MODEL to put a separate voice model back.

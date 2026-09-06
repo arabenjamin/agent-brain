@@ -36,7 +36,7 @@ defaults:
 #            tier 0 was previously picking between them arbitrarily.
 #   210+     paid providers — cost already separates these; rank breaks ties
 #            within a price point (the two gemini flash-lites are both 0.0005).
-#            `gemini-3-flash` (the /chat model) also sits here at 215; it is not
+#            `gemini-3.8-flash` (the /chat model) also sits here at 215; it is not
 #            a capability-routing target, so its rank only orders it among peers.
 #
 # Rank is global, not per-capability, so check every capability a model claims
@@ -329,7 +329,7 @@ models:
   # models on `selection_rank` instead of always losing on `cost ASC`. The two
   # `-lite` entries below keep their real paid pricing because they are not the
   # ones we route to. If this deployment ever moves off the free tier, set a real
-  # cost on `gemini-2.5-flash`/`gemini-3-flash` or capability routing will keep
+  # cost on `gemini-2.5-flash`/`gemini-3.8-flash` or capability routing will keep
   # billing for them ahead of the free Ollama-Cloud tier.
 
   # Reasoning/summarizing winner. selection_rank 5 sits BELOW the ollama-cloud
@@ -359,7 +359,7 @@ models:
   # telemetry and the self-model sync; the active chat model is built from env,
   # not selected from here, and /chat falls back down `chat_fallback_ladder`
   # (led by gpt-oss:120b-cloud) whenever a turn — a 429 included — yields nothing.
-  gemini-3-flash:
+  gemini-3.8-flash:
     provider: gemini
     model: "gemini-3.8-flash"
     context_window: 1048576
