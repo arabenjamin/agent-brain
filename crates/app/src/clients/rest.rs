@@ -44,6 +44,10 @@ pub struct RestState {
     pub scheduler: Option<Arc<RwLock<Option<Arc<SchedulerService>>>>>,
     pub context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
     pub llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    /// Config the human-facing `/chat` actually runs on — may differ from
+    /// `llm_config` (the brain's) whenever `CHAT_LLM_*` is set. Used by
+    /// `/api/models` to report the model the ChatPanel is talking to.
+    pub chat_llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     pub telemetry: Option<TelemetryClient>,
     pub log_buffer: Option<Arc<crate::logging::LogBuffer>>,
     pub tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
@@ -62,6 +66,7 @@ pub struct RestAdapter {
     scheduler: Option<Arc<RwLock<Option<Arc<SchedulerService>>>>>,
     context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
     llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    chat_llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     telemetry: Option<TelemetryClient>,
     log_buffer: Option<Arc<crate::logging::LogBuffer>>,
     tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
@@ -114,6 +119,11 @@ impl RestAdapter {
         self
     }
 
+    pub fn with_chat_llm_config_opt(mut self, cfg: Option<Arc<RwLock<Option<LlmConfig>>>>) -> Self {
+        self.chat_llm_config = cfg;
+        self
+    }
+
     pub fn with_telemetry_opt(mut self, telemetry: Option<TelemetryClient>) -> Self {
         self.telemetry = telemetry;
         self
@@ -150,6 +160,7 @@ impl RestAdapter {
             scheduler: self.scheduler,
             context_builder: self.context_builder,
             llm_config: self.llm_config,
+            chat_llm_config: self.chat_llm_config,
             telemetry: self.telemetry,
             log_buffer: self.log_buffer,
             tool_registry: self.tool_registry,
@@ -1090,17 +1101,28 @@ pub async fn handle_list_http_contexts(
 pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
     use crate::services::LlmProviderType;
 
-    let (active_provider, active_model) = if let Some(ref cfg_arc) = state.llm_config {
-        let cfg = cfg_arc.read().await;
-        (
-            cfg.as_ref()
-                .map(|c| c.provider.to_string())
-                .unwrap_or_else(|| "None".to_string()),
-            cfg.as_ref().map(|c| c.model.clone()).unwrap_or_default(),
-        )
-    } else {
-        ("None".to_string(), String::new())
-    };
+    // Read a (provider, model) pair off an optional config Arc.
+    async fn read_cfg(arc: &Option<Arc<RwLock<Option<LlmConfig>>>>) -> (String, String) {
+        match arc {
+            Some(a) => {
+                let cfg = a.read().await;
+                (
+                    cfg.as_ref()
+                        .map(|c| c.provider.to_string())
+                        .unwrap_or_else(|| "None".to_string()),
+                    cfg.as_ref().map(|c| c.model.clone()).unwrap_or_default(),
+                )
+            }
+            None => ("None".to_string(), String::new()),
+        }
+    }
+
+    // `active_*` is the brain's model (background/scheduled cognition); `chat_*`
+    // is what the human-facing /chat runs on. They diverge whenever CHAT_LLM_*
+    // is set — the ChatPanel reads `chat_*` so its indicator names the model the
+    // user is actually talking to, not the brain's.
+    let (active_provider, active_model) = read_cfg(&state.llm_config).await;
+    let (chat_provider, chat_model) = read_cfg(&state.chat_llm_config).await;
 
     let catalog_models = if let Some(ref db) = state.telemetry {
         db.list_models().ok().map(Value::Array).unwrap_or(json!([]))
@@ -1111,11 +1133,16 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
     Json(json!({
         "active_provider": active_provider,
         "active_model":    active_model,
+        "chat_provider":   chat_provider,
+        "chat_model":      chat_model,
+        // `cost` describes the tier this deployment uses, not the vendor's whole
+        // price list: Ollama Cloud and Gemini are consumed on their free tiers
+        // (429 at the ceiling, no billing). Anthropic is the only metered path.
         "available_providers": [
             { "name": "Ollama (local)", "type": LlmProviderType::Ollama.to_string(),      "cost": "free" },
-            { "name": "Ollama Cloud",   "type": LlmProviderType::OllamaCloud.to_string(), "cost": "usage-based" },
+            { "name": "Ollama Cloud",   "type": LlmProviderType::OllamaCloud.to_string(), "cost": "free tier" },
             { "name": "Anthropic",      "type": LlmProviderType::Anthropic.to_string(),   "cost": "paid" },
-            { "name": "Gemini",         "type": LlmProviderType::Gemini.to_string(),      "cost": "paid" },
+            { "name": "Gemini",         "type": LlmProviderType::Gemini.to_string(),      "cost": "free tier" },
         ],
         "catalog_models": catalog_models,
     })).into_response()

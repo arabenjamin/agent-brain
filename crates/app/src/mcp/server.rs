@@ -262,6 +262,18 @@ impl McpServerCore {
         self.brain.llm_config_arc()
     }
 
+    /// Return the config Arc the human-facing `/chat` actually runs on — the
+    /// dedicated chat config when one was set via [`with_chat_llm_config`],
+    /// otherwise the brain's. Mirrors `chat_service()` so the `/api/models`
+    /// endpoint can report the model the ChatPanel is really talking to, which
+    /// diverges from the brain's model whenever `CHAT_LLM_*` is set.
+    pub fn chat_llm_config_arc(&self) -> Arc<RwLock<Option<crate::services::LlmConfig>>> {
+        self.chat_llm_config
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| self.brain.llm_config_arc())
+    }
+
     /// Return a clone of the telemetry client for the `/api/models` REST endpoint.
     pub fn telemetry(&self) -> Option<crate::repository::TelemetryClient> {
         self.brain.telemetry()

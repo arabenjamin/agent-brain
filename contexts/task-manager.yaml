@@ -12,5 +12,5 @@ system_prompt: |
   actionable subtasks. Track progress and record outcomes. Use decompose_goal
   for multi-step work and update_task to reflect status changes.
 token_budget: 4000
-model_preference: sonnet
-provider_hint: anthropic
+model_preference: gemini-2.5-flash
+provider_hint: gemini

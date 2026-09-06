@@ -658,6 +658,7 @@ async fn run_serve(
             // Wire context-builder, LLM config, and telemetry for the new /api/* endpoints.
             http_config = http_config.with_context_builder(server.context_builder_handle());
             http_config = http_config.with_llm_config_arc(server.llm_config_arc());
+            http_config = http_config.with_chat_llm_config_arc(server.chat_llm_config_arc());
             if let Some(t) = server.telemetry() {
                 http_config = http_config.with_telemetry(t);
             }

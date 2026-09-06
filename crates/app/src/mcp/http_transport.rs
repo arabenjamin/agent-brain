@@ -81,6 +81,9 @@ pub struct HttpTransportConfig {
     pub context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
     /// Optional live LLM-config for the `/api/models` REST endpoint.
     pub llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    /// Optional live chat LLM-config so `/api/models` can report the model the
+    /// ChatPanel actually talks to (differs from `llm_config` under `CHAT_LLM_*`).
+    pub chat_llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     /// Optional telemetry client for the `/api/models` REST endpoint.
     pub telemetry: Option<TelemetryClient>,
     /// Optional in-memory log ring buffer for the `GET /api/logs` endpoint.
@@ -105,6 +108,7 @@ impl Default for HttpTransportConfig {
             brain_event_sender: None,
             context_builder: None,
             llm_config: None,
+            chat_llm_config: None,
             telemetry: None,
             log_buffer: None,
             tool_registry: None,
@@ -177,6 +181,12 @@ impl HttpTransportConfig {
         self
     }
 
+    /// Attach the chat LLM-config Arc so `/api/models` reports the chat model.
+    pub fn with_chat_llm_config_arc(mut self, cfg: Arc<RwLock<Option<LlmConfig>>>) -> Self {
+        self.chat_llm_config = Some(cfg);
+        self
+    }
+
     /// Attach the telemetry client to enable model catalog reads on `/api/models`.
     pub fn with_telemetry(mut self, telemetry: TelemetryClient) -> Self {
         self.telemetry = Some(telemetry);
@@ -218,6 +228,8 @@ struct HttpTransportState {
     context_builder: Option<Arc<RwLock<Option<Arc<ContextBuilderService>>>>>,
     /// Optional live LLM-config for `/api/models`.
     llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
+    /// Optional live chat LLM-config for `/api/models` (the ChatPanel's model).
+    chat_llm_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
     /// Optional telemetry client for `/api/models`.
     telemetry: Option<TelemetryClient>,
     /// Optional in-memory log ring buffer for `GET /api/logs`.
@@ -288,6 +300,7 @@ impl HttpTransport {
             .with_scheduler_opt(state.scheduler.clone())
             .with_context_builder_opt(state.context_builder.clone())
             .with_llm_config_opt(state.llm_config.clone())
+            .with_chat_llm_config_opt(state.chat_llm_config.clone())
             .with_telemetry_opt(state.telemetry.clone())
             .with_log_buffer_opt(state.log_buffer.clone())
             .with_tool_registry_opt(state.tool_registry.clone())
@@ -461,6 +474,7 @@ impl McpTransport for HttpTransport {
             scheduler: self.config.scheduler.clone(),
             context_builder: self.config.context_builder.clone(),
             llm_config: self.config.llm_config.clone(),
+            chat_llm_config: self.config.chat_llm_config.clone(),
             telemetry: self.config.telemetry.clone(),
             log_buffer: self.config.log_buffer.clone(),
             tool_registry: self.config.tool_registry.clone(),

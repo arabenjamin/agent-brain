@@ -633,8 +633,11 @@ function EditPane({
             value={form.model_preference ?? ""}
             onChange={(v) => onFormChange({ ...form, model_preference: v })}
             options={[
-              { value: "", label: "— inherit —" },
-              ...catalogModels.map((m) => ({ value: m.model, label: m.model })),
+              { value: "", label: "— inherit chat default —" },
+              ...catalogModels.map((m) => ({
+                value: m.model,
+                label: `${m.model} · ${m.provider}`,
+              })),
             ]}
           />
           <SelectField

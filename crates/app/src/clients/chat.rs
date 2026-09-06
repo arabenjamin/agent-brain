@@ -995,6 +995,74 @@ impl ChatService {
         }
     }
 
+    /// Resolve a context profile's `model_preference` (+ optional
+    /// `provider_hint`) to a full [`LlmConfig`] for this turn.
+    ///
+    /// The provider and endpoint come from the model catalog (and, through
+    /// [`config_for_catalog_entry`], the environment) so a profile pointing at
+    /// `gemini-2.5-flash` picks up the Gemini key without the checked-in YAML
+    /// ever carrying a credential. Resolution is: exact match on the catalog key
+    /// or model string, then a single substring match so legacy aliases
+    /// (`sonnet`, `haiku`) still resolve to their canonical model, then the
+    /// profile's `provider_hint` for a model not in the catalog.
+    ///
+    /// Returns `None` — meaning "keep the chat default" — when the preference is
+    /// blank or cannot be resolved. A profile is never allowed to fail a turn by
+    /// naming a model that does not exist; it degrades to the default, and the
+    /// fallback ladder still covers a resolved-but-unreachable model.
+    async fn resolve_profile_model(
+        &self,
+        base: &LlmConfig,
+        model_pref: &str,
+        provider_hint: Option<&str>,
+    ) -> Option<LlmConfig> {
+        let model_pref = model_pref.trim();
+        if model_pref.is_empty() {
+            return None;
+        }
+
+        let resolved: Option<(String, String)> = self.telemetry.as_ref().and_then(|tc| {
+            let models = tc.list_models().ok()?;
+            let want = model_pref.to_lowercase();
+            let exact = models.iter().find(|m| {
+                m["model"].as_str() == Some(model_pref) || m["name"].as_str() == Some(model_pref)
+            });
+            let matched = exact.or_else(|| {
+                models.iter().find(|m| {
+                    let name = m["name"].as_str().unwrap_or("").to_lowercase();
+                    let model = m["model"].as_str().unwrap_or("").to_lowercase();
+                    name.contains(&want) || model.contains(&want)
+                })
+            })?;
+            Some((
+                matched["provider"].as_str().unwrap_or("").to_string(),
+                matched["model"].as_str().unwrap_or(model_pref).to_string(),
+            ))
+        });
+
+        let (provider, model) = match resolved {
+            // A known model: the catalog is authoritative for its provider, so
+            // `provider_hint` is not consulted (it is routinely stale, e.g. a
+            // profile naming `haiku` with a leftover `provider_hint: ollama`).
+            Some(pm) => pm,
+            None => match provider_hint.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(ph) => (ph.to_string(), model_pref.to_string()),
+                None => {
+                    warn!(
+                        model_preference = model_pref,
+                        "chat: profile model_preference not in catalog and no provider_hint — \
+                         using the default chat model for this turn"
+                    );
+                    return None;
+                }
+            },
+        };
+
+        Some(crate::services::model_router::config_for_catalog_entry(
+            base, &provider, &model,
+        ))
+    }
+
     /// Run the agentic loop for a chat request, emitting events on `tx`.
     ///
     /// When `request.session_id` is set the user message and the final
@@ -1045,6 +1113,11 @@ impl ChatService {
             None
         };
 
+        // A profile may pin a model (`model_preference` + optional
+        // `provider_hint`); resolved here and applied as this turn's active
+        // model below. `None` = inherit the chat default.
+        let mut profile_model: Option<LlmConfig> = None;
+
         let (tools, profile_system_prompt, profile_notes) = if has_explicit_tools {
             let names = request.tools.as_deref().unwrap_or_default();
             (filter_tools(all_tools, names), None, Vec::new())
@@ -1057,12 +1130,35 @@ impl ChatService {
                     Some(bundle.profile.system_prompt.clone())
                 };
                 let notes = bundle.pre_loaded_notes.clone();
+                // Honour the profile's model_preference for this turn, using the
+                // current chat config as the base so timeouts, temperature, and
+                // the always-local embedding settings carry over.
+                if let Some(pref) = bundle
+                    .profile
+                    .model_preference
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    let base = config.clone().unwrap_or_default();
+                    profile_model = self
+                        .resolve_profile_model(&base, pref, bundle.profile.provider_hint.as_deref())
+                        .await;
+                }
                 (filtered, prompt, notes)
             } else {
                 (all_tools, None, Vec::new())
             }
         } else {
             (all_tools, None, Vec::new())
+        };
+
+        // A resolved profile model overrides the chat default for this turn. The
+        // fallback ladder still applies on top of it (an unreachable profile
+        // model — e.g. an Anthropic pin with no key — falls down the ladder).
+        let config = match profile_model {
+            Some(m) => Some(m),
+            None => config,
         };
 
         // Compose once here so every provider loop runs the same prompt.

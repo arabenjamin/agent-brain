@@ -656,9 +656,17 @@ export default function ChatPanel({
       const res = await fetch(`${getBrainUrl()}/api/models`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
       });
-      const data = (await res.json()) as { active_provider?: string; active_model?: string };
-      const provider = (data.active_provider ?? "").toLowerCase();
-      const model = data.active_model ?? "";
+      const data = (await res.json()) as {
+        active_provider?: string;
+        active_model?: string;
+        chat_provider?: string;
+        chat_model?: string;
+      };
+      // Prefer the chat model — that is what this panel actually talks to. It
+      // diverges from the brain's active_* whenever CHAT_LLM_* is set. Fall back
+      // to active_* for older backends that don't return chat_*.
+      const provider = (data.chat_provider || data.active_provider || "").toLowerCase();
+      const model = data.chat_model || data.active_model || "";
       if (provider && model) setActiveModelKey(`${provider}::${model}`);
     } catch {
       // ignore
