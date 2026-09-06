@@ -95,21 +95,23 @@ services:
       # locked out by real cost. On a 429 those steps fall back to gpt-oss:120b-
       # cloud, then local — see build_fallback_chain in services/shared_llm.rs.
       - CLOUD_TIER=2
-      # Human-facing /chat has its own config handle. gemini-3.8-flash runs the
-      # whole turn — it drives the tool loop AND writes the reply. A 429 (or any
-      # turn that streams nothing) falls down chat_fallback_ladder, led by
-      # gpt-oss:120b-cloud — "what we were doing before". CHAT_API_KEY is
-      # required: the provider override does NOT reset the inherited Ollama key,
-      # so without it chat would call Gemini with the wrong credential.
-      - CHAT_LLM_PROVIDER=gemini
-      - CHAT_LLM_MODEL=gemini-3.8-flash
-      - CHAT_API_KEY=${GEMINI_API_KEY:-}
-      # Worker/voice split DISABLED for chat: gemini-3.8-flash is a strong single
-      # model that both gathers and speaks, so the split (which existed to keep
-      # gpt-oss's fluent invention out of the final prose) is not needed. Re-set
-      # CHAT_SYNTHESIS_PROVIDER/MODEL to put a separate voice model back.
-      # - CHAT_SYNTHESIS_PROVIDER=ollama-cloud
-      # - CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
+      # Human-facing /chat runs on gpt-oss:120b-cloud (Ollama Cloud, UNMETERED —
+      # no RPM limit). Gemini was tried here and pulled back 2026-09-06: chat is
+      # agentic (one model call per tool round), so a single tool-using turn
+      # fired 8 Gemini calls in 17s and tripped the free tier's 5 requests/minute
+      # cap mid-turn (the daily 1500 was never the issue — we sent 11 all day).
+      # Gemini's per-minute limit fits background reasoning (1 call/step), not
+      # interactive chat. So chat stays on gpt-oss; reasoning stays on Gemini via
+      # CLOUD_TIER=2 capability routing. No CHAT_LLM_PROVIDER => inherit the
+      # ollama-cloud provider + its key; no CHAT_API_KEY needed.
+      - CHAT_LLM_MODEL=gpt-oss:120b-cloud
+      # Worker/voice split: gpt-oss:120b-cloud gathers via tools (it is fast and
+      # a willing, reliable tool caller but fills gaps with fluent invention);
+      # gemma4:31b-cloud composes the final reply from what it gathered (nicer to
+      # read, and says "we did not find that" instead of inventing). Unset both
+      # to put gpt-oss back to speaking for itself.
+      - CHAT_SYNTHESIS_PROVIDER=ollama-cloud
+      - CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are

@@ -436,6 +436,8 @@ YAML in `contexts/` define tool allowlists + system prompts per persona; `boot.y
 
 See `project-docs/REFACTOR_PLAN.md` for the ongoing structural refactoring roadmap.
 
+See `project-docs/SUBAGENT_ORCHESTRATION_PLAN.md` for the in-chat sub-agent orchestration spec — **design only, nothing implemented.** A conversational orchestrator (gemma) delegates bounded, tool-heavy lookups to worker sub-agents (gpt-oss) whose structured results return *into the same turn*, via a `delegate` primitive intercepted in the chat loop (not a normal MCP tool — it runs a nested LLM loop). Formalises **agent = context profile** (adds `spawnable`/`specialty`), and is the general form of the existing worker/voice split (`run_synthesis`), which Phase 4 re-expresses on top of it. Load-bearing constraints: sub-agents run on unmetered gpt-oss, never a rate-limited model (the Gemini 5-RPM trap); depth cap 1 and bounded per-loop iterations; the nested loop reuses `execute_guarded`/the write guard/the fallback ladder rather than re-implementing them; a `delegate` result counts as retrieval for the caller's grounding guard.
+
 - [x] Phase 2: Break MCP/Services circular dependency (extract `agent-brain-protocol` crate)
 - [x] Phase 3: Trait abstractions for Storage and LLM (KnowledgeStore, TaskStore, LlmProvider)
 - [x] Phase 4: Decompose McpServerCore god object (service containers + builder pattern)

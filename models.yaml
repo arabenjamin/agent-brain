@@ -36,8 +36,6 @@ defaults:
 #            tier 0 was previously picking between them arbitrarily.
 #   210+     paid providers — cost already separates these; rank breaks ties
 #            within a price point (the two gemini flash-lites are both 0.0005).
-#            `gemini-3.8-flash` (the /chat model) also sits here at 215; it is not
-#            a capability-routing target, so its rank only orders it among peers.
 #
 # Rank is global, not per-capability, so check every capability a model claims
 # before moving it. The live example: `gemma4:31b-cloud` sits at 30 rather than
@@ -322,15 +320,17 @@ models:
 
   # ── Gemini (https://ai.google.dev/gemini) ─────────────────────────────────
   #
-  # NOTE ON COST 0.0 FOR THE TWO FLASH ENTRIES BELOW: the Gemini free tier bills
-  # nothing — it caps at ~10-15 RPM / 1500 RPD and returns HTTP 429 rather than
-  # charging (verified 2026-09-06). So on the free tier `cost 0.0` is *accurate*,
-  # not a fiction, and it is what lets these compete with the $0 Ollama-Cloud
-  # models on `selection_rank` instead of always losing on `cost ASC`. The two
-  # `-lite` entries below keep their real paid pricing because they are not the
-  # ones we route to. If this deployment ever moves off the free tier, set a real
-  # cost on `gemini-2.5-flash`/`gemini-3.8-flash` or capability routing will keep
-  # billing for them ahead of the free Ollama-Cloud tier.
+  # NOTE ON COST 0.0 FOR gemini-2.5-flash BELOW: the Gemini free tier bills
+  # nothing — it caps at ~5 RPM / 1500 RPD and returns HTTP 429 rather than
+  # charging (measured 2026-09-06; the per-minute cap, not the daily, is the
+  # binding one). So on the free tier `cost 0.0` is *accurate*, not a fiction,
+  # and it is what lets it compete with the $0 Ollama-Cloud models on
+  # `selection_rank` instead of always losing on `cost ASC`. The `-lite` entries
+  # below keep their real paid pricing because they are not the ones we route to.
+  # If this deployment ever moves off the free tier, set a real cost on
+  # `gemini-2.5-flash` or capability routing will keep billing for it ahead of
+  # the free Ollama-Cloud tier. The 5 RPM cap is why Gemini is a reasoning-only
+  # model here (1 call/step) and not the chat model (many calls/turn).
 
   # Reasoning/summarizing winner. selection_rank 5 sits BELOW the ollama-cloud
   # band (10-99) on purpose: at CLOUD_TIER=2, with cost tied at 0.0, this takes
@@ -355,27 +355,13 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
-  # Human-facing /chat model (set via CHAT_LLM_MODEL). Present in the catalog for
-  # telemetry and the self-model sync; the active chat model is built from env,
-  # not selected from here, and /chat falls back down `chat_fallback_ladder`
-  # (led by gpt-oss:120b-cloud) whenever a turn — a 429 included — yields nothing.
-  gemini-3.8-flash:
-    provider: gemini
-    model: "gemini-3.8-flash"
-    context_window: 1048576
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 215
-    capabilities:
-      - reasoning
-      - code
-      - vision
-      - fast
-    system_prompt: |
-      You are agent-brain, an autonomous AI agent backed by a persistent
-      Neo4j knowledge graph. You can search notes, manage tasks, reason
-      over stored knowledge, and use many other tools. Think step-by-step
-      before acting and use available tools for grounded answers.
+  # NOTE: gemini-3.8-flash and gemini-3.5-flash were added 2026-09-06 as the
+  # /chat model and a chat-ladder step-down, then removed the same day. Gemini's
+  # free tier is 5 requests/minute, and interactive chat is agentic (one model
+  # call per tool round), so a single tool-using turn fired 8 Gemini calls in
+  # 17s and 429'd mid-turn. Chat moved back to gpt-oss:120b-cloud (unmetered);
+  # Gemini stays a background-reasoning provider (gemini-2.5-flash above, 1
+  # call/step). Re-add a flash entry here only for a low-call-rate use.
 
   gemini-2.5-flash-lite:
     provider: gemini
@@ -473,6 +459,13 @@ models:
 #
 # gemma4:latest is last and is local: it is slower and weaker than every cloud
 # rung, and it is the only one that still answers when ollama.com is down.
+#
+# No Gemini rungs here on purpose: the active chat model is gpt-oss:120b-cloud
+# (unmetered), and Gemini's free tier is 5 requests/minute — a single agentic
+# chat turn makes one model call per tool round and would blow that cap, so a
+# Gemini rung is more likely to 429 than to rescue a turn. Gemini stays a
+# background-reasoning model (1 call/step), not a chat rung. See docker-compose
+# CHAT_LLM_MODEL for the 2026-09-06 measurement.
 chat_fallback_ladder:
   - gpt-oss:120b-cloud
   - nemotron-3-super:cloud

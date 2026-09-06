@@ -12,5 +12,5 @@ system_prompt: |
   findings with store_note. Keep notes factual and well-structured.
 token_budget: 4000
 pre_load_query: "recent notes and active knowledge"
-model_preference: gemini-2.5-flash
-provider_hint: gemini
+model_preference: null
+provider_hint: null
