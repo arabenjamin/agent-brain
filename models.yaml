@@ -26,12 +26,18 @@ defaults:
 # just answering a different question than the one being asked.
 #
 # Bands (the gaps are room to insert without renumbering):
+#   0–9      free-tier Gemini treated as $0 — sits BELOW ollama-cloud so a
+#            capability step prefers it at CLOUD_TIER=2. Only `gemini-2.5-flash`
+#            lives here (rank 5); see the note in the Gemini block on why its
+#            cost is 0.0 and how a 429 falls back down to the ollama-cloud tier.
 #   10–99    ollama-cloud — the contested band, since these all tie at $0
 #   110–199  ollama local — also $0, so they compete with the above and lose at
 #            tier 1 by design. Ranked anyway: three of them tie at 128000, so
 #            tier 0 was previously picking between them arbitrarily.
 #   210+     paid providers — cost already separates these; rank breaks ties
 #            within a price point (the two gemini flash-lites are both 0.0005).
+#            `gemini-3-flash` (the /chat model) also sits here at 215; it is not
+#            a capability-routing target, so its rank only orders it among peers.
 #
 # Rank is global, not per-capability, so check every capability a model claims
 # before moving it. The live example: `gemma4:31b-cloud` sits at 30 rather than
@@ -315,6 +321,62 @@ models:
       You are agent-brain. Use tools efficiently and be concise.
 
   # ── Gemini (https://ai.google.dev/gemini) ─────────────────────────────────
+  #
+  # NOTE ON COST 0.0 FOR THE TWO FLASH ENTRIES BELOW: the Gemini free tier bills
+  # nothing — it caps at ~10-15 RPM / 1500 RPD and returns HTTP 429 rather than
+  # charging (verified 2026-09-06). So on the free tier `cost 0.0` is *accurate*,
+  # not a fiction, and it is what lets these compete with the $0 Ollama-Cloud
+  # models on `selection_rank` instead of always losing on `cost ASC`. The two
+  # `-lite` entries below keep their real paid pricing because they are not the
+  # ones we route to. If this deployment ever moves off the free tier, set a real
+  # cost on `gemini-2.5-flash`/`gemini-3-flash` or capability routing will keep
+  # billing for them ahead of the free Ollama-Cloud tier.
+
+  # Reasoning/summarizing winner. selection_rank 5 sits BELOW the ollama-cloud
+  # band (10-99) on purpose: at CLOUD_TIER=2, with cost tied at 0.0, this takes
+  # every `required_capabilities: ["reasoning"]` step ahead of gpt-oss:120b-cloud
+  # (rank 10). On a 429 the step falls back to the active config (gpt-oss) and
+  # then local — see `build_fallback_chain` in services/shared_llm.rs. Vision is
+  # deliberately NOT claimed here so vision steps stay on gemma4:31b-cloud.
+  gemini-2.5-flash:
+    provider: gemini
+    model: "gemini-2.5-flash"
+    context_window: 1048576
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 5
+    capabilities:
+      - reasoning
+      - code
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
+  # Human-facing /chat model (set via CHAT_LLM_MODEL). Present in the catalog for
+  # telemetry and the self-model sync; the active chat model is built from env,
+  # not selected from here, and /chat falls back down `chat_fallback_ladder`
+  # (led by gpt-oss:120b-cloud) whenever a turn — a 429 included — yields nothing.
+  gemini-3-flash:
+    provider: gemini
+    model: "gemini-3-flash"
+    context_window: 1048576
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 215
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - fast
+    system_prompt: |
+      You are agent-brain, an autonomous AI agent backed by a persistent
+      Neo4j knowledge graph. You can search notes, manage tasks, reason
+      over stored knowledge, and use many other tools. Think step-by-step
+      before acting and use available tools for grounded answers.
+
   gemini-2.5-flash-lite:
     provider: gemini
     model: "gemini-2.5-flash-lite"

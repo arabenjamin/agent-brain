@@ -1,17 +1,27 @@
 # Daily news briefing — expanded coverage (metro Detroit, Michigan, national,
 # world, tech, business, markets, weather).
 #
-# Engine note: the seven news searches request `engine: google_news`, which
-# routes to SerpApi's Google News engine (curated, dated stories with a named
-# source) for richer results than raw web search. `engine` only PROMOTES that
-# engine to the head of the failover ladder — SearXNG and the rest remain as
-# fallbacks — so once SerpApi's shared monthly quota is spent, the brief
-# degrades to SearXNG automatically instead of failing (see skills/search.rs).
-# General/background data mining does NOT set `engine`, so it keeps leading with
-# the unmetered self-hosted SearXNG. `source_list` is intentionally omitted on
-# these steps: appending `(site:… OR …)` to a query degrades Google News badly,
-# and Google News already curates its sources (it also fixed the metro/Michigan
-# junk-results problem the site-restricted SearXNG queries had).
+# Engine note: the seven news searches request `engine: serpapi`, which routes
+# to SerpApi's PLAIN Google (organic) engine. `engine` only PROMOTES that engine
+# to the head of the failover ladder — SearXNG and the rest remain as fallbacks —
+# so once SerpApi's shared monthly quota is spent, the brief degrades to SearXNG
+# automatically instead of failing (see skills/search.rs). General/background
+# data mining does NOT set `engine`, so it keeps leading with the unmetered
+# self-hosted SearXNG.
+#
+# TEMPORARY (2026-09-05): these steps requested `engine: google_news` until
+# SerpApi's Google News engine began returning `503 "We couldn't get valid
+# results … Please try again later."` after a 90s timeout — reproduced live and
+# in the ledger (4 of 7 news searches failed on 2026-09-05), which dropped every
+# failed section through to SearXNG's news-incapable engine set and made the
+# brief read "no news." SerpApi's account and quota are healthy; only the
+# google_news *engine* is down. Plain `engine: serpapi` (Google organic) answers
+# in ~5s and its result snippets carry current headlines, so it is the stopgap.
+# REVERT to `engine: google_news` once SerpApi's news engine recovers — it
+# returns curated, dated, source-named stories that organic results do not.
+# `source_list` is intentionally omitted: plain-organic news queries already
+# return usable metro/Michigan results without a site: restriction, and the
+# site-restricted SearXNG queries were what produced the junk-results problem.
 #
 # Pattern note: {{_prev}} only carries the IMMEDIATELY PRECEDING step's output,
 # so each search_web step is followed by a push_context step that banks the
@@ -30,7 +40,7 @@ steps:
     arguments:
       query: "metro Detroit news headlines"
       count: 6
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -48,7 +58,7 @@ steps:
     arguments:
       query: "Michigan state news headlines"
       count: 6
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -66,7 +76,7 @@ steps:
     arguments:
       query: "top US national news headlines"
       count: 8
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -84,7 +94,7 @@ steps:
     arguments:
       query: "top world news headlines"
       count: 8
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -102,7 +112,7 @@ steps:
     arguments:
       query: "AI technology science news"
       count: 6
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -120,7 +130,7 @@ steps:
     arguments:
       query: "business economy politics news"
       count: 6
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -138,7 +148,7 @@ steps:
     arguments:
       query: "stock market today S&P 500 Dow Jones Nasdaq close summary"
       count: 5
-      engine: google_news
+      engine: serpapi
     priority: 1
     max_attempts: 3
     provider_hint: ollama

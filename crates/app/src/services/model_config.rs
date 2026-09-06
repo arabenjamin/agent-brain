@@ -382,6 +382,34 @@ mod tests {
         );
     }
 
+    /// Tier 2 adds the keyed paid providers. The Gemini free tier bills nothing,
+    /// so `gemini-2.5-flash` is catalogued at cost 0.0 and rank 5 — below the
+    /// ollama-cloud band — which is what makes it take every reasoning step when
+    /// `CLOUD_TIER=2`. This is the deployed routing; lock it by name like the
+    /// tier-1 guard above so a future catalog edit that steals `reasoning` from
+    /// Gemini (or hands it to a paid model on cost) is caught at build time.
+    const TIER2: &[&str] = &["ollama", "ollama-cloud", "gemini", "anthropic"];
+
+    #[test]
+    fn reasoning_at_tier2_routes_to_gemini_flash() {
+        assert_eq!(
+            routes_to(&real_catalog(), "reasoning", TIER2),
+            "gemini-2.5-flash"
+        );
+    }
+
+    /// `gemini-2.5-flash` deliberately does not claim `vision`, and the one
+    /// Gemini entry that does (`gemini-3-flash`) is ranked far below
+    /// gemma4:31b-cloud, so vision stays on the free ollama-cloud vision model
+    /// even at tier 2 — no accidental capture from adding the flash models.
+    #[test]
+    fn vision_at_tier2_stays_on_the_ollama_cloud_vision_model() {
+        assert_eq!(
+            routes_to(&real_catalog(), "vision", TIER2),
+            "gemma4:31b-cloud"
+        );
+    }
+
     #[test]
     fn every_catalog_entry_declares_a_selection_rank() {
         // An unranked entry sorts last, which is safe but silent. Requiring the

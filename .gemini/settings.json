@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "brain-mcp": {
-      "url": "http://localhost:3001/mcp",
-      "type": "sse",
-      "trust": true
-    }
-  }
-}

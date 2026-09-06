@@ -53,6 +53,80 @@ impl SharedLlm {
             telemetry,
         })
     }
+
+    /// Run one generation against `llm`, timing it and recording the outcome in
+    /// the usage ledger. Shared by the primary attempt and every fallback rung
+    /// so each call — including a failed cloud call that then falls back — lands
+    /// in `model_usage` exactly once, with its `error_kind` classified.
+    async fn run_and_record(
+        &self,
+        llm: LlmConfig,
+        prompt: &str,
+        system: Option<&str>,
+        tool: Option<&str>,
+    ) -> anyhow::Result<crate::services::llm::LlmResponse> {
+        let model_name = llm.model.clone();
+        let client =
+            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
+        let start = Instant::now();
+        let result = client
+            .generate_with_system(prompt, system)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e));
+        let duration_ms = start.elapsed().as_millis() as i64;
+        if let Some(ref tc) = self.telemetry {
+            let success = result.is_ok();
+            let (tin, tout) = response_tokens(&result);
+            let _ = tc.record_model_usage(
+                &model_name,
+                tool,
+                success,
+                Some(duration_ms),
+                tin,
+                tout,
+                failure_kind(&result),
+            );
+        }
+        result
+    }
+}
+
+/// Build the ordered fallback chain for a cloud route that came back
+/// unavailable (quota, transport, or 5xx).
+///
+/// The ordering encodes "fall back to what we're doing now, then to what always
+/// answers":
+/// - A **capability-selected** cloud route (e.g. a `reasoning` step routed to
+///   gemini-2.5-flash) falls back first to the **active config** — the free
+///   Ollama Cloud model the deployment was using before, which does not share
+///   the selected model's quota — and only then to **local** Ollama.
+/// - A route that WAS the active config skips the active tier (retrying the same
+///   model that just failed is pointless) and goes straight to local.
+///
+/// A candidate whose model equals the one that just failed is dropped, so a
+/// deployment whose active and local configs coincide with the primary never
+/// re-runs it.
+fn build_fallback_chain(
+    is_selected: bool,
+    primary_model: &str,
+    active: Option<LlmConfig>,
+    local: Option<LlmConfig>,
+) -> Vec<LlmConfig> {
+    let mut chain: Vec<LlmConfig> = Vec::new();
+    if is_selected
+        && let Some(active) = active
+        && active.model != primary_model
+        && !matches!(active.provider, crate::services::LlmProviderType::Ollama)
+    {
+        chain.push(active);
+    }
+    if let Some(local) = local
+        && local.model != primary_model
+        && !chain.iter().any(|c| c.model == local.model)
+    {
+        chain.push(local);
+    }
+    chain
 }
 
 #[async_trait]
@@ -67,100 +141,77 @@ impl LlmProvider for SharedLlm {
         // rows genuinely have no owning tool.
         let tool = CURRENT_TOOL.try_with(|v| v.clone()).unwrap_or(None);
         let tool = tool.as_deref();
-        let (llm, is_local_route) = if let Some(sel) = selected {
+        // `is_selected` distinguishes a capability-routed model (e.g. a
+        // `reasoning` step routed to gemini-2.5-flash) from the plain active
+        // config. It decides the fallback chain below: a selected cloud route
+        // that hits its quota falls back to the *active* config first — the free
+        // Ollama Cloud model that is "what we're doing now" — before dropping to
+        // local. A route that WAS the active config skips straight to local.
+        let (primary, is_local_route, is_selected) = if let Some(sel) = selected {
             debug!(model = %sel.model, "SharedLlm: routing generate() to capability-selected model");
             let local = matches!(sel.provider, crate::services::LlmProviderType::Ollama);
-            (sel, local)
+            (sel, local, true)
         } else if use_local {
             debug!("SharedLlm: routing generate() to local Ollama (USE_LOCAL_LLM=true)");
             let config = self.local_config.read().await.clone();
             (
                 config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?,
                 true,
+                false,
             )
         } else {
             let config = self.config.read().await.clone();
             (
                 config.ok_or_else(|| anyhow::anyhow!("LLM not configured"))?,
                 false,
+                false,
             )
         };
-        let model_name = llm.model.clone();
-        let client =
-            LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
-        let start = Instant::now();
-        let result = client
-            .generate_with_system(prompt, system)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e));
-        let duration_ms = start.elapsed().as_millis() as i64;
 
-        // If the cloud call failed in a way that says "this provider cannot
-        // answer right now" — as opposed to "this prompt is bad" — fall back to
-        // local Ollama before giving up. Applies to both the active config and
-        // capability-selected cloud models.
-        let unavailable_kind = match &result {
-            Err(e) => classify_unavailable(e),
-            _ => None,
-        };
+        let primary_model = primary.model.clone();
+        // The primary attempt is recorded (success or failure) inside the
+        // helper, so a failed cloud call still lands in the ledger before any
+        // fallback — those rows are how the model router learns observed
+        // availability and must not vanish.
+        let result = self.run_and_record(primary, prompt, system, tool).await;
+
+        // If the call failed in a way that says "this provider cannot answer
+        // right now" — as opposed to "this prompt is bad" — walk a fallback
+        // chain before giving up. Only for cloud routes: a local model has
+        // nowhere better to fall back to and must not retry against itself.
+        let unavailable_kind = result.as_ref().err().and_then(classify_unavailable);
         if !is_local_route && let Some(kind) = unavailable_kind {
+            let active = self.config.read().await.clone();
+            let local = self.local_config.read().await.clone();
+            let chain = build_fallback_chain(is_selected, &primary_model, active, local);
             warn!(
                 error_kind = kind,
-                "SharedLlm: cloud LLM unavailable, falling back to local Ollama"
+                primary = %primary_model,
+                fallbacks = %chain
+                    .iter()
+                    .map(|c| c.model.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "SharedLlm: cloud LLM unavailable, walking fallback chain"
             );
-            // Record the failed cloud call FIRST — these events are how the
-            // model router learns observed availability; they must not vanish.
-            if let Some(ref tc) = self.telemetry {
-                let _ = tc.record_model_usage(
-                    &model_name,
-                    tool,
-                    false,
-                    Some(duration_ms),
-                    None,
-                    None,
-                    Some(kind),
-                );
-            }
-            if let Some(local_llm) = self.local_config.read().await.clone() {
-                let local_model = local_llm.model.clone();
-                let local_client = LlmClient::with_config(local_llm)
-                    .map_err(|e| anyhow::anyhow!("Local LLM init error: {}", e))?;
-                let local_start = Instant::now();
-                let local_result = local_client
-                    .generate_with_system(prompt, system)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e));
-                let local_duration_ms = local_start.elapsed().as_millis() as i64;
-                if let Some(ref tc) = self.telemetry {
-                    let success = local_result.is_ok();
-                    let (tin, tout) = response_tokens(&local_result);
-                    let _ = tc.record_model_usage(
-                        &local_model,
-                        tool,
-                        success,
-                        Some(local_duration_ms),
-                        tin,
-                        tout,
-                        failure_kind(&local_result),
-                    );
+            let mut last_err: Option<anyhow::Error> = None;
+            for cfg in chain {
+                let fb_model = cfg.model.clone();
+                match self.run_and_record(cfg, prompt, system, tool).await {
+                    Ok(r) => return Ok(r.text),
+                    Err(e) => {
+                        warn!(model = %fb_model, error = %e, "SharedLlm: fallback model also failed");
+                        last_err = Some(e);
+                    }
                 }
-                return local_result.map(|r| r.text);
+            }
+            // Every fallback also failed. Return the last fallback error if we
+            // attempted any, otherwise the primary error falls through below.
+            if let Some(e) = last_err {
+                return Err(e);
             }
         }
 
-        if let Some(ref tc) = self.telemetry {
-            let success = result.is_ok();
-            let (tin, tout) = response_tokens(&result);
-            let _ = tc.record_model_usage(
-                &model_name,
-                tool,
-                success,
-                Some(duration_ms),
-                tin,
-                tout,
-                failure_kind(&result),
-            );
-        }
         result.map(|r| r.text)
     }
 
@@ -417,5 +468,80 @@ mod tests {
              error sending request for url (http://host.docker.internal:11434/api/generate)",
         );
         assert_eq!(classify_unavailable(&e), Some("transport"));
+    }
+
+    fn cfg(provider: crate::services::LlmProviderType, model: &str) -> LlmConfig {
+        LlmConfig::default()
+            .with_provider(provider)
+            .with_model(model)
+    }
+
+    fn models(chain: &[LlmConfig]) -> Vec<&str> {
+        chain.iter().map(|c| c.model.as_str()).collect()
+    }
+
+    /// A capability-selected cloud route (gemini) that 429s falls back to the
+    /// active cloud config first — "what we're doing now" — then to local. This
+    /// is the whole point of the change: a reasoning step must not silently drop
+    /// straight to the weak local model the instant Gemini's daily quota is hit.
+    #[test]
+    fn selected_cloud_route_falls_back_to_active_then_local() {
+        use crate::services::LlmProviderType::{Gemini, Ollama, OllamaCloud};
+        let chain = build_fallback_chain(
+            true,
+            "gemini-2.5-flash",
+            Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
+            Some(cfg(Ollama, "granite4:latest")),
+        );
+        assert_eq!(
+            models(&chain),
+            vec!["gpt-oss:120b-cloud", "granite4:latest"]
+        );
+        // Sanity: the selected primary was gemini, not represented in the chain.
+        assert!(!chain.iter().any(|c| c.provider == Gemini));
+    }
+
+    /// A route that WAS the active config (not capability-selected) skips the
+    /// active tier — retrying the model that just failed is pointless — and goes
+    /// straight to local.
+    #[test]
+    fn active_config_route_skips_active_and_falls_back_to_local_only() {
+        use crate::services::LlmProviderType::{Ollama, OllamaCloud};
+        let chain = build_fallback_chain(
+            false,
+            "gpt-oss:120b-cloud",
+            Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
+            Some(cfg(Ollama, "granite4:latest")),
+        );
+        assert_eq!(models(&chain), vec!["granite4:latest"]);
+    }
+
+    /// The active config is never used as a fallback for itself, even when the
+    /// route was capability-selected onto the same model the active config names.
+    #[test]
+    fn active_fallback_is_dropped_when_it_equals_the_primary() {
+        use crate::services::LlmProviderType::{Ollama, OllamaCloud};
+        let chain = build_fallback_chain(
+            true,
+            "gpt-oss:120b-cloud",
+            Some(cfg(OllamaCloud, "gpt-oss:120b-cloud")),
+            Some(cfg(Ollama, "granite4:latest")),
+        );
+        assert_eq!(models(&chain), vec!["granite4:latest"]);
+    }
+
+    /// A local active config is not a meaningful cloud fallback — the chain must
+    /// not push it as the "active" rung (it would still appear once as the local
+    /// rung, and never twice).
+    #[test]
+    fn a_local_active_config_is_not_used_as_the_cloud_rung() {
+        use crate::services::LlmProviderType::Ollama;
+        let chain = build_fallback_chain(
+            true,
+            "gemini-2.5-flash",
+            Some(cfg(Ollama, "granite4:latest")),
+            Some(cfg(Ollama, "granite4:latest")),
+        );
+        assert_eq!(models(&chain), vec!["granite4:latest"]);
     }
 }
