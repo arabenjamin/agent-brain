@@ -98,6 +98,67 @@ const NO_ANSWER_AFTER_TOOLS_MESSAGE: &str = "The assistant used every available 
      back. Please retry — and check anything that looks like it should have been created.";
 
 // ============================================================================
+// Sub-agent delegation — Phase 0 (see project-docs/SUBAGENT_ORCHESTRATION_PLAN.md)
+// ============================================================================
+//
+// Gated behind SUBAGENT_ENABLED (default OFF) so it cannot perturb chat until it
+// has been measured. When on, the orchestrator gains one pseudo-tool, `delegate`,
+// which is INTERCEPTED in the chat loop (not dispatched to ToolHandler) and runs
+// a nested, bounded tool-loop under a worker profile whose findings fold back
+// into the turn. Conservative Phase 0 policy: explicit calls only, read-only
+// sub-agents, a curated roster, serial, depth-capped at 1.
+
+/// The pseudo-tool name the orchestrator calls to delegate a sub-task. Never a
+/// registered MCP tool — it runs a nested LLM loop, which ToolHandler cannot.
+const DELEGATE_TOOL: &str = "delegate";
+
+/// Profiles an orchestrator may spawn. Phase 0 hardcodes this curated set;
+/// Phase 2 replaces it with a `spawnable` field on ContextProfile. `general` is
+/// deliberately absent — it is the human entry point, not a worker.
+const SPAWNABLE_PROFILES: &[&str] = &["researcher", "code-analyst", "knowledge-worker"];
+
+/// Roster injected into the `delegate` tool description so the orchestrator knows
+/// which worker to pick. Phase 2 will build this from each profile's `specialty`.
+const SUBAGENT_ROSTER: &str = "  - researcher: web + knowledge-graph search for facts and current information\n  \
+     - code-analyst: read and analyze this codebase\n  \
+     - knowledge-worker: search and synthesize stored knowledge in the graph";
+
+/// Whether in-chat sub-agent delegation is enabled (default OFF for the spike).
+fn subagent_enabled() -> bool {
+    std::env::var("SUBAGENT_ENABLED")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+/// The `delegate` tool definition shown to the orchestrator.
+fn delegate_tool_def() -> agent_brain_protocol::ToolDefinition {
+    agent_brain_protocol::ToolDefinition {
+        name: DELEGATE_TOOL.to_string(),
+        description: format!(
+            "Delegate a self-contained lookup or tool-heavy sub-task to a worker sub-agent and \
+             get its findings back in THIS turn. Prefer this over doing multi-step tool work \
+             yourself. The sub-agent does NOT see this conversation — put everything it needs \
+             into `task`. It returns findings you must then relay to the user, citing any \
+             sources it gives. Available agents:\n{SUBAGENT_ROSTER}"
+        ),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": "Which sub-agent to use — one of the names listed above."
+                },
+                "task": {
+                    "type": "string",
+                    "description": "A complete, self-contained instruction for the sub-agent (it has no other context)."
+                }
+            },
+            "required": ["agent", "task"]
+        }),
+    }
+}
+
+// ============================================================================
 // Turn write guard — grounding and duplicate suppression for chat-authored writes
 // ============================================================================
 
@@ -921,6 +982,7 @@ impl ChatService {
                     .await
                 }
                 LlmProviderType::OllamaCloud => {
+                    // Top-level orchestrator loop: allow `delegate` interception.
                     self.run_ollama_cloud_loop(
                         cfg,
                         tools,
@@ -928,6 +990,7 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
+                        true,
                     )
                     .await
                 }
@@ -1152,6 +1215,16 @@ impl ChatService {
         } else {
             (all_tools, None, Vec::new())
         };
+
+        // Give the orchestrator the `delegate` pseudo-tool when sub-agent
+        // delegation is enabled. Only when the caller did not pin an explicit
+        // tool allowlist — an explicit allowlist is a deliberate scope the
+        // orchestrator role should not silently widen. Sub-agents never receive
+        // it (their toolsets are built without it in `run_subagent`).
+        let mut tools = tools;
+        if subagent_enabled() && !has_explicit_tools {
+            tools.push(delegate_tool_def());
+        }
 
         // A resolved profile model overrides the chat default for this turn. The
         // fallback ladder still applies on top of it (an unreachable profile
@@ -2035,6 +2108,7 @@ impl ChatService {
     // The streaming response is SSE ("data: {...}\n\n") not NDJSON.
     // Tool-call deltas arrive piece-by-piece and must be accumulated per index.
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_ollama_cloud_loop(
         &self,
         config: LlmConfig,
@@ -2043,6 +2117,10 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        // Whether a `delegate` tool call is intercepted and run as a sub-agent.
+        // True only for the top-level orchestrator loop; a sub-agent's own loop
+        // passes false so it cannot delegate further (depth cap 1).
+        allow_delegate: bool,
     ) {
         let base_url = config.base_url.as_deref().unwrap_or("https://ollama.com");
         let url = format!("{}/v1/chat/completions", base_url);
@@ -2425,8 +2503,21 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) =
-                    execute_guarded(&handler, &mut write_guard, tool_name, tool_args).await;
+                // `delegate` is intercepted here (not dispatched to ToolHandler):
+                // it runs a nested sub-agent loop whose findings become this
+                // tool call's result. Everything else goes through the guard.
+                let (success, result_text) = if allow_delegate
+                    && subagent_enabled()
+                    && tool_name.as_str() == DELEGATE_TOOL
+                {
+                    let sub_agent = tool_args.get("agent").and_then(Value::as_str).unwrap_or("");
+                    let sub_task = tool_args.get("task").and_then(Value::as_str).unwrap_or("");
+                    // Box the recursive future: the sub-agent's own loop is this
+                    // same fn, an async cycle the compiler requires boxing to size.
+                    Box::pin(self.run_subagent(sub_agent, sub_task, &tx)).await
+                } else {
+                    execute_guarded(&handler, &mut write_guard, tool_name, tool_args).await
+                };
 
                 let preview: String =
                     prepare_tool_result(tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -2490,6 +2581,180 @@ impl ChatService {
         }
 
         let _ = tx.send(ChatEvent::Done).await;
+    }
+
+    // ========================================================================
+    // Sub-agent delegation — runs a worker profile's loop inside the turn
+    // ========================================================================
+
+    /// Run a worker sub-agent synchronously and return `(success, findings)` to
+    /// fold back into the orchestrator's turn as the `delegate` tool result.
+    ///
+    /// The sub-agent runs under a curated, `spawnable` profile with a READ-ONLY
+    /// toolset and NO `delegate` of its own (depth cap 1). Its progress (tool
+    /// calls/results) is forwarded to `main_tx` so the user sees it working; its
+    /// final prose is captured and returned, never emitted as the turn's answer
+    /// — the orchestrator composes the reply from it. See
+    /// project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
+    async fn run_subagent(
+        &self,
+        agent: &str,
+        task: &str,
+        main_tx: &mpsc::Sender<ChatEvent>,
+    ) -> (bool, String) {
+        let agent = agent.trim();
+        if !SPAWNABLE_PROFILES.contains(&agent) {
+            return (
+                false,
+                format!(
+                    "No sub-agent named '{agent}'. Available: {}.",
+                    SPAWNABLE_PROFILES.join(", ")
+                ),
+            );
+        }
+        if task.trim().is_empty() {
+            return (false, "delegate called with an empty task.".to_string());
+        }
+
+        let Some(cb) = self.context_builder.read().await.clone() else {
+            return (false, "Sub-agent unavailable: no context builder.".to_string());
+        };
+        let Ok(bundle) = cb.build_bundle(agent).await else {
+            return (false, format!("Sub-agent profile '{agent}' could not be loaded."));
+        };
+
+        // Base config = the current chat model (gpt-oss, unmetered); a profile
+        // model_preference overrides it. Sub-agents must never land on a
+        // rate-limited model — the roster is curated to unmetered tool callers.
+        let base = self.llm_config.read().await.clone().unwrap_or_default();
+        let cfg = match bundle
+            .profile
+            .model_preference
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(pref) => self
+                .resolve_profile_model(&base, pref, bundle.profile.provider_hint.as_deref())
+                .await
+                .unwrap_or(base),
+            None => base,
+        };
+
+        // Read-only toolset, and never `delegate` (enforces depth cap 1).
+        let all_tools = self.tool_registry.read().await.list();
+        let allowed: Vec<String> = bundle
+            .profile
+            .tools
+            .iter()
+            .filter(|t| !WRITE_TOOLS.contains(&t.as_str()) && t.as_str() != DELEGATE_TOOL)
+            .cloned()
+            .collect();
+        let sub_tools = filter_tools(all_tools, &allowed);
+        let handler = self.tool_handler.read().await.clone();
+        let sub_system = build_system_prompt(
+            (!bundle.profile.system_prompt.is_empty()).then_some(bundle.profile.system_prompt.as_str()),
+            &bundle.pre_loaded_notes,
+        );
+        let sub_request = ChatRequest {
+            message: task.to_string(),
+            history: Vec::new(),
+            session_id: None,
+            tools: None,
+            context_profile: None,
+            // The sub-agent speaks for itself — no nested worker/voice split.
+            synthesis_provider: None,
+            synthesis_model: None,
+        };
+
+        let _ = main_tx
+            .send(ChatEvent::Thinking {
+                content: format!("🔎 delegating to `{agent}` sub-agent ({})…", cfg.model),
+            })
+            .await;
+
+        let model = cfg.model.clone();
+        let (sub_tx, mut sub_rx) = mpsc::channel::<ChatEvent>(128);
+        let provider_loop = async {
+            match cfg.provider {
+                LlmProviderType::Anthropic => {
+                    self.run_anthropic_loop(cfg, sub_tools, handler, sub_request, sub_system, sub_tx)
+                        .await
+                }
+                LlmProviderType::Ollama => {
+                    self.run_ollama_tool_loop(cfg, sub_tools, handler, sub_request, sub_system, sub_tx)
+                        .await
+                }
+                LlmProviderType::OllamaCloud => {
+                    // allow_delegate = false: a sub-agent cannot delegate further.
+                    self.run_ollama_cloud_loop(
+                        cfg, sub_tools, handler, sub_request, sub_system, sub_tx, false,
+                    )
+                    .await
+                }
+                _ => {
+                    self.run_text_loop(cfg, sub_tools, handler, sub_request, sub_system, sub_tx)
+                        .await
+                }
+            }
+        };
+
+        let drain = async {
+            let mut answer = String::new();
+            let mut saw_error: Option<String> = None;
+            while let Some(ev) = sub_rx.recv().await {
+                match ev {
+                    ChatEvent::Message { content } => answer = content,
+                    ChatEvent::Error { message } => {
+                        if saw_error.is_none() {
+                            saw_error = Some(message);
+                        }
+                    }
+                    ChatEvent::Done => {}
+                    // Forward the sub-agent's activity so the turn is not silent.
+                    ChatEvent::ToolCall { tool, args } => {
+                        let _ = main_tx
+                            .send(ChatEvent::ToolCall {
+                                tool: format!("{agent}:{tool}"),
+                                args,
+                            })
+                            .await;
+                    }
+                    ChatEvent::ToolResult {
+                        tool,
+                        success,
+                        preview,
+                    } => {
+                        let _ = main_tx
+                            .send(ChatEvent::ToolResult {
+                                tool: format!("{agent}:{tool}"),
+                                success,
+                                preview,
+                            })
+                            .await;
+                    }
+                    ChatEvent::Thinking { content } => {
+                        let _ = main_tx
+                            .send(ChatEvent::Thinking {
+                                content: format!("[{agent}] {content}"),
+                            })
+                            .await;
+                    }
+                    ChatEvent::Token { .. } => {}
+                }
+            }
+            (answer, saw_error)
+        };
+
+        let (_, (answer, saw_error)) = tokio::join!(provider_loop, drain);
+        if answer.trim().is_empty() {
+            return (
+                false,
+                saw_error
+                    .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
+            );
+        }
+        (true, answer)
     }
 
     // ========================================================================
@@ -3055,6 +3320,28 @@ mod tests {
         assert!(!p.contains("LIVE SELF-STATE"));
     }
 
+    /// `general` must never be spawnable — it is the human entry point, and
+    /// allowing it as a sub-agent target is the recursion the depth cap exists
+    /// to prevent (an orchestrator delegating to itself).
+    #[test]
+    fn general_is_not_a_spawnable_subagent() {
+        assert!(!SPAWNABLE_PROFILES.contains(&"general"));
+        assert!(!SPAWNABLE_PROFILES.is_empty());
+    }
+
+    /// The delegate tool must expose exactly the two-arg contract the loop
+    /// interception reads (`agent`, `task`), both required.
+    #[test]
+    fn delegate_tool_has_the_expected_contract() {
+        let def = delegate_tool_def();
+        assert_eq!(def.name, DELEGATE_TOOL);
+        let required = def.input_schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "agent"));
+        assert!(required.iter().any(|v| v == "task"));
+        let props = &def.input_schema["properties"];
+        assert!(props.get("agent").is_some() && props.get("task").is_some());
+    }
+
     #[test]
     fn profile_prompt_is_appended_after_the_base_rules() {
         let p = build_system_prompt(Some("Profile rule: inspect yourself first."), &[]);
@@ -3578,6 +3865,7 @@ mod empty_completion_tests {
             test_request(),
             "sys".into(),
             tx,
+            false,
         )
         .await;
 
@@ -3985,6 +4273,7 @@ mod tool_budget_tests {
             test_request(),
             "sys".into(),
             tx,
+            false,
         )
         .await;
         let mut seen = Vec::new();

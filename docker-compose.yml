@@ -112,6 +112,12 @@ services:
       # to put gpt-oss back to speaking for itself.
       - CHAT_SYNTHESIS_PROVIDER=ollama-cloud
       - CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
+      # In-chat sub-agent delegation (Phase 0 spike — OFF by default). When
+      # "true", the orchestrator gains a `delegate(agent, task)` pseudo-tool that
+      # runs a bounded, read-only worker sub-agent (researcher/code-analyst/
+      # knowledge-worker) whose findings fold back into the turn. Flip to measure
+      # latency + calls/turn. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
+      - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-false}
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are

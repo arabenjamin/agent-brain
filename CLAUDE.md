@@ -119,6 +119,7 @@ Copy `.env.example` to `.env` and configure:
 | `CHAT_LLM_BASE_URL` | *(same as brain)* | Override the base URL for the chat LLM endpoint. |
 | `CHAT_SYNTHESIS_PROVIDER` | - | Enables the **worker/voice split** for `/chat`: the model in `CHAT_LLM_MODEL` runs the tool loop, and this provider composes the final reply from what it gathered. Accepts `ollama`, `ollama-cloud`, `gemini`, `anthropic`. Unset ⇒ the worker also speaks (previous behaviour). See "The worker/voice split" below |
 | `CHAT_SYNTHESIS_MODEL` | `gemma4:31b-cloud` | Model used for the synthesis pass. Only consulted when `CHAT_SYNTHESIS_PROVIDER` is set |
+| `SUBAGENT_ENABLED` | `false` | Phase 0 spike for in-chat sub-agent delegation. When `true`/`1`/`yes`, the chat orchestrator gains a `delegate(agent, task)` pseudo-tool (intercepted in `run_ollama_cloud_loop`, not dispatched to ToolHandler) that runs a bounded, read-only worker sub-agent from a curated roster (`researcher`/`code-analyst`/`knowledge-worker`) and folds its findings back into the turn. Depth cap 1 (sub-agents get no `delegate`). Default OFF. See `project-docs/SUBAGENT_ORCHESTRATION_PLAN.md` |
 
 ## Local Development
 

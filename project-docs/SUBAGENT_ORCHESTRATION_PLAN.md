@@ -1,9 +1,29 @@
 # Sub-Agent Orchestration in Chat — Design Proposal
 
-Status: **design only, nothing implemented.** This document proposes an
-orchestrator/worker pattern for the human-facing `/chat` path: a conversational
-model that stays in the dialogue and delegates bounded, tool-heavy sub-tasks to
-worker sub-agents whose results return *into the same turn*.
+Status: **Phase 0 implemented behind `SUBAGENT_ENABLED` (default OFF); awaiting
+measurement.** This document proposes an orchestrator/worker pattern for the
+human-facing `/chat` path: a conversational model that stays in the dialogue and
+delegates bounded, tool-heavy sub-tasks to worker sub-agents whose results return
+*into the same turn*.
+
+**What Phase 0 shipped (see `crates/app/src/clients/chat.rs`):** a `delegate`
+pseudo-tool added to the orchestrator when `SUBAGENT_ENABLED` is set, intercepted
+in `run_ollama_cloud_loop` (the current gpt-oss chat path) and run as a nested,
+read-only worker via `ChatService::run_subagent`; a curated hardcoded roster
+(`SPAWNABLE_PROFILES`); depth cap 1 (sub-agents get no `delegate`); progress
+forwarded to the user, final prose captured and folded back as the tool result.
+Guard tests: `general` is never spawnable; the tool contract is `agent`+`task`.
+
+**Known Phase 0 shortcuts to close in Phase 1 (all noted in §10):**
+- Interception is only in `run_ollama_cloud_loop`, not all four provider loops.
+- The sub-agent shares the top-level `MAX_TOOL_ITERATIONS` (no tighter
+  `MAX_SUBAGENT_ITERATIONS` yet) — so worst-case model calls per turn is a large
+  product; bound it before enabling by default.
+- The result is the sub-agent's prose, not the structured `{answer, sources,
+  gaps}` in §6.
+- A `delegate` result does **not** yet flip the orchestrator's
+  `TurnWriteGuard.retrieval_ran`, so a `semantic` note written after delegating
+  would still be wrongly downgraded (§6/§7). Wire this in Phase 1.
 
 It also folds in the broader question the work raised — "how agents are put
 together and get used" — by formalising **agent = context profile** and giving
@@ -266,9 +286,13 @@ stays; `delegate` is the sanctioned in-turn alternative.
 ---
 
 ## 10. Phased plan
-- **Phase 0 — spike.** Prototype `run_subagent` behind a feature flag with one
-  hardcoded `researcher` profile and depth 1; measure added latency and total
-  model calls per turn on real questions. No prompt/roster changes yet.
+- **Phase 0 — spike. [IMPLEMENTED, behind `SUBAGENT_ENABLED`, default OFF]**
+  `run_subagent` + `delegate` interception in `run_ollama_cloud_loop`, a curated
+  hardcoded roster, depth 1, read-only sub-agents. **Still to do in this phase:
+  turn it on in a test deployment and measure added latency and total model
+  calls per turn on real questions** (the numbers that decide whether the
+  orchestrator should be gemma or gpt-oss, and how tight the iteration caps must
+  be).
 - **Phase 1 — primitive.** `delegate` tool + loop interception (§3.3) +
   `run_subagent` (§3.4), structured result (§6), depth/iteration guards (§7).
   Retrieval-flag propagation into the caller's write guard.
