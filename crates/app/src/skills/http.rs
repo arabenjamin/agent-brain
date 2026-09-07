@@ -9,6 +9,7 @@
 //! Use `neo4j_query` to inspect contexts: MATCH (c:ApiContext) RETURN c
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -135,23 +136,37 @@ impl HttpSkill {
     fn ingest_api_def() -> ToolDefinition {
         ToolDefinition {
             name: "ingest_api".to_string(),
-            description: "Ingest an OpenAPI/Swagger specification (JSON or YAML) from a URL and \
-                          record its endpoints in the knowledge graph so the brain can find and \
-                          call them later. Fetches the spec, parses every operation \
-                          (method, path, summary, parameters, security), and stores each as an \
-                          (:ApiEndpoint) linked to an (:ApiContext) by [:EXPOSES]. Idempotent — \
-                          re-ingesting the same spec updates the endpoints in place. This is the \
-                          deterministic, native form of 'understand a REST API'; unlike a \
-                          reason-over-the-spec pipeline it does not truncate or hallucinate \
-                          endpoints. Query the result with neo4j_query: \
+            description:
+                "Ingest a REST API's endpoints into the knowledge graph from ONE of three \
+                          sources (pass exactly one): `spec_url` — a direct OpenAPI/Swagger \
+                          document (JSON or YAML); `docs_url` — an HTML docs page (Swagger UI, \
+                          Redoc, springdoc, …), from which the linked spec is auto-detected and \
+                          fetched; or `codebase_path` — a local directory searched for an \
+                          openapi/swagger spec file. Parses every operation deterministically \
+                          (method, path, summary, parameters, security) and stores each as an \
+                          (:ApiEndpoint) linked to an (:ApiContext) by [:EXPOSES]; the context \
+                          records how it was ingested (`source`). Idempotent — re-ingesting \
+                          updates in place. Deterministic (no LLM), so no truncation or \
+                          hallucinated endpoints. Note: an HTML page with NO embedded spec, or a \
+                          codebase with no spec file, is not yet supported (LLM extraction / \
+                          build-from-routes are deferred) and returns a clear error. Query the \
+                          result with neo4j_query: \
                           MATCH (c:ApiContext {name:$n})-[:EXPOSES]->(e) RETURN e."
-                .to_string(),
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "spec_url": {
                         "type": "string",
-                        "description": "URL of the OpenAPI/Swagger document (e.g. https://api.example.com/openapi.json)"
+                        "description": "URL of an OpenAPI/Swagger document (e.g. https://api.example.com/openapi.json)"
+                    },
+                    "docs_url": {
+                        "type": "string",
+                        "description": "URL of an HTML API-docs page (Swagger UI / Redoc / springdoc). The linked spec is auto-detected and fetched."
+                    },
+                    "codebase_path": {
+                        "type": "string",
+                        "description": "Local directory to search for an existing openapi/swagger spec file (openapi.json/.yaml, swagger.json/.yaml, api-docs.json)."
                     },
                     "name": {
                         "type": "string",
@@ -161,8 +176,7 @@ impl HttpSkill {
                         "type": "string",
                         "description": "Optional human-readable description. Defaults to the spec's info.title."
                     }
-                },
-                "required": ["spec_url"]
+                }
             }),
         }
     }
@@ -396,10 +410,65 @@ impl HttpSkill {
         }))
     }
 
+    /// Fetch a URL as text with a status check and size guard. Runs in the brain
+    /// process (which has egress), never the sandbox.
+    async fn fetch_text(&self, url: &str) -> Result<String, String> {
+        const MAX_BYTES: usize = 8 * 1024 * 1024;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to fetch {url}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{url} returned {}", resp.status()));
+        }
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read body from {url}: {e}"))?;
+        if body.len() > MAX_BYTES {
+            return Err(format!(
+                "{url} is {} bytes, over the {MAX_BYTES} byte limit",
+                body.len()
+            ));
+        }
+        Ok(body)
+    }
+
+    /// Find the spec URL an HTML docs page references. Two passes: first scan the
+    /// HTML directly, then — because modern Swagger UI keeps the `url:` in a
+    /// separate `swagger-initializer.js` — scan the referenced `.js` files
+    /// (initializer-like first), bounded to a few fetches.
+    async fn resolve_spec_url_from_docs(&self, docs_url: &str) -> Result<String, String> {
+        let html = self.fetch_text(docs_url).await?;
+        if let Some(u) = detect_spec_url_in_html(&html, docs_url) {
+            return Ok(u);
+        }
+        for js in find_js_refs(&html, docs_url).into_iter().take(5) {
+            if let Ok(js_body) = self.fetch_text(&js).await
+                && let Some(u) = detect_spec_url_in_html(&js_body, &js)
+            {
+                return Ok(u);
+            }
+        }
+        Err(format!(
+            "No OpenAPI/Swagger spec is linked from {docs_url} (checked the page and its \
+             scripts). Hand-authored HTML docs with no embedded spec need LLM extraction, which \
+             is not yet wired — pass a spec_url directly, or a docs page rendered by Swagger UI \
+             / Redoc / springdoc."
+        ))
+    }
+
     async fn handle_ingest_api(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
         struct Input {
-            spec_url: String,
+            #[serde(default)]
+            spec_url: Option<String>,
+            #[serde(default)]
+            docs_url: Option<String>,
+            #[serde(default)]
+            codebase_path: Option<String>,
             #[serde(default)]
             name: Option<String>,
             #[serde(default)]
@@ -415,59 +484,109 @@ impl HttpSkill {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
 
-        // Fetch the spec. This runs in the brain process (which has egress),
-        // never the sandbox.
-        let resp = match self.client.get(&input.spec_url).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                return ToolCallResult::error(format!("Failed to fetch spec: {}", e));
-            }
-        };
-        if !resp.status().is_success() {
-            return ToolCallResult::error(format!(
-                "Spec URL returned {} — expected a fetchable OpenAPI/Swagger document",
-                resp.status()
-            ));
-        }
-        let body = match resp.text().await {
-            Ok(t) => t,
-            Err(e) => return ToolCallResult::error(format!("Failed to read spec body: {}", e)),
-        };
-        // Size guard — a spec is metadata, not a payload.
-        const MAX_SPEC_BYTES: usize = 8 * 1024 * 1024;
-        if body.len() > MAX_SPEC_BYTES {
-            return ToolCallResult::error(format!(
-                "Spec is {} bytes, over the {} byte limit",
-                body.len(),
-                MAX_SPEC_BYTES
-            ));
+        // Exactly one source.
+        let set = [
+            input.spec_url.is_some(),
+            input.docs_url.is_some(),
+            input.codebase_path.is_some(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
+        if set != 1 {
+            return ToolCallResult::error(
+                "Provide exactly ONE of: spec_url (a spec document), docs_url (an HTML docs \
+                 page), or codebase_path (a local repo dir)."
+                    .to_string(),
+            );
         }
 
-        // Parse JSON first, then YAML (many specs are served as .yaml).
-        let spec: Value = match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(_) => match serde_yaml::from_str(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return ToolCallResult::error(format!(
-                        "Spec is neither valid JSON nor YAML: {}",
-                        e
-                    ));
+        // Resolve the source to a parsed spec Value + provenance.
+        // (spec, origin_url used for base_url resolution, source label, discovered_from).
+        let (spec, origin_url, source, discovered_from): (Value, String, &str, Option<String>) =
+            if let Some(spec_url) = input.spec_url.clone() {
+                match self
+                    .fetch_text(&spec_url)
+                    .await
+                    .and_then(|b| parse_spec_text(&b))
+                {
+                    Ok(spec) => (spec, spec_url, "openapi_spec", None),
+                    Err(e) => return ToolCallResult::error(e),
                 }
-            },
-        };
+            } else if let Some(docs_url) = input.docs_url.clone() {
+                let spec_url = match self.resolve_spec_url_from_docs(&docs_url).await {
+                    Ok(u) => u,
+                    Err(e) => return ToolCallResult::error(e),
+                };
+                match self
+                    .fetch_text(&spec_url)
+                    .await
+                    .and_then(|b| parse_spec_text(&b))
+                {
+                    Ok(spec) => (spec, spec_url, "html_spec", Some(docs_url)),
+                    Err(e) => {
+                        return ToolCallResult::error(format!(
+                            "Found a spec link ({spec_url}) in {docs_url} but could not load it: {e}"
+                        ));
+                    }
+                }
+            } else {
+                let path = input.codebase_path.clone().unwrap_or_default();
+                let Some(spec_file) = find_spec_file(Path::new(&path)) else {
+                    return ToolCallResult::error(format!(
+                        "No OpenAPI/Swagger spec file (openapi/swagger .json/.yaml, api-docs.json) \
+                         found under {path}. Building a spec from route definitions is not yet \
+                         supported — add a spec file to the repo, or use spec_url / docs_url."
+                    ));
+                };
+                match std::fs::read_to_string(&spec_file)
+                    .map_err(|e| format!("Failed to read {}: {e}", spec_file.display()))
+                    .and_then(|b| parse_spec_text(&b))
+                {
+                    Ok(spec) => (
+                        spec,
+                        spec_file.display().to_string(),
+                        "codebase_spec",
+                        Some(path),
+                    ),
+                    Err(e) => return ToolCallResult::error(e),
+                }
+            };
 
-        let parsed = match parse_api_spec(&spec, &input.spec_url) {
+        self.persist_spec(
+            neo4j,
+            &spec,
+            &origin_url,
+            input.name,
+            input.description,
+            source,
+            discovered_from,
+        )
+        .await
+    }
+
+    /// Parse a spec Value and persist its endpoints. Shared by all three sources;
+    /// `source`/`discovered_from` record the provenance on the ApiContext.
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_spec(
+        &self,
+        neo4j: &Neo4jClient,
+        spec: &Value,
+        origin_url: &str,
+        name_override: Option<String>,
+        description_override: Option<String>,
+        source: &str,
+        discovered_from: Option<String>,
+    ) -> ToolCallResult {
+        let parsed = match parse_api_spec(spec, origin_url) {
             Ok(p) => p,
             Err(e) => return ToolCallResult::error(e),
         };
 
-        let name = input
-            .name
+        let name = name_override
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| derive_api_name(&spec, &input.spec_url));
-        let description = input
-            .description
+            .unwrap_or_else(|| derive_api_name(spec, origin_url));
+        let description = description_override
             .filter(|s| !s.trim().is_empty())
             .or_else(|| {
                 spec.get("info")
@@ -477,10 +596,9 @@ impl HttpSkill {
             })
             .unwrap_or_default();
 
-        // Build the endpoint batch for a single UNWIND round-trip (the same
-        // atomic-write pattern the dynamic-tool fix uses: one query MERGEs the
-        // context and every endpoint together — no cross-connection MATCH — and
-        // a RETURN count confirms the write landed rather than trusting Ok(())).
+        // One UNWIND round-trip: the atomic-write pattern (one query MERGEs the
+        // context and every endpoint together — no cross-connection MATCH — and a
+        // RETURN count confirms the write landed rather than trusting Ok(())).
         let ts = chrono::Utc::now().to_rfc3339();
         let mut batch: Vec<neo4rs::BoltType> = Vec::with_capacity(parsed.endpoints.len());
         for ep in &parsed.endpoints {
@@ -497,11 +615,13 @@ impl HttpSkill {
 
         let cypher = r#"
         MERGE (c:ApiContext {name: $name})
-          SET c.base_url     = $base_url,
-              c.description   = $description,
-              c.spec_url      = $spec_url,
-              c.spec_version  = $spec_version,
-              c.updated_at    = datetime($ts)
+          SET c.base_url        = $base_url,
+              c.description      = $description,
+              c.spec_url         = $spec_url,
+              c.spec_version     = $spec_version,
+              c.source           = $source,
+              c.discovered_from  = $discovered_from,
+              c.updated_at       = datetime($ts)
         WITH c
         UNWIND $endpoints AS ep
         MERGE (e:ApiEndpoint {api_name: $name, method: ep.method, path: ep.path})
@@ -521,8 +641,13 @@ impl HttpSkill {
                     .param("name", name.clone())
                     .param("base_url", parsed.base_url.clone())
                     .param("description", description.clone())
-                    .param("spec_url", input.spec_url.clone())
+                    .param("spec_url", origin_url.to_string())
                     .param("spec_version", parsed.version.clone())
+                    .param("source", source.to_string())
+                    .param(
+                        "discovered_from",
+                        discovered_from.clone().unwrap_or_default(),
+                    )
                     .param("ts", ts)
                     .param("endpoints", batch),
             )
@@ -557,6 +682,8 @@ impl HttpSkill {
             "api_name": name,
             "base_url": parsed.base_url,
             "spec_version": parsed.version,
+            "source": source,
+            "discovered_from": discovered_from,
             "endpoints_stored": stored,
             "sample": sample,
             "query_hint": format!(
@@ -782,6 +909,185 @@ fn derive_api_name(spec: &Value, spec_url: &str) -> String {
         .unwrap_or_else(|| "ingested_api".to_string())
 }
 
+/// Parse spec text as JSON, then YAML (many specs are served as .yaml).
+fn parse_spec_text(body: &str) -> Result<Value, String> {
+    serde_json::from_str(body)
+        .or_else(|_| serde_yaml::from_str(body))
+        .map_err(|e| format!("Spec is neither valid JSON nor YAML: {e}"))
+}
+
+/// Find the OpenAPI/Swagger spec URL an HTML docs page references. Handles the
+/// common renderers: Swagger UI (`SwaggerUIBundle({url: "…"})`), Redoc
+/// (`spec-url="…"`), springdoc (`/v3/api-docs`), and any `<script>/<link>` that
+/// points at an openapi/swagger `.json`/`.yaml`. Deterministic token scan — no
+/// LLM. When a page advertises several specs (e.g. the Swagger demo's dropdown),
+/// prefers one on the SAME host as the page — a docs page's own spec is the
+/// intended one — else the first found. Resolved absolute against `base_url`.
+fn detect_spec_url_in_html(html: &str, base_url: &str) -> Option<String> {
+    let is_specish = |tok: &str| -> bool {
+        let t = tok.to_lowercase();
+        let looks_pathy = t.starts_with("http") || t.contains('/');
+        if !looks_pathy {
+            return false;
+        }
+        let refs_spec = t.contains("openapi") || t.contains("swagger") || t.contains("api-docs");
+        let doc_ext = t.ends_with(".json") || t.ends_with(".yaml") || t.ends_with(".yml");
+        // A spec URL either ends in a doc extension while naming openapi/swagger,
+        // or is a springdoc-style api-docs endpoint.
+        (refs_spec && doc_ext) || t.contains("api-docs")
+    };
+    // Split on quotes/brackets/whitespace to get candidate tokens (URLs and
+    // attribute values both fall out cleanly this way). Collect all, then rank.
+    let mut candidates: Vec<String> = Vec::new();
+    for tok in html.split(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | '`' | '<' | '>' | '(' | ')' | ' ' | '\n' | '\r' | '\t' | ','
+        )
+    }) {
+        let tok = tok.trim();
+        if tok.is_empty() || tok.len() > 512 {
+            continue;
+        }
+        // Initializers often write `host=https://…/openapi.json` (a key=value
+        // map entry). Slice from an embedded absolute URL so the key doesn't
+        // corrupt the token; relative tokens (no scheme) pass through unchanged.
+        let tok = match tok.find("https://").or_else(|| tok.find("http://")) {
+            Some(pos) => &tok[pos..],
+            None => tok,
+        };
+        if is_specish(tok) {
+            let resolved = resolve_url(tok, base_url);
+            if !candidates.contains(&resolved) {
+                candidates.push(resolved);
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    // Prefer a candidate on the same host as the docs page.
+    if let Some(host) = url::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from))
+        && let Some(same) = candidates.iter().find(|c| {
+            url::Url::parse(c)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from))
+                .as_deref()
+                == Some(host.as_str())
+        })
+    {
+        return Some(same.clone());
+    }
+    Some(candidates.remove(0))
+}
+
+/// Collect `.js` URLs referenced by an HTML page (script srcs and any other `.js`
+/// token), resolved absolute, initializer-like ones first. Token-based like
+/// `detect_spec_url_in_html` — robust without full HTML parsing.
+fn find_js_refs(html: &str, base_url: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in html.split(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | '`' | '<' | '>' | '(' | ')' | ' ' | '\n' | '\r' | '\t' | ','
+        )
+    }) {
+        let t = tok.trim();
+        if t.is_empty() || t.len() > 512 {
+            continue;
+        }
+        if t.to_lowercase().ends_with(".js") {
+            let url = resolve_url(t, base_url);
+            if !out.contains(&url) {
+                out.push(url);
+            }
+        }
+    }
+    out.sort_by_key(|s| {
+        let sl = s.to_lowercase();
+        if sl.contains("initializer") || sl.contains("swagger-ui-init") {
+            0
+        } else if sl.contains("swagger") || sl.contains("redoc") {
+            1
+        } else {
+            2
+        }
+    });
+    out
+}
+
+/// Resolve a possibly-relative URL against a base page URL.
+fn resolve_url(candidate: &str, base_url: &str) -> String {
+    if candidate.starts_with("http://") || candidate.starts_with("https://") {
+        return candidate.to_string();
+    }
+    url::Url::parse(base_url)
+        .ok()
+        .and_then(|b| b.join(candidate).ok())
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| candidate.to_string())
+}
+
+/// Names an OpenAPI/Swagger spec file may take at the root of a project.
+const SPEC_FILE_NAMES: [&str; 7] = [
+    "openapi.json",
+    "openapi.yaml",
+    "openapi.yml",
+    "swagger.json",
+    "swagger.yaml",
+    "swagger.yml",
+    "api-docs.json",
+];
+
+/// Search a directory tree for an existing spec file (bounded; skips vendor/noise
+/// dirs). If `root` is a file, it is returned directly.
+fn find_spec_file(root: &Path) -> Option<PathBuf> {
+    if root.is_file() {
+        return Some(root.to_path_buf());
+    }
+    const MAX_ENTRIES: usize = 20_000;
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > MAX_ENTRIES {
+                return None;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if matches!(
+                    name,
+                    ".git"
+                        | "node_modules"
+                        | "target"
+                        | "venv"
+                        | ".venv"
+                        | "dist"
+                        | "build"
+                        | ".tox"
+                ) {
+                    continue;
+                }
+                stack.push(path);
+            } else if let Some(fname) = path.file_name().and_then(|s| s.to_str())
+                && SPEC_FILE_NAMES
+                    .iter()
+                    .any(|s| fname.eq_ignore_ascii_case(s))
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 // Internal type used during auth injection
 struct ApiContext {
     #[allow(dead_code)]
@@ -937,5 +1243,93 @@ mod ingest_api_tests {
             derive_api_name(&untitled, "https://h.example.com/o.json"),
             "h.example.com"
         );
+    }
+
+    #[test]
+    fn detects_swagger_ui_and_redoc_and_springdoc_spec_links() {
+        // Swagger UI inline config with an absolute URL.
+        let swui =
+            r#"<script>SwaggerUIBundle({ url: "https://api.x.com/v3/openapi.json" })</script>"#;
+        assert_eq!(
+            detect_spec_url_in_html(swui, "https://api.x.com/docs"),
+            Some("https://api.x.com/v3/openapi.json".to_string())
+        );
+        // Redoc with a relative spec-url — resolved against the page.
+        let redoc = r#"<redoc spec-url="/static/swagger.yaml"></redoc>"#;
+        assert_eq!(
+            detect_spec_url_in_html(redoc, "https://api.x.com/docs/index.html"),
+            Some("https://api.x.com/static/swagger.yaml".to_string())
+        );
+        // springdoc api-docs endpoint.
+        let springdoc = r#"<a href="/v3/api-docs">spec</a>"#;
+        assert_eq!(
+            detect_spec_url_in_html(springdoc, "https://api.x.com/swagger-ui.html"),
+            Some("https://api.x.com/v3/api-docs".to_string())
+        );
+    }
+
+    #[test]
+    fn prefers_same_host_spec_and_unwraps_key_value_tokens() {
+        // A Swagger-demo-style initializer: a key=value map of several specs, one
+        // relative to the page's own host. The same-host one must win, and the
+        // `host=https://…` wrapping must not corrupt the URL.
+        let js = "const urls=`petstore3.swagger.io=https://petstore3.swagger.io/api/v3/openapi.json,\
+                  petstore.swagger.io=https://petstore.swagger.io/v2/swagger.json`;";
+        assert_eq!(
+            detect_spec_url_in_html(js, "https://petstore3.swagger.io/swagger-initializer.js"),
+            Some("https://petstore3.swagger.io/api/v3/openapi.json".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_html_has_no_spec_link() {
+        let plain = "<html><body><h1>Our API</h1><p>GET /users returns users.</p></body></html>";
+        assert_eq!(detect_spec_url_in_html(plain, "https://x.com/docs"), None);
+    }
+
+    #[test]
+    fn find_js_refs_resolves_and_prioritizes_initializer() {
+        let html = r#"<script src="https://cdn/swagger-ui-bundle.js"></script>
+                      <script src="./swagger-initializer.js"></script>"#;
+        let refs = find_js_refs(html, "https://api.x.com/docs/");
+        // Initializer-like comes first even though it appears second in the HTML.
+        assert_eq!(
+            refs.first().unwrap(),
+            "https://api.x.com/docs/swagger-initializer.js"
+        );
+        assert!(refs.iter().any(|r| r.contains("swagger-ui-bundle.js")));
+    }
+
+    #[test]
+    fn parse_spec_text_accepts_json_and_yaml() {
+        assert!(parse_spec_text(r#"{"openapi":"3.0.0","paths":{}}"#).is_ok());
+        assert!(parse_spec_text("openapi: 3.0.0\npaths: {}\n").is_ok());
+        // An unclosed flow mapping is invalid as both JSON and YAML.
+        assert!(parse_spec_text("{ unclosed: ").is_err());
+    }
+
+    #[test]
+    fn find_spec_file_locates_a_spec_and_skips_noise_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        // Noise dir that must be skipped even though it contains a spec-named file.
+        let nm = dir.path().join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("openapi.json"), "{}").unwrap();
+        // The real spec, one level down in source.
+        let src = dir.path().join("api");
+        std::fs::create_dir_all(&src).unwrap();
+        let spec = src.join("openapi.yaml");
+        std::fs::write(&spec, "openapi: 3.0.0").unwrap();
+
+        let found = find_spec_file(dir.path()).expect("should find a spec");
+        assert!(
+            found.ends_with("api/openapi.yaml"),
+            "found: {}",
+            found.display()
+        );
+
+        // An empty tree yields nothing.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(find_spec_file(empty.path()).is_none());
     }
 }
