@@ -24,6 +24,7 @@
 //! `AgentRunner` holds a `Weak<dyn SubagentLoopRunner>` back to it) is broken
 //! with a `Weak`, wired via `Arc::new_cyclic`.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use tokio::sync::{RwLock, mpsc};
@@ -77,6 +78,17 @@ pub struct AgentBudget {
     pub allow_writes: bool,
 }
 
+/// One tool the sub-agent actually invoked, with the outcome the loop reported.
+/// This is the ground-truth receipt behind a run: an LLM's prose can claim it
+/// "ran X and stored Y" when no such call happened (observed live — the toolsmith
+/// narrated an execution it never performed), so the trace travels with the
+/// findings for the caller to check the narrative against.
+#[derive(Debug, Clone)]
+pub struct ToolInvocation {
+    pub tool: String,
+    pub success: bool,
+}
+
 /// Structured result of one agent run — the same information
 /// `ChatService::run_subagent` returned as a tuple, named.
 #[derive(Debug, Clone)]
@@ -96,8 +108,13 @@ pub struct AgentFindings {
     /// guard cannot otherwise see).
     pub retrieved: bool,
     /// The formatted findings block (on success) or the error text (on failure)
-    /// — ready to fold into the caller's turn / chain step.
+    /// — ready to fold into the caller's turn / chain step. On success the block
+    /// ends with a ground-truth receipt of the tools that actually ran.
     pub findings: String,
+    /// Every tool the sub-agent actually invoked, in order, with outcome. The
+    /// receipt behind `findings`: a caller can check the prose's claims against
+    /// what really happened (empty = the agent ran no tools at all).
+    pub tool_trace: Vec<ToolInvocation>,
 }
 
 impl AgentFindings {
@@ -108,6 +125,7 @@ impl AgentFindings {
             rejected: true,
             retrieved: false,
             findings: msg.into(),
+            tool_trace: Vec::new(),
         }
     }
 }
@@ -323,6 +341,8 @@ impl AgentRunner {
             // caller must cite. The worker's own tool outputs are the only
             // trustworthy provenance — its prose can paraphrase or drop URLs.
             let mut gathered: Vec<String> = Vec::new();
+            // The real tool-call trace — receipts to check the prose against.
+            let mut trace: Vec<ToolInvocation> = Vec::new();
             while let Some(ev) = sub_rx.recv().await {
                 match ev {
                     ChatEvent::Message { content } => answer = content,
@@ -347,6 +367,10 @@ impl AgentRunner {
                         success,
                         preview,
                     } => {
+                        trace.push(ToolInvocation {
+                            tool: tool.clone(),
+                            success,
+                        });
                         if success {
                             gathered.push(preview.clone());
                         }
@@ -372,10 +396,10 @@ impl AgentRunner {
                     ChatEvent::Token { .. } => {}
                 }
             }
-            (answer, saw_error, gathered)
+            (answer, saw_error, gathered, trace)
         };
 
-        let (_, (answer, saw_error, gathered)) = tokio::join!(provider_loop, drain);
+        let (_, (answer, saw_error, gathered, trace)) = tokio::join!(provider_loop, drain);
         // The worker actually consulted the world iff it ran ≥1 successful tool.
         let retrieved = !gathered.is_empty();
 
@@ -404,13 +428,15 @@ impl AgentRunner {
                 retrieved,
                 findings: saw_error
                     .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
+                tool_trace: trace,
             };
         }
         AgentFindings {
             ok: true,
             rejected: false,
             retrieved,
-            findings: format_subagent_findings(agent, &answer, &gathered),
+            findings: format_subagent_findings(agent, &answer, &gathered, &trace),
+            tool_trace: trace,
         }
     }
 
@@ -575,7 +601,12 @@ fn extract_sources(gathered: &[String]) -> Vec<String> {
 /// the caller reads. The header instructs faithful relay, source citation, and
 /// passing along any stated limitation rather than filling it in — the
 /// epistemics the worker/voice split alone does not enforce.
-fn format_subagent_findings(agent: &str, answer: &str, gathered: &[String]) -> String {
+fn format_subagent_findings(
+    agent: &str,
+    answer: &str,
+    gathered: &[String],
+    trace: &[ToolInvocation],
+) -> String {
     let sources = extract_sources(gathered);
     let mut out = format!(
         "[FINDINGS FROM THE `{agent}` SUB-AGENT — relay these faithfully. Cite the sources \
@@ -583,6 +614,7 @@ fn format_subagent_findings(agent: &str, answer: &str, gathered: &[String]) -> S
          could not be found or established, say so plainly rather than filling it in from your \
          own knowledge. Do not add facts the worker did not report.]\n\n{answer}"
     );
+    out.push_str(&format_tool_receipt(agent, trace));
     if !sources.is_empty() {
         out.push_str("\n\nSOURCES:");
         for (i, url) in sources.iter().enumerate() {
@@ -590,6 +622,52 @@ fn format_subagent_findings(agent: &str, answer: &str, gathered: &[String]) -> S
         }
     }
     out
+}
+
+/// Render the ground-truth tool receipt: what the sub-agent ACTUALLY ran,
+/// aggregated per tool in first-seen order. This is the check against a
+/// fabricated narrative — an answer that claims an action whose tool is absent
+/// here did not perform it. Deliberately terse and machine-legible so it survives
+/// relay through `{{_prev}}` and the chat stream.
+fn format_tool_receipt(agent: &str, trace: &[ToolInvocation]) -> String {
+    if trace.is_empty() {
+        return format!(
+            "\n\n[TOOLS `{agent}` ACTUALLY RAN: none. This sub-agent called no tools — any \
+             action its answer claims (a search, a write, an execution) did NOT happen; treat \
+             the answer as ungrounded assertion.]"
+        );
+    }
+    // Aggregate per tool, first-seen order, counting ok vs failed.
+    let mut order: Vec<String> = Vec::new();
+    let mut ok: HashMap<&str, usize> = HashMap::new();
+    let mut fail: HashMap<&str, usize> = HashMap::new();
+    for inv in trace {
+        if !order.iter().any(|t| t == &inv.tool) {
+            order.push(inv.tool.clone());
+        }
+        if inv.success {
+            *ok.entry(inv.tool.as_str()).or_insert(0) += 1;
+        } else {
+            *fail.entry(inv.tool.as_str()).or_insert(0) += 1;
+        }
+    }
+    let parts: Vec<String> = order
+        .iter()
+        .map(|t| {
+            let o = ok.get(t.as_str()).copied().unwrap_or(0);
+            let f = fail.get(t.as_str()).copied().unwrap_or(0);
+            match (o, f) {
+                (o, 0) => format!("{t} ✓×{o}"),
+                (0, f) => format!("{t} ✗×{f}"),
+                (o, f) => format!("{t} ✓×{o} ✗×{f}"),
+            }
+        })
+        .collect();
+    format!(
+        "\n\n[TOOLS `{agent}` ACTUALLY RAN (ground truth — trust this over the prose above; if \
+         the answer claims an action whose tool is not listed here, it did not happen): {}]",
+        parts.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -614,12 +692,20 @@ mod tests {
         assert_eq!(extract_sources(&gathered), vec!["https://example.com/x"]);
     }
 
+    fn inv(tool: &str, success: bool) -> ToolInvocation {
+        ToolInvocation {
+            tool: tool.to_string(),
+            success,
+        }
+    }
+
     #[test]
     fn findings_carry_the_relay_instruction_and_sources() {
         let out = format_subagent_findings(
             "researcher",
             "Reticulum has a 500-byte MTU.",
             &["[S1] RNS docs — https://reticulum.network/manual".to_string()],
+            &[inv("search_web", true)],
         );
         // The relay header must be present (cite + relay limits).
         assert!(out.contains("relay these faithfully"));
@@ -633,9 +719,39 @@ mod tests {
 
     #[test]
     fn findings_omit_the_sources_block_when_there_are_none() {
-        let out = format_subagent_findings("knowledge-worker", "From the graph: X.", &[]);
+        let out = format_subagent_findings(
+            "knowledge-worker",
+            "From the graph: X.",
+            &[],
+            &[inv("search_notes", true)],
+        );
         assert!(out.contains("From the graph: X."));
         assert!(!out.contains("SOURCES:"));
+    }
+
+    #[test]
+    fn receipt_aggregates_tools_and_counts_outcomes() {
+        let out = format_tool_receipt(
+            "toolsmith",
+            &[
+                inv("analyze_own_structure", true),
+                inv("analyze_own_structure", true),
+                inv("manage_dynamic_tool", true),
+                inv("http_request", false),
+            ],
+        );
+        assert!(out.contains("ACTUALLY RAN"));
+        assert!(out.contains("analyze_own_structure ✓×2"), "got: {out}");
+        assert!(out.contains("manage_dynamic_tool ✓×1"), "got: {out}");
+        assert!(out.contains("http_request ✗×1"), "got: {out}");
+    }
+
+    #[test]
+    fn receipt_flags_a_run_that_called_no_tools() {
+        // The toolsmith case: an answer that narrates work while no tool ran.
+        let out = format_tool_receipt("toolsmith", &[]);
+        assert!(out.contains("none"));
+        assert!(out.contains("did NOT happen"), "got: {out}");
     }
 
     #[test]

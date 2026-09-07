@@ -649,7 +649,11 @@ fn parse_api_spec(spec: &Value, spec_url: &str) -> Result<ParsedSpec, String> {
             let tags: Vec<String> = op
                 .get("tags")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             endpoints.push(ParsedEndpoint {
@@ -860,7 +864,11 @@ mod ingest_api_tests {
         assert_eq!(ep.summary, "Find pet by ID");
         // Path-level param merged with the operation param.
         assert!(ep.parameters.contains("petId"), "params: {}", ep.parameters);
-        assert!(ep.parameters.contains("verbose"), "params: {}", ep.parameters);
+        assert!(
+            ep.parameters.contains("verbose"),
+            "params: {}",
+            ep.parameters
+        );
         assert!(ep.parameters.contains("\"required\":true"));
         assert!(ep.security.contains("api_key"), "security: {}", ep.security);
         assert!(ep.tags.contains("pet"));
@@ -920,8 +928,14 @@ mod ingest_api_tests {
     #[test]
     fn derive_name_slugs_the_title_then_falls_back_to_host() {
         let titled = json!({ "info": { "title": "My Cool API!" } });
-        assert_eq!(derive_api_name(&titled, "https://h.example.com/o.json"), "my_cool_api");
+        assert_eq!(
+            derive_api_name(&titled, "https://h.example.com/o.json"),
+            "my_cool_api"
+        );
         let untitled = json!({ "paths": {} });
-        assert_eq!(derive_api_name(&untitled, "https://h.example.com/o.json"), "h.example.com");
+        assert_eq!(
+            derive_api_name(&untitled, "https://h.example.com/o.json"),
+            "h.example.com"
+        );
     }
 }

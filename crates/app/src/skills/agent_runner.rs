@@ -200,11 +200,20 @@ impl AgentRunnerSkill {
         if !findings.ok {
             warn!(agent, "run_agent: agent ran but produced no answer");
         }
+        // Surface the real tool-call trace so a programmatic consumer can check
+        // the answer's claims against what actually ran (the answer text already
+        // carries a human-readable receipt). See ToolInvocation for why.
+        let tool_trace: Vec<Value> = findings
+            .tool_trace
+            .iter()
+            .map(|inv| json!({ "tool": inv.tool, "success": inv.success }))
+            .collect();
         ToolCallResult::success_json(json!({
             "answer": findings.findings,
             "ok": findings.ok,
             "retrieved": findings.retrieved,
             "agent": agent,
+            "tool_trace": tool_trace,
         }))
     }
 }
