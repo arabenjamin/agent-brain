@@ -374,15 +374,27 @@ impl TurnWriteGuard {
             self.retrieval_ran = true;
         }
     }
+
+    /// Record that retrieval happened through a channel `observe` can't see.
+    /// A `delegate` call is intercepted in the loop and never reaches
+    /// `execute_guarded`, so a worker that searched on the orchestrator's behalf
+    /// would otherwise leave `retrieval_ran` false — and a `semantic` note the
+    /// orchestrator writes afterward would be wrongly downgraded. The loop calls
+    /// this when a delegated sub-agent actually ran a retrieval tool.
+    fn mark_retrieval(&mut self) {
+        self.retrieval_ran = true;
+    }
 }
 
 /// Execute one tool call through the turn guard, returning `(success, text)`.
 ///
-/// **All four provider loops dispatch through here.** Wiring a guard into one
-/// loop and leaving the other three is the "labelled in one path, not the
-/// other" failure this codebase has re-learned repeatedly — most recently when
-/// claim labelling covered one retrieval path and the unlabelled copy of the
-/// same assertion reached the context window anyway.
+/// **All four provider loops reach this through [`ChatService::dispatch_tool_call`]**,
+/// which is the single place that also intercepts `delegate`. Routing every loop
+/// through one dispatcher is deliberate: wiring a guard (or the delegate
+/// interception) into one loop and leaving the other three is the "labelled in
+/// one path, not the other" failure this codebase has re-learned repeatedly —
+/// most recently when claim labelling covered one retrieval path and the
+/// unlabelled copy of the same assertion reached the context window anyway.
 ///
 /// A suppressed duplicate reports `success = true`: the identical earlier call
 /// did succeed, and reporting failure would invite the model to retry the very
@@ -1034,6 +1046,7 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
+                        true,
                         MAX_TOOL_ITERATIONS,
                     )
                     .await
@@ -1046,6 +1059,7 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
+                        true,
                         MAX_TOOL_ITERATIONS,
                     )
                     .await
@@ -1072,6 +1086,7 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
+                        true,
                         MAX_TOOL_ITERATIONS,
                     )
                     .await
@@ -1556,6 +1571,7 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        allow_delegate: bool,
         max_iterations: usize,
     ) {
         let api_key = match &config.api_key {
@@ -1784,8 +1800,16 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) =
-                    execute_guarded(&handler, &mut write_guard, &tool_name, &tool_input).await;
+                let (success, result_text) = self
+                    .dispatch_tool_call(
+                        allow_delegate,
+                        &handler,
+                        &mut write_guard,
+                        &tool_name,
+                        &tool_input,
+                        &tx,
+                    )
+                    .await;
 
                 let preview: String =
                     prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -1833,6 +1857,7 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        allow_delegate: bool,
         max_iterations: usize,
     ) {
         let do_synthesis = request.synthesis_provider.is_some();
@@ -2134,8 +2159,16 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) =
-                    execute_guarded(&handler, &mut write_guard, &tool_name, &tool_args).await;
+                let (success, result_text) = self
+                    .dispatch_tool_call(
+                        allow_delegate,
+                        &handler,
+                        &mut write_guard,
+                        &tool_name,
+                        &tool_args,
+                        &tx,
+                    )
+                    .await;
 
                 let preview: String =
                     prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -2586,21 +2619,16 @@ impl ChatService {
                     })
                     .await;
 
-                // `delegate` is intercepted here (not dispatched to ToolHandler):
-                // it runs a nested sub-agent loop whose findings become this
-                // tool call's result. Everything else goes through the guard.
-                let (success, result_text) = if allow_delegate
-                    && subagent_enabled()
-                    && tool_name.as_str() == DELEGATE_TOOL
-                {
-                    let sub_agent = tool_args.get("agent").and_then(Value::as_str).unwrap_or("");
-                    let sub_task = tool_args.get("task").and_then(Value::as_str).unwrap_or("");
-                    // Box the recursive future: the sub-agent's own loop is this
-                    // same fn, an async cycle the compiler requires boxing to size.
-                    Box::pin(self.run_subagent(sub_agent, sub_task, &tx)).await
-                } else {
-                    execute_guarded(&handler, &mut write_guard, tool_name, tool_args).await
-                };
+                let (success, result_text) = self
+                    .dispatch_tool_call(
+                        allow_delegate,
+                        &handler,
+                        &mut write_guard,
+                        tool_name,
+                        tool_args,
+                        &tx,
+                    )
+                    .await;
 
                 let preview: String =
                     prepare_tool_result(tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
@@ -2670,8 +2698,49 @@ impl ChatService {
     // Sub-agent delegation — runs a worker profile's loop inside the turn
     // ========================================================================
 
-    /// Run a worker sub-agent synchronously and return `(success, findings)` to
-    /// fold back into the orchestrator's turn as the `delegate` tool result.
+    /// Dispatch one tool call from a provider loop: intercept `delegate` as a
+    /// sub-agent (grounding the write guard when the worker retrieved), and run
+    /// everything else through `execute_guarded`.
+    ///
+    /// **All four provider loops call this**, so the interception and grounding
+    /// are defined once rather than copied per loop — the "handled in one path,
+    /// not the other" shape this codebase keeps re-growing. `allow_delegate` is
+    /// false inside a sub-agent's own loop, so a sub-agent cannot delegate
+    /// further (depth cap 1); a hallucinated `delegate` call there just falls
+    /// through to `execute_guarded` and fails as an unknown tool.
+    async fn dispatch_tool_call(
+        &self,
+        allow_delegate: bool,
+        handler: &Option<ToolHandler>,
+        write_guard: &mut TurnWriteGuard,
+        tool_name: &str,
+        tool_args: &Value,
+        tx: &mpsc::Sender<ChatEvent>,
+    ) -> (bool, String) {
+        if allow_delegate && subagent_enabled() && tool_name == DELEGATE_TOOL {
+            let sub_agent = tool_args.get("agent").and_then(Value::as_str).unwrap_or("");
+            let sub_task = tool_args.get("task").and_then(Value::as_str).unwrap_or("");
+            // Box the recursive future: a sub-agent runs these same loops, an
+            // async cycle the compiler requires boxing to size.
+            let (ok, retrieved, findings) =
+                Box::pin(self.run_subagent(sub_agent, sub_task, tx)).await;
+            // A worker that searched on our behalf grounds this turn — the
+            // delegate result never reaches execute_guarded/observe, so mark it
+            // here or a store_note written afterward is wrongly downgraded.
+            if retrieved {
+                write_guard.mark_retrieval();
+            }
+            (ok, findings)
+        } else {
+            execute_guarded(handler, write_guard, tool_name, tool_args).await
+        }
+    }
+
+    /// Run a worker sub-agent synchronously and return `(success, retrieved,
+    /// findings)` to fold back into the orchestrator's turn as the `delegate`
+    /// tool result. `retrieved` is true when the worker actually ran ≥1
+    /// successful tool — the orchestrator uses it to ground its own write guard
+    /// (a delegate is a retrieval event the guard cannot otherwise see).
     ///
     /// The sub-agent runs under a curated, `spawnable` profile with a READ-ONLY
     /// toolset and NO `delegate` of its own (depth cap 1). Its progress (tool
@@ -2684,10 +2753,11 @@ impl ChatService {
         agent: &str,
         task: &str,
         main_tx: &mpsc::Sender<ChatEvent>,
-    ) -> (bool, String) {
+    ) -> (bool, bool, String) {
         let agent = agent.trim();
         if !SPAWNABLE_PROFILES.contains(&agent) {
             return (
+                false,
                 false,
                 format!(
                     "No sub-agent named '{agent}'. Available: {}.",
@@ -2696,17 +2766,23 @@ impl ChatService {
             );
         }
         if task.trim().is_empty() {
-            return (false, "delegate called with an empty task.".to_string());
+            return (
+                false,
+                false,
+                "delegate called with an empty task.".to_string(),
+            );
         }
 
         let Some(cb) = self.context_builder.read().await.clone() else {
             return (
+                false,
                 false,
                 "Sub-agent unavailable: no context builder.".to_string(),
             );
         };
         let Ok(bundle) = cb.build_bundle(agent).await else {
             return (
+                false,
                 false,
                 format!("Sub-agent profile '{agent}' could not be loaded."),
             );
@@ -2775,6 +2851,7 @@ impl ChatService {
                         sub_request,
                         sub_system,
                         sub_tx,
+                        false,
                         MAX_SUBAGENT_ITERATIONS,
                     )
                     .await
@@ -2787,6 +2864,7 @@ impl ChatService {
                         sub_request,
                         sub_system,
                         sub_tx,
+                        false,
                         MAX_SUBAGENT_ITERATIONS,
                     )
                     .await
@@ -2813,6 +2891,7 @@ impl ChatService {
                         sub_request,
                         sub_system,
                         sub_tx,
+                        false,
                         MAX_SUBAGENT_ITERATIONS,
                     )
                     .await
@@ -2875,14 +2954,21 @@ impl ChatService {
         };
 
         let (_, (answer, saw_error, gathered)) = tokio::join!(provider_loop, drain);
+        // The worker actually consulted the world iff it ran ≥1 successful tool.
+        let retrieved = !gathered.is_empty();
         if answer.trim().is_empty() {
             return (
                 false,
+                retrieved,
                 saw_error
                     .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
             );
         }
-        (true, format_subagent_findings(agent, &answer, &gathered))
+        (
+            true,
+            retrieved,
+            format_subagent_findings(agent, &answer, &gathered),
+        )
     }
 
     // ========================================================================
@@ -3112,6 +3198,7 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        allow_delegate: bool,
         max_iterations: usize,
     ) {
         let model = config.model.clone();
@@ -3213,8 +3300,16 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) =
-                    execute_guarded(&handler, &mut write_guard, &tool_name, &tool_args).await;
+                let (success, result_text) = self
+                    .dispatch_tool_call(
+                        allow_delegate,
+                        &handler,
+                        &mut write_guard,
+                        &tool_name,
+                        &tool_args,
+                        &tx,
+                    )
+                    .await;
 
                 let preview: String = result_text.chars().take(4000).collect();
                 let _ = tx
@@ -4575,6 +4670,22 @@ mod write_guard_tests {
     fn retrieval_earlier_in_the_turn_grounds_a_semantic_note() {
         let mut g = TurnWriteGuard::default();
         g.observe("search_web", true);
+        assert_eq!(
+            g.screen("store_note", &note(Some("semantic"), "x")),
+            Screened::Pass
+        );
+    }
+
+    /// A successful `delegate` grounds the orchestrator the same way a direct
+    /// retrieval tool does — the worker searched on its behalf. Without this, a
+    /// semantic note written after delegating would be downgraded even though
+    /// the turn genuinely consulted the world.
+    #[test]
+    fn a_delegate_retrieval_grounds_a_semantic_note() {
+        let mut g = TurnWriteGuard::default();
+        // `delegate` is intercepted in the loop, so the guard is told directly
+        // rather than through `observe`.
+        g.mark_retrieval();
         assert_eq!(
             g.screen("store_note", &note(Some("semantic"), "x")),
             Screened::Pass

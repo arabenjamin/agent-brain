@@ -44,11 +44,23 @@ Guard tests: `general` is never spawnable; the tool contract is `agent`+`task`.
   Note: this delivers `answer` + `sources`; a first-class `gaps` array is still
   carried as prose in the answer, not a separate field.
 
-**Still to close in Phase 1 (§10):**
-- Interception is only in `run_ollama_cloud_loop`, not all four provider loops.
-- A `delegate` result does **not** yet flip the orchestrator's
-  `TurnWriteGuard.retrieval_ran`, so a `semantic` note written after delegating
-  would still be wrongly downgraded (§6/§7).
+- ✅ **Grounding-flag propagation** — `run_subagent` now also reports whether the
+  worker ran ≥1 successful tool (`retrieved`); the dispatcher calls
+  `TurnWriteGuard::mark_retrieval()` on a retrieving delegate, so a `semantic`
+  note the orchestrator writes afterward is no longer wrongly downgraded to
+  `unsourced_synthesis`. Guard: `a_delegate_retrieval_grounds_a_semantic_note`.
+- ✅ **All-loop interception** — the delegate interception + grounding was
+  extracted into one `ChatService::dispatch_tool_call` that **all four** provider
+  loops route through (replacing their direct `execute_guarded` calls). Each
+  loop gained an `allow_delegate` param; `run_one_attempt` passes `true`,
+  `run_subagent` passes `false` (depth cap 1). Delegation now works whichever
+  provider the orchestrator runs on, and the interception is defined once rather
+  than copied per loop — closing the "handled in one path, not the other" risk.
+
+**Phase 1 is complete.** The gemma-orchestrator design is validated and the
+primitive is hardened (bounded, grounded, structured, provider-agnostic). What
+remains is forward work, not Phase 1: Phase 2 (roster/`spawnable` profile
+fields) and Phase 4 (re-express the worker/voice split on `delegate`).
 
 It also folds in the broader question the work raised — "how agents are put
 together and get used" — by formalising **agent = context profile** and giving
@@ -318,11 +330,12 @@ stays; `delegate` is the sanctioned in-turn alternative.
   calls per turn on real questions** (the numbers that decide whether the
   orchestrator should be gemma or gpt-oss, and how tight the iteration caps must
   be).
-- **Phase 1 — primitive.** `delegate` tool + loop interception (§3.3) +
-  `run_subagent` (§3.4) [Phase 0]. Then: ✅ tight sub-agent iteration cap
-  (`MAX_SUBAGENT_ITERATIONS`); ⏳ retrieval-flag propagation into the caller's
-  write guard; ⏳ structured result (§6); ⏳ interception in the remaining
-  provider loops.
+- **Phase 1 — primitive. [COMPLETE]** `delegate` tool + `run_subagent` (§3.4);
+  ✅ tight sub-agent iteration cap (`MAX_SUBAGENT_ITERATIONS`); ✅ structured
+  result (§6, `answer`+`sources`); ✅ retrieval-flag propagation into the
+  caller's write guard; ✅ interception in all four provider loops via the shared
+  `dispatch_tool_call`. Validated end-to-end 2026-09-07 under the `orchestrator`
+  profile.
 - **Phase 2 — roster & profiles.** `spawnable`/`specialty` profile fields;
   roster injection into the orchestrator prompt (§5); curate the spawnable set.
 - **Phase 3 — streaming & polish.** Nested event surfacing, episodic-note
