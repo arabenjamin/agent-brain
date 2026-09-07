@@ -1,9 +1,23 @@
 # Unified Agent Execution — Design Proposal
 
-Status: **DESIGN ONLY — nothing implemented.** This document proposes one shared
-agent-execution primitive reachable from all three goal entrypoints (chat, tasks,
-schedules), a choose-or-build agent-selection step, and a durable iterative-project
-loop (build ↔ review against a definition of done) layered on top of it.
+Status (2026-09-07): **Phases 0–3 COMPLETE and live-smoke-tested; Phases 4–5
+REMAINING (both were always optional/deferred).** The core is delivered — one
+shared `AgentRunner` primitive reachable from all three goal entrypoints (chat,
+tasks, schedules) with choose-or-build selection. What remains is the durable
+iterative-project loop (Phase 4, tentative — §8 decision 3) and automatic
+proven-agent preference (Phase 5, optional). Per-phase detail is in §9.
+
+- ✅ **Phase 0** — extract `AgentRunner` (behaviour-neutral).
+- ✅ **Phase 1** — `run_agent` background tool.
+- ✅ **Phase 2** — choose-or-build (`select_agent`, `agent:"auto"`).
+- ✅ **Phase 3** — three front doors (`chains/run-agent.yaml`, `schedule-author`).
+- ⬜ **Phase 4** — iterative `:Project` build↔review loop (tentative; decide vs a
+  lighter evaluator-loop tuning).
+- ⬜ **Phase 5** — automatic proven-agent preference (optional).
+
+Gated behind `SUBAGENT_ENABLED` (default OFF). Smoke-tested functionally
+(routing + a live end-to-end `run_agent`); **not** yet load-, cost-, or
+answer-quality-tested.
 
 Read first: `project-docs/SUBAGENT_ORCHESTRATION_PLAN.md` (the chat-side
 `delegate`/`run_subagent` primitive this generalises), the Externalized Agent
@@ -394,12 +408,15 @@ and DoD, not the 3-retry evaluator cap.
   - Guard tests: every shipped chain + context profile parses (would have caught
     the missing required `pattern`); run-agent skips both critics; schedule-author
     is spawnable with a specialty. 449 lib tests green, fmt/clippy clean.
-- **Phase 4 (tentative — decision 3 open) — iterative Project loop.** `(:Project)`
-  node, `read_workspace_file`, `manage_project`, builder↔reviewer `run_agent` loop
-  with artifact continuity and a DoD gate. The widget example, fully realised.
-  Gated on the §8.3 call — may instead be a lighter tuning of the existing
-  evaluator loop. Decide once Phases 0–3 land.
-- **Phase 5 (optional) — automatic proven-agent preference.** Fold
+- **Phase 4 — ⬜ REMAINING (tentative — decision 3 open) — iterative Project
+  loop.** `(:Project)` node, `read_workspace_file`, `manage_project`,
+  builder↔reviewer `run_agent` loop with artifact continuity and a DoD gate. The
+  widget example, fully realised. Gated on the §8.3 call — may instead be a
+  lighter tuning of the existing evaluator loop. Phases 0–3 have landed, so this
+  is now the one substantive decision left: build the node vs the lighter tuning
+  vs leave it. Recommendation: decide from real usage of Phases 0–3 with the flag
+  on, rather than building it speculatively.
+- **Phase 5 — ⬜ REMAINING (optional) — automatic proven-agent preference.** Fold
   `construct_agent`'s `PERFORMED` grading into `run_agent` selection so a proven
   agent for a recurring sub-goal is chosen without asking.
 

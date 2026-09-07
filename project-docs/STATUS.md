@@ -135,35 +135,36 @@
 
 ## Recent Changes (auto)
 
-### 2026-08-31
+### 2026-09-07
 
-- fix: scratch-session cleanup starved at priority 0 and never ran (`f215c11`)
-- fix: move the fan-out chains off cloud — they were 99% of background spend (`0426218`)
-- Removed scratch.pad as not required (`50345f1`)
-- feat: retrieval eval harness + fix latent ranking bug in note search (`624e3d0`)
+- feat: attach sub-agent tool-call trace to findings; wire ingest_api into api-integrator (`feeffd1`)
+- feat: native ingest_api tool — OpenAPI/Swagger spec -> endpoint graph (`c91fa7b`)
+- fix: fallback ladder in sub-agent loop + atomic dynamic-tool persistence (`b8882a1`)
+- fix: clamp sub-agent models to the unmetered band; drop inert provider_hints (`4cdeb6d`)
+- fix: sharpen select_agent routing (from live smoke test) (`c25eadd`)
+- feat: unified agent execution — shared AgentRunner reachable from all three front doors (`a7313be`)
+- docs: sub-agent orchestration complete (Phases 0-3); Phase 4 deferred (`2d418a5`)
+- feat: sub-agent lifecycle finish marker (Phase 3 polish) (`a09fb93`)
+- feat: data-driven sub-agent roster + empty-arg hardening — Phase 2 complete (`6d407ba`)
+- feat: ground delegate results + intercept in all loops — Phase 1 complete (`112615b`)
+- feat: sub-agent delegate returns structured findings with cited sources (`74e69cd`)
+- feat: gemma-orchestrator sub-agent delegation — iteration cap + search hardening (`ca92774`)
 
-### 2026-08-24
+### 2026-09-06
 
-- fix: make silent signals loud — LLM fallback, tool-result markers, SSE push (`0005bc8`)
+- feat: Phase 0 in-chat sub-agent delegation behind SUBAGENT_ENABLED (`a2153ac`)
+- Came up with a Sub Agent plan (`b8a4a00`)
+- Model config adjustment (`c286f57`)
+- Model config adjustment (`a8351b0`)
+- feat: honor per-agent model_preference in chat + fix HBI agents modal (`5ea6cb0`)
+- feat: route chat to gemini-3-flash and reasoning to gemini-2.5-flash with cloud fallback (`abc4fde`)
 
-### 2026-08-18
+### 2026-09-04
 
-- fix: stop three autonomous loops that ran clean and produced nothing (`0d26801`)
-
-### 2026-08-15
-
-- Updated the daily news scheduled task to include the date of the report and to use source URLs from the source it finds the news (`39c5d78`)
-- fix: store every timestamp as one type, and stop corrupting multi-line Cypher (`f37fa2e`)
-- feat: give the brain a local sense of time (`c788867`)
-- feat: tool-integrated reasoning via a sandboxed code executor (`f4c28b9`)
-
-### 2026-08-10
-
-- feat: claim kinds — separate "was asserted" from "is true" (`2af3957`)
-- feat: source records and corroboration tiering (`8f20d24`)
-- feat: claims — epistemic status for ingested assertions (`a9833f6`)
-- refactor: derive self-knowledge in-process, drop the post-commit script (`e6d0db2`)
-- feat: search engine failover, curiosity-engine web grounding, and self-knowledge fixes (`89a5de8`)
+- fix: stop goal_topic decapitating a quoted subject before a colon (`c51977d`)
+- fix: coerce stringified booleans in reason args so LLM-authored schedules don't dead-letter (`a7856bd`)
+- feat: route the daily news brief through SerpApi Google News (`5fb701c`)
+- chore: bank in-progress reliability & routing work (`617cc68`)
 
 ## Known Issues / Backlog
 
