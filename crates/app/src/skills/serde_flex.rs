@@ -89,7 +89,10 @@ mod tests {
 
     #[test]
     fn a_real_value_survives_and_is_trimmed() {
-        assert_eq!(parse_opt(r#"{"filter": "semantic"}"#), Some("semantic".into()));
+        assert_eq!(
+            parse_opt(r#"{"filter": "semantic"}"#),
+            Some("semantic".into())
+        );
         assert_eq!(parse_opt(r#"{"filter": "  news  "}"#), Some("news".into()));
     }
 

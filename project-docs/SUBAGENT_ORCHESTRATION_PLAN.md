@@ -362,9 +362,21 @@ stays; `delegate` is the sanctioned in-turn alternative.
   (the safety default). Synced to the `:ContextProfile` meta-graph. A new worker
   now joins the roster by editing YAML, no code change. Guards:
   `profiles_are_not_spawnable_by_default`, `format_roster_uses_specialty_then_falls_back_to_description`.
-- **Phase 3 — streaming & polish.** Nested event surfacing, episodic-note
-  folding, error-result handling, `MCP_TOOL_PROFILE`-style bound on the
-  orchestrator's own tool surface.
+- **Phase 3 — streaming & polish. [IN PROGRESS]**
+  - ✅ **Sub-agent lifecycle surfacing** — `run_subagent` now emits a finish
+    marker (`✓ \`researcher\` finished — N result(s) in Ms`, or `✗ … no answer`)
+    to close the delegation bracket; the start marker + prefixed `agent:tool`
+    forwarding were already in place. The delegation now reads as one unit with a
+    clear end, not activity that just stops.
+  - ⏳ **Episodic-note folding** — record in the turn's single episodic note which
+    worker(s) it delegated to. Deferred: it needs delegation state propagated up
+    from `run_subagent` to `run()` (a task-local or side channel), and it is
+    *additive* — sub-agents are read-only, so there is no per-sub-agent note-spam
+    to fix, only an enrichment of the self-record.
+  - ⏳ error-result handling (a failed delegate already returns its error as the
+    findings, and the `✗` finish marker surfaces it) and a tool-surface bound on
+    the orchestrator (its profile already carries a minimal allowlist) — both
+    largely covered; revisit only if a rough edge shows up.
 - **Phase 4 — unify.** Re-express `run_synthesis` (worker/voice split) as a
   `delegate`-backed special case so there is one delegation mechanism, and
   retire the parallel code path.

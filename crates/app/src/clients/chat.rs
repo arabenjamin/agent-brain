@@ -2868,6 +2868,7 @@ impl ChatService {
             synthesis_model: None,
         };
 
+        let started = std::time::Instant::now();
         let _ = main_tx
             .send(ChatEvent::Thinking {
                 content: format!("🔎 delegating to `{agent}` sub-agent ({})…", cfg.model),
@@ -2991,7 +2992,24 @@ impl ChatService {
         let (_, (answer, saw_error, gathered)) = tokio::join!(provider_loop, drain);
         // The worker actually consulted the world iff it ran ≥1 successful tool.
         let retrieved = !gathered.is_empty();
-        if answer.trim().is_empty() {
+
+        // Close the delegation bracket in the stream. Without a finish marker the
+        // user sees "🔎 delegating…" then a burst of nested `agent:tool` events
+        // that simply stops — activity with no visible end. This makes the whole
+        // sub-agent turn read as one unit that started and finished.
+        let ok = !answer.trim().is_empty();
+        let elapsed = started.elapsed().as_secs_f64();
+        let finish = if ok {
+            format!(
+                "✓ `{agent}` finished — {} result(s) in {elapsed:.1}s",
+                gathered.len()
+            )
+        } else {
+            format!("✗ `{agent}` finished with no answer ({elapsed:.1}s)")
+        };
+        let _ = main_tx.send(ChatEvent::Thinking { content: finish }).await;
+
+        if !ok {
             return (
                 false,
                 retrieved,

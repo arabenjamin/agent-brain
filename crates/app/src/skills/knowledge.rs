@@ -360,12 +360,7 @@ impl KnowledgeSkill {
 
         let results = if input.entity_expansion {
             self.svc
-                .search_notes_with_entity_expansion(
-                    query,
-                    input.limit,
-                    input.graph_hops,
-                    note_type,
-                )
+                .search_notes_with_entity_expansion(query, input.limit, input.graph_hops, note_type)
                 .await
         } else {
             self.svc
@@ -916,13 +911,25 @@ struct SearchNotesInput {
     // Every search argument here is an optional filter: an empty string is
     // "absent", not a constraint for "". Normalized at the boundary via
     // `empty_string_as_none` so no handler has to remember the guard.
-    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
     query: Option<String>,
-    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
     entity_name: Option<String>,
-    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
     entity_type: Option<String>,
-    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
     note_type: Option<String>,
     #[serde(default = "agent_brain_protocol::default_limit_5")]
     limit: usize,

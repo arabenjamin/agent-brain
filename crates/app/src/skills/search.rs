@@ -1087,14 +1087,20 @@ struct SearchInput {
     // or "the source list named ''". Normalized at the boundary so an empty
     // value degrades to the default ladder / unrestricted search rather than a
     // filter that matches nothing. See serde_flex::empty_string_as_none.
-    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
     engine: Option<String>,
     /// Accepts both integer and string values (e.g. `10` or `"10"`) so that
     /// ScheduledTask step definitions stored with quoted counts still work.
     #[serde(default, deserialize_with = "deserialize_optional_count")]
     count: Option<u8>,
     /// Name of a SourceList node in Neo4j. When set, restricts results to approved domains.
-    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
     source_list: Option<String>,
 }
 
