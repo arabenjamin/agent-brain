@@ -263,6 +263,11 @@ See `project-docs/architecture_context.md` for skill registry table, initializat
 - `(:DynamicTool)-[:USES]->(:Procedure)` — links a dynamic tool to its step definition
 - `(:AgentSpec)-[:CONSTRUCTED_FOR]->(:Task)` — a constructed agent linked to the task it was dispatched for
 - `(:AgentSpec)-[:PERFORMED {score, passed, at}]->(:Task)` — graded outcome written by the queue's evaluator hook; the constructor's reuse-before-construct prefers specs with avg score ≥ 3.5
+- `(:ApiContext)-[:EXPOSES]->(:ApiEndpoint)` — endpoints ingested by `ingest_api` (see below). `:ApiEndpoint {api_name, method, path, summary, operation_id, parameters, security, tags}` MERGE'd on `(api_name, method, path)`, so re-ingest updates in place.
+
+### Native REST API ingestion (`ingest_api`)
+
+`ingest_api(spec_url [, name, description])` in `HttpSkill` (`skills/http.rs`) fetches an OpenAPI 3.x / Swagger 2.0 doc (JSON **or** YAML), parses **every** operation deterministically (a `serde_json::Value` walk — no LLM, so no truncation/hallucination), and stores each as an `(:ApiEndpoint)` under an `(:ApiContext)` via `[:EXPOSES]`. This is the properly-resurrected agent-api "spec → endpoint graph" idea (the old `ingest_openapi` was a doc-comment ghost; the code was never ported). base_url resolves 3.x `servers[0].url` (absolute or relative-to-origin) → 2.0 `schemes[0]://host+basePath` → the spec URL's origin. Persistence uses the atomic `UNWIND $endpoints` + `RETURN count` read-back pattern (the same lesson as the dynamic-tool fix: one query, no cross-connection MATCH, verify the write landed). Fetch runs **in the brain process** (has egress), never the sandbox. Query results with `neo4j_query`. Parser tests: `ingest_api_tests`. Scope today is **OpenAPI/Swagger only** (HTML docs / codebase introspection are deferred).
 
 **Stdio Transport (Default)**
 - Standard input/output for local CLI usage

@@ -89,6 +89,8 @@ impl Neo4jClient {
             "CREATE INDEX media_channel_idx IF NOT EXISTS FOR (m:Media) ON (m.channel_id)",
             // Recency queries for the watch loop and reporting.
             "CREATE INDEX media_ingested_idx IF NOT EXISTS FOR (m:Media) ON (m.ingested_at)",
+            // ingest_api: "what endpoints does this API expose" lookups.
+            "CREATE INDEX api_endpoint_api IF NOT EXISTS FOR (e:ApiEndpoint) ON (e.api_name)",
             // Note: model_spec_provider index removed — model registry lives in DuckDB
         ];
 
