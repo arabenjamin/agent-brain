@@ -15,7 +15,11 @@ system_prompt: |
   architectural patterns, and suggest improvements. Use reason to think through
   complex trade-offs. Store findings as semantic notes for future reference.
 token_budget: 6000
-model_preference: sonnet
-# Spawnable as a sub-agent (Phase 2). The codebase worker (runs on Claude).
+# Human /chat persona runs on Gemini's free tier (staying within limits) rather
+# than metered Anthropic until that is funded. As a sub-agent this pin is clamped
+# to the unmetered base config anyway (AgentRunner enforces ollama/ollama-cloud
+# only — Gemini's low RPM is a poor fit for a multi-round delegated loop).
+model_preference: gemini-2.5-flash
+# Spawnable as a sub-agent (Phase 2). The codebase worker.
 spawnable: true
 specialty: "questions about this codebase — code structure, git history, static analysis"

@@ -32,7 +32,7 @@ use crate::clients::chat::{ChatEvent, ChatRequest};
 use crate::clients::chat::{DELEGATE_TOOL, WRITE_TOOLS, build_system_prompt, filter_tools};
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::context_builder::ContextBuilderService;
-use crate::services::llm::LlmConfig;
+use crate::services::llm::{LlmConfig, LlmProviderType};
 
 /// The engine an [`AgentRunner`] drives. Implemented by `ChatService`, whose
 /// provider loops and catalog-aware model resolution are the shared machinery we
@@ -219,9 +219,16 @@ impl AgentRunner {
             ));
         };
 
-        // Base config = the current chat model (unmetered); a profile
-        // model_preference overrides it. Sub-agents must never land on a
-        // rate-limited model — the roster is curated to unmetered tool callers.
+        // Base config = the current chat model (unmetered ollama-cloud); a
+        // profile `model_preference` may override it, but a sub-agent must never
+        // land on a metered (Anthropic) or rate-limited (Gemini free tier — the
+        // 5-RPM trap) provider: a multi-round loop there burns paid quota or
+        // trips rate limits, and the roster's model pins exist for the human
+        // /chat persona, not for background/delegated delegation. A pin that
+        // resolves off the unmetered band (local Ollama or free Ollama Cloud) is
+        // honoured on the /chat path (ChatService::resolve_profile_model) but
+        // clamped to `base` here. This is where the invariant the roster assumes
+        // is actually enforced.
         let base = self.llm_config.read().await.clone().unwrap_or_default();
         let cfg = match bundle
             .profile
@@ -230,11 +237,28 @@ impl AgentRunner {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(pref) => engine
-                .resolve_agent_model(&base, pref, bundle.profile.provider_hint.as_deref())
-                .await
-                .unwrap_or(base),
-            None => base,
+            Some(pref) => {
+                let resolved = engine
+                    .resolve_agent_model(&base, pref, bundle.profile.provider_hint.as_deref())
+                    .await
+                    .unwrap_or_else(|| base.clone());
+                if matches!(
+                    resolved.provider,
+                    LlmProviderType::Ollama | LlmProviderType::OllamaCloud
+                ) {
+                    resolved
+                } else {
+                    tracing::warn!(
+                        agent = %agent,
+                        model = %resolved.model,
+                        provider = %resolved.provider,
+                        "sub-agent model_preference resolves to a metered/rate-limited \
+                         provider; clamping to the unmetered base config"
+                    );
+                    base.clone()
+                }
+            }
+            None => base.clone(),
         };
 
         // Toolset: never `delegate` (enforces depth cap 1). Write tools are

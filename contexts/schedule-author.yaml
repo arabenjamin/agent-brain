@@ -15,7 +15,9 @@ tools:
   - context
   - neo4j_query
   - list_tasks
-provider_hint: ollama
+# No model pin. A bare `provider_hint` without `model_preference` is inert (only
+# read via the model_preference resolver); dropped rather than left misleading. A
+# sub-agent runs on the unmetered base config (Ollama Cloud gpt-oss:120b).
 token_budget: 6000
 pre_load_query: "MATCH (s:ScheduledTask) RETURN s.name AS name, s.interval_seconds AS interval, s.steps AS steps ORDER BY s.name"
 system_prompt: |
