@@ -353,7 +353,21 @@ impl DynamicSkill {
             }
         };
 
-        let proc_cypher = r#"
+        // Persist the Procedure and the DynamicTool (with its USES edge) in ONE
+        // autocommit query, and READ BACK the created id to confirm it landed.
+        //
+        // The previous version issued two separate `run()` writes: CREATE the
+        // Procedure, then `MATCH (p:Procedure {id}) CREATE (d)-[:USES]->(p)`. Two
+        // failure modes hid behind that: (1) the second query ran on a different
+        // pooled connection and its MATCH could miss the just-created Procedure,
+        // producing zero rows and NO error — a silent partial write; and (2)
+        // `run()` returns `Ok(())` without inspecting the result summary, so a
+        // transiently-dropped write (e.g. seconds after a restart, pool still
+        // warming) still logged "Defined and registered". A dynamic tool then
+        // lived only in memory and vanished on restart. One combined CREATE
+        // removes the cross-connection dependency; a `RETURN` + row check turns a
+        // non-write into a visible error instead of a false success.
+        let define_cypher = r#"
         CREATE (p:Procedure {
             id: $proc_id,
             name: $name,
@@ -361,26 +375,6 @@ impl DynamicSkill {
             steps: $steps,
             created_at: datetime($ts)
         })
-        "#;
-
-        if let Err(e) = self
-            .neo4j
-            .run(
-                neo4rs::query(proc_cypher)
-                    .param("proc_id", procedure_id.clone())
-                    .param("name", input.name.clone())
-                    .param("description", input.description.clone())
-                    .param("steps", steps_json)
-                    .param("ts", now.clone()),
-            )
-            .await
-        {
-            return ToolCallResult::error(format!("Failed to store Procedure: {}", e));
-        }
-
-        // Persist DynamicTool node with USES->Procedure edge
-        let dt_cypher = r#"
-        MATCH (p:Procedure {id: $proc_id})
         CREATE (d:DynamicTool {
             id: $tool_id,
             name: $name,
@@ -388,22 +382,34 @@ impl DynamicSkill {
             input_schema: $schema,
             created_at: datetime($ts)
         })-[:USES]->(p)
+        RETURN d.id AS id
         "#;
 
-        if let Err(e) = self
+        let rows = match self
             .neo4j
-            .run(
-                neo4rs::query(dt_cypher)
+            .execute(
+                neo4rs::query(define_cypher)
                     .param("proc_id", procedure_id.clone())
                     .param("tool_id", tool_id.clone())
                     .param("name", input.name.clone())
                     .param("description", input.description.clone())
+                    .param("steps", steps_json)
                     .param("schema", schema_json)
                     .param("ts", now),
             )
             .await
         {
-            return ToolCallResult::error(format!("Failed to store DynamicTool: {}", e));
+            Ok(r) => r,
+            Err(e) => return ToolCallResult::error(format!("Failed to store dynamic tool: {}", e)),
+        };
+
+        let persisted_id = rows.first().and_then(|r| r.get::<String>("id").ok());
+        if persisted_id.as_deref() != Some(tool_id.as_str()) {
+            return ToolCallResult::error(format!(
+                "Dynamic tool '{}' did not persist: the CREATE returned no node. \
+                 Not registering it in memory to avoid a tool that vanishes on restart.",
+                input.name
+            ));
         }
 
         // Register in memory (both registry and handler see this via shared Arc)

@@ -1036,6 +1036,7 @@ impl ChatService {
     /// deliver (its explanation belongs with its output), and returned to the
     /// caller unsent if it did not, so a recovered turn is not narrated with the
     /// failure that preceded it.
+    #[allow(clippy::too_many_arguments)]
     async fn run_one_attempt(
         &self,
         cfg: LlmConfig,
@@ -1043,6 +1044,8 @@ impl ChatService {
         handler: Option<ToolHandler>,
         request: ChatRequest,
         system_prompt: String,
+        allow_delegate: bool,
+        max_iterations: usize,
         sink: &mpsc::Sender<ChatEvent>,
     ) -> AttemptOutcome {
         let (attempt_tx, mut attempt_rx) = mpsc::channel::<ChatEvent>(128);
@@ -1057,8 +1060,8 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
-                        true,
-                        MAX_TOOL_ITERATIONS,
+                        allow_delegate,
+                        max_iterations,
                     )
                     .await
                 }
@@ -1070,13 +1073,14 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
-                        true,
-                        MAX_TOOL_ITERATIONS,
+                        allow_delegate,
+                        max_iterations,
                     )
                     .await
                 }
                 LlmProviderType::OllamaCloud => {
-                    // Top-level orchestrator loop: allow `delegate` interception.
+                    // `allow_delegate` is true only for the top-level orchestrator
+                    // turn; a sub-agent rung passes false (depth cap 1).
                     self.run_ollama_cloud_loop(
                         cfg,
                         tools,
@@ -1084,8 +1088,8 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
-                        true,
-                        MAX_TOOL_ITERATIONS,
+                        allow_delegate,
+                        max_iterations,
                     )
                     .await
                 }
@@ -1097,8 +1101,8 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
-                        true,
-                        MAX_TOOL_ITERATIONS,
+                        allow_delegate,
+                        max_iterations,
                     )
                     .await
                 }
@@ -1488,6 +1492,8 @@ impl ChatService {
                             handler.clone(),
                             request.clone(),
                             system_prompt.clone(),
+                            true,
+                            MAX_TOOL_ITERATIONS,
                             &inner_tx,
                         )
                         .await
@@ -3219,59 +3225,71 @@ impl SubagentLoopRunner for ChatService {
         allow_delegate: bool,
         max_iterations: usize,
     ) {
-        match cfg.provider {
-            LlmProviderType::Anthropic => {
-                self.run_anthropic_loop(
-                    cfg,
-                    tools,
-                    handler,
-                    request,
-                    system_prompt,
-                    tx,
+        // Walk [cfg] + the chat fallback ladder, exactly as the top-level chat
+        // path does, so a transient provider failure on a sub-agent turn (a 500,
+        // a rate-limit, a dropped connection) degrades to the next rung instead of
+        // surfacing the raw error as the sub-agent's whole answer. Before this, a
+        // single ollama.com 500 mid-loop returned `ok:false` and the delegated
+        // task failed on a blip. The ladder is unmetered-cloud → local, so it is
+        // consistent with the sub-agent unmetered clamp (no metered/rate-limited
+        // rung is introduced by falling back).
+        let rung_id = |c: &LlmConfig| {
+            (
+                c.provider,
+                c.base_url.clone().unwrap_or_default(),
+                c.model.clone(),
+            )
+        };
+        let mut candidates = vec![cfg];
+        for c in &self.fallback_ladder {
+            if !candidates.iter().any(|x| rung_id(x) == rung_id(c)) {
+                candidates.push(c.clone());
+            }
+        }
+
+        let mut last_error: Option<String> = None;
+        for (i, cand) in candidates.into_iter().enumerate() {
+            if i > 0 {
+                warn!(
+                    model = %cand.model,
+                    provider = %cand.provider,
+                    rung = i,
+                    previous_error = last_error.as_deref().unwrap_or("(none reported)"),
+                    "sub-agent turn produced nothing — falling back to the next model"
+                );
+                let _ = tx
+                    .send(ChatEvent::Thinking {
+                        content: format!(
+                            "⚙ sub-agent model unavailable — retrying on {} ({})",
+                            cand.model, cand.provider
+                        ),
+                    })
+                    .await;
+            }
+            match self
+                .run_one_attempt(
+                    cand,
+                    tools.clone(),
+                    handler.clone(),
+                    request.clone(),
+                    system_prompt.clone(),
                     allow_delegate,
                     max_iterations,
+                    &tx,
                 )
                 .await
+            {
+                // The rung produced real output; the drain reads it off `tx` and
+                // the channel closing on return ends the turn.
+                AttemptOutcome::Delivered => return,
+                AttemptOutcome::Unanswered { error } => last_error = error.or(last_error),
             }
-            LlmProviderType::Ollama => {
-                self.run_ollama_tool_loop(
-                    cfg,
-                    tools,
-                    handler,
-                    request,
-                    system_prompt,
-                    tx,
-                    allow_delegate,
-                    max_iterations,
-                )
-                .await
-            }
-            LlmProviderType::OllamaCloud => {
-                self.run_ollama_cloud_loop(
-                    cfg,
-                    tools,
-                    handler,
-                    request,
-                    system_prompt,
-                    tx,
-                    allow_delegate,
-                    max_iterations,
-                )
-                .await
-            }
-            _ => {
-                self.run_text_loop(
-                    cfg,
-                    tools,
-                    handler,
-                    request,
-                    system_prompt,
-                    tx,
-                    allow_delegate,
-                    max_iterations,
-                )
-                .await
-            }
+        }
+
+        // Every rung was spent — report the concrete failure so the caller sees a
+        // real error (and builds an honest `ok:false`), not silence.
+        if let Some(message) = last_error {
+            let _ = tx.send(ChatEvent::Error { message }).await;
         }
     }
 
@@ -4158,6 +4176,8 @@ mod fallback_ladder_tests {
                 None,
                 test_request(),
                 "sys".into(),
+                true,
+                MAX_TOOL_ITERATIONS,
                 &sink,
             )
             .await;
@@ -4281,6 +4301,99 @@ mod fallback_ladder_tests {
         assert!(
             !seen.iter().any(|e| matches!(e, ChatEvent::Done)),
             "Done belongs to the turn, not to one attempt: {seen:?}"
+        );
+    }
+
+    /// A sub-agent turn (`run_bounded_loop`) must walk the ladder too: a transient
+    /// 500 on the primary model degrades to the next rung instead of surfacing the
+    /// raw error as the whole delegated answer. This is the fix for the live
+    /// `run_agent` 500 that returned `ok:false` on a provider blip.
+    #[tokio::test]
+    async fn a_subagent_turn_falls_back_past_a_transient_500() {
+        // Primary rung: always 500.
+        let primary = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&primary)
+            .await;
+        // Fallback rung: answers.
+        let fallback = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(ANSWERED_COMPLETION_SSE))
+            .mount(&fallback)
+            .await;
+
+        let svc = chat_service(vec![cloud_config(&fallback)]);
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
+        // allow_delegate = false, a bounded budget — the sub-agent shape.
+        svc.run_bounded_loop(
+            cloud_config(&primary),
+            vec![],
+            None,
+            test_request(),
+            "sys".into(),
+            tx,
+            false,
+            MAX_TOOL_ITERATIONS,
+        )
+        .await;
+
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            seen.push(e);
+        }
+        assert!(
+            seen.iter().any(
+                |e| matches!(e, ChatEvent::Message { content } if content == "Substrates and power.")
+            ),
+            "the fallback rung's answer must reach the sub-agent's drain: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a recovered sub-agent turn must not surface the primary's 500: {seen:?}"
+        );
+    }
+
+    /// When every rung fails, the sub-agent turn reports the concrete error rather
+    /// than going silent (so the caller builds an honest `ok:false`).
+    #[tokio::test]
+    async fn a_subagent_turn_reports_error_when_all_rungs_fail() {
+        let primary = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&primary)
+            .await;
+        let fallback = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&fallback)
+            .await;
+
+        let svc = chat_service(vec![cloud_config(&fallback)]);
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
+        svc.run_bounded_loop(
+            cloud_config(&primary),
+            vec![],
+            None,
+            test_request(),
+            "sys".into(),
+            tx,
+            false,
+            MAX_TOOL_ITERATIONS,
+        )
+        .await;
+
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            seen.push(e);
+        }
+        assert!(
+            seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a fully-failed sub-agent turn must report an error, not go silent: {seen:?}"
         );
     }
 }
