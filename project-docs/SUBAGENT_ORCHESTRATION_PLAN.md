@@ -14,16 +14,34 @@ read-only worker via `ChatService::run_subagent`; a curated hardcoded roster
 forwarded to the user, final prose captured and folded back as the tool result.
 Guard tests: `general` is never spawnable; the tool contract is `agent`+`task`.
 
-**Known Phase 0 shortcuts to close in Phase 1 (all noted in §10):**
+**Measured 2026-09-06 (two turns, "What have we learned today?"):**
+- gpt-oss orchestrator (design B): **0 delegations** — it looped its own
+  `search_notes` to the 10-round budget. Design B rejected.
+- gemma orchestrator (design A, `contexts/orchestrator.yaml`): **delegated on
+  its first call** (gemma×3 + gpt-oss×11 = 14 calls). Delegation works; the
+  worker (gpt-oss) then looped `search_notes` to *its* budget and summarised
+  unrelated notes — the sub-agent cap, not the plumbing, was the problem.
+
+**Phase 1 progress:**
+- ✅ **Sub-agent iteration cap** — `MAX_SUBAGENT_ITERATIONS` (3) is threaded
+  through all four provider loops via a `max_iterations` param; `run_one_attempt`
+  passes `MAX_TOOL_ITERATIONS`, `run_subagent` passes `MAX_SUBAGENT_ITERATIONS`.
+  Validated 2026-09-07: the delegated worker hit `rounds:3` (vs 11 before), turn
+  calls 14→7, latency 20s→11s. Guard: `subagent_budget_is_tighter_than_the_orchestrator`.
+- ✅ **`search_notes` empty-query hardening** — an empty/whitespace `entity_name`
+  is now treated as absent (mirrors the existing empty-`query` guard), so a
+  worker looping `search_notes` with `entity_name: ""` gets a clear "supply a
+  real query" error instead of noise it reads as success and loops on. Guards:
+  `search_notes_empty_entity_name_is_not_searched`,
+  `empty_entity_name_with_a_real_query_falls_through_to_query` (`skills/knowledge.rs`).
+
+**Still to close in Phase 1 (§10):**
 - Interception is only in `run_ollama_cloud_loop`, not all four provider loops.
-- The sub-agent shares the top-level `MAX_TOOL_ITERATIONS` (no tighter
-  `MAX_SUBAGENT_ITERATIONS` yet) — so worst-case model calls per turn is a large
-  product; bound it before enabling by default.
 - The result is the sub-agent's prose, not the structured `{answer, sources,
   gaps}` in §6.
 - A `delegate` result does **not** yet flip the orchestrator's
   `TurnWriteGuard.retrieval_ran`, so a `semantic` note written after delegating
-  would still be wrongly downgraded (§6/§7). Wire this in Phase 1.
+  would still be wrongly downgraded (§6/§7).
 
 It also folds in the broader question the work raised — "how agents are put
 together and get used" — by formalising **agent = context profile** and giving
@@ -294,8 +312,10 @@ stays; `delegate` is the sanctioned in-turn alternative.
   orchestrator should be gemma or gpt-oss, and how tight the iteration caps must
   be).
 - **Phase 1 — primitive.** `delegate` tool + loop interception (§3.3) +
-  `run_subagent` (§3.4), structured result (§6), depth/iteration guards (§7).
-  Retrieval-flag propagation into the caller's write guard.
+  `run_subagent` (§3.4) [Phase 0]. Then: ✅ tight sub-agent iteration cap
+  (`MAX_SUBAGENT_ITERATIONS`); ⏳ retrieval-flag propagation into the caller's
+  write guard; ⏳ structured result (§6); ⏳ interception in the remaining
+  provider loops.
 - **Phase 2 — roster & profiles.** `spawnable`/`specialty` profile fields;
   roster injection into the orchestrator prompt (§5); curate the spawnable set.
 - **Phase 3 — streaming & polish.** Nested event surfacing, episodic-note

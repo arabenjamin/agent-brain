@@ -26,6 +26,16 @@ use agent_brain_protocol::Content;
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;
 
+/// Maximum tool-use iterations for a **sub-agent** loop — deliberately far
+/// tighter than [`MAX_TOOL_ITERATIONS`]. A turn's worst-case model calls is the
+/// product of the orchestrator's rounds and each sub-agent's rounds, so a loose
+/// sub-agent cap is a multiplier on cost and latency. It is also a quality
+/// guard: measured 2026-09-06, a gpt-oss worker delegated to for "what have we
+/// learned today" looped `search_notes` to the full budget and summarised
+/// whatever it had scraped (an unrelated biowarfare claim sweep). A short budget
+/// forces it to answer from a few focused calls or report that it could not.
+const MAX_SUBAGENT_ITERATIONS: usize = 3;
+
 /// How many times to re-send a request that came back as an **empty completion**
 /// — the provider reported generating tokens but the stream carried no text and
 /// no tool call.
@@ -967,8 +977,16 @@ impl ChatService {
         let provider_loop = async {
             match cfg.provider {
                 LlmProviderType::Anthropic => {
-                    self.run_anthropic_loop(cfg, tools, handler, request, system_prompt, attempt_tx)
-                        .await
+                    self.run_anthropic_loop(
+                        cfg,
+                        tools,
+                        handler,
+                        request,
+                        system_prompt,
+                        attempt_tx,
+                        MAX_TOOL_ITERATIONS,
+                    )
+                    .await
                 }
                 LlmProviderType::Ollama => {
                     self.run_ollama_tool_loop(
@@ -978,6 +996,7 @@ impl ChatService {
                         request,
                         system_prompt,
                         attempt_tx,
+                        MAX_TOOL_ITERATIONS,
                     )
                     .await
                 }
@@ -991,12 +1010,21 @@ impl ChatService {
                         system_prompt,
                         attempt_tx,
                         true,
+                        MAX_TOOL_ITERATIONS,
                     )
                     .await
                 }
                 _ => {
-                    self.run_text_loop(cfg, tools, handler, request, system_prompt, attempt_tx)
-                        .await
+                    self.run_text_loop(
+                        cfg,
+                        tools,
+                        handler,
+                        request,
+                        system_prompt,
+                        attempt_tx,
+                        MAX_TOOL_ITERATIONS,
+                    )
+                    .await
                 }
             }
         };
@@ -1469,6 +1497,7 @@ impl ChatService {
     // Anthropic native tool-use loop
     // ========================================================================
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_anthropic_loop(
         &self,
         config: LlmConfig,
@@ -1477,6 +1506,7 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        max_iterations: usize,
     ) {
         let api_key = match &config.api_key {
             Some(k) => k.clone(),
@@ -1525,7 +1555,7 @@ impl ChatService {
         // per-turn, and the ladder may run this loop once per rung.
         let mut write_guard = TurnWriteGuard::default();
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
+        for _iteration in 0..max_iterations {
             let body = json!({
                 "model": model,
                 "max_tokens": 4096,
@@ -1744,6 +1774,7 @@ impl ChatService {
     //   message.tool_calls = [{ function: { name, arguments: {…} } }]
     // When no tool is called the message has normal `content` text.
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_ollama_tool_loop(
         &self,
         config: LlmConfig,
@@ -1752,6 +1783,7 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        max_iterations: usize,
     ) {
         let do_synthesis = request.synthesis_provider.is_some();
         let mut gathered: Vec<String> = Vec::new();
@@ -1794,10 +1826,10 @@ impl ChatService {
         // per-turn, and the ladder may run this loop once per rung.
         let mut write_guard = TurnWriteGuard::default();
 
-        for _ in 0..=(MAX_TOOL_ITERATIONS + MAX_EMPTY_COMPLETION_RETRIES + 1) {
+        for _ in 0..=(max_iterations + MAX_EMPTY_COMPLETION_RETRIES + 1) {
             // The wrap-up round: no tools offered, so a model that keeps
             // choosing to search has to answer instead. See FINAL_ROUND_NUDGE.
-            if !final_round && tool_rounds >= MAX_TOOL_ITERATIONS {
+            if !final_round && tool_rounds >= max_iterations {
                 final_round = true;
                 warn!(
                     model = %model,
@@ -2121,6 +2153,7 @@ impl ChatService {
         // True only for the top-level orchestrator loop; a sub-agent's own loop
         // passes false so it cannot delegate further (depth cap 1).
         allow_delegate: bool,
+        max_iterations: usize,
     ) {
         let base_url = config.base_url.as_deref().unwrap_or("https://ollama.com");
         let url = format!("{}/v1/chat/completions", base_url);
@@ -2171,11 +2204,11 @@ impl ChatService {
         // per-turn, and the ladder may run this loop once per rung.
         let mut write_guard = TurnWriteGuard::default();
 
-        for _ in 0..=(MAX_TOOL_ITERATIONS + MAX_EMPTY_COMPLETION_RETRIES + 1) {
+        for _ in 0..=(max_iterations + MAX_EMPTY_COMPLETION_RETRIES + 1) {
             // One extra pass beyond the tool budget: the wrap-up round. See
             // FINAL_ROUND_NUDGE — it is offered no tools, so a looping model
             // has to answer from what it has instead of searching again.
-            if !final_round && tool_rounds >= MAX_TOOL_ITERATIONS {
+            if !final_round && tool_rounds >= max_iterations {
                 final_round = true;
                 warn!(
                     model = %model,
@@ -2617,10 +2650,16 @@ impl ChatService {
         }
 
         let Some(cb) = self.context_builder.read().await.clone() else {
-            return (false, "Sub-agent unavailable: no context builder.".to_string());
+            return (
+                false,
+                "Sub-agent unavailable: no context builder.".to_string(),
+            );
         };
         let Ok(bundle) = cb.build_bundle(agent).await else {
-            return (false, format!("Sub-agent profile '{agent}' could not be loaded."));
+            return (
+                false,
+                format!("Sub-agent profile '{agent}' could not be loaded."),
+            );
         };
 
         // Base config = the current chat model (gpt-oss, unmetered); a profile
@@ -2653,7 +2692,8 @@ impl ChatService {
         let sub_tools = filter_tools(all_tools, &allowed);
         let handler = self.tool_handler.read().await.clone();
         let sub_system = build_system_prompt(
-            (!bundle.profile.system_prompt.is_empty()).then_some(bundle.profile.system_prompt.as_str()),
+            (!bundle.profile.system_prompt.is_empty())
+                .then_some(bundle.profile.system_prompt.as_str()),
             &bundle.pre_loaded_notes,
         );
         let sub_request = ChatRequest {
@@ -2678,23 +2718,54 @@ impl ChatService {
         let provider_loop = async {
             match cfg.provider {
                 LlmProviderType::Anthropic => {
-                    self.run_anthropic_loop(cfg, sub_tools, handler, sub_request, sub_system, sub_tx)
-                        .await
+                    self.run_anthropic_loop(
+                        cfg,
+                        sub_tools,
+                        handler,
+                        sub_request,
+                        sub_system,
+                        sub_tx,
+                        MAX_SUBAGENT_ITERATIONS,
+                    )
+                    .await
                 }
                 LlmProviderType::Ollama => {
-                    self.run_ollama_tool_loop(cfg, sub_tools, handler, sub_request, sub_system, sub_tx)
-                        .await
+                    self.run_ollama_tool_loop(
+                        cfg,
+                        sub_tools,
+                        handler,
+                        sub_request,
+                        sub_system,
+                        sub_tx,
+                        MAX_SUBAGENT_ITERATIONS,
+                    )
+                    .await
                 }
                 LlmProviderType::OllamaCloud => {
                     // allow_delegate = false: a sub-agent cannot delegate further.
                     self.run_ollama_cloud_loop(
-                        cfg, sub_tools, handler, sub_request, sub_system, sub_tx, false,
+                        cfg,
+                        sub_tools,
+                        handler,
+                        sub_request,
+                        sub_system,
+                        sub_tx,
+                        false,
+                        MAX_SUBAGENT_ITERATIONS,
                     )
                     .await
                 }
                 _ => {
-                    self.run_text_loop(cfg, sub_tools, handler, sub_request, sub_system, sub_tx)
-                        .await
+                    self.run_text_loop(
+                        cfg,
+                        sub_tools,
+                        handler,
+                        sub_request,
+                        sub_system,
+                        sub_tx,
+                        MAX_SUBAGENT_ITERATIONS,
+                    )
+                    .await
                 }
             }
         };
@@ -2975,6 +3046,7 @@ impl ChatService {
     // Text-based loop (Gemini fallback)
     // ========================================================================
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_text_loop(
         &self,
         config: LlmConfig,
@@ -2983,6 +3055,7 @@ impl ChatService {
         request: ChatRequest,
         system_prompt: String,
         tx: mpsc::Sender<ChatEvent>,
+        max_iterations: usize,
     ) {
         let model = config.model.clone();
         let llm = match LlmClient::with_config(config) {
@@ -3031,7 +3104,7 @@ impl ChatService {
         // per-turn, and the ladder may run this loop once per rung.
         let mut write_guard = TurnWriteGuard::default();
 
-        for _iteration in 0..MAX_TOOL_ITERATIONS {
+        for _iteration in 0..max_iterations {
             let call_start = std::time::Instant::now();
             let chat_result = llm.chat(&messages).await;
             self.record_llm_call(
@@ -3327,6 +3400,19 @@ mod tests {
     fn general_is_not_a_spawnable_subagent() {
         assert!(!SPAWNABLE_PROFILES.contains(&"general"));
         assert!(!SPAWNABLE_PROFILES.is_empty());
+    }
+
+    /// A sub-agent's tool budget must stay well under the orchestrator's — a
+    /// turn's worst-case model calls is the product of the two, and a loose
+    /// sub-agent cap is what let a delegated worker loop `search_notes` to
+    /// exhaustion and summarise junk (measured 2026-09-06).
+    #[test]
+    fn subagent_budget_is_tighter_than_the_orchestrator() {
+        assert!(
+            MAX_SUBAGENT_ITERATIONS < MAX_TOOL_ITERATIONS,
+            "sub-agent cap ({MAX_SUBAGENT_ITERATIONS}) must be < orchestrator cap ({MAX_TOOL_ITERATIONS})"
+        );
+        assert!(MAX_SUBAGENT_ITERATIONS >= 1);
     }
 
     /// The delegate tool must expose exactly the two-arg contract the loop
@@ -3866,6 +3952,7 @@ mod empty_completion_tests {
             "sys".into(),
             tx,
             false,
+            MAX_TOOL_ITERATIONS,
         )
         .await;
 
@@ -4274,6 +4361,7 @@ mod tool_budget_tests {
             "sys".into(),
             tx,
             false,
+            MAX_TOOL_ITERATIONS,
         )
         .await;
         let mut seen = Vec::new();

@@ -295,8 +295,20 @@ impl KnowledgeSkill {
             Err(e) => return e,
         };
 
-        // entity_name path — direct named-entity lookup
-        if let Some(ref entity_name) = input.entity_name {
+        // entity_name path — direct named-entity lookup. An empty/whitespace
+        // `entity_name` is treated as ABSENT (not searched): a model looping
+        // `search_notes` with `entity_name: ""` would otherwise match nothing,
+        // get noise back, read it as a successful search, and loop — the exact
+        // degenerate behaviour that burned a delegated worker's whole budget
+        // (measured 2026-09-07). Falling through yields a clear error instead,
+        // which tells the model to supply a real query. Mirrors the empty-query
+        // guard below.
+        if let Some(entity_name) = input
+            .entity_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             info!(entity = %entity_name, "Searching notes by entity");
             return match self
                 .svc
@@ -326,7 +338,9 @@ impl KnowledgeSkill {
                 };
             }
             return ToolCallResult::error(
-                "Provide `query`, `entity_name`, or `note_type`".to_string(),
+                "Provide a non-empty `query`, `entity_name`, or `note_type` — empty values \
+                 are ignored, not searched."
+                    .to_string(),
             );
         }
 
@@ -1129,6 +1143,37 @@ mod tests {
         let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
         assert_eq!(r["count"], 1);
         assert_eq!(r["entity_name"], "Rust");
+    }
+
+    /// An empty/whitespace `entity_name` must be treated as absent, not searched
+    /// — otherwise a model looping `search_notes` with `entity_name: ""` gets
+    /// noise back and keeps looping (measured 2026-09-07 burning a sub-agent's
+    /// budget). With nothing else supplied it must error, pointing the model at
+    /// a real query rather than returning a successful empty search.
+    #[tokio::test]
+    async fn search_notes_empty_entity_name_is_not_searched() {
+        let skill = skill_ok();
+        for v in ["", "   "] {
+            let r = skill
+                .execute("search_notes", Some(serde_json::json!({"entity_name": v})))
+                .await
+                .unwrap();
+            assert_eq!(r.is_error, Some(true), "entity_name {v:?} should error, not search");
+        }
+    }
+
+    /// But an empty `entity_name` alongside a real `query` falls through to the
+    /// query search rather than erroring — the empty entity is simply ignored.
+    #[tokio::test]
+    async fn empty_entity_name_with_a_real_query_falls_through_to_query() {
+        let store = MockKnowledgeStore {
+            search_result: Ok(vec![serde_json::json!({"id": "n3"})]),
+            ..Default::default()
+        };
+        let skill = KnowledgeSkill::new(Arc::new(store), Arc::new(MockLlm::ok("{}")));
+        let args = serde_json::json!({"entity_name": "", "query": "reticulum"});
+        let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
+        assert_eq!(r["count"], 1);
     }
 
     // -- prune_old_notes ------------------------------------------------------
