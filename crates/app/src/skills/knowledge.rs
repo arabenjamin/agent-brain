@@ -1158,7 +1158,11 @@ mod tests {
                 .execute("search_notes", Some(serde_json::json!({"entity_name": v})))
                 .await
                 .unwrap();
-            assert_eq!(r.is_error, Some(true), "entity_name {v:?} should error, not search");
+            assert_eq!(
+                r.is_error,
+                Some(true),
+                "entity_name {v:?} should error, not search"
+            );
         }
     }
 

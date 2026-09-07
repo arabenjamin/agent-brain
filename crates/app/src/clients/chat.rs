@@ -168,6 +168,56 @@ fn delegate_tool_def() -> agent_brain_protocol::ToolDefinition {
     }
 }
 
+/// Extract unique http(s) URLs from a sub-agent's tool-result previews.
+///
+/// The worker's own tool outputs are the trustworthy provenance — its prose can
+/// paraphrase or drop links (the exact laundering §6 guards against). Pulling
+/// the URLs straight out of what its tools returned gives the orchestrator a
+/// concrete list to cite regardless of how the worker wrote them up. Split on
+/// whitespace/brackets (no byte indexing, so multibyte text is safe), capped.
+fn extract_sources(gathered: &[String]) -> Vec<String> {
+    const MAX_SOURCES: usize = 8;
+    let mut out: Vec<String> = Vec::new();
+    for text in gathered {
+        for tok in text.split(|c: char| {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>')
+        }) {
+            if (tok.starts_with("http://") || tok.starts_with("https://")) && tok.len() > 10 {
+                let url = tok.trim_end_matches(['.', ',', ';', ':']).to_string();
+                if !out.contains(&url) {
+                    out.push(url);
+                    if out.len() >= MAX_SOURCES {
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Assemble a sub-agent's answer + its sources into the structured `delegate`
+/// result the orchestrator reads (§6). The header instructs the orchestrator to
+/// relay faithfully, cite the sources, and pass along any stated limitation
+/// rather than filling it in — the epistemics the worker/voice split alone does
+/// not enforce.
+fn format_subagent_findings(agent: &str, answer: &str, gathered: &[String]) -> String {
+    let sources = extract_sources(gathered);
+    let mut out = format!(
+        "[FINDINGS FROM THE `{agent}` SUB-AGENT — relay these faithfully. Cite the sources \
+         listed below as markdown links when you use them. If the findings say something \
+         could not be found or established, say so plainly rather than filling it in from your \
+         own knowledge. Do not add facts the worker did not report.]\n\n{answer}"
+    );
+    if !sources.is_empty() {
+        out.push_str("\n\nSOURCES:");
+        for (i, url) in sources.iter().enumerate() {
+            out.push_str(&format!("\n  [S{}] {url}", i + 1));
+        }
+    }
+    out
+}
+
 // ============================================================================
 // Turn write guard — grounding and duplicate suppression for chat-authored writes
 // ============================================================================
@@ -2773,6 +2823,10 @@ impl ChatService {
         let drain = async {
             let mut answer = String::new();
             let mut saw_error: Option<String> = None;
+            // Successful tool-result previews, kept to extract the sources the
+            // orchestrator must cite (§6). The worker's own tool outputs are the
+            // only trustworthy provenance — its prose can paraphrase or drop URLs.
+            let mut gathered: Vec<String> = Vec::new();
             while let Some(ev) = sub_rx.recv().await {
                 match ev {
                     ChatEvent::Message { content } => answer = content,
@@ -2796,6 +2850,9 @@ impl ChatService {
                         success,
                         preview,
                     } => {
+                        if success {
+                            gathered.push(preview.clone());
+                        }
                         let _ = main_tx
                             .send(ChatEvent::ToolResult {
                                 tool: format!("{agent}:{tool}"),
@@ -2814,10 +2871,10 @@ impl ChatService {
                     ChatEvent::Token { .. } => {}
                 }
             }
-            (answer, saw_error)
+            (answer, saw_error, gathered)
         };
 
-        let (_, (answer, saw_error)) = tokio::join!(provider_loop, drain);
+        let (_, (answer, saw_error, gathered)) = tokio::join!(provider_loop, drain);
         if answer.trim().is_empty() {
             return (
                 false,
@@ -2825,7 +2882,7 @@ impl ChatService {
                     .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
             );
         }
-        (true, answer)
+        (true, format_subagent_findings(agent, &answer, &gathered))
     }
 
     // ========================================================================
@@ -3426,6 +3483,48 @@ mod tests {
         assert!(required.iter().any(|v| v == "task"));
         let props = &def.input_schema["properties"];
         assert!(props.get("agent").is_some() && props.get("task").is_some());
+    }
+
+    #[test]
+    fn extract_sources_pulls_unique_urls_from_tool_previews() {
+        let gathered = vec![
+            "[SEARCH SOURCES]\n  [S1] Title — https://example.com/a\nbody".to_string(),
+            "see (https://example.com/b) and https://example.com/a again".to_string(),
+            "no urls here".to_string(),
+        ];
+        let got = extract_sources(&gathered);
+        assert_eq!(got, vec!["https://example.com/a", "https://example.com/b"]);
+    }
+
+    #[test]
+    fn extract_sources_trims_trailing_punctuation_and_brackets() {
+        // A URL wrapped in parens or followed by a period must come out clean.
+        let gathered = vec!["The source (https://example.com/x). Next.".to_string()];
+        assert_eq!(extract_sources(&gathered), vec!["https://example.com/x"]);
+    }
+
+    #[test]
+    fn findings_carry_the_relay_instruction_and_sources() {
+        let out = format_subagent_findings(
+            "researcher",
+            "Reticulum has a 500-byte MTU.",
+            &["[S1] RNS docs — https://reticulum.network/manual".to_string()],
+        );
+        // The orchestrator-facing header must be present (cite + relay limits).
+        assert!(out.contains("relay these faithfully"));
+        assert!(out.contains("researcher"));
+        // The answer is included verbatim...
+        assert!(out.contains("500-byte MTU"));
+        // ...and the source is lifted out for citation.
+        assert!(out.contains("https://reticulum.network/manual"));
+        assert!(out.contains("SOURCES:"));
+    }
+
+    #[test]
+    fn findings_omit_the_sources_block_when_there_are_none() {
+        let out = format_subagent_findings("knowledge-worker", "From the graph: X.", &[]);
+        assert!(out.contains("From the graph: X."));
+        assert!(!out.contains("SOURCES:"));
     }
 
     #[test]

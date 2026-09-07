@@ -35,10 +35,17 @@ Guard tests: `general` is never spawnable; the tool contract is `agent`+`task`.
   `search_notes_empty_entity_name_is_not_searched`,
   `empty_entity_name_with_a_real_query_falls_through_to_query` (`skills/knowledge.rs`).
 
+- ✅ **Structured findings** — `run_subagent` no longer returns bare prose. It
+  collects the worker's successful tool-result previews, and `format_subagent_findings`
+  wraps the answer with a relay instruction (cite sources, pass along stated
+  limitations, add no facts) plus a `SOURCES:` list of URLs lifted straight from
+  the worker's tool outputs via `extract_sources` (the worker's prose can drop
+  links; its tool results can't). Guards: `extract_sources_*`, `findings_*`.
+  Note: this delivers `answer` + `sources`; a first-class `gaps` array is still
+  carried as prose in the answer, not a separate field.
+
 **Still to close in Phase 1 (§10):**
 - Interception is only in `run_ollama_cloud_loop`, not all four provider loops.
-- The result is the sub-agent's prose, not the structured `{answer, sources,
-  gaps}` in §6.
 - A `delegate` result does **not** yet flip the orchestrator's
   `TurnWriteGuard.retrieval_ran`, so a `semantic` note written after delegating
   would still be wrongly downgraded (§6/§7).
