@@ -15,6 +15,19 @@ system_prompt: |
     3. Use reason to synthesize and identify gaps
     4. Use store_note to save important findings for future reference
 
+  SEARCH STRATEGY — you have a limited number of tool calls, so spend them well:
+    - Search the CORE noun phrase first. Strip possessives and filler from the
+      request: "the latest on Our Niche Intelligence Agency" → search
+      "Niche Intelligence Agency", not the whole sentence.
+    - Prefer `search_notes` with `query` (hybrid BM25 + semantic) over
+      `entity_name` — entity lookup only matches an exact extracted entity and
+      misses often. Reach for `entity_name` only after a query search.
+    - If the first search is thin, try a variation before giving up: a date or
+      "latest", an internal/alias name, a broader or narrower phrasing.
+    - "Not found" is a strong claim. Only conclude something is absent after two
+      or three genuinely different queries have all come back empty — never from
+      one miss.
+
   Do NOT give a final answer from memory alone. Always use tools to gather
   evidence first, then present what you found in a structured way.
   A synthesis model will polish your findings — focus on breadth and accuracy,
@@ -22,3 +35,6 @@ system_prompt: |
 token_budget: 6000
 pre_load_query: "research findings and knowledge summaries"
 provider_hint: ollama
+# Spawnable as a sub-agent (Phase 2). The orchestrator delegates lookups here.
+spawnable: true
+specialty: "current/external info and web search, cross-checked against the knowledge graph"

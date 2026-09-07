@@ -38,6 +38,26 @@ where
     }
 }
 
+/// Deserialize an `Option<String>` so that an empty or whitespace-only value is
+/// `None` (and the kept value is trimmed).
+///
+/// Optional FILTER arguments — a `note_type`, an `entity_name`, a search
+/// `engine` — are routinely emitted as `""` by LLM-authored tool calls. Read
+/// literally, `""` is a constraint that matches nothing, so the query returns an
+/// empty result the model reads as a successful "not found" — a false negative
+/// this codebase has now hit three times (`entity_name`, `query`, `note_type`,
+/// each patched reactively in its own handler). Normalizing at the
+/// deserialization boundary makes "absent" and "empty" the same thing, which is
+/// what a filter field means by an empty value — and a new filter field is
+/// covered by adding the attribute, not by remembering the guard.
+pub fn empty_string_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,6 +67,30 @@ mod tests {
     struct Holder {
         #[serde(default, deserialize_with = "deserialize_flex_bool")]
         flag: bool,
+    }
+
+    #[derive(Deserialize)]
+    struct OptHolder {
+        #[serde(default, deserialize_with = "empty_string_as_none")]
+        filter: Option<String>,
+    }
+
+    fn parse_opt(json: &str) -> Option<String> {
+        serde_json::from_str::<OptHolder>(json).unwrap().filter
+    }
+
+    #[test]
+    fn empty_and_whitespace_and_absent_are_none() {
+        assert_eq!(parse_opt(r#"{"filter": ""}"#), None);
+        assert_eq!(parse_opt(r#"{"filter": "   "}"#), None);
+        assert_eq!(parse_opt(r#"{"filter": null}"#), None);
+        assert_eq!(parse_opt(r#"{}"#), None);
+    }
+
+    #[test]
+    fn a_real_value_survives_and_is_trimmed() {
+        assert_eq!(parse_opt(r#"{"filter": "semantic"}"#), Some("semantic".into()));
+        assert_eq!(parse_opt(r#"{"filter": "  news  "}"#), Some("news".into()));
     }
 
     fn parse(json: &str) -> bool {

@@ -272,6 +272,8 @@ pub async fn sync_self_model(
                      SET c.description = $description, \
                          c.model_preference = $model_preference, \
                          c.provider_hint = $provider_hint, \
+                         c.spawnable = $spawnable, \
+                         c.specialty = $specialty, \
                          c.allows_all = $allows_all, \
                          c.synced_at = datetime($now)",
                 )
@@ -282,6 +284,8 @@ pub async fn sync_self_model(
                     p.model_preference.clone().unwrap_or_default(),
                 )
                 .param("provider_hint", p.provider_hint.clone().unwrap_or_default())
+                .param("spawnable", p.spawnable)
+                .param("specialty", p.specialty.clone().unwrap_or_default())
                 .param("allows_all", p.tools.is_empty())
                 .param("now", now.as_str()),
             )

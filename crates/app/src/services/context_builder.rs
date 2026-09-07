@@ -33,6 +33,17 @@ pub struct ContextProfile {
     pub pre_load_query: Option<String>,
     pub model_preference: Option<String>,
     pub provider_hint: Option<String>,
+    /// Whether this profile may be invoked as a sub-agent by an orchestrator via
+    /// `delegate`. Default false — the human entry points (`general`,
+    /// `orchestrator`) must never be spawnable, which would let an orchestrator
+    /// delegate to itself. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md §3.1.
+    #[serde(default)]
+    pub spawnable: bool,
+    /// One-line description of what this agent is *for*, injected into the
+    /// orchestrator's `delegate` roster so it knows when to pick this worker.
+    /// Falls back to `description` when absent.
+    #[serde(default)]
+    pub specialty: Option<String>,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].
@@ -182,6 +193,17 @@ impl ContextBuilderService {
         let mut profiles: Vec<ContextProfile> = map.values().cloned().collect();
         profiles.sort_by(|a, b| a.name.cmp(&b.name));
         profiles
+    }
+
+    /// Profiles that may be spawned as sub-agents, sorted by name. Backs the
+    /// `delegate` roster and the spawnability check, replacing a hardcoded list —
+    /// a new worker becomes delegable by adding `spawnable: true` to its YAML.
+    pub async fn spawnable_profiles(&self) -> Vec<ContextProfile> {
+        self.list_profiles()
+            .await
+            .into_iter()
+            .filter(|p| p.spawnable)
+            .collect()
     }
 
     /// Write a profile to `contexts_dir/{name}.yaml` and update the in-memory map.

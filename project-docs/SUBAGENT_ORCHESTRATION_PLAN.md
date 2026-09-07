@@ -56,11 +56,28 @@ Guard tests: `general` is never spawnable; the tool contract is `agent`+`task`.
   `run_subagent` passes `false` (depth cap 1). Delegation now works whichever
   provider the orchestrator runs on, and the interception is defined once rather
   than copied per loop — closing the "handled in one path, not the other" risk.
+- ✅ **Sub-agent cap 3→6 + `note_type` hardening** — a 2026-09-07 orchestrator
+  turn ("the latest on Our Niche Intelligence Agency") wrongly answered "no
+  information" where `general` succeeded. Root cause was a THIRD empty-arg-as-
+  filter bug: the worker passed `note_type: ""`, which `search_notes` treated as
+  *filter for type ""* → zero results → false negative. Fixed systematically:
+  `serde_flex::empty_string_as_none` normalizes empty/whitespace optional filter
+  args to `None` at the **deserialization boundary**, applied to every
+  `search_notes` filter (`query`/`entity_name`/`entity_type`/`note_type`) and the
+  `search_web` filters (`engine`/`source_list`) — so a new filter field is
+  covered by adding the attribute, not by remembering a per-handler guard (this
+  was the third reactive patch of the same bug class). Ancillary: the sub-agent
+  cap was raised 3→6 (the old junk-loop reason
+  was already hardened away, and 3 starved query refinement) and the
+  `researcher`/`knowledge-worker` prompts nudged to strip possessives, prefer
+  `query` over `entity_name`, and not conclude "not found" from one miss. Guard:
+  `empty_note_type_is_not_treated_as_a_filter`.
 
-**Phase 1 is complete.** The gemma-orchestrator design is validated and the
-primitive is hardened (bounded, grounded, structured, provider-agnostic). What
-remains is forward work, not Phase 1: Phase 2 (roster/`spawnable` profile
-fields) and Phase 4 (re-express the worker/voice split on `delegate`).
+**Phases 1 and 2 are complete.** The gemma-orchestrator design is validated, the
+primitive is hardened (bounded, grounded, structured, provider-agnostic), and the
+worker roster is data-driven (`spawnable`/`specialty` profile fields — no
+hardcoded list). What remains is forward work: Phase 3 (streaming/episodic-note
+polish) and Phase 4 (re-express the worker/voice split on `delegate`).
 
 It also folds in the broader question the work raised — "how agents are put
 together and get used" — by formalising **agent = context profile** and giving
@@ -336,8 +353,15 @@ stays; `delegate` is the sanctioned in-turn alternative.
   caller's write guard; ✅ interception in all four provider loops via the shared
   `dispatch_tool_call`. Validated end-to-end 2026-09-07 under the `orchestrator`
   profile.
-- **Phase 2 — roster & profiles.** `spawnable`/`specialty` profile fields;
-  roster injection into the orchestrator prompt (§5); curate the spawnable set.
+- **Phase 2 — roster & profiles. [COMPLETE]** `spawnable` (default false) +
+  `specialty` fields on `ContextProfile`; `ContextBuilderService::spawnable_profiles()`
+  + `format_roster` build the `delegate` roster live from them; `run_subagent`
+  validates against `spawnable` (not a hardcoded list), and the tool is only
+  offered when ≥1 worker is spawnable. `researcher`/`knowledge-worker`/`code-analyst`
+  carry `spawnable: true` + a specialty; `general`/`orchestrator` stay false
+  (the safety default). Synced to the `:ContextProfile` meta-graph. A new worker
+  now joins the roster by editing YAML, no code change. Guards:
+  `profiles_are_not_spawnable_by_default`, `format_roster_uses_specialty_then_falls_back_to_description`.
 - **Phase 3 — streaming & polish.** Nested event surfacing, episodic-note
   folding, error-result handling, `MCP_TOOL_PROFILE`-style bound on the
   orchestrator's own tool surface.

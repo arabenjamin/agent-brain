@@ -324,11 +324,22 @@ impl KnowledgeSkill {
             };
         }
 
+        // Normalize note_type: an empty/whitespace value is NOT a filter for
+        // `note_type = ""` (which matches nothing and reads back as "no results"
+        // — the false negative that made a delegated worker report "no
+        // information" on data that existed, 2026-09-07). Treat it as absent,
+        // exactly like the empty-query and empty-entity_name guards above.
+        let note_type = input
+            .note_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
         // note_type-only path: list all notes of that type ordered by date
         if input.query.as_deref().is_none_or(str::is_empty) {
-            if let Some(ref nt) = input.note_type {
+            if let Some(nt) = note_type {
                 info!(note_type = %nt, "Listing notes by type");
-                return match self.svc.list_notes(input.limit, Some(nt.as_str())).await {
+                return match self.svc.list_notes(input.limit, Some(nt)).await {
                     Ok(notes) => ToolCallResult::success_json(json!({
                         "count": notes.len(),
                         "note_type": nt,
@@ -345,7 +356,7 @@ impl KnowledgeSkill {
         }
 
         let query = input.query.as_deref().unwrap();
-        info!(query = %query, note_type = ?input.note_type, "Searching notes");
+        info!(query = %query, note_type = ?note_type, "Searching notes");
 
         let results = if input.entity_expansion {
             self.svc
@@ -353,17 +364,12 @@ impl KnowledgeSkill {
                     query,
                     input.limit,
                     input.graph_hops,
-                    input.note_type.as_deref(),
+                    note_type,
                 )
                 .await
         } else {
             self.svc
-                .search_notes(
-                    query,
-                    input.limit,
-                    input.graph_hops,
-                    input.note_type.as_deref(),
-                )
+                .search_notes(query, input.limit, input.graph_hops, note_type)
                 .await
         };
         match results {
@@ -907,13 +913,16 @@ struct StoreNoteInput {
 
 #[derive(Debug, Deserialize)]
 struct SearchNotesInput {
-    #[serde(default)]
+    // Every search argument here is an optional filter: an empty string is
+    // "absent", not a constraint for "". Normalized at the boundary via
+    // `empty_string_as_none` so no handler has to remember the guard.
+    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
     query: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
     entity_name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
     entity_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::skills::serde_flex::empty_string_as_none")]
     note_type: Option<String>,
     #[serde(default = "agent_brain_protocol::default_limit_5")]
     limit: usize,
@@ -1178,6 +1187,28 @@ mod tests {
         let args = serde_json::json!({"entity_name": "", "query": "reticulum"});
         let r = result_json(skill.execute("search_notes", Some(args)).await.unwrap());
         assert_eq!(r["count"], 1);
+    }
+
+    /// An empty/whitespace `note_type` must be treated as absent, not a filter
+    /// for `note_type = ""`. Regression: a delegated worker passed note_type:""
+    /// alongside a query, the real store filtered for type "" and returned
+    /// nothing, and the worker reported "no information" on data that existed
+    /// (2026-09-07). With no query either, an empty note_type leaves nothing to
+    /// search, so it must error rather than list notes of type "".
+    #[tokio::test]
+    async fn empty_note_type_is_not_treated_as_a_filter() {
+        let skill = skill_ok();
+        for v in ["", "   "] {
+            let r = skill
+                .execute("search_notes", Some(serde_json::json!({"note_type": v})))
+                .await
+                .unwrap();
+            assert_eq!(
+                r.is_error,
+                Some(true),
+                "note_type {v:?} must be ignored, not listed as a type"
+            );
+        }
     }
 
     // -- prune_old_notes ------------------------------------------------------

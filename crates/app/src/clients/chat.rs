@@ -26,15 +26,20 @@ use agent_brain_protocol::Content;
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;
 
-/// Maximum tool-use iterations for a **sub-agent** loop — deliberately far
-/// tighter than [`MAX_TOOL_ITERATIONS`]. A turn's worst-case model calls is the
-/// product of the orchestrator's rounds and each sub-agent's rounds, so a loose
-/// sub-agent cap is a multiplier on cost and latency. It is also a quality
-/// guard: measured 2026-09-06, a gpt-oss worker delegated to for "what have we
-/// learned today" looped `search_notes` to the full budget and summarised
-/// whatever it had scraped (an unrelated biowarfare claim sweep). A short budget
-/// forces it to answer from a few focused calls or report that it could not.
-const MAX_SUBAGENT_ITERATIONS: usize = 3;
+/// Maximum tool-use iterations for a **sub-agent** loop — tighter than
+/// [`MAX_TOOL_ITERATIONS`] (a turn's worst-case model calls is the product of
+/// orchestrator rounds and sub-agent rounds), but not so tight that it starves
+/// legitimate query refinement.
+///
+/// Was 3 on 2026-09-06 to stop a worker looping `search_notes` to exhaustion —
+/// but that looping came from the empty-`entity` degenerate search, now hardened
+/// (`skills/knowledge.rs`). With that gone, 3 was too tight: on 2026-09-07 a
+/// delegated worker asked "the latest on Our Niche Intelligence Agency" ran out
+/// after 3 rounds and reported "no information" — a false negative the `general`
+/// profile answered correctly in 5 query-refinement rounds. Raised to 6: enough
+/// to refine a query the way `general` does, still well under the orchestrator's
+/// cap, still bounding the call product.
+const MAX_SUBAGENT_ITERATIONS: usize = 6;
 
 /// How many times to re-send a request that came back as an **empty completion**
 /// — the provider reported generating tokens but the stream carried no text and
@@ -122,17 +127,6 @@ const NO_ANSWER_AFTER_TOOLS_MESSAGE: &str = "The assistant used every available 
 /// registered MCP tool — it runs a nested LLM loop, which ToolHandler cannot.
 const DELEGATE_TOOL: &str = "delegate";
 
-/// Profiles an orchestrator may spawn. Phase 0 hardcodes this curated set;
-/// Phase 2 replaces it with a `spawnable` field on ContextProfile. `general` is
-/// deliberately absent — it is the human entry point, not a worker.
-const SPAWNABLE_PROFILES: &[&str] = &["researcher", "code-analyst", "knowledge-worker"];
-
-/// Roster injected into the `delegate` tool description so the orchestrator knows
-/// which worker to pick. Phase 2 will build this from each profile's `specialty`.
-const SUBAGENT_ROSTER: &str = "  - researcher: web + knowledge-graph search for facts and current information\n  \
-     - code-analyst: read and analyze this codebase\n  \
-     - knowledge-worker: search and synthesize stored knowledge in the graph";
-
 /// Whether in-chat sub-agent delegation is enabled (default OFF for the spike).
 fn subagent_enabled() -> bool {
     std::env::var("SUBAGENT_ENABLED")
@@ -140,8 +134,30 @@ fn subagent_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// The `delegate` tool definition shown to the orchestrator.
-fn delegate_tool_def() -> agent_brain_protocol::ToolDefinition {
+/// Build the `delegate` roster text from the spawnable profiles — one
+/// `- name: specialty` line each (falling back to `description`). Data-driven:
+/// a worker joins the roster by setting `spawnable: true` in its YAML, no code
+/// change. Used both to fill the tool description and to tell the orchestrator
+/// which agents exist.
+fn format_roster(profiles: &[crate::services::context_builder::ContextProfile]) -> String {
+    profiles
+        .iter()
+        .map(|p| {
+            let blurb = p
+                .specialty
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(p.description.as_str());
+            format!("  - {}: {}", p.name, blurb)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The `delegate` tool definition shown to the orchestrator, with the live
+/// roster of spawnable workers injected.
+fn delegate_tool_def(roster: &str) -> agent_brain_protocol::ToolDefinition {
     agent_brain_protocol::ToolDefinition {
         name: DELEGATE_TOOL.to_string(),
         description: format!(
@@ -149,7 +165,7 @@ fn delegate_tool_def() -> agent_brain_protocol::ToolDefinition {
              get its findings back in THIS turn. Prefer this over doing multi-step tool work \
              yourself. The sub-agent does NOT see this conversation — put everything it needs \
              into `task`. It returns findings you must then relay to the user, citing any \
-             sources it gives. Available agents:\n{SUBAGENT_ROSTER}"
+             sources it gives. Available agents:\n{roster}"
         ),
         input_schema: json!({
             "type": "object",
@@ -1313,10 +1329,18 @@ impl ChatService {
         // delegation is enabled. Only when the caller did not pin an explicit
         // tool allowlist — an explicit allowlist is a deliberate scope the
         // orchestrator role should not silently widen. Sub-agents never receive
-        // it (their toolsets are built without it in `run_subagent`).
+        // it (their toolsets are built without it in `run_subagent`). The roster
+        // of workers is built live from the spawnable profiles; with none, the
+        // tool would be useless, so it is not added.
         let mut tools = tools;
         if subagent_enabled() && !has_explicit_tools {
-            tools.push(delegate_tool_def());
+            let spawnable = match self.context_builder.read().await.clone() {
+                Some(cb) => cb.spawnable_profiles().await,
+                None => Vec::new(),
+            };
+            if !spawnable.is_empty() {
+                tools.push(delegate_tool_def(&format_roster(&spawnable)));
+            }
         }
 
         // A resolved profile model overrides the chat default for this turn. The
@@ -2755,16 +2779,6 @@ impl ChatService {
         main_tx: &mpsc::Sender<ChatEvent>,
     ) -> (bool, bool, String) {
         let agent = agent.trim();
-        if !SPAWNABLE_PROFILES.contains(&agent) {
-            return (
-                false,
-                false,
-                format!(
-                    "No sub-agent named '{agent}'. Available: {}.",
-                    SPAWNABLE_PROFILES.join(", ")
-                ),
-            );
-        }
         if task.trim().is_empty() {
             return (
                 false,
@@ -2780,6 +2794,27 @@ impl ChatService {
                 "Sub-agent unavailable: no context builder.".to_string(),
             );
         };
+
+        // Spawnability is checked against the profile's `spawnable` flag BEFORE
+        // building the bundle, so a rejected agent never runs its pre_load_query.
+        // A non-spawnable or unknown name gets the live roster of what it could
+        // have picked — the orchestrator was told the same list in `delegate`.
+        let spawnable_ok = cb.get_profile(agent).await.is_some_and(|p| p.spawnable);
+        if !spawnable_ok {
+            let roster = cb
+                .spawnable_profiles()
+                .await
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return (
+                false,
+                false,
+                format!("'{agent}' is not a sub-agent you can delegate to. Available: {roster}."),
+            );
+        }
+
         let Ok(bundle) = cb.build_bundle(agent).await else {
             return (
                 false,
@@ -3545,13 +3580,35 @@ mod tests {
         assert!(!p.contains("LIVE SELF-STATE"));
     }
 
-    /// `general` must never be spawnable — it is the human entry point, and
-    /// allowing it as a sub-agent target is the recursion the depth cap exists
-    /// to prevent (an orchestrator delegating to itself).
+    /// Spawnability is opt-in: a profile without `spawnable: true` must not be
+    /// spawnable. This is the safety default that keeps the human entry points
+    /// (`general`, `orchestrator`) from being delegated to — the recursion the
+    /// depth cap exists to prevent.
     #[test]
-    fn general_is_not_a_spawnable_subagent() {
-        assert!(!SPAWNABLE_PROFILES.contains(&"general"));
-        assert!(!SPAWNABLE_PROFILES.is_empty());
+    fn profiles_are_not_spawnable_by_default() {
+        use crate::services::context_builder::ContextProfile;
+        let p: ContextProfile =
+            serde_yaml::from_str("name: general\ndescription: the default chat agent\n").unwrap();
+        assert!(
+            !p.spawnable,
+            "a profile without `spawnable: true` must not be spawnable"
+        );
+        assert!(p.specialty.is_none());
+    }
+
+    /// The roster uses each worker's `specialty`, falling back to `description`.
+    #[test]
+    fn format_roster_uses_specialty_then_falls_back_to_description() {
+        use crate::services::context_builder::ContextProfile;
+        let with_spec: ContextProfile = serde_yaml::from_str(
+            "name: researcher\ndescription: deep research\nspecialty: web + graph search\n",
+        )
+        .unwrap();
+        let no_spec: ContextProfile =
+            serde_yaml::from_str("name: knowledge-worker\ndescription: note retrieval\n").unwrap();
+        let roster = format_roster(&[with_spec, no_spec]);
+        assert!(roster.contains("- researcher: web + graph search"));
+        assert!(roster.contains("- knowledge-worker: note retrieval"));
     }
 
     /// A sub-agent's tool budget must stay well under the orchestrator's — a
@@ -3571,7 +3628,7 @@ mod tests {
     /// interception reads (`agent`, `task`), both required.
     #[test]
     fn delegate_tool_has_the_expected_contract() {
-        let def = delegate_tool_def();
+        let def = delegate_tool_def("  - researcher: web + graph search");
         assert_eq!(def.name, DELEGATE_TOOL);
         let required = def.input_schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "agent"));
