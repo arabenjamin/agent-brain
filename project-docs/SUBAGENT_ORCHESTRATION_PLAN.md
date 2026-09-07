@@ -1,10 +1,23 @@
 # Sub-Agent Orchestration in Chat — Design Proposal
 
-Status: **Phase 0 implemented behind `SUBAGENT_ENABLED` (default OFF); awaiting
-measurement.** This document proposes an orchestrator/worker pattern for the
-human-facing `/chat` path: a conversational model that stays in the dialogue and
-delegates bounded, tool-heavy sub-tasks to worker sub-agents whose results return
-*into the same turn*.
+Status: **COMPLETE and validated (Phases 0–3), behind `SUBAGENT_ENABLED`
+(default OFF). Phase 4 deferred by decision.** This document describes an
+orchestrator/worker pattern for the human-facing `/chat` path: a conversational
+model (gemma, the `orchestrator` profile) that stays in the dialogue and
+delegates bounded, tool-heavy sub-tasks to worker sub-agents (gpt-oss) whose
+results return *into the same turn*.
+
+**Validated end-to-end 2026-09-07:** the `orchestrator` profile reliably
+delegates; the bounded worker (cap 6) searches well and grounds its answer; the
+structured findings carry sources/provenance that gemma relays; the empty-arg
+filter-bug class is closed at the deserialization boundary; the worker roster is
+data-driven (`spawnable`/`specialty`); and a delegation reads as one bracketed
+unit in the stream (start marker → nested `agent:tool` events → finish marker).
+On a real question ("the latest on Our Niche Intelligence Agency") the
+orchestrator now returns the same grounded, cited answer as the `general`
+profile. To use it: `SUBAGENT_ENABLED=true`, then select the `orchestrator`
+agent in chat. Deferred/optional forward work: Phase 3 episodic-note folding
+(additive) and Phase 4 (see §10 — deliberately not done).
 
 **What Phase 0 shipped (see `crates/app/src/clients/chat.rs`):** a `delegate`
 pseudo-tool added to the orchestrator when `SUBAGENT_ENABLED` is set, intercepted
@@ -377,9 +390,22 @@ stays; `delegate` is the sanctioned in-turn alternative.
     findings, and the `✗` finish marker surfaces it) and a tool-surface bound on
     the orchestrator (its profile already carries a minimal allowlist) — both
     largely covered; revisit only if a rough edge shows up.
-- **Phase 4 — unify.** Re-express `run_synthesis` (worker/voice split) as a
-  `delegate`-backed special case so there is one delegation mechanism, and
-  retire the parallel code path.
+- **Phase 4 — unify. [DEFERRED — considered, deliberately not done 2026-09-07.]**
+  The intent was to re-express `run_synthesis` (the worker/voice split) on
+  `delegate` so there is one mechanism. On inspection the two are near-inverses,
+  not variants: the worker/voice split has the **worker (gpt-oss) lead** the tool
+  loop with the voice model doing one compose call (`run_synthesis` is a
+  post-processor, not a loop); the orchestrator pattern has the **voice (gemma)
+  lead** and delegate. "Unifying" therefore means making the default `general`
+  chat behave like `orchestrator` — swapping the lead role onto the model
+  measured to be the *weaker* tool-decider (design B, already rejected), adding a
+  delegate-decision round and gemma's delegate-reliability as a new failure
+  surface on the **default** path. That trades a working, tuned default for
+  modest code tidiness, and you still need both primitives ("run a loop",
+  "compose from results") afterward — it is a behaviour change dressed as a
+  refactor. The two modes (fast worker-led `general`, conversational voice-led
+  `orchestrator`) are both useful and both work; they coexist deliberately.
+  Revisit only if maintaining two paths becomes a real cost.
 
 ---
 
