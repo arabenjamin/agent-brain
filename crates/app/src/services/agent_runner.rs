@@ -162,28 +162,25 @@ impl AgentRunner {
         }
 
         // Choose-or-build (plan §4): `agent: "auto"` picks the best-fitting
-        // spawnable agent by specialty match — the "choose" half, LLM-free. No
-        // match is a rejection naming the roster, the caller's cue to construct a
-        // bespoke agent instead (the "build" half, `construct_agent`).
+        // spawnable agent by specialty match — the "choose" half, LLM-free. When
+        // nothing matches lexically, it falls back to a generalist rather than
+        // rejecting, so an open-ended auto task still runs (the standalone
+        // `select_agent` tool stays honest and returns None = a build cue).
         let selected;
         let agent: &str = if agent.eq_ignore_ascii_case("auto") {
             let sel = self.select_agent(task).await;
-            match sel.agent {
+            match sel.agent.or_else(|| generalist_default(&sel.roster)) {
                 Some(name) => {
+                    tracing::info!(agent = %name, "run_agent(auto) selected agent");
                     selected = name;
                     &selected
                 }
+                // Only truly unreachable when the roster is empty (no spawnable
+                // agents exist at all) — then there is nothing to run.
                 None => {
-                    let names = sel
-                        .roster
-                        .iter()
-                        .map(|(n, _)| n.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return AgentFindings::rejected(format!(
-                        "run_agent(auto): no spawnable agent matched the task. Pick one \
-                         explicitly or construct a new agent. Available: {names}."
-                    ));
+                    return AgentFindings::rejected(
+                        "run_agent(auto): no spawnable agents exist to run.",
+                    );
                 }
             }
         } else {
@@ -421,17 +418,22 @@ impl AgentRunner {
             .collect();
 
         let goal_tokens = tokenize(goal);
-        // Best match by raw token overlap; ties broken by roster order (stable),
-        // which is why `max_by_key` is fed in order and `>` (not `>=`) keeps the
-        // first.
+        // Score = NAME_WEIGHT × (name-token overlap) + (specialty-token overlap).
+        // The name is weighted higher because it is the stronger signal: a goal
+        // that says "research …" should pick `researcher` over `knowledge-worker`
+        // even though both specialties contain "search" (and `research` ⊃
+        // `search` under substring matching). Ties break by roster order (stable);
+        // `>` (not `>=`) keeps the first seen.
+        const NAME_WEIGHT: usize = 2;
         let mut best: Option<(String, usize)> = None;
         for p in &roster_profiles {
-            let blurb = p.specialty.as_deref().unwrap_or(&p.description);
-            let haystack = tokenize(&format!("{} {}", p.name, blurb));
-            let overlap = goal_tokens.iter().filter(|t| haystack.contains(*t)).count();
+            let name_tokens = tokenize(&p.name);
+            let spec_tokens = tokenize(p.specialty.as_deref().unwrap_or(&p.description));
+            let score = NAME_WEIGHT * token_overlap(&goal_tokens, &name_tokens)
+                + token_overlap(&goal_tokens, &spec_tokens);
             match &best {
-                Some((_, best_overlap)) if overlap <= *best_overlap => {}
-                _ => best = Some((p.name.clone(), overlap)),
+                Some((_, best_score)) if score <= *best_score => {}
+                _ => best = Some((p.name.clone(), score)),
             }
         }
 
@@ -464,6 +466,42 @@ pub struct AgentSelection {
     pub score: usize,
     /// The full spawnable roster as `(name, specialty)` — always returned.
     pub roster: Vec<(String, String)>,
+}
+
+/// The generalist to fall back to when `run_agent(auto)` finds no lexical match.
+/// A web+graph researcher is the safe default for an open-ended task the matcher
+/// could not place (many topical goals — "off-grid mesh hardware" — share no
+/// words with any curated specialty). Prefers a spawnable whose name mentions
+/// "research"; else the first in the roster. `select_agent` itself stays honest
+/// and returns `None` — only `auto` applies this default, so the standalone
+/// choose-or-build signal (None = consider constructing) is preserved.
+fn generalist_default(roster: &[(String, String)]) -> Option<String> {
+    roster
+        .iter()
+        .map(|(n, _)| n)
+        .find(|n| n.to_ascii_lowercase().contains("research"))
+        .or_else(|| roster.first().map(|(n, _)| n))
+        .cloned()
+}
+
+/// Count goal tokens that match a profile's tokens, by **bidirectional
+/// substring** (a goal token matches if it contains, or is contained by, a
+/// profile token). Substring rather than equality so `research` hooks
+/// `researcher`, `code` hooks `code-analyst`, `schedule` hooks
+/// `schedule-author` — the agent NAME is usually the strongest signal, and goals
+/// name the domain, not the specialty's exact phrasing. Both sides are already
+/// length-≥3 (see [`tokenize`]), which bounds spurious substring hits.
+fn token_overlap(
+    goal: &std::collections::HashSet<String>,
+    haystack: &std::collections::HashSet<String>,
+) -> usize {
+    goal.iter()
+        .filter(|g| {
+            haystack
+                .iter()
+                .any(|h| h.contains(g.as_str()) || g.contains(h.as_str()))
+        })
+        .count()
 }
 
 /// Lowercase, split on non-alphanumerics, drop short/stopword tokens. A tiny
@@ -589,16 +627,66 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_overlap_prefers_the_matching_specialty() {
-        // The selection core is a token-overlap count; verify it discriminates.
+    fn token_overlap_matches_by_substring() {
+        // `research` (goal) must hook `researcher` (agent name) — the exact-token
+        // matching this replaced returned zero here, the bug the smoke test found.
         let goal = tokenize("research the latest off-grid mesh networking hardware");
-        let researcher = tokenize("researcher web research and current events");
-        let coder = tokenize("code-analyst reads the codebase and explains functions");
-        let r_overlap = goal.iter().filter(|t| researcher.contains(*t)).count();
-        let c_overlap = goal.iter().filter(|t| coder.contains(*t)).count();
+        let researcher = tokenize("researcher current external info web search");
         assert!(
-            r_overlap > c_overlap,
-            "a research goal should overlap the researcher more ({r_overlap} vs {c_overlap})"
+            token_overlap(&goal, &researcher) >= 1,
+            "research goal should hook the researcher via substring"
         );
+    }
+
+    #[test]
+    fn token_overlap_discriminates_research_from_code() {
+        let goal = tokenize("research the latest off-grid mesh networking hardware");
+        let researcher = tokenize("researcher current external info web search");
+        // code-analyst specialty AFTER the reword (no ambiguous "source").
+        let coder = tokenize(
+            "code-analyst questions about this codebase code structure git history static analysis",
+        );
+        assert!(
+            token_overlap(&goal, &researcher) > token_overlap(&goal, &coder),
+            "a research goal must prefer the researcher over the code analyst"
+        );
+    }
+
+    #[test]
+    fn name_weight_prefers_researcher_over_knowledge_worker_for_research() {
+        // Both specialties contain "search" (and research ⊃ search), so a raw
+        // overlap ties them; weighting the NAME match must break the tie toward
+        // the researcher. Mirrors the scoring in select_agent.
+        const NAME_WEIGHT: usize = 2;
+        let goal = tokenize("research the latest off-grid mesh networking hardware");
+        let score = |name: &str, spec: &str| {
+            NAME_WEIGHT * token_overlap(&goal, &tokenize(name))
+                + token_overlap(&goal, &tokenize(spec))
+        };
+        let researcher = score(
+            "researcher",
+            "current external info web search knowledge graph",
+        );
+        let kworker = score(
+            "knowledge-worker",
+            "what the brain already knows search synthesise stored notes knowledge graph",
+        );
+        assert!(
+            researcher > kworker,
+            "research goal should prefer researcher ({researcher}) over knowledge-worker ({kworker})"
+        );
+    }
+
+    #[test]
+    fn generalist_default_prefers_researcher() {
+        let roster = vec![
+            ("code-analyst".to_string(), "codebase".to_string()),
+            ("researcher".to_string(), "web".to_string()),
+        ];
+        assert_eq!(generalist_default(&roster).as_deref(), Some("researcher"));
+        // Falls back to the first spawnable when there is no researcher.
+        let roster = vec![("code-analyst".to_string(), "codebase".to_string())];
+        assert_eq!(generalist_default(&roster).as_deref(), Some("code-analyst"));
+        assert_eq!(generalist_default(&[]), None);
     }
 }

@@ -18,4 +18,4 @@ token_budget: 6000
 model_preference: sonnet
 # Spawnable as a sub-agent (Phase 2). The codebase worker (runs on Claude).
 spawnable: true
-specialty: "questions about this codebase — source structure, git history, analysis"
+specialty: "questions about this codebase — code structure, git history, static analysis"
