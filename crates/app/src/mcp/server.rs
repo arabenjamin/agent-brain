@@ -234,14 +234,26 @@ impl McpServerCore {
             .map(Arc::clone)
             .unwrap_or_else(|| Arc::clone(&self.brain.llm_config));
 
-        ChatService::with_context_builder(
+        let chat = ChatService::with_context_builder(
             Arc::clone(&self.brain.tool_handler),
             Arc::clone(&self.brain.tool_registry),
             llm,
             Arc::clone(&self.brain.context_builder_svc),
             self.brain.telemetry(),
             self.chat_fallback_ladder.clone(),
-        )
+        );
+
+        // Publish the chat service's shared AgentRunner so the background
+        // `run_agent` tool reaches the same loop engine. This is the single
+        // factory point, called once at startup when the slot is uncontended.
+        match self.brain.agent_runner_handle().try_write() {
+            Ok(mut slot) => *slot = Some(chat.agent_runner()),
+            Err(_) => tracing::warn!(
+                "could not publish AgentRunner (slot busy at startup); run_agent will be unavailable"
+            ),
+        }
+
+        chat
     }
 
     /// Return the scheduler `Arc` handle so callers can attach it to HTTP

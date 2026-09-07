@@ -9,7 +9,7 @@
 //! (`services/`) which use LLMs as a cognitive substrate rather than as a
 //! conversational interface.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
@@ -19,6 +19,7 @@ use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, warn};
 
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
+use crate::services::agent_runner::{AgentBudget, AgentRunner, SubagentLoopRunner};
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
 use agent_brain_protocol::Content;
@@ -125,7 +126,7 @@ const NO_ANSWER_AFTER_TOOLS_MESSAGE: &str = "The assistant used every available 
 
 /// The pseudo-tool name the orchestrator calls to delegate a sub-task. Never a
 /// registered MCP tool — it runs a nested LLM loop, which ToolHandler cannot.
-const DELEGATE_TOOL: &str = "delegate";
+pub(crate) const DELEGATE_TOOL: &str = "delegate";
 
 /// Whether in-chat sub-agent delegation is enabled (default OFF for the spike).
 fn subagent_enabled() -> bool {
@@ -184,56 +185,6 @@ fn delegate_tool_def(roster: &str) -> agent_brain_protocol::ToolDefinition {
     }
 }
 
-/// Extract unique http(s) URLs from a sub-agent's tool-result previews.
-///
-/// The worker's own tool outputs are the trustworthy provenance — its prose can
-/// paraphrase or drop links (the exact laundering §6 guards against). Pulling
-/// the URLs straight out of what its tools returned gives the orchestrator a
-/// concrete list to cite regardless of how the worker wrote them up. Split on
-/// whitespace/brackets (no byte indexing, so multibyte text is safe), capped.
-fn extract_sources(gathered: &[String]) -> Vec<String> {
-    const MAX_SOURCES: usize = 8;
-    let mut out: Vec<String> = Vec::new();
-    for text in gathered {
-        for tok in text.split(|c: char| {
-            c.is_whitespace() || matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '<' | '>')
-        }) {
-            if (tok.starts_with("http://") || tok.starts_with("https://")) && tok.len() > 10 {
-                let url = tok.trim_end_matches(['.', ',', ';', ':']).to_string();
-                if !out.contains(&url) {
-                    out.push(url);
-                    if out.len() >= MAX_SOURCES {
-                        return out;
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Assemble a sub-agent's answer + its sources into the structured `delegate`
-/// result the orchestrator reads (§6). The header instructs the orchestrator to
-/// relay faithfully, cite the sources, and pass along any stated limitation
-/// rather than filling it in — the epistemics the worker/voice split alone does
-/// not enforce.
-fn format_subagent_findings(agent: &str, answer: &str, gathered: &[String]) -> String {
-    let sources = extract_sources(gathered);
-    let mut out = format!(
-        "[FINDINGS FROM THE `{agent}` SUB-AGENT — relay these faithfully. Cite the sources \
-         listed below as markdown links when you use them. If the findings say something \
-         could not be found or established, say so plainly rather than filling it in from your \
-         own knowledge. Do not add facts the worker did not report.]\n\n{answer}"
-    );
-    if !sources.is_empty() {
-        out.push_str("\n\nSOURCES:");
-        for (i, url) in sources.iter().enumerate() {
-            out.push_str(&format!("\n  [S{}] {url}", i + 1));
-        }
-    }
-    out
-}
-
 // ============================================================================
 // Turn write guard — grounding and duplicate suppression for chat-authored writes
 // ============================================================================
@@ -261,7 +212,7 @@ const RETRIEVAL_TOOLS: &[&str] = &[
 /// Tools whose effects persist beyond the turn. An identical call to one of
 /// these twice in a single turn is never intentional — see
 /// [`TurnWriteGuard::screen`].
-const WRITE_TOOLS: &[&str] = &[
+pub(crate) const WRITE_TOOLS: &[&str] = &[
     "store_note",
     "create_task",
     "write_workspace_file",
@@ -837,7 +788,7 @@ async fn forward_chat_events(
 /// the shared base rules, then the active context profile's `system_prompt`,
 /// then whatever its `pre_load_query` returned. The profile layers are dropped
 /// when no profile applies (explicit tool allowlists, or no context builder).
-fn build_system_prompt(profile_prompt: Option<&str>, pre_loaded: &[String]) -> String {
+pub(crate) fn build_system_prompt(profile_prompt: Option<&str>, pre_loaded: &[String]) -> String {
     let mut prompt = build_base_system_prompt();
 
     if let Some(p) = profile_prompt.map(str::trim).filter(|p| !p.is_empty()) {
@@ -990,6 +941,10 @@ pub struct ChatService {
     /// Resolved from `models.yaml`'s `chat_fallback_ladder` at startup; empty
     /// means the active model is the only one that will ever be tried.
     fallback_ladder: Vec<LlmConfig>,
+    /// The shared agent-execution primitive. `run_subagent` delegates to it; it
+    /// holds a `Weak` back to this `ChatService` as its loop engine. See
+    /// `services/agent_runner.rs`.
+    agent_runner: Arc<AgentRunner>,
 }
 
 impl ChatService {
@@ -999,13 +954,45 @@ impl ChatService {
         tool_registry: Arc<RwLock<ToolRegistry>>,
         llm_config: Arc<RwLock<Option<LlmConfig>>>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Self::build(
             tool_handler,
             tool_registry,
             llm_config,
-            context_builder: Arc::new(RwLock::new(None)),
-            telemetry: None,
-            fallback_ladder: Vec::new(),
+            Arc::new(RwLock::new(None)),
+            None,
+            Vec::new(),
+        )
+    }
+
+    /// Shared constructor. Uses `Arc::new_cyclic` so the owned [`AgentRunner`]
+    /// can hold a `Weak<dyn SubagentLoopRunner>` back to this `ChatService`
+    /// (the loop engine) without a reference cycle keeping either alive.
+    fn build(
+        tool_handler: Arc<RwLock<Option<ToolHandler>>>,
+        tool_registry: Arc<RwLock<ToolRegistry>>,
+        llm_config: Arc<RwLock<Option<LlmConfig>>>,
+        context_builder: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
+        telemetry: Option<crate::repository::TelemetryClient>,
+        fallback_ladder: Vec<LlmConfig>,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|weak: &Weak<ChatService>| {
+            let engine: Weak<dyn SubagentLoopRunner> = weak.clone();
+            let agent_runner = Arc::new(AgentRunner::new(
+                Arc::clone(&tool_handler),
+                Arc::clone(&tool_registry),
+                Arc::clone(&llm_config),
+                Arc::clone(&context_builder),
+                engine,
+            ));
+            Self {
+                tool_handler,
+                tool_registry,
+                llm_config,
+                context_builder,
+                telemetry,
+                fallback_ladder,
+                agent_runner,
+            }
         })
     }
 
@@ -1019,14 +1006,22 @@ impl ChatService {
         telemetry: Option<crate::repository::TelemetryClient>,
         fallback_ladder: Vec<LlmConfig>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Self::build(
             tool_handler,
             tool_registry,
             llm_config,
             context_builder,
             telemetry,
             fallback_ladder,
-        })
+        )
+    }
+
+    /// Hand out this service's shared [`AgentRunner`] so the background
+    /// `run_agent` tool can reach the same loop engine chat uses. Published into
+    /// `BrainCore::agent_runner` when the chat service is created — see
+    /// `McpServerCore::chat_service` / `main.rs`.
+    pub fn agent_runner(&self) -> Arc<AgentRunner> {
+        Arc::clone(&self.agent_runner)
     }
 
     /// Run one turn on one model and report whether the client saw anything.
@@ -2778,250 +2773,26 @@ impl ChatService {
         task: &str,
         main_tx: &mpsc::Sender<ChatEvent>,
     ) -> (bool, bool, String) {
-        let agent = agent.trim();
-        if task.trim().is_empty() {
-            return (
-                false,
-                false,
-                "delegate called with an empty task.".to_string(),
-            );
-        }
-
-        let Some(cb) = self.context_builder.read().await.clone() else {
-            return (
-                false,
-                false,
-                "Sub-agent unavailable: no context builder.".to_string(),
-            );
-        };
-
-        // Spawnability is checked against the profile's `spawnable` flag BEFORE
-        // building the bundle, so a rejected agent never runs its pre_load_query.
-        // A non-spawnable or unknown name gets the live roster of what it could
-        // have picked — the orchestrator was told the same list in `delegate`.
-        let spawnable_ok = cb.get_profile(agent).await.is_some_and(|p| p.spawnable);
-        if !spawnable_ok {
-            let roster = cb
-                .spawnable_profiles()
-                .await
-                .iter()
-                .map(|p| p.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return (
-                false,
-                false,
-                format!("'{agent}' is not a sub-agent you can delegate to. Available: {roster}."),
-            );
-        }
-
-        let Ok(bundle) = cb.build_bundle(agent).await else {
-            return (
-                false,
-                false,
-                format!("Sub-agent profile '{agent}' could not be loaded."),
-            );
-        };
-
-        // Base config = the current chat model (gpt-oss, unmetered); a profile
-        // model_preference overrides it. Sub-agents must never land on a
-        // rate-limited model — the roster is curated to unmetered tool callers.
-        let base = self.llm_config.read().await.clone().unwrap_or_default();
-        let cfg = match bundle
-            .profile
-            .model_preference
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(pref) => self
-                .resolve_profile_model(&base, pref, bundle.profile.provider_hint.as_deref())
-                .await
-                .unwrap_or(base),
-            None => base,
-        };
-
-        // Read-only toolset, and never `delegate` (enforces depth cap 1).
-        let all_tools = self.tool_registry.read().await.list();
-        let allowed: Vec<String> = bundle
-            .profile
-            .tools
-            .iter()
-            .filter(|t| !WRITE_TOOLS.contains(&t.as_str()) && t.as_str() != DELEGATE_TOOL)
-            .cloned()
-            .collect();
-        let sub_tools = filter_tools(all_tools, &allowed);
-        let handler = self.tool_handler.read().await.clone();
-        let sub_system = build_system_prompt(
-            (!bundle.profile.system_prompt.is_empty())
-                .then_some(bundle.profile.system_prompt.as_str()),
-            &bundle.pre_loaded_notes,
-        );
-        let sub_request = ChatRequest {
-            message: task.to_string(),
-            history: Vec::new(),
-            session_id: None,
-            tools: None,
-            context_profile: None,
-            // The sub-agent speaks for itself — no nested worker/voice split.
-            synthesis_provider: None,
-            synthesis_model: None,
-        };
-
-        let started = std::time::Instant::now();
-        let _ = main_tx
-            .send(ChatEvent::Thinking {
-                content: format!("🔎 delegating to `{agent}` sub-agent ({})…", cfg.model),
-            })
-            .await;
-
-        let model = cfg.model.clone();
-        let (sub_tx, mut sub_rx) = mpsc::channel::<ChatEvent>(128);
-        let provider_loop = async {
-            match cfg.provider {
-                LlmProviderType::Anthropic => {
-                    self.run_anthropic_loop(
-                        cfg,
-                        sub_tools,
-                        handler,
-                        sub_request,
-                        sub_system,
-                        sub_tx,
-                        false,
-                        MAX_SUBAGENT_ITERATIONS,
-                    )
-                    .await
-                }
-                LlmProviderType::Ollama => {
-                    self.run_ollama_tool_loop(
-                        cfg,
-                        sub_tools,
-                        handler,
-                        sub_request,
-                        sub_system,
-                        sub_tx,
-                        false,
-                        MAX_SUBAGENT_ITERATIONS,
-                    )
-                    .await
-                }
-                LlmProviderType::OllamaCloud => {
-                    // allow_delegate = false: a sub-agent cannot delegate further.
-                    self.run_ollama_cloud_loop(
-                        cfg,
-                        sub_tools,
-                        handler,
-                        sub_request,
-                        sub_system,
-                        sub_tx,
-                        false,
-                        MAX_SUBAGENT_ITERATIONS,
-                    )
-                    .await
-                }
-                _ => {
-                    self.run_text_loop(
-                        cfg,
-                        sub_tools,
-                        handler,
-                        sub_request,
-                        sub_system,
-                        sub_tx,
-                        false,
-                        MAX_SUBAGENT_ITERATIONS,
-                    )
-                    .await
-                }
-            }
-        };
-
-        let drain = async {
-            let mut answer = String::new();
-            let mut saw_error: Option<String> = None;
-            // Successful tool-result previews, kept to extract the sources the
-            // orchestrator must cite (§6). The worker's own tool outputs are the
-            // only trustworthy provenance — its prose can paraphrase or drop URLs.
-            let mut gathered: Vec<String> = Vec::new();
-            while let Some(ev) = sub_rx.recv().await {
-                match ev {
-                    ChatEvent::Message { content } => answer = content,
-                    ChatEvent::Error { message } => {
-                        if saw_error.is_none() {
-                            saw_error = Some(message);
-                        }
-                    }
-                    ChatEvent::Done => {}
-                    // Forward the sub-agent's activity so the turn is not silent.
-                    ChatEvent::ToolCall { tool, args } => {
-                        let _ = main_tx
-                            .send(ChatEvent::ToolCall {
-                                tool: format!("{agent}:{tool}"),
-                                args,
-                            })
-                            .await;
-                    }
-                    ChatEvent::ToolResult {
-                        tool,
-                        success,
-                        preview,
-                    } => {
-                        if success {
-                            gathered.push(preview.clone());
-                        }
-                        let _ = main_tx
-                            .send(ChatEvent::ToolResult {
-                                tool: format!("{agent}:{tool}"),
-                                success,
-                                preview,
-                            })
-                            .await;
-                    }
-                    ChatEvent::Thinking { content } => {
-                        let _ = main_tx
-                            .send(ChatEvent::Thinking {
-                                content: format!("[{agent}] {content}"),
-                            })
-                            .await;
-                    }
-                    ChatEvent::Token { .. } => {}
-                }
-            }
-            (answer, saw_error, gathered)
-        };
-
-        let (_, (answer, saw_error, gathered)) = tokio::join!(provider_loop, drain);
-        // The worker actually consulted the world iff it ran ≥1 successful tool.
-        let retrieved = !gathered.is_empty();
-
-        // Close the delegation bracket in the stream. Without a finish marker the
-        // user sees "🔎 delegating…" then a burst of nested `agent:tool` events
-        // that simply stops — activity with no visible end. This makes the whole
-        // sub-agent turn read as one unit that started and finished.
-        let ok = !answer.trim().is_empty();
-        let elapsed = started.elapsed().as_secs_f64();
-        let finish = if ok {
-            format!(
-                "✓ `{agent}` finished — {} result(s) in {elapsed:.1}s",
-                gathered.len()
+        // Thin streaming wrapper over the shared [`AgentRunner`]. Chat sub-agents
+        // are read-only (`allow_writes: false`, one writer per turn) and bounded
+        // to [`MAX_SUBAGENT_ITERATIONS`]; passing the live chat sink streams the
+        // worker's activity to the user. All the orchestration (spawnability
+        // check, model resolution, toolset build, drain) now lives in
+        // `services/agent_runner.rs`; this maps the structured findings back to
+        // the `(ok, retrieved, findings)` tuple `dispatch_tool_call` expects.
+        let f = self
+            .agent_runner
+            .run(
+                agent,
+                task,
+                AgentBudget {
+                    max_iterations: MAX_SUBAGENT_ITERATIONS,
+                    allow_writes: false,
+                },
+                Some(main_tx.clone()),
             )
-        } else {
-            format!("✗ `{agent}` finished with no answer ({elapsed:.1}s)")
-        };
-        let _ = main_tx.send(ChatEvent::Thinking { content: finish }).await;
-
-        if !ok {
-            return (
-                false,
-                retrieved,
-                saw_error
-                    .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
-            );
-        }
-        (
-            true,
-            retrieved,
-            format_subagent_findings(agent, &answer, &gathered),
-        )
+            .await;
+        (f.ok, f.retrieved, f.findings)
     }
 
     // ========================================================================
@@ -3427,12 +3198,101 @@ impl ChatService {
 }
 
 // ============================================================================
+// Agent loop engine — the shared AgentRunner drives ChatService through this
+// ============================================================================
+
+/// `ChatService` is the loop engine an [`AgentRunner`] drives: `run_bounded_loop`
+/// is the same provider dispatch the orchestrator and sub-agent paths already
+/// used, and `resolve_agent_model` forwards to the catalog-aware resolver. This
+/// is deliberately a trait rather than a move of the loops — see
+/// `services/agent_runner.rs` for why the machinery stays here.
+#[async_trait::async_trait]
+impl SubagentLoopRunner for ChatService {
+    async fn run_bounded_loop(
+        &self,
+        cfg: LlmConfig,
+        tools: Vec<agent_brain_protocol::ToolDefinition>,
+        handler: Option<ToolHandler>,
+        request: ChatRequest,
+        system_prompt: String,
+        tx: mpsc::Sender<ChatEvent>,
+        allow_delegate: bool,
+        max_iterations: usize,
+    ) {
+        match cfg.provider {
+            LlmProviderType::Anthropic => {
+                self.run_anthropic_loop(
+                    cfg,
+                    tools,
+                    handler,
+                    request,
+                    system_prompt,
+                    tx,
+                    allow_delegate,
+                    max_iterations,
+                )
+                .await
+            }
+            LlmProviderType::Ollama => {
+                self.run_ollama_tool_loop(
+                    cfg,
+                    tools,
+                    handler,
+                    request,
+                    system_prompt,
+                    tx,
+                    allow_delegate,
+                    max_iterations,
+                )
+                .await
+            }
+            LlmProviderType::OllamaCloud => {
+                self.run_ollama_cloud_loop(
+                    cfg,
+                    tools,
+                    handler,
+                    request,
+                    system_prompt,
+                    tx,
+                    allow_delegate,
+                    max_iterations,
+                )
+                .await
+            }
+            _ => {
+                self.run_text_loop(
+                    cfg,
+                    tools,
+                    handler,
+                    request,
+                    system_prompt,
+                    tx,
+                    allow_delegate,
+                    max_iterations,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn resolve_agent_model(
+        &self,
+        base: &LlmConfig,
+        model_pref: &str,
+        provider_hint: Option<&str>,
+    ) -> Option<LlmConfig> {
+        self.resolve_profile_model(base, model_pref, provider_hint)
+            .await
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
 /// Filter a tool list to only those whose names appear in `names`.
 /// Returns `all` unchanged if `names` is empty.
-fn filter_tools(
+pub(crate) fn filter_tools(
     all: Vec<crate::mcp::protocol::ToolDefinition>,
     names: &[String],
 ) -> Vec<crate::mcp::protocol::ToolDefinition> {
@@ -3653,48 +3513,6 @@ mod tests {
         assert!(required.iter().any(|v| v == "task"));
         let props = &def.input_schema["properties"];
         assert!(props.get("agent").is_some() && props.get("task").is_some());
-    }
-
-    #[test]
-    fn extract_sources_pulls_unique_urls_from_tool_previews() {
-        let gathered = vec![
-            "[SEARCH SOURCES]\n  [S1] Title — https://example.com/a\nbody".to_string(),
-            "see (https://example.com/b) and https://example.com/a again".to_string(),
-            "no urls here".to_string(),
-        ];
-        let got = extract_sources(&gathered);
-        assert_eq!(got, vec!["https://example.com/a", "https://example.com/b"]);
-    }
-
-    #[test]
-    fn extract_sources_trims_trailing_punctuation_and_brackets() {
-        // A URL wrapped in parens or followed by a period must come out clean.
-        let gathered = vec!["The source (https://example.com/x). Next.".to_string()];
-        assert_eq!(extract_sources(&gathered), vec!["https://example.com/x"]);
-    }
-
-    #[test]
-    fn findings_carry_the_relay_instruction_and_sources() {
-        let out = format_subagent_findings(
-            "researcher",
-            "Reticulum has a 500-byte MTU.",
-            &["[S1] RNS docs — https://reticulum.network/manual".to_string()],
-        );
-        // The orchestrator-facing header must be present (cite + relay limits).
-        assert!(out.contains("relay these faithfully"));
-        assert!(out.contains("researcher"));
-        // The answer is included verbatim...
-        assert!(out.contains("500-byte MTU"));
-        // ...and the source is lifted out for citation.
-        assert!(out.contains("https://reticulum.network/manual"));
-        assert!(out.contains("SOURCES:"));
-    }
-
-    #[test]
-    fn findings_omit_the_sources_block_when_there_are_none() {
-        let out = format_subagent_findings("knowledge-worker", "From the graph: X.", &[]);
-        assert!(out.contains("From the graph: X."));
-        assert!(!out.contains("SOURCES:"));
     }
 
     #[test]

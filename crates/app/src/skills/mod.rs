@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_runner;
 pub mod claims;
 pub mod codebase;
 pub mod constructor;
@@ -23,6 +24,7 @@ pub mod working_memory;
 pub mod ws;
 
 pub use agent::AgentSkill;
+pub use agent_runner::AgentRunnerSkill;
 pub use codebase::CodebaseSkill;
 pub use dynamic::DynamicSkill;
 pub use exec::ExecSkill;

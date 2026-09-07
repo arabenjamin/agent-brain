@@ -1012,6 +1012,36 @@ fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<String> {
             ));
         }
 
+        // `run_agent` runs a whole sub-agent for the step. Its `agent` and
+        // `task` must be present and non-empty: a blank `agent` cannot name a
+        // spawnable worker, and a blank `task` gives the agent nothing to do —
+        // both fail at runtime. The spawnable-membership check is enforced live
+        // by `run_agent` itself (it returns the roster for a bad name); lint has
+        // no roster, so it verifies the fields are populated at all.
+        if tool == "run_agent" {
+            if args
+                .and_then(|a| a.get("agent"))
+                .and_then(|c| c.as_str())
+                .is_none_or(str::is_empty)
+            {
+                warnings.push(format!(
+                    "step {n} (`run_agent`): no `agent` argument, so it cannot name a spawnable \
+                     worker and will fail every run. Set `agent` to a spawnable agent name."
+                ));
+            }
+            if args
+                .and_then(|a| a.get("task"))
+                .and_then(|c| c.as_str())
+                .is_none_or(str::is_empty)
+            {
+                warnings.push(format!(
+                    "step {n} (`run_agent`): no `task` argument, so the agent has nothing to do. \
+                     Set `task` to a complete, self-contained instruction (use `{{{{_prev}}}}` to \
+                     hand in the upstream result)."
+                ));
+            }
+        }
+
         if PERSISTING_TOOLS.contains(&tool) && i > 0 && !references_prev(args) {
             warnings.push(format!(
                 "step {n} (`{tool}`): arguments contain no `{{{{_prev}}}}`, so it will \
@@ -1305,6 +1335,36 @@ mod tests {
         assert!(
             !w.iter().any(|s| s.contains("step 1")),
             "first step should not be faulted: {w:?}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_a_run_agent_step_missing_agent_or_task() {
+        let steps = vec![step("run_agent", json!({ "task": "summarise X" }))];
+        let w = lint_chain_steps(&steps, &["run_agent".to_string()]);
+        assert!(
+            w.iter().any(|s| s.contains("no `agent` argument")),
+            "missing agent should be flagged: {w:?}"
+        );
+
+        let steps = vec![step("run_agent", json!({ "agent": "researcher" }))];
+        let w = lint_chain_steps(&steps, &["run_agent".to_string()]);
+        assert!(
+            w.iter().any(|s| s.contains("no `task` argument")),
+            "missing task should be flagged: {w:?}"
+        );
+    }
+
+    #[test]
+    fn lint_passes_a_well_formed_run_agent_step() {
+        let steps = vec![step(
+            "run_agent",
+            json!({ "agent": "researcher", "task": "the latest on X: {{_prev}}" }),
+        )];
+        let w = lint_chain_steps(&steps, &["run_agent".to_string()]);
+        assert!(
+            !w.iter().any(|s| s.contains("run_agent")),
+            "a populated run_agent step should not be faulted: {w:?}"
         );
     }
 

@@ -1,3 +1,4 @@
+pub mod agent_runner;
 pub mod chain_seeder;
 pub mod claims;
 pub mod clock;
@@ -26,6 +27,9 @@ pub mod store_impls;
 pub mod traits;
 pub mod transcribe;
 
+pub use agent_runner::{
+    AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,
+};
 pub use context_builder::ContextBuilderService;
 pub use knowledge::{KnowledgeService, ReasonOutput, SourceRef};
 pub use llm::{LlmClient, LlmConfig, LlmProviderType};

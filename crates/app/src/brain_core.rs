@@ -28,16 +28,16 @@ use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::queue::QueueService;
 use crate::services::resource_registry::ResourceRegistry;
 use crate::services::{
-    ContextBuilderService, KnowledgeService, LlmConfig, LlmProviderType, MediaService, SharedLlm,
-    SnapshotService,
+    AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, LlmProviderType, MediaService,
+    SharedLlm, SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, claims::ClaimSkill, codebase::CodebaseSkill,
-    constructor::ConstructorSkill, context::ContextSkill, dynamic::DynamicSkill, exec::ExecSkill,
-    git::GitSkill, http::HttpSkill, knowledge::KnowledgeSkill, media::MediaSkill,
-    model::ModelSkill, query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill,
-    search::SearchSkill, sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
-    ws::WsSkill,
+    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
+    codebase::CodebaseSkill, constructor::ConstructorSkill, context::ContextSkill,
+    dynamic::DynamicSkill, exec::ExecSkill, git::GitSkill, http::HttpSkill,
+    knowledge::KnowledgeSkill, media::MediaSkill, model::ModelSkill, query::QuerySkill,
+    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
+    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -91,6 +91,16 @@ pub enum BrainEvent {
 
 /// Broadcast channel capacity for [`BrainEvent`].
 const BRAIN_EVENT_CAPACITY: usize = 256;
+
+/// Whether the `run_agent` background tool is registered. Reuses
+/// `SUBAGENT_ENABLED` — the same switch that enables chat `delegate` — because
+/// sub-agents are the mechanism, and the runner shares the chat loop engine.
+/// Default OFF, like the chat spike, until it is measured (plan §7).
+fn agent_runner_enabled() -> bool {
+    std::env::var("SUBAGENT_ENABLED")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
 
 // ============================================================================
 // Sub-configs (grouped brain resources)
@@ -222,6 +232,14 @@ pub struct BrainCore {
     // --- context profiles ---
     pub(crate) context_builder_svc: Arc<RwLock<Option<Arc<ContextBuilderService>>>>,
 
+    // --- shared agent-execution primitive ---
+    /// The shared [`AgentRunner`] backing the `run_agent` background tool.
+    /// Populated when the `ChatService` (its loop engine) is created —
+    /// empty until then, and on deployments without a chat service (stdio),
+    /// where `run_agent` reports itself unavailable. See
+    /// `project-docs/UNIFIED_AGENT_EXECUTION_PLAN.md` Phase 1.
+    pub(crate) agent_runner: Arc<RwLock<Option<Arc<AgentRunner>>>>,
+
     // --- event bus ---
     /// Broadcast sender for internal brain events.  Subscribers receive a
     /// cloned [`broadcast::Receiver`] via [`BrainCore::subscribe`].
@@ -245,6 +263,7 @@ impl BrainCore {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("models.yaml")),
             context_builder_svc: Arc::new(RwLock::new(None)),
+            agent_runner: Arc::new(RwLock::new(None)),
             event_tx,
         }
     }
@@ -393,6 +412,14 @@ impl BrainCore {
     /// scheduler: the inner `Option` is `None` until `build_skills` completes.
     pub fn context_builder_handle(&self) -> Arc<RwLock<Option<Arc<ContextBuilderService>>>> {
         Arc::clone(&self.context_builder_svc)
+    }
+
+    /// Return the shared `AgentRunner` slot backing the `run_agent` tool.
+    /// Populated once the `ChatService` (the loop engine) is created — see
+    /// `McpServerCore::chat_service`. Empty until then, and on deployments
+    /// without a chat service.
+    pub fn agent_runner_handle(&self) -> Arc<RwLock<Option<Arc<AgentRunner>>>> {
+        Arc::clone(&self.agent_runner)
     }
 
     /// Return the live LLM-config Arc so HTTP transport can serve `/api/models`.
@@ -748,6 +775,16 @@ impl BrainCore {
         let resource_registry = Arc::new(ResourceRegistry::new());
         registry.register_skill(Box::new(ResourceSkill::new(Arc::clone(&resource_registry))));
 
+        // Agent Runner Skill (`run_agent`) — gated on SUBAGENT_ENABLED (the same
+        // switch that turns on chat `delegate`; sub-agents are the mechanism).
+        // The runner slot is empty until the ChatService (its loop engine) is
+        // created; the tool reports itself unavailable until then.
+        if agent_runner_enabled() {
+            registry.register_skill(Box::new(AgentRunnerSkill::new(Arc::clone(
+                &self.agent_runner,
+            ))));
+        }
+
         // DynamicSkill — registry clone shares tools_map with the handler original
         if let Some(ref d) = dynamic_skill {
             registry.register_skill(Box::new(d.clone_shared()));
@@ -905,6 +942,13 @@ impl BrainCore {
 
         skills.push(Box::new(WsSkill::new()));
         skills.push(Box::new(ResourceSkill::new(Arc::clone(&resource_registry))));
+
+        // Agent Runner Skill (`run_agent`) — see the registry registration above.
+        if agent_runner_enabled() {
+            skills.push(Box::new(AgentRunnerSkill::new(Arc::clone(
+                &self.agent_runner,
+            ))));
+        }
 
         // Original DynamicSkill goes to the handler (shares tools_map with registry clone).
         if let Some(d) = dynamic_skill {

@@ -581,6 +581,54 @@ fn protocol_result_text(result: &agent_brain_protocol::ToolCallResult) -> String
 mod tests {
     use super::*;
 
+    /// Every shipped context profile (except the boot/init protocol files, which
+    /// the loader skips) must deserialize as a `ContextProfile`. The loader only
+    /// WARNs on a parse failure and drops the profile, so a malformed one is
+    /// otherwise invisible until a persona silently goes missing.
+    #[test]
+    fn all_shipped_context_profiles_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contexts");
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if stem == "boot" || stem == "init" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let parsed: Result<ContextProfile, _> = serde_yaml::from_str(&text);
+            assert!(
+                parsed.is_ok(),
+                "context profile {} failed to parse: {:?}",
+                path.display(),
+                parsed.err()
+            );
+            count += 1;
+        }
+        assert!(count > 0, "no context profiles found at {}", dir.display());
+    }
+
+    /// The schedule-author drafting specialist must be spawnable — the
+    /// orchestrator delegates schedule DRAFTING to it (Phase 3).
+    #[test]
+    fn schedule_author_is_spawnable() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contexts/schedule-author.yaml");
+        let text = std::fs::read_to_string(path).unwrap();
+        let profile: ContextProfile = serde_yaml::from_str(&text).unwrap();
+        assert!(profile.spawnable, "schedule-author must be spawnable");
+        assert!(
+            profile.specialty.is_some(),
+            "schedule-author needs a specialty for the roster"
+        );
+    }
+
     #[test]
     fn read_cypher_is_detected() {
         assert!(is_read_cypher("MATCH (n:Note) RETURN n.content AS content"));

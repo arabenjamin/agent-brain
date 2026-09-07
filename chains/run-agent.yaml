@@ -1,0 +1,69 @@
+# chains/run-agent.yaml
+#
+# The Task front door to the shared agent loop (Phase 3 of
+# UNIFIED_AGENT_EXECUTION_PLAN). A Task whose goal is prefixed "run agent:" (or
+# "delegate to agent:") is handed to ONE overseeing agent that decides its own
+# steps, calls tools, and returns a cited answer — the "one agent per task" grain
+# (plan §5). This is how a background Task reaches the same loop chat's `delegate`
+# uses, instead of a fixed sequence of single tool calls.
+#
+# `agent: "auto"` lets run_agent pick the best-fitting spawnable agent by
+# specialty (Phase 2 select_agent). If none fit, the step is rejected naming the
+# roster — the cue to construct one instead.
+#
+# GATING: `run_agent` is only registered when SUBAGENT_ENABLED is on (default
+# OFF). With the feature off this chain is still seeded, but its run_agent step
+# fails as "no such tool" if a matching Task is ever created — so only create
+# "run agent:" Tasks with the feature enabled.
+#
+# {{goal_topic}} is {{goal}} with the routing prefix stripped.
+name: run-agent
+# `pattern` is the required primary match; `patterns` adds alternatives (both are
+# seeded and matched by CONTAINS).
+pattern: "run agent:"
+patterns:
+  - "run agent:"
+  - "delegate to agent:"
+# Distinctive prefixes, so a low priority number is safe; kept well below the
+# generic learn/default chains so it is never hijacked by a broad substring.
+priority: 20
+# One agent owns the task and does its own reasoning, so skip the extra critic
+# and evaluator passes — they would double the cost of a grain that is
+# deliberately "trust the agent". The iterative build↔review loop is Phase 4.
+no_evaluator: true
+no_adversarial: true
+description: "Hand a Task to a single overseeing agent (run_agent, auto-selected), then persist and complete."
+steps:
+  # 1. Run the agent. It may write its own notes/workspace files (allow_writes),
+  #    and returns its findings as this step's result.
+  - tool_name: run_agent
+    arguments:
+      agent: "auto"
+      task: "{{goal_topic}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Run the overseeing agent on the task"
+
+  # 2. Persist the agent's findings so the result is retrievable later (the
+  #    background path has no user to hand them to).
+  - tool_name: store_note
+    arguments:
+      content: "## Agent result: {{goal_topic}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: run_agent
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the agent's findings"
+
+  # 3. Complete the task.
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Complete the task"

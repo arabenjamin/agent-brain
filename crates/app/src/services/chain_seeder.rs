@@ -20,6 +20,8 @@ struct ChainFile {
     evaluation_rubric: Option<String>,
     #[serde(default)]
     no_evaluator: bool,
+    #[serde(default)]
+    no_adversarial: bool,
     steps: Vec<serde_json::Value>,
 }
 
@@ -79,6 +81,7 @@ pub async fn seed_chains_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Re
                           c.description       = $description, \
                           c.evaluation_rubric = $rubric, \
                           c.no_evaluator      = $no_evaluator, \
+                          c.no_adversarial    = $no_adversarial, \
                           c.steps             = $steps, \
                           c.updated_at        = datetime()";
 
@@ -93,6 +96,7 @@ pub async fn seed_chains_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Re
                     .param("description", chain.description.as_str())
                     .param("rubric", rubric.as_str())
                     .param("no_evaluator", chain.no_evaluator)
+                    .param("no_adversarial", chain.no_adversarial)
                     .param("steps", steps_json.as_str()),
             )
             .await
@@ -106,4 +110,55 @@ pub async fn seed_chains_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Re
     }
 
     Ok(seeded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chains_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../chains")
+    }
+
+    /// Every shipped chain must deserialize as a `ChainFile`. A missing required
+    /// field (e.g. the singular `pattern`) is otherwise only caught at runtime as
+    /// a skipped-with-a-warning seed, leaving the chain silently absent.
+    #[test]
+    fn all_shipped_chains_parse() {
+        let dir = chains_dir();
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let parsed: Result<ChainFile, _> = serde_yaml::from_str(&text);
+            assert!(
+                parsed.is_ok(),
+                "chain {} failed to parse: {:?}",
+                path.display(),
+                parsed.err()
+            );
+            count += 1;
+        }
+        assert!(count > 0, "no chains found at {}", dir.display());
+    }
+
+    /// The run-agent front-door chain declares both critic-skipping flags — and
+    /// the seeder must now carry `no_adversarial` (it silently dropped it before).
+    #[test]
+    fn run_agent_chain_skips_the_extra_critics() {
+        let text = std::fs::read_to_string(chains_dir().join("run-agent.yaml")).unwrap();
+        let chain: ChainFile = serde_yaml::from_str(&text).expect("run-agent.yaml parses");
+        assert!(chain.no_evaluator, "run-agent should skip the evaluator");
+        assert!(
+            chain.no_adversarial,
+            "run-agent should skip the adversarial critic"
+        );
+        assert_eq!(chain.pattern, "run agent:");
+    }
 }
