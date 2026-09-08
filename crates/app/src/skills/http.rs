@@ -185,6 +185,10 @@ impl HttpSkill {
                     "description": {
                         "type": "string",
                         "description": "Optional human-readable description. Defaults to the spec's info.title."
+                    },
+                    "prune": {
+                        "type": "boolean",
+                        "description": "When true, delete stored endpoints of this API that are NOT present in this ingest — turning re-ingest into a true sync (a route removed from the source disappears). Default false (upsert only). Use for a keep-in-sync schedule."
                     }
                 }
             }),
@@ -478,6 +482,8 @@ impl HttpSkill {
             name: Option<String>,
             #[serde(default)]
             description: Option<String>,
+            #[serde(default)]
+            prune: bool,
         }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
@@ -548,6 +554,7 @@ impl HttpSkill {
                                 &html,
                                 input.name,
                                 input.description,
+                                input.prune,
                             )
                             .await;
                     }
@@ -557,7 +564,13 @@ impl HttpSkill {
                 let Some(spec_file) = find_spec_file(Path::new(&path)) else {
                     // No spec file — build from route definitions with the LLM.
                     return self
-                        .ingest_codebase_via_llm(neo4j, &path, input.name, input.description)
+                        .ingest_codebase_via_llm(
+                            neo4j,
+                            &path,
+                            input.name,
+                            input.description,
+                            input.prune,
+                        )
                         .await;
                 };
                 match std::fs::read_to_string(&spec_file)
@@ -582,6 +595,7 @@ impl HttpSkill {
             input.description,
             source,
             discovered_from,
+            input.prune,
         )
         .await
     }
@@ -598,6 +612,7 @@ impl HttpSkill {
         description_override: Option<String>,
         source: &str,
         discovered_from: Option<String>,
+        prune: bool,
     ) -> ToolCallResult {
         let parsed = match parse_api_spec(spec, origin_url) {
             Ok(p) => p,
@@ -627,6 +642,7 @@ impl HttpSkill {
             &parsed.endpoints,
             source,
             discovered_from,
+            prune,
         )
         .await
     }
@@ -648,6 +664,7 @@ impl HttpSkill {
         endpoints: &[ParsedEndpoint],
         source: &str,
         discovered_from: Option<String>,
+        prune: bool,
     ) -> ToolCallResult {
         let ts = chrono::Utc::now().to_rfc3339();
         let mut batch: Vec<neo4rs::BoltType> = Vec::with_capacity(endpoints.len());
@@ -698,7 +715,7 @@ impl HttpSkill {
                         "discovered_from",
                         discovered_from.clone().unwrap_or_default(),
                     )
-                    .param("ts", ts)
+                    .param("ts", ts.clone())
                     .param("endpoints", batch),
             )
             .await
@@ -719,6 +736,38 @@ impl HttpSkill {
             ));
         }
 
+        // Sync: drop endpoints not seen in this ingest (older updated_at). Turns
+        // re-ingest into a true mirror of the source — a removed route disappears.
+        let mut pruned = 0i64;
+        if prune {
+            let prune_cypher = r#"
+            MATCH (c:ApiContext {name: $name})-[:EXPOSES]->(e:ApiEndpoint)
+            WHERE e.updated_at < datetime($ts)
+            DETACH DELETE e
+            RETURN count(e) AS pruned
+            "#;
+            match neo4j
+                .execute(
+                    neo4rs::query(prune_cypher)
+                        .param("name", name.to_string())
+                        .param("ts", ts),
+                )
+                .await
+            {
+                Ok(r) => {
+                    pruned = r
+                        .first()
+                        .and_then(|row| row.get::<i64>("pruned").ok())
+                        .unwrap_or(0)
+                }
+                Err(e) => {
+                    return ToolCallResult::error(format!(
+                        "Stored {stored} endpoints but pruning stale ones failed: {e}"
+                    ));
+                }
+            }
+        }
+
         // A small sample so the caller can see the shape without a follow-up query.
         let sample: Vec<Value> = endpoints
             .iter()
@@ -734,6 +783,7 @@ impl HttpSkill {
             "source": source,
             "discovered_from": discovered_from,
             "endpoints_stored": stored,
+            "endpoints_pruned": pruned,
             "sample": sample,
             "query_hint": format!(
                 "MATCH (c:ApiContext {{name:'{}'}})-[:EXPOSES]->(e:ApiEndpoint) RETURN e.method, e.path ORDER BY e.path",
@@ -746,6 +796,7 @@ impl HttpSkill {
     /// the LLM. Lower confidence than a parsed spec (stored `source: html_llm`),
     /// so it is used ONLY after deterministic spec detection fails. Structured
     /// output via `generate_json`; a spec's own parser is always preferred.
+    #[allow(clippy::too_many_arguments)]
     async fn ingest_html_via_llm(
         &self,
         neo4j: &Neo4jClient,
@@ -753,6 +804,7 @@ impl HttpSkill {
         html: &str,
         name_override: Option<String>,
         description_override: Option<String>,
+        prune: bool,
     ) -> ToolCallResult {
         let Some(llm) = self.llm.clone() else {
             return ToolCallResult::error(format!(
@@ -834,6 +886,7 @@ impl HttpSkill {
             &endpoints,
             "html_llm",
             Some(docs_url.to_string()),
+            prune,
         )
         .await
     }
@@ -842,12 +895,14 @@ impl HttpSkill {
     /// the LLM build the endpoint list from them. Lower confidence than a real
     /// spec (stored `source: codebase_generated`) — it reads route registrations,
     /// not a contract — so it runs ONLY after `find_spec_file` finds nothing.
+    #[allow(clippy::too_many_arguments)]
     async fn ingest_codebase_via_llm(
         &self,
         neo4j: &Neo4jClient,
         codebase_path: &str,
         name_override: Option<String>,
         description_override: Option<String>,
+        prune: bool,
     ) -> ToolCallResult {
         let Some(llm) = self.llm.clone() else {
             return ToolCallResult::error(format!(
@@ -954,6 +1009,7 @@ impl HttpSkill {
             &endpoints,
             "codebase_generated",
             Some(codebase_path.to_string()),
+            prune,
         )
         .await
     }
