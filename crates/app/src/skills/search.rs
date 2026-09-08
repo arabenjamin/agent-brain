@@ -800,6 +800,24 @@ impl SearchSkill {
                 }
                 match resp.json::<Value>().await {
                     Ok(json) => {
+                        // SerpApi signals quota/rate/service problems as HTTP 200
+                        // with an `error` field and NO organic_results. Without
+                        // this check the empty result was recorded as a SUCCESSFUL
+                        // serpapi call with 0 results, and the ladder fell through
+                        // to SearXNG silently — so a real SerpApi outage looked
+                        // like "success" in the logs and ledger. Surface the raw
+                        // message: the ladder's classify_search_error buckets it
+                        // (quota → cooldown), WARNs, and falls through visibly.
+                        if let Some(err) = json.get("error").and_then(Value::as_str) {
+                            if let Some(ref t) = self.telemetry {
+                                let _ = t.log_knowledge_gap(
+                                    query,
+                                    Some("search_web:serpapi"),
+                                    classify_search_error(err),
+                                );
+                            }
+                            return ToolCallResult::error(format!("SerpApi error: {err}"));
+                        }
                         let results = json
                             .get("organic_results")
                             .unwrap_or(&json!([]))
@@ -897,6 +915,22 @@ impl SearchSkill {
                 }
                 match resp.json::<Value>().await {
                     Ok(json) => {
+                        // See search_serpapi: a 200 + `error` body is a real
+                        // failure (quota/rate/service), not an empty result.
+                        // Surface it so the ladder classifies and falls through
+                        // visibly instead of recording a phantom success.
+                        if let Some(err) = json.get("error").and_then(Value::as_str) {
+                            if let Some(ref t) = self.telemetry {
+                                let _ = t.log_knowledge_gap(
+                                    query,
+                                    Some("search_web:google_news"),
+                                    classify_search_error(err),
+                                );
+                            }
+                            return ToolCallResult::error(format!(
+                                "SerpApi Google News error: {err}"
+                            ));
+                        }
                         let empty = vec![];
                         let news = json
                             .get("news_results")
@@ -1197,6 +1231,25 @@ mod tests {
         let err = "SerpApi failed: 429 Too Many Requests - {\n  \"error\": \
                    \"Your account has run out of searches.\"\n}";
         assert_eq!(classify_search_error(err), "quota_exhausted");
+    }
+
+    #[test]
+    fn serpapi_200_quota_error_body_still_classifies_as_quota() {
+        // SerpApi reports quota exhaustion as HTTP 200 with an `error` body, not
+        // a 429. search_serpapi now surfaces that as `SerpApi error: <msg>`; the
+        // ladder must still route it to the quota cooldown, not treat it as a
+        // generic api_error (which would keep hammering the exhausted engine).
+        let err = "SerpApi error: You've run out of searches for this month.";
+        assert_eq!(classify_search_error(err), "quota_exhausted");
+    }
+
+    #[test]
+    fn serpapi_benign_no_results_is_not_a_quota() {
+        // The other 200+error case: a genuinely empty query. It must fall through
+        // WITHOUT tripping the 6h quota cooldown — otherwise one obscure query
+        // benches SerpApi for everyone.
+        let err = "SerpApi error: Google hasn't returned any results for this query.";
+        assert_eq!(classify_search_error(err), "api_error");
     }
 
     #[test]

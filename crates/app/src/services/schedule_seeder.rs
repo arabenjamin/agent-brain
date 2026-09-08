@@ -11,6 +11,12 @@ struct ScheduleFile {
     description: String,
     interval_seconds: i64,
     steps: Vec<serde_json::Value>,
+    /// Initial enabled state, honored ONLY when the task is first created
+    /// (`enabled` is graph-owned and never force-synced afterward). Absent ⇒
+    /// `true`, so existing schedules are unaffected; set `false` to seed a task
+    /// OFF for human review before it ever runs.
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 /// Read every `*.yaml` file from `dir`, parse each as a ScheduledTask definition,
@@ -68,6 +74,7 @@ pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow:
                 Some(schedule.description.as_str()),
                 schedule.interval_seconds,
                 &steps_json,
+                schedule.enabled.unwrap_or(true),
             )
             .await
         {

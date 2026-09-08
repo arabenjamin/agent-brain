@@ -1,26 +1,28 @@
 # Daily news briefing — expanded coverage (metro Detroit, Michigan, national,
 # world, tech, business, markets, weather).
 #
-# Engine note: the seven news searches request `engine: serpapi`, which routes
-# to SerpApi's PLAIN Google (organic) engine. `engine` only PROMOTES that engine
-# to the head of the failover ladder — SearXNG and the rest remain as fallbacks —
+# Engine note: the seven news searches request `engine: google_news`, which
+# routes to SerpApi's Google News engine. `engine` only PROMOTES that engine to
+# the head of the failover ladder — SearXNG and the rest remain as fallbacks —
 # so once SerpApi's shared monthly quota is spent, the brief degrades to SearXNG
 # automatically instead of failing (see skills/search.rs). General/background
 # data mining does NOT set `engine`, so it keeps leading with the unmetered
 # self-hosted SearXNG.
 #
-# TEMPORARY (2026-09-05): these steps requested `engine: google_news` until
-# SerpApi's Google News engine began returning `503 "We couldn't get valid
-# results … Please try again later."` after a 90s timeout — reproduced live and
-# in the ledger (4 of 7 news searches failed on 2026-09-05), which dropped every
-# failed section through to SearXNG's news-incapable engine set and made the
-# brief read "no news." SerpApi's account and quota are healthy; only the
-# google_news *engine* is down. Plain `engine: serpapi` (Google organic) answers
-# in ~5s and its result snippets carry current headlines, so it is the stopgap.
-# REVERT to `engine: google_news` once SerpApi's news engine recovers — it
-# returns curated, dated, source-named stories that organic results do not.
-# `source_list` is intentionally omitted: plain-organic news queries already
-# return usable metro/Michigan results without a site: restriction, and the
+# Outage + recovery (resolved 2026-09-08): from 2026-09-05 SerpApi's Google News
+# engine returned `503 "We couldn't get valid results … Please try again later."`
+# after a 90s timeout (4 of 7 news searches failed on 2026-09-05), which dropped
+# every failed section through to SearXNG's news-incapable engine set and made
+# the brief read "no news." As a stopgap the steps were switched to plain
+# `engine: serpapi` (Google organic). That stopgap under-delivered: organic
+# results are undated evergreen pages, so on 2026-09-08 the reason step could not
+# date-verify them and the brief came back near-empty (weather + one 3-month-old
+# story). google_news was re-tested live on 2026-09-08 and answers again with
+# dated, source-named stories, so the steps are reverted to it here — that is the
+# correct engine for a dated daily brief. If it 503s again, the ladder still
+# falls through, but the right stopgap is to fix the query freshness, not to drop
+# to organic. `source_list` is intentionally omitted: news queries already return
+# usable metro/Michigan results without a site: restriction, and the
 # site-restricted SearXNG queries were what produced the junk-results problem.
 #
 # Pattern note: {{_prev}} only carries the IMMEDIATELY PRECEDING step's output,
@@ -38,9 +40,9 @@ steps:
   # ── Collect: search each topic, bank results in working memory ──────────
   - tool_name: search_web
     arguments:
-      query: "metro Detroit news headlines"
+      query: "Detroit metro area local news today"
       count: 6
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -56,9 +58,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "Michigan state news headlines"
+      query: "Michigan state news today"
       count: 6
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -74,9 +76,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "top US national news headlines"
+      query: "top United States national news stories today"
       count: 8
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -92,9 +94,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "top world news headlines"
+      query: "major world news stories today"
       count: 8
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -110,9 +112,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "AI technology science news"
+      query: "artificial intelligence and technology news today"
       count: 6
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -128,9 +130,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "business economy politics news"
+      query: "US business economy and politics news today"
       count: 6
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -148,7 +150,7 @@ steps:
     arguments:
       query: "stock market today S&P 500 Dow Jones Nasdaq close summary"
       count: 5
-      engine: serpapi
+      engine: google_news
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -202,6 +204,33 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
+  # ── ApiTube: structured, dated news articles (supplements google_news) ──
+  # Additive, not a replacement: if ApiTube is unreachable or a param is off,
+  # this block is simply absent and the google_news sections above still carry
+  # the brief. Auth (X-API-Key) is injected from the seeded `apitube` ApiContext,
+  # so no key appears here. Free tier is 100 req/day; this is one call/run.
+  # Params are kept to the well-documented ones (language, per_page) until the
+  # response shape is verified live post-deploy — then add published_at/sort for
+  # tighter recency. Response: results[] with title, href, published_at,
+  # source.domain, description.
+  - tool_name: http_request
+    arguments:
+      method: GET
+      url: "https://api.apitube.io/v1/news/everything?language=en&per_page=12"
+      context_name: apitube
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## APITUBE — latest structured, dated news articles (JSON results[]: title, href, published_at, source.domain, description). Use these for accurate dates and citations, and to fill or corroborate any section where the search blocks were thin.\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
   # ── Assemble: pull every banked section out of working memory ───────────
   - tool_name: neo4j_query
     arguments:
@@ -226,9 +255,12 @@ steps:
         ## WEATHER
         ## STORY TO WATCH
 
-        2-3 bullets per section, drawn only from the raw search results in the
-        context (the context contains one "## <SECTION> — raw search results"
-        block per topic). Cite sources with the URLs from that source not just the site. Flag notable spin or framing
+        2-3 bullets per section, drawn only from the raw results in the context
+        (the context contains one "## <SECTION> — raw search results" block per
+        topic, plus a "## APITUBE" block of structured, dated articles that may
+        cover several sections — draw from whichever block serves each section,
+        and prefer the ApiTube articles for exact publication dates and source
+        names). Cite sources with the URLs from that source not just the site. Flag notable spin or framing
         with ⚠️. For MARKETS, lead with index levels/direction if present. For
         WEATHER, the context holds a National Weather Service JSON response,
         not search results: read `properties.periods` and report the FIRST TWO

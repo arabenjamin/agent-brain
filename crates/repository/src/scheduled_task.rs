@@ -281,6 +281,11 @@ impl Neo4jClient {
         description: Option<&str>,
         interval_seconds: i64,
         steps: &str,
+        // Initial `enabled` state, applied ONLY on create. `enabled` is
+        // graph-owned and never force-synced (so a runtime pause survives a
+        // restart), which is exactly why a schedule that must start OFF has to
+        // set its initial state here — the seeder cannot flip an existing node.
+        enabled: bool,
     ) -> Result<(String, bool), RepositoryError> {
         // Check if it already exists.
         let existing = self
@@ -303,7 +308,7 @@ impl Neo4jClient {
             .create_scheduled_task(
                 name,
                 description,
-                true,
+                enabled,
                 interval_seconds,
                 steps,
                 &now,

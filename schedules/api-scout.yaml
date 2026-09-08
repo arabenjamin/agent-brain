@@ -1,0 +1,42 @@
+# Weekly API scout — SEEDED DISABLED for human review.
+#
+# `enabled: false` is honored ONLY on first creation (enabled is graph-owned and
+# never force-synced — see CLAUDE.md "ScheduledTask ownership"). So this task is
+# created OFF and will not run until you turn it on after reviewing what it does:
+#
+#   MATCH (s:ScheduledTask {name:'Weekly API scout: discover free public REST APIs for our interests, ingest the keyless ones, flag key-gated ones to the human'})
+#   SET s.enabled = true, s.next_run_at = datetime()
+#
+# It runs ONE run_agent step driving the `api-scout` spawnable profile through the
+# shared AgentRunner. Requires SUBAGENT_ENABLED=true (it is). The sub-agent runs
+# on the unmetered base model, ingests keyless APIs via ingest_api, and
+# notify_user's the human about key-gated ones — it never signs up or invents a
+# key. Its own procedure/safety rules live in contexts/api-scout.yaml.
+#
+# A ScheduledTask's steps run VERBATIM (no chain matching, no evaluator), so the
+# behaviour is defined by the agent profile, not by chain routing.
+#
+# The `name` is the Neo4j MERGE key — do not change it without deleting the old
+# (:ScheduledTask) node, or the old one keeps running alongside this one.
+name: "Weekly API scout: discover free public REST APIs for our interests, ingest the keyless ones, flag key-gated ones to the human"
+description: "Weekly: runs the api-scout sub-agent to find free REST APIs in the brain's interest areas; ingests keyless specs via ingest_api and notifies the human about APIs that require a key. Seeded disabled for review."
+interval_seconds: 604800
+enabled: false
+steps:
+  - tool_name: run_agent
+    arguments:
+      agent: api-scout
+      task: >-
+        Scout for genuinely useful, FREE public REST APIs in ONE or TWO of the
+        brain's interest areas this run (off-grid/mesh networking; local/small
+        language models and open AI-ML research; hardware; news and
+        Michigan/Detroit civic open data; weather). Follow your profile procedure
+        exactly: first neo4j_query the existing ApiContexts so you do not
+        re-propose one; ingest a candidate with ingest_api ONLY if it publishes an
+        OpenAPI/Swagger spec reachable without a key; for anything that needs an
+        account or API key, do NOT sign up — notify_user with the API, its docs
+        URL, why it is useful to us, and that it needs a key. At most ~2 ingests
+        and ~3 notifications this run. An empty run is fine; do not fabricate.
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama-cloud

@@ -137,10 +137,12 @@
 
 ### 2026-09-08
 
-- feat: `recall_recent` tool — deterministic local-day/period recall (counts by note_type + source_context + sample) for "what did we learn today"; added to `general` + `knowledge-worker` profiles (fixes a delegated whole-day question answering "no substantive findings" on a 377-note day)
-- feat: attribute sub-agent LLM cost in the usage ledger — `delegate`/`run_agent` calls now record as `subagent:<agent>` instead of billing under `chat` (task-local `USAGE_TOOL_LABEL` scoped in `AgentRunner`)
-- fix: retry-with-backoff on transient YouTube feed failures in `list_feed_videos` (the 404/500 storm was throttling, not stale channel IDs — a single `error_for_status()?` dropped each source for a whole 12h cycle)
-- tune: sub-agent round cap `MAX_SUBAGENT_ITERATIONS` 6 → 8 (a tight cap turned a recoverable wrong-first-retrieval into a hard false negative)
+- fix: SerpApi 200+`{"error":…}` responses now surface as real failures instead of a phantom `success rc=0` that silently fell through to SearXNG (`search_serpapi`/`search_serpapi_news`) + 2 regression tests
+- feat: ApiTube news API wired into the daily brief alongside `google_news` — seeded `apitube` `ApiContext` (X-API-Key), `APITUBE_API_KEY` compose passthrough, structured/dated `results[]` (needs rebuild to activate)
+- feat: `api-scout` spawnable profile + weekly `schedules/api-scout.yaml` (seeded **disabled**) — discovers free REST APIs, ingests keyless ones, `notify_user`-flags key-gated ones
+- feat: `schedules/*.yaml` now honors `enabled: false` on first creation (seed a task OFF for review; `seed_scheduled_task_if_absent`)
+- fix: daily news brief reverted to `engine: google_news` (SerpApi news engine recovered) + queries made specific + recency-scoped ("today", no over-constraining literal date)
+- feat: recall_recent tool + sub-agent cost attribution; fix media feed throttle (`e838a2b`)
 
 ### 2026-09-07
 
@@ -158,13 +160,12 @@
 - feat: unified agent execution — shared AgentRunner reachable from all three front doors (`a7313be`)
 - docs: sub-agent orchestration complete (Phases 0-3); Phase 4 deferred (`2d418a5`)
 - feat: sub-agent lifecycle finish marker (Phase 3 polish) (`a09fb93`)
-- feat: data-driven sub-agent roster + empty-arg hardening — Phase 2 complete (`6d407ba`)
 
 ## Known Issues / Backlog
 
 ### Open
 
-- **The daily news brief cannot get fresh news.** Weather is fixed (`api.weather.gov` via `http_request` — free, no key, no quota), but the other sections still depend on SearXNG, whose only working engines from this IP are encyclopedic or foreign-language and cannot answer a time-sensitive query — three news probes returned 145 results of which **6** were from news outlets (top domains: `en.wikipedia.org`, `handwiki.org`, `rationalwiki.org`, `conservapedia.com`). `search_web`'s ladder only falls through on *zero* results, so junk stops it and SerpApi is never reached; SerpApi's 100/month tier could not carry the brief's 8 searches/day (240/month) anyway, and `brave` is still 429. **Setting `GOOGLE_API_KEY` + `GOOGLE_CX` (Custom Search, 100 free queries/day) is the fix** — needs a key. Re-probe with `scripts/searxng_engine_health.py` (now split into evergreen vs fresh probes, and prints result domains) before assuming the CAPTCHA blocks are permanent; they lifted once already.
+- ~~**The daily news brief cannot get fresh news.**~~ **Largely addressed 2026-09-08.** Weather comes from `api.weather.gov` (free, no key). The 7 news searches use SerpApi `google_news` (dated, source-named stories) — its engine had 503'd 2026-09-05→09-07 (brief temporarily fell back to organic `serpapi`, which returns undated navigational pages the writer can't date-verify → near-empty brief on 09-08); the engine recovered and the brief was reverted to `google_news`, with queries made specific + recency-scoped. ApiTube (`APITUBE_API_KEY`, 100 req/day) now supplements with structured/dated `results[]`. SerpApi confirmed billing 09-05→09-08 (the dashboard reading was a per-engine view artefact, not an outage). `GOOGLE_API_KEY`+`GOOGLE_CX` (Custom Search, 100/day) remains an unconfigured deeper backstop should SerpApi's quota (250/month, shared by `serpapi`+`google_news`) run short.
 - ~~The background model does not fit the GPU~~ — **swapped to `granite4:latest` 2026-09-01.** Production A/B on the same tool in the same hour: `ingest_media` 81.8s → **4.4s**, `reason` 84.6s → **4.8s**, `claim` 82.1s → **3.8s** (17–22×). Queue throughput ~1.5 → ~5 jobs/min. Kept below for the measurements and the reasoning.
 
   **The old finding, benchmarked 2026-09-01.** `gemma4:latest` reports 9.86 GB to `/api/ps` and gets 3.2 GB on an 8 GB RTX 3060 Ti shared with `bge-m3` (1.12 GB, pinned by `OLLAMA_KEEP_ALIVE=30m`) and Whisper — **32% on GPU**. Measured with the brain stopped and no model resident (so every candidate got the same uncontended card), on a real 4.5 KB `video_learning` payload:

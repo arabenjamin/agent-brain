@@ -1174,7 +1174,12 @@ mod tests {
     async fn recall_recent_defaults_to_today_and_echoes_window() {
         let skill = skill_ok();
         // No args → window defaults to "today"; the mock echoes since/until.
-        let r = result_json(skill.execute("recall_recent", Some(json!({}))).await.unwrap());
+        let r = result_json(
+            skill
+                .execute("recall_recent", Some(json!({})))
+                .await
+                .unwrap(),
+        );
         assert_eq!(r["window"], "today");
         assert!(r["since"].as_str().is_some(), "since bound present");
         assert!(r["until"].as_str().is_some(), "until bound present");

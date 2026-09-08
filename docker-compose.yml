@@ -133,6 +133,10 @@ services:
       - MCP_HTTP_BIND=0.0.0.0:3000
       - MCP_API_KEY=   # disabled: env_file would otherwise enable auth from .env
       - SERPAPI_KEY=${SERPAPI_KEY:-}
+      # ApiTube news API key — injected into http_request via the seeded `apitube`
+      # ApiContext (X-API-Key header). Used by the daily news brief for structured,
+      # dated articles alongside google_news. Free tier is 100 requests/day.
+      - APITUBE_API_KEY=${APITUBE_API_KEY:-}
       # search_web failover ladder. SearXNG is self-hosted and unmetered, so it
       # leads; the keyed engines below it are backstops for a sidecar outage.
       # Reorder here to change preference without a rebuild.

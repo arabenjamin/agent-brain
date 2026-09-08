@@ -1062,6 +1062,14 @@ impl BrainCore {
                 "GOOGLE_API_KEY",
                 "Google Custom Search Engine",
             ),
+            (
+                "apitube",
+                "https://api.apitube.io/v1",
+                "header",
+                "X-API-Key",
+                "APITUBE_API_KEY",
+                "ApiTube news API — structured, dated news articles (results[]: title, href, published_at, source.domain, description)",
+            ),
         ] {
             let q = "MERGE (c:ApiContext {name: $name}) \
                      ON CREATE SET c.base_url     = $base_url, \
