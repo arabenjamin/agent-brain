@@ -135,8 +135,21 @@
 
 ## Recent Changes (auto)
 
+### 2026-09-08
+
+- feat: `recall_recent` tool — deterministic local-day/period recall (counts by note_type + source_context + sample) for "what did we learn today"; added to `general` + `knowledge-worker` profiles (fixes a delegated whole-day question answering "no substantive findings" on a 377-note day)
+- feat: attribute sub-agent LLM cost in the usage ledger — `delegate`/`run_agent` calls now record as `subagent:<agent>` instead of billing under `chat` (task-local `USAGE_TOOL_LABEL` scoped in `AgentRunner`)
+- fix: retry-with-backoff on transient YouTube feed failures in `list_feed_videos` (the 404/500 storm was throttling, not stale channel IDs — a single `error_for_status()?` dropped each source for a whole 12h cycle)
+- tune: sub-agent round cap `MAX_SUBAGENT_ITERATIONS` 6 → 8 (a tight cap turned a recoverable wrong-first-retrieval into a hard false negative)
+
 ### 2026-09-07
 
+- feat: give the general chat profile http_request (enables Home Assistant + API calls from chat) (`ed52df7`)
+- feat: ingest_api prune option + brain self-API sync schedule (`a4328cd`)
+- feat: ingest_api build-from-routes for a codebase with no spec file (`de691a3`)
+- feat: ingest_api LLM fallback for HTML docs with no linked spec (`3558250`)
+- feat: ingest_api reads from HTML docs pages and codebase spec files (`a425bca`)
+- docs: mark unified-agent Phases 0-3 complete; refresh STATUS recent changes (`49e66af`)
 - feat: attach sub-agent tool-call trace to findings; wire ingest_api into api-integrator (`feeffd1`)
 - feat: native ingest_api tool — OpenAPI/Swagger spec -> endpoint graph (`c91fa7b`)
 - fix: fallback ladder in sub-agent loop + atomic dynamic-tool persistence (`b8882a1`)
@@ -146,25 +159,6 @@
 - docs: sub-agent orchestration complete (Phases 0-3); Phase 4 deferred (`2d418a5`)
 - feat: sub-agent lifecycle finish marker (Phase 3 polish) (`a09fb93`)
 - feat: data-driven sub-agent roster + empty-arg hardening — Phase 2 complete (`6d407ba`)
-- feat: ground delegate results + intercept in all loops — Phase 1 complete (`112615b`)
-- feat: sub-agent delegate returns structured findings with cited sources (`74e69cd`)
-- feat: gemma-orchestrator sub-agent delegation — iteration cap + search hardening (`ca92774`)
-
-### 2026-09-06
-
-- feat: Phase 0 in-chat sub-agent delegation behind SUBAGENT_ENABLED (`a2153ac`)
-- Came up with a Sub Agent plan (`b8a4a00`)
-- Model config adjustment (`c286f57`)
-- Model config adjustment (`a8351b0`)
-- feat: honor per-agent model_preference in chat + fix HBI agents modal (`5ea6cb0`)
-- feat: route chat to gemini-3-flash and reasoning to gemini-2.5-flash with cloud fallback (`abc4fde`)
-
-### 2026-09-04
-
-- fix: stop goal_topic decapitating a quoted subject before a colon (`c51977d`)
-- fix: coerce stringified booleans in reason args so LLM-authored schedules don't dead-letter (`a7856bd`)
-- feat: route the daily news brief through SerpApi Google News (`5fb701c`)
-- chore: bank in-progress reliability & routing work (`617cc68`)
 
 ## Known Issues / Backlog
 
@@ -190,6 +184,8 @@
   Not swapped yet — it changes the prose of every background note indefinitely, so it is the user's call. `granite4:latest` is the recommendation (already in `models.yaml` at `selection_rank: 120`, 131 072 context, so no catalog change is needed); the swap is one line, `OLLAMA_LOCAL_MODEL` in compose, and `vision` steps keep routing to `gemma4` through the capability router regardless. Note models cannot co-reside on this card — a swap is a replacement, not an addition.
 - **Media-watch fan-out is the burst source.** 15 active sources × `MEDIA_WATCH_MAX_PER_SOURCE` (2) × 2 polls/day ≈ 30 videos per poll, each an `ingest_media` map-reduce (~6 LLM calls) plus `reason` + `claim`, plus up to 2 gap tasks. That is ~7 GPU-hours/day arriving in two piles rather than spread out. Lowering `MEDIA_WATCH_MAX_PER_SOURCE` to 1 halves the burst; spreading the poll interval would smooth it without reducing what the brain learns.
 - **SSE push for job results on stdio transport** — stdio path has no session manager; callers must poll `get_job_result`. No lightweight fix without adding an event bus.
+- **Local Ollama distiller times out under load.** Recurring `Handoff distillation failed — passing raw output: operation timed out (host.docker.internal:11434)` on `distill_prev` steps (observed 2026-09-08). Non-fatal — the step falls back to raw upstream output — but the distill pass is effectively dead when the local model is busy (the map-reduce/media burst saturates it). Same root as the local-model timeout note in CLAUDE.md; the fix is scheduling headroom (spread the media poll) or a dedicated distiller model, not a code change.
+- **YouTube throttles the container's IP.** `poll_media_sources` feed fetches and `yt-dlp` subtitle downloads intermittently get 404/500/429 from YouTube when a poll fans every source at once; the same IDs return 200 minutes later. `list_feed_videos` now retries with backoff (2026-09-08), which recovers a throttled feed within a poll. `yt-dlp` 429s on captions are still unhandled (a video just fails that cycle and is retried next poll via dedup). The channel IDs are correct — do not "fix" them.
 - **Rhai scripting in procedure steps** — basic `on_failure` and `{{context.steps.N}}` conditionals added; full Rhai embed for dynamic logic still deferred.
 
 ### Fixed (recent)

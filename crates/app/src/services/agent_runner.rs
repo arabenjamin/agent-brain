@@ -30,7 +30,9 @@ use std::sync::{Arc, Weak};
 use tokio::sync::{RwLock, mpsc};
 
 use crate::clients::chat::{ChatEvent, ChatRequest};
-use crate::clients::chat::{DELEGATE_TOOL, WRITE_TOOLS, build_system_prompt, filter_tools};
+use crate::clients::chat::{
+    DELEGATE_TOOL, USAGE_TOOL_LABEL, WRITE_TOOLS, build_system_prompt, filter_tools,
+};
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::llm::{LlmConfig, LlmProviderType};
@@ -323,15 +325,23 @@ impl AgentRunner {
         let model = cfg.model.clone();
         let (sub_tx, mut sub_rx) = mpsc::channel::<ChatEvent>(128);
         // allow_delegate = false: an agent cannot delegate further (depth cap 1).
-        let provider_loop = engine.run_bounded_loop(
-            cfg,
-            sub_tools,
-            handler,
-            sub_request,
-            sub_system,
-            sub_tx,
-            false,
-            budget.max_iterations,
+        // Scope the usage-ledger label to `subagent:<agent>` around the loop so
+        // every LLM call it makes (primary + fallback rungs) is attributed to the
+        // sub-agent, not to `chat` — the whole loop chain runs inline under
+        // `join!`, so the task-local propagates. `delegate` and `run_agent` both
+        // reach the loop through here, so this is the one place that fixes both.
+        let provider_loop = USAGE_TOOL_LABEL.scope(
+            format!("subagent:{agent}"),
+            engine.run_bounded_loop(
+                cfg,
+                sub_tools,
+                handler,
+                sub_request,
+                sub_system,
+                sub_tx,
+                false,
+                budget.max_iterations,
+            ),
         );
 
         let drain = async {

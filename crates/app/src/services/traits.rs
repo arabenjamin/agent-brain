@@ -205,6 +205,19 @@ pub trait KnowledgeStore: Send + Sync {
     async fn list_notes(&self, limit: usize, note_type: Option<&str>)
     -> anyhow::Result<Vec<Value>>;
 
+    /// Deterministic time-window recall: notes created in `[since_iso, until_iso)`
+    /// (UTC ISO-8601), counted by `note_type` and by `source_context`, plus a
+    /// bounded, most-recent sample. Chunk notes (`-[:PART_OF]->`) are excluded so
+    /// counts reflect distinct items, not re-embedded fragments. This is the
+    /// aggregate a "what did we learn / what happened" question needs — the thing
+    /// a top-K semantic search over a date string cannot answer.
+    async fn recall_window(
+        &self,
+        since_iso: &str,
+        until_iso: &str,
+        sample_limit: usize,
+    ) -> anyhow::Result<Value>;
+
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool>;
 
     async fn update_note(&self, id: &str, content: &str) -> anyhow::Result<bool>;

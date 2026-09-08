@@ -1278,6 +1278,112 @@ impl KnowledgeService {
         Ok(results)
     }
 
+    /// Deterministic time-window recall. See the `KnowledgeStore::recall_window`
+    /// doc for intent. Runs three read-only aggregations against notes created in
+    /// `[since_iso, until_iso)` (UTC), excluding chunk notes so counts are of
+    /// distinct items. Never embeds or searches — this is the aggregate a
+    /// whole-day question needs, and a top-K semantic search cannot produce.
+    pub async fn recall_window(
+        &self,
+        since_iso: &str,
+        until_iso: &str,
+        sample_limit: usize,
+    ) -> Result<Value> {
+        // Shared window predicate. `datetime($x)` compares native-to-native;
+        // comparing a temporal to a bare string yields null (silent row drop),
+        // hence the explicit casts — see project-docs/schema.md.
+        const WINDOW: &str = "MATCH (n:Note)
+             WHERE n.created_at >= datetime($since) AND n.created_at < datetime($until)
+               AND NOT (n)-[:PART_OF]->()";
+
+        // By note_type (+ overall total via a sum in the caller).
+        let by_type_rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(&format!(
+                    "{WINDOW}
+                     RETURN COALESCE(n.note_type, 'semantic') AS k, count(*) AS c
+                     ORDER BY c DESC"
+                ))
+                .param("since", since_iso)
+                .param("until", until_iso),
+            )
+            .await?;
+        let mut by_type = Vec::new();
+        let mut total: i64 = 0;
+        for row in by_type_rows {
+            let k = row.get::<String>("k").unwrap_or_default();
+            let c = row.get::<i64>("c").unwrap_or(0);
+            total += c;
+            by_type.push(json!({ "note_type": k, "count": c }));
+        }
+
+        // By source_context (what produced the day's notes — video_learning,
+        // fill_knowledge_gap, news, brain_api_sync, …). Top 20.
+        let by_src_rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(&format!(
+                    "{WINDOW}
+                     WITH COALESCE(n.source_context, '(none)') AS k, count(*) AS c
+                     RETURN k, c ORDER BY c DESC LIMIT 20"
+                ))
+                .param("since", since_iso)
+                .param("until", until_iso),
+            )
+            .await?;
+        let by_source_context: Vec<Value> = by_src_rows
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "source_context": row.get::<String>("k").unwrap_or_default(),
+                    "count": row.get::<i64>("c").unwrap_or(0),
+                })
+            })
+            .collect();
+
+        // A bounded, most-recent sample so the caller can characterise the
+        // buckets rather than presenting the sample as the whole.
+        let sample_rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(&format!(
+                    "{WINDOW}
+                     RETURN COALESCE(n.note_type, 'semantic') AS note_type,
+                            COALESCE(n.source_context, '(none)') AS source_context,
+                            toString(n.created_at) AS created_at,
+                            left(n.content, 200) AS snippet
+                     ORDER BY n.created_at DESC LIMIT $limit"
+                ))
+                .param("since", since_iso)
+                .param("until", until_iso)
+                .param("limit", sample_limit as i64),
+            )
+            .await?;
+        let samples: Vec<Value> = sample_rows
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "note_type": row.get::<String>("note_type").unwrap_or_default(),
+                    "source_context": row.get::<String>("source_context").unwrap_or_default(),
+                    "created_at": row.get::<String>("created_at").unwrap_or_default(),
+                    "snippet": row.get::<String>("snippet").unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "since": since_iso,
+            "until": until_iso,
+            "total_notes": total,
+            "by_note_type": by_type,
+            "by_source_context": by_source_context,
+            "sample": samples,
+            "note": "Counts exclude chunk fragments; they are distinct notes created in the window. \
+                     The sample is the most-recent rows, not the whole window — cite it as a sample of the total.",
+        }))
+    }
+
     pub async fn review_due_notes(&self, limit: usize) -> Result<Vec<Value>> {
         let cypher = r#"
         MATCH (n:Note)
@@ -3231,6 +3337,15 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         note_type: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         KnowledgeService::list_notes(self, limit, note_type).await
+    }
+
+    async fn recall_window(
+        &self,
+        since_iso: &str,
+        until_iso: &str,
+        sample_limit: usize,
+    ) -> anyhow::Result<serde_json::Value> {
+        KnowledgeService::recall_window(self, since_iso, until_iso, sample_limit).await
     }
 
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool> {

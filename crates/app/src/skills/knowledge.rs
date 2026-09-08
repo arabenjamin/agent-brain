@@ -118,6 +118,33 @@ impl KnowledgeSkill {
 
     // export_graph_visualization is served by GET /api/graph (REST API)
 
+    fn recall_recent_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "recall_recent".to_string(),
+            description: "Time-window recall: what was created recently, counted by note_type and \
+                 source_context, with a most-recent sample. This is the RIGHT tool for \
+                 'what did we learn today', 'what happened yesterday', 'what have we been \
+                 working on' — any whole-day or whole-period question. Do NOT semantic-search \
+                 for a date string (e.g. search_notes '2026-09-07'); a date does not embed and \
+                 will miss the day's notes. Counts exclude chunk fragments and are computed in \
+                 the brain's LOCAL day; the sample is the newest rows, not the whole window."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "window": {
+                        "type": "string",
+                        "description": "today (default), yesterday, or 'Nd' for the last N days (e.g. 7d, 30d)."
+                    },
+                    "sample_limit": {
+                        "type": "integer",
+                        "description": "Max sample rows to return (default 24, capped at 100)."
+                    }
+                }
+            }),
+        }
+    }
+
     fn prune_old_notes_def() -> ToolDefinition {
         ToolDefinition {
             name: "prune_old_notes".to_string(),
@@ -373,6 +400,70 @@ impl KnowledgeSkill {
                 "notes": results
             })),
             Err(e) => ToolCallResult::error(format!("Search failed: {}", e)),
+        }
+    }
+
+    async fn handle_recall_recent(&self, arguments: Option<Value>) -> ToolCallResult {
+        use chrono::{Duration, TimeZone, Utc};
+        let input: RecallRecentInput = match parse_args(arguments) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let sample_limit = input.sample_limit.unwrap_or(24).clamp(1, 100);
+
+        // Windows are computed in the brain's LOCAL zone (stored timestamps are
+        // UTC, so the bounds are converted to UTC before the query) — "today"
+        // must mean the local day, not the UTC day, or part of every evening
+        // reads as "yesterday". See services/clock.rs.
+        let now_local = crate::services::clock::now_local();
+        let local_midnight = |d: chrono::NaiveDate| {
+            now_local
+                .timezone()
+                .from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
+                .single()
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now)
+        };
+        let now_utc = now_local.with_timezone(&Utc);
+        let today = now_local.date_naive();
+
+        let window = input
+            .window
+            .as_deref()
+            .unwrap_or("today")
+            .trim()
+            .to_lowercase();
+        let (since, until) = match window.as_str() {
+            "today" => (local_midnight(today), now_utc),
+            "yesterday" => (
+                local_midnight(today - Duration::days(1)),
+                local_midnight(today),
+            ),
+            other => {
+                // "Nd" or a bare integer → the last N days ending now.
+                let days: i64 = other
+                    .strip_suffix('d')
+                    .unwrap_or(other)
+                    .trim()
+                    .parse()
+                    .unwrap_or(1);
+                let days = days.clamp(1, 365);
+                (now_utc - Duration::days(days), now_utc)
+            }
+        };
+
+        match self
+            .svc
+            .recall_window(&since.to_rfc3339(), &until.to_rfc3339(), sample_limit)
+            .await
+        {
+            Ok(mut v) => {
+                if let Value::Object(ref mut m) = v {
+                    m.insert("window".into(), json!(window));
+                }
+                ToolCallResult::success_json(v)
+            }
+            Err(e) => ToolCallResult::error(format!("recall_recent failed: {e}")),
         }
     }
 
@@ -864,6 +955,7 @@ impl Skill for KnowledgeSkill {
         vec![
             Self::store_note_def(),
             Self::search_notes_def(),
+            Self::recall_recent_def(),
             Self::prune_old_notes_def(),
             Self::consolidate_memories_def(),
             Self::synthesize_knowledge_def(),
@@ -876,6 +968,7 @@ impl Skill for KnowledgeSkill {
         match tool_name {
             "store_note" => Some(self.handle_store_note(arguments).await),
             "search_notes" => Some(self.handle_search_notes(arguments).await),
+            "recall_recent" => Some(self.handle_recall_recent(arguments).await),
             "prune_old_notes" => Some(self.handle_prune_old_notes(arguments).await),
             "consolidate_memories" => Some(self.handle_consolidate_memories(arguments).await),
             "synthesize_knowledge" => Some(self.handle_synthesize_knowledge(arguments).await),
@@ -904,6 +997,14 @@ struct StoreNoteInput {
     event_at: Option<String>,
     #[serde(default)]
     provenance: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecallRecentInput {
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    sample_limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1055,7 +1156,7 @@ mod tests {
 
     #[test]
     fn tools_list_has_correct_count() {
-        assert_eq!(skill_ok().tools().len(), 7);
+        assert_eq!(skill_ok().tools().len(), 8);
     }
 
     #[test]
@@ -1065,6 +1166,33 @@ mod tests {
             .unwrap()
             .block_on(skill.execute("nonexistent_tool", None));
         assert!(result.is_none());
+    }
+
+    // -- recall_recent --------------------------------------------------------
+
+    #[tokio::test]
+    async fn recall_recent_defaults_to_today_and_echoes_window() {
+        let skill = skill_ok();
+        // No args → window defaults to "today"; the mock echoes since/until.
+        let r = result_json(skill.execute("recall_recent", Some(json!({}))).await.unwrap());
+        assert_eq!(r["window"], "today");
+        assert!(r["since"].as_str().is_some(), "since bound present");
+        assert!(r["until"].as_str().is_some(), "until bound present");
+        // "since" (local midnight, UTC) must not be after "until" (now, UTC).
+        assert!(r["since"].as_str().unwrap() <= r["until"].as_str().unwrap());
+    }
+
+    #[tokio::test]
+    async fn recall_recent_accepts_n_day_window() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute("recall_recent", Some(json!({"window": "7d"})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["window"], "7d");
+        assert_eq!(r["total_notes"], 0); // mock store is empty
     }
 
     // -- store_note -----------------------------------------------------------

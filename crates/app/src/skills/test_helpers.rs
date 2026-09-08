@@ -240,6 +240,22 @@ impl KnowledgeStore for MockKnowledgeStore {
         Ok(vec![])
     }
 
+    async fn recall_window(
+        &self,
+        since_iso: &str,
+        until_iso: &str,
+        _sample_limit: usize,
+    ) -> anyhow::Result<Value> {
+        Ok(serde_json::json!({
+            "since": since_iso,
+            "until": until_iso,
+            "total_notes": 0,
+            "by_note_type": [],
+            "by_source_context": [],
+            "sample": [],
+        }))
+    }
+
     async fn delete_note(&self, _id: &str) -> anyhow::Result<bool> {
         Ok(true)
     }

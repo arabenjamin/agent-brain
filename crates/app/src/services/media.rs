@@ -670,14 +670,45 @@ impl MediaService {
         // A podcast `reference` is a user/graph-supplied URL — scheme-guard it
         // before fetching. YouTube feed URLs are built above and always https.
         Self::validate_url(&url)?;
-        let body = self
-            .http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        // YouTube throttles the feed endpoint by returning transient 404/429/5xx
+        // to an IP it is rate-limiting; the *same* channel_id returns 200 minutes
+        // later. Because a poll fans every source out in one run, a whole run can
+        // be throttled together — observed 2026-09-08, all ~12 sources 404/500 at
+        // one poll, every one returning 200 on a later single fetch. The channel
+        // IDs were correct; a single `error_for_status()?` still dropped each
+        // source for the whole 12h cycle. Retry a few times with backoff; a
+        // genuinely dead feed just costs the (bounded) attempts.
+        let mut attempt = 0u32;
+        let body = loop {
+            attempt += 1;
+            match self
+                .http
+                .get(&url)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+            {
+                Ok(resp) => break resp.text().await?,
+                Err(e) => {
+                    let retryable = e.is_timeout()
+                        || e.is_connect()
+                        || e.status().is_none_or(|s| {
+                            let c = s.as_u16();
+                            c == 404 || c == 408 || c == 425 || c == 429 || c >= 500
+                        });
+                    if attempt >= 3 || !retryable {
+                        return Err(e.into());
+                    }
+                    let backoff = std::time::Duration::from_millis(500 * 2u64.pow(attempt - 1));
+                    tracing::warn!(
+                        url = %url, attempt, error = %e,
+                        backoff_ms = backoff.as_millis() as u64,
+                        "feed fetch failed (transient); retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        };
         Ok(match kind {
             "podcast_rss" => parse_rss_feed(&body),
             _ => parse_youtube_feed(&body),

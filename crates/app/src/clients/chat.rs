@@ -40,7 +40,34 @@ const MAX_TOOL_ITERATIONS: usize = 10;
 /// profile answered correctly in 5 query-refinement rounds. Raised to 6: enough
 /// to refine a query the way `general` does, still well under the orchestrator's
 /// cap, still bounding the call product.
-const MAX_SUBAGENT_ITERATIONS: usize = 6;
+///
+/// Raised again to 8 on 2026-09-08: a delegated `knowledge-worker` asked "what
+/// did we learn today?" spent its rounds on a doomed retrieval (semantic search
+/// on the literal date string), got guillotined mid-recovery, and the turn
+/// reported "no substantive findings" on a 377-note day. The real fix is the
+/// deterministic `recall_recent` tool (a whole-day question resolves in one
+/// call), but the tight cap turned a recoverable wrong-first-move into a hard
+/// false negative, so give the refinement loop the headroom `general` had. Still
+/// under the orchestrator's cap and still bounds the round product.
+const MAX_SUBAGENT_ITERATIONS: usize = 8;
+
+// Usage-ledger `tool_name` override for LLM calls made inside a sub-agent loop.
+// A normal chat turn records under "chat"; `AgentRunner` scopes this task-local
+// to `subagent:<agent>` around the bounded loop so `delegate` / `run_agent` cost
+// stops billing as chat and becomes attributable by agent. Propagates through
+// `join!` (the whole chat loop chain runs in one task, never a `tokio::spawn`);
+// absent the scope, `usage_tool_label` falls back to "chat".
+tokio::task_local! {
+    pub static USAGE_TOOL_LABEL: String;
+}
+
+/// The usage-ledger `tool_name` for the current LLM call: the sub-agent label if
+/// one is scoped ([`USAGE_TOOL_LABEL`]), else `"chat"`.
+fn usage_tool_label() -> String {
+    USAGE_TOOL_LABEL
+        .try_with(|s| s.clone())
+        .unwrap_or_else(|_| "chat".to_string())
+}
 
 /// How many times to re-send a request that came back as an **empty completion**
 /// — the provider reported generating tokens but the stream carried no text and
@@ -1154,9 +1181,10 @@ impl ChatService {
         tokens_out: Option<i64>,
     ) {
         if let Some(ref tc) = self.telemetry {
+            let label = usage_tool_label();
             let _ = tc.record_model_usage(
                 model,
-                Some("chat"),
+                Some(label.as_str()),
                 success,
                 Some(duration_ms),
                 tokens_in,
@@ -1708,9 +1736,10 @@ impl ChatService {
                     .to_string();
                 let rate_limited = msg.contains("rate") || msg.contains("429");
                 if let Some(ref tc) = self.telemetry {
+                    let label = usage_tool_label();
                     let _ = tc.record_model_usage(
                         &model,
-                        Some("chat"),
+                        Some(label.as_str()),
                         false,
                         Some(call_start.elapsed().as_millis() as i64),
                         None,
@@ -2385,9 +2414,10 @@ impl ChatService {
                     } else {
                         None
                     };
+                    let label = usage_tool_label();
                     let _ = tc.record_model_usage(
                         &model,
-                        Some("chat"),
+                        Some(label.as_str()),
                         false,
                         Some(call_start.elapsed().as_millis() as i64),
                         None,
