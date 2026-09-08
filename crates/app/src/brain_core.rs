@@ -663,7 +663,10 @@ impl BrainCore {
         )));
 
         // HTTP Skill (generic http_request + ApiContext management)
-        registry.register_skill(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+        registry.register_skill(Box::new(HttpSkill::new(
+            self.storage.neo4j.clone(),
+            Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+        )));
 
         // Code Execution Skill (sandboxed Python). Absent SANDBOX_URL the tool
         // is not registered at all, rather than registered and always failing.
@@ -841,7 +844,10 @@ impl BrainCore {
             self.storage.telemetry.clone(),
         )));
 
-        skills.push(Box::new(HttpSkill::new(self.storage.neo4j.clone())));
+        skills.push(Box::new(HttpSkill::new(
+            self.storage.neo4j.clone(),
+            Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+        )));
 
         if let Some(exec_skill) = ExecSkill::from_env() {
             skills.push(Box::new(exec_skill));

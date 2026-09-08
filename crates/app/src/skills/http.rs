@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -18,16 +19,22 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 use crate::repository::Neo4jClient;
+use crate::services::LlmProvider;
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 pub struct HttpSkill {
     neo4j: Option<Neo4jClient>,
     client: reqwest::Client,
+    /// Used only by `ingest_api`'s HTML-with-no-spec fallback (extract endpoints
+    /// from a docs page's text). `None` disables that fallback cleanly. Every
+    /// deterministic path (spec_url, docs_url with a linked spec, codebase_path)
+    /// works without it.
+    llm: Option<Arc<dyn LlmProvider>>,
 }
 
 impl HttpSkill {
-    pub fn new(neo4j: Option<Neo4jClient>) -> Self {
+    pub fn new(neo4j: Option<Neo4jClient>, llm: Option<Arc<dyn LlmProvider>>) -> Self {
         Self {
             neo4j,
             client: reqwest::Client::builder()
@@ -35,6 +42,7 @@ impl HttpSkill {
                 .user_agent("agent-brain/1.0")
                 .build()
                 .expect("Failed to build HTTP client"),
+            llm,
         }
     }
 
@@ -146,11 +154,12 @@ impl HttpSkill {
                           (method, path, summary, parameters, security) and stores each as an \
                           (:ApiEndpoint) linked to an (:ApiContext) by [:EXPOSES]; the context \
                           records how it was ingested (`source`). Idempotent — re-ingesting \
-                          updates in place. Deterministic (no LLM), so no truncation or \
-                          hallucinated endpoints. Note: an HTML page with NO embedded spec, or a \
-                          codebase with no spec file, is not yet supported (LLM extraction / \
-                          build-from-routes are deferred) and returns a clear error. Query the \
-                          result with neo4j_query: \
+                          updates in place. Spec-based sources are deterministic (no LLM), so no \
+                          truncation or hallucinated endpoints. For a `docs_url` with NO linked \
+                          spec, it falls back to LLM extraction from the page text, stored \
+                          `source: html_llm` — lower confidence, verify before relying on it. A \
+                          codebase with no spec file is not yet supported (build-from-routes \
+                          deferred) and returns a clear error. Query the result with neo4j_query: \
                           MATCH (c:ApiContext {name:$n})-[:EXPOSES]->(e) RETURN e."
                     .to_string(),
             input_schema: json!({
@@ -436,28 +445,23 @@ impl HttpSkill {
         Ok(body)
     }
 
-    /// Find the spec URL an HTML docs page references. Two passes: first scan the
-    /// HTML directly, then — because modern Swagger UI keeps the `url:` in a
-    /// separate `swagger-initializer.js` — scan the referenced `.js` files
-    /// (initializer-like first), bounded to a few fetches.
-    async fn resolve_spec_url_from_docs(&self, docs_url: &str) -> Result<String, String> {
-        let html = self.fetch_text(docs_url).await?;
-        if let Some(u) = detect_spec_url_in_html(&html, docs_url) {
-            return Ok(u);
+    /// Find the spec URL an HTML docs page references, from already-fetched HTML.
+    /// Two passes: scan the HTML directly, then — because modern Swagger UI keeps
+    /// the `url:` in a separate `swagger-initializer.js` — scan the referenced
+    /// `.js` files (initializer-like first), bounded to a few fetches. `None` when
+    /// nothing is linked (the caller then falls back to LLM extraction).
+    async fn find_linked_spec(&self, html: &str, base_url: &str) -> Option<String> {
+        if let Some(u) = detect_spec_url_in_html(html, base_url) {
+            return Some(u);
         }
-        for js in find_js_refs(&html, docs_url).into_iter().take(5) {
+        for js in find_js_refs(html, base_url).into_iter().take(5) {
             if let Ok(js_body) = self.fetch_text(&js).await
                 && let Some(u) = detect_spec_url_in_html(&js_body, &js)
             {
-                return Ok(u);
+                return Some(u);
             }
         }
-        Err(format!(
-            "No OpenAPI/Swagger spec is linked from {docs_url} (checked the page and its \
-             scripts). Hand-authored HTML docs with no embedded spec need LLM extraction, which \
-             is not yet wired — pass a spec_url directly, or a docs page rendered by Swagger UI \
-             / Redoc / springdoc."
-        ))
+        None
     }
 
     async fn handle_ingest_api(&self, args: Option<Value>) -> ToolCallResult {
@@ -514,20 +518,37 @@ impl HttpSkill {
                     Err(e) => return ToolCallResult::error(e),
                 }
             } else if let Some(docs_url) = input.docs_url.clone() {
-                let spec_url = match self.resolve_spec_url_from_docs(&docs_url).await {
-                    Ok(u) => u,
+                let html = match self.fetch_text(&docs_url).await {
+                    Ok(h) => h,
                     Err(e) => return ToolCallResult::error(e),
                 };
-                match self
-                    .fetch_text(&spec_url)
-                    .await
-                    .and_then(|b| parse_spec_text(&b))
-                {
-                    Ok(spec) => (spec, spec_url, "html_spec", Some(docs_url)),
-                    Err(e) => {
-                        return ToolCallResult::error(format!(
-                            "Found a spec link ({spec_url}) in {docs_url} but could not load it: {e}"
-                        ));
+                match self.find_linked_spec(&html, &docs_url).await {
+                    Some(spec_url) => {
+                        match self
+                            .fetch_text(&spec_url)
+                            .await
+                            .and_then(|b| parse_spec_text(&b))
+                        {
+                            Ok(spec) => (spec, spec_url, "html_spec", Some(docs_url)),
+                            Err(e) => {
+                                return ToolCallResult::error(format!(
+                                    "Found a spec link ({spec_url}) in {docs_url} but could not \
+                                     load it: {e}"
+                                ));
+                            }
+                        }
+                    }
+                    // No linked spec — fall back to LLM extraction from the page text.
+                    None => {
+                        return self
+                            .ingest_html_via_llm(
+                                neo4j,
+                                &docs_url,
+                                &html,
+                                input.name,
+                                input.description,
+                            )
+                            .await;
                     }
                 }
             } else {
@@ -596,12 +617,41 @@ impl HttpSkill {
             })
             .unwrap_or_default();
 
-        // One UNWIND round-trip: the atomic-write pattern (one query MERGEs the
-        // context and every endpoint together — no cross-connection MATCH — and a
-        // RETURN count confirms the write landed rather than trusting Ok(())).
+        self.persist_endpoints(
+            neo4j,
+            &name,
+            &parsed.base_url,
+            &parsed.version,
+            &description,
+            origin_url,
+            &parsed.endpoints,
+            source,
+            discovered_from,
+        )
+        .await
+    }
+
+    /// Persist a set of endpoints under an ApiContext. Shared by the spec paths
+    /// (via `persist_spec`) and the HTML-LLM fallback. One UNWIND round-trip: the
+    /// atomic-write pattern (one query MERGEs the context and every endpoint
+    /// together — no cross-connection MATCH — and a RETURN count confirms the
+    /// write landed rather than trusting Ok(())).
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_endpoints(
+        &self,
+        neo4j: &Neo4jClient,
+        name: &str,
+        base_url: &str,
+        version: &str,
+        description: &str,
+        spec_url: &str,
+        endpoints: &[ParsedEndpoint],
+        source: &str,
+        discovered_from: Option<String>,
+    ) -> ToolCallResult {
         let ts = chrono::Utc::now().to_rfc3339();
-        let mut batch: Vec<neo4rs::BoltType> = Vec::with_capacity(parsed.endpoints.len());
-        for ep in &parsed.endpoints {
+        let mut batch: Vec<neo4rs::BoltType> = Vec::with_capacity(endpoints.len());
+        for ep in endpoints {
             let mut row: HashMap<String, neo4rs::BoltType> = HashMap::new();
             row.insert("method".into(), ep.method.clone().into());
             row.insert("path".into(), ep.path.clone().into());
@@ -638,11 +688,11 @@ impl HttpSkill {
         let rows = match neo4j
             .execute(
                 neo4rs::query(cypher)
-                    .param("name", name.clone())
-                    .param("base_url", parsed.base_url.clone())
-                    .param("description", description.clone())
-                    .param("spec_url", origin_url.to_string())
-                    .param("spec_version", parsed.version.clone())
+                    .param("name", name.to_string())
+                    .param("base_url", base_url.to_string())
+                    .param("description", description.to_string())
+                    .param("spec_url", spec_url.to_string())
+                    .param("spec_version", version.to_string())
                     .param("source", source.to_string())
                     .param(
                         "discovered_from",
@@ -664,14 +714,13 @@ impl HttpSkill {
         if stored == 0 {
             return ToolCallResult::error(format!(
                 "Parsed {} endpoints from '{}' but none persisted",
-                parsed.endpoints.len(),
+                endpoints.len(),
                 name
             ));
         }
 
         // A small sample so the caller can see the shape without a follow-up query.
-        let sample: Vec<Value> = parsed
-            .endpoints
+        let sample: Vec<Value> = endpoints
             .iter()
             .take(8)
             .map(|e| json!({ "method": e.method, "path": e.path, "summary": e.summary }))
@@ -680,8 +729,8 @@ impl HttpSkill {
         ToolCallResult::success_json(json!({
             "ingested": true,
             "api_name": name,
-            "base_url": parsed.base_url,
-            "spec_version": parsed.version,
+            "base_url": base_url,
+            "spec_version": version,
             "source": source,
             "discovered_from": discovered_from,
             "endpoints_stored": stored,
@@ -691,6 +740,102 @@ impl HttpSkill {
                 name
             ),
         }))
+    }
+
+    /// HTML-with-no-spec fallback: extract endpoints from a docs page's text with
+    /// the LLM. Lower confidence than a parsed spec (stored `source: html_llm`),
+    /// so it is used ONLY after deterministic spec detection fails. Structured
+    /// output via `generate_json`; a spec's own parser is always preferred.
+    async fn ingest_html_via_llm(
+        &self,
+        neo4j: &Neo4jClient,
+        docs_url: &str,
+        html: &str,
+        name_override: Option<String>,
+        description_override: Option<String>,
+    ) -> ToolCallResult {
+        let Some(llm) = self.llm.clone() else {
+            return ToolCallResult::error(format!(
+                "No OpenAPI/Swagger spec is linked from {docs_url}, and LLM extraction is \
+                 unavailable (no LLM configured). Pass a spec_url, or a docs page rendered by \
+                 Swagger UI / Redoc / springdoc."
+            ));
+        };
+
+        let text = html_to_text(html);
+        if text.trim().is_empty() {
+            return ToolCallResult::error(format!("{docs_url} had no readable text to extract."));
+        }
+
+        let system = "You extract REST API endpoints from documentation text. Output ONLY the \
+                      requested JSON. Include an endpoint only if the text actually documents it; \
+                      never invent paths, methods, or parameters. If none are documented, return \
+                      an empty endpoints array.";
+        let prompt = format!(
+            "From the API documentation below, extract every REST endpoint.\n\n\
+             Return a JSON object exactly like:\n\
+             {{\n  \"base_url\": \"https://api.example.com\" (or \"\" if unknown),\n  \
+             \"endpoints\": [\n    {{\"method\": \"GET\", \"path\": \"/things/{{id}}\", \
+             \"summary\": \"...\", \"parameters\": [{{\"name\": \"id\", \"in\": \"path\", \
+             \"required\": true, \"type\": \"string\"}}]}}\n  ]\n}}\n\n\
+             Rules: method is an uppercase HTTP verb; path starts with '/'; omit parameters you \
+             cannot see. Do not fabricate.\n\n\
+             DOCUMENTATION:\n{text}"
+        );
+
+        let value = match llm
+            .generate_json(&prompt, Some(system), &["endpoints"], 2)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return ToolCallResult::error(format!("LLM endpoint extraction failed: {e}"));
+            }
+        };
+
+        let endpoints = parse_llm_endpoints(&value);
+        if endpoints.is_empty() {
+            return ToolCallResult::error(format!(
+                "The LLM found no documented endpoints in {docs_url}. If this page renders a spec \
+                 dynamically, pass the spec_url directly."
+            ));
+        }
+
+        let base_url = value
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                url::Url::parse(docs_url)
+                    .ok()
+                    .map(|u| u.origin().ascii_serialization())
+                    .unwrap_or_default()
+            });
+
+        let name = name_override
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                url::Url::parse(docs_url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(String::from))
+                    .unwrap_or_else(|| "ingested_api".to_string())
+            });
+        let description = description_override.unwrap_or_default();
+
+        self.persist_endpoints(
+            neo4j,
+            &name,
+            &base_url,
+            "html_llm_extracted",
+            &description,
+            docs_url,
+            &endpoints,
+            "html_llm",
+            Some(docs_url.to_string()),
+        )
+        .await
     }
 }
 
@@ -914,6 +1059,145 @@ fn parse_spec_text(body: &str) -> Result<Value, String> {
     serde_json::from_str(body)
         .or_else(|_| serde_yaml::from_str(body))
         .map_err(|e| format!("Spec is neither valid JSON nor YAML: {e}"))
+}
+
+/// Case-insensitive ASCII substring search returning the byte offset in `hay`.
+/// `needle` must be lowercase ASCII. Alignment-safe (ASCII case folds per byte).
+fn find_ci(hay: &str, needle: &str, from: usize) -> Option<usize> {
+    let hb = hay.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.is_empty() || from > hb.len().saturating_sub(nb.len()) {
+        return None;
+    }
+    (from..=hb.len() - nb.len()).find(|&i| {
+        hb[i..i + nb.len()]
+            .iter()
+            .zip(nb)
+            .all(|(h, n)| h.to_ascii_lowercase() == *n)
+    })
+}
+
+/// Remove `<tag …>…</tag>` blocks (case-insensitive) whose *content* is not prose
+/// (script, style). An unclosed open tag drops the rest of the document.
+fn strip_block(s: &str, tag: &str) -> String {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while let Some(start) = find_ci(s, &open, i) {
+        out.push_str(&s[i..start]);
+        match find_ci(s, &close, start) {
+            Some(cpos) => i = cpos + close.len(),
+            None => {
+                i = s.len();
+                break;
+            }
+        }
+    }
+    out.push_str(&s[i..]);
+    out
+}
+
+/// Strip an HTML page down to readable text for LLM extraction: drop script/style
+/// blocks, remove tags, decode a few entities, collapse whitespace, and cap length.
+fn html_to_text(html: &str) -> String {
+    const MAX_TEXT: usize = 24_000;
+    let stripped = strip_block(&strip_block(html, "script"), "style");
+    let mut text = String::with_capacity(stripped.len());
+    let mut in_tag = false;
+    for c in stripped.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let decoded = text
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    let collapsed = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.len() > MAX_TEXT {
+        let mut end = MAX_TEXT;
+        while !collapsed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}… [truncated]", &collapsed[..end])
+    } else {
+        collapsed
+    }
+}
+
+/// Convert the LLM's `{endpoints:[…]}` output into `ParsedEndpoint`s. Drops any
+/// entry missing a method or path (the model was told not to fabricate; this is
+/// the belt-and-braces filter). Security/tags are left empty — the LLM path does
+/// not reliably recover them, and an empty list is honest.
+fn parse_llm_endpoints(value: &Value) -> Vec<ParsedEndpoint> {
+    let Some(arr) = value.get("endpoints").and_then(|e| e.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ep in arr {
+        let method = ep
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_uppercase();
+        let path = ep
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if method.is_empty() || path.is_empty() {
+            continue;
+        }
+        let summary = ep
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(300)
+            .collect::<String>();
+        let operation_id = ep
+            .get("operationId")
+            .or_else(|| ep.get("operation_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let params: Vec<Value> = ep
+            .get("parameters")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| {
+                        let name = p.get("name").and_then(|v| v.as_str())?;
+                        Some(json!({
+                            "name": name,
+                            "in": p.get("in").and_then(|v| v.as_str()).unwrap_or(""),
+                            "required": p.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                            "type": p.get("type").and_then(|v| v.as_str()).unwrap_or(""),
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(ParsedEndpoint {
+            method,
+            path,
+            summary,
+            operation_id,
+            parameters: serde_json::to_string(&params).unwrap_or_else(|_| "[]".into()),
+            security: "[]".to_string(),
+            tags: "[]".to_string(),
+        });
+    }
+    out
 }
 
 /// Find the OpenAPI/Swagger spec URL an HTML docs page references. Handles the
@@ -1298,6 +1582,37 @@ mod ingest_api_tests {
             "https://api.x.com/docs/swagger-initializer.js"
         );
         assert!(refs.iter().any(|r| r.contains("swagger-ui-bundle.js")));
+    }
+
+    #[test]
+    fn html_to_text_strips_scripts_styles_and_tags() {
+        let html = "<html><head><style>body{color:red}</style>\
+                    <script>var x = 'GET /secret';</script></head>\
+                    <body><h1>Users API</h1><p>GET /users &amp; POST /users</p></body></html>";
+        let text = html_to_text(html);
+        assert!(text.contains("Users API"));
+        assert!(text.contains("GET /users & POST /users"), "got: {text}");
+        // Script/style content must be gone (no leaked JS endpoint or CSS).
+        assert!(!text.contains("/secret"), "script content leaked: {text}");
+        assert!(!text.contains("color:red"), "style content leaked: {text}");
+    }
+
+    #[test]
+    fn parse_llm_endpoints_keeps_valid_and_drops_incomplete() {
+        let v = json!({
+            "endpoints": [
+                {"method": "get", "path": "/users", "summary": "List users",
+                 "parameters": [{"name": "page", "in": "query", "required": false, "type": "integer"}]},
+                {"method": "POST", "path": "/users", "summary": "Create"},
+                {"method": "GET"},                       // no path -> dropped
+                {"path": "/orphan"}                       // no method -> dropped
+            ]
+        });
+        let eps = parse_llm_endpoints(&v);
+        assert_eq!(eps.len(), 2);
+        assert_eq!(eps[0].method, "GET"); // uppercased
+        assert!(eps[0].parameters.contains("page"));
+        assert_eq!(eps[1].path, "/users");
     }
 
     #[test]
