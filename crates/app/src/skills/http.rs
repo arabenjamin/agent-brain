@@ -158,8 +158,9 @@ impl HttpSkill {
                           truncation or hallucinated endpoints. For a `docs_url` with NO linked \
                           spec, it falls back to LLM extraction from the page text, stored \
                           `source: html_llm` — lower confidence, verify before relying on it. A \
-                          codebase with no spec file is not yet supported (build-from-routes \
-                          deferred) and returns a clear error. Query the result with neo4j_query: \
+                          `codebase_path` with no spec file falls back to LLM extraction from the \
+                          route-defining source files (`source: codebase_generated`, also lower \
+                          confidence). Query the result with neo4j_query: \
                           MATCH (c:ApiContext {name:$n})-[:EXPOSES]->(e) RETURN e."
                     .to_string(),
             input_schema: json!({
@@ -554,11 +555,10 @@ impl HttpSkill {
             } else {
                 let path = input.codebase_path.clone().unwrap_or_default();
                 let Some(spec_file) = find_spec_file(Path::new(&path)) else {
-                    return ToolCallResult::error(format!(
-                        "No OpenAPI/Swagger spec file (openapi/swagger .json/.yaml, api-docs.json) \
-                         found under {path}. Building a spec from route definitions is not yet \
-                         supported — add a spec file to the repo, or use spec_url / docs_url."
-                    ));
+                    // No spec file — build from route definitions with the LLM.
+                    return self
+                        .ingest_codebase_via_llm(neo4j, &path, input.name, input.description)
+                        .await;
                 };
                 match std::fs::read_to_string(&spec_file)
                     .map_err(|e| format!("Failed to read {}: {e}", spec_file.display()))
@@ -834,6 +834,126 @@ impl HttpSkill {
             &endpoints,
             "html_llm",
             Some(docs_url.to_string()),
+        )
+        .await
+    }
+
+    /// Codebase-with-no-spec fallback: locate route-defining source files and have
+    /// the LLM build the endpoint list from them. Lower confidence than a real
+    /// spec (stored `source: codebase_generated`) — it reads route registrations,
+    /// not a contract — so it runs ONLY after `find_spec_file` finds nothing.
+    async fn ingest_codebase_via_llm(
+        &self,
+        neo4j: &Neo4jClient,
+        codebase_path: &str,
+        name_override: Option<String>,
+        description_override: Option<String>,
+    ) -> ToolCallResult {
+        let Some(llm) = self.llm.clone() else {
+            return ToolCallResult::error(format!(
+                "No spec file under {codebase_path}, and LLM route extraction is unavailable (no \
+                 LLM configured). Add an OpenAPI/Swagger spec file, or use spec_url / docs_url."
+            ));
+        };
+
+        let root = Path::new(codebase_path);
+        let route_files = find_route_files(root);
+        if route_files.is_empty() {
+            return ToolCallResult::error(format!(
+                "No spec file and no recognisable route definitions found under {codebase_path}. \
+                 Recognised: axum/actix (Rust), FastAPI/Flask (Python), Express (JS/TS), Spring \
+                 (Java), gin/echo (Go). Add a spec file, or use spec_url / docs_url."
+            ));
+        }
+
+        // Assemble a bounded corpus of the highest-scoring route files.
+        const MAX_CORPUS: usize = 24_000;
+        let mut corpus = String::new();
+        let mut used: Vec<String> = Vec::new();
+        for f in &route_files {
+            if corpus.len() >= MAX_CORPUS {
+                break;
+            }
+            let Ok(content) = std::fs::read_to_string(f) else {
+                continue;
+            };
+            let rel = f.strip_prefix(root).unwrap_or(f).display().to_string();
+            corpus.push_str(&format!("\n\n// ===== FILE: {rel} =====\n"));
+            let budget = MAX_CORPUS.saturating_sub(corpus.len());
+            if content.len() > budget {
+                let mut end = budget;
+                while end > 0 && !content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                corpus.push_str(&content[..end]);
+            } else {
+                corpus.push_str(&content);
+            }
+            used.push(rel);
+        }
+
+        let system = "You extract the REST endpoints a web service exposes by reading its \
+                      route-registration source code. Output ONLY the requested JSON. Include an \
+                      endpoint only if the code actually registers it; never invent routes. Merge \
+                      any router/blueprint/mount prefix into the full path.";
+        let prompt = format!(
+            "From the source files below (which register HTTP routes), extract every REST \
+             endpoint the service exposes.\n\n\
+             Return a JSON object exactly like:\n\
+             {{\n  \"base_url\": \"\" (leave empty unless the code states one),\n  \
+             \"endpoints\": [\n    {{\"method\": \"GET\", \"path\": \"/things/{{id}}\", \
+             \"summary\": \"...\", \"parameters\": [{{\"name\": \"id\", \"in\": \"path\", \
+             \"required\": true, \"type\": \"string\"}}]}}\n  ]\n}}\n\n\
+             Rules: method is an uppercase HTTP verb; path starts with '/'; combine prefixes into \
+             the full path; do not fabricate.\n\n\
+             SOURCE:\n{corpus}"
+        );
+
+        let value = match llm
+            .generate_json(&prompt, Some(system), &["endpoints"], 2)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return ToolCallResult::error(format!("LLM route extraction failed: {e}")),
+        };
+
+        let endpoints = parse_llm_endpoints(&value);
+        if endpoints.is_empty() {
+            return ToolCallResult::error(format!(
+                "The LLM found no endpoints in the route files under {codebase_path} \
+                 (scanned: {}).",
+                used.join(", ")
+            ));
+        }
+
+        let base_url = value
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_string();
+        let name = name_override
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                root.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "ingested_api".to_string())
+            });
+        let description = description_override.unwrap_or_default();
+
+        self.persist_endpoints(
+            neo4j,
+            &name,
+            &base_url,
+            "codebase_generated",
+            &description,
+            codebase_path,
+            &endpoints,
+            "codebase_generated",
+            Some(codebase_path.to_string()),
         )
         .await
     }
@@ -1372,6 +1492,107 @@ fn find_spec_file(root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Source-file extensions worth scanning for route definitions.
+const ROUTE_EXTS: [&str; 8] = ["rs", "py", "js", "ts", "java", "go", "rb", "php"];
+
+/// Lowercase markers that signal an HTTP route registration across the common
+/// frameworks. The method+`"/` forms (e.g. `.get("/`) catch gin/echo/express
+/// while avoiding the `map.get("key")` false positive (a route path starts `/`).
+const ROUTE_MARKERS: [&str; 30] = [
+    ".route(",
+    "web::resource",
+    "router::new",
+    "#[get(",
+    "#[post(",
+    "#[put(",
+    "#[delete(",
+    "@app.route",
+    "@app.get",
+    "@app.post",
+    "@app.put",
+    "@app.delete",
+    "@app.patch",
+    "@router.get",
+    "@router.post",
+    "@router.put",
+    "@router.delete",
+    "apirouter(",
+    "@blueprint.route",
+    "@getmapping",
+    "@postmapping",
+    "@putmapping",
+    "@deletemapping",
+    "@requestmapping",
+    "handlefunc(",
+    ".get(\"/",
+    ".post(\"/",
+    ".put(\"/",
+    ".delete(\"/",
+    ".patch(\"/",
+];
+
+/// Find source files that define HTTP routes, ranked by how many route markers
+/// they contain (most first). Bounded: skips vendor/noise dirs, huge files, and
+/// caps directory entries visited. Used only by the codebase build-from-routes
+/// fallback; the LLM makes the final call on what is actually an endpoint.
+fn find_route_files(root: &Path) -> Vec<PathBuf> {
+    const MAX_ENTRIES: usize = 20_000;
+    const MAX_FILE_BYTES: u64 = 512 * 1024;
+    let mut scored: Vec<(usize, PathBuf)> = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > MAX_ENTRIES {
+                break;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if matches!(
+                    name,
+                    ".git"
+                        | "node_modules"
+                        | "target"
+                        | "venv"
+                        | ".venv"
+                        | "dist"
+                        | "build"
+                        | ".tox"
+                ) {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !ROUTE_EXTS.contains(&ext.as_str()) {
+                continue;
+            }
+            if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let lc = content.to_lowercase();
+                let score: usize = ROUTE_MARKERS.iter().map(|m| lc.matches(m).count()).sum();
+                if score > 0 {
+                    scored.push((score, path));
+                }
+            }
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.into_iter().map(|(_, p)| p).collect()
+}
+
 // Internal type used during auth injection
 struct ApiContext {
     #[allow(dead_code)]
@@ -1646,5 +1867,30 @@ mod ingest_api_tests {
         // An empty tree yields nothing.
         let empty = tempfile::tempdir().unwrap();
         assert!(find_spec_file(empty.path()).is_none());
+    }
+
+    #[test]
+    fn find_route_files_scores_route_definitions_and_ignores_plain_source() {
+        let dir = tempfile::tempdir().unwrap();
+        // A FastAPI-style router file (two markers) — highest score.
+        std::fs::write(
+            dir.path().join("routes.py"),
+            "@app.get('/users')\ndef list_users(): ...\n@app.post('/users')\ndef create(): ...\n",
+        )
+        .unwrap();
+        // A plain module with a map .get() that must NOT register as a route.
+        std::fs::write(
+            dir.path().join("util.py"),
+            "cache = {}\nval = cache.get('key')\n",
+        )
+        .unwrap();
+        // A noise dir with a route-looking file that must be skipped.
+        let nm = dir.path().join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("dep.js"), "app.get(\"/dep\", h)\n").unwrap();
+
+        let found = find_route_files(dir.path());
+        assert_eq!(found.len(), 1, "found: {found:?}");
+        assert!(found[0].ends_with("routes.py"));
     }
 }
