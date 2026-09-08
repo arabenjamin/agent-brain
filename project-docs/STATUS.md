@@ -137,6 +137,7 @@
 
 ### 2026-09-08
 
+- feat: the daily brief is now a **Daily Brief** (self + world) — leads with `## WHAT I DID & LEARNED (last 24h)` (via `recall_recent`) and `## SYSTEM STATUS` (task/job/schedule counts via `neo4j_query`), then the news sections. Writer routed to gpt-oss (dropped `required_capabilities: [reasoning]` — it went to gemini-2.5-flash, which JSON-fenced the whole brief). ApiTube made topical (`title=` per section; `category`/`country` don't filter) at `per_page=2` (its `results[]` triplicates full article body → ~8K tokens/article, un-trimmable server-side; `per_page=8`×2 overflowed gpt-oss's 131K context). Start-of-run `news-raw` clear added so a failed run can't poison the next (a mid-chain death left banked blocks that compounded to ~306K tokens across runs). Status query needs a `WITH` before aggregation (implicit-grouping error).
 - fix: SerpApi 200+`{"error":…}` responses now surface as real failures instead of a phantom `success rc=0` that silently fell through to SearXNG (`search_serpapi`/`search_serpapi_news`) + 2 regression tests
 - feat: ApiTube news API wired into the daily brief alongside `google_news` — seeded `apitube` `ApiContext` (X-API-Key), `APITUBE_API_KEY` compose passthrough, structured/dated `results[]` (needs rebuild to activate)
 - feat: `api-scout` spawnable profile + weekly `schedules/api-scout.yaml` (seeded **disabled**) — discovers free REST APIs, ingests keyless ones, `notify_user`-flags key-gated ones

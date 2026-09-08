@@ -49,7 +49,8 @@ impl KnowledgeSkill {
                     },
                     "note_type": {
                         "type": "string",
-                        "description": "Type of note: semantic (default), episodic, reflection, consolidated, news"
+                        "enum": ["semantic", "episodic", "reflection", "consolidated", "outcome", "inference", "claim", "source_record", "news", "unsourced_synthesis"],
+                        "description": "Type of note (default: semantic). Use `source_record` for what an external source asserted (web/video), `claim` for a single checkable proposition, `unsourced_synthesis` for your own uncited reasoning. Do not invent a type — an unknown value is stored but never labelled or recalled correctly."
                     },
                     "source_context": {
                         "type": "string",

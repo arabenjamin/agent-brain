@@ -930,6 +930,26 @@ const PERSISTING_TOOLS: &[&str] = &[
     "notify_user",
 ];
 
+/// `note_type` values retrieval and the epistemics layer actually understand.
+/// `store_note` takes a free-form string, so an invented type (a chat-authored
+/// schedule stored an `analysis` note on 2026-09-08) is persisted silently and
+/// then never labelled or selected correctly — `label_claims`, consolidation,
+/// and `recall_recent` all key off these names. `news_raw` is the pre-classified
+/// news feed type; kept here so the lint doesn't flag a legitimate one.
+const VALID_NOTE_TYPES: &[&str] = &[
+    "semantic",
+    "episodic",
+    "reflection",
+    "consolidated",
+    "outcome",
+    "inference",
+    "claim",
+    "source_record",
+    "news",
+    "news_raw",
+    "unsourced_synthesis",
+];
+
 /// True when a step's arguments reference the previous step's output in any
 /// form — `{{_prev}}`, a dotted `{{_prev.id}}` path, or the `{{result…}}` alias.
 fn references_prev(args: Option<&Value>) -> bool {
@@ -1061,6 +1081,21 @@ fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<String> {
                 warnings.push(format!(
                     "step {n} (`store_note`): no `source_context`, so a later run has no key \
                      to retrieve this note by and cannot build on it."
+                ));
+            }
+            // An invented note_type is stored verbatim and then never labelled,
+            // consolidated, or recalled correctly — retrieval and the epistemics
+            // layer only understand the canonical set.
+            if let Some(nt) = args
+                .and_then(|a| a.get("note_type"))
+                .and_then(|c| c.as_str())
+                .filter(|t| !t.is_empty())
+                && !VALID_NOTE_TYPES.contains(&nt)
+            {
+                warnings.push(format!(
+                    "step {n} (`store_note`): `note_type: \"{nt}\"` is not a recognized type, so \
+                     the note is stored but never labelled or recalled correctly. Use one of: {}.",
+                    VALID_NOTE_TYPES.join(", ")
                 ));
             }
             // Web-derived material is what a source asserted, not what the brain
@@ -1292,6 +1327,43 @@ mod tests {
             lint_chain_steps(&steps, &[]).is_empty(),
             "repaired chain should lint clean: {:?}",
             lint_chain_steps(&steps, &[])
+        );
+    }
+
+    /// An invented note_type (`analysis`, stored by a chat-authored schedule on
+    /// 2026-09-08) must be flagged — it persists but is never labelled or recalled.
+    #[test]
+    fn lint_flags_an_unknown_note_type() {
+        let steps = vec![step(
+            "store_note",
+            json!({
+                "content": "{{_prev}}",
+                "note_type": "analysis",
+                "source_context": "intelligence_proxy_analysis"
+            }),
+        )];
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            w.iter().any(|s| s.contains("not a recognized type")),
+            "unknown note_type not caught: {w:?}"
+        );
+    }
+
+    /// A canonical note_type must not trip the unknown-type warning.
+    #[test]
+    fn lint_accepts_a_known_note_type() {
+        let steps = vec![step(
+            "store_note",
+            json!({
+                "content": "{{_prev}}",
+                "note_type": "unsourced_synthesis",
+                "source_context": "x"
+            }),
+        )];
+        let w = lint_chain_steps(&steps, &[]);
+        assert!(
+            !w.iter().any(|s| s.contains("not a recognized type")),
+            "known note_type wrongly flagged: {w:?}"
         );
     }
 

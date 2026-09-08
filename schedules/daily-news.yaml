@@ -37,6 +37,22 @@ name: "Daily news aggregation and briefing: aggregate headlines from world, tech
 description: "Aggregates metro Detroit, Michigan, national, world, tech, and business headlines plus a stock-market recap and Detroit weather, then writes and stores a structured daily briefing."
 interval_seconds: 86400
 steps:
+  # ── Clear any leftover raw session FIRST (self-healing) ──────────────────
+  # The cleanup step at the END only runs if the whole chain succeeds. If a
+  # later step dies (e.g. the writer hits a provider error), its banked blocks
+  # survive in news-raw-{{date}}, and the NEXT run's gather pulls the
+  # accumulation — which compounds until the writer's context overflows
+  # (observed 2026-09-08: four failed runs stacked to ~306K tokens and every
+  # subsequent run 400'd on context length). Deleting at the start makes each
+  # run idempotent regardless of how the previous one ended.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
   # ── Collect: search each topic, bank results in working memory ──────────
   - tool_name: search_web
     arguments:
@@ -58,7 +74,7 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "Michigan state news today"
+      query: "Michigan government politics and community news today"
       count: 6
       engine: google_news
     priority: 1
@@ -204,19 +220,21 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # ── ApiTube: structured, dated news articles (supplements google_news) ──
-  # Additive, not a replacement: if ApiTube is unreachable or a param is off,
-  # this block is simply absent and the google_news sections above still carry
-  # the brief. Auth (X-API-Key) is injected from the seeded `apitube` ApiContext,
-  # so no key appears here. Free tier is 100 req/day; this is one call/run.
-  # Params are kept to the well-documented ones (language, per_page) until the
-  # response shape is verified live post-deploy — then add published_at/sort for
-  # tighter recency. Response: results[] with title, href, published_at,
-  # source.domain, description.
+  # ── ApiTube: TOPICAL structured, dated articles (supplements google_news) ──
+  # Additive, not a replacement: if ApiTube is unreachable, these blocks are
+  # simply absent and the google_news sections above still carry the brief. Auth
+  # (X-API-Key) is injected from the seeded `apitube` ApiContext, so no key
+  # appears here. Free tier is 100 req/day; these are 2 calls/run.
+  #
+  # Verified live 2026-09-08: `title=<keyword>` is the only reliable topical
+  # filter — `category` and `source.country.code` returned unrelated/global
+  # results, so they are NOT used. `title=Michigan` and `title=artificial
+  # intelligence` both return today-dated, on-topic articles with source + date.
+  # Response: results[] with title, href, published_at, source.domain, description.
   - tool_name: http_request
     arguments:
       method: GET
-      url: "https://api.apitube.io/v1/news/everything?language=en&per_page=12"
+      url: "https://api.apitube.io/v1/news/everything?title=Michigan&language.code=en&per_page=2"
       context_name: apitube
     priority: 1
     max_attempts: 3
@@ -225,7 +243,73 @@ steps:
   - tool_name: push_context
     arguments:
       session_id: "news-raw-{{date}}"
-      content: "## APITUBE — latest structured, dated news articles (JSON results[]: title, href, published_at, source.domain, description). Use these for accurate dates and citations, and to fill or corroborate any section where the search blocks were thin.\n{{_prev}}"
+      content: "## MICHIGAN — ApiTube articles (structured, dated JSON results[]: title, href, published_at, source.domain, description). Prefer these for exact dates and citations in the MICHIGAN / METRO DETROIT sections.\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: http_request
+    arguments:
+      method: GET
+      url: "https://api.apitube.io/v1/news/everything?title=artificial%20intelligence&language.code=en&per_page=2"
+      context_name: apitube
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## TECHNOLOGY & AI — ApiTube articles (structured, dated JSON results[]: title, href, published_at, source.domain, description). Prefer these for exact dates and citations in the TECHNOLOGY & AI section.\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # ── The brain's OWN day: what it watched / researched / learned (24h) ──────
+  # recall_recent is the deterministic time-window count (by note_type +
+  # source_context, plus a sample) — this is the "what has the system been doing
+  # all night / did it learn anything new" section. Local-day-aware; window=1d
+  # covers overnight.
+  - tool_name: recall_recent
+    arguments:
+      window: "1d"
+      sample_limit: 20
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## BRAIN ACTIVITY (last 24h) — recall_recent JSON: total_notes, by_note_type, by_source_context, and a sample[]. This is what the brain actually did and learned: video_learning = videos it watched, fill_knowledge_gap = gaps it researched, claim/source_record = things it logged, news = briefs. Summarise the shape (counts) and call out anything genuinely new.\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # ── System status: open work, recent job health, active schedules ─────────
+  - tool_name: neo4j_query
+    arguments:
+      cypher: >-
+        MATCH (t:Task) WITH t.status AS k, count(*) AS c
+        RETURN 'tasks_by_status: ' + k + ' = ' + toString(c) AS line
+        UNION ALL
+        MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration('P1D')
+        WITH j.status AS k, count(*) AS c
+        RETURN 'jobs_24h_by_status: ' + k + ' = ' + toString(c) AS line
+        UNION ALL
+        MATCH (s:ScheduledTask) WITH s.enabled AS k, count(*) AS c
+        RETURN 'scheduled_tasks_enabled=' + toString(k) + ': ' + toString(c) AS line
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## SYSTEM STATUS — live counts from the graph (task statuses, AgentJob statuses over the last 24h, and enabled/disabled ScheduledTask totals). Report open/failed work plainly; a non-zero failed/dead count is worth flagging.\n{{_prev}}"
       role: observation
     priority: 1
     max_attempts: 2
@@ -243,8 +327,13 @@ steps:
   - tool_name: reason
     arguments:
       question: |
-        Write a structured daily news brief for {{date}} with the following sections:
+        Write a structured DAILY BRIEF for {{date}}. This is not only a news
+        digest — it covers BOTH the brain's own day (what it did, learned, and
+        its current state) AND the outside world. Use these sections in order:
+
         ## EXECUTIVE SUMMARY for {{date}}
+        ## WHAT I DID & LEARNED (last 24h)
+        ## SYSTEM STATUS
         ## METRO DETROIT
         ## MICHIGAN
         ## NATIONAL
@@ -255,47 +344,72 @@ steps:
         ## WEATHER
         ## STORY TO WATCH
 
-        2-3 bullets per section, drawn only from the raw results in the context
-        (the context contains one "## <SECTION> — raw search results" block per
-        topic, plus a "## APITUBE" block of structured, dated articles that may
-        cover several sections — draw from whichever block serves each section,
-        and prefer the ApiTube articles for exact publication dates and source
-        names). Cite sources with the URLs from that source not just the site. Flag notable spin or framing
-        with ⚠️. For MARKETS, lead with index levels/direction if present. For
-        WEATHER, the context holds a National Weather Service JSON response,
-        not search results: read `properties.periods` and report the FIRST TWO
-        periods (today and tonight) as one bullet each, giving `name`,
-        `temperature` + `temperatureUnit`, `shortForecast`, `windSpeed`/
-        `windDirection`, and `probabilityOfPrecipitation.value` when non-null.
-        Cite https://api.weather.gov. Ignore the remaining periods.
+        Draw ONLY from the blocks in the context; do not invent. Cite source URLs
+        (the actual article URL, not just the site). Flag notable spin/framing ⚠️.
 
-        If a section's results are missing, or are present but unusable (off
-        topic, or dated well before {{date}}), do not silently write it off as
-        a quiet day — say which it was: "No results collected today." when the
-        section is empty, or "Search returned N results but none were usable
-        for {{date}} — <one-line reason>." when it is not. A reader must be
-        able to tell a slow news day from a broken search.
+        SPORTS FILTER — hard rule: EXCLUDE sports and athletics entirely (game
+        scores, results, previews, recruiting, coaching/athletic-department hires
+        and departures, player transfers). This holds for EVERY section. The ONLY
+        exception is a sports item that genuinely intersects politics, government,
+        or public policy — e.g. public/stadium funding or a tax vote, legislation
+        or a court ruling (Title IX, NIL law), a labor/antitrust action, or an
+        athlete/team's political act with policy consequences. When a section's
+        usable results are all sports, drop them and say "No non-sports results
+        usable for today." Do not fill a section with sports to avoid an empty one.
+
+        Avoid duplication: the EXECUTIVE SUMMARY should synthesise across the day,
+        not restate the section bullets verbatim — a headline appears in its
+        section OR the summary, not both word-for-word.
+
+        SELF SECTIONS (lead with these — they are the point of a *daily* brief):
+        - EXECUTIVE SUMMARY: 3-5 bullets spanning BOTH the brain's own day AND the
+          day's news — what the brain did/learned first, then the headlines.
+        - WHAT I DID & LEARNED: read the "## BRAIN ACTIVITY (last 24h)" block
+          (recall_recent JSON). Summarise the shape from the counts — how many
+          videos it watched (source_context video_learning), gaps it researched
+          (fill_knowledge_gap), claims/source_records it logged, briefs (news) —
+          and name anything genuinely new from the sample[]. If total_notes is
+          genuinely low, say it was a quiet night; do not inflate.
+        - SYSTEM STATUS: read the "## SYSTEM STATUS" block. Report open vs
+          completed/failed tasks, AgentJob health over the last 24h, and how many
+          schedules are enabled. Flag any failed/dead jobs explicitly.
+
+        NEWS SECTIONS: each has a "## <SECTION> — raw search results" block and/or
+        a "## <SECTION> — ApiTube articles" block; prefer the ApiTube articles for
+        exact publication dates and source names. 2-3 bullets each. For MARKETS,
+        lead with index levels/direction if present. For WEATHER, the context
+        holds a National Weather Service JSON response, not search results: read
+        `properties.periods` and report the FIRST TWO periods (today and tonight)
+        as one bullet each, giving `name`, `temperature` + `temperatureUnit`,
+        `shortForecast`, `windSpeed`/`windDirection`, and
+        `probabilityOfPrecipitation.value` when non-null. Cite
+        https://api.weather.gov. Ignore the remaining periods.
+
+        If a news section's results are missing or unusable (off topic, or dated
+        well before {{date}}), do not silently write it off as a quiet day — say
+        which: "No results collected today." when empty, or "Search returned N
+        results but none were usable for {{date}} — <one-line reason>." when not.
+        A reader must be able to tell a slow news day from a broken search. (This
+        applies to the news sections; the self sections above always have data.)
         Do not output JSON or any code fences. Write in plain prose with Markdown headings only.
       context: "{{_prev}}"
       store_inference: false
     priority: 2
     max_attempts: 3
-    # Write the brief on a cloud model; searches/cleanup stay local below.
+    # Write the brief on the active cloud model (OLLAMA_MODEL), which is now
+    # `gpt-oss:120b-cloud` — it follows the "plain Markdown, no JSON, no code
+    # fences" instruction and does not empty-complete on this prompt.
     #
-    # `provider_hint: ollama-cloud` alone only means "not the weak local
-    # model" — it selects nothing, it just falls through to the active config
-    # (OLLAMA_MODEL). That was gemma4:31b-cloud, which is the one free-tier
-    # model measured to return EMPTY COMPLETIONS (~25% on a tool-calling
-    # prompt; 1/4 in the catalog's own trial table). The chat loops retry an
-    # empty completion, but a background job has no such guard — SharedLlm
-    # sees a successful call returning "", and this step's output is what
-    # store_note persists and notify_user delivers. An empty brief would read
-    # as a quiet news day.
-    #
-    # `required_capabilities` makes the choice explicit instead of inherited,
-    # so this step routes with the other seven cloud `reason` steps to the
-    # selection_rank winner rather than to whatever OLLAMA_MODEL happens to be.
-    required_capabilities: ["reasoning"]
+    # DELIBERATELY NOT `required_capabilities: ["reasoning"]`. That routes to the
+    # selection_rank winner for `reasoning`, which at CLOUD_TIER 2 is
+    # `gemini-2.5-flash` (rank 5) — and on 2026-09-08 it wrapped the whole brief
+    # in a ```json {"answer": "..."} fence despite the instruction, so the
+    # envelope never unwrapped and store_note/notify_user persisted a JSON blob
+    # instead of the Markdown brief. Plain `provider_hint: ollama-cloud` lands on
+    # gpt-oss directly and renders clean Markdown. (The earlier worry that
+    # ollama-cloud fell through to empty-completing `gemma4:31b-cloud` is stale:
+    # OLLAMA_MODEL is gpt-oss now. If OLLAMA_MODEL ever changes back to a weak
+    # model, pin this step explicitly rather than re-adding the reasoning route.)
     provider_hint: ollama-cloud
 
   - tool_name: store_note
@@ -328,7 +442,7 @@ steps:
   - tool_name: notify_user
     arguments:
       message: "{{_prev}}"
-      context: "Daily News Brief {{date}}"
+      context: "Daily Brief {{date}}"
       related_session_id: "news-{{date}}"
     priority: 2
     max_attempts: 2

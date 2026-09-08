@@ -191,6 +191,25 @@ fn order_engines(configured: &str, requested: Option<&str>, exhausted: &[String]
     ladder
 }
 
+/// Drop engines with no working credentials from an already-ordered ladder so
+/// they don't burn a rung failing `not_configured` on every single search.
+/// `keep` is the subset of engines known to be configured (searxng always is —
+/// it needs no key). Unlike quota exhaustion (demote-and-recover) a missing key
+/// never fixes itself at runtime, so these are removed outright.
+///
+/// Never empties the ladder: if `keep` is empty (nothing configured at all) the
+/// original ladder is returned so the caller still attempts a search and
+/// surfaces a real per-engine error rather than silently doing nothing. Pure so
+/// the rule is testable without env vars or a live graph.
+fn retain_configured(ladder: Vec<String>, keep: &[String]) -> Vec<String> {
+    let filtered: Vec<String> = ladder
+        .iter()
+        .filter(|e| keep.iter().any(|k| k == *e))
+        .cloned()
+        .collect();
+    if filtered.is_empty() { ladder } else { filtered }
+}
+
 pub struct SearchSkill {
     client: Client,
     telemetry: Option<TelemetryClient>,
@@ -414,7 +433,47 @@ impl SearchSkill {
         if has_news && !has_serpapi {
             exhausted.push("serpapi".to_string());
         }
-        order_engines(&configured, requested, &exhausted)
+        let ladder = order_engines(&configured, requested, &exhausted);
+
+        // Drop engines with no credentials configured. A missing key produces
+        // `not_configured` on every call — the 2026-09-08 GDELT session put
+        // `engine: google` on each search, and with no GOOGLE_API_KEY every one
+        // wasted its first rung (and log line) before falling through to
+        // SearXNG, helping exhaust the 8-round tool budget twice. Unlike a spent
+        // quota this never recovers at runtime, so remove rather than demote.
+        let mut keep = Vec::new();
+        for engine in &ladder {
+            if self.is_engine_configured(engine).await {
+                keep.push(engine.clone());
+            }
+        }
+        retain_configured(ladder, &keep)
+    }
+
+    /// Whether an engine has the credentials it needs to answer. `searxng` needs
+    /// none (self-hosted, default URL); the paid engines each need a key (via
+    /// their `ApiContext` or env var), and `google` additionally needs a CX.
+    /// `serpapi` and `google_news` share one SerpApi account, so one key covers
+    /// both. An unknown engine name is assumed configured — we don't second-guess
+    /// something the ladder was explicitly told to try.
+    async fn is_engine_configured(&self, engine: &str) -> bool {
+        match engine {
+            "searxng" => true,
+            "google" => {
+                self.resolve_key("google_cse", "GOOGLE_API_KEY")
+                    .await
+                    .is_some()
+                    && self
+                        .resolve_context_field("google_cse", "google_cx", "GOOGLE_CX")
+                        .await
+                        .is_some()
+            }
+            "serpapi" | "google_news" => {
+                self.resolve_key("serpapi", "SERPAPI_KEY").await.is_some()
+            }
+            "brave" => self.resolve_key("brave", "BRAVE_API_KEY").await.is_some(),
+            _ => true,
+        }
     }
 
     /// Write one row to the search usage ledger. Never fails the search.
@@ -1170,6 +1229,37 @@ mod tests {
         assert_eq!(
             order_engines("", None, &[]),
             v(&["searxng", "google", "serpapi", "brave"])
+        );
+    }
+
+    #[test]
+    fn unconfigured_engines_are_dropped_from_the_ladder() {
+        // Only searxng + serpapi have keys: google and brave leave the ladder
+        // entirely rather than wasting a rung on `not_configured` each call.
+        let ladder = order_engines("", None, &[]);
+        assert_eq!(
+            retain_configured(ladder, &v(&["searxng", "serpapi"])),
+            v(&["searxng", "serpapi"])
+        );
+    }
+
+    #[test]
+    fn retain_configured_never_empties_the_ladder() {
+        // Nothing configured — keep the original so the caller still gets a real
+        // per-engine error instead of silently searching nothing.
+        let ladder = order_engines("", None, &[]);
+        assert_eq!(
+            retain_configured(ladder.clone(), &[]),
+            ladder
+        );
+    }
+
+    #[test]
+    fn retain_configured_preserves_order() {
+        let ladder = v(&["searxng", "google", "serpapi", "brave"]);
+        assert_eq!(
+            retain_configured(ladder, &v(&["brave", "searxng"])),
+            v(&["searxng", "brave"])
         );
     }
 

@@ -16,6 +16,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
+  # TODO: Update the context here so the prompt ask what could Agent-brain do to help, An Ai agent is ambigous.
   - tool_name: reason
     arguments:
       question: |

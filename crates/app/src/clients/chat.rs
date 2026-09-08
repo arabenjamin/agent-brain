@@ -140,6 +140,43 @@ const NO_ANSWER_AFTER_TOOLS_MESSAGE: &str = "The assistant used every available 
      answer. Any tool calls above did run, so work may have been done, but nothing was written \
      back. Please retry — and check anything that looks like it should have been created.";
 
+/// A factual record of the tool calls a turn actually made — the ground truth a
+/// final answer must be built from.
+///
+/// The chat models compose the reply from tool results plus their own prose, and
+/// that prose can narrate actions that never ran. On 2026-09-08 a turn asked to
+/// "find and use the GDELT API" reported it had probed the API (blocked by "the
+/// sandbox's outbound HTTP restrictions") and was drafting a Python client —
+/// while the only tools it ran were `search_notes` and `search_web`: no
+/// `http_request`, no `execute_code`, no `ingest_api`. The worker's fabricated
+/// prose was then handed to the synthesis model as "initial analysis" and
+/// polished into the answer the user saw. Handing the composer this list — and
+/// stating plainly that anything absent did not happen — anchors the answer to
+/// what the tools did, not what the model wishes it had done. This is the same
+/// receipt idea `AgentFindings.tool_trace` gives sub-agents, applied to the main
+/// chat loop, which had no equivalent.
+fn tool_trace_receipt(trace: &[(String, bool)]) -> String {
+    if trace.is_empty() {
+        return "GROUND TRUTH — no tools ran this turn. Do not describe any action \
+                (searching, fetching a URL, running code, creating, registering, or \
+                ingesting anything) as having happened; answer only from prior knowledge \
+                and say so."
+            .to_string();
+    }
+    let mut lines = String::from(
+        "GROUND TRUTH — the ONLY tools that ran this turn, in order. Build the answer \
+         strictly from these. Do NOT claim any action that is not listed: if `http_request` \
+         is absent you fetched no URL, if `execute_code` is absent you ran no code, if \
+         `ingest_api`/`define_api_context` are absent you registered no API. Treat any such \
+         claim (including in any 'initial analysis') as something that did NOT happen:\n",
+    );
+    for (name, success) in trace {
+        let mark = if *success { "ok" } else { "FAILED" };
+        lines.push_str(&format!("  - {name} [{mark}]\n"));
+    }
+    lines
+}
+
 // ============================================================================
 // Sub-agent delegation — Phase 0 (see project-docs/SUBAGENT_ORCHESTRATION_PLAN.md)
 // ============================================================================
@@ -1916,6 +1953,8 @@ impl ChatService {
     ) {
         let do_synthesis = request.synthesis_provider.is_some();
         let mut gathered: Vec<String> = Vec::new();
+        // Ground-truth receipt of what actually ran this turn. See tool_trace_receipt.
+        let mut tool_trace: Vec<(String, bool)> = Vec::new();
         let base_url = config
             .base_url
             .as_deref()
@@ -1965,7 +2004,10 @@ impl ChatService {
                     rounds = tool_rounds,
                     "Tool budget exhausted without an answer — asking for a final answer with no tools"
                 );
-                messages.push(json!({ "role": "user", "content": FINAL_ROUND_NUDGE }));
+                messages.push(json!({
+                    "role": "user",
+                    "content": format!("{}\n\n{}", FINAL_ROUND_NUDGE, tool_trace_receipt(&tool_trace)),
+                }));
             }
 
             let mut body = json!({
@@ -2234,6 +2276,7 @@ impl ChatService {
                     })
                     .await;
 
+                tool_trace.push((tool_name.clone(), success));
                 if do_synthesis && success {
                     gathered.push(format!("### {tool_name}\n{preview}"));
                 }
@@ -2248,7 +2291,7 @@ impl ChatService {
 
         // Research mode: synthesize gathered findings with a stronger model.
         if do_synthesis {
-            self.run_synthesis(&request, &gathered, &weak_model_answer, tx.clone())
+            self.run_synthesis(&request, &gathered, &weak_model_answer, &tool_trace, tx.clone())
                 .await;
         } else if !answered {
             // See the same guard in run_ollama_cloud_loop: the tool calls above
@@ -2334,6 +2377,10 @@ impl ChatService {
         let do_synthesis = request.synthesis_provider.is_some();
         let mut weak_model_answer = String::new();
         let mut gathered: Vec<String> = Vec::new();
+        // Every tool call this turn actually made (name, success), regardless of
+        // synthesis mode — the ground-truth receipt the final answer is anchored
+        // to. See tool_trace_receipt.
+        let mut tool_trace: Vec<(String, bool)> = Vec::new();
 
         // The upper bound only guarantees termination — the loop exits on an
         // answer, on a hard failure, or after the wrap-up round below.
@@ -2352,7 +2399,10 @@ impl ChatService {
                     rounds = tool_rounds,
                     "Tool budget exhausted without an answer — asking for a final answer with no tools"
                 );
-                messages.push(json!({ "role": "user", "content": FINAL_ROUND_NUDGE }));
+                messages.push(json!({
+                    "role": "user",
+                    "content": format!("{}\n\n{}", FINAL_ROUND_NUDGE, tool_trace_receipt(&tool_trace)),
+                }));
             }
 
             let mut body = json!({
@@ -2695,6 +2745,7 @@ impl ChatService {
                     })
                     .await;
 
+                tool_trace.push((tool_name.clone(), success));
                 if do_synthesis && success {
                     gathered.push(format!("### {tool_name}\n{preview}"));
                 }
@@ -2727,7 +2778,7 @@ impl ChatService {
         // summary is least worth relaying. This also means a turn that would
         // otherwise report NO_ANSWER_AFTER_TOOLS_MESSAGE still gets an answer.
         if do_synthesis {
-            self.run_synthesis(&request, &gathered, &weak_model_answer, tx.clone())
+            self.run_synthesis(&request, &gathered, &weak_model_answer, &tool_trace, tx.clone())
                 .await;
         } else if !answered {
             // Falling out of the loop having answered nothing is a real outcome
@@ -2847,6 +2898,7 @@ impl ChatService {
         request: &ChatRequest,
         gathered: &[String],
         weak_answer: &str,
+        tool_trace: &[(String, bool)],
         tx: mpsc::Sender<ChatEvent>,
     ) {
         let provider_str = match &request.synthesis_provider {
@@ -2989,18 +3041,26 @@ impl ChatService {
 
         let synthesis_prompt = format!(
             "You are a research synthesizer. An AI research agent gathered the following \
-             information using multiple tools to answer a question. \
-             Your job is to synthesize all gathered material into a comprehensive, \
+             information using tools to answer a question. \
+             Your job is to synthesize the gathered material into a comprehensive, \
              well-structured, and clearly written response.\n\n\
+             {receipt}\n\n\
              Original question: {question}\n\n\
              Research gathered:\n{research}\n\n\
              {analysis}\
-             Please synthesize the above into a clear, informative, and complete response \
-             to the original question.",
+             Synthesize the above into a clear, informative, and complete response to the \
+             original question. Report actions in the past tense ONLY when they appear in the \
+             ground-truth tool list above; for anything the agent should do but the tools did \
+             not do this turn, say what still needs to happen — do not narrate it as done.",
+            receipt = tool_trace_receipt(tool_trace),
             question = request.message,
             research = research_block,
             analysis = if !weak_answer.is_empty() {
-                format!("Initial analysis from research agent:\n{weak_answer}\n\n")
+                format!(
+                    "Initial analysis from research agent (UNVERIFIED — it may describe actions \
+                     that never ran; keep only what the ground-truth tool list supports):\n\
+                     {weak_answer}\n\n"
+                )
             } else {
                 String::new()
             },
