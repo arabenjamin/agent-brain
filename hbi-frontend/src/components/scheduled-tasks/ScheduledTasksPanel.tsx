@@ -102,7 +102,7 @@ const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Knowledge",
     tools: [
-      "store_note", "search_notes", "list_notes",
+      "store_note", "search_notes", "list_notes", "recall_recent",
       "consolidate_memories", "prune_old_notes",
       "synthesize_knowledge", "reason",
     ],
@@ -124,11 +124,15 @@ const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   },
   {
     group: "Working Memory",
-    tools: ["push_context", "summarise_session", "list_sessions"],
+    tools: ["push_context", "summarise_session", "list_sessions", "notify_user"],
   },
   {
     group: "HTTP / Search",
-    tools: ["http_request", "search_web", "define_api_context"],
+    tools: ["http_request", "search_web", "get_search_usage", "ingest_api", "define_api_context"],
+  },
+  {
+    group: "Sub-Agents",
+    tools: ["run_agent", "select_agent"],
   },
   {
     group: "Proposals",
@@ -166,6 +170,63 @@ const TOOL_GROUPS: { group: string; tools: string[] }[] = [
     tools: ["ws_connect", "ws_send", "ws_receive", "ws_close"],
   },
 ];
+
+type ToolGroup = { group: string; tools: string[] };
+
+// The dropdown used to drift: a newly-registered tool (e.g. notify_user) would be
+// missing until someone hand-edited TOOL_GROUPS. This merges the live tool set on
+// top of the curated groups. Note: tools/list is bounded by MCP_TOOL_PROFILE (often
+// `general`), so it is NOT a superset — hence a FLOOR merge, never a replacement:
+// every curated tool always shows, and any live tool not already grouped lands in
+// "Other (live)". Offline (fetch fails) it degrades to the curated groups.
+let cachedLiveTools: string[] | null = null;
+
+function useMergedToolGroups(): ToolGroup[] {
+  const [groups, setGroups] = useState<ToolGroup[]>(TOOL_GROUPS);
+
+  useEffect(() => {
+    let cancelled = false;
+    const apply = (live: string[]) => {
+      if (cancelled) return;
+      const known = new Set(TOOL_GROUPS.flatMap((g) => g.tools));
+      const extra = live.filter((t) => t && !known.has(t)).sort();
+      setGroups(extra.length ? [...TOOL_GROUPS, { group: "Other (live)", tools: extra }] : TOOL_GROUPS);
+    };
+
+    if (cachedLiveTools) { apply(cachedLiveTools); return; }
+
+    (async () => {
+      // Prefer /api/tools — the COMPLETE registered set, unfiltered by
+      // MCP_TOOL_PROFILE. Fall back to the (profile-bounded) MCP tools/list on an
+      // older backend that lacks the route.
+      try {
+        const res = await apiFetch(`${getBrainUrl()}/api/tools`, { method: "GET" });
+        if (res.ok) {
+          const data = await res.json();
+          const names: string[] = (data?.tools ?? []).filter(Boolean);
+          if (names.length) { cachedLiveTools = names; apply(names); return; }
+        }
+      } catch { /* fall through to tools/list */ }
+
+      try {
+        const res = await apiFetch(`${getBrainUrl()}/mcp`, {
+          method: "POST",
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const names: string[] = (data?.result?.tools ?? []).map((t: any) => t?.name).filter(Boolean);
+        cachedLiveTools = names;
+        apply(names);
+      } catch { /* offline — keep the curated groups */ }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+  return groups;
+}
 
 function makeDefaultStep(): StepDraft {
   return {
@@ -623,6 +684,7 @@ function ChainForm({
   const [description, setDescription] = useState(existing?.description ?? "");
   const [noEvaluator, setNoEvaluator] = useState(existing?.no_evaluator ?? false);
   const [rubric, setRubric] = useState(existing?.evaluation_rubric ?? "");
+  const toolGroups = useMergedToolGroups();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
@@ -908,6 +970,7 @@ function ChainForm({
                   onMoveUp={() => moveStep(i, -1)}
                   onMoveDown={() => moveStep(i, 1)}
                   inputStyle={inputStyle}
+                  toolGroups={toolGroups}
                 />
               ))}
               <button
@@ -1191,6 +1254,7 @@ function StepCard({
   onMoveUp,
   onMoveDown,
   inputStyle,
+  toolGroups,
 }: {
   step: StepDraft;
   index: number;
@@ -1200,7 +1264,9 @@ function StepCard({
   onMoveUp: () => void;
   onMoveDown: () => void;
   inputStyle: React.CSSProperties;
+  toolGroups: ToolGroup[];
 }) {
+  const knownTools = toolGroups.flatMap((g) => g.tools);
   const update = (patch: Partial<StepDraft>) => onChange({ ...step, ...patch });
 
   const setArgKey = (i: number, key: string) => {
@@ -1285,12 +1351,16 @@ function StepCard({
         <span style={{ fontSize: "0.82rem", opacity: 0.75, minWidth: "60px" }}>Tool</span>
         <select
           style={{ ...inputStyle, flex: 1 }}
-          value={TOOL_GROUPS.flatMap(g => g.tools).includes(step.tool_name) ? step.tool_name : "__custom__"}
+          value={knownTools.includes(step.tool_name) ? step.tool_name : "__custom__"}
           onChange={(e) => {
-            if (e.target.value !== "__custom__") update({ tool_name: e.target.value });
+            // Selecting the custom sentinel must clear tool_name so the custom-name
+            // input (gated on tool_name ∉ known tools) appears and the user can type.
+            // Previously this branch was a no-op, so the dropdown could never leave
+            // the known-tool set — custom tools were unreachable.
+            update({ tool_name: e.target.value === "__custom__" ? "" : e.target.value });
           }}
         >
-          {TOOL_GROUPS.map((g) => (
+          {toolGroups.map((g) => (
             <optgroup key={g.group} label={g.group}>
               {g.tools.map((t) => (
                 <option key={t} value={t}>{t}</option>
@@ -1304,7 +1374,7 @@ function StepCard({
       </div>
 
       {/* Custom tool name input — shown when tool not in list */}
-      {!TOOL_GROUPS.flatMap(g => g.tools).includes(step.tool_name) && (
+      {!knownTools.includes(step.tool_name) && (
         <div style={rowStyle}>
           <span style={{ fontSize: "0.82rem", opacity: 0.75, minWidth: "60px" }}>Name</span>
           <input
@@ -1421,6 +1491,7 @@ function ScheduledTaskForm({
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
   const [intervalUnit, setIntervalUnit] = useState<"seconds" | "minutes" | "hours" | "days">("days");
   const [intervalValue, setIntervalValue] = useState<number>(1);
+  const toolGroups = useMergedToolGroups();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
@@ -1513,33 +1584,57 @@ function ScheduledTaskForm({
     setAiLoading(true);
     setAiError(null);
 
-    const allTools = TOOL_GROUPS.flatMap((g) => g.tools).join(", ");
-    const question =
-      `Design a scheduled task step chain for: "${aiPrompt.trim()}"\n\n` +
-      `Available tools: ${allTools}\n\n` +
-      `Return ONLY a valid JSON array of step objects with no extra text. ` +
-      `Each step must have: tool_name (string), arguments (object), provider_hint ("ollama"), priority (1). ` +
-      `Use {{goal}}, {{task_id}}, or {{date}} as template variables where appropriate.\n\n` +
-      `Example:\n[{"tool_name":"search_web","arguments":{"query":"{{goal}} {{date}}"},"provider_hint":"ollama","priority":1}]`;
+    const allTools = toolGroups.flatMap((g) => g.tools).join(", ");
+    // Delegate to the `schedule-author` spawnable agent — the brain's own
+    // scheduler specialist. It already knows the lint rules (provider_hint at the
+    // step top level, {{_prev}} handoffs, valid note_types, source_context) and
+    // the spawnable-agent roster, so it drafts a correct chain rather than us
+    // re-encoding those rules here. The agent sees NO other context, so `task`
+    // must be fully self-contained.
+    const task =
+      `Draft a scheduled-task step chain for this request:\n"${aiPrompt.trim()}"\n\n` +
+      `Tools available to a scheduled step: ${allTools}\n\n` +
+      `Rules:\n` +
+      `- Each step is an object: tool_name (string), arguments (object), provider_hint ("ollama" for local), priority (0-3).\n` +
+      `- provider_hint is a TOP-LEVEL field of the step, never inside arguments (omitting it routes to cloud).\n` +
+      `- A step that consumes the previous step's output must reference {{_prev}} in its arguments; a reason step needs context:"{{_prev}}".\n` +
+      `- A store_note step needs a source_context and a valid note_type.\n` +
+      `- For an open-ended sub-task (research/build/review), use a run_agent step (agent + task).\n` +
+      `- Template vars: {{goal}}, {{task_id}}, {{date}}, {{_prev}}.\n\n` +
+      `Output ONLY the final JSON array of steps inside a \`\`\`json code block.`;
 
     try {
       const res = await apiFetch(`${getBrainUrl()}/mcp`, {
         method: "POST",
         body: JSON.stringify({
           jsonrpc: "2.0", id: 1, method: "tools/call",
-          params: { name: "reason", arguments: { question, store_inference: false } },
+          params: { name: "run_agent", arguments: { agent: "schedule-author", task } },
         }),
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
-      const text: string = data?.result?.content?.[0]?.text ?? "";
+      const rawText: string = data?.result?.content?.[0]?.text ?? "";
+      if (data?.result?.isError) {
+        throw new Error(rawText || "The scheduler agent returned an error");
+      }
 
-      // Extract JSON array from the response (may be wrapped in a code block)
-      const match = text.match(/\[[\s\S]*\]/);
-      if (!match) throw new Error("No JSON array found in AI response");
+      // run_agent wraps the agent's findings as {"answer": "...", "ok": ...,
+      // "tool_trace": [...]}. Pull `answer` out first, otherwise the greedy
+      // array match below could span both the steps array and tool_trace.
+      let findings = rawText;
+      try {
+        const outer = JSON.parse(rawText);
+        if (outer && typeof outer.answer === "string") findings = outer.answer;
+      } catch { /* not wrapped JSON — treat the whole text as findings */ }
 
-      const parsed = jsonToStepDrafts(match[0]);
-      if (!parsed || parsed.length === 0) throw new Error("Could not parse step array from AI response");
+      // Prefer a fenced ```json block; fall back to the first bare [...] array.
+      const fenced = findings.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+      const bare = findings.match(/\[[\s\S]*\]/);
+      const arrayText = fenced ? fenced[1] : bare ? bare[0] : null;
+      if (!arrayText) throw new Error(`No step array in the agent's reply:\n${findings.slice(0, 400)}`);
+
+      const parsed = jsonToStepDrafts(arrayText);
+      if (!parsed || parsed.length === 0) throw new Error("Could not parse the step array the agent returned");
 
       setSteps(parsed);
       setShowAiAssist(false);
@@ -1684,7 +1779,7 @@ function ScheduledTaskForm({
               style={{ width: "100%", background: showAiAssist ? "var(--surface2, #313244)" : "none", border: "none", padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", color: "var(--accent, #89b4fa)", fontSize: "0.82rem", textAlign: "left" }}
             >
               <span>{showAiAssist ? "▲" : "▼"}</span>
-              <span>Ask AI to design steps</span>
+              <span>Ask the scheduler agent to design steps</span>
             </button>
 
             {showAiAssist && (
@@ -1693,7 +1788,7 @@ function ScheduledTaskForm({
                   style={{ background: "var(--surface, #1e1e2e)", border: "1px solid var(--border, #45475a)", borderRadius: "6px", padding: "6px 10px", color: "inherit", fontSize: "0.85rem", resize: "vertical", minHeight: "64px" }}
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
-                  placeholder="Describe what you want this task to do, e.g. 'Every day, search for AI news and store a summary note'"
+                  placeholder="Describe what you want this task to do, e.g. 'Every day, search for AI news and store a summary note'. The scheduler agent (schedule-author) drafts lint-clean steps — this may take a few seconds."
                   spellCheck={false}
                 />
                 {aiError && <span style={{ color: "#f87171", fontSize: "0.78rem" }}>{aiError}</span>}
@@ -1763,6 +1858,7 @@ function ScheduledTaskForm({
                   onMoveUp={() => moveStep(i, -1)}
                   onMoveDown={() => moveStep(i, 1)}
                   inputStyle={inputStyle}
+                  toolGroups={toolGroups}
                 />
               ))}
               <button

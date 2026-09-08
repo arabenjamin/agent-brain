@@ -400,6 +400,7 @@ impl HttpTransport {
             )
             .route("/api/logs", get(rest_handlers::handle_get_logs))
             .route("/api/skills", get(rest_handlers::handle_list_skills))
+            .route("/api/tools", get(rest_handlers::handle_list_all_tools))
             .route(
                 "/api/notifications",
                 get(rest_handlers::handle_list_notifications),

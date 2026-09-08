@@ -1694,6 +1694,40 @@ pub async fn handle_list_skills(Extension(state): Extension<Arc<RestState>>) -> 
     Json(json!({ "skills": skills })).into_response()
 }
 
+/// GET /api/tools — the COMPLETE registered tool set.
+///
+/// Unlike MCP `tools/list`, this is NOT filtered by `MCP_TOOL_PROFILE`, so a UI
+/// (the Scheduled Tasks step editor) can offer every tool a background step may
+/// call — a scheduled step is dispatched through the skill registry regardless
+/// of any chat profile. Returns a flat `tools` name list (for membership checks)
+/// plus `groups` keyed by skill, each tool as `{name, description}`.
+pub async fn handle_list_all_tools(
+    Extension(state): Extension<Arc<RestState>>,
+) -> impl IntoResponse {
+    let Some(ref registry_arc) = state.tool_registry else {
+        return unavailable("Tool registry not available");
+    };
+    let registry = registry_arc.read().await;
+
+    let groups: Vec<Value> = registry
+        .skills_with_tools()
+        .into_iter()
+        .map(|(skill, tools)| {
+            json!({
+                "group": skill,
+                "tools": tools
+                    .iter()
+                    .map(|t| json!({ "name": t.name, "description": t.description }))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let names: Vec<String> = registry.list().into_iter().map(|t| t.name).collect();
+
+    Json(json!({ "count": names.len(), "tools": names, "groups": groups })).into_response()
+}
+
 // ============================================================================
 // Agent Notification endpoints
 // ============================================================================
