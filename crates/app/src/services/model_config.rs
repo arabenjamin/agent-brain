@@ -9,6 +9,14 @@ use tracing::{info, warn};
 
 use crate::repository::TelemetryClient;
 
+/// Context window forced onto a LOCAL chat-fallback rung. Ollama serves 4096 by
+/// default (silently truncating), so the local safety net needs a window that
+/// can hold a real chat turn. Sized to cover the current ~20k-token tool-using
+/// turn with generation headroom; granite4 (the local rung) carries a 128k
+/// catalog window, and this stays well under it. Lower it if the turn size is
+/// trimmed and GPU memory is tight.
+const CHAT_LOCAL_FALLBACK_NUM_CTX: u32 = 32768;
+
 /// Top-level structure of `models.yaml`.
 #[derive(Debug, Deserialize)]
 pub struct ModelCatalog {
@@ -155,11 +163,21 @@ impl ModelCatalog {
                 continue;
             }
             seen.push(entry.model.clone());
-            out.push(crate::services::model_router::config_for_catalog_entry(
+            let mut cfg = crate::services::model_router::config_for_catalog_entry(
                 base,
                 &entry.provider,
                 &entry.model,
-            ));
+            );
+            // A LOCAL fallback rung must be given a real context window. Ollama
+            // silently serves 4096 tokens by default, which truncates a real
+            // (~20k-token) chat turn to a fragment — the local safety net then
+            // answers from garbage (the 2026-09-09 "apply to #N → generic
+            // refusal" incident). Cloud rungs carry the model's catalog window;
+            // only the local rung needs this override.
+            if cfg.provider == crate::services::LlmProviderType::Ollama {
+                cfg = cfg.with_num_ctx(CHAT_LOCAL_FALLBACK_NUM_CTX);
+            }
+            out.push(cfg);
         }
         out
     }
@@ -299,6 +317,29 @@ mod tests {
         );
         assert_eq!(resolved[0].model, "gemma4:latest");
         assert!(resolved[0].api_key.is_none(), "a local rung needs no key");
+        assert_eq!(
+            resolved[0].num_ctx,
+            Some(CHAT_LOCAL_FALLBACK_NUM_CTX),
+            "a local rung must get a real context window, not Ollama's 4096 default"
+        );
+    }
+
+    #[test]
+    fn a_cloud_rung_keeps_the_default_context_window() {
+        let c = catalog(
+            &["cloud"],
+            &[("cloud", "ollama-cloud", "gpt-oss:120b-cloud")],
+        );
+        let resolved = c.resolve_chat_fallback_ladder(&LlmConfig::default(), "none");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].provider,
+            crate::services::LlmProviderType::OllamaCloud
+        );
+        assert!(
+            resolved[0].num_ctx.is_none(),
+            "the num_ctx override is local-only; cloud rungs carry the catalog window"
+        );
     }
 
     // ── Guards against the real checked-in catalog ───────────────────────────

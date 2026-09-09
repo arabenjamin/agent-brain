@@ -457,8 +457,13 @@ models:
 # because it is the only free-tier vision model and may still be chosen
 # explicitly, but it is never a destination for a failed turn.
 #
-# gemma4:latest is last and is local: it is slower and weaker than every cloud
-# rung, and it is the only one that still answers when ollama.com is down.
+# granite4:latest is last and is local: it is slower and weaker than every cloud
+# rung, and it is the only one that still answers when ollama.com is down. It is
+# granite4 (not gemma4) because granite4 is the model that fits this 8 GB GPU;
+# gemma4:latest is 9.86 GB and thrashes. The local rung is given a real num_ctx
+# in resolve_chat_fallback_ladder (Ollama defaults to 4096, which truncates a
+# real ~20k-token chat turn to a fragment and produces a degraded answer — the
+# 2026-09-09 "apply to #N gave a generic refusal" incident).
 #
 # No Gemini rungs here on purpose: the active chat model is gpt-oss:120b-cloud
 # (unmetered), and Gemini's free tier is 5 requests/minute — a single agentic
@@ -471,4 +476,4 @@ chat_fallback_ladder:
   - nemotron-3-super:cloud
   - gpt-oss:20b-cloud
   - nemotron-3-nano:30b-cloud
-  - gemma4:latest
+  - granite4:latest

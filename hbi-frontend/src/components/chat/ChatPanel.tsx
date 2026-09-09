@@ -606,7 +606,13 @@ export default function ChatPanel({
       message: text,
       history,
       sessionId: thread.sessionId,
-      contextProfile,
+      // A reply in a daily job-search thread runs under the lean `job-applicant`
+      // profile (résumé + aidevboard apply tools only), not the ~9k-token,
+      // 42-tool `general` payload that overflowed the free cloud tier and the
+      // local fallback (2026-09-09). Other threads keep the selected profile.
+      contextProfile: thread.sessionId.startsWith("jobsearch-")
+        ? "job-applicant"
+        : contextProfile,
       signal: abort.signal,
       onEvent: (evt) => {
         setThread((prev) => {
