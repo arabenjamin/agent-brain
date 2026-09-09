@@ -207,7 +207,11 @@ fn retain_configured(ladder: Vec<String>, keep: &[String]) -> Vec<String> {
         .filter(|e| keep.iter().any(|k| k == *e))
         .cloned()
         .collect();
-    if filtered.is_empty() { ladder } else { filtered }
+    if filtered.is_empty() {
+        ladder
+    } else {
+        filtered
+    }
 }
 
 pub struct SearchSkill {
@@ -468,9 +472,7 @@ impl SearchSkill {
                         .await
                         .is_some()
             }
-            "serpapi" | "google_news" => {
-                self.resolve_key("serpapi", "SERPAPI_KEY").await.is_some()
-            }
+            "serpapi" | "google_news" => self.resolve_key("serpapi", "SERPAPI_KEY").await.is_some(),
             "brave" => self.resolve_key("brave", "BRAVE_API_KEY").await.is_some(),
             _ => true,
         }
@@ -1248,10 +1250,7 @@ mod tests {
         // Nothing configured — keep the original so the caller still gets a real
         // per-engine error instead of silently searching nothing.
         let ladder = order_engines("", None, &[]);
-        assert_eq!(
-            retain_configured(ladder.clone(), &[]),
-            ladder
-        );
+        assert_eq!(retain_configured(ladder.clone(), &[]), ladder);
     }
 
     #[test]

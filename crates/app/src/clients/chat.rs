@@ -2291,8 +2291,14 @@ impl ChatService {
 
         // Research mode: synthesize gathered findings with a stronger model.
         if do_synthesis {
-            self.run_synthesis(&request, &gathered, &weak_model_answer, &tool_trace, tx.clone())
-                .await;
+            self.run_synthesis(
+                &request,
+                &gathered,
+                &weak_model_answer,
+                &tool_trace,
+                tx.clone(),
+            )
+            .await;
         } else if !answered {
             // See the same guard in run_ollama_cloud_loop: the tool calls above
             // ran, so silence here would hide work that may have happened.
@@ -2778,8 +2784,14 @@ impl ChatService {
         // summary is least worth relaying. This also means a turn that would
         // otherwise report NO_ANSWER_AFTER_TOOLS_MESSAGE still gets an answer.
         if do_synthesis {
-            self.run_synthesis(&request, &gathered, &weak_model_answer, &tool_trace, tx.clone())
-                .await;
+            self.run_synthesis(
+                &request,
+                &gathered,
+                &weak_model_answer,
+                &tool_trace,
+                tx.clone(),
+            )
+            .await;
         } else if !answered {
             // Falling out of the loop having answered nothing is a real outcome
             // and needs a real explanation: the tool calls above did run, so the
