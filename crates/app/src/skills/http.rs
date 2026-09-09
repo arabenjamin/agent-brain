@@ -2110,13 +2110,23 @@ mod projection_tests {
         assert_eq!(jobs[0]["title"], json!("SWE"));
         assert_eq!(jobs[0]["apply_url"], json!("u1"));
         assert!(jobs[0].get("description").is_none(), "description dropped");
-        assert!(jobs[0].get("company_name").is_none(), "company_name not picked");
+        assert!(
+            jobs[0].get("company_name").is_none(),
+            "company_name not picked"
+        );
     }
 
     #[test]
     fn missing_paths_are_skipped_not_errored() {
         let body = json!({"jobs": [{"title": "A"}]});
-        let out = project_body(&body, &["nope".into(), "jobs[].missing".into(), "jobs[].title".into()]);
+        let out = project_body(
+            &body,
+            &[
+                "nope".into(),
+                "jobs[].missing".into(),
+                "jobs[].title".into(),
+            ],
+        );
         assert!(out.get("nope").is_none());
         let jobs = out["jobs"].as_array().unwrap();
         assert_eq!(jobs[0]["title"], json!("A"));

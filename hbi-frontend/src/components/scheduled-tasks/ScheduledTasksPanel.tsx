@@ -238,11 +238,29 @@ function makeDefaultStep(): StepDraft {
   };
 }
 
+// Arg values are edited as text but must round-trip their real JSON type when
+// saved: `query_params` is an object, `pick` an array, `timeout_ms` a number.
+// The generic key/value editor once wrote every value back as a string, so an
+// object became the literal "[object Object]" and an array a comma-joined
+// string — which the strict `http_request` arg parser rejected, silently
+// breaking the step on every run. Parse each value as JSON; a bare string
+// (plain text, or a `{{template}}` var) is not valid JSON and is kept verbatim.
+// To force a numeric- or boolean-looking value to STAY a string, quote it
+// ("12345") — JSON.parse then yields the string.
+function parseArgValue(value: string): unknown {
+  if (value.trim() === "") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 function stepDraftsToJson(drafts: StepDraft[]): string {
   const steps = drafts.map((d) => {
-    const argsObj: Record<string, string> = {};
+    const argsObj: Record<string, unknown> = {};
     for (const { key, value } of d.args) {
-      if (key.trim()) argsObj[key.trim()] = value;
+      if (key.trim()) argsObj[key.trim()] = parseArgValue(value);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const step: Record<string, any> = { tool_name: d.tool_name };
@@ -264,8 +282,14 @@ function jsonToStepDrafts(json: string): StepDraft[] | null {
       // Support both old format (tool/args) and new format (tool_name/arguments)
       const toolName: string = s.tool_name ?? s.tool ?? "";
       const rawArgs = s.arguments ?? s.args ?? {};
+      // Preserve non-string arg types (object/array/number/bool) as their JSON
+      // text so they stay editable and round-trip back through parseArgValue;
+      // String(v) here is what turned an object into "[object Object]".
       const args: ArgPair[] = typeof rawArgs === "object" && rawArgs !== null
-        ? Object.entries(rawArgs).map(([k, v]) => ({ key: k, value: String(v) }))
+        ? Object.entries(rawArgs).map(([k, v]) => ({
+            key: k,
+            value: typeof v === "string" ? v : JSON.stringify(v),
+          }))
         : [];
       return {
         tool_name: toolName,
@@ -1392,7 +1416,7 @@ function StepCard({
         <span style={{ fontSize: "0.78rem", opacity: 0.6 }}>
           Arguments{" "}
           <span style={{ opacity: 0.5 }}>
-            — use <code style={{ fontSize: "0.75rem" }}>{"{{goal}}"}</code>, <code style={{ fontSize: "0.75rem" }}>{"{{task_id}}"}</code>, <code style={{ fontSize: "0.75rem" }}>{"{{date}}"}</code>
+            — use <code style={{ fontSize: "0.75rem" }}>{"{{goal}}"}</code>, <code style={{ fontSize: "0.75rem" }}>{"{{task_id}}"}</code>, <code style={{ fontSize: "0.75rem" }}>{"{{date}}"}</code>. Objects/arrays/numbers are entered as JSON (<code style={{ fontSize: "0.75rem" }}>{"{\"limit\":\"40\"}"}</code>, <code style={{ fontSize: "0.75rem" }}>{"[\"a\",\"b\"]"}</code>, <code style={{ fontSize: "0.75rem" }}>15000</code>); quote a value to keep it a string.
           </span>
         </span>
         {step.args.map((arg, i) => (
