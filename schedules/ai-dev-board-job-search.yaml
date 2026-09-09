@@ -134,6 +134,7 @@ steps:
             score = item.get("match_score") if isinstance(item, dict) else None
             return {"title": title, "company": company, "url": posting,
                     "apply": apply, "loc": loc, "salary": salary,
+                    "id": g.get("id") or "",
                     "score": score if isinstance(score, int) else 0, "source": source}
 
         def extract(js):
@@ -178,6 +179,11 @@ steps:
             if meta: out.append("   " + meta)
             if r["url"]:   out.append("   Posting: " + r["url"])
             if r["apply"]: out.append("   Apply: " + r["apply"])
+            # The aidevboard job_id the apply toolchain needs (analyze/compile).
+            # Printed verbatim so reply-to-apply feeds it directly instead of
+            # parsing the posting URL, whose tail is a truncated slug, not the id.
+            if r["source"] == "aidevboard" and r["id"]:
+                out.append("   job_id: " + r["id"])
             out.append("")
         if raw_fallback:
             out.append("\n".join(raw_fallback))
