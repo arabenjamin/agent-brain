@@ -26,6 +26,7 @@ pub mod source_seeder;
 pub mod store_impls;
 pub mod traits;
 pub mod transcribe;
+pub mod validation;
 
 pub use agent_runner::{
     AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,

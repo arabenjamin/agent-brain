@@ -38,6 +38,7 @@ serde_json = { workspace = true }
 
 # Schema generation for MCP tools
 schemars = { workspace = true }
+jsonschema = { workspace = true }
 
 # Date/time and UUIDs
 chrono = { workspace = true }

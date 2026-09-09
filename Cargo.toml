@@ -20,6 +20,9 @@ serde_json = "1"
 # Schema generation for MCP tools
 schemars = "0.8"
 
+# JSON Schema validation (deterministic write-boundary gate)
+jsonschema = { version = "0.26", default-features = false }
+
 # Date/time and UUIDs
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }

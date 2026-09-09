@@ -8,12 +8,14 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::repository::Neo4jClient;
 use crate::services::queue::ChainStep;
 use crate::services::scheduler::SchedulerService;
+use crate::services::validation;
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -22,6 +24,10 @@ pub struct SchedulerSkill {
     neo4j: Option<Neo4jClient>,
     /// Live tool names populated after skill registration — used by the audit action.
     live_tools: Arc<RwLock<Vec<String>>>,
+    /// Registered tool `input_schema`s, keyed by tool name. Populated from the
+    /// registry at the same snapshot point as `live_tools`. Empty until then,
+    /// which safely disables schema validation (fail-open on our own wiring).
+    tool_schemas: Arc<RwLock<HashMap<String, Value>>>,
 }
 
 impl SchedulerSkill {
@@ -30,12 +36,20 @@ impl SchedulerSkill {
             service,
             neo4j,
             live_tools: Arc::new(RwLock::new(Vec::new())),
+            tool_schemas: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Inject a pre-populated live tool list (replaces the default empty vec).
     pub fn with_live_tools(mut self, live_tools: Arc<RwLock<Vec<String>>>) -> Self {
         self.live_tools = live_tools;
+        self
+    }
+
+    /// Inject the registered tool `input_schema` map used to validate each
+    /// step's `arguments` against the tool it calls.
+    pub fn with_tool_schemas(mut self, tool_schemas: Arc<RwLock<HashMap<String, Value>>>) -> Self {
+        self.tool_schemas = tool_schemas;
         self
     }
 
@@ -648,6 +662,48 @@ impl SchedulerSkill {
                     Ok(s) => s,
                     Err(e) => return ToolCallResult::error(format!("steps JSON invalid: {e}")),
                 };
+
+                // ── Deterministic structural validation (HARD reject) ──────────
+                // Validate each step's arguments against the tool it calls, using
+                // the tool's own registered `input_schema`. This catches
+                // wrong-typed args (e.g. `query_params` as a string, `timeout_ms`
+                // as a string) that the ChainStep shape-check passes because
+                // `arguments` is a free JSON value, and that otherwise fail
+                // silently at run time forever — the class that killed the AI Dev
+                // Board Job Search schedule. Unlike the semantic lint below, a hard
+                // violation is REJECTED and nothing is saved. See
+                // `services/validation.rs` + `project-docs/VALIDATION_AND_APPLY_PLAN.md`.
+                {
+                    let live = self.live_tools.read().await;
+                    let schemas = self.tool_schemas.read().await;
+                    let mut hard: Vec<validation::Violation> = Vec::new();
+                    for (i, step) in parsed_steps.iter().enumerate() {
+                        // An unregistered tool fails every run — reject, don't warn.
+                        if !live.is_empty() && !live.contains(&step.tool_name) {
+                            hard.push(validation::Violation::hard(
+                                format!("steps[{i}] (`{}`)", step.tool_name),
+                                "no such tool is registered — this step would fail every run",
+                            ));
+                        }
+                        hard.extend(validation::validate_step_arguments(
+                            i,
+                            &step.tool_name,
+                            step.arguments.as_ref(),
+                            &schemas,
+                        ));
+                    }
+                    if validation::has_hard(&hard) {
+                        return ToolCallResult::error(format!(
+                            "Schedule rejected — {} structural error(s); nothing was saved. \
+                             Fix these and re-upsert: {}",
+                            hard.iter()
+                                .filter(|v| v.severity == validation::Severity::Hard)
+                                .count(),
+                            validation::render_hard(&hard),
+                        ));
+                    }
+                }
+
                 let step_warnings =
                     lint_chain_steps(&parsed_steps, &self.live_tools.read().await.clone());
 

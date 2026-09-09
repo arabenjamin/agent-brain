@@ -797,6 +797,17 @@ impl BrainCore {
         let live_tool_names: Vec<String> = registry.list().iter().map(|t| t.name.clone()).collect();
         let live_tools_arc: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(live_tool_names));
 
+        // Snapshot each tool's registered `input_schema`, keyed by name, so the
+        // scheduler skill can validate a step's `arguments` against the tool it
+        // calls (deterministic write-boundary check — see services/validation.rs).
+        let tool_schemas: std::collections::HashMap<String, serde_json::Value> = registry
+            .list()
+            .iter()
+            .map(|t| (t.name.clone(), t.input_schema.clone()))
+            .collect();
+        let tool_schemas_arc: Arc<RwLock<std::collections::HashMap<String, serde_json::Value>>> =
+            Arc::new(RwLock::new(tool_schemas));
+
         drop(registry);
 
         // ── Build the ToolHandler skill list ──────────────────────────────
@@ -929,7 +940,8 @@ impl BrainCore {
         if let Some(ref sched) = scheduler_arc {
             skills.push(Box::new(
                 SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())
-                    .with_live_tools(Arc::clone(&live_tools_arc)),
+                    .with_live_tools(Arc::clone(&live_tools_arc))
+                    .with_tool_schemas(Arc::clone(&tool_schemas_arc)),
             ));
         }
 

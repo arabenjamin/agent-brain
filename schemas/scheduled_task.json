@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-brain/scheduled_task",
+  "title": "ScheduledTask",
+  "description": "Envelope schema for a ScheduledTask upsert. Structural gate only — per-step `arguments` are validated separately against each tool's own registered input_schema (see services/validation.rs). Semantic rules (reason needs context, provider_hint routing, {{_prev}} references) stay in lint_chain_steps as warnings.",
+  "type": "object",
+  "required": ["name", "interval_seconds", "steps"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "MERGE key. A task with this name is updated in place, else created."
+    },
+    "description": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "interval_seconds": {
+      "type": "integer",
+      "minimum": 60,
+      "description": "Recurrence cadence. The scheduler polls on SCHEDULER_INTERVAL_SECS; a sub-60s cadence is meaningless."
+    },
+    "next_run_at": {
+      "type": "string",
+      "description": "RFC3339 UTC instant of the next dispatch. Defaults to now on create."
+    },
+    "managed_by": {
+      "type": "string",
+      "enum": ["yaml", "runtime"],
+      "description": "yaml = force-synced from schedules/*.yaml every startup; runtime = graph-owned, seeder never touches."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "description": "ChainStep array, enqueued verbatim at dispatch (no goal_to_steps, no adversarial/evaluator, no auto-retrieval).",
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": ["tool_name"],
+      "properties": {
+        "tool_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must name a registered tool (enforced live against the tool registry, not this schema)."
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Tool arguments. Validated against the named tool's own input_schema at the write boundary."
+        },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "max_attempts": { "type": "integer", "minimum": 1 },
+        "provider_hint": {
+          "type": "string",
+          "description": "Top-level, sibling of tool_name/arguments. `ollama` = local; omission or anything else routes to the active cloud model. Putting it inside arguments is silently ignored by routing."
+        },
+        "context_profile": { "type": "string" },
+        "ttl_secs": { "type": "integer", "minimum": 0 },
+        "description": { "type": "string" },
+        "required_capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
