@@ -17,6 +17,7 @@
 
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// How hard a violation bites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,11 +39,19 @@ pub struct Violation {
 
 impl Violation {
     pub fn hard(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { severity: Severity::Hard, path: path.into(), message: message.into() }
+        Self {
+            severity: Severity::Hard,
+            path: path.into(),
+            message: message.into(),
+        }
     }
 
     pub fn soft(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { severity: Severity::Soft, path: path.into(), message: message.into() }
+        Self {
+            severity: Severity::Soft,
+            path: path.into(),
+            message: message.into(),
+        }
     }
 
     /// Human-readable one-liner for a rejection message.
@@ -113,10 +122,114 @@ pub fn validate_step_arguments(
     validate_against_schema(&prefix, schema, args)
 }
 
+/// Load every `*.json` JSON Schema from `dir`, keyed by file stem
+/// (`scheduled_task.json` → `"scheduled_task"`). Unreadable or unparseable files
+/// are logged and skipped — a broken schema file must never wedge startup. The
+/// schemas are not compiled here; each is compiled at use in
+/// [`validate_against_schema`], which fails open on a bad schema. A missing dir
+/// returns an empty map (envelope validation simply disabled). This is the
+/// envelope-layer loader — the per-step argument check needs no disk.
+pub fn load_schema_dir(dir: &Path) -> HashMap<String, Value> {
+    let mut out = HashMap::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(
+                dir = %dir.display(), error = %e,
+                "validation: schemas dir unreadable — envelope validation disabled"
+            );
+            return out;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(v) => {
+                    out.insert(stem.to_string(), v);
+                }
+                Err(e) => tracing::error!(
+                    path = %path.display(), error = %e,
+                    "validation: schema file is not valid JSON — skipping"
+                ),
+            },
+            Err(e) => tracing::error!(
+                path = %path.display(), error = %e,
+                "validation: cannot read schema file — skipping"
+            ),
+        }
+    }
+    tracing::info!(count = out.len(), "validation: loaded envelope schemas");
+    out
+}
+
+/// Validate a whole step array (raw JSON `Value` objects, as stored/authored),
+/// returning every HARD violation across steps: a missing/blank `tool_name`, an
+/// unregistered tool (only when `live_tools` is non-empty), and each step's
+/// `arguments` against the tool's own `input_schema`. Shared by the scheduler's
+/// `manage_scheduled_task`/`manage_chain` write path and its `audit` action so a
+/// stored (e.g. YAML-seeded) task is checked by exactly the same rules as a new one.
+pub fn validate_step_array(
+    steps: &[Value],
+    live_tools: &[String],
+    tool_schemas: &HashMap<String, Value>,
+) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let tool = step.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+        if tool.is_empty() {
+            out.push(Violation::hard(
+                format!("steps[{i}]"),
+                "missing `tool_name` — cannot dispatch this step",
+            ));
+            continue;
+        }
+        if !live_tools.is_empty() && !live_tools.iter().any(|t| t == tool) {
+            out.push(Violation::hard(
+                format!("steps[{i}] (`{tool}`)"),
+                "no such tool is registered — this step would fail every run",
+            ));
+        }
+        out.extend(validate_step_arguments(
+            i,
+            tool,
+            step.get("arguments"),
+            tool_schemas,
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Every schema checked into `schemas/` must be valid JSON *and* a schema
+    /// the validator can compile — otherwise the envelope layer fails open and
+    /// silently validates nothing. This guards against a typo landing in a
+    /// committed schema.
+    #[test]
+    fn all_committed_schemas_compile() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas");
+        let loaded = load_schema_dir(Path::new(dir));
+        assert!(
+            !loaded.is_empty(),
+            "expected committed schemas under {dir}, found none"
+        );
+        for (name, schema) in &loaded {
+            assert!(
+                jsonschema::validator_for(schema).is_ok(),
+                "schema `{name}` does not compile"
+            );
+        }
+    }
 
     fn http_request_schema() -> Value {
         // The shape the real `http_request` tool registers.
@@ -150,7 +263,10 @@ mod tests {
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
         assert!(has_hard(&v), "must reject: {:?}", v);
         let msg = render_hard(&v);
-        assert!(msg.contains("query_params"), "should name query_params: {msg}");
+        assert!(
+            msg.contains("query_params"),
+            "should name query_params: {msg}"
+        );
         assert!(msg.contains("timeout_ms"), "should name timeout_ms: {msg}");
         assert!(msg.contains("pick"), "should name pick: {msg}");
     }
@@ -181,6 +297,65 @@ mod tests {
         let args = json!({ "anything": 1 });
         let v = validate_step_arguments(0, "not_a_real_tool", Some(&args), &schemas());
         assert!(v.is_empty(), "unknown tool should be skipped, got: {:?}", v);
+    }
+
+    #[test]
+    fn step_array_flags_unregistered_tool_and_bad_args() {
+        let live = vec!["http_request".to_string()];
+        let steps = vec![
+            json!({ "tool_name": "http_request", "arguments": { "method": "GET", "url": "https://x" } }),
+            json!({ "tool_name": "no_such_tool", "arguments": {} }),
+            json!({ "tool_name": "http_request", "arguments": { "method": "GET", "url": "https://x", "timeout_ms": "nope" } }),
+            json!({ "arguments": {} }),
+        ];
+        let v = validate_step_array(&steps, &live, &schemas());
+        let msg = render_hard(&v);
+        assert!(msg.contains("no_such_tool"), "unregistered tool: {msg}");
+        assert!(msg.contains("timeout_ms"), "bad arg type: {msg}");
+        assert!(msg.contains("steps[3]"), "missing tool_name: {msg}");
+        // The clean step 0 produced nothing.
+        assert!(!msg.contains("steps[0]"), "clean step flagged: {msg}");
+    }
+
+    fn committed_schemas() -> HashMap<String, Value> {
+        load_schema_dir(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas"
+        )))
+    }
+
+    #[test]
+    fn scheduled_task_envelope_rejects_empty_steps_and_bad_managed_by() {
+        let schema = committed_schemas().remove("scheduled_task").unwrap();
+        let bad = json!({
+            "name": "x", "interval_seconds": 86400, "steps": [],
+            "managed_by": "somebody"
+        });
+        let v = validate_against_schema("scheduled_task", &schema, &bad);
+        let msg = render_hard(&v);
+        assert!(
+            has_hard(&v),
+            "empty steps + bad managed_by must reject: {msg}"
+        );
+    }
+
+    #[test]
+    fn scheduled_task_envelope_accepts_a_valid_object() {
+        let schema = committed_schemas().remove("scheduled_task").unwrap();
+        let good = json!({
+            "action": "upsert",
+            "name": "AI Dev Board Job Search",
+            "interval_seconds": 86400,
+            "managed_by": "runtime",
+            "steps": [ { "tool_name": "http_request", "provider_hint": "ollama",
+                         "arguments": { "method": "GET", "url": "https://x" } } ]
+        });
+        let v = validate_against_schema("scheduled_task", &schema, &good);
+        assert!(
+            !has_hard(&v),
+            "valid schedule must pass: {}",
+            render_hard(&v)
+        );
     }
 
     #[test]

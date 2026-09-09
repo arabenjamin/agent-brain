@@ -73,15 +73,56 @@ structurally invalid object no matter how confidently it narrates success — th
 same principle AiDevBoard enforces for applications (below).
 
 ### Phases
-- **P1** dep + `validation.rs` + `schemas/scheduled_task.json` + per-step
-  arg-vs-`input_schema` check + wire HARD-reject into `manage_scheduled_task`
-  upsert; unit tests incl. a regression test reproducing the `query_params`
-  string corruption. ← start here.
-- **P2** `scheduler_chain.json` + `manage_chain`; `task.json` + `create_task`.
-- **P3** `context_profile.json` (agents) + `construct_agent`; seeder enforcement.
-- **P4** optional: tighten individual tool `input_schema`s
-  (`additionalProperties`, string value types on `query_params`) so structural
-  validation is even sharper.
+- **P1 — DONE (2026-09-09, committed).** dep + `validation.rs` (`Violation`,
+  `validate_against_schema`, `validate_step_arguments`) + `schemas/scheduled_task.json`
+  + per-step arg-vs-`input_schema` HARD-reject wired into `manage_scheduled_task`
+  upsert; 5 unit tests incl. the `query_params`-corruption regression.
+- **P2 — DONE (2026-09-09, uncommitted).** The gate is extracted to a shared
+  `SchedulerSkill::hard_reject_steps(label, steps)` and now also runs in
+  **`manage_chain` define** (which previously did NO validation). Materialized the
+  remaining schema artifacts — `schemas/scheduler_chain.json`, `schemas/task.json`,
+  `schemas/context_profile.json` (self-contained; no external `$ref` since the
+  validator runs with remote resolution off). Added `validation::load_schema_dir`
+  (the envelope-layer loader: reads `schemas/*.json` by file stem, logs+skips a bad
+  file, empty on missing dir) + a `all_committed_schemas_compile` guard test. 490
+  lib tests green.
+- **P3 — DONE (2026-09-09, uncommitted).** `load_schema_dir` wired in `brain_core`
+  (`SCHEMAS_DIR`, default `./schemas`) → envelope map passed to `SchedulerSkill`
+  (`with_envelope_schemas`). **Envelope validation** now runs in `manage_scheduled_task`
+  upsert (against `scheduled_task`) and `manage_chain` define (against `scheduler_chain`)
+  via `hard_reject_envelope`, alongside the per-step gate (`hard_reject_steps`, now on
+  raw `Value` steps via the shared `validation::validate_step_array`). The **`audit`
+  action** runs the same structural per-step gate over every STORED ScheduledTask
+  (including YAML-seeded ones) and reports `structural_errors` per task — on-demand,
+  zero boot risk. 493 lib tests green (8 in validation.rs).
+
+  **Seeder skip-on-boot was investigated and deliberately NOT enabled.** Before wiring
+  it, the gate was run over all 34 checked-in `schedules/*.yaml` + `chains/*.yaml` using
+  the live registry's schemas. Finding: a boot-time hard-skip would have silently
+  disabled real chains — (1) `chains/meta-learn.yaml` had `note_type: hypothesis`, an
+  invalid enum (the 2026-09-08 class); **fixed in this pass** → `inference`; (2) any
+  chain/schedule using a **conditionally-registered** tool (`run_agent`, gated on
+  `SUBAGENT_ENABLED`) would be skipped whenever that feature is off — dropping
+  `run-agent.yaml` / `api-scout.yaml`. Silently dropping a human-committed schedule on
+  boot is a worse failure than a loud warning, so the safe form of pushback for the
+  YAML path is the **on-demand `audit`** (above) — not an autonomous boot-time skip.
+  (Also: `tools/list` over HTTP is `MCP_TOOL_PROFILE`-bounded, so a validator must use
+  the in-process `registry.list()` full set, never the HTTP tool list.)
+
+- **P3-remainder / P4 (deferred).** (a) `task` envelope in `create_task` and
+  `context_profile` envelope in `construct_agent`/`POST /api/contexts` + the context
+  YAML loader — LOW priority because those paths already parse typed serde inputs
+  (serde rejects wrong types / missing required today); the schemas are materialized
+  and documented, enforcement is the only gap. (b) True seeder skip-on-hard, once
+  conditional-tool registration is modelled and tool `input_schema`s are tightened
+  (`additionalProperties: false`, one-of for `ingest_api`'s `spec_url`/`docs_url`/
+  `codebase_path`, string value types on `query_params`).
+
+Note: `create_task` and `construct_agent` already parse typed serde inputs, so
+serde rejects wrong types / missing required today — the envelope schemas add
+enum/min-length polish and a single documented contract, not the core protection.
+The core protection is the per-step `arguments` gate (P1+P2), because
+`ChainStep.arguments` is the one untyped `Value` on the write path.
 
 ---
 

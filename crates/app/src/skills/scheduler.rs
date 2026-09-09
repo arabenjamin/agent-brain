@@ -28,6 +28,10 @@ pub struct SchedulerSkill {
     /// registry at the same snapshot point as `live_tools`. Empty until then,
     /// which safely disables schema validation (fail-open on our own wiring).
     tool_schemas: Arc<RwLock<HashMap<String, Value>>>,
+    /// Object-envelope JSON Schemas from the `schemas/` seed dir, keyed by file
+    /// stem (`scheduled_task`, `scheduler_chain`). Loaded once at startup. Empty
+    /// = envelope validation disabled (fail-open); the per-step arg gate still runs.
+    envelope_schemas: Arc<HashMap<String, Value>>,
 }
 
 impl SchedulerSkill {
@@ -37,6 +41,7 @@ impl SchedulerSkill {
             neo4j,
             live_tools: Arc::new(RwLock::new(Vec::new())),
             tool_schemas: Arc::new(RwLock::new(HashMap::new())),
+            envelope_schemas: Arc::new(HashMap::new()),
         }
     }
 
@@ -51,6 +56,57 @@ impl SchedulerSkill {
     pub fn with_tool_schemas(mut self, tool_schemas: Arc<RwLock<HashMap<String, Value>>>) -> Self {
         self.tool_schemas = tool_schemas;
         self
+    }
+
+    /// Inject the object-envelope schemas loaded from the `schemas/` seed dir.
+    pub fn with_envelope_schemas(mut self, envelope_schemas: Arc<HashMap<String, Value>>) -> Self {
+        self.envelope_schemas = envelope_schemas;
+        self
+    }
+
+    /// Deterministic structural gate shared by `manage_scheduled_task` upsert and
+    /// `manage_chain` define. Validates every step's `arguments` against the
+    /// tool's own registered `input_schema` (the corruption-catcher) and flags an
+    /// unregistered tool. `steps` are the raw JSON step objects as authored.
+    /// Returns `Some(rejection)` — a ready-to-return error message — on any HARD
+    /// violation, else `None`. See `services/validation.rs`.
+    async fn hard_reject_steps(&self, label: &str, steps: &[Value]) -> Option<String> {
+        let live = self.live_tools.read().await;
+        let schemas = self.tool_schemas.read().await;
+        let hard = validation::validate_step_array(steps, &live, &schemas);
+        if validation::has_hard(&hard) {
+            Some(format!(
+                "{label} rejected — {} structural error(s); nothing was saved. \
+                 Fix these and retry: {}",
+                hard.iter()
+                    .filter(|v| v.severity == validation::Severity::Hard)
+                    .count(),
+                validation::render_hard(&hard),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Validate an object against its envelope schema (`scheduled_task`,
+    /// `scheduler_chain`, …) from the `schemas/` seed dir. No such schema loaded
+    /// ⇒ `None` (envelope layer disabled). Returns a ready-to-return rejection on
+    /// any HARD violation. This is the structural check for the fields *around*
+    /// the steps (name, interval, cadence, enums); the steps themselves are
+    /// covered by [`Self::hard_reject_steps`].
+    fn hard_reject_envelope(&self, label: &str, key: &str, obj: &Value) -> Option<String> {
+        let schema = self.envelope_schemas.get(key)?;
+        let hard = validation::validate_against_schema(key, schema, obj);
+        if validation::has_hard(&hard) {
+            Some(format!(
+                "{label} rejected — {} envelope error(s); nothing was saved. \
+                 Fix these and retry: {}",
+                hard.len(),
+                validation::render_hard(&hard),
+            ))
+        } else {
+            None
+        }
     }
 
     // =========================================================================
@@ -422,6 +478,20 @@ impl SchedulerSkill {
                         return ToolCallResult::error(format!("Failed to serialize steps: {e}"));
                     }
                 };
+                // Same deterministic structural gate as `manage_scheduled_task`
+                // upsert: a chain's steps are enqueued verbatim too, so a
+                // wrong-typed arg or an unregistered tool fails every match. Reject
+                // before storing. (`manage_chain` did no validation at all before.)
+                if let Err(e) = serde_json::from_str::<Vec<ChainStep>>(&steps_json) {
+                    return ToolCallResult::error(format!("steps JSON invalid: {e}"));
+                }
+                if let Some(err) = self.hard_reject_envelope("Chain", "scheduler_chain", &args) {
+                    return ToolCallResult::error(err);
+                }
+                let steps_arr = args["steps"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                if let Some(err) = self.hard_reject_steps("Chain", steps_arr).await {
+                    return ToolCallResult::error(err);
+                }
                 let priority = args["priority"].as_i64().unwrap_or(100);
                 let description = args["description"].as_str().unwrap_or("").to_string();
                 let name = args["name"].as_str().unwrap_or(&pattern).to_string();
@@ -673,35 +743,12 @@ impl SchedulerSkill {
                 // Board Job Search schedule. Unlike the semantic lint below, a hard
                 // violation is REJECTED and nothing is saved. See
                 // `services/validation.rs` + `project-docs/VALIDATION_AND_APPLY_PLAN.md`.
-                {
-                    let live = self.live_tools.read().await;
-                    let schemas = self.tool_schemas.read().await;
-                    let mut hard: Vec<validation::Violation> = Vec::new();
-                    for (i, step) in parsed_steps.iter().enumerate() {
-                        // An unregistered tool fails every run — reject, don't warn.
-                        if !live.is_empty() && !live.contains(&step.tool_name) {
-                            hard.push(validation::Violation::hard(
-                                format!("steps[{i}] (`{}`)", step.tool_name),
-                                "no such tool is registered — this step would fail every run",
-                            ));
-                        }
-                        hard.extend(validation::validate_step_arguments(
-                            i,
-                            &step.tool_name,
-                            step.arguments.as_ref(),
-                            &schemas,
-                        ));
-                    }
-                    if validation::has_hard(&hard) {
-                        return ToolCallResult::error(format!(
-                            "Schedule rejected — {} structural error(s); nothing was saved. \
-                             Fix these and re-upsert: {}",
-                            hard.iter()
-                                .filter(|v| v.severity == validation::Severity::Hard)
-                                .count(),
-                            validation::render_hard(&hard),
-                        ));
-                    }
+                if let Some(err) = self.hard_reject_envelope("Schedule", "scheduled_task", &args) {
+                    return ToolCallResult::error(err);
+                }
+                let steps_arr = args["steps"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                if let Some(err) = self.hard_reject_steps("Schedule", steps_arr).await {
+                    return ToolCallResult::error(err);
                 }
 
                 let step_warnings =
@@ -864,6 +911,7 @@ impl SchedulerSkill {
         };
 
         let live_tools = self.live_tools.read().await;
+        let tool_schemas = self.tool_schemas.read().await;
         let disable_broken = args["disable_broken"].as_bool().unwrap_or(false);
 
         let mut healthy: Vec<Value> = Vec::new();
@@ -896,6 +944,17 @@ impl SchedulerSkill {
                 .filter(|t| !live_tools.is_empty() && !live_tools.contains(t))
                 .collect();
 
+            // Structural gate over the STORED steps — the same per-step
+            // arg-vs-`input_schema` check the write path applies to a new upsert,
+            // now run over every task already in the graph (including YAML-seeded
+            // ones that never went through `manage_scheduled_task`). `&[]` for
+            // live_tools so it does not re-report what `dead` already covers.
+            let structural: Vec<String> =
+                validation::validate_step_array(&steps, &[], &tool_schemas)
+                    .iter()
+                    .map(validation::Violation::render)
+                    .collect();
+
             // A live tool name only means the step will run. Whether it does
             // anything is a separate question — `live_tools` is passed empty
             // here so the lint does not re-report what `dead_tools` covers.
@@ -903,7 +962,7 @@ impl SchedulerSkill {
                 .map(|cs| lint_chain_steps(&cs, &[]))
                 .unwrap_or_default();
 
-            if dead.is_empty() {
+            if dead.is_empty() && structural.is_empty() {
                 if lint.is_empty() {
                     healthy.push(json!({ "id": id, "name": name, "step_count": steps.len() }));
                 } else {
@@ -916,12 +975,16 @@ impl SchedulerSkill {
                     }));
                 }
             } else {
-                let all_dead = dead.len() == steps.len();
+                // "all dead" governs auto-disable and stays about dead tools only;
+                // a structural arg error is a real defect but not grounds to
+                // silently disable a human-committed schedule on an audit.
+                let all_dead = !dead.is_empty() && dead.len() == steps.len();
                 broken.push(json!({
                     "id": id,
                     "name": name,
                     "enabled": enabled,
                     "dead_tools": dead,
+                    "structural_errors": structural,
                     "all_steps_dead": all_dead,
                     "warnings": lint,
                 }));

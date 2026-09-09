@@ -39,7 +39,7 @@ steps:
   - tool_name: store_note
     arguments:
       content: "{{_prev}}"
-      note_type: hypothesis
+      note_type: inference
       source_context: "{{goal}}"
       provenance: synthesis_inference
     priority: 2

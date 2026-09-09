@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-brain/context_profile",
+  "title": "ContextProfile",
+  "description": "Envelope schema for a context profile (an 'agent') — the YAML in contexts/*.yaml and the payload of POST /api/contexts. A profile applies four layers to a turn: a tool allowlist, an appended system_prompt, a pre_load_query injected under LIVE SELF-STATE, and an optional model override. `additionalProperties` is permissive: profiles carry many optional fields and new ones are added over time.",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": true,
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "description": "Unique profile key; also the agent name for run_agent/delegate." },
+    "description": { "type": "string" },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Allowlist of tool names the profile may call. Each must name a registered tool (enforced against the registry, not this schema)."
+    },
+    "system_prompt": { "type": "string", "description": "Appended after the base system prompt." },
+    "pre_load_query": {
+      "type": "string",
+      "description": "Read-only Cypher (rejected if it contains a write token) or a keyword; output injected under LIVE SELF-STATE."
+    },
+    "model_preference": {
+      "type": "string",
+      "description": "Overrides the chat model for this profile's turns. Honored on /chat; a sub-agent run CLAMPS it to the unmetered band. Blank/unresolvable keeps the default."
+    },
+    "provider_hint": {
+      "type": "string",
+      "enum": ["ollama", "ollama-cloud", "anthropic", "gemini"],
+      "description": "Provider for model_preference. Inert without model_preference (the resolver is only reached via it)."
+    },
+    "spawnable": { "type": "boolean", "description": "Whether run_agent/delegate may spawn this profile as a sub-agent." },
+    "specialty": { "type": "string", "description": "Free-text specialty used by select_agent token-overlap matching." },
+    "auto_assign": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Goal keywords that auto-select this profile."
+    }
+  }
+}

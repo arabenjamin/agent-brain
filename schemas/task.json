@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-brain/task",
+  "title": "Task",
+  "description": "Envelope schema for a `create_task`. A Task is a one-shot goal the scheduler picks up on the next tick and expands via goal_to_steps (cadence words in the goal are inert — recurrence needs a ScheduledTask). `create_task` already parses a typed CreateTaskInput, so serde enforces types; this schema documents the contract and adds min-length. A Task with `success_criteria` gets evaluator + adversarial steps appended/prepended automatically.",
+  "type": "object",
+  "required": ["goal"],
+  "additionalProperties": true,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 3,
+      "description": "The objective, in plain language. A routing prefix (e.g. `watch video:`, `fill knowledge gap:`, `run agent:`) selects the chain."
+    },
+    "context": {
+      "type": "string",
+      "description": "Extra background handed to the executing chain. Prior-failure context is injected here on a re-created task."
+    },
+    "success_criteria": {
+      "type": "string",
+      "description": "Measurable definition of done. Its presence turns on the generator-evaluator + adversarial-critic loops for this task."
+    }
+  }
+}

@@ -808,6 +808,16 @@ impl BrainCore {
         let tool_schemas_arc: Arc<RwLock<std::collections::HashMap<String, serde_json::Value>>> =
             Arc::new(RwLock::new(tool_schemas));
 
+        // Object-envelope JSON Schemas from the `schemas/` seed dir (SCHEMAS_DIR,
+        // default ./schemas). Loaded once; a missing dir or bad file degrades to
+        // no envelope validation (the per-step arg gate still runs). See
+        // services/validation.rs + project-docs/VALIDATION_AND_APPLY_PLAN.md.
+        let schemas_dir = std::env::var("SCHEMAS_DIR").unwrap_or_else(|_| "./schemas".to_string());
+        let envelope_schemas_arc: Arc<std::collections::HashMap<String, serde_json::Value>> =
+            Arc::new(crate::services::validation::load_schema_dir(
+                std::path::Path::new(&schemas_dir),
+            ));
+
         drop(registry);
 
         // ── Build the ToolHandler skill list ──────────────────────────────
@@ -941,7 +951,8 @@ impl BrainCore {
             skills.push(Box::new(
                 SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())
                     .with_live_tools(Arc::clone(&live_tools_arc))
-                    .with_tool_schemas(Arc::clone(&tool_schemas_arc)),
+                    .with_tool_schemas(Arc::clone(&tool_schemas_arc))
+                    .with_envelope_schemas(Arc::clone(&envelope_schemas_arc)),
             ));
         }
 
