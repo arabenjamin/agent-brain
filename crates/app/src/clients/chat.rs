@@ -1174,30 +1174,71 @@ impl ChatService {
         };
 
         let relay = async {
-            let mut delivered = false;
+            // "Answered" means a real assistant answer reached the client — a
+            // non-empty `Message` (or streamed answer `Token`s). Tool calls, tool
+            // results, and `Thinking` are PROGRESS, not an answer. A turn that ran
+            // tools and then went empty mid-loop has streamed events but produced
+            // no answer, and must be reported `Unanswered` so the caller walks the
+            // fallback ladder to the next model rather than ending the turn on an
+            // error banner. (This is the "apply to #N choked" bug: gpt-oss went
+            // empty right after `search_notes`, the relay counted the tool events
+            // as "delivered", and the ladder never engaged. Progress events still
+            // stream to the client; the ladder's "retrying on X" note explains the
+            // re-run on the next model.)
+            let mut answered = false;
+            let mut streamed_progress = false;
             let mut error: Option<String> = None;
             while let Some(event) = attempt_rx.recv().await {
                 match &event {
                     ChatEvent::Done => continue,
                     ChatEvent::Error { message } => {
                         // Keep the first: it is the one that describes what
-                        // actually went wrong, before any cleanup reporting.
+                        // actually went wrong, before any cleanup reporting. Note
+                        // an EMPTY COMPLETION no longer arrives here — the loops
+                        // emit only `Done` for that, precisely so it is
+                        // distinguishable from a hard error below.
                         if error.is_none() {
                             error = Some(message.clone());
                         }
                         continue;
                     }
-                    _ => delivered = true,
+                    ChatEvent::Message { content } if !content.trim().is_empty() => {
+                        answered = true;
+                    }
+                    ChatEvent::Token { .. } => {
+                        answered = true;
+                    }
+                    // Tool calls, tool results, and Thinking are PROGRESS, not an
+                    // answer.
+                    _ => streamed_progress = true,
                 }
                 let _ = sink.send(event).await;
             }
 
-            if delivered {
+            let empty_completion = error.as_deref() == Some(EMPTY_COMPLETION_MESSAGE);
+            if answered {
+                // A real answer went out; forward any trailing/cleanup error too.
+                if let Some(message) = error {
+                    let _ = sink.send(ChatEvent::Error { message }).await;
+                }
+                AttemptOutcome::Delivered
+            } else if error.is_some() && !empty_completion && streamed_progress {
+                // A HARD error (NOT an empty completion) after tools ran: this
+                // model owns the turn. Handing it onward would re-execute those
+                // tool calls under a second answer, so report the failure in
+                // place (existing invariant — the 503-after-a-tool-call case).
                 if let Some(message) = error {
                     let _ = sink.send(ChatEvent::Error { message }).await;
                 }
                 AttemptOutcome::Delivered
             } else {
+                // Fall back to the next ladder rung, error held back for the
+                // candidate loop to surface only if every rung is spent:
+                //  - an EMPTY COMPLETION (the model produced nothing), even after
+                //    running read-only tools first — the "apply to #N choked" fix:
+                //    gpt-oss went empty after search_notes and the ladder never
+                //    engaged because the tool events looked like a delivered turn;
+                //  - a hard error with NO progress (a dead primary), as before.
                 AttemptOutcome::Unanswered { error }
             }
         };
@@ -4384,6 +4425,54 @@ mod fallback_ladder_tests {
             seen.iter()
                 .any(|e| matches!(e, ChatEvent::Error { message } if message.contains("503"))),
             "the failure must still be reported: {seen:?}"
+        );
+    }
+
+    /// Regression for the "apply to #N choked" bug. A tool call streamed, then
+    /// the model returned an EMPTY completion on every retry — unlike a hard
+    /// error after a tool call, this must be handed to the next model, not ended
+    /// on an error banner. The tool events still reached the client, but the
+    /// empty-completion error is held back so the ladder can try another model.
+    #[tokio::test]
+    async fn an_empty_completion_after_a_tool_call_falls_back_not_choke() {
+        let server = MockServer::start().await;
+        // Round 1: a tool call (streams a ToolCall event).
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",",
+                "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",",
+                "\"function\":{\"name\":\"search_notes\",\"arguments\":\"{}\"}}]},",
+                "\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8}}\n\n",
+                "data: [DONE]\n\n",
+            )))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Round 2 and every retry: empty completions (the thinking-model failure).
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(sse(EMPTY_COMPLETION_SSE))
+            .mount(&server)
+            .await;
+
+        let (seen, outcome) = attempt(&server).await;
+
+        match outcome {
+            AttemptOutcome::Unanswered { error } => {
+                assert_eq!(error.as_deref(), Some(EMPTY_COMPLETION_MESSAGE));
+            }
+            other => panic!("empty-after-tool must fall back, got {other:?}"),
+        }
+        assert!(
+            seen.iter().any(|e| matches!(e, ChatEvent::ToolCall { .. })),
+            "the tool call still reached the client: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "the empty-completion error is held back for the ladder, not shown: {seen:?}"
         );
     }
 

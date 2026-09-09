@@ -22,6 +22,20 @@ interval_seconds: 86400
 managed_by: yaml
 enabled: false   # seeded off for review; enable after the post-rebuild smoke test
 steps:
+  # 0. Replace, don't stack. The session is per-DAY (jobsearch-<date>), so a
+  #    second run the same day (manual re-trigger, catch-up) would append a
+  #    second list and leave the thread with two — ambiguous when the user
+  #    replies "apply to #3". Clear any prior job-LIST entries first (matched by
+  #    their leading text) while preserving the rest of the conversation. Runs
+  #    first so it does not sit between the merge step and its {{_prev.stdout}}
+  #    consumer. A write, so readonly:false.
+  - tool_name: neo4j_query
+    provider_hint: ollama
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'jobsearch-{{date}}'}) WHERE w.role = 'assistant' AND w.content STARTS WITH 'AI job search' DETACH DELETE w"
+      readonly: false
+    description: "Clear any prior same-day job list (replace, not stack)"
+
   # 1. aidevboard — ranked matches against Ara's skill vector.
   - tool_name: mcp_call
     provider_hint: ollama
@@ -31,7 +45,7 @@ steps:
       arguments:
         skills: [rust, python, golang, typescript, neo4j, docker, kubernetes, aws, fastapi, react, llm, agents, mcp, distributed-systems, infrastructure, mlops, embedded]
         workplace: remote
-        limit: 20
+        limit: 14
     description: "aidevboard match_jobs (remote, Ara's stack)"
 
   # 2. Bank aidevboard: structured JSON (preferred) + raw text (fallback).
@@ -50,9 +64,12 @@ steps:
       server: worklittle
       tool: search_jobs
       arguments:
-        query: "software engineer, machine learning engineer, ai engineer, backend engineer, platform engineer"
-        limit: 25
-    description: "worklittle search_jobs (engineering/AI titles)"
+        query: "machine learning engineer, ai engineer, ml engineer, backend engineer, platform engineer, infrastructure engineer"
+        workplace_type: remote
+        country: US
+        posted_within_days: 3
+        limit: 20
+    description: "worklittle search_jobs (remote, US, recent, AI/infra titles)"
 
   # 4. Bank worklittle.
   - tool_name: push_context
@@ -93,17 +110,29 @@ steps:
             try: return int(v)
             except Exception: return None
 
-        def norm(job, source):
-            g = job.get("job", job) if isinstance(job, dict) else {}
-            title = g.get("title") or g.get("role") or ""
-            company = g.get("company_name") or g.get("company") or ""
-            url = g.get("url") or g.get("posting_url") or g.get("job_url") or ""
-            apply = g.get("apply_url") or g.get("applyUrl") or ""
-            loc = g.get("location") or g.get("workplace") or ""
+        def company_of(g):
+            # aidevboard: company_name (string); worklittle: company {name,slug}.
+            c = g.get("company") or g.get("company_name")
+            if isinstance(c, dict): return c.get("name") or c.get("slug") or ""
+            return c or ""
+
+        def norm(item, source):
+            # aidevboard item = {job, match_score, url}; worklittle item = the job itself.
+            g = item.get("job", item) if isinstance(item, dict) else {}
+            if not isinstance(g, dict): g = {}
+            title = (g.get("title") or g.get("role") or "").strip()
+            company = company_of(g).strip()
+            # Posting URL: aidevboard carries it at the match level (item.url);
+            # worklittle has none, but /jobs/<id> is its canonical posting page.
+            posting = item.get("url") or g.get("url") or g.get("posting_url") or g.get("job_url") or ""
+            if not posting and source == "worklittle" and g.get("id"):
+                posting = "https://worklittle.com/jobs/" + str(g["id"])
+            apply = g.get("apply_url") or g.get("applyUrl") or item.get("apply_url") or ""
+            loc = g.get("location") or g.get("job_city") or g.get("workplace") or g.get("workplace_type") or ""
             smin, smax = num(g.get("salary_min")), num(g.get("salary_max"))
             salary = f"${smin:,}-${smax:,}" if smin and smax else ""
-            score = job.get("match_score") if isinstance(job, dict) else None
-            return {"title": title.strip(), "company": company.strip(), "url": url,
+            score = item.get("match_score") if isinstance(item, dict) else None
+            return {"title": title, "company": company, "url": posting,
                     "apply": apply, "loc": loc, "salary": salary,
                     "score": score if isinstance(score, int) else 0, "source": source}
 
@@ -115,12 +144,12 @@ steps:
                 for k in ("matches", "jobs", "results", "data"):
                     if isinstance(data.get(k), list): data = data[k]; break
             if not isinstance(data, list): return []
-            return [norm(j, "") for j in data if isinstance(j, dict)]
+            return [j for j in data if isinstance(j, dict)]
 
         rows, raw_fallback = [], []
         for board in ("AIDEVBOARD", "WORKLITTLE"):
-            got = extract(section(board + "_JSON"))
-            for r in got: r["source"] = board.lower()
+            items = extract(section(board + "_JSON"))
+            got = [norm(it, board.lower()) for it in items]
             if got:
                 rows.extend(got)
             else:
@@ -136,6 +165,11 @@ steps:
             if key not in seen or r["score"] > seen[key]["score"]:
                 seen[key] = r
         merged = sorted(seen.values(), key=lambda r: r["score"], reverse=True)
+        # Cap at top 20, but guarantee BOTH boards appear: worklittle scores 0 and
+        # would otherwise be crowded out by aidevboard's ranked roles entirely.
+        ad = [r for r in merged if r["source"] == "aidevboard"][:14]
+        wl = [r for r in merged if r["source"] == "worklittle"][:6]
+        merged = ad + wl
 
         out = ["AI job search — {} roles from aidevboard + worklittle, best-fit first:\n".format(len(merged))]
         for i, r in enumerate(merged, 1):
@@ -176,4 +210,5 @@ steps:
     provider_hint: ollama
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'jobsearch-scratch-{{date}}'}) DETACH DELETE w"
+      readonly: false   # DETACH DELETE is a write — neo4j_query rejects writes without this
     description: "Delete scratch session"
