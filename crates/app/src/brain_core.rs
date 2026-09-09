@@ -35,9 +35,9 @@ use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
     codebase::CodebaseSkill, constructor::ConstructorSkill, context::ContextSkill,
     dynamic::DynamicSkill, exec::ExecSkill, git::GitSkill, http::HttpSkill,
-    knowledge::KnowledgeSkill, media::MediaSkill, model::ModelSkill, query::QuerySkill,
-    resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill, sleep::SleepSkill,
-    task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
+    knowledge::KnowledgeSkill, mcp_client::McpClientSkill, media::MediaSkill, model::ModelSkill,
+    query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill,
+    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -668,6 +668,9 @@ impl BrainCore {
             Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
         )));
 
+        // MCP Client Skill — call tools on external MCP servers (:McpServer nodes).
+        registry.register_skill(Box::new(McpClientSkill::new(self.storage.neo4j.clone())));
+
         // Code Execution Skill (sandboxed Python). Absent SANDBOX_URL the tool
         // is not registered at all, rather than registered and always failing.
         if let Some(exec_skill) = ExecSkill::from_env() {
@@ -869,6 +872,9 @@ impl BrainCore {
             self.storage.neo4j.clone(),
             Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
         )));
+
+        // MCP Client Skill (handler copy).
+        skills.push(Box::new(McpClientSkill::new(self.storage.neo4j.clone())));
 
         if let Some(exec_skill) = ExecSkill::from_env() {
             skills.push(Box::new(exec_skill));
@@ -1279,6 +1285,18 @@ impl BrainCore {
             PathBuf::from(std::env::var("SOURCES_DIR").unwrap_or_else(|_| "sources".into()));
         let n = crate::services::source_seeder::seed_sources_from_dir(neo4j, &sources_dir).await;
         debug!(created = n, "Seeded SourceLists from sources/");
+
+        // ── Seed external MCP servers from mcp-servers/*.yaml ─────────────────
+        // ON CREATE only — graph-owned after first creation (like SourceLists).
+        // A missing directory is non-fatal: the MCP-client tools just have fewer
+        // servers to offer. Secrets stay in env (only the env var name is stored).
+        let mcp_servers_dir = PathBuf::from(
+            std::env::var("MCP_SERVERS_DIR").unwrap_or_else(|_| "mcp-servers".into()),
+        );
+        let mcpn =
+            crate::services::mcp_server_seeder::seed_mcp_servers_from_dir(neo4j, &mcp_servers_dir)
+                .await;
+        debug!(created = mcpn, "Seeded McpServers from mcp-servers/");
 
         // ── Seed MediaSource watchlist from sources-media/*.yaml ───────────
         // ON CREATE only — graph-owned after first creation (same as SourceList).

@@ -6,6 +6,8 @@ pub mod context_builder;
 pub mod knowledge;
 pub mod llm;
 pub mod llm_providers;
+pub mod mcp_client;
+pub mod mcp_server_seeder;
 pub mod media;
 pub mod media_source_seeder;
 pub mod model_config;

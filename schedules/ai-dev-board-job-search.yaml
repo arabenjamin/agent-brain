@@ -1,0 +1,179 @@
+# AI Dev Board Job Search — daily, two boards, deterministic merge.
+#
+# ACTIVATION (post-rebuild): the live task with this name is currently a
+# RUNTIME-managed node (id bd43474e…) using the old http_request+execute_code
+# steps, so this YAML is SHADOWED and will not seed until ownership is
+# transferred. After the brain is rebuilt (so mcp_call is registered), either
+#   MATCH (s:ScheduledTask {name:'AI Dev Board Job Search'}) DETACH DELETE s
+# (then restart to seed this file), or SET s.managed_by='yaml' to let the seeder
+# force-sync these steps. THEN smoke-test one run and confirm the execute_code
+# merge against real worklittle output (its structured shape is unverified — the
+# parser falls back to the raw text section if JSON is absent, so nothing is lost).
+#
+# Pattern mirrors schedules/hardware-tripwire.yaml: each mcp_call is banked into a
+# WorkingMemory scratch session (because {{_prev}} only carries the previous
+# step), reassembled with neo4j_query, merged deterministically by execute_code
+# (Python copies links verbatim — never let the local model reproduce URLs), then
+# pushed into the fresh jobsearch-<date> session so notify_user opens a resumable
+# chat where a reply routes to the JOB APPLICATION RULE (general.yaml).
+name: AI Dev Board Job Search
+description: "Daily remote AI/ML engineering roles from aidevboard + worklittle, merged and deduped, into a fresh resumable chat."
+interval_seconds: 86400
+managed_by: yaml
+enabled: false   # seeded off for review; enable after the post-rebuild smoke test
+steps:
+  # 1. aidevboard — ranked matches against Ara's skill vector.
+  - tool_name: mcp_call
+    provider_hint: ollama
+    arguments:
+      server: aidevboard
+      tool: match_jobs
+      arguments:
+        skills: [rust, python, golang, typescript, neo4j, docker, kubernetes, aws, fastapi, react, llm, agents, mcp, distributed-systems, infrastructure, mlops, embedded]
+        workplace: remote
+        limit: 20
+    description: "aidevboard match_jobs (remote, Ara's stack)"
+
+  # 2. Bank aidevboard: structured JSON (preferred) + raw text (fallback).
+  - tool_name: push_context
+    provider_hint: ollama
+    arguments:
+      session_id: "jobsearch-scratch-{{date}}"
+      role: assistant
+      content: "AIDEVBOARD_JSON\n{{_prev.structured_json}}\nAIDEVBOARD_TEXT\n{{_prev}}"
+    description: "Bank aidevboard results"
+
+  # 3. worklittle — broad remote engineering/AI titles (keyless search_jobs).
+  - tool_name: mcp_call
+    provider_hint: ollama
+    arguments:
+      server: worklittle
+      tool: search_jobs
+      arguments:
+        query: "software engineer, machine learning engineer, ai engineer, backend engineer, platform engineer"
+        limit: 25
+    description: "worklittle search_jobs (engineering/AI titles)"
+
+  # 4. Bank worklittle.
+  - tool_name: push_context
+    provider_hint: ollama
+    arguments:
+      session_id: "jobsearch-scratch-{{date}}"
+      role: assistant
+      content: "WORKLITTLE_JSON\n{{_prev.structured_json}}\nWORKLITTLE_TEXT\n{{_prev}}"
+    description: "Bank worklittle results"
+
+  # 5. Reassemble both banked blobs (single column → {{_prev}}).
+  - tool_name: neo4j_query
+    provider_hint: ollama
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'jobsearch-scratch-{{date}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    description: "Read both boards back from the scratch session"
+
+  # 6. Deterministic merge/dedupe/rank/format. Python copies every URL verbatim;
+  #    prefers each board's JSON section, falls back to its raw text so a board
+  #    with an unexpected structured shape is passed through, never dropped.
+  - tool_name: execute_code
+    provider_hint: ollama
+    arguments:
+      language: python
+      code: |
+        import json, re
+        BLOB = r"""{{_prev}}"""
+
+        def section(tag):
+            # tag e.g. AIDEVBOARD_JSON — return text until the next ALLCAPS_ marker.
+            m = re.search(r'(?m)^' + tag + r'\s*\n', BLOB)
+            if not m: return ""
+            start = m.end()
+            nxt = re.search(r'(?m)^[A-Z]+_[A-Z]+\s*\n', BLOB[start:])
+            return BLOB[start:start + nxt.start()] if nxt else BLOB[start:]
+
+        def num(v):
+            try: return int(v)
+            except Exception: return None
+
+        def norm(job, source):
+            g = job.get("job", job) if isinstance(job, dict) else {}
+            title = g.get("title") or g.get("role") or ""
+            company = g.get("company_name") or g.get("company") or ""
+            url = g.get("url") or g.get("posting_url") or g.get("job_url") or ""
+            apply = g.get("apply_url") or g.get("applyUrl") or ""
+            loc = g.get("location") or g.get("workplace") or ""
+            smin, smax = num(g.get("salary_min")), num(g.get("salary_max"))
+            salary = f"${smin:,}-${smax:,}" if smin and smax else ""
+            score = job.get("match_score") if isinstance(job, dict) else None
+            return {"title": title.strip(), "company": company.strip(), "url": url,
+                    "apply": apply, "loc": loc, "salary": salary,
+                    "score": score if isinstance(score, int) else 0, "source": source}
+
+        def extract(js):
+            if not js: return []
+            try: data = json.loads(js)
+            except Exception: return []
+            if isinstance(data, dict):
+                for k in ("matches", "jobs", "results", "data"):
+                    if isinstance(data.get(k), list): data = data[k]; break
+            if not isinstance(data, list): return []
+            return [norm(j, "") for j in data if isinstance(j, dict)]
+
+        rows, raw_fallback = [], []
+        for board in ("AIDEVBOARD", "WORKLITTLE"):
+            got = extract(section(board + "_JSON"))
+            for r in got: r["source"] = board.lower()
+            if got:
+                rows.extend(got)
+            else:
+                txt = section(board + "_TEXT").strip()
+                if txt:
+                    raw_fallback.append("## " + board.title() + " (raw)\n" + txt)
+
+        # Dedupe by (title, company); keep the higher score.
+        seen = {}
+        for r in rows:
+            if not r["title"]: continue
+            key = (r["title"].lower(), r["company"].lower())
+            if key not in seen or r["score"] > seen[key]["score"]:
+                seen[key] = r
+        merged = sorted(seen.values(), key=lambda r: r["score"], reverse=True)
+
+        out = ["AI job search — {} roles from aidevboard + worklittle, best-fit first:\n".format(len(merged))]
+        for i, r in enumerate(merged, 1):
+            out.append("{}. {} — {}".format(i, r["title"], r["company"]))
+            meta = " | ".join(x for x in (r["loc"], r["salary"], "["+r["source"]+"]") if x)
+            if meta: out.append("   " + meta)
+            if r["url"]:   out.append("   Posting: " + r["url"])
+            if r["apply"]: out.append("   Apply: " + r["apply"])
+            out.append("")
+        if raw_fallback:
+            out.append("\n".join(raw_fallback))
+        if not merged and not raw_fallback:
+            out.append("No roles returned by either board today.")
+        out.append("\nReply with the number of a role and I will prepare your application.")
+        print("\n".join(out))
+    description: "Merge, dedupe, rank, format (links verbatim)"
+
+  # 7. Persist the formatted list into the fresh daily session (assistant role so
+  #    the thread drawer renders it).
+  - tool_name: push_context
+    provider_hint: ollama
+    arguments:
+      session_id: "jobsearch-{{date}}"
+      role: assistant
+      content: "{{_prev.stdout}}"
+    description: "Seed the resumable jobsearch-<date> chat"
+
+  # 8. Notify the user, opening that session as a resumable chat.
+  - tool_name: notify_user
+    provider_hint: ollama
+    arguments:
+      related_session_id: "jobsearch-{{date}}"
+      message: "{{_prev}}"
+    description: "Open the fresh job-search chat"
+
+  # 9. Clean up the scratch session.
+  - tool_name: neo4j_query
+    provider_hint: ollama
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'jobsearch-scratch-{{date}}'}) DETACH DELETE w"
+    description: "Delete scratch session"

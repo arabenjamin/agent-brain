@@ -1,0 +1,12 @@
+# Worklittle — job search MCP server (from worklittle.com/llms.txt).
+# search_jobs and other read tools are keyless; an API key (worklittle.com/
+# business/api-keys) is only needed for employer/write tools. Add one later as
+# auth_scheme: bearer / auth_env_var: WORKLITTLE_KEY if we register for writes.
+name: worklittle
+url: https://mcp.worklittle.com/
+description: >
+  Worklittle job search. Keyless read tools incl. search_jobs (any industry;
+  title/company/location/seniority/recency filters). Complements aidevboard for
+  broader, non-AI-only listings.
+auth_scheme: none
+enabled: true
