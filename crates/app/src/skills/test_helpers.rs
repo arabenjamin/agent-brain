@@ -247,6 +247,8 @@ impl KnowledgeStore for MockKnowledgeStore {
         since_iso: &str,
         until_iso: &str,
         _sample_limit: usize,
+        source_context: Option<&str>,
+        note_type: Option<&str>,
     ) -> anyhow::Result<Value> {
         Ok(serde_json::json!({
             "since": since_iso,
@@ -255,6 +257,10 @@ impl KnowledgeStore for MockKnowledgeStore {
             "by_note_type": [],
             "by_source_context": [],
             "sample": [],
+            "filter": {
+                "source_context": source_context,
+                "note_type": note_type,
+            },
         }))
     }
 

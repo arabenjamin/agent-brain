@@ -270,9 +270,26 @@ services:
     # ~80 tok/s — HALF the VRAM of Qwen3-8B (6.0 GB) and ~14% faster, on llama.cpp
     # ~13% faster than the same model on Ollama. The ~2.7 GB it frees takes
     # headroom to ~3.5 GB (kills the whisper-burst OOM risk). Tuning notes:
-    # `kv_unified` makes slot count (`-np`) free on VRAM, so `-np 2` matches the
-    # queue's 2 concurrent local slots; `-c` is the real KV lever (16384 covers
-    # the distiller). q8_0 KV is the compact option.
+    # `-np 2` matches the queue's 2 concurrent local slots. q8_0 KV is the
+    # compact option.
+    #
+    # ★ `-c` IS DIVIDED BY `-np`, so it is NOT the per-request context limit.
+    # This server runs with `kv_unified = 'false'` (check the startup line
+    # `srv load_model: initializing, n_slots = N, n_ctx_slot = M`), which
+    # statically partitions the KV cache: `-c 16384 -np 2` gave each request
+    # 8192 and nothing announced it. On 2026-09-11 a `reason` job sent 8956
+    # tokens and took a hard `400 … exceeds the available context size (8192)`,
+    # burning all 3 attempts and dead-lettering the job; the sub-agent loop was
+    # already peaking at 6916 tokens_in, ~1.3k short of a ceiling nobody set.
+    # So size `-c` as (per-request context × -np): 32768/2 = the 16384 per
+    # request the distiller and the sub-agent loop actually need. Read
+    # n_ctx_slot at startup after changing either flag — it is the only number
+    # that matters, and `-c` alone does not tell you what it will be.
+    #
+    # `--no-mmproj` pays for the extra KV: `-hf` auto-downloads Gemma-4's BF16
+    # multimodal projector and loads it into VRAM, and nothing on the background
+    # path ever sends an image (vision routes to the ollama-cloud vision model —
+    # see models.yaml). Skipping it frees that VRAM for context.
     #
     # ★ Gemma 4 is a THINKING model and IGNORES `--reasoning-budget 0` (Qwen's
     # flag) — it leaks its reasoning into the answer and emits no JSON. It needs
@@ -283,13 +300,14 @@ services:
       --alias gemma4-e4b
       --host 0.0.0.0 --port 8080
       -ngl 99
-      -c 16384
+      -c 32768
       -np 2
       --flash-attn on
       --cache-type-k q8_0 --cache-type-v q8_0
       --jinja
       --reasoning off
       --no-webui
+      --no-mmproj
     environment:
       - LLAMA_CACHE=/models
     volumes:

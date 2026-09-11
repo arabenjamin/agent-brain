@@ -128,7 +128,24 @@ impl KnowledgeSkill {
                  working on' — any whole-day or whole-period question. Do NOT semantic-search \
                  for a date string (e.g. search_notes '2026-09-07'); a date does not embed and \
                  will miss the day's notes. Counts exclude chunk fragments and are computed in \
-                 the brain's LOCAL day; the sample is the newest rows, not the whole window."
+                 the brain's LOCAL day; the sample is the newest rows, not the whole window.\n\n\
+                 TWO-STEP DRILL-DOWN — this is how you answer 'summarize the videos we watched \
+                 today' or any 'what did <source> produce' question: (1) call with no filter to \
+                 see the buckets, then (2) call AGAIN passing `source_context` (or `note_type`) \
+                 copied verbatim from a row of `by_source_context` / `by_note_type` to get those \
+                 notes themselves, with longer snippets. NEVER switch to search_notes to expand a \
+                 bucket: it ranks by topic similarity, so searching the label 'video_learning' \
+                 returns whatever note is topically nearest — typically an unrelated note from \
+                 another month — and reads as 'nothing today'. If step 1 reports a non-zero count \
+                 for a bucket, those notes EXIST; a later empty search is the search failing, not \
+                 absence. Check `complete` to know whether you were shown every matching note, \
+                 and raise `sample_limit` if not. Filter ONE side at a time — pairing a \
+                 source_context with a GUESSED note_type is the usual way to match nothing \
+                 (source_context 'video_learning' is stored as note_type 'source_record' and \
+                 'claim', never 'episodic'). If a filtered call returns 0 it tells you which \
+                 values DO exist in the window, in `available_note_types` / \
+                 `available_source_contexts` — retry with one of those. A 0 from a filter means \
+                 the FILTER is wrong, not that the day was empty: never report absence from it."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -139,7 +156,15 @@ impl KnowledgeSkill {
                     },
                     "sample_limit": {
                         "type": "integer",
-                        "description": "Max sample rows to return (default 24, capped at 100)."
+                        "description": "Max sample rows to return (default 24, or 50 when a filter is set; capped at 100)."
+                    },
+                    "source_context": {
+                        "type": "string",
+                        "description": "Drill down: return only notes with this source_context, copied verbatim from a by_source_context row (e.g. 'video_learning', 'fill_knowledge_gap', or the literal '(none)'). Counts and sample are both narrowed."
+                    },
+                    "note_type": {
+                        "type": "string",
+                        "description": "Drill down: return only notes of this note_type (e.g. 'source_record', 'claim', 'reflection'). Combines with source_context."
                     }
                 }
             }),
@@ -431,7 +456,14 @@ impl KnowledgeSkill {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let sample_limit = input.sample_limit.unwrap_or(24).clamp(1, 100);
+        // A filtered call is an enumeration, not a characterisation, so it gets a
+        // larger default — the point is to see the matching notes, and a default
+        // that truncates them re-creates the "I found nothing" failure one step on.
+        let filtered = input.source_context.is_some() || input.note_type.is_some();
+        let sample_limit = input
+            .sample_limit
+            .unwrap_or(if filtered { 50 } else { 24 })
+            .clamp(1, 100);
 
         // Windows are computed in the brain's LOCAL zone (stored timestamps are
         // UTC, so the bounds are converted to UTC before the query) — "today"
@@ -476,7 +508,13 @@ impl KnowledgeSkill {
 
         match self
             .svc
-            .recall_window(&since.to_rfc3339(), &until.to_rfc3339(), sample_limit)
+            .recall_window(
+                &since.to_rfc3339(),
+                &until.to_rfc3339(),
+                sample_limit,
+                input.source_context.as_deref(),
+                input.note_type.as_deref(),
+            )
             .await
         {
             Ok(mut v) => {
@@ -1027,6 +1065,18 @@ struct RecallRecentInput {
     window: Option<String>,
     #[serde(default)]
     sample_limit: Option<usize>,
+    // Drill-down filters. Empty strings are "absent", not a constraint for "" —
+    // a model that omits a filter by passing "" must not silently match nothing.
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
+    source_context: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
+    note_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1229,6 +1279,48 @@ mod tests {
         );
         assert_eq!(r["window"], "7d");
         assert_eq!(r["total_notes"], 0); // mock store is empty
+    }
+
+    // The drill-down half: a bucket reported in `by_source_context` has to be
+    // expandable by name. Without this, a caller handed "video_learning: 43" can
+    // only reach for search_notes, which ranks by topic and reports absence for a
+    // label — the 2026-09-11 "no videos today" false negative on a day with 11.
+    #[tokio::test]
+    async fn recall_recent_forwards_drill_down_filters() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute(
+                    "recall_recent",
+                    Some(json!({
+                        "source_context": "video_learning",
+                        "note_type": "source_record"
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["filter"]["source_context"], "video_learning");
+        assert_eq!(r["filter"]["note_type"], "source_record");
+    }
+
+    // An omitted filter passed as "" must be absent, not a constraint for "" —
+    // otherwise the drill-down silently matches nothing and looks like absence
+    // again, one layer down.
+    #[tokio::test]
+    async fn recall_recent_treats_empty_filter_as_absent() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute(
+                    "recall_recent",
+                    Some(json!({"source_context": "", "note_type": "  "})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(r["filter"]["source_context"].is_null());
+        assert!(r["filter"]["note_type"].is_null());
     }
 
     // -- store_note -----------------------------------------------------------

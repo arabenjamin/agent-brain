@@ -53,12 +53,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     git \
     openssh-client \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp for the Media Learning skill (video metadata + caption extraction).
 # Standalone Linux build — self-contained, no python runtime needed. Pinned by
-# rebuild: `docker compose build` fetches the current release. ffmpeg (for the
-# Phase 4 Whisper audio fallback) is intentionally omitted until that path ships.
+# rebuild: `docker compose build` fetches the current release.
+#
+# ffmpeg is REQUIRED, not optional: the Whisper fallback has shipped
+# (WHISPER_PROVIDER=http + the whisper sidecar), so a caption-less video now
+# reaches yt-dlp's audio download, and YouTube serves that as m3u8 — which
+# yt-dlp can only mux with ffmpeg. Without it the job fails "m3u8 download
+# detected but ffmpeg could not be found", retries 3×, and dead-letters: 3 such
+# jobs on 2026-09-11 alone. It was previously omitted on the grounds that the
+# Whisper path had not shipped yet; that comment outlived the condition.
 ADD https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux /usr/local/bin/yt-dlp
 RUN chmod 0755 /usr/local/bin/yt-dlp
 

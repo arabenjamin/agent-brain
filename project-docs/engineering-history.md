@@ -185,6 +185,44 @@ A chat session on 2026-08-10 asked "where are we on project X" and was told the 
 
 The behavioural half lives in the `PROJECT-STATUS RULE` in `contexts/general.yaml`: check schedules *and* tasks *and* notes, treat an alias found in a note as a lead to re-query rather than an answer, and report running work in the present tense.
 
+#### A count you cannot drill into manufactures false negatives (2026-09-11)
+
+`recall_recent` was built (2026-09-08, above) so a whole-day question would reach real counts instead of a top-K sample. It worked — and three days later it produced the most confident wrong answer in the brain's history, because **it could report a bucket it could not open**.
+
+Asked *"summarize all the YouTube videos you watched today?"*, the `orchestrator` delegated to `knowledge-worker` (local `gemma4-e4b`). The reply: *"I do not have any recorded information about YouTube videos watched or processed today."* Asked again, rephrased, it escalated: *"Based on a thorough search of the knowledge graph, there are **no notes** tagged or containing the phrase 'video_learning' that were created today… subsequent targeted searches confirmed that no such notes exist."*
+
+The brain had watched **11 videos that day** — NewsNation ×2, C-SPAN ×2, 60 Minutes ×2, Julian Dorey, Adam Kinzinger, Hasan Minhaj, IBM Technology, Cappy Army — stored as 11 `source_record` notes with full summaries, plus 49 extracted `claim` notes.
+
+The damning sentence is in its own answer: *"While initial checks indicated there may have been 43 notes from this source today, subsequent targeted searches… confirmed that no such notes exist."* 43 is **exactly right** — the precise local-day count (EDT midnight = 04:00Z; the UTC-day figure is 60). It read its own correct answer off `recall_recent`, then overrode it. **Confidence rose as accuracy went to zero.**
+
+Not a model failure — a missing capability, and the chain is short:
+
+1. `recall_recent` surfaced `source_context: video_learning, count: 43` at position 1. Its schema was `window` + `sample_limit` only: **no way to filter to that bucket.**
+2. Nothing else could enumerate by `source_context` either. `search_notes` *hard-errors* without a `query` and applies `source_context` only as a post-filter on similarity ranking; `list_notes` is an unfiltered last-20.
+3. So the only move left was `search_notes(query="video learning")`. Its top hit — reproduced afterwards — is a **2026-08-07 IBM video about online technical learning**, verbatim the "August 7" date the brain cited. The query matched the *topic* "learning"; that day's videos were about nuclear proliferation and GOP politics and matched it not at all.
+4. Dead end → declared absence.
+
+Zero errors across 12 LLM calls. A *quality* miss, invisible to every failure metric. And it violated the `TIME-WINDOW RULE` and `STRUCTURAL vs TOPICAL` rule **sitting in its own system prompt** — the rules were correct and unactionable, because the tool they pointed at could count but not enumerate.
+
+**The rule: a tool that reports a count must be able to show the rows behind it.** `recall_recent` gained `source_context` / `note_type`, applied through one shared predicate (`KnowledgeService::window_predicate`) so a filter can never reach the counts but not the sample — that asymmetry would rebuild the same bug inside the fix. A filtered call also returns 600-char snippets instead of 200 (enough to summarise each note without a second lookup), defaults `sample_limit` to 50 instead of 24, and reports **`complete`**: whether the sample IS the whole matching set. "Did I see everything?" is the difference between a correct summary and a false negative, so it is stated, not left to be inferred from two numbers.
+
+**Then the fix reproduced the bug one level down.** Verifying end-to-end, the sub-agent used the new filters on its first call — and guessed `note_type: "episodic"` alongside `source_context: "video_learning"`. A reasonable guess; wrong, because those notes are `source_record` and `claim`. `total: 0` → *"no YouTube videos were watched or processed."* The drill-down had turned a wrong filter value into absence.
+
+So a zero-match **filtered** call now re-runs the aggregations **unfiltered** and returns `window_total_notes`, `available_note_types`, and `available_source_contexts`, with a note stating the filter is the likely fault and naming the values that do exist. This is the same shape as `list_endpoints` pointing a zero result at `list_apis`: **a deterministic tool's empty answer has to carry the way out of it**, because the caller cannot guess a label it has never been shown. After that, the same question returned all 8 local-day videos correctly categorised with source links — and on its own detour through `MATCH (n:SourceRecord)` the Cypher guard rejected the unknown label and pointed it at `describe_graph`, which it then called. The subsystems compose.
+
+Two generalisations worth keeping:
+
+- **A count already retrieved outranks a later search that finds nothing.** The inversion — letting a failed search overturn a deterministic count held in the same context — is the specific error, and it is what `COUNT-THEN-DRILL` in `contexts/general.yaml` and `contexts/knowledge-worker.yaml` forbids.
+- **Every escape hatch needs its own escape hatch.** The drill-down fixed "I can't see the rows" and created "I asked for the wrong rows". Each new deterministic path should be asked: what does it return when the caller gets it *slightly* wrong, and does that look like absence?
+
+#### A cancelled turn left no trace at all (2026-09-11)
+
+The same session surfaced a quieter gap. A chat turn stored the user's question, ran `search_notes`, spent **two gpt-oss calls (~31K prompt tokens)** — and vanished. No assistant reply, no error, no log line, not even the dropped-turn WARN. The user re-asked 33 seconds later in a fresh session, which is the only reason the abandonment was noticeable at all.
+
+`forward_chat_events` already reports a turn that ends with nothing to say. But this turn never *ended*: the SSE client went away, the handler future was dropped, and the forwarder's tail — where every piece of that reporting lives — never ran. Reading the logs afterwards, an abandoned turn is indistinguishable from a request that never arrived, which is the worst available state for a subsystem whose failures are already hard to see.
+
+**Cancellation is the one turn-ending path no `await`-side code can report, so it needs `Drop`.** `TurnAbandonGuard` is armed for the whole turn and disarmed once the event stream drains, so it fires only on the cancellation path and never double-reports the dropped-turn case. Abandoning a turn is legitimate user behaviour; spending two cloud calls with no record of where they went is not.
+
 ### The worker/voice split, and the write guard that had to come with it
 
 One chat turn on 2026-08-31 produced both halves of this section. Asked for technical deep-dives on three mesh technologies, `gpt-oss:120b-cloud` ran **zero** searches — confirmed against the `search_usage` ledger, whose last row that day predates the turn by 25 minutes — and wrote all three from prior. One of the three was **"Metastatic"**, a typo of *Meshtastic* that had been sitting in a Todo snapshot since 08-11. The model did not recognise it as a typo and did not flag it as unknown: it invented a Rust crate, an async API (`Metastatic::new(config).await?`), a Noise XX handshake, and a closing **`Sources:` line citing a GitHub repository that does not exist**. All of it was stored as `note_type: semantic` — the one type `label_claims` deliberately does *not* mark on retrieval, because it means *knowledge the brain established*. The same turn wrote **15 notes for 3 topics** (7 metastatic, 4 reticulum, 4 tailscale) as the tool loop re-issued `store_note` each iteration, then answered the *previous* question in the session and described the notes it had just written as pre-existing discoveries — including reporting one topic as "not yet captured, no dedicated note exists" 90 seconds after creating it.

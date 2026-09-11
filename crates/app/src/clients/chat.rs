@@ -799,6 +799,60 @@ fn prepare_tool_result(tool_name: &str, text: &str, limit: usize) -> String {
 /// `tx` is moved in here and dropped when this returns, so this is the last
 /// point at which anything can still be said to the client — code after the
 /// provider loops in `run()` cannot reach it.
+/// Records a chat turn that ended without ever finishing — the one turn-ending
+/// path `forward_chat_events`'s own tail cannot report.
+///
+/// If the SSE client goes away mid-turn, the handler future is dropped, the
+/// forwarder's tail never runs, and the turn leaves NO trace: not the
+/// dropped-turn warning, not an error event, nothing. On 2026-09-11 a chat turn
+/// asked "summarize the YouTube videos you watched today", ran `search_notes`,
+/// spent two gpt-oss calls (~31k prompt tokens), and then vanished — the only
+/// evidence it had ever existed was an orphaned user row in working memory and
+/// two ledger rows. Reading the logs afterwards, that is indistinguishable from
+/// a request that never arrived, which is the worst possible state for a
+/// subsystem whose failures are already hard to see.
+///
+/// `Drop` runs on the cancellation path, so the abandonment gets recorded.
+struct TurnAbandonGuard {
+    session_id: String,
+    user_snippet: String,
+    completed: bool,
+}
+
+impl TurnAbandonGuard {
+    fn new(session_id: Option<&str>, user_snippet: &str) -> Self {
+        Self {
+            session_id: session_id.unwrap_or("-").to_string(),
+            user_snippet: user_snippet.to_string(),
+            completed: false,
+        }
+    }
+
+    /// The turn's event stream drained normally, so whatever happened is already
+    /// represented (a message, an error, or the dropped-turn warning below).
+    fn mark_completed(&mut self) {
+        self.completed = true;
+    }
+
+    fn should_warn(&self) -> bool {
+        !self.completed
+    }
+}
+
+impl Drop for TurnAbandonGuard {
+    fn drop(&mut self) {
+        if self.should_warn() {
+            warn!(
+                session_id = %self.session_id,
+                user_message = %self.user_snippet,
+                "Chat turn abandoned before producing a reply — the client disconnected or the \
+                 task was cancelled mid-turn. Any model calls already made are still billed, and \
+                 nothing was saved for this turn."
+            );
+        }
+    }
+}
+
 async fn forward_chat_events(
     mut inner_rx: mpsc::Receiver<ChatEvent>,
     tx: mpsc::Sender<ChatEvent>,
@@ -806,6 +860,9 @@ async fn forward_chat_events(
     session_id: Option<String>,
     user_snippet: String,
 ) {
+    // Armed for the whole turn; disarmed once the stream drains normally. See
+    // TurnAbandonGuard — a cancelled turn runs none of the code below.
+    let mut abandon_guard = TurnAbandonGuard::new(session_id.as_deref(), &user_snippet);
     let mut final_text = String::new();
     let mut saw_error = false;
     while let Some(event) = inner_rx.recv().await {
@@ -820,6 +877,9 @@ async fn forward_chat_events(
         }
         let _ = tx.send(event).await;
     }
+
+    // The stream drained, so the turn reached an end it can describe itself.
+    abandon_guard.mark_completed();
 
     // `saw_error` keeps this from double-reporting a turn that already failed
     // loudly (e.g. no provider configured): that turn has an explanation, and a
@@ -3899,6 +3959,26 @@ mod limits_marker_tests {
         }
         let final_text = result_rx.try_recv().unwrap_or_default();
         (seen, final_text)
+    }
+
+    /// A turn that drains normally is NOT an abandonment, however it ended —
+    /// the dropped-turn warning already covers "ended with nothing to say", and
+    /// double-reporting it would make the abandonment signal useless.
+    #[test]
+    fn a_drained_turn_is_not_reported_as_abandoned() {
+        let mut g = TurnAbandonGuard::new(Some("sess-1"), "hello");
+        assert!(g.should_warn(), "armed before the stream drains");
+        g.mark_completed();
+        assert!(!g.should_warn(), "a drained turn must not warn");
+    }
+
+    /// A turn dropped before its stream drained — the cancellation path, where
+    /// none of `forward_chat_events`'s tail runs — must still be reported.
+    #[test]
+    fn a_cancelled_turn_is_reported_as_abandoned() {
+        let g = TurnAbandonGuard::new(None, "summarize the videos you watched today");
+        assert!(g.should_warn(), "a cancelled turn must warn on drop");
+        assert_eq!(g.session_id, "-", "missing session id renders as '-'");
     }
 
     /// The 2026-08-24 failure: the loop returned having emitted nothing at all.

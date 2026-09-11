@@ -1336,36 +1336,39 @@ impl KnowledgeService {
         Ok(results)
     }
 
-    /// Deterministic time-window recall. See the `KnowledgeStore::recall_window`
-    /// doc for intent. Runs three read-only aggregations against notes created in
-    /// `[since_iso, until_iso)` (UTC), excluding chunk notes so counts are of
-    /// distinct items. Never embeds or searches — this is the aggregate a
-    /// whole-day question needs, and a top-K semantic search cannot produce.
-    pub async fn recall_window(
+    /// The two bucket aggregations over a window, optionally narrowed to one
+    /// `source_context` / `note_type`. Returns `(by_note_type, by_source_context,
+    /// total)`.
+    ///
+    /// Split out so a filtered call that matches nothing can re-run it
+    /// UNFILTERED and report which values do exist — see `recall_window`.
+    async fn window_buckets(
         &self,
         since_iso: &str,
         until_iso: &str,
-        sample_limit: usize,
-    ) -> Result<Value> {
-        // Shared window predicate. `datetime($x)` compares native-to-native;
-        // comparing a temporal to a bare string yields null (silent row drop),
-        // hence the explicit casts — see project-docs/schema.md.
-        const WINDOW: &str = "MATCH (n:Note)
-             WHERE n.created_at >= datetime($since) AND n.created_at < datetime($until)
-               AND NOT (n)-[:PART_OF]->()";
+        source_context: Option<&str>,
+        note_type: Option<&str>,
+    ) -> Result<(Vec<Value>, Vec<Value>, i64)> {
+        let window = Self::window_predicate(source_context, note_type);
+        let bind = |q: neo4rs::Query| {
+            let mut q = q.param("since", since_iso).param("until", until_iso);
+            if let Some(sc) = source_context {
+                q = q.param("source_context", sc);
+            }
+            if let Some(nt) = note_type {
+                q = q.param("note_type", nt);
+            }
+            q
+        };
 
-        // By note_type (+ overall total via a sum in the caller).
+        // By note_type (+ overall total via a sum below).
         let by_type_rows = self
             .neo4j
-            .execute(
-                neo4rs::query(&format!(
-                    "{WINDOW}
-                     RETURN COALESCE(n.note_type, 'semantic') AS k, count(*) AS c
-                     ORDER BY c DESC"
-                ))
-                .param("since", since_iso)
-                .param("until", until_iso),
-            )
+            .execute(bind(neo4rs::query(&format!(
+                "{window}
+                 RETURN COALESCE(n.note_type, 'semantic') AS k, count(*) AS c
+                 ORDER BY c DESC"
+            ))))
             .await?;
         let mut by_type = Vec::new();
         let mut total: i64 = 0;
@@ -1376,19 +1379,15 @@ impl KnowledgeService {
             by_type.push(json!({ "note_type": k, "count": c }));
         }
 
-        // By source_context (what produced the day's notes — video_learning,
+        // By source_context (what produced the window's notes — video_learning,
         // fill_knowledge_gap, news, brain_api_sync, …). Top 20.
         let by_src_rows = self
             .neo4j
-            .execute(
-                neo4rs::query(&format!(
-                    "{WINDOW}
-                     WITH COALESCE(n.source_context, '(none)') AS k, count(*) AS c
-                     RETURN k, c ORDER BY c DESC LIMIT 20"
-                ))
-                .param("since", since_iso)
-                .param("until", until_iso),
-            )
+            .execute(bind(neo4rs::query(&format!(
+                "{window}
+                 WITH COALESCE(n.source_context, '(none)') AS k, count(*) AS c
+                 RETURN k, c ORDER BY c DESC LIMIT 20"
+            ))))
             .await?;
         let by_source_context: Vec<Value> = by_src_rows
             .into_iter()
@@ -1400,46 +1399,178 @@ impl KnowledgeService {
             })
             .collect();
 
-        // A bounded, most-recent sample so the caller can characterise the
-        // buckets rather than presenting the sample as the whole.
-        let sample_rows = self
-            .neo4j
-            .execute(
-                neo4rs::query(&format!(
-                    "{WINDOW}
-                     RETURN COALESCE(n.note_type, 'semantic') AS note_type,
-                            COALESCE(n.source_context, '(none)') AS source_context,
-                            toString(n.created_at) AS created_at,
-                            left(n.content, 200) AS snippet
-                     ORDER BY n.created_at DESC LIMIT $limit"
-                ))
-                .param("since", since_iso)
-                .param("until", until_iso)
-                .param("limit", sample_limit as i64),
-            )
+        Ok((by_type, by_source_context, total))
+    }
+
+    /// Window predicate shared by every aggregation and the sample, so a filter
+    /// can never apply to some of them and not others.
+    ///
+    /// `datetime($x)` compares native-to-native; comparing a temporal to a bare
+    /// string yields null (a silent row drop), hence the explicit casts — see
+    /// project-docs/schema.md. Filters are matched against the same COALESCE'd
+    /// values the counts are grouped by, so a name copied out of
+    /// `by_source_context` (including the literal "(none)" bucket) round-trips
+    /// and selects exactly those rows.
+    fn window_predicate(source_context: Option<&str>, note_type: Option<&str>) -> String {
+        let mut p = String::from(
+            "MATCH (n:Note)
+             WHERE n.created_at >= datetime($since) AND n.created_at < datetime($until)
+               AND NOT (n)-[:PART_OF]->()",
+        );
+        if source_context.is_some() {
+            p.push_str(
+                "\n               AND COALESCE(n.source_context, '(none)') = $source_context",
+            );
+        }
+        if note_type.is_some() {
+            p.push_str("\n               AND COALESCE(n.note_type, 'semantic') = $note_type");
+        }
+        p
+    }
+
+    /// Deterministic time-window recall. See the `KnowledgeStore::recall_window`
+    /// doc for intent. Runs read-only aggregations against notes created in
+    /// `[since_iso, until_iso)` (UTC), excluding chunk notes so counts are of
+    /// distinct items. Never embeds or searches — this is the aggregate a
+    /// whole-day question needs, and a top-K semantic search cannot produce.
+    ///
+    /// `source_context` / `note_type` narrow every aggregation AND the sample, so
+    /// a bucket this tool reported can be enumerated by asking again with the
+    /// bucket's own name. Without that, a caller handed
+    /// `source_context: video_learning, count: 43` had no way to see those 43 —
+    /// `search_notes` needs a `query` and then ranks by similarity, which for a
+    /// label like "video_learning" returns whatever is topically nearest (a video
+    /// *about* learning, from another month) and reads as absence. The tool that
+    /// surfaces a count must be able to show the rows behind it.
+    ///
+    /// ★ A filter that matches NOTHING must not look like an empty window. The
+    /// first cut of the drill-down shipped without this and reproduced the bug it
+    /// was written to fix: asked for today's videos, the agent guessed
+    /// `note_type: "episodic"` alongside `source_context: "video_learning"` —
+    /// a reasonable guess, and wrong, because those notes are `source_record` —
+    /// got `total: 0`, and told the user no videos had been watched. So a
+    /// zero-match filtered call re-runs the aggregations UNFILTERED and returns
+    /// the values that DO exist, with a note saying the filter is the likely
+    /// fault. Same shape as `list_endpoints` pointing a zero result at
+    /// `list_apis`: a deterministic tool's empty answer has to carry the way out
+    /// of it, because the caller cannot guess a label it has never been shown.
+    /// (2026-09-11)
+    pub async fn recall_window(
+        &self,
+        since_iso: &str,
+        until_iso: &str,
+        sample_limit: usize,
+        source_context: Option<&str>,
+        note_type: Option<&str>,
+    ) -> Result<Value> {
+        let filtered = source_context.is_some() || note_type.is_some();
+        let (by_type, by_source_context, total) = self
+            .window_buckets(since_iso, until_iso, source_context, note_type)
             .await?;
+
+        let window = Self::window_predicate(source_context, note_type);
+        // A filtered call is an enumeration rather than a characterisation, so it
+        // gets a longer snippet — enough of each note to summarise it without a
+        // second lookup.
+        let snippet_len = if filtered { 600 } else { 200 };
+        let mut sample_query = neo4rs::query(&format!(
+            "{window}
+             RETURN COALESCE(n.note_type, 'semantic') AS note_type,
+                    COALESCE(n.source_context, '(none)') AS source_context,
+                    n.id AS id,
+                    toString(n.created_at) AS created_at,
+                    left(n.content, {snippet_len}) AS snippet
+             ORDER BY n.created_at DESC LIMIT $limit"
+        ))
+        .param("since", since_iso)
+        .param("until", until_iso)
+        .param("limit", sample_limit as i64);
+        if let Some(sc) = source_context {
+            sample_query = sample_query.param("source_context", sc);
+        }
+        if let Some(nt) = note_type {
+            sample_query = sample_query.param("note_type", nt);
+        }
+        let sample_rows = self.neo4j.execute(sample_query).await?;
         let samples: Vec<Value> = sample_rows
             .into_iter()
             .map(|row| {
                 json!({
                     "note_type": row.get::<String>("note_type").unwrap_or_default(),
                     "source_context": row.get::<String>("source_context").unwrap_or_default(),
+                    "id": row.get::<String>("id").unwrap_or_default(),
                     "created_at": row.get::<String>("created_at").unwrap_or_default(),
                     "snippet": row.get::<String>("snippet").unwrap_or_default(),
                 })
             })
             .collect();
 
-        Ok(json!({
+        // Whether the sample IS the full matching set. A filtered caller is
+        // enumerating, and "did I see everything?" is the difference between a
+        // correct summary and a false negative, so state it rather than leaving
+        // it to be inferred from two numbers.
+        let complete = (samples.len() as i64) >= total;
+
+        let mut out = json!({
             "since": since_iso,
             "until": until_iso,
             "total_notes": total,
+            "matched_notes": total,
+            "returned": samples.len(),
+            "complete": complete,
+            "filter": json!({
+                "source_context": source_context,
+                "note_type": note_type,
+            }),
             "by_note_type": by_type,
             "by_source_context": by_source_context,
             "sample": samples,
-            "note": "Counts exclude chunk fragments; they are distinct notes created in the window. \
-                     The sample is the most-recent rows, not the whole window — cite it as a sample of the total.",
-        }))
+        });
+
+        let note: String = if filtered && total == 0 {
+            // The escape hatch. Re-run unfiltered so the caller is handed the
+            // values that actually exist instead of having to guess again.
+            let (avail_type, avail_src, window_total) = self
+                .window_buckets(since_iso, until_iso, None, None)
+                .await?;
+            let m = out.as_object_mut().expect("object");
+            m.insert("window_total_notes".into(), json!(window_total));
+            m.insert("available_note_types".into(), json!(avail_type));
+            m.insert("available_source_contexts".into(), json!(avail_src));
+            format!(
+                "NO NOTES MATCHED THIS FILTER — and this is NOT evidence the window is empty: \
+                 {window_total} notes exist in it. The filter is the likely fault (a note_type \
+                 or source_context that does not pair, e.g. source_context 'video_learning' is \
+                 stored as note_type 'source_record' and 'claim', never 'episodic'). \
+                 `available_note_types` and `available_source_contexts` list the values that DO \
+                 exist here — retry with one of those, or drop one side of the filter. Do NOT \
+                 report absence to the user off this result, and do NOT fall back to \
+                 search_notes, which ranks by topic and cannot establish absence either."
+            )
+        } else if filtered && complete {
+            "These are ALL the notes matching the filter in this window — the set is complete, \
+             so summarise from it directly. Counts exclude chunk fragments."
+                .to_string()
+        } else if filtered {
+            "PARTIAL: more notes match this filter than were returned — the sample is the \
+             most-recent rows. Raise sample_limit to enumerate the rest, and cite the count, \
+             not the sample size. Counts exclude chunk fragments."
+                .to_string()
+        } else {
+            "Counts exclude chunk fragments; they are distinct notes created in the window. \
+             The sample is the most-recent rows, not the whole window — cite it as a sample of \
+             the total. To SEE the notes behind any row in by_source_context or by_note_type, \
+             call recall_recent again with that source_context / note_type — do NOT semantic-search \
+             for the bucket name, which ranks by topic and will miss them. Pass ONE side of the \
+             filter first: pairing a source_context with a guessed note_type is the common way to \
+             match nothing."
+                .to_string()
+        };
+        out.as_object_mut()
+            .expect("object")
+            .insert("note".into(), json!(note));
+
+        Ok(out)
     }
 
     pub async fn review_due_notes(&self, limit: usize) -> Result<Vec<Value>> {
@@ -3410,8 +3541,18 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         since_iso: &str,
         until_iso: &str,
         sample_limit: usize,
+        source_context: Option<&str>,
+        note_type: Option<&str>,
     ) -> anyhow::Result<serde_json::Value> {
-        KnowledgeService::recall_window(self, since_iso, until_iso, sample_limit).await
+        KnowledgeService::recall_window(
+            self,
+            since_iso,
+            until_iso,
+            sample_limit,
+            source_context,
+            note_type,
+        )
+        .await
     }
 
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool> {
@@ -3465,7 +3606,7 @@ fn sanitize_lucene_query(q: &str) -> String {
 
 #[cfg(test)]
 mod lucene_tests {
-    use super::sanitize_lucene_query;
+    use super::{KnowledgeService, sanitize_lucene_query};
 
     #[test]
     fn escapes_url_and_colon() {
@@ -3484,6 +3625,37 @@ mod lucene_tests {
         assert_eq!(
             sanitize_lucene_query("rust async runtime"),
             "rust async runtime"
+        );
+    }
+
+    /// The filter has to live in ONE predicate shared by every aggregation and
+    /// the sample. If a filter reached the counts but not the sample (or vice
+    /// versa) the tool would report a count it then failed to enumerate — the
+    /// exact shape of the 2026-09-11 false negative, rebuilt inside the fix.
+    #[test]
+    fn window_predicate_applies_each_filter_to_the_shared_predicate() {
+        let none = KnowledgeService::window_predicate(None, None);
+        assert!(!none.contains("$source_context"));
+        assert!(!none.contains("$note_type"));
+        assert!(
+            none.contains("NOT (n)-[:PART_OF]->()"),
+            "chunks always excluded"
+        );
+
+        let by_src = KnowledgeService::window_predicate(Some("video_learning"), None);
+        assert!(by_src.contains("COALESCE(n.source_context, '(none)') = $source_context"));
+        assert!(!by_src.contains("$note_type"));
+
+        let both =
+            KnowledgeService::window_predicate(Some("video_learning"), Some("source_record"));
+        assert!(both.contains("$source_context") && both.contains("$note_type"));
+
+        // The COALESCE'd form is load-bearing: it lets a name copied out of a
+        // by_source_context row — including the literal "(none)" bucket — round
+        // trip back as a filter instead of silently matching nothing.
+        assert!(
+            both.contains("COALESCE(n.note_type, 'semantic') = $note_type"),
+            "note_type filter must match the value the counts are grouped by"
         );
     }
 }

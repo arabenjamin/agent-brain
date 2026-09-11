@@ -213,11 +213,18 @@ pub trait KnowledgeStore: Send + Sync {
     /// counts reflect distinct items, not re-embedded fragments. This is the
     /// aggregate a "what did we learn / what happened" question needs — the thing
     /// a top-K semantic search over a date string cannot answer.
+    ///
+    /// `source_context` / `note_type`, when given, narrow every aggregation and
+    /// the sample alike, so any bucket this returns can be enumerated by calling
+    /// again with that bucket's name. A count a caller cannot drill into is how a
+    /// false negative gets manufactured — see the impl for the incident.
     async fn recall_window(
         &self,
         since_iso: &str,
         until_iso: &str,
         sample_limit: usize,
+        source_context: Option<&str>,
+        note_type: Option<&str>,
     ) -> anyhow::Result<Value>;
 
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool>;
