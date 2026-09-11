@@ -74,12 +74,18 @@ impl KnowledgeSkill {
     fn search_notes_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_notes".to_string(),
-            description: "Search stored notes. Provide `query` for hybrid BM25+semantic search with \
-                         optional graph expansion. Provide `entity_name` instead to find notes that \
-                         mention a specific named entity (case-insensitive). Use `note_type` to filter \
-                         by type (semantic, episodic, reflection, consolidated, news, news_raw, outcome) \
-                         — when set without a `query`, lists all notes of that type ordered by date. \
-                         At least one of `query`, `entity_name`, or `note_type` must be supplied."
+            description: "Search OR enumerate stored notes. TWO MODES — pick deliberately. \
+                         (1) SEARCH: provide `query` for hybrid BM25+semantic ranking with optional \
+                         graph expansion, or `entity_name` to find notes mentioning a named entity. \
+                         This returns a RANKED, TRUNCATED SAMPLE — it cannot count, order, or \
+                         return everything. (2) ENUMERATE: OMIT `query` and pass `source_context` \
+                         and/or `note_type` to get ALL notes carrying that label, oldest first, with \
+                         a `complete` flag telling you whether you were shown the whole set. If you \
+                         know the LABEL a set of notes was filed under (a résumé under \
+                         source_context 'resume', a report under 'daily_brief'), ENUMERATE — a \
+                         `query` will rank a fraction of it and you will wrongly read the gap as \
+                         absence. At least one of `query`, `entity_name`, `note_type`, or \
+                         `source_context` must be supplied."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -98,11 +104,15 @@ impl KnowledgeSkill {
                     },
                     "note_type": {
                         "type": "string",
-                        "description": "Filter by note type: semantic, episodic, reflection, consolidated, news, news_raw, outcome. Without a query, lists all notes of this type by date."
+                        "description": "Filter by note type: semantic, episodic, reflection, consolidated, news, news_raw, outcome. Without a query, ENUMERATES all notes of this type by date."
+                    },
+                    "source_context": {
+                        "type": "string",
+                        "description": "The label a set of notes was filed under (e.g. 'resume', 'video_learning', 'daily_brief'). WITHOUT a `query` this ENUMERATES every note carrying that source_context (chunk fragments excluded) and returns a `complete` flag — this is how you retrieve a whole multi-note document. With a `query` it only narrows the ranked search."
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max number of results (default: 5)"
+                        "description": "Max number of results (default: 5). Raise it when enumerating — a multi-note document needs a limit above its note count for `complete` to come back true."
                     },
                     "graph_hops": {
                         "type": "integer",
@@ -397,22 +407,49 @@ impl KnowledgeSkill {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        // note_type-only path: list all notes of that type ordered by date
+        // Query-less ENUMERATION path: note_type and/or source_context list the
+        // matching notes in full, ordered by date, instead of ranking a sample.
+        //
+        // `source_context` belongs here for the same reason `recall_recent` and
+        // `list_endpoints` exist: when the caller already knows the LABEL, a
+        // ranked top-K is the wrong tool. A résumé stored as 11 notes under
+        // `source_context:"resume"` (10411 chars) was reachable only through
+        // similarity search, which truncates and misses — on 2026-09-11 a
+        // delegated `job-applicant` spent all 8 of its rounds on repeat searches
+        // and still reported the résumé "incomplete", declining to compile an
+        // application from a résumé that was entirely present in the graph.
         if input.query.as_deref().is_none_or(str::is_empty) {
-            if let Some(nt) = note_type {
-                info!(note_type = %nt, "Listing notes by type");
-                return match self.svc.list_notes(input.limit, Some(nt)).await {
-                    Ok(notes) => ToolCallResult::success_json(json!({
-                        "count": notes.len(),
-                        "note_type": nt,
-                        "notes": notes
-                    })),
+            if note_type.is_some() || source_context.is_some() {
+                info!(
+                    note_type = ?note_type,
+                    source_context = ?source_context,
+                    "Enumerating notes by label"
+                );
+                return match self
+                    .svc
+                    .list_notes_filtered(input.limit, note_type, source_context)
+                    .await
+                {
+                    Ok(notes) => {
+                        // `complete` tells the caller whether they were shown the
+                        // whole set or just the first `limit` — the same signal
+                        // recall_recent carries, and the thing that stops an agent
+                        // concluding "incomplete" from a full-but-capped result.
+                        let complete = notes.len() < input.limit;
+                        ToolCallResult::success_json(json!({
+                            "count": notes.len(),
+                            "note_type": note_type,
+                            "source_context": source_context,
+                            "complete": complete,
+                            "notes": notes
+                        }))
+                    }
                     Err(e) => ToolCallResult::error(format!("list_notes failed: {}", e)),
                 };
             }
             return ToolCallResult::error(
-                "Provide a non-empty `query`, `entity_name`, or `note_type` — empty values \
-                 are ignored, not searched."
+                "Provide a non-empty `query`, `entity_name`, `note_type`, or \
+                 `source_context` — empty values are ignored, not searched."
                     .to_string(),
             );
         }

@@ -55,8 +55,17 @@ pre_load_query: "research findings and knowledge summaries"
 # 16384-token/request budget, and E4B drives multi-round tool loops with zero
 # errors, so the unmetered-cloud base is no longer needed here. The sub-agent
 # clamp keeps `llamacpp` (local is always unmetered).
-model_preference: "gemma4-e4b"
-provider_hint: "llamacpp"
+# STAYS ON CLOUD — head-to-head measured 2026-09-11 against an identical twin
+# (same tools, same prompt, only the model differs), run via run_agent directly
+# so the front door was out of the loop:
+#   local made 4 calls (3x search_web + reason), never called http_request, named no manufacturer and declined to cite a figure it had; cloud made 8 (search_notes -> search_web -> http_request x3) and returned a sourced manufacturer/cost table.
+# Context was never the constraint. The failure is result-directed iteration:
+# E4B does not let the outcome of one tool call shape the next, so it either
+# stops at the first obstacle or loops undirected. Local is fine for one-shot
+# synthesis (schedule-author) and deterministic lookup (knowledge-worker
+# recall_recent) -- both have no loop to close. Re-test before moving this local.
+model_preference: ""
+provider_hint: ""
 # Spawnable as a sub-agent (Phase 2). The orchestrator delegates lookups here.
 spawnable: true
 specialty: "current/external info and web search, cross-checked against the knowledge graph"

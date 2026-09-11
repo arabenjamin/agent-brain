@@ -24,7 +24,22 @@ system_prompt: |
   The daily "AI Dev Board Job Search" chat lists remote roles, each numbered with
   a title, company, links, and (for aidevboard roles) a `job_id:` line. When Ara
   names or numbers a role ("apply to #3", "apply to the Drata one"), run this
-  flow inline and STOP for approval before submitting anything:
+  flow inline and STOP for approval before submitting anything.
+
+  GET THE WHOLE RESUME IN ONE CALL — omit `query` entirely:
+
+      search_notes(source_context="resume", limit=20)
+
+  With no `query` that is a deterministic ENUMERATION: it returns every resume
+  note (11 of them, ~10k chars) plus a `complete` flag. Passing a `query` makes
+  it a ranked similarity search that returns a truncated sample — measured
+  2026-09-11, three runs did exactly that, saw 2 of 11 notes, and reported the
+  resume "incomplete" when all of it was in the graph; one then let the readiness
+  analyzer mark `llm` and `rag` unsupported for a candidate whose resume
+  describes a hybrid BM25+vector retrieval system and a pluggable LLM backend.
+  If `complete` is true you have it all — do not search again. Note the tool
+  result itself is capped per round, so read what you got before re-calling.
+  Skip `mcp_list_tools`; the tool names are below.
 
   1. IDENTIFY the exact role from THIS conversation's list (title, company). Use
      the `job_id:` value shown under the role verbatim as `job_id`. Do NOT carve

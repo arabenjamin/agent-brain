@@ -1283,6 +1283,52 @@ impl KnowledgeService {
 
     /// Return notes whose spaced-repetition review is due.
     pub async fn list_notes(&self, limit: usize, note_type: Option<&str>) -> Result<Vec<Value>> {
+        self.list_notes_filtered(limit, note_type, None).await
+    }
+
+    /// Enumerate notes, optionally narrowed by `note_type` and/or `source_context`.
+    ///
+    /// `source_context` enumeration exists because similarity search cannot do it:
+    /// a résumé filed as 11 notes under `source_context:"resume"` (10411 chars)
+    /// was only reachable via `search_notes`, which ranks by topic and truncates,
+    /// so a delegated `job-applicant` burned all 8 of its rounds on repeat
+    /// searches and still reported the résumé "incomplete" — then declined to
+    /// compile an application from it (2026-09-11). Same shape as `recall_recent`
+    /// and `list_endpoints`: when the caller knows the LABEL, give them an
+    /// enumeration, not a ranked sample.
+    pub async fn list_notes_filtered(
+        &self,
+        limit: usize,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+    ) -> Result<Vec<Value>> {
+        // Chunk fragments inherit their parent's source_context, so an
+        // unfiltered enumeration would return the same text several times over
+        // and eat the caller's limit — exclude them, as the prior-run Cypher
+        // rule in CLAUDE.md requires.
+        if source_context.is_some() {
+            let mut q = String::from(
+                "MATCH (n:Note) WHERE n.source_context = $source_context \
+                 AND NOT (n)-[:PART_OF]->() ",
+            );
+            if note_type.is_some() {
+                q.push_str("AND n.note_type = $note_type ");
+            }
+            q.push_str(
+                "RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
+                 n.access_count AS access_count, toString(n.created_at) AS created_at, \
+                 n.source_context AS source_context, n.provenance AS provenance \
+                 ORDER BY n.created_at ASC LIMIT $limit",
+            );
+            let mut query = neo4rs::query(&q)
+                .param("source_context", source_context.unwrap_or_default())
+                .param("limit", limit as i64);
+            if let Some(nt) = note_type {
+                query = query.param("note_type", nt);
+            }
+            return self.rows_to_notes(query).await;
+        }
+
         let query = if let Some(nt) = note_type {
             neo4rs::query(
                 r#"
@@ -1309,6 +1355,11 @@ impl KnowledgeService {
             .param("limit", limit as i64)
         };
 
+        self.rows_to_notes(query).await
+    }
+
+    /// Shared row -> JSON mapping for the `list_notes*` enumerations.
+    async fn rows_to_notes(&self, query: neo4rs::Query) -> Result<Vec<Value>> {
         let rows = self.neo4j.execute(query).await?;
         let mut results = Vec::new();
         for row in rows {
@@ -3526,6 +3577,15 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         limit: usize,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         KnowledgeService::search_by_entity(self, entity_name, entity_type, limit).await
+    }
+
+    async fn list_notes_filtered(
+        &self,
+        limit: usize,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        KnowledgeService::list_notes_filtered(self, limit, note_type, source_context).await
     }
 
     async fn list_notes(

@@ -60,6 +60,12 @@ pub struct VideoMeta {
     pub url: String,
     pub published_at: String,
     pub duration_secs: i64,
+    /// Whether yt-dlp reports this as a CURRENTLY-BROADCASTING live stream
+    /// (`is_live`). Load-bearing: a live stream has no end, and the
+    /// `MEDIA_MAX_DURATION_SECS` cost guard structurally cannot catch one
+    /// because yt-dlp reports `duration: null` for it, which parses to 0 — and
+    /// `0 > 10800` is false. See [`MediaService::ingest_media`].
+    pub is_live: bool,
 }
 
 /// How a transcript target must be acquired, chosen by [`MediaService::classify_input`].
@@ -307,6 +313,10 @@ impl MediaService {
         let url = first_nonempty(&[str_field(v, "webpage_url"), str_field(v, "original_url")]);
         let duration_secs = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0) as i64;
         let published_at = format_upload_date(&str_field(v, "upload_date"));
+        // `is_live` is true only while the stream is actually broadcasting;
+        // `was_live` (a finished stream, now a normal VOD with a real duration)
+        // is deliberately NOT treated as live — those are safe to ingest.
+        let is_live = v.get("is_live").and_then(|x| x.as_bool()).unwrap_or(false);
 
         Ok(VideoMeta {
             id,
@@ -316,6 +326,7 @@ impl MediaService {
             url,
             published_at,
             duration_secs,
+            is_live,
         })
     }
 
@@ -404,6 +415,27 @@ impl MediaService {
     async fn fetch_via_ytdlp(&self, url: &str) -> anyhow::Result<(VideoMeta, String, String)> {
         let raw = self.run_yt_dlp_json(url).await?;
         let meta = self.parse_meta(&raw)?;
+
+        // ── Live-stream guard ────────────────────────────────────────────────
+        // Reject BEFORE the caption path, which is what a live stream slips
+        // through: the MEDIA_MAX_DURATION_SECS cost guard below only runs on the
+        // no-captions branch, and even when reached it cannot fire, because
+        // yt-dlp reports `duration: null` for a live stream (parsed to 0, and
+        // `0 > max` is false). A live broadcast also has no end, so the
+        // map-reduce summarisation in `ingest_media` has no finite transcript to
+        // reduce and the job simply hangs.
+        //
+        // Observed 2026-09-11: a `watch video:` task on a broadcasting stream
+        // held a local job slot for 3 hours across 29 attempts, burning zero LLM
+        // calls and never erroring. Failing fast and loudly is the correct
+        // outcome — a live stream is not transient, so retrying cannot help.
+        if meta.is_live {
+            anyhow::bail!(
+                "'{}' ({}) is a LIVE broadcast — refusing to ingest. A live stream has no end, so there is no finite transcript to summarise, and it would hold a job slot until the broadcast stops. Re-run this once the stream has ended and YouTube has published it as a normal video with a duration.",
+                meta.title,
+                meta.id
+            );
+        }
 
         debug!(video = %meta.id, "downloading caption track via yt-dlp");
         if let Some(text) = self.download_captions(url, &meta.id).await? {
@@ -886,6 +918,8 @@ fn meta_from_media_url(url: &str) -> VideoMeta {
         url: url.to_string(),
         published_at: String::new(),
         duration_secs: 0,
+        // A published enclosure is a finished file, never a live broadcast.
+        is_live: false,
     }
 }
 
@@ -900,6 +934,8 @@ fn meta_from_local_file(path: &std::path::Path) -> VideoMeta {
         url: format!("file://{path_str}"),
         published_at: String::new(),
         duration_secs: 0,
+        // A file on disk is finite by construction.
+        is_live: false,
     }
 }
 
@@ -1006,6 +1042,47 @@ fn split_sentences(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_live` is the only thing standing between a live broadcast and a job
+    /// that hangs until the stream ends: yt-dlp reports `duration: null` for one,
+    /// which parses to 0, so the MEDIA_MAX_DURATION_SECS guard can never fire.
+    /// `was_live` (a finished stream, now an ordinary VOD with a real duration)
+    /// must NOT be treated as live or the finished recording becomes uningestable.
+    #[test]
+    fn parse_meta_flags_live_but_not_finished_streams() {
+        let svc = MediaService::from_env();
+
+        let live = serde_json::json!({
+            "id": "f9f6JURECo4",
+            "title": "25th Anniversary Commemoration Coverage",
+            "is_live": true,
+            "duration": serde_json::Value::Null,
+        });
+        let m = svc.parse_meta(&live).expect("live metadata parses");
+        assert!(m.is_live, "a broadcasting stream must be flagged live");
+        assert_eq!(
+            m.duration_secs, 0,
+            "null duration parses to 0 — which is exactly why the duration cap \
+             cannot catch a live stream and is_live has to"
+        );
+
+        // A finished stream is a normal video and stays ingestable.
+        let finished = serde_json::json!({
+            "id": "abc123",
+            "title": "Yesterday's stream",
+            "is_live": false,
+            "was_live": true,
+            "duration": 3600.0,
+        });
+        let m = svc.parse_meta(&finished).expect("finished metadata parses");
+        assert!(!m.is_live, "was_live must not be treated as live");
+        assert_eq!(m.duration_secs, 3600);
+
+        // Absent field (most videos, and non-YouTube extractors) is not live.
+        let plain = serde_json::json!({"id": "x1", "title": "t", "duration": 120.0});
+        let m = svc.parse_meta(&plain).expect("plain metadata parses");
+        assert!(!m.is_live, "absent is_live must default to not-live");
+    }
 
     #[test]
     fn extracts_first_url_from_goal() {

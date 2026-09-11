@@ -207,6 +207,19 @@ pub trait KnowledgeStore: Send + Sync {
     async fn list_notes(&self, limit: usize, note_type: Option<&str>)
     -> anyhow::Result<Vec<Value>>;
 
+    /// Enumerate notes by LABEL — `note_type` and/or `source_context` — rather
+    /// than ranking them by similarity. When the caller already knows the label,
+    /// a top-K sample is the wrong shape: it truncates and misses, and an agent
+    /// reads the gap as absence. Same doctrine as `recall_recent` and
+    /// `list_endpoints`. Chunk fragments are excluded so one note is not
+    /// returned several times over.
+    async fn list_notes_filtered(
+        &self,
+        limit: usize,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+    ) -> anyhow::Result<Vec<Value>>;
+
     /// Deterministic time-window recall: notes created in `[since_iso, until_iso)`
     /// (UTC ISO-8601), counted by `note_type` and by `source_context`, plus a
     /// bounded, most-recent sample. Chunk notes (`-[:PART_OF]->`) are excluded so

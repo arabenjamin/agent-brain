@@ -62,8 +62,17 @@ pre_load_query: "MATCH (c:ApiContext) RETURN 'Existing ApiContext: ' + c.name + 
 # 16384-token/request budget, and E4B drives multi-round tool loops with zero
 # errors, so the unmetered-cloud base is no longer needed here. The sub-agent
 # clamp keeps `llamacpp` (local is always unmetered).
-model_preference: "gemma4-e4b"
-provider_hint: "llamacpp"
+# STAYS ON CLOUD — head-to-head measured 2026-09-11 against an identical twin
+# (same tools, same prompt, only the model differs), run via run_agent directly
+# so the front door was out of the loop:
+#   local made 3 calls, all search_web, verified nothing and returned no base URL or endpoint; cloud made 8 including http_request probes and returned name, base URL, key requirement and example endpoint.
+# Context was never the constraint. The failure is result-directed iteration:
+# E4B does not let the outcome of one tool call shape the next, so it either
+# stops at the first obstacle or loops undirected. Local is fine for one-shot
+# synthesis (schedule-author) and deterministic lookup (knowledge-worker
+# recall_recent) -- both have no loop to close. Re-test before moving this local.
+model_preference: ""
+provider_hint: ""
 # Spawnable as a sub-agent. Reachable via run_agent(agent="api-scout") — the
 # weekly `Weekly API scout` schedule targets it.
 spawnable: true

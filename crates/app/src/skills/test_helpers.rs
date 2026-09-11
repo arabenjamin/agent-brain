@@ -242,6 +242,15 @@ impl KnowledgeStore for MockKnowledgeStore {
         Ok(vec![])
     }
 
+    async fn list_notes_filtered(
+        &self,
+        _limit: usize,
+        _note_type: Option<&str>,
+        _source_context: Option<&str>,
+    ) -> anyhow::Result<Vec<Value>> {
+        Ok(vec![])
+    }
+
     async fn recall_window(
         &self,
         since_iso: &str,

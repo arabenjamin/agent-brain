@@ -149,22 +149,56 @@ impl Neo4jClient {
             .collect()
     }
 
-    /// Reset any jobs that were `running` when the process died back to `queued`.
-    /// Returns the number of jobs reset.
+    /// Recover jobs that were `running` when the process died: requeue those with
+    /// attempts left, and **dead-letter those already at their cap**.
+    ///
+    /// Returns the number REQUEUED (dead-lettered ones are logged at WARN, not
+    /// counted, so the "reloaded N jobs" line stays honest).
+    ///
+    /// The cap check is load-bearing. This used to flip every running job back to
+    /// `queued` unconditionally, which made `max_attempts` meaningless across a
+    /// restart: a job that hangs is never marked failed, so it is still `running`
+    /// at the next startup and gets resurrected, forever. Observed 2026-09-11 — an
+    /// `ingest_media` job on a live YouTube broadcast reached **attempt 29 against
+    /// a cap of 3**, having been revived by each restart during a day of rebuilds.
+    /// It held one of the two local job slots for three hours while burning zero
+    /// LLM calls and recording no error.
+    ///
+    /// This is not specific to media: ANY job that hangs rather than failing hits
+    /// it, which is why the fix belongs here rather than in a duration guard.
     pub async fn reset_running_agent_jobs(&self) -> Result<usize, RepositoryError> {
         let now = Utc::now().to_rfc3339();
         let q = query(
             "MATCH (j:AgentJob {status: 'running'}) \
-             SET j.status = 'queued', j.updated_at = datetime($now) \
-             RETURN count(j) AS n",
+             WITH j, coalesce(j.attempt_count, 0) AS attempts, \
+                  coalesce(j.max_attempts, 3) AS cap \
+             SET j.status = CASE WHEN attempts >= cap THEN 'dead' ELSE 'queued' END, \
+                 j.error = CASE WHEN attempts >= cap \
+                      THEN 'Exhausted ' + toString(cap) + ' attempts (' + toString(attempts) + \
+                           ' recorded) and was still running at startup — dead-lettered by \
+                            recovery instead of being requeued.' \
+                      ELSE j.error END, \
+                 j.updated_at = datetime($now) \
+             RETURN sum(CASE WHEN attempts >= cap THEN 0 ELSE 1 END) AS n, \
+                    sum(CASE WHEN attempts >= cap THEN 1 ELSE 0 END) AS dead",
         )
         .param("now", now);
         let rows = self.execute(q).await?;
-        let count = rows
+        let requeued = rows
             .first()
             .and_then(|r| r.get::<i64>("n").ok())
             .unwrap_or(0) as usize;
-        Ok(count)
+        let dead = rows
+            .first()
+            .and_then(|r| r.get::<i64>("dead").ok())
+            .unwrap_or(0);
+        if dead > 0 {
+            tracing::warn!(
+                count = dead,
+                "Dead-lettered AgentJobs that were still running past their attempt cap"
+            );
+        }
+        Ok(requeued)
     }
 
     /// Update a job's status to a new value.

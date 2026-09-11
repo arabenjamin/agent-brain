@@ -61,8 +61,17 @@ pre_load_query: "dynamic tools and procedure pipelines"
 # 16384-token/request budget, and E4B drives multi-round tool loops with zero
 # errors, so the unmetered-cloud base is no longer needed here. The sub-agent
 # clamp keeps `llamacpp` (local is always unmetered).
-model_preference: "gemma4-e4b"
-provider_hint: "llamacpp"
+# STAYS ON CLOUD — head-to-head measured 2026-09-11 against an identical twin
+# (same tools, same prompt, only the model differs), run via run_agent directly
+# so the front door was out of the loop:
+#   local made ZERO tool calls -- it guessed the tool inventory from memory ("Mental Check/Pre-analysis") and leaked its chain-of-thought as step_by_step_thought; cloud called analyze_own_structure and worked from the real registry.
+# Context was never the constraint. The failure is result-directed iteration:
+# E4B does not let the outcome of one tool call shape the next, so it either
+# stops at the first obstacle or loops undirected. Local is fine for one-shot
+# synthesis (schedule-author) and deterministic lookup (knowledge-worker
+# recall_recent) -- both have no loop to close. Re-test before moving this local.
+model_preference: ""
+provider_hint: ""
 spawnable: true
 specialty: >-
   composing a new dynamic tool out of the brain's existing tools (a procedure

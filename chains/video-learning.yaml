@@ -25,7 +25,12 @@ steps:
   #    { video_id, title, channel, url, summary, key_concepts, ... }.
   - tool_name: ingest_media
     arguments:
-      url: "{{goal}}"
+      # `{{goal_topic}}`, NOT `{{goal}}`: the task goal is "watch video: <url>"
+      # and `{{goal}}` passes the routing prefix through as part of the URL, so
+      # ingest_media received "watch video: https://youtube.com/watch?v=..."
+      # (observed 2026-09-11). Same rule CLAUDE.md already states for search
+      # steps — anything consumed as DATA wants the topic, not the routing line.
+      url: "{{goal_topic}}"
       source_context: video_learning
       store: false
     priority: 1

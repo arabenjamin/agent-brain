@@ -422,10 +422,38 @@ impl MediaSkill {
                 // the owning Task (the top source of media failures in the 2026-08
                 // review). Record a "skipped_too_long" :Media node so media_exists()
                 // dedups it on the next poll and we never re-probe the same video.
+                // The probe is NOT gated on the duration cap any more: the live
+                // check below must run even when MEDIA_MAX_DURATION_SECS=0
+                // (unlimited), because a live broadcast is unbounded regardless
+                // of what cap is configured.
                 let max = self.svc.max_duration_secs();
-                if max > 0 {
+                {
                     match self.svc.fetch_meta(&item.url).await {
-                        Ok(meta) if meta.duration_secs > max => {
+                        // ── Live broadcast: skip WITHOUT a dedup record ──────
+                        // `ingest_media` also refuses a live stream, but catching
+                        // it here means it never becomes a Task at all — no chain,
+                        // no retry cycle, no failed owning Task. C-SPAN is the
+                        // motivating case: highest-volume watched source (25 tasks
+                        // in 7 days) and it broadcasts hearings and commemorative
+                        // coverage LIVE.
+                        //
+                        // Deliberately NO `skipped_live` :Media node, unlike the
+                        // over-length path below. A video's duration never
+                        // changes, so skipping it is permanent and the dedup
+                        // record is correct. "Live" is TEMPORARY — the broadcast
+                        // ends and YouTube republishes it as an ordinary video
+                        // with a real duration. Recording a dedup node here would
+                        // make `media_exists()` suppress it forever and the
+                        // finished recording could never be ingested. It stays in
+                        // the channel's RSS feed, so the next poll re-probes it
+                        // and picks it up once `is_live` is false.
+                        Ok(meta) if meta.is_live => {
+                            info!(source = %ms.name, url = %item.url, title = %item.title,
+                                "poll_media_sources: skipping LIVE broadcast; will re-probe \
+                                 on a later poll once it has ended");
+                            continue;
+                        }
+                        Ok(meta) if max > 0 && meta.duration_secs > max => {
                             let record = MediaRecord {
                                 id: item.video_id.clone(),
                                 url: item.url.clone(),
