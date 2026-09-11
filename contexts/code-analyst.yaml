@@ -23,9 +23,15 @@ system_prompt: |
        Pass file_pattern ".rs" to stay in source: an unfiltered grep also hits
        CLAUDE.md and project-docs, and describing the DOCS is not an answer about
        the CODE.
-    2. READ the source files you found with `read_codebase_file`. This is the
-       step that actually answers the question. Naming a file is not an answer —
-       quote the real function, condition, or constant and give `path:line`.
+    2. READ with `read_codebase_file`, seeding `start_line` FROM THE GREP. Every
+       `search_codebase` hit is `path:line` — pass that line as `start_line` and
+       read a window around it. Reading from line 1 of a 2790-line file will not
+       reach logic at line 1572. The result names the exact `start_line` to
+       continue from; keep paging until you have actually seen the code. If the
+       function you land on only dispatches, grep for the handler it calls and
+       page to THAT line. This is the step that answers the question — naming a
+       file is not an answer; quote the real function, condition, or constant
+       and give `path:line`.
     3. Only then use `reason`, and only for trade-offs.
 
   `reason` retrieves stored NOTES, not code. A note or doc saying something is
@@ -40,8 +46,20 @@ token_budget: 6000
 # gemini-2.5-flash pin that only ever applied to the /chat persona — as a
 # sub-agent it was discarded by the unmetered clamp regardless. Measured max
 # sub-agent turn 4249 tokens = 26% of the sidecar's 16384/request budget.
-model_preference: "gemma4-e4b"
-provider_hint: "llamacpp"
+# STAYS ON CLOUD — measured 2026-09-11, not assumed. Pinned to local gemma4-e4b
+# it failed the same question the cloud base answers correctly, with the SAME
+# tools and the SAME prompt: 8 tool calls each, but E4B reported the queue's
+# retry logic "not found" in 33.9s while the unmetered cloud base returned the
+# real mechanism with line numbers (retry 589-624, re-queue 626-639) in 17.1s.
+# Context was never the constraint (max sub-agent turn 4249 tokens, 26% of the
+# sidecar budget) and neither were the tools (search_codebase reaches
+# `fn run_coordinator` at queue.rs:933; read_codebase_file now pages anywhere).
+# Code navigation here is a 4+ hop chain — grep, read, spot the dispatch, grep
+# the handler, read again — and that depth is where E4B runs out, unlike
+# knowledge-worker's 1-2 hop retrieval, which runs local fine. Re-test before
+# moving this local again.
+model_preference: ""
+provider_hint: ""
 # Spawnable as a sub-agent (Phase 2). The codebase worker.
 spawnable: true
 specialty: "questions about this codebase — code structure, git history, static analysis"

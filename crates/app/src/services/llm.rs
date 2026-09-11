@@ -66,6 +66,27 @@ const DEFAULT_LLAMACPP_URL: &str = "http://localhost:8080";
 /// to `OLLAMA_EMBED_MODEL` (`bge-m3`). llama.cpp single-model servers don't
 /// serve `/api/embeddings`, so this keeps `search_notes` / `store_note` working
 /// unchanged while generation moves to llama.cpp.
+/// Context window for **host-Ollama generation**, from `OLLAMA_NUM_CTX`.
+///
+/// Ollama serves a 4096-token window by default whatever the model claims, and
+/// input past it is dropped **silently** — no error, no marker, just a shorter
+/// prompt. Measured 2026-09-11 over 30 days: 103 of 874 `reason` calls came back
+/// with `tokens_in` sitting exactly on 4096 (granite4 58, gemma4 45; the
+/// llama.cpp and cloud paths showed zero), i.e. they were clipped and answered
+/// from a truncated prompt. Every host-Ollama config must therefore set this
+/// explicitly — leaving `num_ctx: None` is the bug, not the default.
+///
+/// Raising it costs KV-cache VRAM on a shared GPU, so it is env-tunable; 16384
+/// covers 99.4% of observed `reason` inputs (only 5/874 exceeded it).
+pub fn ollama_num_ctx() -> u32 {
+    const DEFAULT_OLLAMA_NUM_CTX: u32 = 16384;
+    std::env::var("OLLAMA_NUM_CTX")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_OLLAMA_NUM_CTX)
+}
+
 pub fn build_local_llm_config() -> LlmConfig {
     let backend = std::env::var("LOCAL_LLM_BACKEND")
         .unwrap_or_default()
@@ -102,6 +123,12 @@ pub fn build_local_llm_config() -> LlmConfig {
         // when generation runs on llama.cpp (whose base_url can't serve embeds).
         .with_embed_base_url(ollama_url)
         .with_timeout(local_timeout());
+
+    // Only the Ollama path needs this: llama.cpp fixes its context at launch
+    // (`-c` / `-np`) and ignores a per-request num_ctx entirely.
+    if matches!(cfg.provider, LlmProviderType::Ollama) {
+        cfg = cfg.with_num_ctx(ollama_num_ctx());
+    }
 
     if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
         cfg = cfg.with_embed_model(em);

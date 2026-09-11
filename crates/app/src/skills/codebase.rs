@@ -261,13 +261,17 @@ impl CodebaseSkill {
     fn read_codebase_file_def() -> ToolDefinition {
         ToolDefinition {
             name: "read_codebase_file".to_string(),
-            description: "Read a file from the agent's own codebase by path. Path is relative to the codebase root.".to_string(),
+            description: "Read a file from the agent's own codebase by path. Path is relative to the codebase root. Returns a WINDOW of lines, not necessarily the whole file: use start_line (1-indexed) with max_lines to page through a large file — the result states which lines you got and the exact start_line to continue from.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "File path relative to codebase root (e.g. 'src/main.rs' or 'Cargo.toml')"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "1-indexed line to start reading from (default: 1). Use the value the previous result's continuation marker names to page through a file larger than max_lines."
                     },
                     "max_lines": {
                         "type": "integer",
@@ -669,6 +673,7 @@ impl CodebaseSkill {
         struct Args {
             path: String,
             max_lines: Option<usize>,
+            start_line: Option<usize>,
             prepend_context: Option<String>,
         }
         let args: Args = match parse_args(arguments) {
@@ -676,6 +681,14 @@ impl CodebaseSkill {
             Err(e) => return e,
         };
         let max_lines = args.max_lines.unwrap_or(500).min(2000);
+        // 1-indexed to match the `path:line` citations every other tool emits
+        // (search_codebase results, compiler errors, the agent's own report).
+        // Without an offset the window could only ever start at line 1, so a
+        // 2790-line file like services/queue.rs had everything past line 2000
+        // permanently unreachable — an agent asked about logic at line ~1572 hit
+        // the cap and correctly reported it "not visible in the files examined".
+        let start_line = args.start_line.unwrap_or(1).max(1);
+        let start_idx = start_line - 1;
         let full_path = match self.safe_path(&args.path) {
             Ok(p) => p,
             Err(e) => return e,
@@ -688,8 +701,16 @@ impl CodebaseSkill {
 
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
-        let truncated = total > max_lines;
-        let shown = lines[..max_lines.min(total)].join("\n");
+        if start_idx >= total && total > 0 {
+            return ToolCallResult::success_text(format!(
+                "// File: {}\n\n[start_line {} is past the end of the file ({} lines). \
+                 Re-read with a start_line between 1 and {}.]",
+                args.path, start_line, total, total
+            ));
+        }
+        let end_idx = start_idx.saturating_add(max_lines).min(total);
+        let truncated = end_idx < total;
+        let shown = lines[start_idx.min(total)..end_idx].join("\n");
 
         let mut out = String::new();
         if let Some(ctx) = args.prepend_context
@@ -698,12 +719,18 @@ impl CodebaseSkill {
             out.push_str(&ctx);
             out.push_str("\n\n---\n\n");
         }
-        out.push_str(&format!("// File: {}\n{}", args.path, shown));
+        out.push_str(&format!(
+            "// File: {} (lines {}-{} of {})\n{}",
+            args.path, start_line, end_idx, total, shown
+        ));
         if truncated {
+            // Name the exact next call. "use max_lines to read more" was a dead
+            // end past the 2000 cap; a concrete start_line is not.
             out.push_str(&format!(
-                "\n\n[... {} more lines truncated (total: {}) — use max_lines to read more ...]",
-                total - max_lines,
-                total
+                "\n\n[... {} more line(s) not shown (total: {}). Continue with start_line: {} (max_lines caps at 2000 per call) ...]",
+                total - end_idx,
+                total,
+                end_idx + 1
             ));
         }
         ToolCallResult::success_text(out)

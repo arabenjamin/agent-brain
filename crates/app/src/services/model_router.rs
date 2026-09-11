@@ -117,6 +117,12 @@ pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -
             cfg.keep_alive = std::env::var("OLLAMA_KEEP_ALIVE")
                 .ok()
                 .and_then(|s| crate::config::validate_go_duration(s.trim()));
+            // Same reason as base_url/keep_alive: the router builds on
+            // `LlmConfig::default()`, whose `num_ctx` is None — which means
+            // Ollama's silent 4096. A capability-routed local model (granite4 at
+            // selection_rank 120) landed here and answered `reason` off a clipped
+            // prompt 58 times in 30 days. See `llm::ollama_num_ctx`.
+            cfg.num_ctx = Some(crate::services::llm::ollama_num_ctx());
         }
     }
     cfg
@@ -207,10 +213,17 @@ mod tests {
         let base = LlmConfig::default();
         for name in ["llamacpp", "llama-cpp", "llama.cpp", "llama_cpp"] {
             let cfg = config_for_catalog_entry(&base, name, "gemma4-e4b");
-            assert_eq!(cfg.provider, LlmProviderType::LlamaCpp, "provider for {name}");
+            assert_eq!(
+                cfg.provider,
+                LlmProviderType::LlamaCpp,
+                "provider for {name}"
+            );
             assert_eq!(cfg.model, "gemma4-e4b");
             assert!(cfg.base_url.is_some(), "base_url set for {name}");
-            assert!(cfg.embed_base_url.is_some(), "embed endpoint pinned for {name}");
+            assert!(
+                cfg.embed_base_url.is_some(),
+                "embed endpoint pinned for {name}"
+            );
             assert!(cfg.api_key.is_none(), "no api key for {name}");
         }
     }
