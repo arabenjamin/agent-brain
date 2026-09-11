@@ -28,8 +28,8 @@ use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::queue::QueueService;
 use crate::services::resource_registry::ResourceRegistry;
 use crate::services::{
-    AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, LlmProviderType, MediaService,
-    SharedLlm, SnapshotService,
+    AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, MediaService, SharedLlm,
+    SnapshotService,
 };
 use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
@@ -525,39 +525,18 @@ impl BrainCore {
         // so maintenance tasks never touch cloud quota even when the active
         // provider is ollama-cloud or anthropic.
         let local_config_arc = {
-            let local_url = std::env::var("OLLAMA_LOCAL_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let model =
-                std::env::var("OLLAMA_LOCAL_MODEL").unwrap_or_else(|_| "gemma4:latest".to_string());
-            // The local model needs a far larger request budget than the shared
-            // 120s default — see `DEFAULT_LOCAL_TIMEOUT_SECS`. On a shared
-            // consumer GPU a background call takes 54–79s idle and 80–120s
-            // under the media-watch burst, so the default ceiling was killing
-            // in-flight work and dead-lettering the chain around it.
-            let timeout = crate::services::llm::local_timeout();
-            let mut local_llm_config = LlmConfig::default()
-                .with_provider(LlmProviderType::Ollama)
-                .with_base_url(local_url.clone())
-                .with_model(model)
-                .with_embed_base_url(local_url)
-                .with_timeout(timeout);
-            // Pin the embedding model so local knowledge ops use bge-m3 (or whatever
-            // OLLAMA_EMBED_MODEL is set to) instead of falling back to the generation model.
-            if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
-                local_llm_config = local_llm_config.with_embed_model(em);
-            }
-            // Keep the background model resident between chain steps. This config
-            // serves exactly the serial, gap-separated workload that would
-            // otherwise pay a reload per step on a shared GPU.
-            if let Some(ka) = std::env::var("OLLAMA_KEEP_ALIVE")
-                .ok()
-                .and_then(|s| crate::config::validate_go_duration(s.trim()))
-            {
-                local_llm_config = local_llm_config.with_keep_alive(ka);
-            }
+            // Backend (Ollama vs llama.cpp) is chosen by LOCAL_LLM_BACKEND; the
+            // local model needs a far larger request budget than the shared 120s
+            // default (see `DEFAULT_LOCAL_TIMEOUT_SECS`) because on a shared
+            // consumer GPU a background call takes 54–79s idle and 80–120s under
+            // the media-watch burst. Embeddings stay pinned to local Ollama
+            // regardless of the generation backend. See `build_local_llm_config`.
+            let local_llm_config = crate::services::llm::build_local_llm_config();
             info!(
+                provider = %local_llm_config.provider,
                 model = %local_llm_config.model,
-                timeout_secs = timeout.as_secs(),
+                base_url = local_llm_config.base_url.as_deref().unwrap_or(""),
+                timeout_secs = local_llm_config.timeout.as_secs(),
                 "Local background LLM configured"
             );
             Arc::new(RwLock::new(Some(local_llm_config)))

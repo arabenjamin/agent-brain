@@ -211,7 +211,7 @@ pub async fn run_eval(
         }
 
         let results = knowledge
-            .search_notes_readonly(&case.query, k, 0, case.note_type.as_deref())
+            .search_notes_readonly(&case.query, k, 0, case.note_type.as_deref(), None)
             .await
             .with_context(|| format!("searching for {:?}", case.query))?;
 

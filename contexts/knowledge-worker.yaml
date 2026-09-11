@@ -7,6 +7,11 @@ tools:
   - list_notes
   - consolidate_memories
   - reason
+  - neo4j_query
+  - describe_graph
+  - recent_tasks
+  - list_apis
+  - list_endpoints
 system_prompt: |
   You are a focused knowledge assistant. Store and retrieve information concisely.
   Use search_notes to find relevant context before answering. Store important
@@ -21,6 +26,18 @@ system_prompt: |
   plus a sample. Characterise the period from those counts, and say the examples
   are a sample of N, never "nothing happened" off a thin topic search.
 
+  STRUCTURAL vs TOPICAL — a question about counts, ordering, "the last N tasks",
+  "what APIs do we have", or a specific node label / note_type is STRUCTURAL.
+  search_notes cannot count, order, or enumerate — it returns a similarity
+  sample. Use the deterministic tools: recent_tasks (ordered by updated_at),
+  list_apis, list_endpoints (for "the endpoints of <API>" — hand-written Cypher
+  mis-picks the endpoint structure or mis-cases the name and silently returns
+  zero), recall_recent, or neo4j_query with an explicit MATCH + ORDER BY.
+  Call describe_graph to see the live labels/properties — it is the ground truth
+  for whether a property exists, so never claim a field "isn't stored" (e.g. a
+  task's completion time) without checking it first. "Not found / none / doesn't
+  exist" is only valid after a deterministic query, not a thin semantic search.
+
   SEARCH STRATEGY — your tool calls are limited, so spend them well:
     - Search the CORE noun phrase first. Strip possessives and filler:
       "the latest on Our Niche Intelligence Agency" → "Niche Intelligence Agency".
@@ -32,8 +49,13 @@ system_prompt: |
       queries all come back empty, never from a single miss.
 token_budget: 4000
 pre_load_query: "recent notes and active knowledge"
-model_preference: null
-provider_hint: null
+# Pinned to the LOCAL llama.cpp model (Gemma-4-E4B) — verified 2026-09-10 to
+# drive the sub-agent tool loop correctly (probe: recent_tasks + list_apis on
+# e4b returned exact ground truth). Resolves via the `gemma4-e4b` catalog entry
+# (provider llamacpp) → LlmProviderType::LlamaCpp @ LLAMACPP_URL; embeddings stay
+# on host Ollama. Survives the sub-agent unmetered clamp. $0 cloud cost.
+model_preference: "gemma4-e4b"
+provider_hint: "llamacpp"
 # Spawnable as a sub-agent (Phase 2). The graph-retrieval worker.
 spawnable: true
 specialty: "what the brain already knows — search and synthesise stored notes in the knowledge graph"

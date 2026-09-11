@@ -264,8 +264,12 @@ impl AgentRunner {
                     .unwrap_or_else(|| base.clone());
                 if matches!(
                     resolved.provider,
-                    LlmProviderType::Ollama | LlmProviderType::OllamaCloud
+                    LlmProviderType::Ollama
+                        | LlmProviderType::OllamaCloud
+                        | LlmProviderType::LlamaCpp
                 ) {
+                    // Ollama (host), Ollama Cloud (free tier), and the llama.cpp
+                    // sidecar are all unmetered/local — safe for a sub-agent.
                     resolved
                 } else {
                     tracing::warn!(

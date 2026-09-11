@@ -96,6 +96,23 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
+  # The llama.cpp `llama-server` sidecar (LLAMACPP_URL, OpenAI-compatible), which
+  # serves Gemma-4-E4B GPU-resident at ~3.3 GB (see llamacpp/Dockerfile). This is
+  # the background-generation model; the entry exists so a chat/sub-agent PROFILE
+  # can pin it (provider `llamacpp` → LlamaCpp @ LLAMACPP_URL, embeddings stay on
+  # host Ollama). `model` is a ledger label — llama-server serves whatever GGUF it
+  # launched with regardless. Local band (110–199); it never wins capability
+  # routing over cloud on cost ties.
+  gemma4-e4b:
+    provider: llamacpp
+    model: "gemma4-e4b"
+    context_window: 16384
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 118
+    capabilities:
+      - fast
+
   gemma4:latest:
     provider: ollama
     model: "gemma4:latest"

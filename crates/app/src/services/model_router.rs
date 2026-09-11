@@ -87,6 +87,24 @@ pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -
             cfg.base_url = None;
             cfg.api_key = std::env::var("GEMINI_API_KEY").ok();
         }
+        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp" => {
+            // The llama.cpp `llama-server` sidecar (OpenAI-compatible). base_url
+            // points at LLAMACPP_URL regardless of LOCAL_LLM_BACKEND, because the
+            // caller asked for this provider explicitly (a profile/catalog pin,
+            // not the background backend switch). A single-model llama-server
+            // cannot serve embeddings, so embeddings stay pinned to host Ollama —
+            // mirroring build_local_llm_config.
+            cfg.provider = LlmProviderType::LlamaCpp;
+            cfg.base_url = Some(
+                std::env::var("LLAMACPP_URL")
+                    .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            );
+            cfg.embed_base_url = Some(
+                std::env::var("OLLAMA_LOCAL_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
+            );
+            cfg.api_key = None;
+        }
         _ => {
             cfg.provider = LlmProviderType::Ollama;
             cfg.base_url = Some(
@@ -179,6 +197,23 @@ pub fn resolve_model_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn llamacpp_provider_resolves_to_the_sidecar() {
+        // A profile/catalog pin with provider `llamacpp` must produce a LlamaCpp
+        // config (routed to the sidecar), NOT collapse into the host-Ollama
+        // default branch. Embeddings stay pinned (a single-model llama-server
+        // can't embed) and no api key is sent (llama-server needs none).
+        let base = LlmConfig::default();
+        for name in ["llamacpp", "llama-cpp", "llama.cpp", "llama_cpp"] {
+            let cfg = config_for_catalog_entry(&base, name, "gemma4-e4b");
+            assert_eq!(cfg.provider, LlmProviderType::LlamaCpp, "provider for {name}");
+            assert_eq!(cfg.model, "gemma4-e4b");
+            assert!(cfg.base_url.is_some(), "base_url set for {name}");
+            assert!(cfg.embed_base_url.is_some(), "embed endpoint pinned for {name}");
+            assert!(cfg.api_key.is_none(), "no api key for {name}");
+        }
+    }
 
     #[test]
     fn tier0_allows_only_local() {

@@ -39,7 +39,19 @@ services:
       - NEO4J_PASSWORD=password
       - LLM_PROVIDER=ollama-cloud
       - OLLAMA_URL=https://ollama.com
+      # host Ollama — still the EMBEDDINGS backend (bge-m3) even after generation
+      # moves to llama.cpp. A single-model llama-server can't serve /api/embeddings,
+      # so build_local_llm_config keeps embed() pinned here regardless of backend.
       - OLLAMA_LOCAL_URL=http://host.docker.internal:11434
+      # Background/scheduled generation backend: `llamacpp` routes every
+      # provider_hint:"ollama" step to the llama.cpp sidecar below (OpenAI-compatible
+      # API); `ollama` (the historical default) keeps generation on host Ollama.
+      # Embeddings are unaffected either way. See services/llm.rs build_local_llm_config.
+      - LOCAL_LLM_BACKEND=llamacpp
+      - LLAMACPP_URL=http://llamacpp:8080
+      # Ledger/log label only — a single-model llama-server serves whatever GGUF it
+      # was launched with (see the llamacpp service --alias) regardless of this name.
+      - LLAMACPP_MODEL=gemma4-e4b
       # The model every background/scheduled job runs on. Swapped off
       # gemma4:latest 2026-09-01 on a clean benchmark (brain stopped, no model
       # resident, real video_learning payload):
@@ -193,6 +205,8 @@ services:
         condition: service_started
       sandbox:
         condition: service_started
+      llamacpp:
+        condition: service_started
     networks:
       - brain-internal
       - sandbox-net
@@ -218,6 +232,68 @@ services:
       - WHISPER__TTL=300   # unload the model after 5 min idle to free VRAM
     volumes:
       - whisper_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - brain-internal
+    restart: unless-stopped
+
+  # Local llama.cpp inference server (OpenAI-compatible) for all background /
+  # scheduled jobs — the generation backend when LOCAL_LLM_BACKEND=llamacpp.
+  # Replaces host Ollama as the *generation* backend; embeddings still run on
+  # host Ollama (bge-m3), which a single-model llama-server does not serve, so
+  # the brain keeps OLLAMA_LOCAL_URL pointed at host Ollama for embed() only.
+  #
+  # GPU (cuda): host driver 535.261.03 (CUDA 12.2) satisfies the -cuda image.
+  # Shares the 8 GB RTX 3060 Ti with host Ollama's bge-m3 (~1.2 GB) and the
+  # whisper sidecar (~1 GB, on-demand). Qwen3-8B Q4_K_M (~4.7 GB) fits alongside
+  # them with a q8_0 KV cache and a conservative context; tune -c / -ngl below.
+  #
+  # -hf auto-downloads the GGUF into the mounted cache on first start (persists
+  # across restarts via the llamacpp_cache volume). --reasoning-budget 0 disables
+  # Qwen3's <think> output so background steps that parse JSON get clean text
+  # (see CLAUDE.md — a thinking model emits into `thinking` and returns empty).
+  llamacpp:
+    # Built from source against CUDA 12.2 to match the host's 535 driver — the
+    # upstream prebuilt image's CUDA 12.8 kernels won't load on it. See
+    # llamacpp/Dockerfile.
+    build:
+      context: ./llamacpp
+      dockerfile: Dockerfile
+    # Model: Gemma-4-E4B (unsloth GGUF). Benchmarked 2026-09-10 on the RTX 3060 Ti
+    # against Qwen3-8B and Ollama: E4B Q4_K_M is fully GPU-resident at ~3.3 GB /
+    # ~80 tok/s — HALF the VRAM of Qwen3-8B (6.0 GB) and ~14% faster, on llama.cpp
+    # ~13% faster than the same model on Ollama. The ~2.7 GB it frees takes
+    # headroom to ~3.5 GB (kills the whisper-burst OOM risk). Tuning notes:
+    # `kv_unified` makes slot count (`-np`) free on VRAM, so `-np 2` matches the
+    # queue's 2 concurrent local slots; `-c` is the real KV lever (16384 covers
+    # the distiller). q8_0 KV is the compact option.
+    #
+    # ★ Gemma 4 is a THINKING model and IGNORES `--reasoning-budget 0` (Qwen's
+    # flag) — it leaks its reasoning into the answer and emits no JSON. It needs
+    # `--reasoning off`. A 12B does NOT fit resident here (Gemma-3-12B Q3_K_M
+    # spills to CPU ~21 tok/s); E4B is the resident/fast choice.
+    command: >
+      -hf unsloth/gemma-4-E4B-it-GGUF:Q4_K_M
+      --alias gemma4-e4b
+      --host 0.0.0.0 --port 8080
+      -ngl 99
+      -c 16384
+      -np 2
+      --flash-attn on
+      --cache-type-k q8_0 --cache-type-v q8_0
+      --jinja
+      --reasoning off
+      --no-webui
+    environment:
+      - LLAMA_CACHE=/models
+    volumes:
+      - llamacpp_cache:/models
     deploy:
       resources:
         reservations:
@@ -309,6 +385,7 @@ networks:
 
 volumes:
   whisper_cache:
+  llamacpp_cache:
   neo4j_data:
   neo4j_logs:
   brain_snapshots:

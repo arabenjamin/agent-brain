@@ -363,6 +363,15 @@ impl KnowledgeSkill {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
+        // Same empty-is-absent normalization for source_context. Until now this
+        // arg was parsed and silently dropped — the semantic search ranked purely
+        // on content, so `source_context:"resume"` still returned unrelated notes.
+        let source_context = input
+            .source_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
         // note_type-only path: list all notes of that type ordered by date
         if input.query.as_deref().is_none_or(str::is_empty) {
             if let Some(nt) = note_type {
@@ -388,11 +397,23 @@ impl KnowledgeSkill {
 
         let results = if input.entity_expansion {
             self.svc
-                .search_notes_with_entity_expansion(query, input.limit, input.graph_hops, note_type)
+                .search_notes_with_entity_expansion(
+                    query,
+                    input.limit,
+                    input.graph_hops,
+                    note_type,
+                    source_context,
+                )
                 .await
         } else {
             self.svc
-                .search_notes(query, input.limit, input.graph_hops, note_type)
+                .search_notes(
+                    query,
+                    input.limit,
+                    input.graph_hops,
+                    note_type,
+                    source_context,
+                )
                 .await
         };
         match results {
@@ -820,7 +841,7 @@ Respond with a JSON object only (no markdown, no explanation):
         // avoid repeating already-known failure patterns and build on prior learning.
         let past_patterns = self
             .svc
-            .search_notes("adversarial review plan failure scenario", 3, 0, None)
+            .search_notes("adversarial review plan failure scenario", 3, 0, None, None)
             .await
             .unwrap_or_default();
 
@@ -1033,6 +1054,15 @@ struct SearchNotesInput {
         deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
     )]
     note_type: Option<String>,
+    // Restrict the semantic search to notes with this exact provenance tag (e.g.
+    // "resume"). Advertised in the tool schema but previously never captured here,
+    // so it was silently ignored — the fix is this field + threading it into the
+    // search filter.
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
+    source_context: Option<String>,
     #[serde(default = "agent_brain_protocol::default_limit_5")]
     limit: usize,
     #[serde(default = "agent_brain_protocol::default_graph_hops")]

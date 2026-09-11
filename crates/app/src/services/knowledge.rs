@@ -895,9 +895,18 @@ impl KnowledgeService {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, false, note_type, true)
-            .await
+        self.search_notes_inner(
+            query_text,
+            limit,
+            graph_hops,
+            false,
+            note_type,
+            source_context,
+            true,
+        )
+        .await
     }
 
     /// Like `search_notes` but with entity-bridging enabled.
@@ -907,9 +916,18 @@ impl KnowledgeService {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, true, note_type, true)
-            .await
+        self.search_notes_inner(
+            query_text,
+            limit,
+            graph_hops,
+            true,
+            note_type,
+            source_context,
+            true,
+        )
+        .await
     }
 
     /// Like `search_notes` but **non-perturbing**: it does not bump
@@ -927,11 +945,21 @@ impl KnowledgeService {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.search_notes_inner(query_text, limit, graph_hops, false, note_type, false)
-            .await
+        self.search_notes_inner(
+            query_text,
+            limit,
+            graph_hops,
+            false,
+            note_type,
+            source_context,
+            false,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn search_notes_inner(
         &self,
         query_text: &str,
@@ -939,6 +967,7 @@ impl KnowledgeService {
         graph_hops: usize,
         entity_expansion: bool,
         note_type: Option<&str>,
+        source_context: Option<&str>,
         track_access: bool,
     ) -> Result<Vec<serde_json::Value>> {
         let fetch_limit = (limit * 3).max(10);
@@ -1180,6 +1209,35 @@ impl KnowledgeService {
                         merged.retain(|(id, _)| keep.contains(id));
                     }
                     Err(e) => warn!("note_type filter query failed: {}", e),
+                }
+            }
+        }
+
+        // 4.76 Source-context filter: same shape as the note_type filter. Vector +
+        // BM25 both rank purely on content, so a `source_context` restriction (e.g.
+        // the job-applicant profile grounding on `source_context:"resume"`) is only
+        // honoured if applied here — without it the semantic search silently
+        // returned unrelated notes (a Paxos knowledge note under a resume query).
+        // No COALESCE default: filtering by source_context means ONLY that source.
+        if let Some(sc) = source_context.map(str::trim).filter(|s| !s.is_empty()) {
+            let ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
+            if !ids.is_empty() {
+                let q = neo4rs::query(
+                    "MATCH (n:Note) WHERE n.id IN $ids \
+                       AND n.source_context = $sc \
+                     RETURN n.id AS id",
+                )
+                .param("ids", ids)
+                .param("sc", sc);
+                match self.neo4j.execute(q).await {
+                    Ok(rows) => {
+                        let keep: std::collections::HashSet<String> = rows
+                            .into_iter()
+                            .filter_map(|r| r.get::<String>("id").ok())
+                            .collect();
+                        merged.retain(|(id, _)| keep.contains(id));
+                    }
+                    Err(e) => warn!("source_context filter query failed: {}", e),
                 }
             }
         }
@@ -3221,8 +3279,10 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        KnowledgeService::search_notes(self, query, limit, graph_hops, note_type).await
+        KnowledgeService::search_notes(self, query, limit, graph_hops, note_type, source_context)
+            .await
     }
 
     async fn search_notes_with_entity_expansion(
@@ -3231,9 +3291,15 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         KnowledgeService::search_notes_with_entity_expansion(
-            self, query, limit, graph_hops, note_type,
+            self,
+            query,
+            limit,
+            graph_hops,
+            note_type,
+            source_context,
         )
         .await
     }

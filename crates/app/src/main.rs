@@ -166,6 +166,22 @@ fn build_llm_config(config: &Config) -> LlmConfig {
                 base = base.with_embed_model(embed_model);
             }
         }
+        LlmProviderType::LlamaCpp => {
+            // llama.cpp's OpenAI-compatible endpoint. Endpoint/model come from
+            // LLAMACPP_URL / LLAMACPP_MODEL (this arm is only reached when the
+            // *active* provider is llama.cpp; background jobs use
+            // build_local_llm_config instead).
+            let url = std::env::var("LLAMACPP_URL")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string());
+            let model =
+                std::env::var("LLAMACPP_MODEL").unwrap_or_else(|_| llm.ollama_model.clone());
+            base = base.with_base_url(url).with_model(model);
+            // Embeddings always route to local Ollama.
+            base = base.with_embed_base_url(llm.ollama_local_url.clone());
+            if let Some(embed_model) = &llm.ollama_embed_model {
+                base = base.with_embed_model(embed_model);
+            }
+        }
         LlmProviderType::Anthropic => {
             if let Some(key) = &llm.anthropic_api_key {
                 base = base.with_api_key(key);

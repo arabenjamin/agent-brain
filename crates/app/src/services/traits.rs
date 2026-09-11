@@ -130,6 +130,7 @@ pub trait KnowledgeStore: Send + Sync {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> anyhow::Result<Vec<Value>>;
 
     async fn search_notes_with_entity_expansion(
@@ -138,6 +139,7 @@ pub trait KnowledgeStore: Send + Sync {
         limit: usize,
         graph_hops: usize,
         note_type: Option<&str>,
+        source_context: Option<&str>,
     ) -> anyhow::Result<Vec<Value>>;
 
     async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>>;

@@ -1,34 +1,29 @@
-# AI Dev Board Job Search — daily, two boards, deterministic merge.
+# AI Dev Board Job Search — daily, two boards, RESUME-MATCHED, deterministic.
 #
-# ACTIVATION (post-rebuild): the live task with this name is currently a
-# RUNTIME-managed node (id bd43474e…) using the old http_request+execute_code
-# steps, so this YAML is SHADOWED and will not seed until ownership is
-# transferred. After the brain is rebuilt (so mcp_call is registered), either
-#   MATCH (s:ScheduledTask {name:'AI Dev Board Job Search'}) DETACH DELETE s
-# (then restart to seed this file), or SET s.managed_by='yaml' to let the seeder
-# force-sync these steps. THEN smoke-test one run and confirm the execute_code
-# merge against real worklittle output (its structured shape is unverified — the
-# parser falls back to the raw text section if JSON is absent, so nothing is lost).
+# Reads each job's DESCRIPTION against Ara's resume and surfaces only the roles
+# whose JD actually matches his stack, best-fit first. The board's own match_score
+# ranks against a generic skill list; this chain re-reads the full JD text (title,
+# tags, description) against resume-grounded signals and ranks by that fit — all
+# deterministically in execute_code (Python; never let the local model reproduce
+# links or invent a fit). The resume is pulled live from the graph
+# (source_context:"resume") so it tracks resume edits.
 #
-# Pattern mirrors schedules/hardware-tripwire.yaml: each mcp_call is banked into a
-# WorkingMemory scratch session (because {{_prev}} only carries the previous
-# step), reassembled with neo4j_query, merged deterministically by execute_code
-# (Python copies links verbatim — never let the local model reproduce URLs), then
-# pushed into the fresh jobsearch-<date> session so notify_user opens a resumable
-# chat where a reply routes to the JOB APPLICATION RULE (general.yaml).
+# ACTIVATION: the live node is YAML-managed + enabled, so editing these steps
+# force-syncs on the next brain restart (enabled is graph-owned and stays true).
+#
+# Pattern (mirrors hardware-tripwire): each source + the resume is banked into a
+# jobsearch-scratch-<date> WorkingMemory session under a unique MARKER line,
+# reassembled with neo4j_query, matched/ranked by execute_code, pushed into the
+# fresh jobsearch-<date> session so notify_user opens a resumable chat where a
+# reply routes to the job-applicant profile (session-pinned in clients/chat.rs).
 name: AI Dev Board Job Search
-description: "Daily remote AI/ML engineering roles from aidevboard + worklittle, merged and deduped, into a fresh resumable chat."
+description: "Daily remote AI/ML engineering roles from aidevboard + worklittle, ranked by how well each JD matches Ara's resume, into a fresh resumable chat."
 interval_seconds: 86400
 managed_by: yaml
-enabled: false   # seeded off for review; enable after the post-rebuild smoke test
+enabled: false   # seeded off for review; enable is graph-owned once created
 steps:
-  # 0. Replace, don't stack. The session is per-DAY (jobsearch-<date>), so a
-  #    second run the same day (manual re-trigger, catch-up) would append a
-  #    second list and leave the thread with two — ambiguous when the user
-  #    replies "apply to #3". Clear any prior job-LIST entries first (matched by
-  #    their leading text) while preserving the rest of the conversation. Runs
-  #    first so it does not sit between the merge step and its {{_prev.stdout}}
-  #    consumer. A write, so readonly:false.
+  # 0. Replace, don't stack: clear any prior same-day job LIST (matched by its
+  #    leading text) while preserving the rest of the conversation.
   - tool_name: neo4j_query
     provider_hint: ollama
     arguments:
@@ -36,7 +31,23 @@ steps:
       readonly: false
     description: "Clear any prior same-day job list (replace, not stack)"
 
-  # 1. aidevboard — ranked matches against Ara's skill vector.
+  # 1. Pull Ara's resume from the graph as one string (exclude chunk fragments).
+  - tool_name: neo4j_query
+    provider_hint: ollama
+    arguments:
+      cypher: "MATCH (n:Note {source_context: 'resume'}) WHERE NOT (n)-[:PART_OF]->() WITH collect(n.content) AS cs RETURN reduce(s = '', c IN cs | s + ' ' + c) AS resume"
+    description: "Fetch Ara's resume text (source_context:resume)"
+
+  # 2. Bank the resume under its marker.
+  - tool_name: push_context
+    provider_hint: ollama
+    arguments:
+      session_id: "jobsearch-scratch-{{date}}"
+      role: assistant
+      content: "RESUME_TEXT\n{{_prev}}"
+    description: "Bank resume text"
+
+  # 3. aidevboard — candidate pool (server-side ranked; JD text comes on job.description).
   - tool_name: mcp_call
     provider_hint: ollama
     arguments:
@@ -45,10 +56,10 @@ steps:
       arguments:
         skills: [rust, python, golang, typescript, neo4j, docker, kubernetes, aws, fastapi, react, llm, agents, mcp, distributed-systems, infrastructure, mlops, embedded]
         workplace: remote
-        limit: 14
+        limit: 25
     description: "aidevboard match_jobs (remote, Ara's stack)"
 
-  # 2. Bank aidevboard: structured JSON (preferred) + raw text (fallback).
+  # 4. Bank aidevboard: structured JSON (preferred) + raw text (fallback).
   - tool_name: push_context
     provider_hint: ollama
     arguments:
@@ -57,21 +68,21 @@ steps:
       content: "AIDEVBOARD_JSON\n{{_prev.structured_json}}\nAIDEVBOARD_TEXT\n{{_prev}}"
     description: "Bank aidevboard results"
 
-  # 3. worklittle — broad remote engineering/AI titles (keyless search_jobs).
+  # 5. worklittle — broad remote engineering/AI titles (keyless search_jobs).
   - tool_name: mcp_call
     provider_hint: ollama
     arguments:
       server: worklittle
       tool: search_jobs
       arguments:
-        query: "machine learning engineer, ai engineer, ml engineer, backend engineer, platform engineer, infrastructure engineer"
+        query: "machine learning engineer, ai engineer, ml engineer, backend engineer, platform engineer, infrastructure engineer, rust engineer"
         workplace_type: remote
         country: US
         posted_within_days: 3
-        limit: 20
+        limit: 25
     description: "worklittle search_jobs (remote, US, recent, AI/infra titles)"
 
-  # 4. Bank worklittle.
+  # 6. Bank worklittle.
   - tool_name: push_context
     provider_hint: ollama
     arguments:
@@ -80,16 +91,17 @@ steps:
       content: "WORKLITTLE_JSON\n{{_prev.structured_json}}\nWORKLITTLE_TEXT\n{{_prev}}"
     description: "Bank worklittle results"
 
-  # 5. Reassemble both banked blobs (single column → {{_prev}}).
+  # 7. Reassemble resume + both boards (single column → {{_prev}}).
   - tool_name: neo4j_query
     provider_hint: ollama
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'jobsearch-scratch-{{date}}'}) RETURN w.content AS content ORDER BY w.turn_index"
-    description: "Read both boards back from the scratch session"
+    description: "Read resume + both boards back from the scratch session"
 
-  # 6. Deterministic merge/dedupe/rank/format. Python copies every URL verbatim;
-  #    prefers each board's JSON section, falls back to its raw text so a board
-  #    with an unexpected structured shape is passed through, never dropped.
+  # 8. Resume-match: read each JD (title+tags+description) against resume-grounded
+  #    signals, keep the roles that actually match, rank by fit. Deterministic —
+  #    Python copies every link verbatim and derives the signals from the resume
+  #    text itself (a signal counts only if it appears in Ara's resume).
   - tool_name: execute_code
     provider_hint: ollama
     arguments:
@@ -98,44 +110,92 @@ steps:
         import json, re
         BLOB = r"""{{_prev}}"""
 
+        MARKERS = ["RESUME_TEXT", "AIDEVBOARD_JSON", "AIDEVBOARD_TEXT",
+                   "WORKLITTLE_JSON", "WORKLITTLE_TEXT"]
+
         def section(tag):
-            # tag e.g. AIDEVBOARD_JSON — return text until the next ALLCAPS_ marker.
-            m = re.search(r'(?m)^' + tag + r'\s*\n', BLOB)
-            if not m: return ""
-            start = m.end()
-            nxt = re.search(r'(?m)^[A-Z]+_[A-Z]+\s*\n', BLOB[start:])
-            return BLOB[start:start + nxt.start()] if nxt else BLOB[start:]
+            # From the `tag` marker line until the next KNOWN marker line. Robust
+            # to ALLCAPS_ text inside a section (unlike a bare regex split).
+            out, cap = [], False
+            for ln in BLOB.split("\n"):
+                s = ln.strip()
+                if s == tag:
+                    cap = True; continue
+                if cap and s in MARKERS:
+                    break
+                if cap:
+                    out.append(ln)
+            return "\n".join(out)
+
+        def has(text, phrase):
+            # Word-boundary match for plain alnum terms (so "go"/"ml" don't match
+            # inside "goal"/"html"); substring for symbol/multiword terms ("c++").
+            if phrase.replace(" ", "").replace("-", "").isalnum():
+                return re.search(r"\b" + re.escape(phrase) + r"\b", text) is not None
+            return phrase in text
+
+        # Resume-signal vocabulary (canonical -> match phrases). A signal is kept
+        # only if it actually appears in Ara's resume, so ranking is resume-grounded.
+        VOCAB = {
+            "python": ["python"], "rust": ["rust"], "golang": ["golang", "go"],
+            "typescript": ["typescript"], "javascript": ["javascript", "node.js", "nodejs", "node"],
+            "c/c++": ["c++", "c/c++"], "neo4j": ["neo4j", "cypher"],
+            "graph db": ["graph database", "graph db", "knowledge graph"],
+            "aws": ["aws", "amazon web services"], "lambda": ["lambda"],
+            "serverless": ["serverless"], "s3": ["s3"], "sqs": ["sqs"], "cloudwatch": ["cloudwatch"],
+            "docker": ["docker"], "kubernetes": ["kubernetes", "k8s"], "terraform": ["terraform"],
+            "gcp": ["google cloud", "gcp"], "azure": ["azure"],
+            "fastapi": ["fastapi"], "flask": ["flask"], "django": ["django"],
+            "react": ["react"], "vue": ["vue"], "node": ["node"],
+            "postgres": ["postgres", "postgresql"], "mysql": ["mysql", "mariadb"],
+            "redis": ["redis"], "mongodb": ["mongodb", "mongo"], "duckdb": ["duckdb"], "sqlite": ["sqlite"],
+            "mcp": ["mcp", "model context protocol"], "llm": ["llm", "large language model"],
+            "ai agents": ["ai agent", "agentic", "agents"],
+            "ml": ["machine learning", "ml", "deep learning"],
+            "distributed systems": ["distributed system", "distributed-systems"],
+            "backend": ["backend", "back-end", "back end"],
+            "infrastructure": ["infrastructure", "infra"], "devops": ["devops"],
+            "ci/cd": ["ci/cd", "cicd", "continuous integration"],
+            "etl": ["etl", "data pipeline", "data pipelines"], "pydantic": ["pydantic"],
+            "rest api": ["rest", "restful"], "microservices": ["microservice", "microservices"],
+            "linux": ["linux"],
+            "embedded": ["embedded", "microcontroller", "esp8266", "atmega", "i2c", "spi", "uart", "iot"],
+            "computer vision": ["opencv", "computer vision"],
+            "nginx": ["nginx"], "apache": ["apache"],
+            "security": ["encryption", "cryptograph", "ssl"],
+        }
+
+        resume = section("RESUME_TEXT").lower()
+        resume_signals = {c: ps for c, ps in VOCAB.items() if any(has(resume, p) for p in ps)}
 
         def num(v):
             try: return int(v)
             except Exception: return None
 
         def company_of(g):
-            # aidevboard: company_name (string); worklittle: company {name,slug}.
             c = g.get("company") or g.get("company_name")
             if isinstance(c, dict): return c.get("name") or c.get("slug") or ""
             return c or ""
 
         def norm(item, source):
-            # aidevboard item = {job, match_score, url}; worklittle item = the job itself.
             g = item.get("job", item) if isinstance(item, dict) else {}
             if not isinstance(g, dict): g = {}
             title = (g.get("title") or g.get("role") or "").strip()
             company = company_of(g).strip()
-            # Posting URL: aidevboard carries it at the match level (item.url);
-            # worklittle has none, but /jobs/<id> is its canonical posting page.
             posting = item.get("url") or g.get("url") or g.get("posting_url") or g.get("job_url") or ""
             if not posting and source == "worklittle" and g.get("id"):
                 posting = "https://worklittle.com/jobs/" + str(g["id"])
             apply = g.get("apply_url") or g.get("applyUrl") or item.get("apply_url") or ""
             loc = g.get("location") or g.get("job_city") or g.get("workplace") or g.get("workplace_type") or ""
             smin, smax = num(g.get("salary_min")), num(g.get("salary_max"))
-            salary = f"${smin:,}-${smax:,}" if smin and smax else ""
-            score = item.get("match_score") if isinstance(item, dict) else None
-            return {"title": title, "company": company, "url": posting,
-                    "apply": apply, "loc": loc, "salary": salary,
-                    "id": g.get("id") or "",
-                    "score": score if isinstance(score, int) else 0, "source": source}
+            salary = "${:,}-${:,}".format(smin, smax) if smin and smax else ""
+            board = item.get("match_score") if isinstance(item, dict) else None
+            tags = g.get("tags") if isinstance(g.get("tags"), list) else []
+            desc = g.get("description") or g.get("summary") or ""
+            return {"title": title, "company": company, "url": posting, "apply": apply,
+                    "loc": loc, "salary": salary, "id": g.get("id") or "",
+                    "board": board if isinstance(board, int) else 0, "source": source,
+                    "tags": [str(t).lower() for t in tags], "desc": str(desc)}
 
         def extract(js):
             if not js: return []
@@ -148,52 +208,79 @@ steps:
             return [j for j in data if isinstance(j, dict)]
 
         rows, raw_fallback = [], []
-        for board in ("AIDEVBOARD", "WORKLITTLE"):
-            items = extract(section(board + "_JSON"))
-            got = [norm(it, board.lower()) for it in items]
+        for board_name in ("AIDEVBOARD", "WORKLITTLE"):
+            items = extract(section(board_name + "_JSON"))
+            got = [norm(it, board_name.lower()) for it in items]
             if got:
                 rows.extend(got)
             else:
-                txt = section(board + "_TEXT").strip()
+                txt = section(board_name + "_TEXT").strip()
                 if txt:
-                    raw_fallback.append("## " + board.title() + " (raw)\n" + txt)
+                    raw_fallback.append("## " + board_name.title() + " (raw)\n" + txt)
 
-        # Dedupe by (title, company); keep the higher score.
+        # Resume-fit: read each JD against the resume signals. Title+tags weigh more
+        # (3) than a hit buried in the description (1).
+        def score_job(r):
+            strong = (r["title"] + " " + " ".join(r["tags"])).lower()
+            full = strong + " " + r["desc"].lower()
+            matched, pts = [], 0
+            for canon, ps in resume_signals.items():
+                in_strong = any(has(strong, p) for p in ps)
+                in_full = in_strong or any(has(full, p) for p in ps)
+                if in_full:
+                    matched.append(canon)
+                    pts += 3 if in_strong else 1
+            r["matched"] = sorted(set(matched))
+            r["fit"] = pts
+            return r
+
+        for r in rows:
+            score_job(r)
+
+        # Dedupe by (title, company); keep the better resume fit.
         seen = {}
         for r in rows:
             if not r["title"]: continue
             key = (r["title"].lower(), r["company"].lower())
-            if key not in seen or r["score"] > seen[key]["score"]:
+            if key not in seen or r["fit"] > seen[key]["fit"]:
                 seen[key] = r
-        merged = sorted(seen.values(), key=lambda r: r["score"], reverse=True)
-        # Cap at top 20, but guarantee BOTH boards appear: worklittle scores 0 and
-        # would otherwise be crowded out by aidevboard's ranked roles entirely.
-        ad = [r for r in merged if r["source"] == "aidevboard"][:14]
-        wl = [r for r in merged if r["source"] == "worklittle"][:6]
-        merged = ad + wl
+        cands = list(seen.values())
 
-        out = ["AI job search — {} roles from aidevboard + worklittle, best-fit first:\n".format(len(merged))]
-        for i, r in enumerate(merged, 1):
+        # Keep roles whose JD actually matches the resume (>= MIN_MATCH signals).
+        MIN_MATCH = 2
+        matched_jobs = [r for r in cands if len(r["matched"]) >= MIN_MATCH]
+        # Robustness: never send an empty brief — if the bar is too strict today,
+        # top up with the next-best positive-fit roles.
+        if len(matched_jobs) < 5:
+            extra = sorted([r for r in cands if r["fit"] > 0 and len(r["matched"]) < MIN_MATCH],
+                           key=lambda r: r["fit"], reverse=True)
+            matched_jobs += extra[: max(0, 5 - len(matched_jobs))]
+        matched_jobs.sort(key=lambda r: (r["fit"], r["board"]), reverse=True)
+        matched_jobs = matched_jobs[:20]
+
+        skills_str = ", ".join(sorted(resume_signals.keys()))
+        out = ["AI job search — {} roles whose JD matches your resume, best-fit first.".format(len(matched_jobs))]
+        out.append("(scored against your resume: {})\n".format(skills_str or "n/a"))
+        for i, r in enumerate(matched_jobs, 1):
             out.append("{}. {} — {}".format(i, r["title"], r["company"]))
-            meta = " | ".join(x for x in (r["loc"], r["salary"], "["+r["source"]+"]") if x)
+            meta = " | ".join(x for x in (r["loc"], r["salary"], "[" + r["source"] + "]") if x)
             if meta: out.append("   " + meta)
+            if r["matched"]:
+                out.append("   ✓ resume match ({}): {}".format(r["fit"], ", ".join(r["matched"])))
             if r["url"]:   out.append("   Posting: " + r["url"])
             if r["apply"]: out.append("   Apply: " + r["apply"])
-            # The aidevboard job_id the apply toolchain needs (analyze/compile).
-            # Printed verbatim so reply-to-apply feeds it directly instead of
-            # parsing the posting URL, whose tail is a truncated slug, not the id.
             if r["source"] == "aidevboard" and r["id"]:
                 out.append("   job_id: " + r["id"])
             out.append("")
-        if raw_fallback:
+        if raw_fallback and not matched_jobs:
             out.append("\n".join(raw_fallback))
-        if not merged and not raw_fallback:
-            out.append("No roles returned by either board today.")
-        out.append("\nReply with the number of a role and I will prepare your application.")
+        if not matched_jobs and not raw_fallback:
+            out.append("No roles matched your resume today.")
+        out.append("Reply with the number of a role and I will prepare your application.")
         print("\n".join(out))
-    description: "Merge, dedupe, rank, format (links verbatim)"
+    description: "Read each JD against the resume, keep the matches, rank by fit (links verbatim)"
 
-  # 7. Persist the formatted list into the fresh daily session (assistant role so
+  # 9. Persist the formatted list into the fresh daily session (assistant role so
   #    the thread drawer renders it).
   - tool_name: push_context
     provider_hint: ollama
@@ -203,7 +290,7 @@ steps:
       content: "{{_prev.stdout}}"
     description: "Seed the resumable jobsearch-<date> chat"
 
-  # 8. Notify the user, opening that session as a resumable chat.
+  # 10. Notify the user, opening that session as a resumable chat.
   - tool_name: notify_user
     provider_hint: ollama
     arguments:
@@ -211,10 +298,10 @@ steps:
       message: "{{_prev}}"
     description: "Open the fresh job-search chat"
 
-  # 9. Clean up the scratch session.
+  # 11. Clean up the scratch session.
   - tool_name: neo4j_query
     provider_hint: ollama
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'jobsearch-scratch-{{date}}'}) DETACH DELETE w"
-      readonly: false   # DETACH DELETE is a write — neo4j_query rejects writes without this
+      readonly: false
     description: "Delete scratch session"

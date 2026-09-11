@@ -7,14 +7,23 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::repository::{Neo4jClient, TelemetryClient};
+use crate::services::graph_schema::{self, GraphSchema};
+use crate::services::{cypher_guard, validation};
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
 pub struct QuerySkill {
     neo4j: Option<Neo4jClient>,
     telemetry: Option<TelemetryClient>,
+    /// Live graph schema, introspected lazily on first use and cached for the
+    /// life of the process (labels change only on code/`init-db`, like the
+    /// live-tools snapshot). Feeds `describe_graph` and the Cypher guard. Never
+    /// fatal — a `None` here just means "run without a schema".
+    schema_cache: RwLock<Option<Arc<GraphSchema>>>,
 }
 
 /// True when a row-returning query has no `LIMIT` of its own and should get one.
@@ -118,7 +127,25 @@ fn looks_like_date_at(b: &[u8], i: usize) -> bool {
 
 impl QuerySkill {
     pub fn new(neo4j: Option<Neo4jClient>, telemetry: Option<TelemetryClient>) -> Self {
-        Self { neo4j, telemetry }
+        Self {
+            neo4j,
+            telemetry,
+            schema_cache: RwLock::new(None),
+        }
+    }
+
+    /// Live graph schema, cached after the first introspection. Fails open
+    /// (`None`) if Neo4j is absent or introspection errors — the caller then
+    /// proceeds without the schema (the guard simply does not run).
+    async fn schema(&self) -> Option<Arc<GraphSchema>> {
+        if let Some(s) = self.schema_cache.read().await.clone() {
+            return Some(s);
+        }
+        let neo4j = self.neo4j.as_ref()?;
+        let introspected = graph_schema::introspect(neo4j).await?;
+        let arc = Arc::new(introspected);
+        *self.schema_cache.write().await = Some(Arc::clone(&arc));
+        Some(arc)
     }
 
     // =========================================================================
@@ -189,9 +216,213 @@ impl QuerySkill {
         }
     }
 
+    fn describe_graph_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "describe_graph".to_string(),
+            description: "Return the LIVE graph schema — every node label with its properties \
+                          (⏱ marks a native DateTime, which must be compared with datetime('…'), \
+                          never a quoted string) and the relationship types. Read directly from \
+                          Neo4j, so it is never stale. Call this before writing Cypher against \
+                          an unfamiliar part of the graph, and ALWAYS before claiming a property \
+                          or label does not exist — the schema is the ground truth for that."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    fn recent_tasks_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "recent_tasks".to_string(),
+            description: "The most recently updated Tasks, newest first (ordered by updated_at). \
+                          This is the deterministic answer to 'the last N tasks', 'what tasks \
+                          ran', 'recent work' — do NOT semantic-search for it (search cannot \
+                          order by time). Optional `status` filter \
+                          (created/in_progress/completed/failed/blocked)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "description": "How many to return (default 5)" },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional status filter, e.g. completed or failed"
+                    }
+                }
+            }),
+        }
+    }
+
+    fn list_apis_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_apis".to_string(),
+            description: "Every API known to the graph: each (:ApiContext) with its base_url, \
+                          provenance, and how many (:ApiEndpoint)s have been ingested via \
+                          [:EXPOSES]. This is the deterministic answer to 'what APIs do we \
+                          have / know about' — do NOT semantic-search notes for it (that finds \
+                          discussion, not the ingested endpoint graph)."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    fn list_endpoints_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_endpoints".to_string(),
+            description: "Every endpoint (method + path + summary) an API exposes, for a given \
+                          API name. This is the deterministic answer to 'what endpoints does \
+                          <API> have' / 'list the endpoints for <API>' — do NOT hand-write \
+                          Cypher for it (the graph has more than one endpoint-shaped structure, \
+                          and the API name is case-sensitive). Get the exact `api` name from \
+                          list_apis first (e.g. `home_assistant`, not `HomeAssistant`)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "api": {
+                        "type": "string",
+                        "description": "Exact ApiContext name, as shown by list_apis (case-sensitive)."
+                    }
+                },
+                "required": ["api"]
+            }),
+        }
+    }
+
     // =========================================================================
     // Handlers
     // =========================================================================
+
+    /// Map neo4rs rows into JSON objects (queries must alias with `AS` for
+    /// predictable keys). Shared by the canned read tools.
+    fn rows_to_json(rows: Vec<neo4rs::Row>) -> Vec<Value> {
+        rows.iter()
+            .map(|row| row.to::<Value>().unwrap_or(Value::Null))
+            .collect()
+    }
+
+    async fn handle_describe_graph(&self) -> ToolCallResult {
+        match self.schema().await {
+            Some(schema) => ToolCallResult::success_json(json!({
+                "schema": schema.render_compact(),
+                "label_count": schema.labels.len(),
+                "relationship_type_count": schema.rel_types.len(),
+            })),
+            None => ToolCallResult::error(
+                "Graph schema unavailable (Neo4j not reachable or empty).".to_string(),
+            ),
+        }
+    }
+
+    async fn handle_recent_tasks(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input {
+            #[serde(default = "default_task_limit")]
+            limit: i64,
+            #[serde(default)]
+            status: Option<String>,
+        }
+        fn default_task_limit() -> i64 {
+            5
+        }
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+        // Deterministic: ordered by updated_at DESC. Task carries created_at and
+        // updated_at as native datetimes — the "timestamps aren't stored" claim
+        // this tool exists to prevent is simply false.
+        let where_clause = if input.status.is_some() {
+            "WHERE t.status = $status"
+        } else {
+            ""
+        };
+        let cypher = format!(
+            "MATCH (t:Task) {where_clause} \
+             RETURN t.id AS id, t.goal AS goal, t.status AS status, \
+                    toString(t.updated_at) AS updated_at, toString(t.created_at) AS created_at \
+             ORDER BY t.updated_at DESC LIMIT $limit"
+        );
+        let mut q = neo4rs::query(&cypher).param("limit", input.limit.max(1));
+        if let Some(ref s) = input.status {
+            q = q.param("status", s.clone());
+        }
+        match neo4j.execute(q).await {
+            Ok(rows) => {
+                let result = Self::rows_to_json(rows);
+                let count = result.len();
+                ToolCallResult::success_json(json!({ "tasks": result, "count": count }))
+            }
+            Err(e) => ToolCallResult::error(format!("recent_tasks query failed: {}", e)),
+        }
+    }
+
+    async fn handle_list_apis(&self) -> ToolCallResult {
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+        let cypher = "MATCH (c:ApiContext) \
+             OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) \
+             RETURN c.name AS name, coalesce(c.base_url, '') AS base_url, \
+                    coalesce(c.source, '') AS source, count(e) AS endpoints \
+             ORDER BY endpoints DESC, name ASC";
+        match neo4j.execute(neo4rs::query(cypher)).await {
+            Ok(rows) => {
+                let result = Self::rows_to_json(rows);
+                let count = result.len();
+                ToolCallResult::success_json(json!({ "apis": result, "count": count }))
+            }
+            Err(e) => ToolCallResult::error(format!("list_apis query failed: {}", e)),
+        }
+    }
+
+    async fn handle_list_endpoints(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize)]
+        struct Input {
+            api: String,
+        }
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+        // The one correct structure: (:ApiContext)-[:EXPOSES]->(:ApiEndpoint).
+        // Baking it here is the point — a hand-written query can pick the wrong
+        // endpoint-shaped path or mis-case the name and silently return zero.
+        let cypher = "MATCH (c:ApiContext {name: $api})-[:EXPOSES]->(e:ApiEndpoint) \
+             RETURN e.method AS method, e.path AS path, coalesce(e.summary, '') AS summary \
+             ORDER BY e.path, e.method";
+        match neo4j
+            .execute(neo4rs::query(cypher).param("api", input.api.clone()))
+            .await
+        {
+            Ok(rows) => {
+                let result = Self::rows_to_json(rows);
+                let count = result.len();
+                let mut response = json!({
+                    "api": input.api,
+                    "endpoints": result,
+                    "count": count,
+                });
+                // Zero is almost always a wrong/mis-cased name, not an API with
+                // no endpoints — point at list_apis rather than let the caller
+                // conclude the endpoints "aren't stored".
+                if count == 0 {
+                    response["hint"] = json!(
+                        "0 endpoints — the api name is case-sensitive and must match an \
+                         ApiContext exactly. Call list_apis to get the exact names (e.g. \
+                         `home_assistant`, not `HomeAssistant`), then retry."
+                    );
+                }
+                ToolCallResult::success_json(response)
+            }
+            Err(e) => ToolCallResult::error(format!("list_endpoints query failed: {}", e)),
+        }
+    }
 
     async fn handle_neo4j_query(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
@@ -243,6 +474,26 @@ impl QuerySkill {
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
+
+        // Schema-aware guard (fail open). Reject a read that names a label or
+        // relationship that cannot exist; carry advisory (Soft) findings — an
+        // unknown property, a datetime-vs-string literal — out as a `warning`.
+        let mut soft_warnings: Vec<String> = Vec::new();
+        if let Some(schema) = self.schema().await {
+            let violations = cypher_guard::check(&input.cypher, &schema, input.readonly);
+            if validation::has_hard(&violations) {
+                return ToolCallResult::error(format!(
+                    "Cypher rejected by the schema guard: {}. Call describe_graph to see the \
+                     valid labels, relationships, and properties before re-running.",
+                    validation::render_hard(&violations)
+                ));
+            }
+            soft_warnings = violations
+                .iter()
+                .filter(|v| v.severity == validation::Severity::Soft)
+                .map(validation::Violation::render)
+                .collect();
+        }
 
         // Inject LIMIT if not already present and query returns rows. The clause
         // goes on its own line so it cannot be swallowed by a trailing `//`
@@ -297,6 +548,12 @@ impl QuerySkill {
                 {
                     response["hint"] = json!(hint);
                 }
+                // Advisory schema findings ride out with the rows — the query
+                // still ran, but a property may be misspelled or a datetime
+                // comparison may silently match nothing.
+                if !soft_warnings.is_empty() {
+                    response["warning"] = json!(soft_warnings.join(" | "));
+                }
                 ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Neo4j query failed: {}", e)),
@@ -346,7 +603,13 @@ impl Skill for QuerySkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        let mut tools = vec![Self::neo4j_query_def()];
+        let mut tools = vec![
+            Self::neo4j_query_def(),
+            Self::describe_graph_def(),
+            Self::recent_tasks_def(),
+            Self::list_apis_def(),
+            Self::list_endpoints_def(),
+        ];
         if self.telemetry.is_some() {
             tools.push(Self::duckdb_query_def());
         }
@@ -357,6 +620,10 @@ impl Skill for QuerySkill {
         match name {
             "neo4j_query" => Some(self.handle_neo4j_query(args).await),
             "duckdb_query" => Some(self.handle_duckdb_query(args).await),
+            "describe_graph" => Some(self.handle_describe_graph().await),
+            "recent_tasks" => Some(self.handle_recent_tasks(args).await),
+            "list_apis" => Some(self.handle_list_apis().await),
+            "list_endpoints" => Some(self.handle_list_endpoints(args).await),
             _ => None,
         }
     }
@@ -374,10 +641,15 @@ mod tests {
     // -- tool registry --------------------------------------------------------
 
     #[test]
-    fn tools_without_db_has_only_neo4j_query() {
-        let tools = skill_no_db().tools();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "neo4j_query");
+    fn tools_without_telemetry_omit_duckdb_but_keep_reads() {
+        let names: Vec<String> = skill_no_db().tools().into_iter().map(|t| t.name).collect();
+        // The read/introspection tools do not need telemetry; duckdb does.
+        assert!(names.contains(&"neo4j_query".to_string()));
+        assert!(names.contains(&"describe_graph".to_string()));
+        assert!(names.contains(&"recent_tasks".to_string()));
+        assert!(names.contains(&"list_apis".to_string()));
+        assert!(names.contains(&"list_endpoints".to_string()));
+        assert!(!names.contains(&"duckdb_query".to_string()));
     }
 
     #[test]

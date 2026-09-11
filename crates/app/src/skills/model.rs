@@ -205,11 +205,13 @@ impl ModelSkill {
         let mut new_config = match provider.to_lowercase().as_str() {
             "ollama" => base.with_provider(LlmProviderType::Ollama),
             "ollama-cloud" | "ollamacloud" => base.with_provider(LlmProviderType::OllamaCloud),
+            "llamacpp" | "llama-cpp" | "llama.cpp" => base.with_provider(LlmProviderType::LlamaCpp),
             "anthropic" => base.with_provider(LlmProviderType::Anthropic),
             "gemini" => base.with_provider(LlmProviderType::Gemini),
             _ => {
                 return ToolCallResult::error(
-                    "Invalid provider. Use Ollama, OllamaCloud, Anthropic, or Gemini.".to_string(),
+                    "Invalid provider. Use Ollama, OllamaCloud, LlamaCpp, Anthropic, or Gemini."
+                        .to_string(),
                 );
             }
         };

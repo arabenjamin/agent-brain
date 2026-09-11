@@ -1142,7 +1142,11 @@ impl ChatService {
                     )
                     .await
                 }
-                LlmProviderType::OllamaCloud => {
+                LlmProviderType::OllamaCloud | LlmProviderType::LlamaCpp => {
+                    // Both speak the OpenAI-compatible /v1/chat/completions wire
+                    // (Ollama Cloud and the llama.cpp `llama-server` sidecar), so
+                    // the same tool-call-accumulating loop drives them — NOT the
+                    // degraded text loop, which only <tool_call>-parses.
                     // `allow_delegate` is true only for the top-level orchestrator
                     // turn; a sub-agent rung passes false (depth cap 1).
                     self.run_ollama_cloud_loop(
@@ -1384,8 +1388,21 @@ impl ChatService {
         } else if request.context_profile.is_some() {
             request.context_profile.clone()
         } else if let Some(ref cb) = cb_opt {
-            let assigned = cb.auto_assign(&request.message).await;
-            Some(assigned)
+            // Reply-to-apply routing: the daily job search opens a
+            // `jobsearch-<date>` session, and a reply there is about applying to a
+            // listed role. auto_assign sees ONLY the reply text, so a natural terse
+            // reply ("#1", "the Harvey one") scores 0 and falls back to `general`,
+            // which lacks the aidevboard apply tools — the apply flow then silently
+            // fails. Pin the job-applicant profile for these sessions so any reply
+            // reaches it. An explicit `context_profile` (handled above) still wins.
+            if session_id
+                .as_deref()
+                .is_some_and(|s| s.starts_with("jobsearch-"))
+            {
+                Some("job-applicant".to_string())
+            } else {
+                Some(cb.auto_assign(&request.message).await)
+            }
         } else {
             None
         };
@@ -3656,11 +3673,14 @@ mod tests {
     /// exhaustion and summarise junk (measured 2026-09-06).
     #[test]
     fn subagent_budget_is_tighter_than_the_orchestrator() {
-        assert!(
-            MAX_SUBAGENT_ITERATIONS < MAX_TOOL_ITERATIONS,
-            "sub-agent cap ({MAX_SUBAGENT_ITERATIONS}) must be < orchestrator cap ({MAX_TOOL_ITERATIONS})"
-        );
-        assert!(MAX_SUBAGENT_ITERATIONS >= 1);
+        // Compile-time invariants: a violation fails the build, not just this test.
+        const {
+            assert!(
+                MAX_SUBAGENT_ITERATIONS < MAX_TOOL_ITERATIONS,
+                "sub-agent cap must be < orchestrator cap"
+            );
+            assert!(MAX_SUBAGENT_ITERATIONS >= 1);
+        }
     }
 
     /// The delegate tool must expose exactly the two-arg contract the loop

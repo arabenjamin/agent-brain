@@ -208,6 +208,9 @@ impl Config {
                         "ollama-cloud" | "ollamacloud" => {
                             crate::services::llm::LlmProviderType::OllamaCloud
                         }
+                        "llamacpp" | "llama-cpp" | "llama.cpp" => {
+                            crate::services::llm::LlmProviderType::LlamaCpp
+                        }
                         _ => crate::services::llm::LlmProviderType::Ollama,
                     })
                     .unwrap_or_default(),
@@ -236,6 +239,9 @@ impl Config {
                         "gemini" => crate::services::llm::LlmProviderType::Gemini,
                         "ollama-cloud" | "ollamacloud" => {
                             crate::services::llm::LlmProviderType::OllamaCloud
+                        }
+                        "llamacpp" | "llama-cpp" | "llama.cpp" => {
+                            crate::services::llm::LlmProviderType::LlamaCpp
                         }
                         _ => crate::services::llm::LlmProviderType::Ollama,
                     }

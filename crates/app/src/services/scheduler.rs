@@ -21,10 +21,10 @@ use tracing::{debug, info, warn};
 
 use crate::models::TaskStatus;
 use crate::repository::{Neo4jClient, ScheduledTask};
+use crate::services::LlmConfig;
 use crate::services::chain_seeder;
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::queue::{ChainStep, QueueService};
-use crate::services::{LlmConfig, LlmProviderType};
 
 /// Runtime configuration for the scheduler.
 #[derive(Debug, Clone)]
@@ -1580,16 +1580,11 @@ impl SchedulerService {
                 lc.model = model.clone();
                 info!(local_model = %model, "Updated scheduler local LLM model");
             } else {
-                // local_config was None — seed it from defaults.
-                let local_url = std::env::var("OLLAMA_LOCAL_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string());
-                *guard = Some(
-                    LlmConfig::default()
-                        .with_provider(LlmProviderType::Ollama)
-                        .with_base_url(local_url.clone())
-                        .with_model(model.clone())
-                        .with_embed_base_url(local_url),
-                );
+                // local_config was None — seed it from the configured background
+                // backend (LOCAL_LLM_BACKEND), then apply the requested model.
+                let mut seeded = crate::services::llm::build_local_llm_config();
+                seeded.model = model.clone();
+                *guard = Some(seeded);
                 info!(local_model = %model, "Seeded scheduler local LLM config");
             }
         }

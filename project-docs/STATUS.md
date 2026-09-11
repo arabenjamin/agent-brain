@@ -50,7 +50,7 @@
 | ModelSkill | `src/skills/model.rs` | 3 | Model registry + selection |
 | WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad and summarisation |
 | HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
-| QuerySkill | `src/skills/query.rs` | 2 | Generic Neo4j (Cypher) and DuckDB (SQL) primitives |
+| QuerySkill | `src/skills/query.rs` | 6 | Neo4j (Cypher, schema-guarded) + DuckDB (SQL) primitives; deterministic reads: describe_graph, recent_tasks, list_apis, list_endpoints |
 | SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
 | ClaimSkill | `src/skills/claims.rs` | 1 | Claim extraction, verification, corroboration tiering |
@@ -135,32 +135,29 @@
 
 ## Recent Changes (auto)
 
+### 2026-09-09
+
+- fix: robust chat fallback + lean job-applicant profile (`ed3edd4`)
+- fix: surface aidevboard job_id in the search list so reply-to-apply uses it (`7b6aeb5`)
+- fix: chat turn falls back on empty completion after a tool call; job search replaces not stacks (`f3c60ea`)
+- feat: outbound MCP client + aidevboard apply workflow (`d3a9e03`)
+- feat: deterministic write-boundary validation for schedules & chains (`41cd61d`)
+- Added Schema Validation (`da1f0d6`)
+- Tweaked some Scheduler business, and some context business (`39c8575`)
+- feat: http_request  — project JSON responses to fit local context (`c86a3c4`)
+
 ### 2026-09-08
 
-- feat: the daily brief is now a **Daily Brief** (self + world) — leads with `## WHAT I DID & LEARNED (last 24h)` (via `recall_recent`) and `## SYSTEM STATUS` (task/job/schedule counts via `neo4j_query`), then the news sections. Writer routed to gpt-oss (dropped `required_capabilities: [reasoning]` — it went to gemini-2.5-flash, which JSON-fenced the whole brief). ApiTube made topical (`title=` per section; `category`/`country` don't filter) at `per_page=2` (its `results[]` triplicates full article body → ~8K tokens/article, un-trimmable server-side; `per_page=8`×2 overflowed gpt-oss's 131K context). Start-of-run `news-raw` clear added so a failed run can't poison the next (a mid-chain death left banked blocks that compounded to ~306K tokens across runs). Status query needs a `WITH` before aggregation (implicit-grouping error).
-- fix: SerpApi 200+`{"error":…}` responses now surface as real failures instead of a phantom `success rc=0` that silently fell through to SearXNG (`search_serpapi`/`search_serpapi_news`) + 2 regression tests
-- feat: ApiTube news API wired into the daily brief alongside `google_news` — seeded `apitube` `ApiContext` (X-API-Key), `APITUBE_API_KEY` compose passthrough, structured/dated `results[]` (needs rebuild to activate)
-- feat: `api-scout` spawnable profile + weekly `schedules/api-scout.yaml` (seeded **disabled**) — discovers free REST APIs, ingests keyless ones, `notify_user`-flags key-gated ones
-- feat: `schedules/*.yaml` now honors `enabled: false` on first creation (seed a task OFF for review; `seed_scheduled_task_if_absent`)
-- fix: daily news brief reverted to `engine: google_news` (SerpApi news engine recovered) + queries made specific + recency-scoped ("today", no over-constraining literal date)
+- Tweaking ! yolo lol (`1ee3695`)
+- feat: scheduler editor tooling + native aidevboard API ingest (`1e21b0d`)
+- Updated and fined tuned chat workflow (`af39bcd`)
+- feat: surface SerpApi 200+error failures; ApiTube + api-scout; news query tuning (`d293b5d`)
 - feat: recall_recent tool + sub-agent cost attribution; fix media feed throttle (`e838a2b`)
 
 ### 2026-09-07
 
 - feat: give the general chat profile http_request (enables Home Assistant + API calls from chat) (`ed52df7`)
 - feat: ingest_api prune option + brain self-API sync schedule (`a4328cd`)
-- feat: ingest_api build-from-routes for a codebase with no spec file (`de691a3`)
-- feat: ingest_api LLM fallback for HTML docs with no linked spec (`3558250`)
-- feat: ingest_api reads from HTML docs pages and codebase spec files (`a425bca`)
-- docs: mark unified-agent Phases 0-3 complete; refresh STATUS recent changes (`49e66af`)
-- feat: attach sub-agent tool-call trace to findings; wire ingest_api into api-integrator (`feeffd1`)
-- feat: native ingest_api tool — OpenAPI/Swagger spec -> endpoint graph (`c91fa7b`)
-- fix: fallback ladder in sub-agent loop + atomic dynamic-tool persistence (`b8882a1`)
-- fix: clamp sub-agent models to the unmetered band; drop inert provider_hints (`4cdeb6d`)
-- fix: sharpen select_agent routing (from live smoke test) (`c25eadd`)
-- feat: unified agent execution — shared AgentRunner reachable from all three front doors (`a7313be`)
-- docs: sub-agent orchestration complete (Phases 0-3); Phase 4 deferred (`2d418a5`)
-- feat: sub-agent lifecycle finish marker (Phase 3 polish) (`a09fb93`)
 
 ## Known Issues / Backlog
 

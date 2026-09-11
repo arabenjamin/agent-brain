@@ -50,6 +50,73 @@ pub fn local_timeout() -> Duration {
 /// Default Ollama API URL.
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
+/// Default `llama-server` OpenAI-compatible endpoint.
+const DEFAULT_LLAMACPP_URL: &str = "http://localhost:8080";
+
+/// Build the LLM config used for **background / scheduled jobs** (the "local"
+/// route taken whenever a step sets `provider_hint: "ollama"` / `USE_LOCAL_LLM`).
+///
+/// The generation backend is selected by `LOCAL_LLM_BACKEND`:
+/// - `ollama` (default) — native Ollama at `OLLAMA_LOCAL_URL` / `OLLAMA_LOCAL_MODEL`.
+/// - `llamacpp` — `llama-server`'s OpenAI-compatible API at `LLAMACPP_URL` /
+///   `LLAMACPP_MODEL` (falls back to `OLLAMA_LOCAL_MODEL` for the model name).
+///
+/// **Embeddings always stay on local Ollama** regardless of the generation
+/// backend: `embed_base_url` is pinned to `OLLAMA_LOCAL_URL` and the embed model
+/// to `OLLAMA_EMBED_MODEL` (`bge-m3`). llama.cpp single-model servers don't
+/// serve `/api/embeddings`, so this keeps `search_notes` / `store_note` working
+/// unchanged while generation moves to llama.cpp.
+pub fn build_local_llm_config() -> LlmConfig {
+    let backend = std::env::var("LOCAL_LLM_BACKEND")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+
+    let ollama_url =
+        std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
+
+    let (provider, base_url, model) = match backend.as_str() {
+        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp" => {
+            let url =
+                std::env::var("LLAMACPP_URL").unwrap_or_else(|_| DEFAULT_LLAMACPP_URL.to_string());
+            // A single-model llama-server serves whatever GGUF it was launched
+            // with regardless of the requested name, so this is mostly a ledger
+            // label; keep it meaningful by reusing OLLAMA_LOCAL_MODEL if set.
+            let model = std::env::var("LLAMACPP_MODEL")
+                .or_else(|_| std::env::var("OLLAMA_LOCAL_MODEL"))
+                .unwrap_or_else(|_| "local".to_string());
+            (LlmProviderType::LlamaCpp, url, model)
+        }
+        _ => {
+            let model =
+                std::env::var("OLLAMA_LOCAL_MODEL").unwrap_or_else(|_| "gemma4:latest".to_string());
+            (LlmProviderType::Ollama, ollama_url.clone(), model)
+        }
+    };
+
+    let mut cfg = LlmConfig::default()
+        .with_provider(provider)
+        .with_base_url(base_url)
+        .with_model(model)
+        // Embeddings are ALWAYS local Ollama — pin the embed endpoint to it even
+        // when generation runs on llama.cpp (whose base_url can't serve embeds).
+        .with_embed_base_url(ollama_url)
+        .with_timeout(local_timeout());
+
+    if let Ok(em) = std::env::var("OLLAMA_EMBED_MODEL") {
+        cfg = cfg.with_embed_model(em);
+    }
+    // keep_alive is Ollama-only (ignored by the llama.cpp/OpenAI-compat provider,
+    // which never serializes it). Keeping it set is harmless when backend=llamacpp.
+    if let Some(ka) = std::env::var("OLLAMA_KEEP_ALIVE")
+        .ok()
+        .and_then(|s| crate::config::validate_go_duration(s.trim()))
+    {
+        cfg = cfg.with_keep_alive(ka);
+    }
+    cfg
+}
+
 /// Default model to use.
 const DEFAULT_MODEL: &str = "qwen3.5:4b";
 
@@ -85,6 +152,11 @@ pub enum LlmProviderType {
     Ollama,
     /// Ollama Cloud (https://ollama.com) — same wire format as local, requires API key.
     OllamaCloud,
+    /// Local llama.cpp `llama-server`, spoken via its OpenAI-compatible API
+    /// (`/v1/chat/completions`, `/v1/embeddings`). One model per server instance;
+    /// context window / GPU offload are launch-time flags, not per-request.
+    #[serde(alias = "llamacpp", alias = "llama-cpp", alias = "llama.cpp")]
+    LlamaCpp,
     Anthropic,
     Gemini,
 }
@@ -94,6 +166,7 @@ impl std::fmt::Display for LlmProviderType {
         match self {
             LlmProviderType::Ollama => write!(f, "ollama"),
             LlmProviderType::OllamaCloud => write!(f, "ollama-cloud"),
+            LlmProviderType::LlamaCpp => write!(f, "llamacpp"),
             LlmProviderType::Anthropic => write!(f, "anthropic"),
             LlmProviderType::Gemini => write!(f, "gemini"),
         }
@@ -329,6 +402,14 @@ impl LlmClient {
             // Ollama Cloud uses the OpenAI-compatible API at /v1/chat/completions,
             // not the native Ollama /api/chat endpoint.
             LlmProviderType::OllamaCloud => {
+                use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
+                Arc::new(OpenAiCompatProvider::new(provider_config))
+            }
+            // llama.cpp's `llama-server` speaks the same OpenAI-compatible wire
+            // format as Ollama Cloud, so it reuses the same provider. `keep_alive`
+            // / `num_ctx` in provider_config are ignored (llama.cpp sets those at
+            // server launch, not per-request).
+            LlmProviderType::LlamaCpp => {
                 use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
                 Arc::new(OpenAiCompatProvider::new(provider_config))
             }
