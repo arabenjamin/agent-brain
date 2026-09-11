@@ -15,9 +15,13 @@ tools:
   - context
   - neo4j_query
   - list_tasks
-# No model pin. A bare `provider_hint` without `model_preference` is inert (only
-# read via the model_preference resolver); dropped rather than left misleading. A
-# sub-agent runs on the unmetered base config (Ollama Cloud gpt-oss:120b).
+# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
+# 7 days this agent's largest sub-agent turn was well inside the sidecar's
+# 16384-token/request budget, and E4B drives multi-round tool loops with zero
+# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
+# clamp keeps `llamacpp` (local is always unmetered).
+model_preference: "gemma4-e4b"
+provider_hint: "llamacpp"
 token_budget: 6000
 pre_load_query: "MATCH (s:ScheduledTask) RETURN s.name AS name, s.interval_seconds AS interval, s.steps AS steps ORDER BY s.name"
 system_prompt: |

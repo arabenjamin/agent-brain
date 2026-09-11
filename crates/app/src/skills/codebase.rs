@@ -341,7 +341,7 @@ impl CodebaseSkill {
     fn search_codebase_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_codebase".to_string(),
-            description: "Search the codebase for a regex pattern, like grep. Returns matching lines with file and line number context.".to_string(),
+            description: "Search the codebase for a regex pattern, like grep. LITERAL match over file contents — NOT semantic search: pass an identifier, symbol, or exact phrase (`max_attempts`, `fn retry`), never a question or description, which will match nothing. Returns matching lines with file and line number context.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -874,7 +874,82 @@ impl CodebaseSkill {
         );
 
         if results.is_empty() {
-            ToolCallResult::success_text(format!("No matches found for '{}'", args.query))
+            // A zero result must carry the way out of it. `search_codebase` is a
+            // literal/regex grep, so a natural-language question matches nothing
+            // and reads exactly like "this code does not exist" — on 2026-09-11 a
+            // delegated code-analyst asked a prose question about the queue's
+            // retry handling, got this empty result, and correctly-but-wrongly
+            // reported the logic absent — on a codebase where the relevant
+            // identifier has 50 hits. The
+            // model was not at fault; the empty answer named nothing it could try
+            // next. So when a multi-word query misses, re-probe each significant
+            // term and report which ones DO match (same doctrine as
+            // `recall_recent`'s unfiltered re-run and `list_endpoints` pointing at
+            // `list_apis`).
+            const PROBE_CAP: usize = 20;
+            const NOISE: &[&str] = &[
+                "the", "and", "for", "with", "from", "that", "this", "how", "does", "what", "why",
+                "who", "are", "was", "its", "our", "all", "any", "can", "does", "did", "you",
+                "use", "get", "into", "about", "when", "where", "which",
+            ];
+            let terms: Vec<&str> = args
+                .query
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|t| t.len() >= 3 && !NOISE.contains(&t.to_ascii_lowercase().as_str()))
+                .take(8)
+                .collect();
+
+            let mut hits: Vec<String> = Vec::new();
+            if terms.len() > 1 {
+                for term in &terms {
+                    let Ok(tre) = regex::Regex::new(&format!("(?i){}", regex::escape(term))) else {
+                        continue;
+                    };
+                    let mut sub: Vec<String> = Vec::new();
+                    search_in_dir(
+                        &root,
+                        &root,
+                        &tre,
+                        &args.file_pattern,
+                        0,
+                        &mut sub,
+                        PROBE_CAP,
+                    );
+                    if !sub.is_empty() {
+                        // The probe is capped, so an exact count would be a lie at
+                        // the ceiling; mark it as a floor instead.
+                        let plus = if sub.len() >= PROBE_CAP { "+" } else { "" };
+                        hits.push(format!("  '{}' - {}{} match(es)", term, sub.len(), plus));
+                    }
+                }
+            }
+
+            let guidance = if hits.is_empty() {
+                concat!(
+                    "This tool is a LITERAL regex/grep over file contents - it is NOT ",
+                    "semantic search, so a question or description will never match. Search ",
+                    "for an identifier, symbol, or exact phrase that appears verbatim in the ",
+                    "source (e.g. `max_attempts`, `fn retry`, `impl QueueService`). To find ",
+                    "code by concept, use `get_file_tree` or `analyze_own_structure` to ",
+                    "locate the file, then `read_codebase_file`."
+                )
+                .to_string()
+            } else {
+                format!(
+                    concat!(
+                        "This tool is a LITERAL regex/grep, not semantic search - the full ",
+                        "phrase matched nothing, but these terms from it DO occur:\n{}\n\n",
+                        "Re-run with one of those, or with a symbol you expect verbatim in ",
+                        "the source. Absence of the phrase is NOT absence of the code."
+                    ),
+                    hits.join("\n")
+                )
+            };
+
+            ToolCallResult::success_text(format!(
+                "No matches found for '{}'.\n\n{}",
+                args.query, guidance
+            ))
         } else {
             ToolCallResult::success_text(format!(
                 "{} match(es) for '{}':\n\n{}",

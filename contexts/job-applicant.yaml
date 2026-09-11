@@ -65,3 +65,13 @@ system_prompt: |
 
   Deliver the actual result inline this turn — do not queue work to the
   background, and cite what the tools actually returned.
+
+# Reachable from the front door via `delegate`. The apply flow has a hard
+# human-approval gate (step 5): the sub-agent PREPARES and returns the artifact
+# for the user to approve, and the approval itself comes back through the
+# orchestrator on a later turn. It must never submit on its own.
+spawnable: true
+specialty: >-
+  preparing a tailored job application for a specific AI Dev Board role,
+  grounded in the stored resume — drafts and stops for human approval,
+  never submits by itself

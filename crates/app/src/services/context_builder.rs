@@ -125,6 +125,24 @@ pub struct ContextBuilderService {
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
 
+/// The profile used when nothing else selects one.
+///
+/// Read from `CHAT_DEFAULT_PROFILE`, falling back to `"general"`. This exists so
+/// the conversational front door can be swapped (and reverted) with an env var
+/// rather than a rebuild — the front-door design is deliberately tool-poor, and
+/// which profile plays that role is a deployment decision, not a code constant.
+///
+/// Also used to bound MCP `tools/list` when `MCP_TOOL_PROFILE` names it: a
+/// delegating front door advertises a handful of tools instead of the full
+/// registry, which keeps a connecting client's context small.
+pub fn default_profile_name() -> String {
+    std::env::var("CHAT_DEFAULT_PROFILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "general".to_string())
+}
+
 impl ContextBuilderService {
     pub fn new(
         neo4j: Option<Neo4jClient>,
@@ -226,8 +244,8 @@ impl ContextBuilderService {
     /// Delete `contexts_dir/{name}.yaml` and remove from the in-memory map.
     /// Returns `false` if the profile was not found.
     pub async fn delete_profile(&self, name: &str) -> anyhow::Result<bool> {
-        if name == "general" {
-            anyhow::bail!("Cannot delete the default 'general' profile");
+        if name == "general" || name == default_profile_name().as_str() {
+            anyhow::bail!("Cannot delete the default '{name}' profile");
         }
         let path = self.contexts_dir.join(format!("{name}.yaml"));
         let existed = path.exists();
@@ -290,19 +308,22 @@ impl ContextBuilderService {
 
     /// Assign a context profile to a goal using description-based text overlap
     /// (fast path) with an LLM classifier fallback for ambiguous goals.
-    /// Returns the best profile name, or `"general"` as the default.
+    /// Returns the best profile name, or [`default_profile_name`] as the default.
     pub async fn auto_assign(&self, goal: &str) -> String {
         let profiles = self.profiles.read().await.clone();
         if profiles.is_empty() {
-            return "general".to_string();
+            return default_profile_name();
         }
 
         let goal_tokens = Self::tokenize(goal);
+        // The default profile is the fallback, never a candidate: matching it
+        // explicitly would shadow a real specialist. Read once, not per-profile.
+        let default_name = default_profile_name();
 
-        // Score each non-general profile by token overlap with name + description.
+        // Score each non-default profile by token overlap with name + description.
         let mut scores: Vec<(usize, String)> = profiles
             .iter()
-            .filter(|(n, _)| *n != "general")
+            .filter(|(n, _)| n.as_str() != default_name && n.as_str() != "general")
             .map(|(name, profile)| {
                 let profile_tokens = Self::tokenize(&format!(
                     "{} {}",
@@ -338,7 +359,7 @@ impl ContextBuilderService {
         if let Some(llm) = self.make_llm().await {
             let profile_list: String = profiles
                 .iter()
-                .filter(|(n, _)| *n != "general")
+                .filter(|(n, _)| n.as_str() != default_name && n.as_str() != "general")
                 .map(|(name, p)| format!("- {}: {}", name, p.description))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -363,8 +384,8 @@ impl ContextBuilderService {
             }
         }
 
-        debug!(goal = %goal, "auto_assign: fallback to general");
-        "general".to_string()
+        debug!(goal = %goal, "auto_assign: fallback to default profile");
+        default_profile_name()
     }
 
     /// Tokenize text into a set of lowercase alphanumeric tokens.
@@ -682,5 +703,36 @@ mod tests {
         assert!(!is_read_cypher(
             "MATCH (n:Note) WHERE n.c = 'create' RETURN n AS content"
         ));
+    }
+
+    /// `CHAT_DEFAULT_PROFILE` selects the fallback profile; absent or blank it
+    /// stays `general`. This is the whole mechanism behind swapping the chat
+    /// front door without a rebuild, so a regression here silently reverts the
+    /// deployment to the old tool-heavy default.
+    ///
+    /// Serialised with its own env var and restored afterwards — these run in
+    /// one process, and a leaked var would change what every later test sees.
+    #[test]
+    fn default_profile_name_follows_the_env_var() {
+        let saved = std::env::var("CHAT_DEFAULT_PROFILE").ok();
+
+        unsafe { std::env::remove_var("CHAT_DEFAULT_PROFILE") };
+        assert_eq!(default_profile_name(), "general");
+
+        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "GeneralDefault-Orchrestator") };
+        assert_eq!(default_profile_name(), "GeneralDefault-Orchrestator");
+
+        // Blank / whitespace-only must not produce an unresolvable profile name.
+        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "   ") };
+        assert_eq!(default_profile_name(), "general");
+
+        // Surrounding whitespace is trimmed, not preserved into a lookup key.
+        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "  orchestrator  ") };
+        assert_eq!(default_profile_name(), "orchestrator");
+
+        match saved {
+            Some(v) => unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", v) },
+            None => unsafe { std::env::remove_var("CHAT_DEFAULT_PROFILE") },
+        }
     }
 }

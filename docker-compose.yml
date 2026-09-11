@@ -122,8 +122,16 @@ services:
       # gemma4:31b-cloud composes the final reply from what it gathered (nicer to
       # read, and says "we did not find that" instead of inventing). Unset both
       # to put gpt-oss back to speaking for itself.
-      - CHAT_SYNTHESIS_PROVIDER=ollama-cloud
-      - CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
+      # Worker/voice split — OFF by default since 2026-09-11. It existed to
+      # replace NO_ANSWER_AFTER_TOOLS when gpt-oss ran the loop; the local E4B
+      # front door speaks for itself, faster (21.9s vs ~28s) and with BETTER
+      # provenance — measured, the voice pass rewrote "based on what the
+      # knowledge-worker found" into the brain's own voice, stripping the
+      # attribution that TOOL-RESULT RULE exists to preserve. Turning it on
+      # re-adds one cloud call per turn. Set a provider to re-enable:
+      #   CHAT_SYNTHESIS_PROVIDER=ollama-cloud CHAT_SYNTHESIS_MODEL=gemma4:31b-cloud
+      - CHAT_SYNTHESIS_PROVIDER=${CHAT_SYNTHESIS_PROVIDER-}
+      - CHAT_SYNTHESIS_MODEL=${CHAT_SYNTHESIS_MODEL-}
       # In-chat sub-agent delegation (Phase 0 spike — OFF by default). When
       # "true", the orchestrator gains a `delegate(agent, task)` pseudo-tool that
       # runs a bounded, read-only worker sub-agent (researcher/code-analyst/
@@ -136,7 +144,13 @@ services:
       # routinely evicted mid-chain and reloaded per step. Override with a Go
       # duration; "-1m" pins indefinitely (whisper also wants VRAM, so 30m).
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-30m}
-      - MCP_TOOL_PROFILE=general    # Limit tools/list to this profile for smaller MCP clients (e.g. Open WebUI)
+      # The conversational front door. Deliberately tool-poor: it holds no
+      # retrieval tools and reaches everything through `delegate` (chat) or
+      # `run_agent` (MCP). Both vars point at the same profile on purpose — a
+      # connecting MCP client then sees ~7 tools instead of the full registry,
+      # which keeps its context small. Revert either to `general` to go back.
+      - CHAT_DEFAULT_PROFILE=${CHAT_DEFAULT_PROFILE:-GeneralDefault-Orchrestator}
+      - MCP_TOOL_PROFILE=${MCP_TOOL_PROFILE:-GeneralDefault-Orchrestator}
       - CONTEXTS_DIR=/home/agent/agent-brain/contexts  # Use volume-mounted contexts so profile changes take effect without rebuild
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}

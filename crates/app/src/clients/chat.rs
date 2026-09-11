@@ -1441,6 +1441,11 @@ impl ChatService {
             .unwrap_or(false);
         let cb_opt = self.context_builder.read().await.clone();
 
+        // The fallback profile when neither the request nor auto-assign picks one.
+        // Env-driven (CHAT_DEFAULT_PROFILE) so the front door can be swapped
+        // without a rebuild.
+        let default_profile = crate::services::context_builder::default_profile_name();
+
         // Resolve the effective profile name: use the one from the request, or
         // auto-assign based on the message content when none is provided.
         let resolved_profile: Option<String> = if has_explicit_tools {
@@ -1460,6 +1465,21 @@ impl ChatService {
                 .is_some_and(|s| s.starts_with("jobsearch-"))
             {
                 Some("job-applicant".to_string())
+            } else if std::env::var("CHAT_DEFAULT_PROFILE")
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty())
+            {
+                // An explicit CHAT_DEFAULT_PROFILE means the deployment has a
+                // designated front door, and the front door IS the router: it
+                // reads the live spawnable roster and picks a worker with
+                // `delegate`. Running auto_assign here would pre-empt that with
+                // a keyword match and swap in a *persona* instead — observed
+                // 2026-09-11, when "What did we learn today?" scored
+                // `knowledge-worker` and answered from its own `recall_recent`,
+                // never reaching the orchestrator at all. Keyword routing and
+                // roster delegation are two routers; running both means the
+                // dumber one wins, because it runs first.
+                Some(default_profile.clone())
             } else {
                 Some(cb.auto_assign(&request.message).await)
             }
@@ -1596,7 +1616,7 @@ impl ChatService {
                             .as_ref()
                             .map(|c| c.model.as_str())
                             .unwrap_or("unknown"),
-                        resolved_profile.as_deref().unwrap_or("general"),
+                        resolved_profile.as_deref().unwrap_or(&default_profile),
                         tools.len(),
                         if profile_system_prompt.is_some() {
                             "profile"
@@ -1743,7 +1763,7 @@ impl ChatService {
         {
             let user_snippet: String = user_message.chars().take(300).collect();
             let response_snippet: String = final_text.chars().take(200).collect();
-            let profile = resolved_profile.as_deref().unwrap_or("general");
+            let profile = resolved_profile.as_deref().unwrap_or(&default_profile);
             let session_tag = session_id
                 .as_deref()
                 .map(|s| format!(" [session: {s}]"))

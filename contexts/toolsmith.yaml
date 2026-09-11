@@ -55,7 +55,14 @@ system_prompt: |
 token_budget: 10000
 pre_load_query: "dynamic tools and procedure pipelines"
 # Spawnable as a sub-agent. Runs on the unmetered base config (Ollama Cloud
-# gpt-oss:120b — a large context helps with big specs); no model_preference pin.
+# gpt-oss:120b). Now pinned local — see below.
+# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
+# 7 days this agent's largest sub-agent turn was well inside the sidecar's
+# 16384-token/request budget, and E4B drives multi-round tool loops with zero
+# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
+# clamp keeps `llamacpp` (local is always unmetered).
+model_preference: "gemma4-e4b"
+provider_hint: "llamacpp"
 spawnable: true
 specialty: >-
   composing a new dynamic tool out of the brain's existing tools (a procedure

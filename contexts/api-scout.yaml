@@ -57,11 +57,15 @@ system_prompt: |
   URLs. Do not claim an ingest or a notification you did not actually perform.
 token_budget: 8000
 pre_load_query: "MATCH (c:ApiContext) RETURN 'Existing ApiContext: ' + c.name + ' (' + COALESCE(c.base_url,'') + ')' AS content ORDER BY c.name"
-model_preference: null
-provider_hint: null
+# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
+# 7 days this agent's largest sub-agent turn was well inside the sidecar's
+# 16384-token/request budget, and E4B drives multi-round tool loops with zero
+# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
+# clamp keeps `llamacpp` (local is always unmetered).
+model_preference: "gemma4-e4b"
+provider_hint: "llamacpp"
 # Spawnable as a sub-agent. Reachable via run_agent(agent="api-scout") — the
-# weekly `Weekly API scout` schedule targets it. Runs on the unmetered base
-# config (Ollama Cloud gpt-oss:120b); no model_preference pin.
+# weekly `Weekly API scout` schedule targets it.
 spawnable: true
 specialty: >-
   scout the web for free public REST APIs in the brain's interest areas; ingest

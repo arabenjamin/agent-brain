@@ -69,7 +69,14 @@ token_budget: 8000
 pre_load_query: "REST API clients and integrations"
 # Spawnable as a sub-agent. Reachable via run_agent(agent="api-integrator") or
 # run_agent(agent="auto"). Runs on the unmetered base config (Ollama Cloud
-# gpt-oss:120b) — no model_preference pin.
+# gpt-oss:120b). Now pinned local — see below.
+# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
+# 7 days this agent's largest sub-agent turn was well inside the sidecar's
+# 16384-token/request budget, and E4B drives multi-round tool loops with zero
+# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
+# clamp keeps `llamacpp` (local is always unmetered).
+model_preference: "gemma4-e4b"
+provider_hint: "llamacpp"
 spawnable: true
 specialty: >-
   discover and understand a REST API (ingest_api for an OpenAPI/Swagger spec, else
