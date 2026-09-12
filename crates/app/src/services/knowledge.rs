@@ -54,6 +54,10 @@ pub struct KnowledgeService {
     pub(crate) auto_snapshot_prune: bool,
 }
 
+/// Reserved envelope key carrying rows destined for the PERSON, not the model.
+/// Lifted into `ToolCallResult::bulk` and stripped by the skill layer.
+pub const BULK_ROWS_KEY: &str = "__bulk_rows";
+
 impl KnowledgeService {
     /// Create a new knowledge service.
     pub fn new(neo4j: Neo4jClient, llm: Option<Arc<dyn LlmProvider>>) -> Self {
@@ -988,10 +992,31 @@ impl KnowledgeService {
         let pool_limit = fetch_limit;
 
         // 1. Vector search (if LLM available)
+        //
+        // A failed embed degrades this to BM25-only, which is correct — but the
+        // error used to be discarded by the let-chain with no log at all, so a
+        // silently half-blind hybrid search looked identical to a healthy one.
+        // That invisibility is why the codebase carried a wrong folk diagnosis
+        // ("certain strings return NaN") for months: nothing ever showed which
+        // inputs actually failed. Probing the endpoint found the real causes —
+        // over-length and empty input — both now prevented in
+        // `prepare_embed_input`.
         let mut vec_hits: Vec<(String, String)> = Vec::new();
-        if let Some(llm) = &self.llm
-            && let Ok(query_embedding) = llm.embed(query_text).await
-        {
+        let query_embedding = match &self.llm {
+            Some(llm) => match llm.embed(query_text).await {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        chars = query_text.len(),
+                        "Embedding failed — this search is BM25-only (semantic recall degraded)"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        if let Some(query_embedding) = query_embedding {
             let cypher = r#"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
                 YIELD node, score
@@ -1559,14 +1584,25 @@ impl KnowledgeService {
     /// `list_apis`: a deterministic tool's empty answer has to carry the way out
     /// of it, because the caller cannot guess a label it has never been shown.
     /// (2026-09-11)
+    /// Hard ceiling on rows sent to a person in one delivery. A runaway guard,
+    /// not a display budget — nothing downstream truncates the bulk channel.
+    const BULK_DELIVERY_MAX: i64 = 5000;
+
+    /// `full` delivers the COMPLETE matching set with whole note content, for
+    /// a person to read — not a model-sized page of snippets.
     pub async fn recall_window(
         &self,
-        since_iso: &str,
-        until_iso: &str,
-        sample_limit: usize,
-        source_context: Option<&str>,
-        note_type: Option<&str>,
+        spec: crate::services::traits::RecallSpec<'_>,
     ) -> Result<Value> {
+        let crate::services::traits::RecallSpec {
+            since_iso,
+            until_iso,
+            sample_limit,
+            source_context,
+            note_type,
+            offset,
+            full,
+        } = spec;
         let filtered = source_context.is_some() || note_type.is_some();
         let (by_type, by_source_context, total) = self
             .window_buckets(since_iso, until_iso, source_context, note_type)
@@ -1576,7 +1612,16 @@ impl KnowledgeService {
         // A filtered call is an enumeration rather than a characterisation, so it
         // gets a longer snippet — enough of each note to summarise it without a
         // second lookup.
-        let snippet_len = if filtered { 600 } else { 200 };
+        // A page for a model gets a snippet; a delivery to a person gets the
+        // note. 8000 is a per-note sanity bound, not a display budget — nothing
+        // downstream truncates the bulk channel.
+        let snippet_len = if full {
+            8000
+        } else if filtered {
+            600
+        } else {
+            200
+        };
         let mut sample_query = neo4rs::query(&format!(
             "{window}
              RETURN COALESCE(n.note_type, 'semantic') AS note_type,
@@ -1584,10 +1629,11 @@ impl KnowledgeService {
                     n.id AS id,
                     toString(n.created_at) AS created_at,
                     left(n.content, {snippet_len}) AS snippet
-             ORDER BY n.created_at DESC LIMIT $limit"
+             ORDER BY n.created_at DESC SKIP $offset LIMIT $limit"
         ))
         .param("since", since_iso)
         .param("until", until_iso)
+        .param("offset", offset as i64)
         .param("limit", sample_limit as i64);
         if let Some(sc) = source_context {
             sample_query = sample_query.param("source_context", sc);
@@ -1595,25 +1641,88 @@ impl KnowledgeService {
         if let Some(nt) = note_type {
             sample_query = sample_query.param("note_type", nt);
         }
-        let sample_rows = self.neo4j.execute(sample_query).await?;
-        let samples: Vec<Value> = sample_rows
-            .into_iter()
-            .map(|row| {
-                json!({
-                    "note_type": row.get::<String>("note_type").unwrap_or_default(),
-                    "source_context": row.get::<String>("source_context").unwrap_or_default(),
-                    "id": row.get::<String>("id").unwrap_or_default(),
-                    "created_at": row.get::<String>("created_at").unwrap_or_default(),
-                    "snippet": row.get::<String>("snippet").unwrap_or_default(),
+        let to_rows = |rows: Vec<neo4rs::Row>| -> Vec<Value> {
+            rows.into_iter()
+                .map(|row| {
+                    json!({
+                        "note_type": row.get::<String>("note_type").unwrap_or_default(),
+                        "source_context": row.get::<String>("source_context").unwrap_or_default(),
+                        "id": row.get::<String>("id").unwrap_or_default(),
+                        "created_at": row.get::<String>("created_at").unwrap_or_default(),
+                        "snippet": row.get::<String>("snippet").unwrap_or_default(),
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
+        let samples: Vec<Value> = to_rows(self.neo4j.execute(sample_query).await?);
+
+        // ── Unconditional delivery of a FILTERED set ────────────────────────
+        //
+        // A filtered recall means the caller already named what they want, so
+        // the complete set is fetched and handed to the PERSON every time,
+        // regardless of what the model asked for or noticed. It costs the model
+        // nothing — it still gets only its page — and it costs the reader
+        // nothing, since the UI keeps it collapsed.
+        //
+        // It is unconditional because every conditional version failed. A
+        // system-prompt rule ("if the user wants to SEE them, pass full:true")
+        // and then an in-band hint at the exact decision point were both
+        // ignored by the 4B worker, which paged a 12-row window and reported it
+        // had "only been able to retrieve the first 12" — and, on the next
+        // attempt, that showing all 50 "would be impractical", deciding on the
+        // user's behalf not to show them. The intent never survived the trip
+        // anyway: the front door paraphrased "I want to see all of what we
+        // learned" into "Search all stored notes for information related to…",
+        // so the worker could not have known it was a delivery request.
+        //
+        // Guessing intent from phrasing would just move the guess. Not making
+        // it is better: the rows are always THERE, and nobody has to infer that
+        // the person who asked about 50 notes might want to look at them.
+        let bulk_rows: Vec<Value> = if filtered && !full && (samples.len() as i64) < total {
+            let mut q = neo4rs::query(&format!(
+                "{window}
+                 RETURN COALESCE(n.note_type, 'semantic') AS note_type,
+                        COALESCE(n.source_context, '(none)') AS source_context,
+                        n.id AS id,
+                        toString(n.created_at) AS created_at,
+                        left(n.content, 8000) AS snippet
+                 ORDER BY n.created_at DESC LIMIT $limit"
+            ))
+            .param("since", since_iso)
+            .param("until", until_iso)
+            .param("limit", Self::BULK_DELIVERY_MAX);
+            if let Some(sc) = source_context {
+                q = q.param("source_context", sc);
+            }
+            if let Some(nt) = note_type {
+                q = q.param("note_type", nt);
+            }
+            // Never fatal: a failed bulk fetch degrades to the page, which is
+            // exactly the old behaviour.
+            match self.neo4j.execute(q).await {
+                Ok(rows) => to_rows(rows),
+                Err(e) => {
+                    tracing::warn!(error = %e, "bulk delivery fetch failed (non-fatal)");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         // Whether the sample IS the full matching set. A filtered caller is
         // enumerating, and "did I see everything?" is the difference between a
         // correct summary and a false negative, so state it rather than leaving
         // it to be inferred from two numbers.
-        let complete = (samples.len() as i64) >= total;
+        //
+        // `offset` is part of this: without it, "show me ALL the video-learning
+        // notes" had no answer at any setting. Raising sample_limit past what
+        // the caller's channel carries does not enumerate more, it just moves
+        // where the truncation falls — so the rest has to be reachable by a
+        // SECOND call, not a bigger one. See the `next_offset` note below.
+        let seen = offset + samples.len();
+        let complete = seen as i64 >= total;
+        let next_offset = if complete { None } else { Some(seen) };
 
         let mut out = json!({
             "since": since_iso,
@@ -1621,6 +1730,9 @@ impl KnowledgeService {
             "total_notes": total,
             "matched_notes": total,
             "returned": samples.len(),
+            "offset": offset,
+            "seen_through": seen,
+            "next_offset": next_offset,
             "complete": complete,
             "filter": json!({
                 "source_context": source_context,
@@ -1630,6 +1742,15 @@ impl KnowledgeService {
             "by_source_context": by_source_context,
             "sample": samples,
         });
+
+        // Carried out-of-band under a reserved key. The skill lifts it into the
+        // ToolCallResult's `bulk` channel and removes it here, so it never
+        // reaches a model's context — see `KnowledgeSkill::lift_bulk_rows`.
+        if !bulk_rows.is_empty() {
+            out.as_object_mut()
+                .expect("object")
+                .insert(BULK_ROWS_KEY.into(), json!(bulk_rows));
+        }
 
         let note: String = if filtered && total == 0 {
             // The escape hatch. Re-run unfiltered so the caller is handed the
@@ -1641,25 +1762,84 @@ impl KnowledgeService {
             m.insert("window_total_notes".into(), json!(window_total));
             m.insert("available_note_types".into(), json!(avail_type));
             m.insert("available_source_contexts".into(), json!(avail_src));
+            // The most common single mistake, caught deterministically instead
+            // of left for the caller to notice: a source_context passed in the
+            // note_type slot (or the reverse). Observed 2026-09-12 —
+            // `note_type: "video_learning", source_context: "video_learning"`
+            // matched nothing, and the worker went on to report that no
+            // video-learning notes existed while holding a response whose
+            // `available_source_contexts` said `video_learning: 50`. The escape
+            // hatch had the answer; naming the swap is what makes it actionable.
+            let value_of = |rows: &[Value], key: &str| -> Vec<String> {
+                rows.iter()
+                    .filter_map(|r| r.get(key).and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            };
+            let known_types = value_of(&avail_type, "note_type");
+            let known_sources = value_of(&avail_src, "source_context");
+            let mut swap: Option<String> = None;
+            if let Some(nt) = note_type
+                && !known_types.iter().any(|k| k == nt)
+                && known_sources.iter().any(|k| k == nt)
+            {
+                swap = Some(format!(
+                    "'{nt}' IS NOT A note_type — it is a source_context, and it has notes. \
+                     Retry as recall_recent(source_context: \"{nt}\") with NO note_type."
+                ));
+            } else if let Some(sc) = source_context
+                && !known_sources.iter().any(|k| k == sc)
+                && known_types.iter().any(|k| k == sc)
+            {
+                swap = Some(format!(
+                    "'{sc}' IS NOT A source_context — it is a note_type. Retry as \
+                     recall_recent(note_type: \"{sc}\") with NO source_context."
+                ));
+            }
+            if let Some(ref msg) = swap {
+                out.as_object_mut()
+                    .expect("object")
+                    .insert("filter_error".into(), json!(msg));
+            }
             format!(
-                "NO NOTES MATCHED THIS FILTER — and this is NOT evidence the window is empty: \
+                "{}NO NOTES MATCHED THIS FILTER — and this is NOT evidence the window is empty: \
                  {window_total} notes exist in it. The filter is the likely fault (a note_type \
                  or source_context that does not pair, e.g. source_context 'video_learning' is \
                  stored as note_type 'source_record' and 'claim', never 'episodic'). \
                  `available_note_types` and `available_source_contexts` list the values that DO \
                  exist here — retry with one of those, or drop one side of the filter. Do NOT \
                  report absence to the user off this result, and do NOT fall back to \
-                 search_notes, which ranks by topic and cannot establish absence either."
+                 search_notes, which ranks by topic and cannot establish absence either.",
+                swap.map(|m| format!("{m} ")).unwrap_or_default()
             )
         } else if filtered && complete {
-            "These are ALL the notes matching the filter in this window — the set is complete, \
-             so summarise from it directly. Counts exclude chunk fragments."
-                .to_string()
+            format!(
+                "COMPLETE: all {total} matching notes are here (rows {offset}-{seen}) — \
+                 summarise directly. If your copy ends in a TRUNCATED marker it was clipped in \
+                 transit: call again with offset set past what you received, do not report the \
+                 list as unavailable. Counts exclude chunk fragments.",
+                seen = seen,
+            )
         } else if filtered {
-            "PARTIAL: more notes match this filter than were returned — the sample is the \
-             most-recent rows. Raise sample_limit to enumerate the rest, and cite the count, \
-             not the sample size. Counts exclude chunk fragments."
-                .to_string()
+            // Two different next moves, and which one is right depends on WHO
+            // wanted the notes. Naming both here, at the moment of the choice,
+            // is the deterministic half — a system-prompt rule alone did not
+            // reach a 4B worker, which paged a 12-row window and then told the
+            // user it had "only been able to retrieve the first 12".
+            format!(
+                "PARTIAL: {total} notes match this filter and you have rows {offset}-{seen}. \
+                 TWO WAYS ON, pick by who wants them:\n\
+                 · The USER asked to SEE the notes → call again with the SAME filter and \
+                 `full: true`. That delivers ALL {total} straight to their screen, costs you \
+                 no context, and is ONE call. Then say what was delivered — never that you \
+                 could only retrieve part of it.\n\
+                 · YOU need to reason over them → page with offset={next} until complete=true.\n\
+                 Either way do NOT just raise sample_limit: a bigger page does not fit through \
+                 the tool-result channel, it only moves where the clipping falls. Cite {total}, \
+                 not the number of rows you happen to hold. Counts exclude chunk fragments.",
+                seen = seen,
+                next = next_offset.unwrap_or(seen),
+            )
         } else {
             "Counts exclude chunk fragments; they are distinct notes created in the window. \
              The sample is the most-recent rows, not the whole window — cite it as a sample of \
@@ -3520,6 +3700,25 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
             .await
     }
 
+    async fn search_notes_readonly(
+        &self,
+        query: &str,
+        limit: usize,
+        graph_hops: usize,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        KnowledgeService::search_notes_readonly(
+            self,
+            query,
+            limit,
+            graph_hops,
+            note_type,
+            source_context,
+        )
+        .await
+    }
+
     async fn search_notes_with_entity_expansion(
         &self,
         query: &str,
@@ -3657,21 +3856,9 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
 
     async fn recall_window(
         &self,
-        since_iso: &str,
-        until_iso: &str,
-        sample_limit: usize,
-        source_context: Option<&str>,
-        note_type: Option<&str>,
+        spec: crate::services::traits::RecallSpec<'_>,
     ) -> anyhow::Result<serde_json::Value> {
-        KnowledgeService::recall_window(
-            self,
-            since_iso,
-            until_iso,
-            sample_limit,
-            source_context,
-            note_type,
-        )
-        .await
+        KnowledgeService::recall_window(self, spec).await
     }
 
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool> {
@@ -3706,7 +3893,7 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
 /// literal terms by `db.index.fulltext.queryNodes`. Without this, characters like `:`,
 /// `/`, `[`, or an unbalanced `"` (common in a graph full of URLs) make the fulltext
 /// call throw and hybrid search silently degrades to the slow CONTAINS fallback.
-fn sanitize_lucene_query(q: &str) -> String {
+pub fn sanitize_lucene_query(q: &str) -> String {
     // The Lucene classic-parser reserved set, plus `&`/`|` handled individually so the
     // `&&`/`||` operators are neutralised too.
     const SPECIAL: &[char] = &[

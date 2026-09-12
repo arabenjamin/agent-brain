@@ -494,6 +494,18 @@ html, body, #root {
 .event-muted { color: var(--text-muted); margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .event-chevron { margin-left: auto; padding-left: 8px; color: var(--text-muted); font-size: 9px; flex-shrink: 0; }
 
+.event-note {
+  width: 100%;
+  margin: 6px 0 0 0;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 2px solid var(--accent, #6aa9ff);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
 .event-pre {
   width: 100%;
   margin: 6px 0 0 0;
@@ -2270,6 +2282,46 @@ html, body, #root {
 .agent-config-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Token spend, last 24h — the headline number in the chat strip. */
+.token-spend-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(106, 169, 255, 0.12);
+  border: 1px solid rgba(106, 169, 255, 0.28);
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+  white-space: nowrap;
+}
+.token-spend-label {
+  color: var(--text-secondary);
+  opacity: 0.75;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.token-spend-in { color: #7fb2ff; }
+.token-spend-out { color: #9ad7a0; }
+.token-spend-cost {
+  color: #ffcc66;
+  font-weight: 600;
+  padding-left: 2px;
+}
+/* A model whose rows carry no token counts. Not free — unmeasured. */
+.token-spend-blind {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 180, 80, 0.12);
+  border: 1px solid rgba(255, 180, 80, 0.3);
+  color: #ffb450;
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: help;
 }
 
 .model-usage-chip {

@@ -1,16 +1,25 @@
 name: researcher
-description: Deep research profile. Gathers knowledge from the graph, web, and reasoning before synthesis. Pairs with research mode (Gemini/Claude synthesis).
+description: |-
+  Deep research profile. Gathers knowledge from the graph, web, and reasoning before synthesis. Pairs with research mode (Gemini/Claude synthesis).
 tools:
-  - search_notes
-  - list_capabilities
-  - list_notes
-  - synthesize_knowledge
-  - search_web
-  - http_request
-  - ingest_api
-  - reason
-  - store_note
+- search_notes
+- list_capabilities
+- list_notes
+- synthesize_knowledge
+- search_web
+- http_request
+- ingest_api
+- reason
+- store_note
 system_prompt: |
+  GRAPH FIRST, WEB SECOND. Before reaching outward, ask "do we already know
+  this?" Check the graph — search_notes, recall_recent, list_apis/list_endpoints,
+  list_capabilities — and search the web only for what is genuinely new or needs
+  updating. Every search_web result is prefixed with WHAT WE ALREADY KNOW; read
+  that block before the results. If it answers the question, cite the stored note
+  and stop. Re-deriving what we already hold costs a search and creates a second
+  copy of the same knowledge.
+
   You are a research agent. Your job is to thoroughly gather information before
   drawing conclusions. Always search multiple sources:
     1. Search the knowledge graph first (search_notes, list_notes)
@@ -50,23 +59,10 @@ system_prompt: |
   A synthesis model will polish your findings — focus on breadth and accuracy,
   not prose quality.
 token_budget: 6000
-pre_load_query: "research findings and knowledge summaries"
-# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
-# 7 days this agent's largest sub-agent turn was well inside the sidecar's
-# 16384-token/request budget, and E4B drives multi-round tool loops with zero
-# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
-# clamp keeps `llamacpp` (local is always unmetered).
-# STAYS ON CLOUD — head-to-head measured 2026-09-11 against an identical twin
-# (same tools, same prompt, only the model differs), run via run_agent directly
-# so the front door was out of the loop:
-#   local made 4 calls (3x search_web + reason), never called http_request, named no manufacturer and declined to cite a figure it had; cloud made 8 (search_notes -> search_web -> http_request x3) and returned a sourced manufacturer/cost table.
-# Context was never the constraint. The failure is result-directed iteration:
-# E4B does not let the outcome of one tool call shape the next, so it either
-# stops at the first obstacle or loops undirected. Local is fine for one-shot
-# synthesis (schedule-author) and deterministic lookup (knowledge-worker
-# recall_recent) -- both have no loop to close. Re-test before moving this local.
-model_preference: ""
-provider_hint: ""
-# Spawnable as a sub-agent (Phase 2). The orchestrator delegates lookups here.
+pre_load_query: |-
+  research findings and knowledge summaries
+model_preference: ''
+provider_hint: ''
 spawnable: true
-specialty: "current/external info and web search, cross-checked against the knowledge graph"
+specialty: |-
+  current/external info and web search, cross-checked against the knowledge graph

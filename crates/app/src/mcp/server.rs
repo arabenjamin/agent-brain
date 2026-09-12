@@ -613,6 +613,21 @@ impl McpServerCore {
         // Notify the scheduler that activity occurred (wakes sleep mode).
         self.brain.notify_scheduler_activity().await;
 
+        // Fold human-facing bulk output into `content` for MCP clients.
+        //
+        // The bulk/content split exists so the CHAT loop can keep large results
+        // out of a model's context while still delivering them to the person.
+        // An MCP client has no such split — it asked for the tool's output and
+        // should receive all of it — and `bulk` is not a field in the MCP spec,
+        // so leaving it beside `content` would ship data every conformant client
+        // silently drops. Merging here keeps the split an internal concern.
+        let mut result = result;
+        if let Some(bulk) = result.bulk.take() {
+            result
+                .content
+                .push(crate::mcp::protocol::Content::text(bulk));
+        }
+
         Ok(JsonRpcResponse::new(
             request.id.clone(),
             serde_json::to_value(result).unwrap(),

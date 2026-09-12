@@ -169,10 +169,29 @@ impl ContextBuilderService {
         let mut map = self.profiles.write().await;
         map.clear();
 
-        let rd = std::fs::read_dir(dir)?;
+        // SORTED, because `map.insert` is last-write-wins and `read_dir` returns
+        // filesystem order — which is arbitrary and can differ between two
+        // machines, or between two boots of the same one.
+        //
+        // Two files can legitimately declare the same profile `name`: the UI's
+        // save path writes `<profile.name>.yaml`, so editing a profile whose
+        // file was named differently (`general-default-orchestrator.yaml` for
+        // `GeneralDefault-Orchrestator`) silently creates a SECOND definition
+        // rather than updating the first. On 2026-09-12 that left the front
+        // door's model a coin flip per restart — one file pinned it to a local
+        // 4B model, the other to gemini-2.5-flash, and nothing said so.
+        // Sorting makes the winner deterministic; the warning below makes the
+        // collision visible, which is the half that actually gets it fixed.
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+
         let mut count = 0usize;
-        for entry in rd.flatten() {
-            let path = entry.path();
+        let mut seen: std::collections::HashMap<String, std::path::PathBuf> =
+            std::collections::HashMap::new();
+        for path in paths {
             if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
                 continue;
             }
@@ -184,6 +203,16 @@ impl ContextBuilderService {
             match std::fs::read_to_string(&path) {
                 Ok(text) => match serde_yaml::from_str::<ContextProfile>(&text) {
                     Ok(profile) => {
+                        if let Some(prev) = seen.insert(profile.name.clone(), path.clone()) {
+                            warn!(
+                                name = %profile.name,
+                                overridden = %prev.display(),
+                                winner = %path.display(),
+                                "DUPLICATE context profile name — two files define it and the \
+                                 later one wins. Delete one; a UI edit writes \
+                                 <profile.name>.yaml and will not update a differently-named file."
+                            );
+                        }
                         debug!(name = %profile.name, "Loaded context profile");
                         map.insert(profile.name.clone(), profile);
                         count += 1;

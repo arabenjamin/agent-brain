@@ -40,7 +40,7 @@
 |-------|------|-------|-------|
 | CodebaseSkill | `src/skills/codebase.rs` | 14 | Codebase analysis, git logs/diffs, proposals, workspace files |
 | DynamicSkill | `src/skills/dynamic.rs` | 8 | Runtime tool definition and procedures |
-| KnowledgeSkill | `src/skills/knowledge.rs` | 7 | RAG, reasoning, consolidation, adversarial plan review |
+| KnowledgeSkill | `src/skills/knowledge.rs` | 8 | RAG, reasoning, consolidation, adversarial plan review; `recall_recent` pages with `offset`/`next_offset`, names a filter value passed in the wrong slot, and delivers a filtered set to the user in full via `ToolCallResult::bulk` (out of the model's context) |
 | MediaSkill | `src/skills/media.rs` | 7 | Watch/summarize videos (yt-dlp captions), watchlist, RSS polling, discovery |
 | GitSkill | `src/skills/git.rs` | 6 | git status/commit/push/branch/PR + codebase file writes |
 | TaskSkill | `src/skills/task.rs` | 5 | Goal tracking, decomposition, outcomes, reflection |
@@ -51,7 +51,7 @@
 | WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad and summarisation |
 | HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
 | QuerySkill | `src/skills/query.rs` | 7 | Neo4j (Cypher, schema-guarded) + DuckDB (SQL) primitives; deterministic reads: describe_graph, recent_tasks, list_apis, list_endpoints, list_capabilities (the brain's own tool/agent inventory) |
-| SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger |
+| SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger; every result is prefixed with WHAT WE ALREADY KNOW from the graph (hybrid notes + ingested APIs + watched media) |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
 | ClaimSkill | `src/skills/claims.rs` | 1 | Claim extraction, verification, corroboration tiering |
 | ConstructorSkill | `src/skills/constructor.rs` | 1 | Agent construction and reuse |
@@ -135,6 +135,10 @@
 
 ## Recent Changes (auto)
 
+### 2026-09-12
+
+- feat: give the brain a tool for its own inventory; stop guessed labels reading as absence (`f9b1750`)
+
 ### 2026-09-11
 
 - fix: stop a hung job living forever; reject live streams; enumerate notes by label (`2397e2e`)
@@ -157,7 +161,6 @@
 ### 2026-09-08
 
 - Tweaking ! yolo lol (`1ee3695`)
-- feat: scheduler editor tooling + native aidevboard API ingest (`1e21b0d`)
 
 ## Known Issues / Backlog
 

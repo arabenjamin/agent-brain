@@ -620,11 +620,20 @@ impl BrainCore {
         );
         registry.register_skill(Box::new(task_skill));
 
-        // Search Skill
-        registry.register_skill(Box::new(SearchSkill::new(
-            self.storage.telemetry.clone(),
-            self.storage.neo4j.clone(),
-        )));
+        // Search Skill. The knowledge store gives its prior-knowledge probe
+        // hybrid recall — see `SearchSkill::with_knowledge`.
+        {
+            let mut search =
+                SearchSkill::new(self.storage.telemetry.clone(), self.storage.neo4j.clone());
+            if let Some(neo4j) = &self.storage.neo4j {
+                search = search.with_knowledge(Arc::new(KnowledgeService::new(
+                    neo4j.clone(),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
+                ))
+                    as Arc<dyn crate::services::KnowledgeStore>);
+            }
+            registry.register_skill(Box::new(search));
+        }
 
         // Claim Skill — epistemic status for ingested assertions.
         if let Some(ref neo4j) = self.storage.neo4j {
@@ -829,10 +838,18 @@ impl BrainCore {
             queue_arc.as_ref().map(Arc::clone),
         )));
 
-        skills.push(Box::new(SearchSkill::new(
-            self.storage.telemetry.clone(),
-            self.storage.neo4j.clone(),
-        )));
+        {
+            let mut search =
+                SearchSkill::new(self.storage.telemetry.clone(), self.storage.neo4j.clone());
+            if let Some(neo4j) = &self.storage.neo4j {
+                search = search.with_knowledge(Arc::new(KnowledgeService::new(
+                    neo4j.clone(),
+                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
+                ))
+                    as Arc<dyn crate::services::KnowledgeStore>);
+            }
+            skills.push(Box::new(search));
+        }
 
         if let Some(ref neo4j) = self.storage.neo4j {
             skills.push(Box::new(ClaimSkill::new(

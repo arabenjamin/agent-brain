@@ -180,6 +180,7 @@ pub async fn run(
                     tool,
                     success,
                     preview,
+                    ..
                 } => {
                     let icon = if success {
                         "\x1b[32m✓\x1b[0m"

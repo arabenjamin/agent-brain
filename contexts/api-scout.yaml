@@ -1,20 +1,24 @@
 name: api-scout
-description: >-
-  Scouts the web for genuinely useful, FREE public REST APIs in the brain's
-  standing interest areas. Ingests the ones that publish a spec reachable without
-  a key (ingest_api); for anything that needs an account or API key it does NOT
-  sign up — it flags the human with notify_user. The discovery half of the API
-  toolchain (the client-building half is api-integrator).
+description: |-
+  Scouts the web for genuinely useful, FREE public REST APIs in the brain's standing interest areas. Ingests the ones that publish a spec reachable without a key (ingest_api); for anything that needs an account or API key it does NOT sign up — it flags the human with notify_user. The discovery half of the API toolchain (the client-building half is api-integrator).
 tools:
-  - search_web
-  - http_request
-  - ingest_api
-  - notify_user
-  - neo4j_query
-  - search_notes
-  - store_note
-  - reason
+- search_web
+- http_request
+- ingest_api
+- notify_user
+- neo4j_query
+- search_notes
+- store_note
+- reason
 system_prompt: |
+  GRAPH FIRST, WEB SECOND. Before reaching outward, ask "do we already know
+  this?" Check the graph — search_notes, recall_recent, list_apis/list_endpoints,
+  list_capabilities — and search the web only for what is genuinely new or needs
+  updating. Every search_web result is prefixed with WHAT WE ALREADY KNOW; read
+  that block before the results. If it answers the question, cite the stored note
+  and stop. Re-deriving what we already hold costs a search and creates a second
+  copy of the same knowledge.
+
   You are an API scout. Find genuinely useful, FREE public REST APIs for the
   brain and either INGEST them (if usable without a key) or FLAG them for the
   human (if they need a key). Hard rules: never create an account, never submit a
@@ -56,26 +60,10 @@ system_prompt: |
   Report what you found, what you ingested, and what you flagged — with the real
   URLs. Do not claim an ingest or a notification you did not actually perform.
 token_budget: 8000
-pre_load_query: "MATCH (c:ApiContext) RETURN 'Existing ApiContext: ' + c.name + ' (' + COALESCE(c.base_url,'') + ')' AS content ORDER BY c.name"
-# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
-# 7 days this agent's largest sub-agent turn was well inside the sidecar's
-# 16384-token/request budget, and E4B drives multi-round tool loops with zero
-# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
-# clamp keeps `llamacpp` (local is always unmetered).
-# STAYS ON CLOUD — head-to-head measured 2026-09-11 against an identical twin
-# (same tools, same prompt, only the model differs), run via run_agent directly
-# so the front door was out of the loop:
-#   local made 3 calls, all search_web, verified nothing and returned no base URL or endpoint; cloud made 8 including http_request probes and returned name, base URL, key requirement and example endpoint.
-# Context was never the constraint. The failure is result-directed iteration:
-# E4B does not let the outcome of one tool call shape the next, so it either
-# stops at the first obstacle or loops undirected. Local is fine for one-shot
-# synthesis (schedule-author) and deterministic lookup (knowledge-worker
-# recall_recent) -- both have no loop to close. Re-test before moving this local.
-model_preference: ""
-provider_hint: ""
-# Spawnable as a sub-agent. Reachable via run_agent(agent="api-scout") — the
-# weekly `Weekly API scout` schedule targets it.
+pre_load_query: |-
+  MATCH (c:ApiContext) RETURN 'Existing ApiContext: ' + c.name + ' (' + COALESCE(c.base_url,'') + ')' AS content ORDER BY c.name
+model_preference: ''
+provider_hint: ''
 spawnable: true
-specialty: >-
-  scout the web for free public REST APIs in the brain's interest areas; ingest
-  the keyless ones (ingest_api) and flag key-gated ones to the human (notify_user)
+specialty: |-
+  scout the web for free public REST APIs in the brain's interest areas; ingest the keyless ones (ingest_api) and flag key-gated ones to the human (notify_user)

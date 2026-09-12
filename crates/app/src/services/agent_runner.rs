@@ -380,6 +380,7 @@ impl AgentRunner {
                         tool,
                         success,
                         preview,
+                        model_saw_chars,
                     } => {
                         trace.push(ToolInvocation {
                             tool: tool.clone(),
@@ -393,7 +394,11 @@ impl AgentRunner {
                                 .send(ChatEvent::ToolResult {
                                     tool: format!("{agent}:{tool}"),
                                     success,
+                                    // Forwarded intact: a sub-agent's tool
+                                    // result reaches the user's stream in full,
+                                    // carrying how much of it the WORKER read.
                                     preview,
+                                    model_saw_chars,
                                 })
                                 .await;
                         }

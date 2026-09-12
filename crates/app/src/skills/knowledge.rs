@@ -139,6 +139,12 @@ impl KnowledgeSkill {
                  for a date string (e.g. search_notes '2026-09-07'); a date does not embed and \
                  will miss the day's notes. Counts exclude chunk fragments and are computed in \
                  the brain's LOCAL day; the sample is the newest rows, not the whole window.\n\n\
+                 SHOWING vs REASONING — if the user wants to SEE the notes (\"show me all X\", \
+                 \"list everything we learned\", \"I want to see...\"), pass `full: true`: every \
+                 matching note goes straight to their screen and you get a receipt. That is a \
+                 delivery, not a retrieval — do not page it, do not re-query it, and never \
+                 call it incomplete. Use the paged form below only when YOU need to reason \
+                 over the notes.\n\n\
                  TWO-STEP DRILL-DOWN — this is how you answer 'summarize the videos we watched \
                  today' or any 'what did <source> produce' question: (1) call with no filter to \
                  see the buckets, then (2) call AGAIN passing `source_context` (or `note_type`) \
@@ -148,8 +154,14 @@ impl KnowledgeSkill {
                  returns whatever note is topically nearest — typically an unrelated note from \
                  another month — and reads as 'nothing today'. If step 1 reports a non-zero count \
                  for a bucket, those notes EXIST; a later empty search is the search failing, not \
-                 absence. Check `complete` to know whether you were shown every matching note, \
-                 and raise `sample_limit` if not. Filter ONE side at a time — pairing a \
+                 absence. Check `complete` to know whether you were shown every matching note; if it is \
+                 false, call again with the SAME filter and `offset` set to the returned \
+                 `next_offset`, and keep paging until it is true. Do NOT raise \
+                 `sample_limit` to fix an incomplete read — a bigger page does not fit \
+                 through the tool-result channel any better, it just moves where the \
+                 clipping falls. And if the text you received ends in a TRUNCATED marker, \
+                 you did not see all of what was sent: page from where your copy stopped \
+                 rather than telling the user the list is unavailable. Filter ONE side at a time — pairing a \
                  source_context with a GUESSED note_type is the usual way to match nothing \
                  (source_context 'video_learning' is stored as note_type 'source_record' and \
                  'claim', never 'episodic'). If a filtered call returns 0 it tells you which \
@@ -166,7 +178,15 @@ impl KnowledgeSkill {
                     },
                     "sample_limit": {
                         "type": "integer",
-                        "description": "Max sample rows to return (default 24, or 50 when a filter is set; capped at 100)."
+                        "description": "Max sample rows per page (default 24, or 50 when a filter is set; capped at 100). Raising this does NOT get you more notes if the result is being clipped in transit — page with `offset` instead."
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": "Set true when the USER asked to SEE the notes themselves — \"show me all X\", \"list everything\", \"I want to see what we learned\". Delivers the COMPLETE matching set straight to the user's screen with whole note content, and gives you only a receipt plus 3 rows. The rows are NOT in your context and do not need to be: the user is already looking at them. Never page or re-query after a full delivery, and never tell the user the list is partial."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Rows to skip. This is how you enumerate a set bigger than one tool result: call again with the SAME filter and the `next_offset` the previous result gave you, until `complete` is true. Cite `matched_notes`, never the number of rows you happen to hold."
                     },
                     "source_context": {
                         "type": "string",
@@ -521,14 +541,28 @@ impl KnowledgeSkill {
             Ok(v) => v,
             Err(e) => return e,
         };
-        // A filtered call is an enumeration, not a characterisation, so it gets a
-        // larger default — the point is to see the matching notes, and a default
-        // that truncates them re-creates the "I found nothing" failure one step on.
-        let filtered = input.source_context.is_some() || input.note_type.is_some();
-        let sample_limit = input
-            .sample_limit
-            .unwrap_or(if filtered { 50 } else { 24 })
-            .clamp(1, 100);
+        // Defaults are chosen by MEASUREMENT against a sub-agent's tool-result
+        // budget (`tool_result_budget`, 8000 chars for a lean allowlist), not by
+        // taste. A sample row serialises to ~450 chars unfiltered (200-char
+        // snippet + id + timestamp + two labels) and ~850 filtered (600-char
+        // snippet), so the old 24/50 produced 10562/14000+ — both clipped. The
+        // clip is the whole bug: a payload that says `complete: true` and then
+        // loses a third of itself in transit gets relayed to the user as "not
+        // the complete list".
+        //
+        // 12 fits either way with headroom. Fewer rows per call is strictly
+        // better than more rows that arrive cut, because `offset` makes the
+        // rest reachable and truncation does not — and the caller can always
+        // ask for a bigger page deliberately.
+        // `full` means the audience is the PERSON, so the model-sized page cap
+        // does not apply — a page is the wrong shape for "show me everything".
+        // The 5000 bound is a runaway guard, not a display budget.
+        let full = input.full.unwrap_or(false);
+        let sample_limit = if full {
+            input.sample_limit.unwrap_or(5000).clamp(1, 5000)
+        } else {
+            input.sample_limit.unwrap_or(12).clamp(1, 100)
+        };
 
         // Windows are computed in the brain's LOCAL zone (stored timestamps are
         // UTC, so the bounds are converted to UTC before the query) — "today"
@@ -573,23 +607,150 @@ impl KnowledgeSkill {
 
         match self
             .svc
-            .recall_window(
-                &since.to_rfc3339(),
-                &until.to_rfc3339(),
+            .recall_window(crate::services::traits::RecallSpec {
+                since_iso: &since.to_rfc3339(),
+                until_iso: &until.to_rfc3339(),
                 sample_limit,
-                input.source_context.as_deref(),
-                input.note_type.as_deref(),
-            )
+                source_context: input.source_context.as_deref(),
+                note_type: input.note_type.as_deref(),
+                offset: input.offset.unwrap_or(0),
+                full,
+            })
             .await
         {
             Ok(mut v) => {
                 if let Value::Object(ref mut m) = v {
                     m.insert("window".into(), json!(window));
                 }
-                ToolCallResult::success_json(v)
+                if full {
+                    Self::split_full_delivery(v)
+                } else {
+                    Self::lift_bulk_rows(v)
+                }
             }
             Err(e) => ToolCallResult::error(format!("recall_recent failed: {e}")),
         }
+    }
+
+    /// Move any rows the service staged for the PERSON out of the model-facing
+    /// envelope and into the `bulk` channel.
+    ///
+    /// A filtered recall always stages the complete set (see the unconditional
+    /// delivery note in `KnowledgeService::recall_window`). The model still gets
+    /// only its page; this just makes sure the rest reaches the screen instead
+    /// of the context — and tells the model plainly that it did, so it stops
+    /// reporting a delivered set as one it "could only partly retrieve".
+    fn lift_bulk_rows(mut v: Value) -> ToolCallResult {
+        let rows: Vec<Value> = match v
+            .as_object_mut()
+            .and_then(|m| m.remove(crate::services::knowledge::BULK_ROWS_KEY))
+        {
+            Some(Value::Array(a)) => a,
+            _ => return ToolCallResult::success_json(v),
+        };
+        if rows.is_empty() {
+            return ToolCallResult::success_json(v);
+        }
+
+        let bulk = Self::render_rows(&rows);
+        let page = v.get("returned").and_then(Value::as_i64).unwrap_or(0);
+        if let Value::Object(ref mut m) = v {
+            m.insert("delivered_to_user".into(), json!(rows.len()));
+            let prior = m
+                .get("note")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            m.insert(
+                "note".into(),
+                json!(format!(
+                    "ALL {} MATCHING NOTES ARE ALREADY ON THE USER'S SCREEN — delivered in \
+                     full alongside this result, outside your context. You hold a page of {} \
+                     for reasoning. Do NOT tell the user the list is partial, that you could \
+                     only retrieve some, or that showing them all is impractical: they are \
+                     looking at all {} right now. Answer questions about them; page only if \
+                     YOU need more to reason with.\n{prior}",
+                    rows.len(),
+                    page,
+                    rows.len(),
+                )),
+            );
+        }
+        ToolCallResult::success_json(v).with_bulk(bulk)
+    }
+
+    /// Render note rows as a readable block — one entry per note, whole content.
+    fn render_rows(rows: &[Value]) -> String {
+        let mut out = String::new();
+        for (i, row) in rows.iter().enumerate() {
+            let get = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or("");
+            out.push_str(&format!(
+                "\n[{}/{}] {} · {} · {}\n{}\n{}\n",
+                i + 1,
+                rows.len(),
+                get("note_type"),
+                get("source_context"),
+                get("created_at"),
+                get("id"),
+                get("snippet"),
+            ));
+        }
+        out
+    }
+
+    /// Split a `full: true` recall into its two audiences.
+    ///
+    /// The person gets every matching note rendered for reading; the model gets
+    /// a receipt — counts, a three-row taste, and an instruction not to re-query
+    /// in order to enumerate what the user is already looking at.
+    ///
+    /// This is the point of the bulk channel: the model's context cost becomes
+    /// independent of how many rows came back. Before it, "show me all of what
+    /// we learned from video learning" made a 4B local worker page a 12-row
+    /// window to shuttle 50 rows to a human — extra LLM calls, a truncation
+    /// risk at every hop, and less delivered at the end than one query.
+    fn split_full_delivery(mut v: Value) -> ToolCallResult {
+        let rows: Vec<Value> = match v.get_mut("sample").map(Value::take) {
+            Some(Value::Array(a)) => a,
+            _ => Vec::new(),
+        };
+        let total = v.get("matched_notes").and_then(Value::as_i64).unwrap_or(0);
+
+        let mut bulk = String::new();
+        for (i, row) in rows.iter().enumerate() {
+            let get = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or("");
+            bulk.push_str(&format!(
+                "\n[{}/{}] {} · {} · {}\n{}\n{}\n",
+                i + 1,
+                rows.len(),
+                get("note_type"),
+                get("source_context"),
+                get("created_at"),
+                get("id"),
+                get("snippet"),
+            ));
+        }
+
+        if let Value::Object(ref mut m) = v {
+            m.insert("delivered_to_user".into(), json!(rows.len()));
+            m.insert(
+                "sample".into(),
+                json!(rows.iter().take(3).cloned().collect::<Vec<_>>()),
+            );
+            m.insert(
+                "note".into(),
+                json!(format!(
+                    "FULL DELIVERY — all {} of {total} matching notes were sent to the USER \
+                     directly and are on their screen now. You were given 3 as a taste; the rest \
+                     were deliberately NOT loaded into your context. Do NOT page, re-query or \
+                     enumerate them, and do NOT say the list is incomplete or that you could \
+                     only retrieve part of it — the user can see all of it. State what was \
+                     delivered, then offer to answer questions about it.",
+                    rows.len()
+                )),
+            );
+        }
+        ToolCallResult::success_json(v).with_bulk(bulk)
     }
 
     async fn handle_prune_old_notes(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -1142,6 +1303,14 @@ struct RecallRecentInput {
         deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
     )]
     note_type: Option<String>,
+    /// Rows to skip — how the caller pages through a matching set larger than
+    /// one tool result. Copied from the previous call's `next_offset`.
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Deliver the COMPLETE matching set to the USER instead of a model-sized
+    /// page. The rows bypass the model's context entirely; it gets a receipt.
+    #[serde(default)]
+    full: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1438,6 +1607,157 @@ mod tests {
         assert_eq!(r["count"], 1);
         assert!(r["note"].is_null());
         assert!(r["available_note_types"].is_null());
+    }
+
+    // -- recall_recent paging -------------------------------------------------
+
+    /// `offset` must reach the service, or "show me the rest" silently re-reads
+    /// page one forever.
+    #[tokio::test]
+    async fn recall_recent_forwards_offset() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute(
+                    "recall_recent",
+                    Some(json!({"source_context": "video_learning", "offset": 50})),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["offset"], 50);
+    }
+
+    /// Absent offset is page one, not an error.
+    #[tokio::test]
+    async fn recall_recent_defaults_offset_to_zero() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute("recall_recent", Some(json!({})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["offset"], 0);
+    }
+
+    /// The schema has to TELL the model to page rather than inflate the page —
+    /// the behavioural half. A worker that raises `sample_limit` against a
+    /// clipped channel just moves where the clipping falls and reports the set
+    /// as unavailable, which is the failure this whole path exists to stop.
+    #[test]
+    fn recall_recent_schema_steers_to_paging_not_a_bigger_limit() {
+        let def = KnowledgeSkill::recall_recent_def();
+        let offset = def.input_schema["properties"]["offset"]["description"]
+            .as_str()
+            .expect("offset documented");
+        assert!(offset.contains("next_offset"));
+        let limit = def.input_schema["properties"]["sample_limit"]["description"]
+            .as_str()
+            .expect("sample_limit documented");
+        assert!(limit.contains("offset"), "must redirect to paging");
+        assert!(def.description.contains("next_offset"));
+        assert!(def.description.contains("TRUNCATED"));
+    }
+
+    // -- full delivery (the bulk channel) -------------------------------------
+
+    /// `full: true` must reach the service, or "show me everything" silently
+    /// returns a model-sized page instead of a delivery.
+    #[tokio::test]
+    async fn recall_recent_forwards_full() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute("recall_recent", Some(json!({"full": true})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["full"], true);
+    }
+
+    /// The split is the whole feature: the user's copy carries every row, the
+    /// model's copy carries a receipt and three. A model that receives all 50
+    /// has gained nothing over the old paging and has paid for it in context.
+    #[test]
+    fn full_delivery_sends_rows_to_the_user_and_a_receipt_to_the_model() {
+        let rows: Vec<Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "id": format!("n{i}"),
+                    "note_type": "claim",
+                    "source_context": "video_learning",
+                    "created_at": "2026-09-12T00:00:00Z",
+                    "snippet": format!("row {i} content"),
+                })
+            })
+            .collect();
+        let v = json!({ "matched_notes": 50, "sample": rows });
+
+        let out = KnowledgeSkill::split_full_delivery(v);
+        let bulk = out.bulk.clone().expect("bulk channel populated");
+        let model = out.model_text();
+
+        // Every row reached the person.
+        assert!(bulk.contains("row 0 content"));
+        assert!(bulk.contains("row 49 content"));
+        assert!(bulk.contains("[50/50]"));
+
+        // The model got the count and a taste — not the rows.
+        let m: Value = serde_json::from_str(&model).expect("model copy is json");
+        assert_eq!(m["delivered_to_user"], 50);
+        assert_eq!(m["sample"].as_array().map(Vec::len), Some(3));
+        assert!(
+            !model.contains("row 49 content"),
+            "row 49 leaked into context"
+        );
+
+        // And it is told not to undo the delivery by re-querying or hedging.
+        let note = m["note"].as_str().unwrap_or_default();
+        assert!(note.contains("FULL DELIVERY"));
+        assert!(note.contains("Do NOT page"));
+        assert!(note.contains("incomplete"));
+    }
+
+    /// Context cost must not grow with the result. This is the property the
+    /// whole bulk channel exists to provide, so assert it directly rather than
+    /// trusting the shape.
+    #[test]
+    fn full_delivery_model_cost_is_flat_in_row_count() {
+        let build = |n: usize| {
+            let rows: Vec<Value> = (0..n)
+                .map(|i| {
+                    json!({
+                        "id": format!("n{i}"),
+                        "note_type": "claim",
+                        "source_context": "video_learning",
+                        "created_at": "2026-09-12T00:00:00Z",
+                        "snippet": "x".repeat(400),
+                    })
+                })
+                .collect();
+            KnowledgeSkill::split_full_delivery(json!({ "matched_notes": n, "sample": rows }))
+        };
+        let small = build(5).model_text().len();
+        let huge = build(500).model_text().len();
+        // 100x the rows must not meaningfully move the model's payload.
+        assert!(
+            huge < small * 2,
+            "model payload grew with row count: {small} -> {huge}"
+        );
+        // ...while the user's copy did grow, because that is the point.
+        assert!(build(500).bulk.unwrap().len() > build(5).bulk.unwrap().len() * 10);
+    }
+
+    #[test]
+    fn full_flag_is_documented_as_a_delivery_not_a_page() {
+        let def = KnowledgeSkill::recall_recent_def();
+        let full = def.input_schema["properties"]["full"]["description"]
+            .as_str()
+            .expect("full documented");
+        assert!(full.contains("show me all") || full.contains("show me"));
+        assert!(full.contains("NOT in your context") || full.contains("not in your context"));
+        assert!(def.description.contains("full: true"));
     }
 
     // -- store_note -----------------------------------------------------------

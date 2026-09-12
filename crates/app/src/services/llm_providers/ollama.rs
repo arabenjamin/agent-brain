@@ -162,27 +162,35 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
+        // Non-empty, capped, and halved-and-retried if the endpoint still says
+        // the input is too long — the ceiling is in tokens and this cap is in
+        // characters, so it cannot be exactly right for every content density.
         let url = format!("{}/api/embeddings", self.base_url());
+        super::embed_with_backoff(text, |prompt| {
+            let url = url.clone();
+            async move {
+                let request = EmbeddingsRequest {
+                    model: &self.config.model,
+                    prompt: &prompt,
+                    keep_alive: self.config.keep_alive.as_deref(),
+                };
 
-        let request = EmbeddingsRequest {
-            model: &self.config.model,
-            prompt: text,
-            keep_alive: self.config.keep_alive.as_deref(),
-        };
+                let response = self.post(&url).json(&request).send().await?;
 
-        let response = self.post(&url).json(&request).send().await?;
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(LlmProviderError::GenerationFailed(format!(
+                        "Status {}: {}",
+                        status, body
+                    )));
+                }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(LlmProviderError::GenerationFailed(format!(
-                "Status {}: {}",
-                status, body
-            )));
-        }
-
-        let emb_response: EmbeddingsResponse = response.json().await?;
-        Ok(emb_response.embedding)
+                let emb_response: EmbeddingsResponse = response.json().await?;
+                Ok(emb_response.embedding)
+            }
+        })
+        .await
     }
 
     async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmProviderError> {

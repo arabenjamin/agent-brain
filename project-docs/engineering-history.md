@@ -248,6 +248,90 @@ Three rules worth carrying:
 - **Check the budget of the loop that will actually consume the payload, not the one you happen to be reading.** 6000 and 2000 are both live in this codebase, and the smaller one belongs to the path a delegated answer travels.
 - **A routing miss costs a whole turn and shows up as nothing.** Every one of these burned 8 rounds and recorded `success: true` on every row. The error counter cannot see any of it.
 
+#### A complete result that arrived incomplete (2026-09-12)
+
+Same day, one layer down. Asked **"what did we learn in the last 24 hrs?"**, the front door delegated to `knowledge-worker`, which called `recall_recent` and got back a payload whose own envelope read:
+
+```json
+{ "complete": true, "returned": 41, "matched_notes": 41,
+  "note": "These are ALL the notes matching the filter — summarise from it directly" }
+```
+
+6254 characters of it. The worker received **2000**. It relayed the truncation honestly — *"this is not the complete list"* — and the user was told the graph could not produce what the graph had already produced. Asked again for the complete list, it declined again.
+
+**The tool was lying about itself, and it had no way to know.** `complete: true` is a claim about the query; it says nothing about the channel, and nothing reconciled the two. Three separate defects fed it:
+
+- **One blanket cap for two very different callers.** `CLOUD_TOOL_RESULT_CHARS = 2000` was sized for `general` — 46 tools, ~33K chars of schema resent every round — and then applied unchanged to a `knowledge-worker` sub-agent whose 12 schemas are ~11K against E4B's 16384-token window, observed peaking at 8080 `tokens_in`. The lean profile was paying the fat profile's tax. `tool_result_budget()` now derives the cap from the schemas actually in play: measured live, both the 11-tool worker and the 8-tool front door moved from 2000 to **8000**, while a 46-tool allowlist still clamps to 2000. It logs at INFO, because it is the number that explains an entire class of symptom and was previously invisible.
+- **No way to ask for the rest.** `recall_recent` had `sample_limit` and nothing else, so "show me all 50" had no answer at any setting — **raising the limit does not enumerate more, it only moves where the clipping falls.** It now takes `offset` and returns `next_offset`/`seen_through`, and its advisory says in as many words: page, do not inflate.
+- **Defaults chosen by taste, not measurement.** A sample row serialises to ~450 chars unfiltered and ~850 filtered, so the old 24/50 defaults produced 10562 and 14000+ — clipped before they left the building. Measured down to 12, which lands at 7227/5194 against the 8000 budget. *Fewer rows that arrive whole beat more rows that arrive cut*, because `offset` makes the rest reachable and truncation does not.
+
+A fourth defect surfaced while verifying the fix, and it is the sharpest of them. The worker called:
+
+```
+recall_recent { "note_type": "video_learning", "source_context": "video_learning" }
+```
+
+— a source_context in the note_type slot. It matched nothing. The zero-match escape hatch fired correctly and handed back `available_source_contexts: [{ "video_learning": 50 }]`, **and the worker still reported that no video-learning notes existed.** The data it needed was in its hands, in the response it was reading.
+
+So the escape hatch got an escape hatch: when a filter value is absent from one slot's vocabulary but present in the other's, `recall_recent` now says so first and by name — *"'video_learning' IS NOT A note_type — it is a source_context, and it has notes. Retry as recall_recent(source_context: \"video_learning\") with NO note_type."* — as both a `filter_error` field and the head of `note`. Deterministic, model-agnostic, and the one mistake worth catching because it is the one that manufactures a false absence.
+
+**Verified end to end afterwards:** the 24-hour question now answers from a single un-truncated call with real counts and no hedge; "all of what we learned from video learning" enumerates 9 source records with titles and YouTube URLs.
+
+Rules earned:
+- **A result that asserts its own completeness must be sized for the channel that carries it, or the assertion is a lie the caller will faithfully relay.** `complete: true` plus a truncation marker is a contradiction the model resolves in the pessimistic direction, every time.
+- **Pagination is the honest answer to "show me more"; a bigger page is not.** Any tool that can return more than fits needs an offset, not a larger limit.
+- **Pick payload defaults by measuring the serialised bytes against the consumer's budget.** Both numbers are knowable; neither was being checked.
+- **The UI preview and the model's copy must use the same cap.** They had drifted apart (6000 display vs 8000 model), so the stream showed TRUNCATED on results the model saw whole — a false signal about the one thing that marker exists to report.
+
+#### Showing is not reasoning: the bulk channel (2026-09-12)
+
+Third attempt at the same request, and the one that finally addressed it rather than tuning around it. Asked *"I want to see all of what we learned from video learning today"*, the brain kept answering with 12 of 50 notes and an apology. Each previous fix made the funnel wider — a schema-derived tool-result budget, paging, measured defaults — and the request still failed, because **the funnel was the wrong shape, not the wrong size.**
+
+The user's framing was the diagnosis: *"I want the brain to be more like a db admin and return what's there as if I had written and ran the cypher query myself."* A person asking to SEE 50 notes does not need a model to hold them. Routing them through a 4B worker's context in 12-row pages costs extra LLM calls, risks a truncated relay at every hop, and delivers less than one query would have.
+
+Three things came out of it.
+
+**A second output channel.** `ToolCallResult` gained `bulk: Option<String>` — output whose audience is the person, never the model. The chat loop sends `content` to the model and `content + bulk` to the user; MCP folds them together, since an external client has no such split and `bulk` is not in the spec. Measured on the failing request: **47,077 characters delivered to the user, 5,875 to the model.** The model's cost is now flat in the row count, which is the property the whole thing exists to provide — asserted directly by `full_delivery_model_cost_is_flat_in_row_count` rather than inferred from the shape.
+
+**The budget became model-aware, which it should have been from the start.** `tool_result_budget` took only the tool list: a fixed 24,000-char allowance whether the loop was driving Gemma-4-E4B at 16384 tokens or a 1M-token cloud model. Asked why a sub-agent should be rationed like a small local model when the orchestrator has a million tokens, there was no answer — the code never looked. It now reads `context_window` from the catalog and takes a fraction of it, so the ration follows the model.
+
+**And the user's view stopped being capped at the model's.** The day before, the streamed preview had been deliberately unified with the model's ration so the UI would stop flagging `TRUNCATED` on results the model had received whole. That fixed a false signal and created a worse one: it capped what a *person* could see at what a 4B model could read. The frontend had rendered the full preview in an expandable block the entire time; only that cap stood in the way. Honesty is preserved by a `model_saw_chars` field — *"showing all 47,077 characters; the model read the first 5,875"* — rather than by degrading the view.
+
+**The part worth remembering is how the trigger was decided.** The first implementation put it behind `full: true` and told the worker when to use it, in its system prompt. It did not. So the advisory was moved in-band, naming both options at the exact moment of the choice ("the USER asked to SEE them → `full: true`; YOU need to reason → page"). It did not use that either — it answered that retrieving all 50 "would be impractical", **deciding on the user's behalf not to show them.** And the intent could not have survived the trip regardless: the front door had paraphrased *"I want to see all of what we learned"* into *"Search all stored notes for information related to video learning"*, so the worker never knew a delivery had been asked for. A 4B orchestrator rewriting a request into a `task` string is a lossy channel for anything that is not a question — an imperative about *presentation* does not survive it.
+
+Guessing intent from phrasing would only have moved the guess. So the trigger was removed: **a filtered `recall_recent` now delivers the complete matching set to the person every time**, unconditionally, whatever the model asked for or noticed. It costs the model nothing (it still gets its page) and the reader nothing (the UI keeps it collapsed). Nobody has to infer that the person who asked about 50 notes might want to look at them.
+
+Rules earned:
+- **Separate the data channel from the reasoning channel.** A tool result has two audiences with different needs, and one cap cannot serve both. Ask who each byte is for.
+- **A ration must follow the model, not the codebase's oldest assumption.** Both numbers — schema size and context window — are knowable at call time.
+- **When a behaviour must happen, do not make it a decision.** A prompt rule failed, then an in-band hint at the decision point failed. Unconditional delivery cannot fail, because nothing has to notice anything.
+- **Intent does not survive paraphrase through a small model.** Anything load-bearing about *presentation* has to be structural, because the front door will rewrite the words that carried it.
+
+#### "Wait — do I already know that?" (2026-09-12)
+
+The brain's default reflex was to reach outward. Asked to write the Home Assistant API to an OpenAPI doc, a worker web-searched for a spec five times — while `(:ApiContext {name:'home_assistant'})` sat in the graph with 20 endpoints already ingested, **listed in that same conversation two turns earlier**. The same shape is far more expensive on the research and media paths, where re-studying a topic from a month ago is invisible waste: no error, no duplicate detection, just a second set of notes saying what the first set said. Consolidation cleans that up afterwards; nothing was stopping it being created.
+
+The fix is unconditional and in-band, because that is the only kind that has worked this month: **every `search_web` result is now prefixed with what the graph already holds** — matching notes, already-ingested APIs, already-watched media. Nobody has to remember to check. A prompt rule telling agents to look locally first was tried and ignored, twice.
+
+**Precision turned out to be the hard part.** The first build matched *"Home Assistant REST API"* against three videos on the strength of the word **"home"** alone — a SmartThings pricing rant, an Arizona sober-living exposé, a 9/11 archive piece — and filled the notes section with chat transcripts of the user asking about Home Assistant. Both were fixed (two matching words minimum for media; `chat_session`/`scheduler_dispatch` excluded, since they record that something *happened* and quote the question verbatim, so they outrank actual knowledge). **A block full of confident false positives is worse than no block, because it teaches the reader to skip it.**
+
+Then a second lesson, sharper than the first. Adding the graph-first rule to `api-integrator` changed nothing, because its prompt opened `1. DISCOVER. Use search_web…` under *"do not skip steps"* — **a rule bolted on top of a numbered workflow loses to the workflow.** Making the lookup step 0 *also* changed nothing, because the profile did not hold `list_apis` or `list_endpoints`: it had been instructed to call tools it could not reach. Adding those two tools is what actually worked — five web searches and a fabricated file write became `list_apis` → `list_endpoints` → generate, with zero searches.
+
+#### Embedding fails on length, and the limit is tokens (2026-09-12)
+
+Asked why the prior-knowledge probe used BM25 instead of the real hybrid search, the answer given was "embedding is unreliable." That was wrong, and checking it was worthwhile. `search_notes_inner` already degraded safely — `if let Some(llm) … && let Ok(embedding) = llm.embed(…)` skips the vector half and continues on BM25 — so a hand-rolled degradation had been built on top of one that already existed. The real reasons were duller: `SearchSkill` held no LLM, and an embed call costs 122ms on the hot path.
+
+Probing the endpoint then contradicted the codebase's long-standing folk diagnosis. **"Ollama returns `500 … NaN` deterministically for certain strings" did not reproduce at all** — emoji, control characters, zero-width joiners, CJK, bare punctuation and whitespace-only input all embedded cleanly at 1024 dims. Two real failure modes:
+
+- **Empty input returns HTTP 200 with a zero-length vector.** Worse than an error: it flows into `db.index.vector.queryNodes` as a silent no-op and reads as "nothing is similar".
+- **Over-length input 500s** — and nothing truncated before `llm.embed(content)`, so 4 notes (the longest **201,259 chars**) were stored with no vector and were permanently invisible to semantic search.
+
+**The limit is tokens, and the first fix got the unit wrong.** Bisection with `lorem ipsum` gave ~10,327 chars, so the cap was set at 8,000 — and the backfill still 500'd on 3 of the 4 notes it was meant to repair. Re-bisecting against real stored content (JSON, URLs, punctuation) gave **~5,819 chars**. Both land near 3,200 tokens. A character cap cannot be correct for a token limit across a 1.8× density range, so the cap dropped to 4,000 *and* gained `embed_with_backoff`, which halves and retries on a length-shaped failure only — a missing API key is not retried, because shrinking cannot fix it.
+
+The reason this folklore survived so long is worth naming: the `Err` in that let-chain was **discarded with no log**. A half-blind hybrid search looked exactly like a healthy one, so nothing ever showed which inputs actually failed. It warns now.
+
+A last note on scope discipline. The backfill dry-run reported **4,902** notes with no embedding, not 4 — almost all short `episodic` and `reflection` records from a write path that never embeds. That is a pre-existing condition unrelated to this bug, and mass-mutating 4,902 nodes is not a call to make mid-repair. Only the 4 oversized notes were fixed; the rest was reported and left as a decision.
+
 ### The worker/voice split, and the write guard that had to come with it
 
 One chat turn on 2026-08-31 produced both halves of this section. Asked for technical deep-dives on three mesh technologies, `gpt-oss:120b-cloud` ran **zero** searches — confirmed against the `search_usage` ledger, whose last row that day predates the turn by 25 minutes — and wrote all three from prior. One of the three was **"Metastatic"**, a typo of *Meshtastic* that had been sitting in a Todo snapshot since 08-11. The model did not recognise it as a typo and did not flag it as unknown: it invented a Rust crate, an async API (`Metastatic::new(config).await?`), a Noise XX handshake, and a closing **`Sources:` line citing a GitHub repository that does not exist**. All of it was stored as `note_type: semantic` — the one type `label_claims` deliberately does *not* mark on retrieval, because it means *knowledge the brain established*. The same turn wrote **15 notes for 3 topics** (7 metastatic, 4 reticulum, 4 tailscale) as the tool loop re-issued `store_note` each iteration, then answered the *previous* question in the session and described the notes it had just written as pre-existing discoveries — including reporting one topic as "not yet captured, no dedicated note exists" 90 seconds after creating it.

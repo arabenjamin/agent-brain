@@ -266,16 +266,23 @@ impl KnowledgeStore for MockKnowledgeStore {
 
     async fn recall_window(
         &self,
-        since_iso: &str,
-        until_iso: &str,
-        _sample_limit: usize,
-        source_context: Option<&str>,
-        note_type: Option<&str>,
+        spec: crate::services::traits::RecallSpec<'_>,
     ) -> anyhow::Result<Value> {
+        let crate::services::traits::RecallSpec {
+            since_iso,
+            until_iso,
+            source_context,
+            note_type,
+            offset,
+            full,
+            ..
+        } = spec;
         Ok(serde_json::json!({
             "since": since_iso,
             "until": until_iso,
             "total_notes": 0,
+            "offset": offset,
+            "full": full,
             "by_note_type": [],
             "by_source_context": [],
             "sample": [],

@@ -218,6 +218,10 @@ pub struct SearchSkill {
     client: Client,
     telemetry: Option<TelemetryClient>,
     neo4j: Option<Neo4jClient>,
+    /// Used only by the "do we already know this?" probe, and only through
+    /// `search_notes_readonly` so the probe never bumps a note's access count.
+    /// Optional: absent it, the probe falls back to BM25 over the raw query.
+    knowledge: Option<std::sync::Arc<dyn crate::services::KnowledgeStore>>,
 }
 
 impl SearchSkill {
@@ -226,7 +230,23 @@ impl SearchSkill {
             client: Client::new(),
             telemetry,
             neo4j,
+            knowledge: None,
         }
+    }
+
+    /// Give the prior-knowledge probe hybrid (vector + BM25) recall.
+    ///
+    /// BM25 alone misses a paraphrase, which is most of what "do we already
+    /// know this?" has to catch — the stored note rarely uses the searcher's
+    /// wording. `search_notes_readonly` cannot fail the search: an embed error
+    /// degrades it to BM25 internally, which is exactly the hand-rolled
+    /// behaviour this replaces.
+    pub fn with_knowledge(
+        mut self,
+        knowledge: std::sync::Arc<dyn crate::services::KnowledgeStore>,
+    ) -> Self {
+        self.knowledge = Some(knowledge);
+        self
     }
 
     // =========================================================================
@@ -528,6 +548,308 @@ impl SearchSkill {
     // Tool Handlers
     // ========================================================================
 
+    /// What the graph ALREADY holds on this query, rendered as a block that
+    /// leads every `search_web` result.
+    ///
+    /// The brain's default reflex was to reach outward. Asked to produce an
+    /// OpenAPI doc for Home Assistant, a worker went web-searching for a spec —
+    /// while `(:ApiContext {name:'home_assistant'})` sat in the graph with 20
+    /// endpoints already ingested, listed in that same conversation two turns
+    /// earlier. The same shape costs far more on the research and media paths,
+    /// where re-searching a topic the brain studied last week is invisible
+    /// waste: no error, no duplicate-detection, just a second set of notes
+    /// saying what the first set said.
+    ///
+    /// Consolidation cleans duplicates up AFTERWARDS. This is the half that
+    /// stops them being created — the "wait, do I already know this?" question,
+    /// asked automatically so no model has to remember to ask it.
+    ///
+    /// Deliberately UNCONDITIONAL and in-band. A prompt rule telling an agent to
+    /// check the graph first is the weak half: it was ignored in three separate
+    /// incidents this month. Putting the answer at position zero of the result
+    /// the agent is already reading requires nobody to remember anything.
+    ///
+    /// Fails open in every direction — a graph error, a missing index, or no
+    /// Neo4j at all yields `None` and the search proceeds untouched. This must
+    /// never be able to break a search.
+    async fn prior_knowledge(&self, query: &str) -> Option<String> {
+        let neo4j = self.neo4j.as_ref()?;
+        let mut lines: Vec<String> = Vec::new();
+
+        // ── Notes: hybrid (vector + BM25) when a knowledge store is wired,
+        // BM25 alone otherwise.
+        //
+        // Hybrid matters here more than almost anywhere: the stored note
+        // rarely repeats the searcher's wording, and a keyword-only probe
+        // reports "we know nothing about this" for a paraphrase. It is safe
+        // because `search_notes_readonly` degrades to BM25 internally on an
+        // embed error, and READONLY because a housekeeping probe must not bump
+        // access counts and quietly reshape the spaced-repetition schedule.
+        //
+        // Activity logs are excluded either way. `chat_session` and
+        // `scheduler_dispatch` record that something HAPPENED, not what is
+        // KNOWN — and because they quote user questions verbatim they score
+        // extremely well on the very query being asked, crowding out real
+        // knowledge with transcripts of someone asking about it.
+        const LOG_CONTEXTS: [&str; 2] = ["chat_session", "scheduler_dispatch"];
+        let mut note_hits: Vec<(String, String, String)> = Vec::new();
+        let mut note_total: i64 = 0;
+
+        if let Some(k) = &self.knowledge
+            && let Ok(rows) = k.search_notes_readonly(query, 12, 0, None, None).await
+            && !rows.is_empty()
+        {
+            // The hybrid path returns only {id, content}, so date and
+            // source_context come from one follow-up lookup rather than by
+            // widening a return shape a dozen other callers depend on.
+            let ids: Vec<String> = rows
+                .iter()
+                .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_string))
+                .collect();
+            if let Ok(meta) = neo4j
+                .execute(
+                    neo4rs::query(
+                        "MATCH (n:Note) WHERE n.id IN $ids \
+                           AND NOT coalesce(n.source_context, '') IN $logs \
+                         RETURN n.id AS id, \
+                                substring(toString(n.created_at), 0, 10) AS d, \
+                                coalesce(n.source_context, '') AS sc, \
+                                left(n.content, 160) AS t",
+                    )
+                    .param("ids", ids)
+                    .param("logs", LOG_CONTEXTS.to_vec()),
+                )
+                .await
+            {
+                for row in &meta {
+                    note_hits.push((
+                        row.get::<String>("d").unwrap_or_default(),
+                        row.get::<String>("sc").unwrap_or_default(),
+                        row.get::<String>("t").unwrap_or_default(),
+                    ));
+                }
+            }
+            note_total = note_hits.len() as i64;
+        }
+
+        if note_hits.is_empty() {
+            // No store wired, or hybrid found nothing — fall back to the
+            // fulltext index directly so the probe still works standalone.
+            let lucene = crate::services::knowledge::sanitize_lucene_query(query);
+            if let Ok(rows) = neo4j
+                .execute(
+                    neo4rs::query(
+                        "CALL db.index.fulltext.queryNodes('note_content_fulltext', $q, \
+                         {limit: 60}) \
+                         YIELD node AS n, score \
+                         WHERE NOT (n)-[:PART_OF]->() \
+                           AND NOT coalesce(n.source_context, '') IN $logs \
+                         RETURN count(n) AS total, \
+                                collect({ \
+                                  t: left(n.content, 100), \
+                                  d: substring(toString(n.created_at), 0, 10), \
+                                  s: coalesce(n.source_context, '') \
+                                })[0..3] AS top",
+                    )
+                    .param("q", lucene.as_str())
+                    .param("logs", LOG_CONTEXTS.to_vec()),
+                )
+                .await
+                && let Some(row) = rows.first()
+            {
+                note_total = row.get::<i64>("total").unwrap_or(0);
+                if let Ok(top) = row.get::<Vec<Value>>("top") {
+                    for item in top.iter() {
+                        note_hits.push((
+                            item.get("d")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            item.get("s")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            item.get("t")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if note_total > 0 {
+            lines.push(format!(
+                "· {note_total} stored note(s) already match this query. Most relevant:"
+            ));
+            for (d, sc, t) in note_hits.iter().take(3) {
+                let sc = if sc.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{sc}]")
+                };
+                // Retrieval labels ("[CLAIM · unverified …]", "[SOURCE RECORD …]")
+                // are baked into stored content and would eat the whole preview
+                // window, showing the label instead of the note.
+                let body = t.replace('\n', " ");
+                let body = match (body.find('['), body.find(']')) {
+                    (Some(0), Some(end)) => body[end + 1..].trim().to_string(),
+                    _ => body.trim().to_string(),
+                };
+                lines.push(format!(
+                    "    ({d}){sc} {}",
+                    body.chars().take(100).collect::<String>()
+                ));
+            }
+        }
+
+        // ── APIs: an ingested endpoint graph beats any spec found on the web.
+        if let Ok(rows) = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (c:ApiContext) \
+                     WHERE any(w IN $words WHERE toLower(c.name) CONTAINS w) \
+                     OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) \
+                     WITH c, count(e) AS n WHERE n > 0 \
+                     RETURN c.name AS name, n ORDER BY n DESC LIMIT 3",
+                )
+                .param("words", Self::query_words(query)),
+            )
+            .await
+        {
+            for row in &rows {
+                lines.push(format!(
+                    "· API ALREADY INGESTED: `{}` with {} endpoints — use list_endpoints(\"{}\"), \
+                     do NOT search the web for its spec.",
+                    row.get::<String>("name").unwrap_or_default(),
+                    row.get::<i64>("n").unwrap_or(0),
+                    row.get::<String>("name").unwrap_or_default(),
+                ));
+            }
+        }
+
+        // ── Media: "have we watched this already?"
+        //
+        // TWO matching words minimum. A single word is not evidence: the first
+        // build matched "Home Assistant REST API" against three videos on the
+        // strength of "home" alone — a SmartThings pricing rant, an Arizona
+        // sober-living exposé, and a 9/11 archive piece. A block full of
+        // confident false positives is worse than no block, because it trains
+        // the reader to skip it.
+        if let Ok(rows) = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (m:Media) \
+                     WITH m, [w IN $words WHERE toLower(coalesce(m.title, '')) CONTAINS w] AS hits \
+                     WHERE size(hits) >= 2 \
+                     RETURN m.title AS title, m.url AS url, \
+                            substring(toString(m.ingested_at), 0, 10) AS d \
+                     ORDER BY m.ingested_at DESC LIMIT 3",
+                )
+                .param("words", Self::query_words(query)),
+            )
+            .await
+        {
+            for row in &rows {
+                lines.push(format!(
+                    "· ALREADY WATCHED ({}): {} — {}",
+                    row.get::<String>("d").unwrap_or_default(),
+                    row.get::<String>("title").unwrap_or_default(),
+                    row.get::<String>("url").unwrap_or_default(),
+                ));
+            }
+        }
+
+        if lines.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "═════ WHAT WE ALREADY KNOW (checked before searching) ═════\n{}\n\
+             Read this FIRST. If it answers the question, say so and cite the stored \
+             note — do not re-derive it from the web results below, and do not store a \
+             second copy of something we already have. Use the web results for what is \
+             genuinely NEW or needs updating.\n\
+             ═══════════════════════════════════════════════════════════\n",
+            lines.join("\n")
+        ))
+    }
+
+    /// Lowercased, de-noised words from a query, for CONTAINS matching against
+    /// names and titles. Short words are dropped — matching on "the" or "a"
+    /// would make every API and every video look relevant.
+    fn query_words(query: &str) -> Vec<String> {
+        // Generic protocol/doc vocabulary is filtered because it appears in
+        // almost every technical query — an unfiltered "rest" or "endpoint"
+        // makes every ingested API look like a match for every search, which
+        // turns the prior-knowledge block into noise nobody reads.
+        const STOP: &[&str] = &[
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "how",
+            "what",
+            "does",
+            "api",
+            "apis",
+            "spec",
+            "specs",
+            "docs",
+            "documentation",
+            "openapi",
+            "swagger",
+            "about",
+            "into",
+            "that",
+            "this",
+            "your",
+            "our",
+            "rest",
+            "http",
+            "https",
+            "json",
+            "yaml",
+            "endpoint",
+            "endpoints",
+            "reference",
+            "guide",
+            "using",
+            "write",
+            "search",
+            "find",
+            "look",
+        ];
+        let mut out: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|w| w.to_lowercase())
+            .filter(|w| w.len() > 3 && !STOP.contains(&w.as_str()))
+            .collect();
+        out.sort();
+        out.dedup();
+        out.truncate(6);
+        out
+    }
+
+    /// Prepend [`prior_knowledge`] to a successful search result.
+    async fn with_prior_knowledge(&self, query: &str, result: ToolCallResult) -> ToolCallResult {
+        if result.is_error == Some(true) {
+            return result;
+        }
+        let Some(block) = self.prior_knowledge(query).await else {
+            return result;
+        };
+        let body = Self::result_text(&result);
+        ToolCallResult {
+            content: vec![agent_brain_protocol::Content::text(format!(
+                "{block}\n{body}"
+            ))],
+            is_error: result.is_error,
+            bulk: result.bulk,
+        }
+    }
+
     async fn handle_search_web(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: SearchInput = match parse_args(arguments) {
             Ok(input) => input,
@@ -656,7 +978,7 @@ impl SearchSkill {
 
         // Post-filter: drop any result whose URL is not from an approved domain.
         if allowed_domains.is_empty() {
-            return result;
+            return self.with_prior_knowledge(&input.query, result).await;
         }
         let content_text = result
             .content
@@ -670,7 +992,7 @@ impl SearchSkill {
             })
             .unwrap_or("[]");
         let Ok(items) = serde_json::from_str::<Vec<Value>>(content_text) else {
-            return result;
+            return self.with_prior_knowledge(&input.query, result).await;
         };
         let filtered: Vec<Value> = items
             .into_iter()
@@ -683,7 +1005,11 @@ impl SearchSkill {
                 Self::url_matches_any(url, &allowed_domains)
             })
             .collect();
-        ToolCallResult::success_json(filtered)
+        // Source-list path returns here; it must carry the prior-knowledge
+        // block too, or a domain-restricted search is the one route that
+        // silently skips the "do we already know this?" check.
+        self.with_prior_knowledge(&input.query, ToolCallResult::success_json(filtered))
+            .await
     }
 
     async fn handle_get_search_usage(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -1221,6 +1547,65 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- prior knowledge ------------------------------------------------------
+
+    /// The word filter decides what counts as "do we already know this".
+    /// Too loose and every API matches every query; too tight and nothing does.
+    #[test]
+    fn query_words_drop_noise_and_keep_subjects() {
+        let w = SearchSkill::query_words("Home Assistant REST API OpenAPI spec");
+        assert!(w.contains(&"home".to_string()) || w.contains(&"assistant".to_string()));
+        // Generic doc words would match every ingested API, not this one.
+        for noise in ["api", "spec", "openapi", "the", "rest"] {
+            assert!(
+                !w.contains(&noise.to_string()),
+                "{noise} should be filtered"
+            );
+        }
+    }
+
+    #[test]
+    fn query_words_are_deduped_and_bounded() {
+        let w = SearchSkill::query_words("alpha alpha beta gamma delta epsilon zeta eta theta");
+        assert!(w.len() <= 6, "unbounded word list: {w:?}");
+        let mut sorted = w.clone();
+        sorted.dedup();
+        assert_eq!(w.len(), sorted.len(), "duplicates survived");
+    }
+
+    /// Short tokens carry no signal and would match almost any title.
+    #[test]
+    fn query_words_ignore_short_tokens() {
+        let w = SearchSkill::query_words("who is he in AI ml");
+        assert!(w.is_empty(), "expected nothing usable, got {w:?}");
+    }
+
+    /// The check must never be able to break a search: no graph, no block, and
+    /// the original result passes through untouched.
+    #[tokio::test]
+    async fn prior_knowledge_fails_open_without_neo4j() {
+        let skill = SearchSkill::new(None, None);
+        let original = ToolCallResult::success_json(serde_json::json!([{"link": "x"}]));
+        let out = skill
+            .with_prior_knowledge("anything", original.clone())
+            .await;
+        assert_eq!(
+            SearchSkill::result_text(&out),
+            SearchSkill::result_text(&original)
+        );
+    }
+
+    /// An errored search must not get a "what we already know" preamble — the
+    /// caller needs the failure, undecorated.
+    #[tokio::test]
+    async fn prior_knowledge_is_not_attached_to_an_error() {
+        let skill = SearchSkill::new(None, None);
+        let err = ToolCallResult::error("all engines failed");
+        let out = skill.with_prior_knowledge("anything", err).await;
+        assert_eq!(out.is_error, Some(true));
+        assert!(SearchSkill::result_text(&out).contains("all engines failed"));
+    }
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

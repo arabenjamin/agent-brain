@@ -281,11 +281,31 @@ impl Content {
 }
 
 /// Tool call response result.
+///
+/// `content` is what the MODEL reads. `bulk` is a second channel for output
+/// whose audience is the **person**, not the model — the complete rows behind a
+/// result, delivered without spending the model's context on them.
+///
+/// The two exist because they answer different questions. A model calling
+/// `recall_recent` needs enough to reason and cite; a person who asked "show me
+/// everything we learned from video learning" needs all 50 rows, and routing
+/// those through a 4B local worker's context in 12-row pages is a round trip
+/// that serves nobody: it costs four extra LLM calls, risks a truncated relay,
+/// and delivers less than a single query would have. Bulk output bypasses that
+/// entirely — the model is told the rows were delivered and given a small
+/// sample for continuity, and its context cost stays flat whether the result is
+/// 50 rows or 5,000.
+///
+/// Over MCP, `bulk` is appended to `content` so an external client receives the
+/// whole result as one payload. Only the chat loop splits them.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallResult {
     pub content: Vec<Content>,
     #[serde(default, rename = "isError", skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    /// Full output for the human. Never fed to the model. See the type docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bulk: Option<String>,
 }
 
 impl ToolCallResult {
@@ -293,7 +313,23 @@ impl ToolCallResult {
         Self {
             content,
             is_error: None,
+            bulk: None,
         }
+    }
+
+    /// Attach human-facing bulk output that the model will never be given.
+    ///
+    /// Use it when a tool can produce far more than a model needs but exactly
+    /// what a person asked for. The `content` half should then be a receipt:
+    /// how many rows were delivered, a small sample, and — importantly — an
+    /// instruction not to re-query in order to enumerate what the user can
+    /// already see.
+    pub fn with_bulk(mut self, bulk: impl Into<String>) -> Self {
+        let bulk = bulk.into();
+        if !bulk.is_empty() {
+            self.bulk = Some(bulk);
+        }
+        self
     }
 
     pub fn success_text(text: impl Into<String>) -> Self {
@@ -308,6 +344,27 @@ impl ToolCallResult {
         Self {
             content: vec![Content::text(message)],
             is_error: Some(true),
+            bulk: None,
+        }
+    }
+
+    /// The model-facing text (`content` only — never `bulk`).
+    pub fn model_text(&self) -> String {
+        self.content
+            .iter()
+            .map(|c| match c {
+                Content::Text { text } => text.as_str(),
+                _ => "",
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Everything a person should see: the model-facing text plus any bulk.
+    pub fn full_text(&self) -> String {
+        match &self.bulk {
+            Some(b) => format!("{}\n\n{}", self.model_text(), b),
+            None => self.model_text(),
         }
     }
 }

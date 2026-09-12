@@ -53,6 +53,15 @@ interface ModelUsageStat {
   avg_duration_ms: number | null;
   total_tokens_in: number | null;
   total_tokens_out: number | null;
+  /** Already aggregated server-side; was simply never rendered. */
+  total_cost: number | null;
+}
+
+/** 1234567 -> "1.2M", 34567 -> "34.6K". Spend is read at a glance. */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -246,7 +255,16 @@ function EventBubble({ evt, isActive }: { evt: ChatEvent; isActive?: boolean }) 
           <span className="event-muted"> — {preview.slice(0, 80)}{collapsible ? "…" : ""}</span>
         )}
         {preview && expanded && (
-          <pre className="event-pre">{preview}</pre>
+          <>
+            {typeof evt.model_saw_chars === "number" && (
+              <div className="event-note">
+                Showing all {preview.length.toLocaleString()} characters. The model read the
+                first {evt.model_saw_chars.toLocaleString()} — anything below that point
+                informed this view, not its answer.
+              </div>
+            )}
+            <pre className="event-pre">{preview}</pre>
+          </>
         )}
         {collapsible && <span className="event-chevron">{expanded ? "▲" : "▼"}</span>}
       </div>
@@ -433,20 +451,66 @@ function ChatSettingsBar({
           🤖 {contextProfile}
         </button>
 
-        {/* Model usage chips */}
-        {modelUsage.slice(0, 5).map((s) => (
-          <span
-            key={s.model}
-            className={`model-usage-chip${s.model === currentModel ? " active" : ""}`}
-            title={`${s.total_calls} calls · ${s.successes} ok · avg ${s.avg_duration_ms != null ? Math.round(s.avg_duration_ms) : "?"}ms`}
-          >
-            <span className="model-usage-name">{s.model.split(":")[0]}</span>
-            <span className="model-usage-count">{s.total_calls}</span>
-            <span className={`model-usage-rate${s.success_rate < 0.8 ? " warn" : ""}`}>
-              {Math.round(s.success_rate * 100)}%
-            </span>
-          </span>
-        ))}
+        {/* TOKEN SPEND, last 24h.
+            This strip used to show call counts and success rates — how OFTEN a
+            model ran, which says nothing about what it consumed. Tokens are the
+            unit that matters, they were already in this payload, and they were
+            simply never rendered. Total first (the number you actually want),
+            per-model after (where it went). */}
+        {(() => {
+          const tin = modelUsage.reduce((a, s) => a + (s.total_tokens_in ?? 0), 0);
+          const tout = modelUsage.reduce((a, s) => a + (s.total_tokens_out ?? 0), 0);
+          const cost = modelUsage.reduce((a, s) => a + (s.total_cost ?? 0), 0);
+          // A model reporting no tokens is a broken ledger, not a free model —
+          // Gemini rows read NULL for weeks because of a serde field-name
+          // mismatch. Name it rather than letting it read as zero spend.
+          const blind = modelUsage.filter(
+            (s) => s.total_calls > 0 && !s.total_tokens_in && !s.total_tokens_out,
+          );
+          if (!modelUsage.length) return null;
+          return (
+            <>
+              <span
+                className="token-spend-total"
+                title={`Last 24h across all models: ${tin.toLocaleString()} in, ${tout.toLocaleString()} out`}
+              >
+                <span className="token-spend-label">24h</span>
+                <span className="token-spend-in">↑{fmtTokens(tin)}</span>
+                <span className="token-spend-out">↓{fmtTokens(tout)}</span>
+                {cost > 0 && <span className="token-spend-cost">${cost.toFixed(3)}</span>}
+              </span>
+              {modelUsage
+                .slice()
+                .sort(
+                  (a, b) =>
+                    (b.total_tokens_in ?? 0) + (b.total_tokens_out ?? 0) -
+                    ((a.total_tokens_in ?? 0) + (a.total_tokens_out ?? 0)),
+                )
+                .slice(0, 4)
+                .map((s) => {
+                  const t = (s.total_tokens_in ?? 0) + (s.total_tokens_out ?? 0);
+                  return (
+                    <span
+                      key={s.model}
+                      className={`model-usage-chip${s.model === currentModel ? " active" : ""}`}
+                      title={`${s.model}\n${(s.total_tokens_in ?? 0).toLocaleString()} in · ${(s.total_tokens_out ?? 0).toLocaleString()} out\n${s.total_calls} calls · ${Math.round(s.success_rate * 100)}% ok${s.total_cost ? ` · $${s.total_cost.toFixed(4)}` : ""}`}
+                    >
+                      <span className="model-usage-name">{s.model.split(":")[0]}</span>
+                      <span className="model-usage-count">{t ? fmtTokens(t) : "—"}</span>
+                    </span>
+                  );
+                })}
+              {blind.length > 0 && (
+                <span
+                  className="token-spend-blind"
+                  title={`No token counts recorded for: ${blind.map((b) => b.model).join(", ")}. Spend on these is NOT included in the totals.`}
+                >
+                  ⚠ {blind.length} unmetered
+                </span>
+              )}
+            </>
+          );
+        })()}
       </div>
     </div>
   );
@@ -681,7 +745,9 @@ export default function ChatPanel({
 
   const loadModelUsage = useCallback(async () => {
     try {
-      const res = await fetch(`${getBrainUrl()}/api/models/usage`, {
+      // 24h window: "spend" only means something against a period. All-time
+      // totals never move visibly and cannot answer "what is this costing me".
+      const res = await fetch(`${getBrainUrl()}/api/models/usage?hours=24`, {
         headers: { Authorization: `Bearer ${getApiKey()}` },
       });
       if (res.ok) {

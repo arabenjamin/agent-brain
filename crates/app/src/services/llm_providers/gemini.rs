@@ -53,7 +53,17 @@ struct GeminiGenerationConfig {
     max_output_tokens: Option<u32>,
 }
 
+/// Gemini answers in camelCase (`usageMetadata`), so this needs `rename_all`.
+///
+/// Without it serde simply does not match the field and `usage_metadata` is
+/// `None` — no error, no warning. The token counts were extracted correctly by
+/// both `generate()` and `chat()`; they were just always extracting from a
+/// `None`. Every Gemini row in `model_usage` had NULL `tokens_in`/`tokens_out`
+/// while gpt-oss and llama.cpp rows were populated, so orchestrator spend was
+/// invisible in the ledger — which matters most for the one provider here that
+/// is actually metered.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiResponse {
     candidates: Vec<GeminiCandidate>,
     usage_metadata: Option<GeminiUsage>,
@@ -65,6 +75,7 @@ struct GeminiCandidate {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiUsage {
     prompt_token_count: u32,
     candidates_token_count: u32,
@@ -180,6 +191,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
+        let text = super::prepare_embed_input(text)?;
         let api_key = self.config.api_key.as_ref().ok_or_else(|| {
             LlmProviderError::InvalidConfig("Gemini API key is missing".to_string())
         })?;
@@ -320,5 +332,39 @@ impl LlmProvider for GeminiProvider {
 
     async fn health_check(&self) -> bool {
         self.config.api_key.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Gemini answers in camelCase. Without `rename_all` serde matches nothing,
+    /// `usage_metadata` is silently `None`, and every Gemini row in the usage
+    /// ledger records NULL tokens — invisible spend on the one metered provider
+    /// in the fleet. This is a real captured response body, trimmed.
+    #[test]
+    fn usage_metadata_is_parsed_from_gemini_camel_case() {
+        let body = r#"{
+          "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}}],
+          "usageMetadata": {
+            "promptTokenCount": 1234,
+            "candidatesTokenCount": 56,
+            "totalTokenCount": 1290
+          }
+        }"#;
+        let res: GeminiResponse = serde_json::from_str(body).expect("parses");
+        let usage = res.usage_metadata.expect("usageMetadata must deserialize");
+        assert_eq!(usage.prompt_token_count, 1234);
+        assert_eq!(usage.candidates_token_count, 56);
+    }
+
+    /// A response without usage must still parse — the field is optional and a
+    /// missing one must not fail the whole call.
+    #[test]
+    fn a_response_without_usage_still_parses() {
+        let body = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]}}]}"#;
+        let res: GeminiResponse = serde_json::from_str(body).expect("parses");
+        assert!(res.usage_metadata.is_none());
     }
 }

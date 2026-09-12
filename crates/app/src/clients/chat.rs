@@ -430,16 +430,22 @@ impl TurnWriteGuard {
 /// A suppressed duplicate reports `success = true`: the identical earlier call
 /// did succeed, and reporting failure would invite the model to retry the very
 /// write being suppressed.
+/// Run a tool and return `(success, model_text, bulk)`.
+///
+/// `bulk` is output destined for the PERSON and never for the model — the whole
+/// rows behind a result the user asked to see. Keeping it out of `model_text`
+/// is the point: it makes a tool's context cost independent of how much data it
+/// returns. See [`ToolCallResult::bulk`].
 async fn execute_guarded(
     handler: &Option<ToolHandler>,
     guard: &mut TurnWriteGuard,
     tool_name: &str,
     tool_args: &Value,
-) -> (bool, String) {
+) -> (bool, String, Option<String>) {
     let (args_to_send, notice) = match guard.screen(tool_name, tool_args) {
         Screened::Suppress { notice } => {
             warn!(tool = %tool_name, "Duplicate write suppressed within chat turn");
-            return (true, notice.to_string());
+            return (true, notice.to_string(), None);
         }
         Screened::Rewrite { args, notice } => {
             warn!(
@@ -452,7 +458,7 @@ async fn execute_guarded(
     };
 
     let Some(h) = handler else {
-        return (false, "No tool handler available".to_string());
+        return (false, "No tool handler available".to_string(), None);
     };
 
     let args = if args_to_send.is_object() {
@@ -485,7 +491,21 @@ async fn execute_guarded(
         text.push_str(n);
     }
 
-    (!is_err, text)
+    (!is_err, text, result.bulk)
+}
+
+/// Build the copy a PERSON sees: the model-facing text plus any bulk output the
+/// model was deliberately not given.
+///
+/// The bulk is fenced with a header naming the split, so a reader is never left
+/// wondering why the assistant's answer is thinner than the data above it.
+fn user_facing_result(model_text: &str, bulk: Option<&str>) -> String {
+    match bulk {
+        Some(b) if !b.is_empty() => format!(
+            "{model_text}\n\n             ───── FULL RESULT (delivered to you, not loaded into the model) ─────\n             {b}"
+        ),
+        _ => model_text.to_string(),
+    }
 }
 
 /// Maximum characters of a tool result fed back to the LLM.
@@ -493,10 +513,82 @@ async fn execute_guarded(
 /// The display preview uses the same cap so the UI stays consistent.
 const MAX_TOOL_RESULT_CHARS: usize = 6000;
 
-/// For OllamaCloud/Ollama streaming loops, cap tool results at this smaller limit.
-/// Tool schemas (~9K chars) are resent every round; combined with cumulative tool results
-/// the context grows quickly and causes 500s from smaller cloud models.
+/// Floor for the OllamaCloud/Ollama streaming loops' tool-result cap — what a
+/// profile with a very large allowlist gets. Tool schemas are resent every round;
+/// combined with cumulative tool results the context grows quickly and causes
+/// 500s from smaller cloud models.
 const CLOUD_TOOL_RESULT_CHARS: usize = 2000;
+
+/// Fraction of a model's context window this loop is willing to spend on tool
+/// schemas plus ONE tool result. The rest is the system prompt, the running
+/// message history, and room to answer.
+const ROUND_CONTEXT_FRACTION: f64 = 0.35;
+
+/// Chars per token, roughly, for English prose and JSON. Used only to turn a
+/// catalog `context_window` (tokens) into the char budget everything else here
+/// is measured in.
+const CHARS_PER_TOKEN: usize = 4;
+
+/// Context window assumed when the catalog does not name one. The old
+/// `ROUND_CONTEXT_CHARS = 24_000` constant in disguise, kept so an unknown model
+/// behaves exactly as before rather than surprising anyone.
+const ASSUMED_CONTEXT_TOKENS: usize = 17_000;
+
+/// Ceiling for the streaming loops' tool-result cap.
+///
+/// Deliberately ABOVE [`MAX_TOOL_RESULT_CHARS`], which is the non-streaming
+/// preview cap and a different concern that was being conflated with this one.
+/// Set from measurement: `knowledge-worker` (11-12 tools, ~11K chars of schema)
+/// peaks at 8080 `tokens_in` against E4B's 16384, so ~8K chars (~2K tokens) of
+/// tool result still leaves roughly a third of the window free.
+const STREAM_TOOL_RESULT_CEILING: usize = 8_000;
+
+/// Upper bound once a genuinely large context window is in play. A 1M-token
+/// orchestrator has no business being held to a 16K model's ration, but an
+/// unbounded result is still a bad idea: a single tool call should not be able
+/// to evict the conversation it is supposed to serve.
+const LARGE_CONTEXT_RESULT_CEILING: usize = 120_000;
+
+/// How many characters of tool result to feed back, given the schemas resent
+/// alongside it every round AND the window of the model that has to hold both.
+///
+/// Two things were wrong with the single blanket cap this replaced. It was 2000
+/// for everyone — a number sized for `general` (46 tools, ~33K chars of schema)
+/// and then applied unchanged to a `knowledge-worker` sub-agent whose 12 schemas
+/// are ~13K. The cost is not a crash; it is a **tool that lies about itself**:
+/// on 2026-09-12 `recall_recent` returned `complete: true`, `returned: 41`, and
+/// "These are ALL the notes matching the filter — summarise from it directly" in
+/// a 6254-char payload of which the worker saw 2000, then relayed the truncation
+/// honestly, so the user was told the graph could not produce what it already had.
+///
+/// The second thing was that the fix was **model-blind**: a fixed 24_000-char
+/// allowance regardless of whether the loop was driving Gemma-4-E4B at 16384
+/// tokens or a 1M-token cloud model. Asked why a sub-agent should be rationed
+/// like a small local model when the orchestrator has a million tokens, there
+/// was no answer — the code never looked. It does now: the allowance is a
+/// fraction of the model's own catalog `context_window`, so the ration follows
+/// the model rather than the codebase's oldest assumption.
+fn tool_result_budget(
+    tools: &[agent_brain_protocol::ToolDefinition],
+    context_tokens: Option<usize>,
+) -> usize {
+    let schema_chars: usize = tools
+        .iter()
+        .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+        .sum();
+    let window_chars = context_tokens.unwrap_or(ASSUMED_CONTEXT_TOKENS) * CHARS_PER_TOKEN;
+    let allowance = (window_chars as f64 * ROUND_CONTEXT_FRACTION) as usize;
+    // A big window raises the ceiling as well as the allowance — otherwise the
+    // extra room is computed and then thrown away by the clamp.
+    let ceiling = if window_chars > ASSUMED_CONTEXT_TOKENS * CHARS_PER_TOKEN * 2 {
+        LARGE_CONTEXT_RESULT_CEILING
+    } else {
+        STREAM_TOOL_RESULT_CEILING
+    };
+    allowance
+        .saturating_sub(schema_chars)
+        .clamp(CLOUD_TOOL_RESULT_CHARS, ceiling)
+}
 
 /// Maximum number of non-system messages kept in the OllamaCloud/Ollama message history.
 /// Older messages are dropped (keeping system + user + last N) to prevent context overflow.
@@ -978,7 +1070,15 @@ pub enum ChatEvent {
     ToolResult {
         tool: String,
         success: bool,
+        /// The FULL tool output, for the person reading. Not capped to the
+        /// model's ration — see the comment at the cloud loop's assignment.
         preview: String,
+        /// How much of `preview` the model was given, when that is less than
+        /// all of it. `None` means the model read the same thing you can see.
+        /// This is how the UI stays honest about the narrower view without
+        /// narrowing yours.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_saw_chars: Option<usize>,
     },
     /// Streaming token chunk from the LLM (Ollama only).
     Token { content: String },
@@ -1351,6 +1451,23 @@ impl ChatService {
     /// blank or cannot be resolved. A profile is never allowed to fail a turn by
     /// naming a model that does not exist; it degrades to the default, and the
     /// fallback ladder still covers a resolved-but-unreachable model.
+    /// The model's context window in tokens, from the DuckDB catalog, or `None`
+    /// when it is not catalogued.
+    ///
+    /// This is what makes the tool-result budget follow the MODEL rather than a
+    /// constant: a 1M-token orchestrator and a 16384-token local worker were
+    /// being handed the identical ration, which is indefensible in either
+    /// direction — it starves the big one and flatters the small one.
+    fn context_window_tokens(&self, model: &str) -> Option<usize> {
+        let models = self.telemetry.as_ref()?.list_models().ok()?;
+        models
+            .iter()
+            .find(|m| m["model"].as_str() == Some(model) || m["name"].as_str() == Some(model))
+            .and_then(|m| m["context_window"].as_i64())
+            .filter(|w| *w > 0)
+            .map(|w| w as usize)
+    }
+
     async fn resolve_profile_model(
         &self,
         base: &LlmConfig,
@@ -2029,7 +2146,7 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = self
+                let (success, result_text, bulk) = self
                     .dispatch_tool_call(
                         allow_delegate,
                         &handler,
@@ -2042,11 +2159,17 @@ impl ChatService {
 
                 let preview: String =
                     prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
+                // The person's copy carries the bulk; the model's `preview`
+                // below never does.
+                let user_copy = user_facing_result(&preview, bulk.as_deref());
+                let model_saw = (preview.chars().count() < user_copy.chars().count())
+                    .then(|| preview.chars().count());
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
-                        preview: preview.clone(),
+                        preview: user_copy,
+                        model_saw_chars: model_saw,
                     })
                     .await;
 
@@ -2393,7 +2516,7 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = self
+                let (success, result_text, bulk) = self
                     .dispatch_tool_call(
                         allow_delegate,
                         &handler,
@@ -2406,11 +2529,17 @@ impl ChatService {
 
                 let preview: String =
                     prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
+                // The person's copy carries the bulk; the model's `preview`
+                // below never does.
+                let user_copy = user_facing_result(&preview, bulk.as_deref());
+                let model_saw = (preview.chars().count() < user_copy.chars().count())
+                    .then(|| preview.chars().count());
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
-                        preview: preview.clone(),
+                        preview: user_copy,
+                        model_saw_chars: model_saw,
                     })
                     .await;
 
@@ -2479,6 +2608,18 @@ impl ChatService {
         allow_delegate: bool,
         max_iterations: usize,
     ) {
+        // Sized against THIS loop's actual schema pressure, not a blanket
+        // constant — see `tool_result_budget`. Computed once: the allowlist does
+        // not change mid-loop.
+        let result_budget = tool_result_budget(&tools, self.context_window_tokens(&config.model));
+        // At INFO on purpose: once per loop, and it is the number that explains
+        // why a complete tool result can still arrive clipped. Without it, the
+        // only symptom is a worker hedging an answer it actually had.
+        tracing::info!(
+            tools = tools.len(),
+            result_budget,
+            "tool-result budget for this loop"
+        );
         let base_url = config.base_url.as_deref().unwrap_or("https://ollama.com");
         let url = format!("{}/v1/chat/completions", base_url);
         let model = config.model.clone();
@@ -2868,7 +3009,7 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = self
+                let (success, result_text, bulk) = self
                     .dispatch_tool_call(
                         allow_delegate,
                         &handler,
@@ -2879,26 +3020,55 @@ impl ChatService {
                     )
                     .await;
 
-                let preview: String =
-                    prepare_tool_result(tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
+                // THE HUMAN GETS THE WHOLE THING. The model's ration and the
+                // user's view are different concerns and must not share a cap.
+                //
+                // They were briefly unified so the UI would stop flagging
+                // TRUNCATED on results the model had in fact received whole.
+                // That fixed a false signal and created a worse one: it capped
+                // what the USER can see at what a 4B local model can read.
+                // Asked to "see all of what we learned from video learning",
+                // the answer is the 50 rows — not a 4B model's ration of them.
+                // The frontend already renders this preview in full inside an
+                // expandable block, so the data path to the person existed the
+                // whole time; only this cap was standing in it.
+                //
+                // Honesty about the model's narrower view is preserved by
+                // `model_saw_chars` on the event, not by degrading the view.
+                let preview: String = user_facing_result(
+                    &annotate_tool_result(tool_name, &result_text),
+                    bulk.as_deref(),
+                );
+                // The model's ration: schema- and window-aware, because tool
+                // schemas are resent every round. Computed separately from the
+                // user's copy above, on purpose — and NEVER including `bulk`,
+                // which is the whole reason a bulk result's context cost stays
+                // flat no matter how many rows it carries.
+                let model_preview: String =
+                    prepare_tool_result(tool_name, &result_text, result_budget);
+                let model_saw = (model_preview.chars().count() < preview.chars().count())
+                    .then(|| model_preview.chars().count());
+
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
                         preview: preview.clone(),
+                        model_saw_chars: model_saw,
                     })
                     .await;
 
                 tool_trace.push((tool_name.clone(), success));
                 if do_synthesis && success {
-                    gathered.push(format!("### {tool_name}\n{preview}"));
+                    gathered.push(format!("### {tool_name}\n{model_preview}"));
                 }
 
                 // OpenAI requires tool results as role="tool" with tool_call_id.
-                // Use CLOUD_TOOL_RESULT_CHARS (smaller cap) because tool schemas are resent
-                // every round; combined context grows quickly and causes 500s.
+                // Capped at `result_budget` (schema-aware) because tool schemas
+                // are resent every round; combined context grows quickly and
+                // causes 500s. A lean sub-agent allowlist earns the full cap.
                 let cloud_preview: String =
-                    prepare_tool_result(tool_name, &result_text, CLOUD_TOOL_RESULT_CHARS);
+                    prepare_tool_result(tool_name, &result_text, result_budget);
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_id,
@@ -2972,7 +3142,7 @@ impl ChatService {
         tool_name: &str,
         tool_args: &Value,
         tx: &mpsc::Sender<ChatEvent>,
-    ) -> (bool, String) {
+    ) -> (bool, String, Option<String>) {
         if allow_delegate && subagent_enabled() && tool_name == DELEGATE_TOOL {
             let sub_agent = tool_args.get("agent").and_then(Value::as_str).unwrap_or("");
             let sub_task = tool_args.get("task").and_then(Value::as_str).unwrap_or("");
@@ -2986,7 +3156,9 @@ impl ChatService {
             if retrieved {
                 write_guard.mark_retrieval();
             }
-            (ok, findings)
+            // A sub-agent's bulk already reached the user directly, streamed
+            // from its own loop — it must not be re-emitted here.
+            (ok, findings, None)
         } else {
             execute_guarded(handler, write_guard, tool_name, tool_args).await
         }
@@ -3370,7 +3542,7 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text) = self
+                let (success, result_text, bulk) = self
                     .dispatch_tool_call(
                         allow_delegate,
                         &handler,
@@ -3382,11 +3554,15 @@ impl ChatService {
                     .await;
 
                 let preview: String = result_text.chars().take(4000).collect();
+                let user_copy = user_facing_result(&preview, bulk.as_deref());
+                let model_saw = (preview.chars().count() < user_copy.chars().count())
+                    .then(|| preview.chars().count());
                 let _ = tx
                     .send(ChatEvent::ToolResult {
                         tool: tool_name.clone(),
                         success,
-                        preview,
+                        preview: user_copy,
+                        model_saw_chars: model_saw,
                     })
                     .await;
 
@@ -3708,6 +3884,89 @@ fn extract_tool_call(text: &str) -> Option<(String, Value, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- tool_result_budget ---------------------------------------------------
+
+    fn tool_of(name: &str, desc_len: usize) -> agent_brain_protocol::ToolDefinition {
+        agent_brain_protocol::ToolDefinition {
+            name: name.to_string(),
+            description: "x".repeat(desc_len),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    /// A lean sub-agent allowlist must earn more than the old blanket 2000.
+    /// This is the whole point: `knowledge-worker` (12 tools, ~13K of schema)
+    /// was handed the cap sized for `general` (46 tools, ~33K), so a complete
+    /// `recall_recent` result arrived clipped and was relayed as "not the
+    /// complete list".
+    #[test]
+    fn a_lean_allowlist_earns_the_full_tool_result_budget() {
+        let lean: Vec<_> = (0..12).map(|i| tool_of(&format!("t{i}"), 500)).collect();
+        assert_eq!(
+            tool_result_budget(&lean, Some(16_384)),
+            STREAM_TOOL_RESULT_CEILING
+        );
+    }
+
+    /// ...and a large one is still squeezed back to the floor, so the profile
+    /// the 2000 was chosen for is unaffected.
+    #[test]
+    fn a_large_allowlist_is_squeezed_back_to_the_floor() {
+        let heavy: Vec<_> = (0..46).map(|i| tool_of(&format!("t{i}"), 700)).collect();
+        assert_eq!(
+            tool_result_budget(&heavy, Some(16_384)),
+            CLOUD_TOOL_RESULT_CHARS
+        );
+    }
+
+    /// The budget is clamped at both ends — never tighter than the constant it
+    /// replaced, never looser than the non-streaming path.
+    #[test]
+    fn tool_result_budget_stays_within_both_caps() {
+        for n in [0usize, 1, 5, 20, 60, 200] {
+            let tools: Vec<_> = (0..n).map(|i| tool_of(&format!("t{i}"), 400)).collect();
+            let b = tool_result_budget(&tools, Some(16_384));
+            assert!(
+                (CLOUD_TOOL_RESULT_CHARS..=STREAM_TOOL_RESULT_CEILING).contains(&b),
+                "n={n} gave {b}"
+            );
+        }
+    }
+
+    /// The ration must follow the MODEL, not a constant. A 1M-token orchestrator
+    /// and a 16384-token local worker were handed the identical allowance, which
+    /// is indefensible in both directions — it starves the big one and flatters
+    /// the small one. This is the half that answers "why should a sub-agent be
+    /// rationed like a small local model when the orchestrator has a million
+    /// tokens".
+    #[test]
+    fn a_bigger_context_window_earns_a_bigger_tool_result() {
+        let tools: Vec<_> = (0..12).map(|i| tool_of(&format!("t{i}"), 500)).collect();
+        let small = tool_result_budget(&tools, Some(16_384));
+        let large = tool_result_budget(&tools, Some(1_000_000));
+        assert!(large > small, "1M window gave {large}, 16K gave {small}");
+        assert!(large <= LARGE_CONTEXT_RESULT_CEILING);
+    }
+
+    /// An uncatalogued model must behave exactly as the old constant did, so an
+    /// unknown model is never a surprise regression.
+    #[test]
+    fn an_unknown_context_window_falls_back_to_the_old_allowance() {
+        let tools: Vec<_> = (0..12).map(|i| tool_of(&format!("t{i}"), 500)).collect();
+        assert_eq!(
+            tool_result_budget(&tools, None),
+            tool_result_budget(&tools, Some(ASSUMED_CONTEXT_TOKENS))
+        );
+    }
+
+    /// Monotonic: adding tools can only shrink the room left for a result.
+    #[test]
+    fn more_schema_never_buys_a_bigger_tool_result() {
+        let small: Vec<_> = (0..8).map(|i| tool_of(&format!("t{i}"), 600)).collect();
+        let big: Vec<_> = (0..30).map(|i| tool_of(&format!("t{i}"), 600)).collect();
+        assert!(tool_result_budget(&big, Some(16_384)) <= tool_result_budget(&small, Some(16_384)));
+    }
 
     #[test]
     fn base_prompt_is_used_when_no_profile_applies() {

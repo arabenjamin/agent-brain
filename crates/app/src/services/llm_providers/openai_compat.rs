@@ -141,6 +141,7 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
+        let text = super::prepare_embed_input(text)?;
         let url = format!("{}/v1/embeddings", self.base_url());
         let req = EmbedRequest {
             model: &self.config.model,

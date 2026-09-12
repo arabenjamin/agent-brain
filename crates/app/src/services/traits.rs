@@ -102,6 +102,33 @@ pub trait LlmProvider: Send + Sync {
 // ============================================================================
 
 /// Methods on [`crate::services::KnowledgeService`] that `KnowledgeSkill` calls.
+/// What a `recall_window` call is asking for.
+///
+/// A struct rather than seven positional arguments because the last three
+/// (`offset`, `sample_limit`, `full`) are a single decision — how much of the
+/// matching set to return and *to whom* — and passing them separately made it
+/// easy to change one without the others. `full` in particular is not a bigger
+/// page: it routes the rows to the human and leaves the model a receipt.
+#[derive(Debug, Clone, Copy)]
+pub struct RecallSpec<'a> {
+    /// Window start, UTC ISO-8601, inclusive.
+    pub since_iso: &'a str,
+    /// Window end, UTC ISO-8601, exclusive.
+    pub until_iso: &'a str,
+    /// Max sample rows for this page.
+    pub sample_limit: usize,
+    pub source_context: Option<&'a str>,
+    pub note_type: Option<&'a str>,
+    /// Rows to skip. Paging exists because raising `sample_limit` past the
+    /// caller's channel does not enumerate more — it moves where the clipping
+    /// falls.
+    pub offset: usize,
+    /// Deliver the COMPLETE matching set with whole note content, for a person
+    /// to read. The caller is expected to route these rows to the user rather
+    /// than into a model's context.
+    pub full: bool,
+}
+
 #[async_trait]
 pub trait KnowledgeStore: Send + Sync {
     async fn store_note(
@@ -132,6 +159,27 @@ pub trait KnowledgeStore: Send + Sync {
         note_type: Option<&str>,
         source_context: Option<&str>,
     ) -> anyhow::Result<Vec<Value>>;
+
+    /// Hybrid search that does NOT bump `access_count` / `last_accessed_at`.
+    ///
+    /// For callers that read the graph to decide something rather than to
+    /// answer a user — the retrieval eval harness, and the "do we already know
+    /// this?" probe that fronts every web search. Those must not make a note
+    /// look popular, or measurement and housekeeping start shaping the spaced
+    /// repetition schedule they are supposed to observe.
+    ///
+    /// Default forwards to `search_notes`; the real store overrides it.
+    async fn search_notes_readonly(
+        &self,
+        query: &str,
+        limit: usize,
+        graph_hops: usize,
+        note_type: Option<&str>,
+        source_context: Option<&str>,
+    ) -> anyhow::Result<Vec<Value>> {
+        self.search_notes(query, limit, graph_hops, note_type, source_context)
+            .await
+    }
 
     async fn search_notes_with_entity_expansion(
         &self,
@@ -240,14 +288,13 @@ pub trait KnowledgeStore: Send + Sync {
     /// the sample alike, so any bucket this returns can be enumerated by calling
     /// again with that bucket's name. A count a caller cannot drill into is how a
     /// false negative gets manufactured — see the impl for the incident.
-    async fn recall_window(
-        &self,
-        since_iso: &str,
-        until_iso: &str,
-        sample_limit: usize,
-        source_context: Option<&str>,
-        note_type: Option<&str>,
-    ) -> anyhow::Result<Value>;
+    ///
+    /// `offset` skips rows, so a matching set larger than one tool result stays
+    /// reachable by paging. Raising `sample_limit` past what the caller's
+    /// channel carries does NOT enumerate more — it only moves where the
+    /// truncation falls, which is how a complete result came back reading as
+    /// "not the complete list".
+    async fn recall_window(&self, spec: RecallSpec<'_>) -> anyhow::Result<Value>;
 
     async fn delete_note(&self, id: &str) -> anyhow::Result<bool>;
 

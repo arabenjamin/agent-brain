@@ -209,9 +209,17 @@ struct ExecuteCodeInput {
 mod tests {
     use super::*;
 
+    /// `SANDBOX_URL` is process-global and cargo runs these in parallel threads,
+    /// so the two tests that mutate it raced: each would clear the var while the
+    /// other was mid-assertion, and `base_url_loses_trailing_slash` failed
+    /// intermittently on an unrelated change. The comment claiming "single-
+    /// threaded test, no other thread reads the environment" was simply untrue.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn from_env_rejects_blank_url() {
-        // Safety: single-threaded test, no other thread reads the environment.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Safety: serialised against the other SANDBOX_URL test by ENV_LOCK.
         unsafe { std::env::set_var("SANDBOX_URL", "   ") };
         assert!(ExecSkill::from_env().is_none());
         unsafe { std::env::remove_var("SANDBOX_URL") };
@@ -220,6 +228,8 @@ mod tests {
 
     #[test]
     fn base_url_loses_trailing_slash() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Safety: serialised against the other SANDBOX_URL test by ENV_LOCK.
         unsafe { std::env::set_var("SANDBOX_URL", "http://sandbox:8000/") };
         let skill = ExecSkill::from_env().expect("skill should build");
         assert_eq!(skill.base_url, "http://sandbox:8000");

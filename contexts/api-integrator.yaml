@@ -1,28 +1,39 @@
 name: api-integrator
-description: >-
-  Discovers a REST API, understands its request/response shape from a live probe,
-  registers it, and writes + validates a Python client for it. The composed
-  "ingest and understand a REST API, then build a client" capability. Prefers the
-  native `ingest_api` tool when the API publishes an OpenAPI/Swagger spec, and
-  falls back to a live probe otherwise.
+description: |-
+  Discovers a REST API, understands its request/response shape from a live probe, registers it, and writes + validates a Python client for it. The composed "ingest and understand a REST API, then build a client" capability. Prefers the native `ingest_api` tool when the API publishes an OpenAPI/Swagger spec, and falls back to a live probe otherwise.
 tools:
-  - search_web
-  - ingest_api
-  - http_request
-  - define_api_context
-  - write_workspace_file
-  - list_workspace_files
-  - execute_code
-  - search_notes
-  - store_note
-  - reason
-  - neo4j_query
+- list_endpoints
+- list_apis
+- search_web
+- ingest_api
+- http_request
+- define_api_context
+- write_workspace_file
+- list_workspace_files
+- execute_code
+- search_notes
+- store_note
+- reason
+- neo4j_query
 system_prompt: |
   You are an API integration engineer. Your job: find a suitable REST API,
   understand it from a REAL probe (never from memory), register it, then write a
   working Python client and validate it. Work in this order and do not skip steps.
 
-  1. DISCOVER. Use search_web to find a genuinely FREE REST API that needs NO API
+  0. CHECK WHAT WE ALREADY HAVE — ALWAYS FIRST, BEFORE ANY SEARCH. Call
+     `list_apis`. If the API you were asked about is already there, call
+     `list_endpoints("<exact name>")` and USE THAT: it is an ingested, verified
+     endpoint graph, which beats anything you will find on the web. Go straight to
+     the step that does the work you were asked for (write the client, produce the
+     spec, answer the question) and do NOT search, probe, or re-ingest it.
+     Steps 1-2 are for an API we do NOT already hold. Searching the web for a spec
+     we already parsed wastes the search and risks writing a second, conflicting
+     copy of it.
+     Every search_web result also carries a WHAT WE ALREADY KNOW block — read it
+     before the results.
+
+  1. DISCOVER — only when step 0 found nothing.
+     Use search_web to find a genuinely FREE REST API that needs NO API
      key and NO signup for the task you were given (for weather, api.open-meteo.com
      is a strong candidate — verify it, don't assume). Prefer one with public docs.
 
@@ -66,28 +77,10 @@ system_prompt: |
   Report what you actually did and observed at each step. If something could not be
   found or a step failed, say so plainly — do not paper over it.
 token_budget: 8000
-pre_load_query: "REST API clients and integrations"
-# Spawnable as a sub-agent. Reachable via run_agent(agent="api-integrator") or
-# run_agent(agent="auto"). Runs on the unmetered base config (Ollama Cloud
-# gpt-oss:120b). Now pinned local — see below.
-# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
-# 7 days this agent's largest sub-agent turn was well inside the sidecar's
-# 16384-token/request budget, and E4B drives multi-round tool loops with zero
-# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
-# clamp keeps `llamacpp` (local is always unmetered).
-# STAYS ON CLOUD — head-to-head measured 2026-09-11 against an identical twin
-# (same tools, same prompt, only the model differs), run via run_agent directly
-# so the front door was out of the loop:
-#   local made 1 call, quit when the probe failed; cloud made 8, searched for the docs, retried, and produced a cited report.
-# Context was never the constraint. The failure is result-directed iteration:
-# E4B does not let the outcome of one tool call shape the next, so it either
-# stops at the first obstacle or loops undirected. Local is fine for one-shot
-# synthesis (schedule-author) and deterministic lookup (knowledge-worker
-# recall_recent) -- both have no loop to close. Re-test before moving this local.
-model_preference: ""
-provider_hint: ""
+pre_load_query: |-
+  REST API clients and integrations
+model_preference: ''
+provider_hint: ''
 spawnable: true
-specialty: >-
-  discover and understand a REST API (ingest_api for an OpenAPI/Swagger spec, else
-  a live probe), then write and validate a Python client for it (define_api_context
-  + write_workspace_file + execute_code)
+specialty: |-
+  discover and understand a REST API (ingest_api for an OpenAPI/Swagger spec, else a live probe), then write and validate a Python client for it (define_api_context + write_workspace_file + execute_code)

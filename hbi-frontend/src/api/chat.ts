@@ -19,7 +19,15 @@ export interface ChatEvent {
   tool?: string;
   args?: unknown;
   success?: boolean;
+  /** The FULL tool output. Not capped to what the model was given. */
   preview?: string;
+  /**
+   * How much of `preview` the model actually read, when that is less than all
+   * of it. Absent means the model saw the same thing you can. The two are
+   * deliberately different: a 4B local worker's ration must not decide how much
+   * of a result a person is allowed to look at.
+   */
+  model_saw_chars?: number;
 }
 
 export interface ChatHistoryMessage {
