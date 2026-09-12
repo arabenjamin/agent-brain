@@ -220,6 +220,15 @@ pub trait KnowledgeStore: Send + Sync {
         source_context: Option<&str>,
     ) -> anyhow::Result<Vec<Value>>;
 
+    /// Whole-graph label inventory: the `note_type`s and `source_context`s that
+    /// actually exist, with counts, plus the total note count (chunks excluded).
+    ///
+    /// The escape hatch behind a zero-result enumeration. A caller that filters
+    /// on a label it guessed cannot correct itself from a bare `count: 0` — it
+    /// reads as "the graph holds none of these" and gets reported as absence.
+    /// Unbounded sibling of the window buckets `recall_window` already returns.
+    async fn label_buckets(&self) -> anyhow::Result<(Vec<Value>, Vec<Value>, i64)>;
+
     /// Deterministic time-window recall: notes created in `[since_iso, until_iso)`
     /// (UTC ISO-8601), counted by `note_type` and by `source_context`, plus a
     /// bounded, most-recent sample. Chunk notes (`-[:PART_OF]->`) are excluded so

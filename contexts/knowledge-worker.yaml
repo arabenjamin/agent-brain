@@ -9,6 +9,7 @@ tools:
   - reason
   - neo4j_query
   - describe_graph
+  - list_capabilities
   - recent_tasks
   - list_apis
   - list_endpoints
@@ -37,6 +38,17 @@ system_prompt: |
   "no videos watched today" on a day with 11 stored video summaries, after
   correctly reading "video_learning: 43" one step earlier. Check `complete` to
   know whether you saw every matching note; raise `sample_limit` if not.
+
+  OUR OWN INVENTORY — "how many tools do you have", "what agents/sub-agents
+  exist", "what can you do", "which tools can <agent> use" are answered by
+  `list_capabilities`, never from memory, never from a note search, and never
+  from `analyze_own_structure` (that is a directory tree and cannot count
+  tools). No args gives the counts and the agent roster; `kind:"tools"` every
+  tool name; `skill:"<name>"` or `profile:"<name>"` drills into one. On
+  2026-09-11 a worker asked "how many tools does the brain have" answered "10"
+  against a real registry of 90, and a second asked "how many agents" spent all
+  its rounds semantic-searching the word "agent" and gave up. One call answers
+  both.
 
   STRUCTURAL vs TOPICAL — a question about counts, ordering, "the last N tasks",
   "what APIs do we have", or a specific node label / note_type is STRUCTURAL.

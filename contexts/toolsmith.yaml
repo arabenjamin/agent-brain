@@ -6,6 +6,7 @@ description: >-
   extending itself without a code change.
 tools:
   - analyze_own_structure
+  - list_capabilities
   - manage_dynamic_tool
   - execute_procedure
   - http_request

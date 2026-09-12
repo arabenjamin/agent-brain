@@ -248,7 +248,20 @@ impl KnowledgeStore for MockKnowledgeStore {
         _note_type: Option<&str>,
         _source_context: Option<&str>,
     ) -> anyhow::Result<Vec<Value>> {
-        Ok(vec![])
+        // Reuse `search_result` so a test can exercise BOTH the matched and the
+        // zero-match enumeration paths through the one knob.
+        self.search_result.clone().map_err(anyhow::Error::msg)
+    }
+
+    async fn label_buckets(&self) -> anyhow::Result<(Vec<Value>, Vec<Value>, i64)> {
+        // Non-empty on purpose: the point of this hook is that a zero-match
+        // enumeration can name the labels that DO exist, so a mock returning
+        // nothing would let that regress silently.
+        Ok((
+            vec![serde_json::json!({"note_type": "source_record", "count": 18})],
+            vec![serde_json::json!({"source_context": "video_learning", "count": 102})],
+            250,
+        ))
     }
 
     async fn recall_window(

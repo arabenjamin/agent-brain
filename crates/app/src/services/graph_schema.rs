@@ -209,14 +209,26 @@ mod tests {
         s.labels.insert(
             "Task".to_string(),
             vec![
-                PropInfo { name: "goal".to_string(), is_temporal: false },
-                PropInfo { name: "status".to_string(), is_temporal: false },
-                PropInfo { name: "updated_at".to_string(), is_temporal: true },
+                PropInfo {
+                    name: "goal".to_string(),
+                    is_temporal: false,
+                },
+                PropInfo {
+                    name: "status".to_string(),
+                    is_temporal: false,
+                },
+                PropInfo {
+                    name: "updated_at".to_string(),
+                    is_temporal: true,
+                },
             ],
         );
         s.labels.insert(
             "Note".to_string(),
-            vec![PropInfo { name: "content".to_string(), is_temporal: false }],
+            vec![PropInfo {
+                name: "content".to_string(),
+                is_temporal: false,
+            }],
         );
         s.rel_types.insert("EXPOSES".to_string());
         s.rel_types.insert("MENTIONS".to_string());

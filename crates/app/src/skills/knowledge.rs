@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::services::traits::{KnowledgeStore, LlmProvider};
 use crate::skills::Skill;
@@ -108,7 +108,7 @@ impl KnowledgeSkill {
                     },
                     "source_context": {
                         "type": "string",
-                        "description": "The label a set of notes was filed under (e.g. 'resume', 'video_learning', 'daily_brief'). WITHOUT a `query` this ENUMERATES every note carrying that source_context (chunk fragments excluded) and returns a `complete` flag — this is how you retrieve a whole multi-note document. With a `query` it only narrows the ranked search."
+                        "description": "The label a set of notes was filed under (e.g. 'resume', 'video_learning', 'daily_brief'). WITHOUT a `query` this ENUMERATES every note carrying that source_context (chunk fragments excluded) and returns a `complete` flag — this is how you retrieve a whole multi-note document. With a `query` it only narrows the ranked search. An enumeration that matches NOTHING returns `available_note_types` / `available_source_contexts` — the labels that actually exist. Retry with one of those; never report absence off a zero here, and never guess a third label without reading that list."
                     },
                     "limit": {
                         "type": "integer",
@@ -436,13 +436,41 @@ impl KnowledgeSkill {
                         // recall_recent carries, and the thing that stops an agent
                         // concluding "incomplete" from a full-but-capped result.
                         let complete = notes.len() < input.limit;
-                        ToolCallResult::success_json(json!({
+                        let mut out = json!({
                             "count": notes.len(),
                             "note_type": note_type,
                             "source_context": source_context,
                             "complete": complete,
                             "notes": notes
-                        }))
+                        });
+                        // A zero here is almost always a LABEL that does not
+                        // exist, not an empty graph — and the caller guessed the
+                        // label, so it cannot correct itself without being shown
+                        // the real ones. This is the `recall_recent` escape
+                        // hatch, which this sibling path never got: on
+                        // 2026-09-11 a delegated worker probed note_type
+                        // "agent", then source_context "agent", then note_type
+                        // "news", learned nothing from any miss, and reported it
+                        // could not determine the answer.
+                        if notes.is_empty() {
+                            match self.svc.label_buckets().await {
+                                Ok((types, sources, total)) => {
+                                    let m = out.as_object_mut().expect("object");
+                                    m.insert("graph_total_notes".into(), json!(total));
+                                    m.insert("available_note_types".into(), json!(types));
+                                    m.insert("available_source_contexts".into(), json!(sources));
+                                    m.insert("note".into(), json!(format!(
+                                        "NO NOTES CARRY THIS LABEL — and this is NOT evidence the graph is empty: {total} notes exist. The label is the likely fault. `available_note_types` and `available_source_contexts` list the values that DO exist — retry with one of those, or drop one side of the filter. Note the two do not pair freely (e.g. source_context 'video_learning' is stored as note_type 'source_record' and 'claim', never 'episodic'). Do NOT report absence off this result."
+                                    )));
+                                }
+                                Err(e) => {
+                                    // Advisory only — never turn a successful
+                                    // enumeration into an error.
+                                    warn!(error = %e, "label_buckets failed (non-fatal)");
+                                }
+                            }
+                        }
+                        ToolCallResult::success_json(out)
                     }
                     Err(e) => ToolCallResult::error(format!("list_notes failed: {}", e)),
                 };
@@ -1358,6 +1386,58 @@ mod tests {
         );
         assert!(r["filter"]["source_context"].is_null());
         assert!(r["filter"]["note_type"].is_null());
+    }
+
+    // -- search_notes enumeration ---------------------------------------------
+
+    /// A query-less enumeration that matches nothing must name the labels that
+    /// DO exist, exactly as `recall_recent` does. Without it the caller sees a
+    /// bare `count: 0` and cannot tell a wrong label from an empty graph — on
+    /// 2026-09-11 a delegated worker probed note_type "agent", source_context
+    /// "agent", then note_type "news", learned nothing from any miss, burned
+    /// all 8 of its rounds and reported it could not determine the answer.
+    #[tokio::test]
+    async fn empty_enumeration_names_the_labels_that_exist() {
+        let skill = skill_ok();
+        let r = result_json(
+            skill
+                .execute("search_notes", Some(json!({"note_type": "agent"})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["count"], 0);
+        // The escape hatch: totals plus both label inventories.
+        assert_eq!(r["graph_total_notes"], 250);
+        assert!(r["available_note_types"].is_array());
+        assert!(r["available_source_contexts"].is_array());
+        let note = r["note"].as_str().expect("advisory note present");
+        assert!(
+            note.contains("NOT evidence"),
+            "must reject the absence reading"
+        );
+        assert!(note.contains("250"), "must quote the real total");
+    }
+
+    /// The hint is for a zero — a successful enumeration must not be polluted
+    /// with it, or every drill-down carries a "you may be wrong" banner.
+    #[tokio::test]
+    async fn non_empty_enumeration_carries_no_absence_hint() {
+        let skill = KnowledgeSkill::new(
+            Arc::new(MockKnowledgeStore {
+                search_result: Ok(vec![json!({"id": "n1", "content": "a"})]),
+                ..Default::default()
+            }),
+            Arc::new(MockLlm::ok("{}")),
+        );
+        let r = result_json(
+            skill
+                .execute("search_notes", Some(json!({"note_type": "source_record"})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["count"], 1);
+        assert!(r["note"].is_null());
+        assert!(r["available_note_types"].is_null());
     }
 
     // -- store_note -----------------------------------------------------------

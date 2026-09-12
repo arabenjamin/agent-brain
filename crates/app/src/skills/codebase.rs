@@ -599,7 +599,16 @@ impl CodebaseSkill {
     fn analyze_own_structure_def() -> ToolDefinition {
         ToolDefinition {
             name: "analyze_own_structure".to_string(),
-            description: "Generate a structured overview of the agent's own codebase: directory tree, workspace layout, skill registry, and recent git history. If store_as_note=true, persists the result to the knowledge graph as a semantic note.".to_string(),
+            description: "Generate a structured overview of the agent's own CODEBASE: a \
+                          capability tally, directory tree, workspace layout, module list, and \
+                          recent git history. Use it to orient in the source. It is long and \
+                          gets truncated, so for the brain's INVENTORY — how many tools it has, \
+                          what they are called, which agents exist, what a profile may use — \
+                          call `list_capabilities` instead: that is the deterministic, \
+                          drillable answer and this is a code overview that happens to lead \
+                          with the counts. If store_as_note=true, persists the result to the \
+                          knowledge graph as a semantic note."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1493,6 +1502,102 @@ impl CodebaseSkill {
         let store = args.store_as_note.unwrap_or(false);
 
         let mut sections: Vec<String> = Vec::new();
+
+        // Section 0: the actual capability inventory, FIRST.
+        //
+        // This tool's name promises self-knowledge, so it is what a model
+        // reaches for when asked "how many tools do you have" — and until now it
+        // answered with a directory tree, 40 lines of Cargo.toml, and the 25
+        // `pub mod` lines of skills/mod.rs, which name modules, not tools, and
+        // carry no count at all. Worse, MAX_TOOL_RESULT_CHARS (6000) clipped the
+        // response long before even that module list. Observed 2026-09-11: a
+        // `toolsmith` sub-agent called this twice, correctly, and reported "10
+        // distinct tools" against a real registry of 90.
+        //
+        // The counts come from the meta-graph, re-synced from the live tool
+        // registry at the end of every build_skills(), and lead the output
+        // because a truncated result must not be able to drop them — the same
+        // position-zero rule as the truncation and search-source markers.
+        if let Some(neo4j) = &self.neo4j {
+            use neo4rs::query;
+            let mut lines: Vec<String> = Vec::new();
+
+            if let Ok(rows) = neo4j
+                .execute(query(
+                    "MATCH (d:ToolDef) RETURN count(d) AS tools, count(DISTINCT d.skill) AS skills",
+                ))
+                .await
+                && let Some(row) = rows.first()
+            {
+                let tools = row.get::<i64>("tools").unwrap_or(0);
+                let skills = row.get::<i64>("skills").unwrap_or(0);
+                lines.push(format!(
+                    "**{tools} tools registered across {skills} skills.** This is the count — \
+                     do not infer a different one from the module list or directory tree below."
+                ));
+            }
+
+            if let Ok(rows) = neo4j
+                .execute(query(
+                    "MATCH (d:ToolDef) RETURN coalesce(d.skill, '(none)') AS skill, \
+                     count(d) AS c ORDER BY c DESC, skill",
+                ))
+                .await
+                && !rows.is_empty()
+            {
+                lines.push("\n### Tools per skill".into());
+                for row in &rows {
+                    lines.push(format!(
+                        "- {}: {}",
+                        row.get::<String>("skill").unwrap_or_default(),
+                        row.get::<i64>("c").unwrap_or(0)
+                    ));
+                }
+            }
+
+            if let Ok(rows) = neo4j
+                .execute(query(
+                    "MATCH (c:ContextProfile) RETURN count(c) AS profiles, \
+                     count(CASE WHEN c.spawnable THEN 1 END) AS agents",
+                ))
+                .await
+                && let Some(row) = rows.first()
+            {
+                lines.push(format!(
+                    "\n**{} context profiles, of which {} are spawnable agents.**",
+                    row.get::<i64>("profiles").unwrap_or(0),
+                    row.get::<i64>("agents").unwrap_or(0)
+                ));
+            }
+
+            if let Ok(rows) = neo4j
+                .execute(query(
+                    "MATCH (c:ContextProfile) WHERE c.spawnable \
+                     RETURN c.name AS name, coalesce(c.specialty, c.description) AS specialty \
+                     ORDER BY c.name",
+                ))
+                .await
+                && !rows.is_empty()
+            {
+                lines.push("\n### Spawnable agents (the delegate/run_agent roster)".into());
+                for row in &rows {
+                    lines.push(format!(
+                        "- {}: {}",
+                        row.get::<String>("name").unwrap_or_default(),
+                        row.get::<String>("specialty").unwrap_or_default()
+                    ));
+                }
+            }
+
+            if !lines.is_empty() {
+                lines.push(
+                    "\nFor tool NAMES, one skill's tools, or one profile's allowlist, call \
+                     `list_capabilities` — this section is a tally, not the rows."
+                        .into(),
+                );
+                sections.push(format!("## Capability Inventory\n{}", lines.join("\n")));
+            }
+        }
 
         // Section 1: Directory tree (depth 3)
         let tree = self

@@ -5,7 +5,7 @@
      this file wholesale; make targeted, commit-grounded edits only. -->
 
 **Build:** passing
-**Tool count:** 79 static registered across 20 skills + N runtime (DynamicSkill)
+**Tool count:** 91 static registered across 22 skills + N runtime (DynamicSkill) — measured 2026-09-12 with `list_capabilities`, which reads the live `(:ToolDef)` meta-graph. Ask the tool rather than trusting this line; it is the one number in this file that drifts silently (it said 79/20 while the registry held 90).
 **LLM Providers:** Ollama (local), Ollama Cloud, Anthropic, Gemini
 **Last updated:** 2026-08-10
 
@@ -50,7 +50,7 @@
 | ModelSkill | `src/skills/model.rs` | 3 | Model registry + selection |
 | WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad and summarisation |
 | HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
-| QuerySkill | `src/skills/query.rs` | 6 | Neo4j (Cypher, schema-guarded) + DuckDB (SQL) primitives; deterministic reads: describe_graph, recent_tasks, list_apis, list_endpoints |
+| QuerySkill | `src/skills/query.rs` | 7 | Neo4j (Cypher, schema-guarded) + DuckDB (SQL) primitives; deterministic reads: describe_graph, recent_tasks, list_apis, list_endpoints, list_capabilities (the brain's own tool/agent inventory) |
 | SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger |
 | SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
 | ClaimSkill | `src/skills/claims.rs` | 1 | Claim extraction, verification, corroboration tiering |
@@ -135,6 +135,14 @@
 
 ## Recent Changes (auto)
 
+### 2026-09-11
+
+- fix: stop a hung job living forever; reject live streams; enumerate notes by label (`2397e2e`)
+- fix: Ollama's silent 4096 context; read_codebase_file paging; keep code-analyst on cloud (`f2618f0`)
+- feat: local Gemma-4-E4B front door; move chat and sub-agents off gpt-oss (`d0bfb70`)
+- fix: make recall_recent counts drillable; real 16k local context; ffmpeg (`b802142`)
+- feat: local llama.cpp generation + graph self-knowledge tools & Cypher guard (`5345d97`)
+
 ### 2026-09-09
 
 - fix: robust chat fallback + lean job-applicant profile (`ed3edd4`)
@@ -150,14 +158,6 @@
 
 - Tweaking ! yolo lol (`1ee3695`)
 - feat: scheduler editor tooling + native aidevboard API ingest (`1e21b0d`)
-- Updated and fined tuned chat workflow (`af39bcd`)
-- feat: surface SerpApi 200+error failures; ApiTube + api-scout; news query tuning (`d293b5d`)
-- feat: recall_recent tool + sub-agent cost attribution; fix media feed throttle (`e838a2b`)
-
-### 2026-09-07
-
-- feat: give the general chat profile http_request (enables Home Assistant + API calls from chat) (`ed52df7`)
-- feat: ingest_api prune option + brain self-API sync schedule (`a4328cd`)
 
 ## Known Issues / Backlog
 

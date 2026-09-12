@@ -288,6 +288,62 @@ impl QuerySkill {
         }
     }
 
+    /// The deterministic answer to "how many tools / what agents do you have".
+    ///
+    /// The meta-graph (`(:ToolDef)`, `(:ContextProfile)`, `[:ALLOWS]`) is
+    /// re-synced from the live registry at the end of every `build_skills()`
+    /// and is the only ground truth for the brain's own inventory. Nothing
+    /// surfaced it before, so the question had no correct path at all:
+    /// on 2026-09-11 a chat asked "how many tools does the brain have?", the
+    /// front door delegated to `toolsmith`, which called `analyze_own_structure`
+    /// twice — the right-sounding tool, which returns a directory tree and a
+    /// list of `pub mod` lines and **cannot** answer it — and reported "10"
+    /// against a real count of 90. The follow-up "how many agents" went to
+    /// `researcher`, which spent all 8 rounds semantic-searching the word
+    /// "agent" and gave up, while the roster sat verbatim in the orchestrator's
+    /// own `delegate` tool description.
+    ///
+    /// Same doctrine as `recall_recent` / `list_endpoints`: a tool that reports
+    /// a count must be able to show the rows behind it, and a zero result must
+    /// name the values that DO exist.
+    fn list_capabilities_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "list_capabilities".to_string(),
+            description: "The brain's own inventory: how many TOOLS it has, which SKILL each \
+                          belongs to, and which AGENTS (spawnable context profiles) exist with \
+                          their specialties. This is the deterministic answer to 'how many tools \
+                          do you have', 'what agents/sub-agents exist', 'what can you do', 'which \
+                          tools can <agent> use' — do NOT semantic-search notes for it and do NOT \
+                          use analyze_own_structure (that returns a directory tree and cannot \
+                          count tools). Read live from the meta-graph, re-synced from the tool \
+                          registry on every startup. No args = a summary with counts; \
+                          `kind:\"tools\"` lists every tool, `kind:\"agents\"` the full roster, \
+                          `profile:\"<name>\"` one profile's allowlist, `skill:\"<name>\"` one \
+                          skill's tools."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["summary", "tools", "agents", "profiles"],
+                        "description": "summary (default): counts + roster + per-skill tallies. \
+                                        tools: every tool name. agents: spawnable agents only. \
+                                        profiles: every context profile, spawnable or not."
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "Drill down: the tools one context profile is allowed to use."
+                    },
+                    "skill": {
+                        "type": "string",
+                        "description": "Drill down: the tools belonging to one skill, with descriptions."
+                    }
+                }
+            }),
+        }
+    }
+
     // =========================================================================
     // Handlers
     // =========================================================================
@@ -422,6 +478,243 @@ impl QuerySkill {
             }
             Err(e) => ToolCallResult::error(format!("list_endpoints query failed: {}", e)),
         }
+    }
+
+    /// Read the brain's own inventory out of the meta-graph.
+    ///
+    /// Every branch returns the top-level counts, so the caller can never see a
+    /// drill-down without the total it belongs to — the inversion that made a
+    /// sub-agent report absence while quoting a correct count in the same breath.
+    async fn handle_list_capabilities(&self, args: Option<Value>) -> ToolCallResult {
+        #[derive(Deserialize, Default)]
+        struct Input {
+            #[serde(default)]
+            kind: Option<String>,
+            #[serde(default)]
+            profile: Option<String>,
+            #[serde(default)]
+            skill: Option<String>,
+        }
+        let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
+            Ok(i) => i,
+            Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
+        };
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+
+        // Empty strings are absent, not filters for "" — the same normalization
+        // search_notes and recall_recent apply, and for the same reason: a
+        // blank filter that matches nothing reads back as "there are none".
+        let trim = |o: &Option<String>| {
+            o.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let profile = trim(&input.profile);
+        let skill = trim(&input.skill);
+        let kind = trim(&input.kind).unwrap_or_else(|| "summary".to_string());
+
+        // ── Totals: present on every response ────────────────────────────────
+        let totals = neo4j
+            .execute(neo4rs::query(
+                "MATCH (d:ToolDef) WITH count(d) AS tools, count(DISTINCT d.skill) AS skills \
+                 MATCH (c:ContextProfile) \
+                 RETURN tools AS tool_count, skills AS skill_count, \
+                        count(c) AS profile_count, \
+                        count(CASE WHEN c.spawnable THEN 1 END) AS agent_count",
+            ))
+            .await;
+        let mut response = match totals {
+            Ok(rows) => Self::rows_to_json(rows)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| json!({})),
+            Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+        };
+
+        // ── Drill-down: one profile's allowlist ──────────────────────────────
+        if let Some(name) = profile {
+            let rows = neo4j
+                .execute(
+                    neo4rs::query(
+                        "MATCH (c:ContextProfile {name: $name}) \
+                         OPTIONAL MATCH (c)-[:ALLOWS]->(d:ToolDef) \
+                         RETURN c.name AS profile, c.allows_all AS allows_all, \
+                                c.spawnable AS spawnable, \
+                                coalesce(c.specialty, '') AS specialty, \
+                                coalesce(c.model_preference, '') AS model_preference, \
+                                coalesce(c.provider_hint, '') AS provider_hint, \
+                                collect(d.name) AS tools",
+                    )
+                    .param("name", name.as_str()),
+                )
+                .await;
+            match rows {
+                Ok(rows) => match Self::rows_to_json(rows).into_iter().next() {
+                    Some(row) => {
+                        response["profile"] = row;
+                        // allows_all means "no allowlist", i.e. the whole
+                        // registry — an empty `tools` array there would read as
+                        // "this profile has no tools", the exact inversion.
+                        if response["profile"]["allows_all"] == json!(true) {
+                            response["profile"]["note"] = json!(
+                                "This profile declares no allowlist, so it may use ALL \
+                                 registered tools (tool_count above), not the empty list."
+                            );
+                        }
+                    }
+                    None => {
+                        response["profile"] = json!(null);
+                        response["hint"] = json!(format!(
+                            "No context profile named '{name}'. Profile names are \
+                             case-sensitive; call list_capabilities with kind=\"profiles\" \
+                             for the exact names."
+                        ));
+                    }
+                },
+                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+            }
+            return ToolCallResult::success_json(response);
+        }
+
+        // ── Drill-down: one skill's tools, with descriptions ─────────────────
+        if let Some(name) = skill {
+            let rows = neo4j
+                .execute(
+                    neo4rs::query(
+                        "MATCH (d:ToolDef {skill: $skill}) \
+                         RETURN d.name AS name, coalesce(d.description, '') AS description \
+                         ORDER BY d.name",
+                    )
+                    .param("skill", name.as_str()),
+                )
+                .await;
+            match rows {
+                Ok(rows) => {
+                    let tools = Self::rows_to_json(rows);
+                    response["skill"] = json!(name);
+                    response["count"] = json!(tools.len());
+                    response["tools"] = json!(tools);
+                    if tools.is_empty() {
+                        // Name what exists rather than let the caller conclude
+                        // the skill is empty (it is almost always mis-spelled).
+                        let known = neo4j
+                            .execute(neo4rs::query(
+                                "MATCH (d:ToolDef) RETURN DISTINCT d.skill AS skill ORDER BY skill",
+                            ))
+                            .await
+                            .map(Self::rows_to_json)
+                            .unwrap_or_default();
+                        response["available_skills"] = json!(known);
+                        response["hint"] = json!(format!(
+                            "No tools registered under skill '{name}'. Skill names are \
+                             case-sensitive — see available_skills. The FILTER is the likely \
+                             fault here, not the registry: tool_count above is the real total."
+                        ));
+                    }
+                }
+                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+            }
+            return ToolCallResult::success_json(response);
+        }
+
+        // ── kind=tools: every registered tool, plus the per-skill tally ──────
+        if kind == "tools" {
+            let rows = neo4j
+                .execute(neo4rs::query(
+                    "MATCH (d:ToolDef) RETURN d.name AS name, coalesce(d.skill, '') AS skill \
+                     ORDER BY d.skill, d.name",
+                ))
+                .await;
+            match rows {
+                Ok(rows) => response["tools"] = json!(Self::rows_to_json(rows)),
+                Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+            }
+            if let Ok(rows) = neo4j
+                .execute(neo4rs::query(
+                    "MATCH (d:ToolDef) RETURN coalesce(d.skill, '') AS skill, count(d) AS tools \
+                     ORDER BY tools DESC, skill",
+                ))
+                .await
+            {
+                response["skills"] = json!(Self::rows_to_json(rows));
+            }
+            return ToolCallResult::success_json(response);
+        }
+
+        // ── kind=profiles / agents / summary ─────────────────────────────────
+        // `agents` are the spawnable subset — the roster `delegate`/`run_agent`
+        // can actually dispatch to. `profiles` is every profile including the
+        // non-spawnable personas (general, boot, the front door).
+        let spawnable_only = kind != "profiles";
+        let rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (c:ContextProfile) \
+                     WHERE $all OR c.spawnable \
+                     OPTIONAL MATCH (c)-[:ALLOWS]->(d:ToolDef) \
+                     RETURN c.name AS name, c.spawnable AS spawnable, \
+                            coalesce(c.specialty, c.description) AS specialty, \
+                            coalesce(c.model_preference, '') AS model_preference, \
+                            coalesce(c.provider_hint, '') AS provider_hint, \
+                            c.allows_all AS allows_all, count(d) AS tool_count \
+                     ORDER BY c.spawnable DESC, c.name",
+                )
+                .param("all", !spawnable_only),
+            )
+            .await;
+        match rows {
+            Ok(rows) => {
+                let mut list = Self::rows_to_json(rows);
+                if kind == "summary" {
+                    // The summary has ONE job: answer "how many tools / which
+                    // agents" in a payload that survives a sub-agent's tool
+                    // budget. That budget is CLOUD_TOOL_RESULT_CHARS = 2000 —
+                    // NOT the 6000 the chat loop uses — and the full-fat rows
+                    // blew past it: measured live at 4380 chars, the roster was
+                    // cut mid-list and a `knowledge-worker` reported "at least
+                    // six agents" (there are 8) while quoting the correct
+                    // tool_count from the surviving head of the same payload.
+                    // So the summary carries name + a clipped specialty only,
+                    // and `kind:"agents"` is where the model/allowlist detail
+                    // lives. A truncated count is a wrong count.
+                    for row in &mut list {
+                        let name = row.get("name").cloned().unwrap_or(Value::Null);
+                        let mut specialty = row
+                            .get("specialty")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        if specialty.chars().count() > 90 {
+                            specialty = specialty.chars().take(89).collect::<String>() + "…";
+                        }
+                        *row = json!({ "name": name, "specialty": specialty });
+                    }
+                }
+                if spawnable_only {
+                    response["agents"] = json!(list);
+                } else {
+                    response["profiles"] = json!(list);
+                }
+            }
+            Err(e) => return ToolCallResult::error(format!("list_capabilities failed: {}", e)),
+        }
+
+        if kind == "summary" {
+            // `agent_count` above is the authority, not the length of the list —
+            // say so, because the list is the half that a truncation eats.
+            response["drill_down"] = json!(
+                "agent_count is the real number of agents; agents[] above is the roster. \
+                 kind=\"tools\" for every tool name + per-skill tallies, skill=\"<name>\" for \
+                 one skill's tools with descriptions, profile=\"<name>\" for one profile's \
+                 allowlist, kind=\"agents\" for each agent's model and tool count, \
+                 kind=\"profiles\" to include non-spawnable personas."
+            );
+        }
+
+        ToolCallResult::success_json(response)
     }
 
     async fn handle_neo4j_query(&self, args: Option<Value>) -> ToolCallResult {
@@ -609,6 +902,7 @@ impl Skill for QuerySkill {
             Self::recent_tasks_def(),
             Self::list_apis_def(),
             Self::list_endpoints_def(),
+            Self::list_capabilities_def(),
         ];
         if self.telemetry.is_some() {
             tools.push(Self::duckdb_query_def());
@@ -624,6 +918,7 @@ impl Skill for QuerySkill {
             "recent_tasks" => Some(self.handle_recent_tasks(args).await),
             "list_apis" => Some(self.handle_list_apis().await),
             "list_endpoints" => Some(self.handle_list_endpoints(args).await),
+            "list_capabilities" => Some(self.handle_list_capabilities(args).await),
             _ => None,
         }
     }
@@ -636,6 +931,65 @@ mod tests {
 
     fn skill_no_db() -> QuerySkill {
         QuerySkill::new(None, None)
+    }
+
+    // -- list_capabilities ----------------------------------------------------
+
+    #[test]
+    fn list_capabilities_is_registered() {
+        let names: Vec<String> = skill_no_db().tools().into_iter().map(|t| t.name).collect();
+        assert!(names.contains(&"list_capabilities".to_string()));
+    }
+
+    /// The description has to steer callers AWAY from the two tools that
+    /// produced the wrong answers on 2026-09-11 — `analyze_own_structure`
+    /// (a directory tree that cannot count) and a semantic note search.
+    #[test]
+    fn list_capabilities_description_redirects_from_the_tools_that_failed() {
+        let def = QuerySkill::list_capabilities_def();
+        let d = def.description.to_lowercase();
+        assert!(d.contains("analyze_own_structure"));
+        assert!(d.contains("semantic-search") || d.contains("semantic search"));
+        // The three questions it must claim, verbatim enough to match on.
+        assert!(d.contains("how many tools"));
+        assert!(d.contains("agents"));
+    }
+
+    #[test]
+    fn list_capabilities_accepts_every_documented_kind() {
+        let def = QuerySkill::list_capabilities_def();
+        let kinds = def.input_schema["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("kind enum")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        for k in ["summary", "tools", "agents", "profiles"] {
+            assert!(kinds.contains(&k.to_string()), "missing kind {k}");
+        }
+        // Both drill-downs must exist, or a reported count has no rows behind it.
+        assert!(def.input_schema["properties"]["profile"].is_object());
+        assert!(def.input_schema["properties"]["skill"].is_object());
+    }
+
+    /// No args must be legal: the summary is the entry point, and requiring a
+    /// `kind` would make the common question ("how many tools do you have")
+    /// fail on the first call.
+    #[test]
+    fn list_capabilities_requires_no_arguments() {
+        let def = QuerySkill::list_capabilities_def();
+        assert!(def.input_schema.get("required").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_capabilities_without_neo4j_errors_rather_than_reporting_zero() {
+        // A capability question answered "0 tools" is worse than an error: the
+        // caller relays the zero. Same reason the other canned reads error here.
+        let r = skill_no_db()
+            .execute("list_capabilities", Some(json!({})))
+            .await
+            .expect("dispatches");
+        assert_eq!(r.is_error, Some(true));
     }
 
     // -- tool registry --------------------------------------------------------

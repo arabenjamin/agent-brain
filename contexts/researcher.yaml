@@ -2,6 +2,7 @@ name: researcher
 description: Deep research profile. Gathers knowledge from the graph, web, and reasoning before synthesis. Pairs with research mode (Gemini/Claude synthesis).
 tools:
   - search_notes
+  - list_capabilities
   - list_notes
   - synthesize_knowledge
   - search_web

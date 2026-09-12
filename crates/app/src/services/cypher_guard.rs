@@ -175,28 +175,48 @@ fn looks_like_date_at(b: &[u8], i: usize) -> bool {
         return false;
     }
     let d = |n: usize| b[i + n].is_ascii_digit();
-    d(0) && d(1) && d(2) && d(3) && b[i + 4] == b'-' && d(5) && d(6) && b[i + 7] == b'-' && d(8) && d(9)
+    d(0) && d(1)
+        && d(2)
+        && d(3)
+        && b[i + 4] == b'-'
+        && d(5)
+        && d(6)
+        && b[i + 7] == b'-'
+        && d(8)
+        && d(9)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::graph_schema::PropInfo;
-    use crate::services::validation::{has_hard, render_hard, Severity};
+    use crate::services::validation::{Severity, has_hard, render_hard};
 
     fn schema() -> GraphSchema {
         let mut s = GraphSchema::default();
         s.labels.insert(
             "Task".to_string(),
             vec![
-                PropInfo { name: "goal".to_string(), is_temporal: false },
-                PropInfo { name: "status".to_string(), is_temporal: false },
-                PropInfo { name: "updated_at".to_string(), is_temporal: true },
+                PropInfo {
+                    name: "goal".to_string(),
+                    is_temporal: false,
+                },
+                PropInfo {
+                    name: "status".to_string(),
+                    is_temporal: false,
+                },
+                PropInfo {
+                    name: "updated_at".to_string(),
+                    is_temporal: true,
+                },
             ],
         );
         s.labels.insert(
             "ApiContext".to_string(),
-            vec![PropInfo { name: "name".to_string(), is_temporal: false }],
+            vec![PropInfo {
+                name: "name".to_string(),
+                is_temporal: false,
+            }],
         );
         s.rel_types.insert("EXPOSES".to_string());
         s
@@ -228,14 +248,22 @@ mod tests {
 
     #[test]
     fn unknown_rel_type_is_hard_in_readonly() {
-        let v = check("MATCH (a:Task)-[:BOGUS]->(b:ApiContext) RETURN a", &schema(), true);
+        let v = check(
+            "MATCH (a:Task)-[:BOGUS]->(b:ApiContext) RETURN a",
+            &schema(),
+            true,
+        );
         assert!(has_hard(&v));
         assert!(render_hard(&v).contains("BOGUS"));
     }
 
     #[test]
     fn known_rel_type_passes() {
-        let v = check("MATCH (c:ApiContext)-[:EXPOSES]->(x) RETURN c", &schema(), true);
+        let v = check(
+            "MATCH (c:ApiContext)-[:EXPOSES]->(x) RETURN c",
+            &schema(),
+            true,
+        );
         assert!(!has_hard(&v), "known rel flagged: {:?}", v);
     }
 
@@ -243,16 +271,27 @@ mod tests {
     fn unknown_property_is_soft_and_named() {
         // The fabrication case: Task has updated_at, not completed_at.
         let v = check("MATCH (t:Task) RETURN t.completed_at", &schema(), true);
-        assert!(!has_hard(&v), "unknown prop must be advisory, not hard: {:?}", v);
+        assert!(
+            !has_hard(&v),
+            "unknown prop must be advisory, not hard: {:?}",
+            v
+        );
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].severity, Severity::Soft);
         assert!(v[0].message.contains("completed_at"));
-        assert!(v[0].message.contains("updated_at"), "should suggest the real prop");
+        assert!(
+            v[0].message.contains("updated_at"),
+            "should suggest the real prop"
+        );
     }
 
     #[test]
     fn known_property_passes() {
-        let v = check("MATCH (t:Task) RETURN t.goal, t.updated_at", &schema(), true);
+        let v = check(
+            "MATCH (t:Task) RETURN t.goal, t.updated_at",
+            &schema(),
+            true,
+        );
         assert!(v.is_empty(), "known props flagged: {:?}", v);
     }
 
@@ -274,7 +313,10 @@ mod tests {
             &schema(),
             true,
         );
-        assert!(v.iter().any(|x| x.severity == Severity::Soft && x.message.contains("datetime(")));
+        assert!(
+            v.iter()
+                .any(|x| x.severity == Severity::Soft && x.message.contains("datetime("))
+        );
     }
 
     #[test]
@@ -284,7 +326,11 @@ mod tests {
             &schema(),
             true,
         );
-        assert!(!v.iter().any(|x| x.message.contains("null")), "wrapped datetime flagged: {:?}", v);
+        assert!(
+            !v.iter().any(|x| x.message.contains("null")),
+            "wrapped datetime flagged: {:?}",
+            v
+        );
     }
 
     #[test]

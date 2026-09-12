@@ -1296,6 +1296,59 @@ impl KnowledgeService {
     /// compile an application from it (2026-09-11). Same shape as `recall_recent`
     /// and `list_endpoints`: when the caller knows the LABEL, give them an
     /// enumeration, not a ranked sample.
+    /// Whole-graph label inventory: every `note_type` and `source_context` that
+    /// actually exists, plus the total note count (chunk fragments excluded).
+    ///
+    /// The unbounded sibling of [`window_buckets`], and it exists for the same
+    /// reason. `search_notes`' query-less enumeration path answers a `note_type`
+    /// / `source_context` the caller has to *guess*, and a wrong guess returned
+    /// a bare `count: 0` — indistinguishable from "the graph holds none of
+    /// these". Observed 2026-09-11: a delegated `researcher` asked "how many
+    /// agents does the brain have", probed `note_type:"agent"`, then
+    /// `source_context:"agent"`, then `note_type:"news"`, learned nothing from
+    /// any of the misses, burned all 8 rounds and reported it could not
+    /// determine the answer. A caller cannot guess a label it has never been
+    /// shown.
+    pub async fn label_buckets(&self) -> Result<(Vec<Value>, Vec<Value>, i64)> {
+        // `NOT (n)-[:PART_OF]->()` everywhere, so these counts line up with what
+        // the enumeration itself returns rather than double-counting chunks.
+        let type_rows = self
+            .neo4j
+            .execute(neo4rs::query(
+                "MATCH (n:Note) WHERE NOT (n)-[:PART_OF]->() \
+                 RETURN COALESCE(n.note_type, 'semantic') AS k, count(*) AS c ORDER BY c DESC",
+            ))
+            .await?;
+        let mut by_type = Vec::new();
+        let mut total: i64 = 0;
+        for row in type_rows {
+            let k = row.get::<String>("k").unwrap_or_default();
+            let c = row.get::<i64>("c").unwrap_or(0);
+            total += c;
+            by_type.push(json!({ "note_type": k, "count": c }));
+        }
+
+        let src_rows = self
+            .neo4j
+            .execute(neo4rs::query(
+                "MATCH (n:Note) WHERE NOT (n)-[:PART_OF]->() \
+                 WITH COALESCE(n.source_context, '(none)') AS k, count(*) AS c \
+                 RETURN k, c ORDER BY c DESC LIMIT 30",
+            ))
+            .await?;
+        let by_source = src_rows
+            .iter()
+            .map(|row| {
+                json!({
+                    "source_context": row.get::<String>("k").unwrap_or_default(),
+                    "count": row.get::<i64>("c").unwrap_or(0),
+                })
+            })
+            .collect();
+
+        Ok((by_type, by_source, total))
+    }
+
     pub async fn list_notes_filtered(
         &self,
         limit: usize,
@@ -3586,6 +3639,12 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         source_context: Option<&str>,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         KnowledgeService::list_notes_filtered(self, limit, note_type, source_context).await
+    }
+
+    async fn label_buckets(
+        &self,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, Vec<serde_json::Value>, i64)> {
+        KnowledgeService::label_buckets(self).await
     }
 
     async fn list_notes(

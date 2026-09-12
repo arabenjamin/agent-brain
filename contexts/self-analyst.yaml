@@ -6,6 +6,7 @@ tools:
 - get_usage
 - context
 - analyze_own_structure
+- list_capabilities
 - search_codebase
 - read_codebase_file
 - list_codebase_files
