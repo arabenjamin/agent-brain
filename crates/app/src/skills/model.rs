@@ -167,24 +167,30 @@ impl ModelSkill {
                 .get("provider")
                 .and_then(|v| v.as_str())
                 .unwrap_or("ollama");
-            let provider_type = match provider_str.to_lowercase().as_str() {
-                "anthropic" => LlmProviderType::Anthropic,
-                "gemini" => LlmProviderType::Gemini,
-                "ollama-cloud" | "ollamacloud" => LlmProviderType::OllamaCloud,
-                _ => LlmProviderType::Ollama,
-            };
             let model_name = best
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // The provider's model id, which can differ from the catalog key
+            // (`gemma4-e4b` is served under its sidecar alias).
+            let model_id = best
+                .get("model")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&model_name)
+                .to_string();
 
+            // Endpoint and key come from the provider registry, so a selected
+            // Mistral or OpenRouter model is called at its own API rather than
+            // at whatever endpoint the previous config pointed to.
             let mut config = self.llm_config.write().await;
             let base = config.as_ref().cloned().unwrap_or_default();
-            *config = Some(
-                base.with_provider(provider_type)
-                    .with_model(model_name.clone()),
-            );
+            *config = Some(crate::services::model_router::config_for_catalog_entry(
+                &base,
+                provider_str,
+                &model_id,
+            ));
 
             return ToolCallResult::success_json(json!({
                 "selected": true,
@@ -246,10 +252,13 @@ impl ModelSkill {
         };
 
         let catalog = ModelCatalog::load_or_default(&self.catalog_path);
+        let providers = catalog.install_providers();
         match catalog.sync_to_duckdb(db) {
             Ok(count) => ToolCallResult::success_json(json!({
                 "reloaded": true,
                 "models_loaded": count,
+                "providers_loaded": providers,
+                "provider_issues": catalog.provider_issues(),
                 "path": self.catalog_path.display().to_string(),
             })),
             Err(e) => ToolCallResult::error(format!("reload_models failed: {}", e)),

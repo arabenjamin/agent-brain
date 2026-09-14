@@ -1144,6 +1144,9 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
             { "name": "Anthropic",      "type": LlmProviderType::Anthropic.to_string(),   "cost": "paid" },
             { "name": "Gemini",         "type": LlmProviderType::Gemini.to_string(),      "cost": "free tier" },
         ],
+        // The provider registry: kind, billing, data_policy, limits, spend, and
+        // whether each provider's key env var is set — never the key.
+        "providers": crate::services::provider_registry::snapshot_json(),
         "catalog_models": catalog_models,
     })).into_response()
 }

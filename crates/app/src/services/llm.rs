@@ -186,6 +186,11 @@ pub enum LlmProviderType {
     LlamaCpp,
     Anthropic,
     Gemini,
+    /// Any other OpenAI-compatible `/v1/chat/completions` API (Mistral,
+    /// OpenRouter, a paid OpenAI-wire provider). Endpoint and key come from the
+    /// provider registry; `LlmConfig::provider_name` says which provider it is.
+    #[serde(rename = "openai_compat", alias = "openai-compat")]
+    OpenAiCompat,
 }
 
 impl std::fmt::Display for LlmProviderType {
@@ -194,6 +199,7 @@ impl std::fmt::Display for LlmProviderType {
             LlmProviderType::Ollama => write!(f, "ollama"),
             LlmProviderType::OllamaCloud => write!(f, "ollama-cloud"),
             LlmProviderType::LlamaCpp => write!(f, "llamacpp"),
+            LlmProviderType::OpenAiCompat => write!(f, "openai-compat"),
             LlmProviderType::Anthropic => write!(f, "anthropic"),
             LlmProviderType::Gemini => write!(f, "gemini"),
         }
@@ -244,6 +250,13 @@ pub struct LlmConfig {
     /// truncated. `None` keeps Ollama's default; raise it only for calls that
     /// genuinely need to read a large payload, since the window costs VRAM.
     pub num_ctx: Option<u32>,
+
+    /// The provider-registry key this config was built from (`mistral`,
+    /// `ollama-cloud`, …). `provider` says which client code runs; this says
+    /// whose endpoint it runs against, which matters once several providers
+    /// share the OpenAI-compatible client. `None` for configs not built from
+    /// the registry. Recorded in the usage ledger via [`Self::provider_label`].
+    pub provider_name: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -260,11 +273,20 @@ impl Default for LlmConfig {
             max_tokens: None,
             keep_alive: None,
             num_ctx: None,
+            provider_name: None,
         }
     }
 }
 
 impl LlmConfig {
+    /// The provider name for the usage ledger: the registry key when known,
+    /// else the provider type.
+    pub fn provider_label(&self) -> String {
+        self.provider_name
+            .clone()
+            .unwrap_or_else(|| self.provider.to_string())
+    }
+
     /// Create config from environment-style parameters.
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
@@ -277,6 +299,9 @@ impl LlmConfig {
     /// Set the provider type.
     pub fn with_provider(mut self, provider: LlmProviderType) -> Self {
         self.provider = provider;
+        // A registry name describes the old provider; keeping it would record
+        // calls against the wrong provider in the ledger.
+        self.provider_name = None;
         self
     }
 
@@ -436,7 +461,9 @@ impl LlmClient {
             // format as Ollama Cloud, so it reuses the same provider. `keep_alive`
             // / `num_ctx` in provider_config are ignored (llama.cpp sets those at
             // server launch, not per-request).
-            LlmProviderType::LlamaCpp => {
+            // Generic OpenAI-compatible providers (Mistral, OpenRouter, …) use the
+            // same client; their endpoint and key come from the provider registry.
+            LlmProviderType::LlamaCpp | LlmProviderType::OpenAiCompat => {
                 use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
                 Arc::new(OpenAiCompatProvider::new(provider_config))
             }

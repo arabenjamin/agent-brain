@@ -24,6 +24,7 @@ use tracing::{debug, info};
 
 use crate::repository::TelemetryClient;
 use crate::services::llm::{LlmConfig, LlmProviderType};
+use crate::services::provider_registry::{self, ProviderEntry, ProviderKind};
 
 /// Read the active cloud tier from `CLOUD_TIER` (default 1).
 pub fn cloud_tier() -> u8 {
@@ -58,36 +59,75 @@ fn candidate_allowed(
 
 /// Turn a catalog entry's `provider` + `model` into a full [`LlmConfig`].
 ///
-/// Endpoint and credentials come from the environment rather than the catalog,
-/// because `models.yaml` is checked in and must never carry a key. Everything
-/// else — embedding settings above all — is inherited from `base`, so a
-/// re-pointed config keeps embeddings local no matter which provider it names.
+/// The endpoint and the NAME of the key's env var come from the provider
+/// registry (`providers:` in `models.yaml`, over the built-in table in
+/// [`provider_registry`]); the key itself only ever comes from the environment,
+/// because `models.yaml` is checked in. Everything else — embedding settings
+/// above all — is inherited from `base`, so a re-pointed config keeps
+/// embeddings local no matter which provider it names.
 ///
-/// Shared by capability routing ([`resolve_model_config`]) and by the `/chat`
-/// fallback ladder, which both answer the same question: *this catalog row is
-/// the model now; what does it take to call it?*
+/// Shared by capability routing ([`resolve_model_config`]), the `/chat`
+/// fallback ladder and profile pins, which all answer the same question: *this
+/// catalog row is the model now; what does it take to call it?* A provider the
+/// registry does not know is called as local Ollama, as it always was; startup
+/// names every such model (`ModelCatalog::provider_issues`).
 pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -> LlmConfig {
+    let name = provider_registry::canonical_name(provider);
+    match provider_registry::get(&name) {
+        Some(entry) => config_for_provider(base, &name, &entry, model),
+        None => {
+            let local = provider_registry::get("ollama")
+                .unwrap_or_else(|| provider_registry::builtin()["ollama"].clone());
+            config_for_provider(base, "ollama", &local, model)
+        }
+    }
+}
+
+/// The local Ollama endpoint embeddings are pinned to, whatever generates.
+fn local_embed_url() -> String {
+    std::env::var("OLLAMA_LOCAL_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_string())
+}
+
+/// [`config_for_catalog_entry`] for a resolved registry entry. Reads only the
+/// env vars the entry names, so it is testable with a hand-built entry.
+pub fn config_for_provider(
+    base: &LlmConfig,
+    name: &str,
+    entry: &ProviderEntry,
+    model: &str,
+) -> LlmConfig {
     let mut cfg = base.clone();
     cfg.model = model.to_string();
-    match provider {
-        "ollama-cloud" | "ollamacloud" => {
-            cfg.provider = LlmProviderType::OllamaCloud;
-            cfg.base_url = Some(
-                std::env::var("OLLAMA_URL").unwrap_or_else(|_| "https://ollama.com".to_string()),
-            );
-            cfg.api_key = std::env::var("OLLAMA_API_KEY").ok();
+    match entry.kind {
+        ProviderKind::OpenaiCompat => {
+            // Ollama Cloud keeps its own provider type: CLOUD_TIER and the
+            // sub-agent clamp still recognise it by type, and the registry must
+            // not change who may use it. Every other OpenAI-wire API is the
+            // generic type, which neither of those admits.
+            cfg.provider = if name == "ollama-cloud" {
+                LlmProviderType::OllamaCloud
+            } else {
+                LlmProviderType::OpenAiCompat
+            };
+            cfg.base_url = entry.base_url();
+            cfg.api_key = entry.api_key();
+            // A remote OpenAI-wire API has no bge-m3; embeddings stay local.
+            cfg.embed_base_url.get_or_insert_with(local_embed_url);
         }
-        "anthropic" => {
+        ProviderKind::Anthropic => {
             cfg.provider = LlmProviderType::Anthropic;
-            cfg.base_url = None;
-            cfg.api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+            cfg.base_url = entry.base_url();
+            cfg.api_key = entry.api_key();
         }
-        "gemini" => {
+        ProviderKind::Gemini => {
             cfg.provider = LlmProviderType::Gemini;
-            cfg.base_url = None;
-            cfg.api_key = std::env::var("GEMINI_API_KEY").ok();
+            cfg.base_url = entry.base_url();
+            cfg.api_key = entry.api_key();
         }
-        "llamacpp" | "llama-cpp" | "llama.cpp" | "llama_cpp" => {
+        ProviderKind::Llamacpp => {
             // The llama.cpp `llama-server` sidecar (OpenAI-compatible). base_url
             // points at LLAMACPP_URL regardless of LOCAL_LLM_BACKEND, because the
             // caller asked for this provider explicitly (a profile/catalog pin,
@@ -95,22 +135,13 @@ pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -
             // cannot serve embeddings, so embeddings stay pinned to host Ollama —
             // mirroring build_local_llm_config.
             cfg.provider = LlmProviderType::LlamaCpp;
-            cfg.base_url = Some(
-                std::env::var("LLAMACPP_URL")
-                    .unwrap_or_else(|_| "http://localhost:8080".to_string()),
-            );
-            cfg.embed_base_url = Some(
-                std::env::var("OLLAMA_LOCAL_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            );
+            cfg.base_url = entry.base_url();
+            cfg.embed_base_url = Some(local_embed_url());
             cfg.api_key = None;
         }
-        _ => {
+        ProviderKind::Ollama => {
             cfg.provider = LlmProviderType::Ollama;
-            cfg.base_url = Some(
-                std::env::var("OLLAMA_LOCAL_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-            );
+            cfg.base_url = entry.base_url();
             cfg.api_key = None;
             // The router is called with `LlmConfig::default()` as base, so
             // keep_alive has to be sourced here like base_url and api_key are.
@@ -125,6 +156,7 @@ pub fn config_for_catalog_entry(base: &LlmConfig, provider: &str, model: &str) -
             cfg.num_ctx = Some(crate::services::llm::ollama_num_ctx());
         }
     }
+    cfg.provider_name = Some(name.to_string());
     cfg
 }
 
@@ -330,5 +362,67 @@ mod tests {
     #[test]
     fn unknown_provider_rejected() {
         assert!(!candidate_allowed("vllm", 0.0, 0.0, 2, true, true, true));
+    }
+
+    /// The training free tiers must not become reachable through CLOUD_TIER
+    /// before the policy router can keep private work off them.
+    #[test]
+    fn may_train_providers_are_not_routable_through_cloud_tier() {
+        for p in ["mistral", "openrouter"] {
+            assert!(!candidate_allowed(p, 0.0, 0.0, 2, true, true, true), "{p}");
+        }
+    }
+
+    #[test]
+    fn a_generic_openai_compat_provider_gets_its_endpoint_and_name() {
+        let entry: ProviderEntry = serde_yaml::from_str(
+            "kind: openai_compat\nbilling: free\ndata_policy: may_train\n\
+             base_url_default: https://api.mistral.ai\n\
+             api_key_env: AGENT_BRAIN_TEST_KEY_THAT_IS_NEVER_SET",
+        )
+        .unwrap();
+        let cfg = config_for_provider(
+            &LlmConfig::default(),
+            "mistral",
+            &entry,
+            "mistral-medium-latest",
+        );
+        assert_eq!(cfg.provider, LlmProviderType::OpenAiCompat);
+        assert_eq!(cfg.base_url.as_deref(), Some("https://api.mistral.ai"));
+        assert_eq!(cfg.model, "mistral-medium-latest");
+        assert!(cfg.api_key.is_none(), "an unset key var yields no key");
+        assert_eq!(cfg.provider_label(), "mistral");
+        assert!(
+            cfg.embed_base_url.is_some(),
+            "embeddings stay local for a remote OpenAI-wire API"
+        );
+    }
+
+    #[test]
+    fn ollama_cloud_keeps_its_provider_type_under_any_spelling() {
+        for name in ["ollama-cloud", "ollamacloud"] {
+            let cfg = config_for_catalog_entry(&LlmConfig::default(), name, "gpt-oss:120b-cloud");
+            assert_eq!(cfg.provider, LlmProviderType::OllamaCloud, "{name}");
+            assert_eq!(cfg.provider_label(), "ollama-cloud");
+            assert!(cfg.base_url.is_some());
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_is_still_called_as_local_ollama() {
+        let cfg = config_for_catalog_entry(&LlmConfig::default(), "vllm", "some-model");
+        assert_eq!(cfg.provider, LlmProviderType::Ollama);
+        assert_eq!(cfg.provider_label(), "ollama");
+        assert!(
+            cfg.num_ctx.is_some(),
+            "local Ollama never runs at its 4096 default"
+        );
+    }
+
+    #[test]
+    fn switching_provider_type_drops_a_stale_registry_name() {
+        let cfg = config_for_catalog_entry(&LlmConfig::default(), "ollama-cloud", "m")
+            .with_provider(LlmProviderType::Anthropic);
+        assert_eq!(cfg.provider_label(), "anthropic");
     }
 }

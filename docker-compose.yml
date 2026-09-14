@@ -155,6 +155,11 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Free-tier OpenAI-compatible providers (models.yaml `providers:`). Both are
+      # declared data_policy may_train; CLOUD_TIER routing does not know them, so
+      # only an explicit /chat profile pin reaches them until the policy router.
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - MCP_TRANSPORT=http
       - MCP_HTTP_BIND=0.0.0.0:3000
       - MCP_API_KEY=   # disabled: env_file would otherwise enable auth from .env
@@ -171,6 +176,9 @@ services:
       # Sandboxed code execution. Unset => execute_code is not registered at
       # all, so a deployment without the sandbox service degrades cleanly.
       - SANDBOX_URL=http://sandbox:8000
+      # Offline Rust compile/test sandbox. Unset => execute_code offers no
+      # `language: "rust"`. See rust-sandbox/ and RUST_FINETUNE_EXPERIMENT.md.
+      - RUST_SANDBOX_URL=http://rust-sandbox:8000
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
       - PROPOSALS_DIR=/home/agent/proposals
@@ -218,6 +226,8 @@ services:
       searxng:
         condition: service_started
       sandbox:
+        condition: service_started
+      rust-sandbox:
         condition: service_started
       llamacpp:
         condition: service_started
@@ -389,6 +399,35 @@ services:
       - ALL
     mem_limit: 2g
     pids_limit: 128
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+
+  # Offline Rust compile/test sandbox for `execute_code(language: "rust")`.
+  # Same contract as `sandbox` above — sandbox-net only, no env_file, no bind
+  # mounts, read-only root, no capabilities — with two measured differences:
+  #
+  #   - /work is tmpfs WITHOUT noexec: Rust compiles test binaries and build
+  #     scripts and must run them. The network is still the boundary.
+  #   - Crates are pre-fetched into the image at build time
+  #     (rust-sandbox/crates/Cargo.toml) and cargo runs --offline against that
+  #     read-only cache. tmpfs pages count against mem_limit, hence 4g.
+  #
+  # Do NOT put this service on brain-internal or add a `ports:` mapping.
+  rust-sandbox:
+    build:
+      context: ./rust-sandbox
+      dockerfile: Dockerfile
+    read_only: true
+    tmpfs:
+      - /work:rw,exec,nosuid,size=2g,mode=1777
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 4g
+    pids_limit: 256
     networks:
       - sandbox-net
     restart: unless-stopped

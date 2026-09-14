@@ -1302,7 +1302,9 @@ impl ChatService {
                     )
                     .await
                 }
-                LlmProviderType::OllamaCloud | LlmProviderType::LlamaCpp => {
+                LlmProviderType::OllamaCloud
+                | LlmProviderType::LlamaCpp
+                | LlmProviderType::OpenAiCompat => {
                     // Both speak the OpenAI-compatible /v1/chat/completions wire
                     // (Ollama Cloud and the llama.cpp `llama-server` sidecar), so
                     // the same tool-call-accumulating loop drives them — NOT the
@@ -1416,6 +1418,7 @@ impl ChatService {
     /// Record one chat LLM call in the usage ledger (tool_name = "chat").
     fn record_llm_call(
         &self,
+        provider: &str,
         model: &str,
         success: bool,
         duration_ms: i64,
@@ -1426,6 +1429,7 @@ impl ChatService {
             let label = usage_tool_label();
             let _ = tc.record_model_usage(
                 model,
+                Some(provider),
                 Some(label.as_str()),
                 success,
                 Some(duration_ms),
@@ -1934,6 +1938,8 @@ impl ChatService {
 
         let model = config.model.clone();
 
+        let provider_label = config.provider_label();
+
         // Build Anthropic tools array.
         let anthropic_tools: Vec<Value> = tools
             .iter()
@@ -1989,6 +1995,7 @@ impl ChatService {
                 Ok(r) => r,
                 Err(e) => {
                     self.record_llm_call(
+                        &provider_label,
                         &model,
                         false,
                         call_start.elapsed().as_millis() as i64,
@@ -2031,6 +2038,7 @@ impl ChatService {
                     let label = usage_tool_label();
                     let _ = tc.record_model_usage(
                         &model,
+                        Some(provider_label.as_str()),
                         Some(label.as_str()),
                         false,
                         Some(call_start.elapsed().as_millis() as i64),
@@ -2045,6 +2053,7 @@ impl ChatService {
             }
 
             self.record_llm_call(
+                &provider_label,
                 &model,
                 true,
                 call_start.elapsed().as_millis() as i64,
@@ -2221,6 +2230,7 @@ impl ChatService {
             .as_deref()
             .unwrap_or("http://localhost:11434");
         let model = config.model.clone();
+        let provider_label = config.provider_label();
 
         // Build the Ollama tools array (OpenAI function-calling schema).
         let ollama_tools: Vec<Value> = tools
@@ -2296,6 +2306,7 @@ impl ChatService {
                 Ok(r) => r,
                 Err(e) => {
                     self.record_llm_call(
+                        &provider_label,
                         &model,
                         false,
                         call_start.elapsed().as_millis() as i64,
@@ -2410,6 +2421,7 @@ impl ChatService {
             }
 
             self.record_llm_call(
+                &provider_label,
                 &model,
                 true,
                 call_start.elapsed().as_millis() as i64,
@@ -2623,6 +2635,7 @@ impl ChatService {
         let base_url = config.base_url.as_deref().unwrap_or("https://ollama.com");
         let url = format!("{}/v1/chat/completions", base_url);
         let model = config.model.clone();
+        let provider_label = config.provider_label();
 
         // OpenAI-format tools array.
         let oai_tools: Vec<Value> = tools
@@ -2717,6 +2730,7 @@ impl ChatService {
                 Ok(r) => r,
                 Err(e) => {
                     self.record_llm_call(
+                        &provider_label,
                         &model,
                         false,
                         call_start.elapsed().as_millis() as i64,
@@ -2752,6 +2766,7 @@ impl ChatService {
                     let label = usage_tool_label();
                     let _ = tc.record_model_usage(
                         &model,
+                        Some(provider_label.as_str()),
                         Some(label.as_str()),
                         false,
                         Some(call_start.elapsed().as_millis() as i64),
@@ -2882,6 +2897,7 @@ impl ChatService {
                 .collect();
 
             self.record_llm_call(
+                &provider_label,
                 &model,
                 true,
                 call_start.elapsed().as_millis() as i64,
@@ -3309,6 +3325,8 @@ impl ChatService {
 
         let model = request.synthesis_model.clone().unwrap_or(default_model);
 
+        let provider_label = provider.to_string();
+
         let synth_config = LlmConfig {
             provider,
             model: model.clone(),
@@ -3394,6 +3412,7 @@ impl ChatService {
         let call_start = std::time::Instant::now();
         let chat_result = llm.chat(&messages).await;
         self.record_llm_call(
+            &provider_label,
             &model,
             chat_result.is_ok(),
             call_start.elapsed().as_millis() as i64,
@@ -3444,6 +3463,7 @@ impl ChatService {
         max_iterations: usize,
     ) {
         let model = config.model.clone();
+        let provider_label = config.provider_label();
         let llm = match LlmClient::with_config(config) {
             Ok(c) => c,
             Err(e) => {
@@ -3494,6 +3514,7 @@ impl ChatService {
             let call_start = std::time::Instant::now();
             let chat_result = llm.chat(&messages).await;
             self.record_llm_call(
+                &provider_label,
                 &model,
                 chat_result.is_ok(),
                 call_start.elapsed().as_millis() as i64,

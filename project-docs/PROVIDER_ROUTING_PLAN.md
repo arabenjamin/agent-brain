@@ -1,0 +1,276 @@
+# Provider Routing: Local, Free and Paid Tiers Behind One Router
+
+**Status: design, implementation starting 2026-09-13.** Supersedes the free-tier-only draft
+(`FREE_TIER_ROUTING_PLAN.md`, never committed).
+
+## Goal
+
+Route every LLM call through **one policy-driven router** that treats "local", "free tier" and
+"paid API" as properties of a provider, not as special cases in code. Today the brain runs on
+local models plus free tiers. Tomorrow a paid key, or better hardware, should be a **config
+change**, with no redesign and ideally no Rust change.
+
+Four non-negotiables:
+
+1. **Privacy before budget.** Private work never reaches a provider that may log or train on
+   prompts, not even as the last fallback.
+2. **Budgets act before the call.** Rate limits, daily quotas and **spend caps** are enforced
+   proactively; a 429 is information, not the detection mechanism.
+3. **Adding an OpenAI-compatible API is YAML-only.** Mistral, OpenRouter, DeepSeek, Together,
+   a self-hosted vLLM, etc. share one generic provider kind.
+4. **Paid spend is off until a cap is set.** A paid provider with no cap is unusable, never
+   unlimited.
+
+## Where the code is today (2026-09-13)
+
+| concern | where | the free-only / hardcoded assumption |
+|---|---|---|
+| provider kinds | `services/llm.rs` `LlmProviderType` | 5 variants; each new API is an enum variant, a `Display` arm and a dispatch arm |
+| client construction | `LlmClient::with_config` (`llm.rs` ~L428) | per-variant match |
+| endpoint + key | `model_router::config_for_catalog_entry` | per-provider env var names hardcoded in Rust |
+| tier policy | `model_router::candidate_allowed`, `CLOUD_TIER` 0/1/2 | 4 providers hardcoded; "free" means `cost == 0.0` |
+| chat loop dispatch | `clients/chat.rs` `run_one_attempt` | `OllamaCloud \| LlamaCpp` → OpenAI tool loop; anything unlisted → degraded text loop |
+| chat provider env | `config.rs` `CHAT_LLM_PROVIDER` parsing | per-name match |
+| sub-agent policy | `agent_runner.rs` clamp (~L242) | allow-list of provider *types* (Ollama/OllamaCloud/LlamaCpp) |
+| fallback chain | `shared_llm::build_fallback_chain` | fixed "selected → active → local" |
+| concurrency | `queue.rs` 3 semaphores (ollama/anthropic/gemini) | unknown `provider_hint` falls into the ollama pool; chat and sub-agents unmetered |
+| usage ledger | DuckDB `model_usage` (4 call sites: 3 in `chat.rs`, 1 in `shared_llm.rs`) | no `provider` column; cost is computed but never capped |
+| catalog | `models.yaml` → `model_registry` | cost/rank/capabilities only; consumers: `model_router`, `model_config`, `/api/models`, `self_model`, `skills/model.rs` |
+
+**The OpenAI-compatible client already exists** (`llm_providers/openai_compat.rs`) and chat's
+`run_ollama_cloud_loop` already drives OpenAI-style tool calls. What's missing is the ability to
+point them at an arbitrary endpoint and key from config, and to see response headers (rate-limit
+headroom is currently invisible).
+
+## Measured load (Phase 0, 2026-09-13, last 7 days of `model_usage`)
+
+| | calls | tokens in | tokens out |
+|---|---|---|---|
+| **total** | ~2,640 (43–846/day, ≈378/day avg) | ~11.1 M (≤4.9 M/day) | ~0.7 M |
+| gemma4-e4b (local llama.cpp) | 962 | 3.43 M | 200 K |
+| gpt-oss:120b-cloud | 776 | 5.99 M | 297 K |
+| granite4 (local Ollama) | 730 | 0.84 M | 161 K |
+| gemma4:31b-cloud | 117 | 0.45 M | 32 K |
+| gemini-2.5-flash | 28 | 59 K | 4 K |
+| claude-sonnet-4-6 (**paid**) | 4 | 23 K | 1 K |
+
+- **By tool:** chat 766, `subagent:knowledge-worker` 451, `ingest_media` 450, `reason` 393, `claim` 332.
+- **Burstiness:** peak **26 calls in one minute**; 5.3 per active minute on average.
+- **Spend:** **$0.08** over the week, all Anthropic. Cost tracking works; there are no caps and no
+  per-provider view.
+
+**What this sizes:**
+- **OpenRouter `:free` (20 rpm, 50 rpd) is a fallback rung only.** One peak minute exceeds its
+  rpm cap; one busy hour exceeds its daily cap.
+- **A GPU lease moves ~1,700 local calls and ~4.3 M tokens a week onto cloud providers.** On free
+  tiers alone that is the load that will hit limits, which is exactly where a paid provider
+  should slot in once one exists.
+- **Paid spend is already non-zero** with no cap. The spend guard isn't only for tomorrow.
+
+---
+
+## Design
+
+### 1. Provider registry (`providers:` in `models.yaml`)
+
+Every model's `provider:` names an entry here. Endpoints and **env var names** live in YAML; keys
+never do.
+
+```yaml
+providers:
+  ollama:          { kind: ollama,       billing: local, data_policy: no_log,
+                     base_url_env: OLLAMA_LOCAL_URL, base_url_default: "http://localhost:11434",
+                     limits: { concurrency: 2 } }
+  llamacpp:        { kind: llamacpp,     billing: local, data_policy: no_log,
+                     base_url_env: LLAMACPP_URL, base_url_default: "http://localhost:8080",
+                     limits: { concurrency: 2 } }
+  ollama-cloud:    { kind: openai_compat, billing: free, data_policy: no_log,
+                     base_url_env: OLLAMA_URL, base_url_default: "https://ollama.com",
+                     api_key_env: OLLAMA_API_KEY,
+                     limits: { concurrency: 1 },
+                     terms: "never logged or trained on (pricing page, checked 2026-09-12)" }
+  mistral:         { kind: openai_compat, billing: free, data_policy: may_train,
+                     base_url_default: "https://api.mistral.ai", api_key_env: MISTRAL_API_KEY,
+                     limits: { concurrency: 1 },
+                     terms: "Experiment plan: inputs/outputs may train Mistral models" }
+  openrouter:      { kind: openai_compat, billing: free, data_policy: may_train,
+                     base_url_default: "https://openrouter.ai/api", api_key_env: OPENROUTER_API_KEY,
+                     limits: { rpm: 20, rpd: 50, concurrency: 1 } }
+  anthropic:       { kind: anthropic, billing: paid, data_policy: no_log, api_key_env: ANTHROPIC_API_KEY,
+                     spend: { daily_usd: 1.00, monthly_usd: 10.00 } }
+  gemini:          { kind: gemini, billing: free, data_policy: may_train, api_key_env: GEMINI_API_KEY,
+                     limits: { rpm: 5 } }
+```
+
+- **`kind`** selects the client code: `ollama | llamacpp | openai_compat | anthropic | gemini`.
+  `openai_compat` is the generic kind: any OpenAI-wire API is a new YAML entry.
+- **`billing`**: `local` (own hardware), `free` (a free tier: rate-limited, $0), `paid` (metered money).
+- **`data_policy`**: `no_log | may_log | may_train`. **Unknown ⇒ `may_train`.**
+- **`limits`**: `rpm`, `rpd` (requests/day), `tpd` (tokens/day), `concurrency`. All optional;
+  absent = unenforced.
+- **`spend`**: `daily_usd`, `monthly_usd`. **A `paid` provider with no `spend` block is not
+  routable.**
+- **`enabled`** (default true) and **key presence**: a provider whose `api_key_env` is unset is
+  skipped, never an error.
+- **Per-model overrides** (`data_policy`, `billing`, `limits`) handle mixed providers. Example:
+  an OpenRouter `:free` model vs a paid model on the same account, or Gemini's free tier vs
+  billed usage.
+- **Anthropic is `no_log` in this table only as the API default** (it does not train on API
+  data). It remains subject to the separate rule that its outputs are never used as training
+  data (fine-tuning plan).
+
+**Backward compatibility:** a model whose `provider:` isn't in `providers:` resolves through a
+built-in default table equal to today's behaviour, so nothing breaks before the YAML is filled in.
+
+### 2. Routing policy (`ROUTING_BILLING`, per-purpose)
+
+Replaces the numeric `CLOUD_TIER`.
+
+| env | default | meaning |
+|---|---|---|
+| `ROUTING_BILLING` | `local,free` | billing classes the router may use at all |
+| `ROUTING_PAID_FOR` | `chat` | purposes allowed to spend money: any of `chat,subagent,background` |
+
+- `CLOUD_TIER` stays readable for compatibility: `0 → local`, `1 → local,free`,
+  `2 → local,free,paid` (paid still needs `ROUTING_PAID_FOR` + a spend cap).
+- **"Paid when needed"** is expressed by `selection_rank` + cost: paid models rank behind free
+  ones, so they're reached only when free rungs are unavailable (budget exhausted, cooling down,
+  or lacking the capability). Raising a paid model's rank makes it preferred.
+
+### 3. Work carries a data class
+
+`data_class: private | public` on context profiles, chains, schedules and individual chain steps.
+**Absent ⇒ private.**
+
+> **Routing rule:** private work may only use a provider/model whose effective
+> `data_policy` is `no_log`. With no eligible rung, a background job **defers** (retried later
+> by the queue) and interactive chat **fails loudly** with the reason. Neither ever falls back
+> to a `may_log`/`may_train` provider.
+
+Proposed defaults (the `researcher` classification is an open decision):
+
+| unit | class |
+|---|---|
+| chat front door, `knowledge-worker`, `scribe`, `job-applicant`, `code-analyst`, `toolsmith`, `self-analyst` | private |
+| news brief, `api-scout`, media summaries of public videos, fine-tuning teacher sampling | public |
+| `researcher` | **open** (public topics, revealing question set) |
+
+### 4. One router
+
+```text
+route(RouteRequest { purpose: chat|subagent|background,
+                     data_class, required_capabilities, preferred_model?, preferred_provider? })
+  -> RoutePlan { candidates: [Candidate{model, provider, config, why}], rejected: [(model, reason)] }
+```
+
+**Filters, in order.** Each rejected model records a reason, so "why didn't it use X?" is
+answerable:
+
+1. provider enabled and key present
+2. billing allowed (`ROUTING_BILLING`; paid also needs `ROUTING_PAID_FOR` ∋ purpose and a spend cap)
+3. **data policy permits the data class**
+4. capabilities satisfied
+5. budget available: not cooling down, rpm/rpd/tpd not exhausted, spend cap not reached
+6. observed availability: no recent `subscription_required`, as today
+
+**Ordering:** the preferred model (profile pin) first if it survives, then
+`cost ASC, selection_rank ASC, context_window DESC` (today's ordering).
+
+**The plan is the fallback chain.** `SharedLlm` walks `candidates` on an unavailable-class
+failure instead of today's fixed selected→active→local chain, and the chat ladder is expressed
+as preferred models filtered through the same router. The sub-agent clamp becomes policy:
+`purpose: subagent` with default `ROUTING_PAID_FOR=chat` excludes paid automatically, and
+data-class filtering excludes training providers for private agents. No provider-type allow-list.
+
+### 5. Budget ledger
+
+- **`model_usage.provider TEXT`** (new column) and cost recorded per call, as today.
+- **In-memory `ProviderBudget`** per provider (and per model where limits are per-model):
+  - sliding 60 s request window (rpm)
+  - today's requests, tokens and spend, seeded at startup from `model_usage` since the provider's
+    reset boundary (UTC midnight default)
+  - this month's spend
+  - `cooldown_until`
+  - last seen `x-ratelimit-limit-*` / `x-ratelimit-remaining-*` / `retry-after` headers
+- **Before a call:** `route()` excludes exhausted providers. **After a call:** record it and
+  update the window. **After a 429:** cooldown until `Retry-After` or reset, else 1 m → 5 m → 1 h.
+  A reported limit of 0 marks the model unavailable until re-probed (Mistral Medium on the free
+  plan).
+- **Header capture:** `OpenAiCompatProvider` returns rate-limit headers alongside the response
+  (and in the error on failure), so Mistral/OpenRouter headroom feeds the budget.
+
+### 6. Concurrency gate
+
+A process-wide `ProviderGate` holds one semaphore per provider, sized from `limits.concurrency`.
+It's acquired by `SharedLlm`, the chat loops and `AgentRunner` around each call, and by the queue
+when dispatching. Ollama Cloud's free plan = 1 means chat, sub-agents and background jobs share
+one slot. Waiting callers queue, with interactive chat served first.
+
+### 7. GPU lease
+
+Unchanged from the earlier draft:
+- `gpu_lease(acquire|release|status, holder, reason)` via tool + REST, persisted as `(:GpuLease)`
+- while held, `billing: local` generation providers are unavailable to the router
+- private work routes to `no_log` cloud (Ollama Cloud) or defers
+- `store_note` writes `embedding_pending` (bge-m3 lives on the GPU) and a backfill runs on release
+
+### 8. Observability
+
+- **`get_llm_budget`** tool + **`/api/llm/budget`**: per provider, billing, data policy, today's
+  requests/tokens/spend vs limits and caps, monthly spend, cooldowns, concurrency in use, and the
+  lease state.
+- **WARN** when private work defers for lack of a `no_log` rung, and when a spend cap blocks a
+  paid provider. These are the signals that more capacity is needed.
+- **`route()` logs the chosen model and the rejection reasons** of the models it skipped.
+
+---
+
+## Failure modes this must not introduce
+
+| risk | guard |
+|---|---|
+| private data sent to a training provider via fallback | data-policy filter inside `route()`; unknown policy = `may_train`; test that private + only-`may_train` candidates yields an empty plan |
+| surprise spend | paid requires a spend cap; `ROUTING_PAID_FOR` defaults to `chat`; spend checked before every paid call |
+| a new provider silently changes routing | rejection reasons logged; catalog tests pin current routing by name (existing `model_config` guards extended) |
+| free-tier limit relearned per call | cooldowns + `limit = 0` → unavailable until re-probed |
+| Ollama Cloud's single slot starves chat | process-wide gate with chat priority |
+| breaking existing behaviour before YAML is filled in | built-in default provider table mirrors today's hardcoded values; `CLOUD_TIER` still honoured |
+
+## Phases
+
+- [x] **Phase 0: Measure.** Done above.
+- [x] **Phase 1: Registry + generic OpenAI-compatible providers.** Done 2026-09-13.
+  - `services/provider_registry.rs`: schema, a built-in table equal to the old hardcoded endpoints, and a process-wide slot installed from `models.yaml` at startup and by `reload_models`. Unknown YAML fields are rejected; omitted `billing`/`data_policy` default to `paid`/`may_train`.
+  - `LlmProviderType::OpenAiCompat` plus `LlmConfig.provider_name` / `provider_label()`; `with_provider` clears a stale name.
+  - `config_for_catalog_entry` reads the endpoint and key env var from the registry. Ollama Cloud keeps its own provider type, so `CLOUD_TIER` and the sub-agent clamp are unchanged.
+  - Chat dispatch sends `OpenAiCompat` to the OpenAI tool loop. `model_usage.provider` is recorded on every ledger row.
+  - `providers:` section plus 3 Mistral and 2 OpenRouter `:free` models at ranks 350–372, behind every other model.
+  - `/api/models` returns the registry: key env var names and `key_configured`, never values. Startup warns on provider issues; guard tests assert the checked-in declarations have none and that the training free tiers stay `may_train`.
+  - **Not routable yet, by design:** `candidate_allowed` rejects `mistral`/`openrouter` and the sub-agent clamp drops `OpenAiCompat`. Only an explicit `/chat` profile pin reaches them until Phase 2.
+- [ ] **Phase 2: Policy router.** `billing` / `data_policy` / `data_class`; `route()` with rejection reasons; capability routing, chat pins and the sub-agent clamp moved onto it; `ROUTING_BILLING` / `ROUTING_PAID_FOR` (+ `CLOUD_TIER` mapping).
+- [ ] **Phase 3: Budget ledger.** rpm/rpd/tpd, spend caps, cooldowns, header capture, `get_llm_budget` + `/api/llm/budget`.
+- [ ] **Phase 4: Concurrency gate.** Registry-sized per-provider semaphores shared by queue, chat and sub-agents.
+- [ ] **Phase 5: GPU lease.** Router integration, `embedding_pending` backfill, `experiment` scripts acquire/release.
+
+### Probe findings for Phase 3 (2026-09-13)
+
+I sent one trivial public prompt to each provider, at the exact registry URL (`base_url_default` + `/v1/chat/completions`):
+
+- **Mistral limits are per model, not per account.** `mistral-small-latest` returned 429 `rate_limited` (code 1300) while `codestral-latest` answered in 0.4s seconds later. The success carried `x-ratelimit-limit-req-minute: 125`, `x-ratelimit-limit-tokens-minute: 625000`, their `remaining-*` twins and `x-ratelimit-tokens-query-cost`. Header capture can seed per-model budgets directly.
+- **OpenRouter's `:free` 429 can be upstream.** `google/gemma-4-31b-it:free` returned "temporarily rate-limited upstream" (`provider_name: Google AI Studio`) while `nvidia/nemotron-3-super-120b-a12b:free` answered. **Cooldowns therefore key on (provider, model).** The success carried **no rate-limit headers**, so OpenRouter's 20 rpm / 50 rpd budget must be counted locally from the ledger.
+- **Nemotron via OpenRouter is a reasoning model.** 15 of 16 completion tokens were `reasoning_tokens` and the visible content leaked the reasoning. Give it a generous `max_tokens`, and don't route strict-JSON steps to it without a test.
+
+## Open decisions
+
+1. `researcher` data class.
+2. Whether background work may ever use paid (`ROUTING_PAID_FOR`).
+3. Starting spend caps once a paid key is added.
+4. Whether private background work should defer indefinitely or fail after N hours during a long GPU lease.
+
+## Sources
+
+- [Ollama pricing](https://ollama.com/pricing)
+- [Mistral commercial terms](https://legal.mistral.ai/terms/commercial-terms-of-service)
+- [OpenRouter free tier limits](https://klymentiev.com/blog/openrouter-free-tier)
+- [OpenRouter free models: limits and catches](https://ask-coreai.com/blog/openrouter-free-models-2026-limits-catches)
+- Mistral per-model limits measured via `GET /v1/models` and a probe call, 2026-09-12 (`RUST_FINETUNE_EXPERIMENT.md`).

@@ -66,6 +66,7 @@ impl SharedLlm {
         tool: Option<&str>,
     ) -> anyhow::Result<crate::services::llm::LlmResponse> {
         let model_name = llm.model.clone();
+        let provider_label = llm.provider_label();
         let client =
             LlmClient::with_config(llm).map_err(|e| anyhow::anyhow!("LLM init error: {}", e))?;
         let start = Instant::now();
@@ -79,6 +80,7 @@ impl SharedLlm {
             let (tin, tout) = response_tokens(&result);
             let _ = tc.record_model_usage(
                 &model_name,
+                Some(provider_label.as_str()),
                 tool,
                 success,
                 Some(duration_ms),

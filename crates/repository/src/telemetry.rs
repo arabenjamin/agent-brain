@@ -90,10 +90,14 @@ impl TelemetryClient {
                 tokens_out     INTEGER,
                 cost           DOUBLE,
                 error_kind     TEXT,
-                created_at     TIMESTAMPTZ DEFAULT current_timestamp
+                created_at     TIMESTAMPTZ DEFAULT current_timestamp,
+                provider       TEXT
             );
 
             ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS error_kind TEXT;
+            -- Provider-registry name (ollama-cloud, mistral, …). NULL on rows
+            -- written before 2026-09-13. Per-provider budgets are keyed on it.
+            ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS provider TEXT;
 
             CREATE TABLE IF NOT EXISTS search_usage (
                 id           TEXT PRIMARY KEY,
@@ -427,6 +431,7 @@ impl TelemetryClient {
     pub fn record_model_usage(
         &self,
         model_name: &str,
+        provider: Option<&str>,
         tool_name: Option<&str>,
         success: bool,
         duration_ms: Option<i64>,
@@ -463,11 +468,12 @@ impl TelemetryClient {
 
         conn.execute(
             "INSERT INTO model_usage
-             (id, model_name, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, model_name, provider, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 model_name,
+                provider,
                 tool_name,
                 success,
                 duration_ms,

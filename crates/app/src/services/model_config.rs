@@ -8,6 +8,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::repository::TelemetryClient;
+use crate::services::provider_registry::{self, ProviderEntry};
 
 /// Context window forced onto a LOCAL chat-fallback rung. Ollama serves 4096 by
 /// default (silently truncating), so the local safety net needs a window that
@@ -30,6 +31,12 @@ pub struct ModelCatalog {
     /// [`Self::resolve_chat_fallback_ladder`] for how names become configs.
     #[serde(default)]
     pub chat_fallback_ladder: Vec<String>,
+    /// The `providers:` section — how to reach each provider and what kind of
+    /// provider it is. Laid over the built-in table in
+    /// [`provider_registry::builtin`], so an entry left out keeps today's
+    /// endpoint. Installed process-wide by [`Self::install_providers`].
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,7 +116,45 @@ impl ModelCatalog {
                     .to_string(),
             ),
             chat_fallback_ladder: Vec::new(),
+            providers: HashMap::new(),
         }
+    }
+
+    /// Install this catalog's providers as the process-wide registry and warn
+    /// about every declaration that cannot work. Returns the provider count.
+    pub fn install_providers(&self) -> usize {
+        let n = provider_registry::install(&self.providers);
+        for issue in self.provider_issues() {
+            warn!("{issue}");
+        }
+        info!(providers = n, "Installed provider registry");
+        n
+    }
+
+    /// Problems with the provider declarations this catalog produces: a model
+    /// naming a provider the registry does not know (it would be called as
+    /// local Ollama), a paid provider with no spend cap, an OpenAI-compatible
+    /// provider with no endpoint. Sorted, so the startup log is stable.
+    pub fn provider_issues(&self) -> Vec<String> {
+        let registry = provider_registry::merged(&self.providers);
+        let mut out = Vec::new();
+        for (name, entry) in &registry {
+            for issue in entry.issues() {
+                out.push(format!("provider {name}: {issue}"));
+            }
+        }
+        let mut models: Vec<_> = self.models.iter().collect();
+        models.sort_by(|a, b| a.0.cmp(b.0));
+        for (key, m) in models {
+            if !registry.contains_key(&provider_registry::canonical_name(&m.provider)) {
+                out.push(format!(
+                    "model {key}: provider '{}' is not in the provider registry — \
+                     it would be called as local Ollama",
+                    m.provider
+                ));
+            }
+        }
+        out
     }
 
     /// Return the system prompt for a named model.
@@ -480,6 +525,30 @@ mod tests {
             {
                 panic!("selection_rank {r} used by both {prev} and {name}");
             }
+        }
+    }
+
+    #[test]
+    fn the_checked_in_provider_declarations_have_no_issues() {
+        // Every model names a known provider, every paid provider carries a
+        // spend cap, every OpenAI-compatible provider has an endpoint.
+        let issues = real_catalog().provider_issues();
+        assert!(issues.is_empty(), "provider issues: {issues:#?}");
+    }
+
+    #[test]
+    fn the_training_free_tiers_stay_declared_may_train() {
+        // The privacy rule keys off this field. Flipping one of these to
+        // no_log without re-reading the provider's terms would send private
+        // work to a provider that trains on it.
+        use crate::services::provider_registry::DataPolicy;
+        let registry = provider_registry::merged(&real_catalog().providers);
+        for name in ["mistral", "openrouter", "gemini"] {
+            assert_eq!(
+                registry[name].data_policy,
+                DataPolicy::MayTrain,
+                "{name} data_policy"
+            );
         }
     }
 

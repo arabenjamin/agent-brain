@@ -8,6 +8,86 @@ defaults:
   max_tokens: 4096
   timeout_secs: 120
 
+# ── providers: how to reach each model's provider, and what calling it means ──
+#
+# Every model's `provider:` names an entry here (project-docs/PROVIDER_ROUTING_PLAN.md).
+# Keys NEVER live in this file — only the NAME of the env var holding one
+# (`api_key_env`). A provider whose key var is unset or empty is skipped, never
+# an error.
+#
+#   kind         client code: ollama | llamacpp | openai_compat | anthropic | gemini.
+#                Any OpenAI-wire API, free or paid, is a new `openai_compat` entry.
+#   billing      local (own hardware) | free (rate-limited, $0) | paid (money).
+#                Omitted ⇒ paid.
+#   data_policy  no_log | may_log | may_train — what the provider may do with
+#                prompts. Omitted ⇒ may_train. Private work will only ever be
+#                routed to no_log providers.
+#   limits       rpm / rpd / tpd / concurrency. Declared now, enforced in Phase 3.
+#   spend        daily_usd / monthly_usd. A paid provider without one is reported
+#                at startup and will not be routable under the policy router.
+#   terms        where the billing / data_policy claim came from, and when.
+#
+# Phase 1 status: endpoints and keys come from here and `model_usage.provider`
+# records who served each call. Routing still runs on CLOUD_TIER, which does not
+# know `mistral` or `openrouter` — no capability step, sub-agent or fallback
+# rung can land on them; only an explicit /chat profile `model_preference` can.
+# A provider left out of this section falls back to the built-in table in
+# services/provider_registry.rs, which matches the old hardcoded endpoints.
+providers:
+  ollama:
+    kind: ollama
+    billing: local
+    data_policy: no_log
+    base_url_env: OLLAMA_LOCAL_URL
+    base_url_default: "http://localhost:11434"
+    limits: { concurrency: 2 }
+  llamacpp:
+    kind: llamacpp
+    billing: local
+    data_policy: no_log
+    base_url_env: LLAMACPP_URL
+    base_url_default: "http://localhost:8080"
+    limits: { concurrency: 2 }   # llama-server -np 2
+  ollama-cloud:
+    kind: openai_compat
+    billing: free
+    data_policy: no_log
+    base_url_env: OLLAMA_URL
+    base_url_default: "https://ollama.com"
+    api_key_env: OLLAMA_API_KEY
+    limits: { concurrency: 1 }
+    terms: "Prompts never logged or trained on (ollama.com/pricing, checked 2026-09-12)"
+  mistral:
+    kind: openai_compat
+    billing: free
+    data_policy: may_train
+    base_url_default: "https://api.mistral.ai"
+    api_key_env: MISTRAL_API_KEY
+    limits: { concurrency: 1 }
+    terms: "Experiment (free) plan: inputs and outputs may be used to train Mistral models"
+  openrouter:
+    kind: openai_compat
+    billing: free
+    data_policy: may_train
+    base_url_default: "https://openrouter.ai/api"
+    api_key_env: OPENROUTER_API_KEY
+    limits: { rpm: 20, rpd: 50, concurrency: 1 }
+    terms: ":free endpoints — upstream providers may log and train on prompts; 50 requests/day without credits"
+  anthropic:
+    kind: anthropic
+    billing: paid
+    data_policy: no_log
+    api_key_env: ANTHROPIC_API_KEY
+    spend: { daily_usd: 1.00, monthly_usd: 10.00 }
+    terms: "API inputs are not used for training by default. Outputs are never fine-tuning data (FINE_TUNING_PLAN)"
+  gemini:
+    kind: gemini
+    billing: free
+    data_policy: may_train
+    api_key_env: GEMINI_API_KEY
+    limits: { rpm: 5 }
+    terms: "Free tier: Google may use prompts and responses to improve its products"
+
 # ── selection_rank: which model a capability-routed step actually gets ────────
 #
 # `select_models` orders candidates `cost ASC, selection_rank ASC,
@@ -36,6 +116,9 @@ defaults:
 #            tier 0 was previously picking between them arbitrarily.
 #   210+     paid providers — cost already separates these; rank breaks ties
 #            within a price point (the two gemini flash-lites are both 0.0005).
+#   350–399  free tiers that MAY TRAIN on prompts (Mistral, OpenRouter :free).
+#            Behind everything else on purpose: overflow for public work once
+#            the policy router admits them, never a preference.
 #
 # Rank is global, not per-capability, so check every capability a model claims
 # before moving it. The live example: `gemma4:31b-cloud` sits at 30 rather than
@@ -396,6 +479,68 @@ models:
       Neo4j knowledge graph. You can search notes, manage tasks, reason
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
+
+  # ── Free tiers that MAY TRAIN on prompts (rank 350–399) ───────────────────────
+  # `data_policy: may_train` in `providers:` above. CLOUD_TIER routing does not
+  # know these providers, so no capability step, sub-agent or fallback rung can
+  # land on them; they are reachable only by an explicit /chat profile pin until
+  # the policy router admits them for `data_class: public` work. Ranked behind
+  # every no_log model so that, once admitted, they are overflow rather than a
+  # preference. Model ids checked against each provider's /v1/models 2026-09-13.
+  mistral-medium-latest:
+    provider: mistral
+    model: "mistral-medium-latest"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 350
+    capabilities:
+      - reasoning
+      - code
+      - vision
+
+  codestral-latest:
+    provider: mistral
+    model: "codestral-latest"
+    context_window: 256000
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 352
+    capabilities:
+      - code
+
+  mistral-small-latest:
+    provider: mistral
+    model: "mistral-small-latest"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 354
+    capabilities:
+      - reasoning
+      - fast
+      - vision
+
+  "nvidia/nemotron-3-super-120b-a12b:free":
+    provider: openrouter
+    model: "nvidia/nemotron-3-super-120b-a12b:free"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 370
+    capabilities:
+      - reasoning
+      - code
+
+  "google/gemma-4-31b-it:free":
+    provider: openrouter
+    model: "google/gemma-4-31b-it:free"
+    context_window: 262144
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 372
+    capabilities:
+      - reasoning
 
 
       # ── /chat fallback ladder ─────────────────────────────────────────────────────

@@ -1,0 +1,28 @@
+# Crates available OFFLINE to code submitted to the rust sandbox.
+#
+# This manifest is never built. The image runs `cargo fetch` over it at build
+# time so the registry cache is populated, and every run afterwards is
+# `cargo --offline` against that read-only cache. A submission that depends on
+# a crate not listed here fails with cargo's own "no matching package" error.
+#
+# To add a crate: add it below and rebuild the image. Keep versions to the
+# major line submissions will ask for; offline resolution picks the cached one.
+[package]
+name = "sandbox-crate-seed"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Required by the Exercism / Aider polyglot Rust exercises.
+anyhow = "1.0"
+pretty_assertions = "1"
+rand = "0.8"
+time = "0.3"
+
+# Common idioms generated Rust reaches for.
+itertools = "0.14"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

@@ -1,8 +1,10 @@
 //! OpenAI-compatible LLM provider.
 //!
-//! Used by `LlmProviderType::OllamaCloud` which exposes the OpenAI REST API at
-//! `https://ollama.com/v1/chat/completions`. Also compatible with other OpenAI-API
-//! servers (LM Studio, llama.cpp, Groq, etc.) if needed in future.
+//! Serves `LlmProviderType::OllamaCloud` (`https://ollama.com/v1/chat/completions`),
+//! `LlmProviderType::LlamaCpp` (the `llama-server` sidecar) and
+//! `LlmProviderType::OpenAiCompat` — any provider-registry entry of
+//! `kind: openai_compat` (Mistral, OpenRouter, …), whose base URL and key the
+//! registry supplies.
 //!
 //! Endpoints used:
 //! - `POST /v1/chat/completions` — chat and single-turn generation
@@ -107,7 +109,7 @@ struct EmbedData {
 #[async_trait]
 impl LlmProvider for OpenAiCompatProvider {
     fn name(&self) -> &'static str {
-        "vllm"
+        "openai-compat"
     }
 
     async fn generate(

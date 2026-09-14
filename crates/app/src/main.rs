@@ -166,6 +166,18 @@ fn build_llm_config(config: &Config) -> LlmConfig {
                 base = base.with_embed_model(embed_model);
             }
         }
+        LlmProviderType::OpenAiCompat => {
+            // Not selectable through LLM_PROVIDER: a generic OpenAI-compatible
+            // provider is reached through the provider registry
+            // (`model_router::config_for_catalog_entry`), which supplies its
+            // endpoint and key. Keep embeddings local regardless.
+            base = base
+                .with_model(llm.ollama_model.clone())
+                .with_embed_base_url(llm.ollama_local_url.clone());
+            if let Some(embed_model) = &llm.ollama_embed_model {
+                base = base.with_embed_model(embed_model);
+            }
+        }
         LlmProviderType::LlamaCpp => {
             // llama.cpp's OpenAI-compatible endpoint. Endpoint/model come from
             // LLAMACPP_URL / LLAMACPP_MODEL (this arm is only reached when the
@@ -522,6 +534,9 @@ async fn run_serve(
     // Load model catalog and determine active system prompt
     let catalog_path = PathBuf::from(&config.telemetry.model_catalog_path);
     let catalog = ModelCatalog::load_or_default(&catalog_path);
+    // Before anything builds a config from the catalog: endpoints and key env
+    // var names for every provider come from here.
+    catalog.install_providers();
     let active_model = match config.llm.provider {
         LlmProviderType::Anthropic => config
             .llm
