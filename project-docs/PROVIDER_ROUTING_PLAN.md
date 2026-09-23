@@ -281,7 +281,26 @@ Unchanged from the earlier draft:
     - No defer mechanism is needed yet: private background work always has a `no_log` rung (Ollama Cloud or local), so deferral arrives with the GPU lease (Phase 5).
     - Per-model policy overrides are not implemented; no provider mixes policies today.
     - The sub-agent loop thresholds (`rpm ≥ 20`, `rpd ≥ 500`) are constants until Phase 3 budgets replace them.
-- [ ] **Phase 3: Budget ledger.** rpm/rpd/tpd, spend caps, cooldowns, header capture, `get_llm_budget` + `/api/llm/budget`.
+- [x] **Phase 3: Budget ledger.** Done 2026-09-15.
+  - **`services/budget.rs`** holds a `BudgetBook` behind a process-wide mutex. Every method takes `now`, so the rules are unit-tested.
+  - **Per provider:** requests in a sliding 60 s window, plus requests, tokens and spend for the UTC day, and spend for the month. `verdict` checks them against the declared `limits` (`rpm`, `rpd`, `tpd`) and, for `billing: paid`, the `spend` caps, with a WARN when a cap blocks.
+  - **Per (provider, model):** cooldowns and the last rate-limit headers seen. Limits and 429s were measured per model, so a cooldown never benches a whole provider.
+  - **One write path:** `record_call` writes the DuckDB usage ledger and the budget together. `record_model_usage` now returns the computed cost. All four ledger sites use it: `SharedLlm::run_and_record`, chat's `record_llm_call`, and the Ollama Cloud and Anthropic error paths.
+  - **Cooldowns, most trusted first:**
+    - `Retry-After` on a 429 or 503, or a `…remaining…req…: 0` header with its reset time (RFC 3339, unit duration like `6m0s`, epoch ms/s, or seconds)
+    - a retry hint in the error body (Gemini's `retryDelay`, "retry in 12.5s")
+    - otherwise backoff of 60 s → 5 m → 1 h, reset by a success
+    - a reported limit of `0` benches the model for an hour, then one call re-probes
+    - cooldowns only ever lengthen
+  - **Header capture:** `budget::observe_headers` runs wherever a response arrives, before the body is read. That covers the OpenAI-compatible, Anthropic and Gemini providers, via a new `ProviderConfig.provider_name`, and chat's Ollama Cloud loop. Only `*ratelimit*` and `retry-after` headers are kept.
+  - **Enforcement:** `RoutingPolicy::admit` consults `budget::verdict` after the policy checks. `route()` takes a `budget` closure and records the reason for each skip. So a cooling or spent model is skipped by capability routing, the `SharedLlm` fallback walk and both chat ladders before any call is made.
+  - **Seeding:** at startup, after the catalog sync, from `model_usage` via `TelemetryClient::budget_usage_since`. Rows written before `provider` existed take their provider from the catalog, so a restart does not hand back spent quota.
+  - **Observability:** the `get_llm_budget` tool (in `ModelSkill`, allowlisted for `general` and `self-analyst`) and `/api/llm/budget`. Both show each provider's declaration, today's usage, month spend, last-minute requests, headroom against declared limits, and per-model cooldowns with reasons and headers.
+  - **Deviations from the design:**
+    - Day boundaries are UTC midnight for every provider; Gemini's free tier actually resets at Pacific midnight.
+    - Declared limits count per provider; provider-reported limits act per model through cooldowns.
+    - The sub-agent loop thresholds (`rpm ≥ 20`, `rpd ≥ 500`) stay as a loop-shape gate in `routing.rs`, separate from quota.
+    - `SharedLlm` keeps the selected → active → local chain rather than walking the full candidate list; with cooldowns now skipping benched rungs, a longer walk is a possible follow-up.
 - [ ] **Phase 4: Concurrency gate.** Registry-sized per-provider semaphores shared by queue, chat and sub-agents.
 - [ ] **Phase 5: GPU lease.** Router integration, `embedding_pending` backfill, `experiment` scripts acquire/release.
 

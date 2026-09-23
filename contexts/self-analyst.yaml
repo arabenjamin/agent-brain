@@ -3,7 +3,7 @@ description: Self-inspection and self-improvement of the agent-brain system itse
 tools:
 - duckdb_query
 - neo4j_query
-- get_usage
+- get_llm_budget
 - context
 - analyze_own_structure
 - list_capabilities

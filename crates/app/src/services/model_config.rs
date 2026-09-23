@@ -550,6 +550,7 @@ mod tests {
             policy,
             |n| registry.get(n).cloned(),
             |_| true,
+            |_, _, _| Ok(()),
             &[],
         )
         .candidates

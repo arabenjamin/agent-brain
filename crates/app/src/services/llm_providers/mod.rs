@@ -166,6 +166,9 @@ pub enum LlmProviderError {
 
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
+    /// Provider-registry name (`LlmConfig::provider_label`), so a response's
+    /// rate-limit headers are booked against the right provider's budget.
+    pub provider_name: String,
     pub model: String,
     pub api_key: Option<String>,
     pub base_url: Option<String>,

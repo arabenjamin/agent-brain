@@ -1,4 +1,5 @@
 pub mod agent_runner;
+pub mod budget;
 pub mod chain_seeder;
 pub mod claims;
 pub mod clock;

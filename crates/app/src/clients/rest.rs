@@ -1162,6 +1162,12 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
     })).into_response()
 }
 
+/// GET /api/llm/budget — the live budget ledger: per-provider usage against
+/// declared limits and spend caps, plus per-model cooldowns and headers.
+pub async fn handle_llm_budget() -> impl IntoResponse {
+    Json(crate::services::budget::snapshot_json()).into_response()
+}
+
 /// GET /api/tools/dynamic — list all runtime-defined DynamicTool nodes.
 /// GET /api/jobs?status=<filter>&limit=<n>
 ///

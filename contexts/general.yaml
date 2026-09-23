@@ -36,7 +36,7 @@ tools:
 - recent_tasks
 - list_apis
 - list_endpoints
-- get_usage
+- get_llm_budget
 - context
 - manage_scheduled_task
 - manage_chain

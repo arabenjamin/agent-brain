@@ -6,6 +6,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+/// One provider's usage for the budget ledger, as returned by
+/// [`TelemetryClient::budget_usage_since`]: `(provider, requests_today,
+/// tokens_today, spend_today_usd, spend_month_usd)`.
+pub type ProviderUsageRow = (String, i64, i64, f64, f64);
+
 /// Client for the local DuckDB telemetry store.
 /// This serves as the "Hippocampus" - storing raw experiences for later "sleep" (fine-tuning).
 #[derive(Clone)]
@@ -438,7 +443,7 @@ impl TelemetryClient {
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
         error_kind: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Option<f64>> {
         let conn = self
             .conn
             .lock()
@@ -483,7 +488,54 @@ impl TelemetryClient {
                 error_kind
             ],
         )?;
-        Ok(())
+        Ok(cost)
+    }
+
+    /// Per-provider usage for the budget ledger: requests, tokens and cost since
+    /// `day_start`, and cost since `month_start` (both RFC 3339). A row written
+    /// before `model_usage.provider` existed takes its provider from the catalog.
+    pub fn budget_usage_since(
+        &self,
+        day_start: &str,
+        month_start: &str,
+    ) -> Result<Vec<ProviderUsageRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let mut stmt = conn.prepare(
+            "SELECT provider,
+                    CAST(SUM(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 ELSE 0 END) AS BIGINT),
+                    CAST(SUM(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ)
+                                  THEN COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0) ELSE 0 END) AS BIGINT),
+                    CAST(SUM(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ)
+                                  THEN COALESCE(cost, 0) ELSE 0 END) AS DOUBLE),
+                    CAST(SUM(COALESCE(cost, 0)) AS DOUBLE)
+             FROM (
+                 SELECT COALESCE(u.provider, r.provider) AS provider,
+                        u.created_at, u.tokens_in, u.tokens_out, u.cost
+                 FROM model_usage u
+                 LEFT JOIN (SELECT model, ANY_VALUE(provider) AS provider
+                            FROM model_registry GROUP BY model) r
+                   ON r.model = u.model_name
+                 WHERE u.created_at >= CAST(? AS TIMESTAMPTZ)
+             ) t
+             WHERE provider IS NOT NULL
+             GROUP BY provider",
+        )?;
+        let rows = stmt.query_map(
+            params![day_start, day_start, day_start, month_start],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, f64>(4)?,
+                ))
+            },
+        )?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// Model names with a given `error_kind` recorded in the last `hours`.

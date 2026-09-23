@@ -583,6 +583,9 @@ async fn run_serve(
                     if let Err(e) = catalog.sync_to_duckdb(&tc) {
                         warn!("Could not sync model catalog to DuckDB: {}", e);
                     }
+                    // After the catalog sync: usage rows from before the ledger
+                    // recorded a provider are attributed through the catalog.
+                    agent_brain::services::budget::seed_from_ledger(&tc);
                     info!("Telemetry enabled at {}", path);
                     Some(tc)
                 }

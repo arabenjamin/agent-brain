@@ -1452,19 +1452,19 @@ impl ChatService {
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
     ) {
-        if let Some(ref tc) = self.telemetry {
-            let label = usage_tool_label();
-            let _ = tc.record_model_usage(
-                model,
-                Some(provider),
-                Some(label.as_str()),
-                success,
-                Some(duration_ms),
-                tokens_in,
-                tokens_out,
-                None,
-            );
-        }
+        let label = usage_tool_label();
+        crate::services::budget::record_call(
+            self.telemetry.as_ref(),
+            provider,
+            model,
+            Some(label.as_str()),
+            success,
+            Some(duration_ms),
+            tokens_in,
+            tokens_out,
+            None,
+            None,
+        );
     }
 
     /// Resolve a context profile's `model_preference` (+ optional
@@ -2115,19 +2115,19 @@ impl ChatService {
                     .unwrap_or("Unknown Anthropic error")
                     .to_string();
                 let rate_limited = msg.contains("rate") || msg.contains("429");
-                if let Some(ref tc) = self.telemetry {
-                    let label = usage_tool_label();
-                    let _ = tc.record_model_usage(
-                        &model,
-                        Some(provider_label.as_str()),
-                        Some(label.as_str()),
-                        false,
-                        Some(call_start.elapsed().as_millis() as i64),
-                        None,
-                        None,
-                        rate_limited.then_some("rate_limited"),
-                    );
-                }
+                let label = usage_tool_label();
+                crate::services::budget::record_call(
+                    self.telemetry.as_ref(),
+                    &provider_label,
+                    &model,
+                    Some(label.as_str()),
+                    false,
+                    Some(call_start.elapsed().as_millis() as i64),
+                    None,
+                    None,
+                    rate_limited.then_some("rate_limited"),
+                    Some(msg.as_str()),
+                );
                 let _ = tx.send(ChatEvent::Error { message: msg }).await;
                 let _ = tx.send(ChatEvent::Done).await;
                 return;
@@ -2827,6 +2827,14 @@ impl ChatService {
                     return;
                 }
             };
+            // Rate-limit headers feed the budget whatever the status: a success
+            // can report the last request of a window as well as a 429 can.
+            crate::services::budget::observe_headers(
+                &provider_label,
+                &model,
+                response.status().as_u16(),
+                response.headers(),
+            );
 
             if !response.status().is_success() {
                 let status = response.status();
@@ -2837,25 +2845,26 @@ impl ChatService {
                     body = %body_text,
                     "OllamaCloud returned non-success status"
                 );
-                // 429s are the quota-pressure signal — mark them in the ledger.
-                if let Some(ref tc) = self.telemetry {
-                    let error_kind = if status.as_u16() == 429 {
-                        Some("rate_limited")
-                    } else {
-                        None
-                    };
-                    let label = usage_tool_label();
-                    let _ = tc.record_model_usage(
-                        &model,
-                        Some(provider_label.as_str()),
-                        Some(label.as_str()),
-                        false,
-                        Some(call_start.elapsed().as_millis() as i64),
-                        None,
-                        None,
-                        error_kind,
-                    );
-                }
+                // 429s are the quota-pressure signal — mark them in the ledger
+                // and start the model's cooldown in the budget.
+                let error_kind = if status.as_u16() == 429 {
+                    Some("rate_limited")
+                } else {
+                    None
+                };
+                let label = usage_tool_label();
+                crate::services::budget::record_call(
+                    self.telemetry.as_ref(),
+                    &provider_label,
+                    &model,
+                    Some(label.as_str()),
+                    false,
+                    Some(call_start.elapsed().as_millis() as i64),
+                    None,
+                    None,
+                    error_kind,
+                    Some(body_text.as_str()),
+                );
                 let _ = tx
                     .send(ChatEvent::Error {
                         message: format!("OllamaCloud error ({status}): {body_text}"),

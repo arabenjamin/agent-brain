@@ -164,6 +164,7 @@ pub fn resolve_model_config(
         &policy,
         provider_registry::get,
         |e| e.key_configured(),
+        crate::services::budget::verdict,
         &unavailable,
     );
 

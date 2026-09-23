@@ -91,6 +91,19 @@ impl ModelSkill {
         }
     }
 
+    fn get_llm_budget_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "get_llm_budget".to_string(),
+            description: "The live LLM budget per provider: billing and data policy, declared \
+                limits and spend caps, today's requests/tokens/spend (UTC day) and this month's \
+                spend, headroom left, and per-model cooldowns with their reasons and the last \
+                rate-limit headers seen. Use it to answer why a model was skipped or how much \
+                free-tier quota is left; get_usage is the historical ledger."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
     fn get_usage_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_usage".to_string(),
@@ -277,6 +290,7 @@ impl Skill for ModelSkill {
             Self::use_model_def(),
             Self::reload_models_def(),
             Self::get_usage_def(),
+            Self::get_llm_budget_def(),
         ]
     }
 
@@ -285,6 +299,9 @@ impl Skill for ModelSkill {
             "use_model" => Some(self.handle_use_model(args).await),
             "reload_models" => Some(self.handle_reload_models().await),
             "get_usage" => Some(self.handle_get_usage(args).await),
+            "get_llm_budget" => Some(ToolCallResult::success_json(
+                crate::services::budget::snapshot_json(),
+            )),
             _ => None,
         }
     }

@@ -76,20 +76,23 @@ impl SharedLlm {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
         let duration_ms = start.elapsed().as_millis() as i64;
-        if let Some(ref tc) = self.telemetry {
-            let success = result.is_ok();
-            let (tin, tout) = response_tokens(&result);
-            let _ = tc.record_model_usage(
-                &model_name,
-                Some(provider_label.as_str()),
-                tool,
-                success,
-                Some(duration_ms),
-                tin,
-                tout,
-                failure_kind(&result),
-            );
-        }
+        // One write path for the usage ledger and the budget ledger, so every
+        // call that spends quota is counted where the router can see it. The
+        // error text carries retry hints (Gemini's retryDelay) for cooldowns.
+        let (tin, tout) = response_tokens(&result);
+        let error_text = result.as_ref().err().map(|e| e.to_string());
+        crate::services::budget::record_call(
+            self.telemetry.as_ref(),
+            &provider_label,
+            &model_name,
+            tool,
+            result.is_ok(),
+            Some(duration_ms),
+            tin,
+            tout,
+            failure_kind(&result),
+            error_text.as_deref(),
+        );
         result
     }
 }

@@ -98,6 +98,13 @@ impl LlmProvider for AnthropicProvider {
             .send()
             .await?;
 
+        crate::services::budget::observe_headers(
+            &self.config.provider_name,
+            &self.config.model,
+            response.status().as_u16(),
+            response.headers(),
+        );
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -172,6 +179,13 @@ impl LlmProvider for AnthropicProvider {
             .json(&request)
             .send()
             .await?;
+
+        crate::services::budget::observe_headers(
+            &self.config.provider_name,
+            &self.config.model,
+            response.status().as_u16(),
+            response.headers(),
+        );
 
         if !response.status().is_success() {
             let status = response.status();

@@ -439,6 +439,7 @@ impl LlmClient {
         };
 
         let provider_config = ProviderConfig {
+            provider_name: config.provider_label(),
             model: config.model.clone(),
             api_key: config.api_key.clone(),
             base_url: config.base_url.clone(),
@@ -475,6 +476,7 @@ impl LlmClient {
         let embed_provider = if let Some(ref embed_model) = config.embed_model {
             let embed_base = config.embed_base_url.clone().or(config.base_url.clone());
             let embed_config = ProviderConfig {
+                provider_name: "ollama".to_string(),
                 model: embed_model.clone(),
                 api_key: config.api_key.clone(),
                 base_url: embed_base,
@@ -500,6 +502,7 @@ impl LlmClient {
             // isn't pulled locally the call fails fast and vector search is skipped
             // gracefully; BM25 still runs.
             let embed_config = ProviderConfig {
+                provider_name: "ollama".to_string(),
                 model: config.model.clone(),
                 api_key: None, // local Ollama doesn't need auth
                 base_url: Some(embed_base.clone()),

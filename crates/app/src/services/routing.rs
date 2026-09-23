@@ -139,7 +139,8 @@ impl RouteContext {
 /// Declared limits below which a provider cannot carry a multi-round agent loop.
 /// A sub-agent makes one call per tool round (up to 8), so 5 requests/minute
 /// (Gemini's free tier) stalls mid-run and 50 requests/day (OpenRouter `:free`)
-/// is spent by a handful of runs. Phase 3 replaces this with live budgets.
+/// is spent by a handful of runs. This guards the loop shape; the quota itself is
+/// guarded by live budgets in `services/budget.rs`.
 const LOOP_MIN_RPM: u32 = 20;
 const LOOP_MIN_RPD: u32 = 500;
 
@@ -323,7 +324,13 @@ impl RoutingPolicy {
         let key_present = entry.as_ref().is_some_and(|e| {
             e.key_configured() || cfg.api_key.as_deref().is_some_and(|k| !k.trim().is_empty())
         });
-        self.check_entry(&name, entry.as_ref(), key_present, ctx)
+        self.check_entry(&name, entry.as_ref(), key_present, ctx)?;
+        // Budget last: only a provider the policy would otherwise use is worth
+        // judging for headroom (`services/budget.rs`).
+        match entry.as_ref() {
+            Some(e) => crate::services::budget::verdict(&name, &cfg.model, e),
+            None => Ok(()),
+        }
     }
 
     /// The policy as JSON for `/api/models`.
@@ -385,7 +392,7 @@ impl RoutePlan {
 /// Filter catalog rows — already capability-matched and ordered by
 /// `select_models` (`cost ASC, selection_rank ASC, context_window DESC`) —
 /// through the policy, preserving order. `unavailable` lists models observed
-/// returning `subscription_required` recently. `lookup` and `key_present` are
+/// returning `subscription_required` recently. `lookup`, `key_present` and `budget` (headroom, `services/budget.rs`) are
 /// injected so tests can judge a catalog without touching the environment.
 pub fn route(
     rows: &[Value],
@@ -393,6 +400,7 @@ pub fn route(
     policy: &RoutingPolicy,
     lookup: impl Fn(&str) -> Option<ProviderEntry>,
     key_present: impl Fn(&ProviderEntry) -> bool,
+    budget: impl Fn(&str, &str, &ProviderEntry) -> Result<(), String>,
     unavailable: &[String],
 ) -> RoutePlan {
     let mut plan = RoutePlan::default();
@@ -407,6 +415,10 @@ pub fn route(
         let key = entry.as_ref().is_some_and(&key_present);
         let verdict = policy
             .check_entry(&provider, entry.as_ref(), key, ctx)
+            .and_then(|()| match entry.as_ref() {
+                Some(e) => budget(&provider, &model, e),
+                None => Ok(()),
+            })
             .and_then(|()| {
                 if unavailable.contains(&model) {
                     Err("returned subscription_required in the last 7 days".to_string())
@@ -658,6 +670,7 @@ mod tests {
             &tier("2"),
             |n| r.get(n).cloned(),
             |_| true,
+            |_, _, _| Ok(()),
             &[],
         );
         assert!(plan.candidates.is_empty());
@@ -678,6 +691,7 @@ mod tests {
             &tier("2"),
             |n| r.get(n).cloned(),
             |_| true,
+            |_, _, _| Ok(()),
             &["dead-model".to_string()],
         );
         let names: Vec<_> = plan.candidates.iter().map(|c| c.model.as_str()).collect();
@@ -703,6 +717,32 @@ mod tests {
         stamp_data_class(&mut steps, DataClass::Public);
         assert_eq!(steps[0]["data_class"], "public");
         assert_eq!(steps[1]["data_class"], "private");
+    }
+
+    #[test]
+    fn a_model_without_budget_headroom_is_skipped_for_the_next() {
+        let r = registry();
+        let plan = route(
+            &rows(&[
+                ("gpt-oss:120b-cloud", "ollama-cloud"),
+                ("gemma4-e4b", "llamacpp"),
+            ]),
+            RouteContext::new(Purpose::Background, DataClass::Private),
+            &tier("2"),
+            |n| r.get(n).cloned(),
+            |_| true,
+            |_, model, _| {
+                if model == "gpt-oss:120b-cloud" {
+                    Err("cooling down".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            &[],
+        );
+        let names: Vec<_> = plan.candidates.iter().map(|c| c.model.as_str()).collect();
+        assert_eq!(names, ["gemma4-e4b"]);
+        assert!(plan.rejected[0].reason.contains("cooling down"));
     }
 
     /// The classes chosen on 2026-09-15, read from the checked-in profiles. A
