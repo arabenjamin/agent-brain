@@ -20,6 +20,7 @@ pub mod queue;
 pub mod repair;
 pub mod resource_registry;
 pub mod retrieval_eval;
+pub mod routing;
 pub mod schedule_seeder;
 pub mod scheduler;
 pub mod secrets;

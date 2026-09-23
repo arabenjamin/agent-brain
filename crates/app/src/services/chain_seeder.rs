@@ -23,6 +23,10 @@ struct ChainFile {
     #[serde(default)]
     no_adversarial: bool,
     steps: Vec<serde_json::Value>,
+    /// Default data class for every step that does not set its own
+    /// (`services/routing.rs`). Absent ⇒ steps stay private.
+    #[serde(default)]
+    data_class: Option<crate::services::routing::DataClass>,
 }
 
 fn default_priority() -> i64 {
@@ -63,7 +67,11 @@ pub async fn seed_chains_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Re
             }
         };
 
-        let steps_json = match serde_json::to_string(&chain.steps) {
+        let mut steps = chain.steps.clone();
+        if let Some(class) = chain.data_class {
+            crate::services::routing::stamp_data_class(&mut steps, class);
+        }
+        let steps_json = match serde_json::to_string(&steps) {
             Ok(s) => s,
             Err(e) => {
                 warn!(name = %chain.name, error = %e, "seed_chains: steps serialization error");

@@ -129,7 +129,7 @@ Replaces the numeric `CLOUD_TIER`.
 | env | default | meaning |
 |---|---|---|
 | `ROUTING_BILLING` | `local,free` | billing classes the router may use at all |
-| `ROUTING_PAID_FOR` | `chat` | purposes allowed to spend money: any of `chat,subagent,background` |
+| `ROUTING_PAID_FOR` | *(empty: nothing may spend)* | purposes allowed to spend money: any of `chat,subagent,background`. Empty by decision on 2026-09-15, until a paid key is in use |
 
 - `CLOUD_TIER` stays readable for compatibility: `0 → local`, `1 → local,free`,
   `2 → local,free,paid` (paid still needs `ROUTING_PAID_FOR` + a spend cap).
@@ -247,7 +247,40 @@ Unchanged from the earlier draft:
   - `providers:` section plus 3 Mistral and 2 OpenRouter `:free` models at ranks 350–372, behind every other model.
   - `/api/models` returns the registry: key env var names and `key_configured`, never values. Startup warns on provider issues; guard tests assert the checked-in declarations have none and that the training free tiers stay `may_train`.
   - **Not routable yet, by design:** `candidate_allowed` rejects `mistral`/`openrouter` and the sub-agent clamp drops `OpenAiCompat`. Only an explicit `/chat` profile pin reaches them until Phase 2.
-- [ ] **Phase 2: Policy router.** `billing` / `data_policy` / `data_class`; `route()` with rejection reasons; capability routing, chat pins and the sub-agent clamp moved onto it; `ROUTING_BILLING` / `ROUTING_PAID_FOR` (+ `CLOUD_TIER` mapping).
+- [x] **Phase 2: Policy router.** Done 2026-09-15.
+  - `services/routing.rs`:
+    - `RoutingPolicy` is built from `ROUTING_BILLING`, falling back to the `CLOUD_TIER` mapping, plus `ROUTING_PAID_FOR`.
+    - `check_entry` runs the §4 filters in order: registered, enabled, key, billing, paid purpose and spend cap, data policy, then loop limits for sub-agents.
+    - `admit(config, ctx)` judges one ready config. `route(rows, ctx, …)` filters the capability-matched catalog, keeping its order, with a reason for every rejection.
+  - **Route context.** A `ROUTE_CONTEXT` task-local (`Purpose` + `DataClass`) is scoped by the chat turn (per ladder attempt), `AgentRunner::run` and the queue coordinator. Anything unscoped reads as background/private.
+  - **Where the policy now applies:**
+    - capability routing: `resolve_model_config` takes the context and logs the winner plus every better-ranked model it skipped, with the reason
+    - `SharedLlm`: every rung, primary included, must be admitted; a refused primary walks the chain, and with nothing admitted the call fails with all reasons
+    - chat: the profile pin, each ladder rung and synthesis
+    - sub-agents: the pin and ladder, with the class the stricter of caller and profile
+    - `construct_agent`'s planner, which inherits the caller's class
+  - **The provider-type allow-lists are gone:** `candidate_allowed` and the sub-agent clamp.
+  - **Where `data_class` is set:**
+    - `ContextProfile.data_class`; a save that omits it keeps the stored value, so a UI edit can't flip a profile private
+    - `ChainStep.data_class`, carried as `__data_class` in job args
+    - a chain or schedule file's top-level `data_class`, stamped onto steps by the seeders; the three envelope schemas declare it
+  - **Observability:** `/api/models` returns `routing_policy`.
+  - **Guards:**
+    - policy unit tests, including private work with only training providers getting an empty plan
+    - real-catalog tests: private reasoning goes to `gpt-oss:120b-cloud`, public reasoning to `gemini-2.5-flash`, private work never reaches a non-`no_log` provider for any capability, and paid stays unroutable until a purpose may spend
+    - chat tests: a fully refused turn fails loudly and sends nothing; a refused primary is skipped
+  - **Decisions taken 2026-09-15:**
+    1. The front door (`GeneralDefault-Orchrestator`) is **public** and keeps `gemini-2.5-flash`.
+    2. `researcher` is **private**.
+    3. The four monitors (hardware-tripwire, slm-benchmark-watch, off-grid-networking-monitor, tech-dependency-synthesis) are **public**, and `learn` is **private**.
+    4. **Nothing may spend yet**, so the `ROUTING_PAID_FOR` default is empty, not `chat`.
+    5. `api-scout` is public, per the proposed table.
+  - **Deviations from the design:**
+    - `SharedLlm` keeps the selected → active → local order, with each rung admitted, rather than walking the full candidate list. A longer walk matters once cooldowns exist (Phase 3).
+    - A preferred model is expressed as "admit the pin, else the default", not as an ordering input to `route()`.
+    - No defer mechanism is needed yet: private background work always has a `no_log` rung (Ollama Cloud or local), so deferral arrives with the GPU lease (Phase 5).
+    - Per-model policy overrides are not implemented; no provider mixes policies today.
+    - The sub-agent loop thresholds (`rpm ≥ 20`, `rpd ≥ 500`) are constants until Phase 3 budgets replace them.
 - [ ] **Phase 3: Budget ledger.** rpm/rpd/tpd, spend caps, cooldowns, header capture, `get_llm_budget` + `/api/llm/budget`.
 - [ ] **Phase 4: Concurrency gate.** Registry-sized per-provider semaphores shared by queue, chat and sub-agents.
 - [ ] **Phase 5: GPU lease.** Router integration, `embedding_pending` backfill, `experiment` scripts acquire/release.

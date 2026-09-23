@@ -13,6 +13,9 @@
 name: "Bi-weekly SLM benchmark watch: track frontier-equivalent small models in the 1B-7B range"
 description: "Bi-weekly sweep of new small-model releases and benchmark results, compared against the previous run, ending in an updated Tier 2 recommendation list for local deployment."
 interval_seconds: 1209600
+# Public web research on public topics: its reasoning step may use free tiers
+# that train on prompts (gemini-2.5-flash). See PROVIDER_ROUTING_PLAN.md §3.
+data_class: public
 
 steps:
   # 1. Prior run (or the original hand-written BASELINE note on the first run).

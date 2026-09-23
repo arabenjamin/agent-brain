@@ -6,6 +6,10 @@ patterns:
   - "understand"
 priority: 50
 description: "Learning / research: search the web for current information, reason over the gathered material, persist a sourced semantic note."
+# Topics come from goals you set, so this chain is private: its reasoning step
+# only reaches no_log providers (gpt-oss:120b-cloud), never a free tier that
+# trains on prompts. See project-docs/PROVIDER_ROUTING_PLAN.md §3.
+data_class: private
 steps:
   # Step flow and {{_prev}} chain:
   #   1. search_web → external results (the graph can't answer a research goal

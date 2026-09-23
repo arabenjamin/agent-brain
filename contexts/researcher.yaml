@@ -64,5 +64,7 @@ pre_load_query: |-
 model_preference: ''
 provider_hint: ''
 spawnable: true
+# Topics are public web research, but the questions come from private chat.
+data_class: private
 specialty: |-
   current/external info and web search, cross-checked against the knowledge graph

@@ -105,4 +105,8 @@ pre_load_query: |-
 model_preference: gemini-2.5-flash
 provider_hint: gemini
 spawnable: false
+# Chosen 2026-09-15: the front door stays on gemini-2.5-flash, whose free tier
+# may train on prompts, so every turn through this profile is public. Set
+# private to keep chat on no_log models only.
+data_class: public
 specialty: null

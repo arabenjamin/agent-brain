@@ -44,6 +44,12 @@ pub struct ContextProfile {
     /// Falls back to `description` when absent.
     #[serde(default)]
     pub specialty: Option<String>,
+    /// Who may see this profile's turns (`services/routing.rs`): `private`
+    /// (the default when absent) keeps them on `no_log` providers; `public`
+    /// also admits free tiers that may train on prompts. A sub-agent run uses
+    /// the stricter of this and its caller's class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_class: Option<crate::services::routing::DataClass>,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].
@@ -255,6 +261,15 @@ impl ContextBuilderService {
 
     /// Write a profile to `contexts_dir/{name}.yaml` and update the in-memory map.
     pub async fn save_profile(&self, profile: ContextProfile) -> anyhow::Result<()> {
+        let mut profile = profile;
+        // A save that omits `data_class` (a UI form that predates the field)
+        // keeps the stored class. Otherwise editing a public profile's model
+        // would silently make it private and change where its turns may go.
+        if profile.data_class.is_none()
+            && let Some(existing) = self.profiles.read().await.get(&profile.name)
+        {
+            profile.data_class = existing.data_class;
+        }
         if profile.name == "boot" || profile.name == "init" {
             anyhow::bail!("Cannot overwrite reserved protocol files (boot/init)");
         }

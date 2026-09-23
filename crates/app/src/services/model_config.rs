@@ -528,6 +528,108 @@ mod tests {
         }
     }
 
+    /// Which model a capability step gets under the routing policy, through the
+    /// real catalog ordering and the checked-in provider declarations. Keys are
+    /// assumed present so the test does not depend on the environment.
+    fn routes_under_policy(
+        c: &ModelCatalog,
+        capability: &str,
+        class: crate::services::routing::DataClass,
+        policy: &crate::services::routing::RoutingPolicy,
+    ) -> Vec<String> {
+        use crate::services::routing::{Purpose, RouteContext, route};
+        let db = TelemetryClient::new(":memory:").unwrap();
+        c.sync_to_duckdb(&db).unwrap();
+        let rows = db
+            .select_models(&[capability.to_string()], None, None)
+            .unwrap();
+        let registry = provider_registry::merged(&c.providers);
+        route(
+            &rows,
+            RouteContext::new(Purpose::Background, class),
+            policy,
+            |n| registry.get(n).cloned(),
+            |_| true,
+            &[],
+        )
+        .candidates
+        .into_iter()
+        .map(|c| c.name)
+        .collect()
+    }
+
+    fn deployed_policy() -> crate::services::routing::RoutingPolicy {
+        // Compose: CLOUD_TIER=2, ROUTING_PAID_FOR unset.
+        crate::services::routing::RoutingPolicy::from_values(None, Some("2"), None)
+    }
+
+    #[test]
+    fn private_reasoning_stays_on_a_no_log_model() {
+        use crate::services::routing::DataClass;
+        let got = routes_under_policy(
+            &real_catalog(),
+            "reasoning",
+            DataClass::Private,
+            &deployed_policy(),
+        );
+        assert_eq!(got.first().map(String::as_str), Some("gpt-oss:120b-cloud"));
+    }
+
+    #[test]
+    fn public_reasoning_still_routes_to_gemini_flash() {
+        use crate::services::routing::DataClass;
+        let got = routes_under_policy(
+            &real_catalog(),
+            "reasoning",
+            DataClass::Public,
+            &deployed_policy(),
+        );
+        assert_eq!(got.first().map(String::as_str), Some("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn private_work_never_reaches_a_training_provider_for_any_capability() {
+        use crate::services::provider_registry::DataPolicy;
+        use crate::services::routing::DataClass;
+        let c = real_catalog();
+        let registry = provider_registry::merged(&c.providers);
+        let mut caps: Vec<String> = c
+            .models
+            .values()
+            .flat_map(|m| m.capabilities.clone())
+            .collect();
+        caps.sort();
+        caps.dedup();
+        for cap in caps {
+            for name in routes_under_policy(&c, &cap, DataClass::Private, &deployed_policy()) {
+                let provider = provider_registry::canonical_name(&c.models[&name].provider);
+                assert_eq!(
+                    registry[&provider].data_policy,
+                    DataPolicy::NoLog,
+                    "private {cap} work admitted {name} on {provider}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn paid_models_stay_unroutable_until_a_purpose_may_spend() {
+        use crate::services::routing::{DataClass, RoutingPolicy};
+        let c = real_catalog();
+        let paid = |policy: &RoutingPolicy| {
+            routes_under_policy(&c, "reasoning", DataClass::Public, policy)
+                .into_iter()
+                .filter(|n| c.models[n].provider == "anthropic")
+                .count()
+        };
+        assert_eq!(paid(&deployed_policy()), 0);
+        let background = RoutingPolicy::from_values(None, Some("2"), Some("background"));
+        assert!(
+            paid(&background) > 0,
+            "opting background in admits the capped paid provider"
+        );
+    }
+
     #[test]
     fn the_checked_in_provider_declarations_have_no_issues() {
         // Every model names a known provider, every paid provider carries a

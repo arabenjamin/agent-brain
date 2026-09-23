@@ -35,7 +35,8 @@ use crate::clients::chat::{
 };
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::context_builder::ContextBuilderService;
-use crate::services::llm::{LlmConfig, LlmProviderType};
+use crate::services::llm::LlmConfig;
+use crate::services::routing::{Purpose, ROUTE_CONTEXT, RouteContext, RoutingPolicy};
 
 /// The engine an [`AgentRunner`] drives. Implemented by `ChatService`, whose
 /// provider loops and catalog-aware model resolution are the shared machinery we
@@ -239,16 +240,22 @@ impl AgentRunner {
             ));
         };
 
-        // Base config = the current chat model (unmetered ollama-cloud); a
-        // profile `model_preference` may override it, but a sub-agent must never
-        // land on a metered (Anthropic) or rate-limited (Gemini free tier — the
-        // 5-RPM trap) provider: a multi-round loop there burns paid quota or
-        // trips rate limits, and the roster's model pins exist for the human
-        // /chat persona, not for background/delegated delegation. A pin that
-        // resolves off the unmetered band (local Ollama or free Ollama Cloud) is
-        // honoured on the /chat path (ChatService::resolve_profile_model) but
-        // clamped to `base` here. This is where the invariant the roster assumes
-        // is actually enforced.
+        // Which models this run may use is the routing policy's call, not a
+        // provider-type allow-list. `purpose: subagent` keeps paid providers out
+        // unless ROUTING_PAID_FOR names subagents and refuses providers whose
+        // declared limits cannot carry a multi-round loop (the Gemini 5-RPM
+        // trap). The data class is the stricter of the caller's and the
+        // profile's: a private chat handing a task to a public agent stays
+        // private, because the task text is the caller's data.
+        let route_ctx = RouteContext::new(
+            Purpose::Subagent,
+            RouteContext::current()
+                .data_class
+                .stricter(bundle.profile.data_class.unwrap_or_default()),
+        );
+        // Base config = the current chat model; a profile `model_preference` may
+        // override it when the policy admits the pin for this run. A refused pin
+        // falls back to `base`; the ladder walk then judges base and every rung.
         let base = self.llm_config.read().await.clone().unwrap_or_default();
         let cfg = match bundle
             .profile
@@ -262,24 +269,20 @@ impl AgentRunner {
                     .resolve_agent_model(&base, pref, bundle.profile.provider_hint.as_deref())
                     .await
                     .unwrap_or_else(|| base.clone());
-                if matches!(
-                    resolved.provider,
-                    LlmProviderType::Ollama
-                        | LlmProviderType::OllamaCloud
-                        | LlmProviderType::LlamaCpp
-                ) {
-                    // Ollama (host), Ollama Cloud (free tier), and the llama.cpp
-                    // sidecar are all unmetered/local — safe for a sub-agent.
-                    resolved
-                } else {
-                    tracing::warn!(
-                        agent = %agent,
-                        model = %resolved.model,
-                        provider = %resolved.provider,
-                        "sub-agent model_preference resolves to a metered/rate-limited \
-                         provider; clamping to the unmetered base config"
-                    );
-                    base.clone()
+                match RoutingPolicy::from_env().admit(&resolved, route_ctx) {
+                    Ok(()) => resolved,
+                    Err(reason) => {
+                        tracing::warn!(
+                            agent = %agent,
+                            model = %resolved.model,
+                            provider = %resolved.provider_label(),
+                            data_class = %route_ctx.data_class,
+                            reason = %reason,
+                            "sub-agent model_preference refused by routing policy; \
+                             using the chat default"
+                        );
+                        base.clone()
+                    }
                 }
             }
             None => base.clone(),
@@ -334,17 +337,22 @@ impl AgentRunner {
         // sub-agent, not to `chat` — the whole loop chain runs inline under
         // `join!`, so the task-local propagates. `delegate` and `run_agent` both
         // reach the loop through here, so this is the one place that fixes both.
-        let provider_loop = USAGE_TOOL_LABEL.scope(
-            format!("subagent:{agent}"),
-            engine.run_bounded_loop(
-                cfg,
-                sub_tools,
-                handler,
-                sub_request,
-                sub_system,
-                sub_tx,
-                false,
-                budget.max_iterations,
+        // ROUTE_CONTEXT is scoped the same way, so the ladder walk and every tool
+        // the agent runs are judged as this sub-agent's work.
+        let provider_loop = ROUTE_CONTEXT.scope(
+            route_ctx,
+            USAGE_TOOL_LABEL.scope(
+                format!("subagent:{agent}"),
+                engine.run_bounded_loop(
+                    cfg,
+                    sub_tools,
+                    handler,
+                    sub_request,
+                    sub_system,
+                    sub_tx,
+                    false,
+                    budget.max_iterations,
+                ),
             ),
         );
 

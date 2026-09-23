@@ -99,14 +99,20 @@ services:
       # model, so a future vision step still resolves to it; it is just no
       # longer what unhinted calls fall through to.
       - OLLAMA_MODEL=gpt-oss:120b-cloud
-      # Per-step capability routing tier. `2` = any provider with a configured
-      # key is eligible, which is what makes gemini-2.5-flash reachable for the
-      # `required_capabilities: ["reasoning"]` steps. It wins them because on the
-      # free tier its catalog cost is 0.0 (see models.yaml) and its
-      # selection_rank (5) sits below the ollama-cloud band; anthropic stays
-      # locked out by real cost. On a 429 those steps fall back to gpt-oss:120b-
-      # cloud, then local — see build_fallback_chain in services/shared_llm.rs.
+      # Billing classes the routing policy may use: CLOUD_TIER 2 = local, free
+      # and paid (ROUTING_BILLING, a comma list, overrides it when set). It no
+      # longer decides alone — services/routing.rs also requires the work's
+      # data_class to fit each provider's data_policy (private work only reaches
+      # no_log providers), and a paid provider needs ROUTING_PAID_FOR plus a spend
+      # cap. So the public monitors' reasoning steps still win on gemini-2.5-flash
+      # (rank 5) while private ones (learn) go to gpt-oss:120b-cloud. On a 429
+      # a step falls back to the active config, then local, each rung judged
+      # by the same policy — see build_fallback_chain in services/shared_llm.rs.
       - CLOUD_TIER=2
+      - ROUTING_BILLING=${ROUTING_BILLING:-}
+      # Purposes allowed to spend money: any of chat,subagent,background. Empty
+      # = none, so paid providers stay unroutable until this names one.
+      - ROUTING_PAID_FOR=${ROUTING_PAID_FOR:-}
       # Human-facing /chat runs on gpt-oss:120b-cloud (Ollama Cloud, UNMETERED —
       # no RPM limit). Gemini was tried here and pulled back 2026-09-06: chat is
       # agentic (one model call per tool round), so a single tool-using turn

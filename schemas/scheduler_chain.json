@@ -18,6 +18,7 @@
       "description": "Lower = matched first (default 100; default chain 9999). A broad substring at a low number silently hijacks a specific one."
     },
     "description": { "type": "string" },
+    "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) = only no_log providers; public also admits free tiers that may train on prompts. A file-level value is stamped onto steps that set none." },
     "no_evaluator": { "type": "boolean" },
     "no_adversarial": { "type": "boolean" },
     "evaluation_rubric": { "type": "string", "description": "Overrides the task goal text for the appended evaluator step." },
@@ -41,6 +42,7 @@
         "context_profile": { "type": "string" },
         "ttl_secs": { "type": "integer", "minimum": 0 },
         "description": { "type": "string" },
+        "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) = only no_log providers; public also admits free tiers that may train on prompts. A file-level value is stamped onto steps that set none." },
         "required_capabilities": { "type": "array", "items": { "type": "string" } },
         "is_evaluator": { "type": "boolean" },
         "min_score": { "type": "number" },

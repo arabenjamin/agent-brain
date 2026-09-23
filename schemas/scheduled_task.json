@@ -12,6 +12,7 @@
       "description": "MERGE key. A task with this name is updated in place, else created."
     },
     "description": { "type": "string" },
+    "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) = only no_log providers; public also admits free tiers that may train on prompts. A file-level value is stamped onto steps that set none." },
     "enabled": { "type": "boolean" },
     "interval_seconds": {
       "type": "integer",
@@ -57,6 +58,7 @@
         "context_profile": { "type": "string" },
         "ttl_secs": { "type": "integer", "minimum": 0 },
         "description": { "type": "string" },
+        "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) = only no_log providers; public also admits free tiers that may train on prompts. A file-level value is stamped onto steps that set none." },
         "required_capabilities": {
           "type": "array",
           "items": { "type": "string" }

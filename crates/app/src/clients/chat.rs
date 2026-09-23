@@ -22,6 +22,7 @@ use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::agent_runner::{AgentBudget, AgentRunner, SubagentLoopRunner};
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::llm::{ChatMessage, LlmClient, LlmConfig, LlmProviderType};
+use crate::services::routing::{DataClass, Purpose, ROUTE_CONTEXT, RouteContext, RoutingPolicy};
 use agent_brain_protocol::Content;
 
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
@@ -67,6 +68,32 @@ fn usage_tool_label() -> String {
     USAGE_TOOL_LABEL
         .try_with(|s| s.clone())
         .unwrap_or_else(|_| "chat".to_string())
+}
+
+/// Keep the ladder rungs the routing policy admits for this work, in order, and
+/// say why each refused rung was refused. Shared by the top-level chat ladder and
+/// the sub-agent ladder so both walk only permitted models.
+fn admit_rungs(candidates: Vec<LlmConfig>, ctx: RouteContext) -> (Vec<LlmConfig>, Vec<String>) {
+    let policy = RoutingPolicy::from_env();
+    let mut kept = Vec::new();
+    let mut refused = Vec::new();
+    for c in candidates {
+        match policy.admit(&c, ctx) {
+            Ok(()) => kept.push(c),
+            Err(reason) => {
+                warn!(
+                    model = %c.model,
+                    provider = %c.provider_label(),
+                    purpose = %ctx.purpose,
+                    data_class = %ctx.data_class,
+                    reason = %reason,
+                    "routing policy refused a chat rung"
+                );
+                refused.push(format!("{} ({}): {reason}", c.model, c.provider_label()));
+            }
+        }
+    }
+    (kept, refused)
 }
 
 /// How many times to re-send a request that came back as an **empty completion**
@@ -1612,6 +1639,9 @@ impl ChatService {
         // `provider_hint`); resolved here and applied as this turn's active
         // model below. `None` = inherit the chat default.
         let mut profile_model: Option<LlmConfig> = None;
+        // The profile's data class — private unless it says public — decides
+        // which providers the routing policy may send this turn to.
+        let mut turn_class = DataClass::Private;
 
         let (tools, profile_system_prompt, profile_notes) = if has_explicit_tools {
             let names = request.tools.as_deref().unwrap_or_default();
@@ -1625,6 +1655,7 @@ impl ChatService {
                     Some(bundle.profile.system_prompt.clone())
                 };
                 let notes = bundle.pre_loaded_notes.clone();
+                turn_class = bundle.profile.data_class.unwrap_or_default();
                 // Honour the profile's model_preference for this turn, using the
                 // current chat config as the base so timeouts, temperature, and
                 // the always-local embedding settings carry over.
@@ -1669,6 +1700,32 @@ impl ChatService {
         // A resolved profile model overrides the chat default for this turn. The
         // fallback ladder still applies on top of it (an unreachable profile
         // model — e.g. an Anthropic pin with no key — falls down the ladder).
+        // The routing policy judges the pin for this turn's data class before it
+        // may replace the default. A refused pin is reported in the stream and the
+        // turn keeps the chat default, which the ladder walk judges in turn.
+        let route_ctx = RouteContext::new(Purpose::Chat, turn_class);
+        let mut pin_refusal: Option<String> = None;
+        let profile_model = match profile_model {
+            Some(m) => match RoutingPolicy::from_env().admit(&m, route_ctx) {
+                Ok(()) => Some(m),
+                Err(reason) => {
+                    warn!(
+                        model = %m.model,
+                        provider = %m.provider_label(),
+                        data_class = %turn_class,
+                        reason = %reason,
+                        "chat: routing policy refused the profile's model_preference — \
+                         using the chat default"
+                    );
+                    pin_refusal = Some(format!(
+                        "⚙ profile model {} refused by routing policy — {reason}; using the chat default",
+                        m.model
+                    ));
+                    None
+                }
+            },
+            None => None,
+        };
         let config = match profile_model {
             Some(m) => Some(m),
             None => config,
@@ -1782,6 +1839,25 @@ impl ChatService {
                     }
                 }
 
+                if let Some(note) = pin_refusal.take() {
+                    let _ = inner_tx.send(ChatEvent::Thinking { content: note }).await;
+                }
+                // Only rungs the routing policy admits for this turn are walked.
+                // With none left the turn fails loudly with every reason — it
+                // never falls through to a provider the policy refused.
+                let (candidates, refused) = admit_rungs(candidates, route_ctx);
+                if candidates.is_empty() {
+                    let _ = inner_tx
+                        .send(ChatEvent::Error {
+                            message: format!(
+                                "No model may answer this {turn_class} chat turn under the routing policy: {}",
+                                refused.join("; ")
+                            ),
+                        })
+                        .await;
+                    let _ = inner_tx.send(ChatEvent::Done).await;
+                }
+
                 let last = candidates.len().saturating_sub(1);
                 let mut last_error: Option<String> = None;
 
@@ -1809,16 +1885,21 @@ impl ChatService {
                     }
 
                     let model = cfg.model.clone();
-                    match self
-                        .run_one_attempt(
-                            cfg,
-                            tools.clone(),
-                            handler.clone(),
-                            request.clone(),
-                            system_prompt.clone(),
-                            true,
-                            MAX_TOOL_ITERATIONS,
-                            &inner_tx,
+                    // Scoped per attempt: every tool, synthesis pass and sub-agent
+                    // this turn runs is judged as this turn's work.
+                    match ROUTE_CONTEXT
+                        .scope(
+                            route_ctx,
+                            self.run_one_attempt(
+                                cfg,
+                                tools.clone(),
+                                handler.clone(),
+                                request.clone(),
+                                system_prompt.clone(),
+                                true,
+                                MAX_TOOL_ITERATIONS,
+                                &inner_tx,
+                            ),
                         )
                         .await
                     {
@@ -3337,6 +3418,18 @@ impl ChatService {
             ..LlmConfig::default()
         };
 
+        // The voice model reads everything the turn gathered, so it answers to
+        // the same routing policy as the turn.
+        if let Err(reason) = RoutingPolicy::from_env().admit(&synth_config, RouteContext::current())
+        {
+            let _ = tx
+                .send(ChatEvent::Error {
+                    message: format!("Synthesis model {model} refused by routing policy: {reason}"),
+                })
+                .await;
+            return;
+        }
+
         let llm = match LlmClient::with_config(synth_config) {
             Ok(c) => c,
             Err(e) => {
@@ -3682,6 +3775,20 @@ impl SubagentLoopRunner for ChatService {
             if !candidates.iter().any(|x| rung_id(x) == rung_id(c)) {
                 candidates.push(c.clone());
             }
+        }
+        // The sub-agent's route context (scoped by AgentRunner::run) decides which
+        // rungs it may use; a refused rung is skipped, never tried.
+        let (candidates, refused) = admit_rungs(candidates, RouteContext::current());
+        if candidates.is_empty() {
+            let _ = tx
+                .send(ChatEvent::Error {
+                    message: format!(
+                        "No model may run this sub-agent under the routing policy: {}",
+                        refused.join("; ")
+                    ),
+                })
+                .await;
+            return;
         }
 
         let mut last_error: Option<String> = None;
@@ -4568,6 +4675,9 @@ mod empty_completion_tests {
         LlmConfig {
             provider: LlmProviderType::OllamaCloud,
             base_url: Some(server.uri()),
+            // The routing policy refuses a keyed provider whose key is absent, so
+            // a rung meant to reach the mock must carry one.
+            api_key: Some("test-key".into()),
             timeout: Duration::from_secs(30),
             ..Default::default()
         }
@@ -5031,6 +5141,70 @@ mod turn_tests {
             seen.push(e);
         }
         seen
+    }
+
+    /// A rung on a provider the registry does not know. The policy refuses it
+    /// whatever the environment holds (its billing and data policy are unknown).
+    fn unregistered_config(server: &MockServer) -> LlmConfig {
+        LlmConfig {
+            provider: LlmProviderType::OpenAiCompat,
+            provider_name: Some("unregistered-provider".into()),
+            base_url: Some(server.uri()),
+            api_key: Some("test-key".into()),
+            timeout: Duration::from_secs(30),
+            ..Default::default()
+        }
+    }
+
+    /// Privacy before availability: when the policy refuses every rung, the turn
+    /// says so and never sends the prompt anywhere.
+    #[tokio::test]
+    async fn a_turn_the_policy_refuses_everywhere_fails_loudly_and_calls_nothing() {
+        let server = MockServer::start().await;
+        always(&server, ANSWERED_COMPLETION_SSE).await;
+
+        let seen = run_turn(unregistered_config(&server), vec![]).await;
+
+        assert!(
+            seen.iter().any(
+                |e| matches!(e, ChatEvent::Error { message } if message.contains("routing policy"))
+            ),
+            "the refusal must reach the client with its reason: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Message { .. })),
+            "no model answered, so nothing may be presented as an answer: {seen:?}"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            0,
+            "a refused provider must never receive the prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_primary_is_skipped_for_the_next_permitted_rung() {
+        let refused = MockServer::start().await;
+        always(&refused, ANSWERED_COMPLETION_SSE).await;
+        let permitted = MockServer::start().await;
+        always(&permitted, ANSWERED_COMPLETION_SSE).await;
+
+        let seen = run_turn(
+            unregistered_config(&refused),
+            vec![cloud_config(&permitted)],
+        )
+        .await;
+
+        assert!(
+            seen.iter()
+                .any(|e| matches!(e, ChatEvent::Message { content } if content == "Substrates and power.")),
+            "the permitted rung answers the turn: {seen:?}"
+        );
+        assert_eq!(
+            refused.received_requests().await.unwrap_or_default().len(),
+            0,
+            "the refused primary must never receive the prompt"
+        );
     }
 
     /// Regression: `run()` holds the only remaining sender once the ladder

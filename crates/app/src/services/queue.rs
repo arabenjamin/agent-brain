@@ -155,6 +155,13 @@ pub struct ChainStep {
     /// When nothing qualifies the step falls back to normal routing.
     #[serde(default)]
     pub required_capabilities: Option<Vec<String>>,
+    /// Who may see this step's prompts (`services/routing.rs`): `private`
+    /// (the default when absent) only reaches `no_log` providers; `public` also
+    /// admits free tiers that may train on prompts. A chain or schedule file's
+    /// top-level `data_class` is stamped onto steps that do not set their own.
+    /// Stored as `__data_class` in the job args; tools ignore it via serde.
+    #[serde(default)]
+    pub data_class: Option<crate::services::routing::DataClass>,
     /// When `true`, the previous step's output is compressed by the local model
     /// before it is substituted into this step's `{{_prev}}` / `{{result}}`.
     ///
@@ -465,6 +472,21 @@ impl QueueService {
                     Some(a)
                 }
                 _ => effective_args,
+            };
+
+            // Inject the data class for the routing policy (read by execute_job).
+            let effective_args: Option<serde_json::Value> = match step.data_class {
+                Some(class) => {
+                    let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                    if let serde_json::Value::Object(ref mut m) = a {
+                        m.insert(
+                            "__data_class".to_string(),
+                            serde_json::json!(class.as_str()),
+                        );
+                    }
+                    Some(a)
+                }
+                None => effective_args,
             };
 
             // Inject distilled-handoff metadata. Read by execute_job before
@@ -1362,9 +1384,23 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
             None => job.arguments.clone(),
         };
 
+        // The work's route context: a queued step is background work, private
+        // unless the step (or its chain/schedule file) declared `data_class:
+        // public`. Scoped around the tool call below so every LLM call it makes —
+        // capability-selected or not — is judged by the routing policy.
+        let route_ctx = crate::services::routing::RouteContext::new(
+            crate::services::routing::Purpose::Background,
+            job.arguments
+                .as_ref()
+                .and_then(|a| a.get("__data_class"))
+                .and_then(|v| v.as_str())
+                .map(crate::services::routing::DataClass::parse_or_private)
+                .unwrap_or_default(),
+        );
+
         // Per-step model routing: when the step declared required_capabilities,
-        // resolve a model within the active cloud tier. Falls back to normal
-        // routing (None) when nothing qualifies or telemetry is unavailable.
+        // resolve a model the routing policy admits for this work. Falls back to
+        // normal routing (None) when nothing qualifies or telemetry is unavailable.
         let selected_llm: Option<crate::services::LlmConfig> = job
             .arguments
             .as_ref()
@@ -1384,22 +1420,27 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
                         tc,
                         &caps,
                         &crate::services::LlmConfig::default(),
+                        route_ctx,
                     )
                 })
             });
 
         // Run the tool call inside task-local scopes so `SharedLlm` can route:
         // SELECTED_LLM (capability-resolved) takes precedence over USE_LOCAL_LLM
-        // (background default), which takes precedence over the active config.
+        // (background default), which takes precedence over the active config;
+        // ROUTE_CONTEXT lets the routing policy judge every one of them.
         let use_local = job.provider_hint.as_deref() == Some("ollama");
-        let result = SELECTED_LLM
+        let result = crate::services::routing::ROUTE_CONTEXT
             .scope(
-                selected_llm,
-                USE_LOCAL_LLM.scope(
-                    use_local,
-                    CURRENT_TOOL.scope(
-                        Some(job.tool_name.clone()),
-                        handler.execute(&job.tool_name, resolved_args),
+                route_ctx,
+                SELECTED_LLM.scope(
+                    selected_llm,
+                    USE_LOCAL_LLM.scope(
+                        use_local,
+                        CURRENT_TOOL.scope(
+                            Some(job.tool_name.clone()),
+                            handler.execute(&job.tool_name, resolved_args),
+                        ),
                     ),
                 ),
             )

@@ -36,6 +36,9 @@
 name: "Off-Grid Networking Monitor"
 description: "Weekly sweep of off-grid and decentralized mesh networking developments (Meshtastic, Reticulum, LoRa, and alternatives), compared against the previous run, ending in an actionable delta and a hardware/setup note."
 interval_seconds: 604800
+# Public web research on public topics: its reasoning step may use free tiers
+# that train on prompts (gemini-2.5-flash). See PROVIDER_ROUTING_PLAN.md §3.
+data_class: public
 
 steps:
   # 1. Prior run, for delta rather than re-describing the field from scratch.

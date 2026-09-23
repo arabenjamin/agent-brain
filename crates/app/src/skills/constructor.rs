@@ -323,6 +323,12 @@ impl ConstructorSkill {
                 tc,
                 &["reasoning".to_string()],
                 &crate::services::LlmConfig::default(),
+                // Planning reads the goal and context of whoever asked, so it
+                // inherits that work's data class.
+                crate::services::routing::RouteContext::new(
+                    crate::services::routing::Purpose::Background,
+                    crate::services::routing::RouteContext::current().data_class,
+                ),
             )
         });
         let planner_model = selected

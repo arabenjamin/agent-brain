@@ -29,6 +29,7 @@
       "description": "Provider for model_preference. Inert without model_preference (the resolver is only reached via it)."
     },
     "spawnable": { "type": "boolean", "description": "Whether run_agent/delegate may spawn this profile as a sub-agent." },
+    "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) keeps this profile's turns on no_log providers; public also admits free tiers that may train on prompts. A sub-agent run uses the stricter of this and its caller's class." },
     "specialty": { "type": "string", "description": "Free-text specialty used by select_agent token-overlap matching." },
     "auto_assign": {
       "type": "array",

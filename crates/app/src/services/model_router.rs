@@ -1,61 +1,32 @@
-//! Per-step model routing — Phase 1 of the Agent Constructor plan.
+//! Per-step model routing.
 //!
 //! A `ChainStep` may declare `required_capabilities`. At job execution time
-//! the queue resolves the cheapest catalog model that satisfies them *within
-//! the active cloud tier* and scopes the job's LLM calls to it via the
+//! the queue resolves the best catalog model that satisfies them **and that the
+//! routing policy admits for the step's purpose and data class**
+//! (`services/routing.rs`), and scopes the job's LLM calls to it via the
 //! `SELECTED_LLM` task-local. Steps without capabilities keep today's
-//! behavior (background jobs pinned to local Ollama).
+//! behaviour (background jobs pinned to local).
 //!
-//! Cloud tiers (env `CLOUD_TIER`, default `1`):
-//! - `0` — local Ollama only.
-//! - `1` — local + Ollama Cloud models with $0 catalog cost (free tier).
-//!   Requires `OLLAMA_API_KEY`; candidates without a usable key are skipped.
-//! - `2` — any provider with a configured API key ("income mode").
+//! Which providers are eligible is policy, not code: `ROUTING_BILLING` (or the
+//! legacy `CLOUD_TIER` mapping `0 → local`, `1 → local,free`, `2 → +paid`),
+//! `ROUTING_PAID_FOR`, and each provider's registry declaration. Private work
+//! only reaches `no_log` providers.
 //!
 //! Selection inherits `select_models` ordering: cost ascending, then
 //! `selection_rank` ascending, then context window descending. Since every
 //! local and Ollama-Cloud entry costs $0, `selection_rank` — set per model in
 //! `models.yaml` — is what actually decides these steps; see the block comment
 //! there for the bands and for the incident that motivated the field.
-//! If no candidate survives the tier filter the caller falls back to normal
-//! routing — a missing model degrades the step, never blocks it.
+//! If no candidate survives the policy the caller falls back to normal
+//! routing — a missing model degrades the step, never blocks it — and normal
+//! routing is itself judged by the policy in `SharedLlm`.
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::repository::TelemetryClient;
 use crate::services::llm::{LlmConfig, LlmProviderType};
 use crate::services::provider_registry::{self, ProviderEntry, ProviderKind};
-
-/// Read the active cloud tier from `CLOUD_TIER` (default 1).
-pub fn cloud_tier() -> u8 {
-    std::env::var("CLOUD_TIER")
-        .ok()
-        .and_then(|v| v.trim().parse::<u8>().ok())
-        .map(|t| t.min(2))
-        .unwrap_or(1)
-}
-
-/// Whether a catalog candidate is usable at the given tier.
-/// `has_key` closures keep this testable without touching the environment.
-fn candidate_allowed(
-    provider: &str,
-    cost_in: f64,
-    cost_out: f64,
-    tier: u8,
-    has_ollama_key: bool,
-    has_anthropic_key: bool,
-    has_gemini_key: bool,
-) -> bool {
-    match provider {
-        "ollama" => true,
-        "ollama-cloud" | "ollamacloud" => {
-            has_ollama_key && (tier == 2 || (tier == 1 && cost_in == 0.0 && cost_out == 0.0))
-        }
-        "anthropic" => tier == 2 && has_anthropic_key,
-        "gemini" => tier == 2 && has_gemini_key,
-        _ => false,
-    }
-}
+use crate::services::routing::{RouteContext, RoutingPolicy, route};
 
 /// Turn a catalog entry's `provider` + `model` into a full [`LlmConfig`].
 ///
@@ -103,10 +74,10 @@ pub fn config_for_provider(
     cfg.model = model.to_string();
     match entry.kind {
         ProviderKind::OpenaiCompat => {
-            // Ollama Cloud keeps its own provider type: CLOUD_TIER and the
-            // sub-agent clamp still recognise it by type, and the registry must
-            // not change who may use it. Every other OpenAI-wire API is the
-            // generic type, which neither of those admits.
+            // Ollama Cloud keeps its own provider type: config parsing, the chat
+            // loop dispatch and the REST provider list still name it. Who may use
+            // it is the routing policy's call (`services/routing.rs`), by registry
+            // name, for every OpenAI-wire provider alike.
             cfg.provider = if name == "ollama-cloud" {
                 LlmProviderType::OllamaCloud
             } else {
@@ -161,13 +132,15 @@ pub fn config_for_provider(
 }
 
 /// Resolve the model config for a step's `required_capabilities`, or `None`
-/// when nothing in the catalog satisfies them within the active tier.
+/// when nothing in the catalog satisfies them under the routing policy for this
+/// work (`ctx`: purpose + data class).
 pub fn resolve_model_config(
     telemetry: &TelemetryClient,
     required_capabilities: &[String],
     base: &LlmConfig,
+    ctx: RouteContext,
 ) -> Option<LlmConfig> {
-    let candidates = match telemetry.select_models(required_capabilities, None, None) {
+    let rows = match telemetry.select_models(required_capabilities, None, None) {
         Ok(c) => c,
         Err(e) => {
             debug!(error = %e, "Model routing: catalog query failed");
@@ -175,10 +148,7 @@ pub fn resolve_model_config(
         }
     };
 
-    let tier = cloud_tier();
-    let has_ollama_key = std::env::var("OLLAMA_API_KEY").is_ok();
-    let has_anthropic_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
-    let has_gemini_key = std::env::var("GEMINI_API_KEY").is_ok();
+    let policy = RoutingPolicy::from_env();
 
     // Observed availability: the catalog says what *should* be free, the
     // ledger records what the provider actually served. A model that recently
@@ -188,45 +158,52 @@ pub fn resolve_model_config(
         .models_with_recent_errors("subscription_required", 24 * 7)
         .unwrap_or_default();
 
-    let chosen = candidates.iter().find(|c| {
-        let model = c["model"].as_str().unwrap_or("");
-        !unavailable.iter().any(|u| u == model)
-            && candidate_allowed(
-                c["provider"].as_str().unwrap_or(""),
-                c["cost_per_1k_input"].as_f64().unwrap_or(f64::MAX),
-                c["cost_per_1k_output"].as_f64().unwrap_or(f64::MAX),
-                tier,
-                has_ollama_key,
-                has_anthropic_key,
-                has_gemini_key,
-            )
-    })?;
+    let plan = route(
+        &rows,
+        ctx,
+        &policy,
+        provider_registry::get,
+        |e| e.key_configured(),
+        &unavailable,
+    );
 
-    let provider = chosen["provider"].as_str().unwrap_or("ollama");
-    let model = chosen["model"].as_str().unwrap_or("").to_string();
-    if model.is_empty() {
+    let Some(chosen) = plan.candidates.first() else {
+        if !plan.rejected.is_empty() {
+            warn!(
+                capabilities = ?required_capabilities,
+                purpose = %ctx.purpose,
+                data_class = %ctx.data_class,
+                policy = %policy.source,
+                rejected = %plan.rejected_before(usize::MAX),
+                "Model routing: the policy admits no capable model — step uses normal routing"
+            );
+        }
         return None;
-    }
+    };
 
     // Build a full config for the chosen provider. Embedding settings are
     // inherited from the base config — embeddings always stay local.
-    let cfg = config_for_catalog_entry(base, provider, &model);
+    let cfg = config_for_catalog_entry(base, &chosen.provider, &chosen.model);
 
     // `rank` and `runner_up` are logged because the incident that produced
     // `selection_rank` was invisible at runtime: a new catalog entry captured
-    // every reasoning step and the only evidence was slower jobs. Naming the
-    // winner alongside what it beat makes a silent reorder greppable.
+    // every reasoning step and the only evidence was slower jobs. `skipped`
+    // names every better-ranked model the policy refused, with the reason, so
+    // "why didn't it use X?" is answered in the same line.
     info!(
         capabilities = ?required_capabilities,
-        provider = provider,
-        model = %model,
-        rank = chosen["selection_rank"].as_i64().unwrap_or(-1),
-        runner_up = candidates
-            .iter()
-            .find(|c| c["model"].as_str() != Some(model.as_str()))
-            .and_then(|c| c["model"].as_str())
+        provider = %chosen.provider,
+        model = %chosen.model,
+        rank = chosen.selection_rank,
+        runner_up = plan
+            .candidates
+            .get(1)
+            .map(|c| c.model.as_str())
             .unwrap_or("-"),
-        tier = tier,
+        purpose = %ctx.purpose,
+        data_class = %ctx.data_class,
+        policy = %policy.source,
+        skipped = %plan.rejected_before(chosen.position),
         "Model routing: resolved step model"
     );
     Some(cfg)
@@ -257,119 +234,6 @@ mod tests {
                 "embed endpoint pinned for {name}"
             );
             assert!(cfg.api_key.is_none(), "no api key for {name}");
-        }
-    }
-
-    #[test]
-    fn tier0_allows_only_local() {
-        assert!(candidate_allowed("ollama", 0.0, 0.0, 0, true, true, true));
-        assert!(!candidate_allowed(
-            "ollama-cloud",
-            0.0,
-            0.0,
-            0,
-            true,
-            true,
-            true
-        ));
-        assert!(!candidate_allowed(
-            "anthropic",
-            0.001,
-            0.005,
-            0,
-            true,
-            true,
-            true
-        ));
-    }
-
-    #[test]
-    fn tier1_allows_free_cloud_with_key() {
-        assert!(candidate_allowed(
-            "ollama-cloud",
-            0.0,
-            0.0,
-            1,
-            true,
-            false,
-            false
-        ));
-        // No key — not usable even if free.
-        assert!(!candidate_allowed(
-            "ollama-cloud",
-            0.0,
-            0.0,
-            1,
-            false,
-            false,
-            false
-        ));
-        // Paid cloud model — locked at tier 1.
-        assert!(!candidate_allowed(
-            "ollama-cloud",
-            0.001,
-            0.002,
-            1,
-            true,
-            false,
-            false
-        ));
-        assert!(!candidate_allowed(
-            "anthropic",
-            0.001,
-            0.005,
-            1,
-            true,
-            true,
-            true
-        ));
-    }
-
-    #[test]
-    fn tier2_allows_paid_providers_with_keys() {
-        assert!(candidate_allowed(
-            "anthropic",
-            0.001,
-            0.005,
-            2,
-            true,
-            true,
-            true
-        ));
-        assert!(candidate_allowed(
-            "gemini", 0.0001, 0.0004, 2, true, true, true
-        ));
-        assert!(!candidate_allowed(
-            "anthropic",
-            0.001,
-            0.005,
-            2,
-            true,
-            false,
-            true
-        ));
-        assert!(candidate_allowed(
-            "ollama-cloud",
-            0.002,
-            0.004,
-            2,
-            true,
-            false,
-            false
-        ));
-    }
-
-    #[test]
-    fn unknown_provider_rejected() {
-        assert!(!candidate_allowed("vllm", 0.0, 0.0, 2, true, true, true));
-    }
-
-    /// The training free tiers must not become reachable through CLOUD_TIER
-    /// before the policy router can keep private work off them.
-    #[test]
-    fn may_train_providers_are_not_routable_through_cloud_tier() {
-        for p in ["mistral", "openrouter"] {
-            assert!(!candidate_allowed(p, 0.0, 0.0, 2, true, true, true), "{p}");
         }
     }
 

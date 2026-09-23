@@ -65,5 +65,7 @@ pre_load_query: |-
 model_preference: ''
 provider_hint: ''
 spawnable: true
+# Scouts public APIs in public interest areas.
+data_class: public
 specialty: |-
   scout the web for free public REST APIs in the brain's interest areas; ingest the keyless ones (ingest_api) and flag key-gated ones to the human (notify_user)

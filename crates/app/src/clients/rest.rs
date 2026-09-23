@@ -992,6 +992,9 @@ pub async fn handle_list_context_profiles(
                 "tool_count":       p.tools.len(),
                 "model_preference": p.model_preference,
                 "provider_hint":    p.provider_hint,
+                "spawnable":        p.spawnable,
+                "specialty":        p.specialty,
+                "data_class":       p.data_class,
             })
         })
         .collect();
@@ -1022,6 +1025,12 @@ pub async fn handle_get_context_profile(
             "pre_load_query":   p.pre_load_query,
             "model_preference": p.model_preference,
             "provider_hint":    p.provider_hint,
+            // Returned so an edit form can send them back: `save_profile` keeps
+            // a stored data_class when a save omits it, but has no such guard
+            // for spawnable/specialty.
+            "spawnable":        p.spawnable,
+            "specialty":        p.specialty,
+            "data_class":       p.data_class,
         }))
         .into_response(),
         None => not_found(),
@@ -1147,6 +1156,8 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
         // The provider registry: kind, billing, data_policy, limits, spend, and
         // whether each provider's key env var is set — never the key.
         "providers": crate::services::provider_registry::snapshot_json(),
+        // Which billing classes are routable and which purposes may spend.
+        "routing_policy": crate::services::routing::RoutingPolicy::from_env().describe(),
         "catalog_models": catalog_models,
     })).into_response()
 }

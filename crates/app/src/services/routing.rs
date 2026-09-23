@@ -1,0 +1,725 @@
+//! Routing policy — Phase 2 of `project-docs/PROVIDER_ROUTING_PLAN.md`.
+//!
+//! One question, asked everywhere a model is about to be called: *may this work,
+//! for this purpose, use this provider?* The answer comes from the provider's
+//! registry declaration (enabled, key, billing, data policy, limits) and from
+//! the work itself (purpose + data class) — never from a provider type
+//! hardcoded at a call site.
+//!
+//! - [`RoutingPolicy::admit`] judges one ready config: a chat pin, a ladder rung,
+//!   a sub-agent's model, a background fallback rung.
+//! - [`route`] filters the capability-matched catalog for a routed step,
+//!   keeping its order and recording why every skipped model was skipped.
+//!
+//! **Privacy before budget.** Work is `private` unless it says otherwise, and
+//! private work only reaches `no_log` providers — not even as a last fallback.
+//! **Paid is off until opted in**: a paid provider needs its billing class in
+//! the policy, the purpose in `ROUTING_PAID_FOR`, and a declared spend cap.
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::services::llm::LlmConfig;
+use crate::services::provider_registry::{self, Billing, DataPolicy, ProviderEntry};
+
+/// What kind of caller is about to spend a model call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Purpose {
+    /// A human `/chat` turn.
+    Chat,
+    /// A delegated agent loop (`delegate` / `run_agent`): many calls per run.
+    Subagent,
+    /// A queued job step, or anything not scoped as chat or sub-agent.
+    Background,
+}
+
+impl Purpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Purpose::Chat => "chat",
+            Purpose::Subagent => "subagent",
+            Purpose::Background => "background",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "chat" => Some(Purpose::Chat),
+            "subagent" | "sub-agent" => Some(Purpose::Subagent),
+            "background" => Some(Purpose::Background),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Purpose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Who may see the work's prompts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataClass {
+    /// Only `no_log` providers. The default: work that does not say it is
+    /// public is treated as private.
+    #[default]
+    Private,
+    /// Any permitted provider, including free tiers that may train on prompts.
+    Public,
+}
+
+impl DataClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DataClass::Private => "private",
+            DataClass::Public => "public",
+        }
+    }
+
+    /// Parse a stored label; anything unrecognised is private.
+    pub fn parse_or_private(s: &str) -> Self {
+        if s.trim().eq_ignore_ascii_case("public") {
+            DataClass::Public
+        } else {
+            DataClass::Private
+        }
+    }
+
+    /// Private if either side is. Work handed from a private caller to a public
+    /// agent stays private: the task text carries the caller's data.
+    pub fn stricter(self, other: DataClass) -> DataClass {
+        if self == DataClass::Private || other == DataClass::Private {
+            DataClass::Private
+        } else {
+            DataClass::Public
+        }
+    }
+}
+
+impl std::fmt::Display for DataClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The purpose and data class of the work running on this task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteContext {
+    pub purpose: Purpose,
+    pub data_class: DataClass,
+}
+
+tokio::task_local! {
+    /// Scoped by the chat turn, `AgentRunner::run` and the queue coordinator, so
+    /// every model call below them — including `SharedLlm` calls made by tools —
+    /// is judged against the work that caused it.
+    pub static ROUTE_CONTEXT: RouteContext;
+}
+
+impl RouteContext {
+    pub fn new(purpose: Purpose, data_class: DataClass) -> Self {
+        Self {
+            purpose,
+            data_class,
+        }
+    }
+
+    /// The scoped context, or background/private when nothing scoped one (a
+    /// direct MCP tool call, a startup protocol step) — the cautious reading.
+    pub fn current() -> Self {
+        ROUTE_CONTEXT
+            .try_with(|c| *c)
+            .unwrap_or(Self::new(Purpose::Background, DataClass::Private))
+    }
+}
+
+/// Declared limits below which a provider cannot carry a multi-round agent loop.
+/// A sub-agent makes one call per tool round (up to 8), so 5 requests/minute
+/// (Gemini's free tier) stalls mid-run and 50 requests/day (OpenRouter `:free`)
+/// is spent by a handful of runs. Phase 3 replaces this with live budgets.
+const LOOP_MIN_RPM: u32 = 20;
+const LOOP_MIN_RPD: u32 = 500;
+
+fn billing_str(b: Billing) -> &'static str {
+    match b {
+        Billing::Local => "local",
+        Billing::Free => "free",
+        Billing::Paid => "paid",
+    }
+}
+
+fn policy_str(p: DataPolicy) -> &'static str {
+    match p {
+        DataPolicy::NoLog => "no_log",
+        DataPolicy::MayLog => "may_log",
+        DataPolicy::MayTrain => "may_train",
+    }
+}
+
+/// Which billing classes may be used at all, and which purposes may spend money.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingPolicy {
+    pub billing: Vec<Billing>,
+    pub paid_for: Vec<Purpose>,
+    /// Where `billing` came from (`ROUTING_BILLING` or `CLOUD_TIER=N`), for
+    /// rejection reasons and `/api/models`.
+    pub source: String,
+}
+
+impl RoutingPolicy {
+    /// Read the policy from the environment. Cheap; read per decision so an env
+    /// change needs no cache invalidation.
+    pub fn from_env() -> Self {
+        Self::from_values(
+            std::env::var("ROUTING_BILLING").ok().as_deref(),
+            std::env::var("CLOUD_TIER").ok().as_deref(),
+            std::env::var("ROUTING_PAID_FOR").ok().as_deref(),
+        )
+    }
+
+    /// `ROUTING_BILLING` (comma list of `local,free,paid`) wins when non-empty.
+    /// Otherwise the legacy `CLOUD_TIER` maps `0 → local`, `1 → local,free`
+    /// (the default), `2 → local,free,paid`. `ROUTING_PAID_FOR` lists purposes
+    /// allowed to spend; unset means none. Unknown words are ignored.
+    pub fn from_values(
+        routing_billing: Option<&str>,
+        cloud_tier: Option<&str>,
+        paid_for: Option<&str>,
+    ) -> Self {
+        let explicit = routing_billing.map(str::trim).filter(|s| !s.is_empty());
+        let (billing, source) = match explicit {
+            Some(list) => {
+                let mut billing = Vec::new();
+                for word in list.split(',') {
+                    let b = match word.trim().to_ascii_lowercase().as_str() {
+                        "local" => Billing::Local,
+                        "free" => Billing::Free,
+                        "paid" => Billing::Paid,
+                        _ => continue,
+                    };
+                    if !billing.contains(&b) {
+                        billing.push(b);
+                    }
+                }
+                (billing, format!("ROUTING_BILLING={list}"))
+            }
+            None => {
+                let tier = cloud_tier
+                    .and_then(|v| v.trim().parse::<u8>().ok())
+                    .map(|t| t.min(2))
+                    .unwrap_or(1);
+                let billing = match tier {
+                    0 => vec![Billing::Local],
+                    1 => vec![Billing::Local, Billing::Free],
+                    _ => vec![Billing::Local, Billing::Free, Billing::Paid],
+                };
+                (billing, format!("CLOUD_TIER={tier}"))
+            }
+        };
+        let mut purposes = Vec::new();
+        for word in paid_for.unwrap_or("").split(',') {
+            if let Some(p) = Purpose::parse(word)
+                && !purposes.contains(&p)
+            {
+                purposes.push(p);
+            }
+        }
+        Self {
+            billing,
+            paid_for: purposes,
+            source,
+        }
+    }
+
+    /// Judge one provider for one piece of work. Filters run in the plan's
+    /// order, and the first failure is the reason reported.
+    pub fn check_entry(
+        &self,
+        name: &str,
+        entry: Option<&ProviderEntry>,
+        key_present: bool,
+        ctx: RouteContext,
+    ) -> Result<(), String> {
+        let Some(e) = entry else {
+            return Err(format!(
+                "provider '{name}' is not in the provider registry, so its billing and data \
+                 policy are unknown"
+            ));
+        };
+        if !e.enabled {
+            return Err(format!("provider '{name}' is disabled"));
+        }
+        if !key_present {
+            return Err(format!(
+                "{} is not set",
+                e.api_key_env.as_deref().unwrap_or("its API key")
+            ));
+        }
+        if !self.billing.contains(&e.billing) {
+            return Err(format!(
+                "billing '{}' is not allowed ({})",
+                billing_str(e.billing),
+                self.source
+            ));
+        }
+        if e.billing == Billing::Paid {
+            if !self.paid_for.contains(&ctx.purpose) {
+                let list = self
+                    .paid_for
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                return Err(format!(
+                    "{} work may not spend money (ROUTING_PAID_FOR={})",
+                    ctx.purpose,
+                    if list.is_empty() { "unset" } else { &list }
+                ));
+            }
+            let capped = e
+                .spend
+                .as_ref()
+                .is_some_and(|s| s.daily_usd.is_some() || s.monthly_usd.is_some());
+            if !capped {
+                return Err(format!("paid provider '{name}' declares no spend cap"));
+            }
+        }
+        if ctx.data_class == DataClass::Private && e.data_policy != DataPolicy::NoLog {
+            return Err(format!(
+                "private work may not use a {} provider",
+                policy_str(e.data_policy)
+            ));
+        }
+        if ctx.purpose == Purpose::Subagent {
+            if let Some(rpm) = e.limits.rpm
+                && rpm < LOOP_MIN_RPM
+            {
+                return Err(format!(
+                    "declared {rpm} requests/minute cannot carry a multi-round agent loop \
+                     (needs {LOOP_MIN_RPM})"
+                ));
+            }
+            if let Some(rpd) = e.limits.rpd
+                && rpd < LOOP_MIN_RPD
+            {
+                return Err(format!(
+                    "declared {rpd} requests/day cannot carry agent loops (needs {LOOP_MIN_RPD})"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Judge a ready-to-call config against the live registry.
+    pub fn admit(&self, cfg: &LlmConfig, ctx: RouteContext) -> Result<(), String> {
+        let name = provider_registry::canonical_name(&cfg.provider_label());
+        let entry = provider_registry::get(&name);
+        // A key supplied some other way (CHAT_API_KEY, use_model) counts: the
+        // question is whether this config can authenticate, not whether the
+        // registry's env var happens to be the place it came from.
+        let key_present = entry.as_ref().is_some_and(|e| {
+            e.key_configured() || cfg.api_key.as_deref().is_some_and(|k| !k.trim().is_empty())
+        });
+        self.check_entry(&name, entry.as_ref(), key_present, ctx)
+    }
+
+    /// The policy as JSON for `/api/models`.
+    pub fn describe(&self) -> Value {
+        json!({
+            "billing": self.billing.iter().map(|b| billing_str(*b)).collect::<Vec<_>>(),
+            "paid_for": self.paid_for.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "source": self.source,
+            "subagent_min_rpm": LOOP_MIN_RPM,
+            "subagent_min_rpd": LOOP_MIN_RPD,
+        })
+    }
+}
+
+/// A catalog model the policy admits, in routing order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+    pub selection_rank: i64,
+    /// Index in the ordered catalog rows, so a log can name what outranked it.
+    pub position: usize,
+}
+
+/// A catalog model the policy refused, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rejection {
+    pub name: String,
+    pub provider: String,
+    pub reason: String,
+    pub position: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RoutePlan {
+    pub candidates: Vec<Candidate>,
+    pub rejected: Vec<Rejection>,
+}
+
+impl RoutePlan {
+    /// Rejections that ranked ahead of `position` — the ones that explain why
+    /// the winner won.
+    pub fn rejected_before(&self, position: usize) -> String {
+        let parts: Vec<String> = self
+            .rejected
+            .iter()
+            .filter(|r| r.position < position)
+            .map(|r| format!("{} ({})", r.name, r.reason))
+            .collect();
+        if parts.is_empty() {
+            "-".to_string()
+        } else {
+            parts.join("; ")
+        }
+    }
+}
+
+/// Filter catalog rows — already capability-matched and ordered by
+/// `select_models` (`cost ASC, selection_rank ASC, context_window DESC`) —
+/// through the policy, preserving order. `unavailable` lists models observed
+/// returning `subscription_required` recently. `lookup` and `key_present` are
+/// injected so tests can judge a catalog without touching the environment.
+pub fn route(
+    rows: &[Value],
+    ctx: RouteContext,
+    policy: &RoutingPolicy,
+    lookup: impl Fn(&str) -> Option<ProviderEntry>,
+    key_present: impl Fn(&ProviderEntry) -> bool,
+    unavailable: &[String],
+) -> RoutePlan {
+    let mut plan = RoutePlan::default();
+    for (position, row) in rows.iter().enumerate() {
+        let model = row["model"].as_str().unwrap_or("").to_string();
+        if model.is_empty() {
+            continue;
+        }
+        let name = row["name"].as_str().unwrap_or(&model).to_string();
+        let provider = provider_registry::canonical_name(row["provider"].as_str().unwrap_or(""));
+        let entry = lookup(&provider);
+        let key = entry.as_ref().is_some_and(&key_present);
+        let verdict = policy
+            .check_entry(&provider, entry.as_ref(), key, ctx)
+            .and_then(|()| {
+                if unavailable.contains(&model) {
+                    Err("returned subscription_required in the last 7 days".to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        match verdict {
+            Ok(()) => plan.candidates.push(Candidate {
+                name,
+                provider,
+                model,
+                selection_rank: row["selection_rank"].as_i64().unwrap_or(-1),
+                position,
+            }),
+            Err(reason) => plan.rejected.push(Rejection {
+                name,
+                provider,
+                reason,
+                position,
+            }),
+        }
+    }
+    plan
+}
+
+/// Stamp a chain or schedule file's top-level `data_class` onto every step that
+/// does not declare its own, so the class travels inside the stored step JSON.
+pub fn stamp_data_class(steps: &mut [Value], class: DataClass) {
+    for step in steps {
+        if let Value::Object(m) = step {
+            m.entry("data_class")
+                .or_insert_with(|| Value::String(class.as_str().to_string()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn entry(yaml: &str) -> ProviderEntry {
+        serde_yaml::from_str(yaml).expect("entry parses")
+    }
+
+    fn registry() -> HashMap<String, ProviderEntry> {
+        let mut m = HashMap::new();
+        m.insert(
+            "llamacpp".into(),
+            entry("kind: llamacpp\nbilling: local\ndata_policy: no_log"),
+        );
+        m.insert(
+            "ollama-cloud".into(),
+            entry(
+                "kind: openai_compat\nbilling: free\ndata_policy: no_log\n\
+                 base_url_default: https://ollama.com",
+            ),
+        );
+        m.insert(
+            "gemini".into(),
+            entry("kind: gemini\nbilling: free\ndata_policy: may_train\nlimits: { rpm: 5 }"),
+        );
+        m.insert(
+            "openrouter".into(),
+            entry(
+                "kind: openai_compat\nbilling: free\ndata_policy: may_train\n\
+                 base_url_default: https://openrouter.ai/api\nlimits: { rpm: 20, rpd: 50 }",
+            ),
+        );
+        m.insert(
+            "anthropic".into(),
+            entry(
+                "kind: anthropic\nbilling: paid\ndata_policy: no_log\n\
+                 spend: { daily_usd: 1.0 }",
+            ),
+        );
+        m.insert(
+            "uncapped".into(),
+            entry("kind: anthropic\nbilling: paid\ndata_policy: no_log"),
+        );
+        m
+    }
+
+    fn check(
+        policy: &RoutingPolicy,
+        name: &str,
+        purpose: Purpose,
+        class: DataClass,
+    ) -> Result<(), String> {
+        let r = registry();
+        policy.check_entry(name, r.get(name), true, RouteContext::new(purpose, class))
+    }
+
+    fn tier(t: &str) -> RoutingPolicy {
+        RoutingPolicy::from_values(None, Some(t), None)
+    }
+
+    #[test]
+    fn cloud_tier_maps_onto_billing_classes() {
+        assert_eq!(tier("0").billing, vec![Billing::Local]);
+        assert_eq!(tier("1").billing, vec![Billing::Local, Billing::Free]);
+        assert_eq!(
+            tier("2").billing,
+            vec![Billing::Local, Billing::Free, Billing::Paid]
+        );
+        assert_eq!(
+            RoutingPolicy::from_values(None, None, None).billing,
+            vec![Billing::Local, Billing::Free],
+            "unset CLOUD_TIER keeps the old default of 1"
+        );
+    }
+
+    #[test]
+    fn routing_billing_overrides_cloud_tier_and_blank_does_not() {
+        let p = RoutingPolicy::from_values(Some("local, paid"), Some("0"), None);
+        assert_eq!(p.billing, vec![Billing::Local, Billing::Paid]);
+        let blank = RoutingPolicy::from_values(Some("  "), Some("0"), None);
+        assert_eq!(blank.billing, vec![Billing::Local]);
+    }
+
+    #[test]
+    fn nothing_may_spend_until_roufting_paid_for_names_it() {
+        let p = tier("2");
+        assert!(p.paid_for.is_empty());
+        let err = check(&p, "anthropic", Purpose::Chat, DataClass::Private).unwrap_err();
+        assert!(err.contains("ROUTING_PAID_FOR=unset"), "{err}");
+
+        let chat = RoutingPolicy::from_values(None, Some("2"), Some("chat"));
+        assert!(check(&chat, "anthropic", Purpose::Chat, DataClass::Private).is_ok());
+        assert!(check(&chat, "anthropic", Purpose::Subagent, DataClass::Private).is_err());
+    }
+
+    #[test]
+    fn a_paid_provider_without_a_spend_cap_is_never_routable() {
+        let p = RoutingPolicy::from_values(None, Some("2"), Some("chat,subagent,background"));
+        let err = check(&p, "uncapped", Purpose::Chat, DataClass::Public).unwrap_err();
+        assert!(err.contains("spend cap"), "{err}");
+    }
+
+    #[test]
+    fn paid_billing_outside_the_policy_is_refused_before_purpose() {
+        let p = RoutingPolicy::from_values(None, Some("1"), Some("chat"));
+        let err = check(&p, "anthropic", Purpose::Chat, DataClass::Public).unwrap_err();
+        assert!(err.contains("billing 'paid'"), "{err}");
+    }
+
+    #[test]
+    fn private_work_only_reaches_no_log_providers() {
+        let p = tier("2");
+        for provider in ["gemini", "openrouter"] {
+            let err = check(&p, provider, Purpose::Background, DataClass::Private).unwrap_err();
+            assert!(err.contains("may_train"), "{provider}: {err}");
+            assert!(check(&p, provider, Purpose::Background, DataClass::Public).is_ok());
+        }
+        assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
+        assert!(check(&p, "llamacpp", Purpose::Chat, DataClass::Private).is_ok());
+    }
+
+    #[test]
+    fn tier_zero_admits_only_local() {
+        let p = tier("0");
+        assert!(check(&p, "llamacpp", Purpose::Background, DataClass::Public).is_ok());
+        assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Public).is_err());
+    }
+
+    #[test]
+    fn a_rate_limited_free_tier_cannot_carry_a_sub_agent_loop() {
+        let p = tier("2");
+        let err = check(&p, "gemini", Purpose::Subagent, DataClass::Public).unwrap_err();
+        assert!(err.contains("requests/minute"), "{err}");
+        let err = check(&p, "openrouter", Purpose::Subagent, DataClass::Public).unwrap_err();
+        assert!(err.contains("requests/day"), "{err}");
+        // The same providers remain fine for a single public chat or background call.
+        assert!(check(&p, "gemini", Purpose::Chat, DataClass::Public).is_ok());
+    }
+
+    #[test]
+    fn disabled_unkeyed_and_unknown_providers_are_refused() {
+        let p = tier("2");
+        let mut e =
+            entry("kind: openai_compat\nbilling: free\ndata_policy: no_log\nbase_url_default: x");
+        e.enabled = false;
+        let ctx = RouteContext::new(Purpose::Chat, DataClass::Public);
+        assert!(
+            p.check_entry("x", Some(&e), true, ctx)
+                .unwrap_err()
+                .contains("disabled")
+        );
+        e.enabled = true;
+        e.api_key_env = Some("SOME_KEY".into());
+        assert!(
+            p.check_entry("x", Some(&e), false, ctx)
+                .unwrap_err()
+                .contains("SOME_KEY")
+        );
+        assert!(
+            p.check_entry("vllm", None, true, ctx)
+                .unwrap_err()
+                .contains("not in the provider registry")
+        );
+    }
+
+    #[test]
+    fn private_is_the_default_and_wins_any_combination() {
+        assert_eq!(DataClass::default(), DataClass::Private);
+        assert_eq!(DataClass::parse_or_private("PUBLIC"), DataClass::Public);
+        assert_eq!(DataClass::parse_or_private("secret"), DataClass::Private);
+        assert_eq!(
+            DataClass::Public.stricter(DataClass::Private),
+            DataClass::Private
+        );
+        assert_eq!(
+            DataClass::Private.stricter(DataClass::Public),
+            DataClass::Private
+        );
+        assert_eq!(
+            DataClass::Public.stricter(DataClass::Public),
+            DataClass::Public
+        );
+    }
+
+    #[test]
+    fn outside_any_scope_work_is_background_and_private() {
+        assert_eq!(
+            RouteContext::current(),
+            RouteContext::new(Purpose::Background, DataClass::Private)
+        );
+    }
+
+    fn rows(models: &[(&str, &str)]) -> Vec<Value> {
+        models
+            .iter()
+            .enumerate()
+            .map(|(i, (model, provider))| {
+                json!({"name": model, "model": model, "provider": provider, "selection_rank": i})
+            })
+            .collect()
+    }
+
+    /// The plan's named failure mode: private work whose only capable models
+    /// sit on training providers must get NO candidate, not a fallback onto one.
+    #[test]
+    fn private_work_with_only_training_providers_gets_an_empty_plan() {
+        let r = registry();
+        let plan = route(
+            &rows(&[("gemini-2.5-flash", "gemini"), ("gemma-free", "openrouter")]),
+            RouteContext::new(Purpose::Background, DataClass::Private),
+            &tier("2"),
+            |n| r.get(n).cloned(),
+            |_| true,
+            &[],
+        );
+        assert!(plan.candidates.is_empty());
+        assert_eq!(plan.rejected.len(), 2);
+    }
+
+    #[test]
+    fn route_keeps_catalog_order_and_explains_what_outranked_the_winner() {
+        let r = registry();
+        let plan = route(
+            &rows(&[
+                ("gemini-2.5-flash", "gemini"),
+                ("gpt-oss:120b-cloud", "ollama-cloud"),
+                ("dead-model", "ollama-cloud"),
+                ("gemma4-e4b", "llamacpp"),
+            ]),
+            RouteContext::new(Purpose::Background, DataClass::Private),
+            &tier("2"),
+            |n| r.get(n).cloned(),
+            |_| true,
+            &["dead-model".to_string()],
+        );
+        let names: Vec<_> = plan.candidates.iter().map(|c| c.model.as_str()).collect();
+        assert_eq!(names, ["gpt-oss:120b-cloud", "gemma4-e4b"]);
+        let why = plan.rejected_before(plan.candidates[0].position);
+        assert!(
+            why.contains("gemini-2.5-flash") && why.contains("may_train"),
+            "{why}"
+        );
+        assert!(
+            plan.rejected
+                .iter()
+                .any(|x| x.reason.contains("subscription_required"))
+        );
+    }
+
+    #[test]
+    fn a_file_level_class_fills_steps_without_overriding_them() {
+        let mut steps = vec![
+            json!({"tool_name": "search_web"}),
+            json!({"tool_name": "reason", "data_class": "private"}),
+        ];
+        stamp_data_class(&mut steps, DataClass::Public);
+        assert_eq!(steps[0]["data_class"], "public");
+        assert_eq!(steps[1]["data_class"], "private");
+    }
+
+    /// The classes chosen on 2026-09-15, read from the checked-in profiles. A
+    /// public front door is what keeps its gemini-2.5-flash pin; losing the
+    /// field (a hand edit, a UI save) would silently move chat to another model.
+    #[test]
+    fn the_checked_in_profiles_keep_their_decided_data_class() {
+        use crate::services::context_builder::ContextProfile;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contexts");
+        for (file, want) in [
+            ("GeneralDefault-Orchrestator.yaml", DataClass::Public),
+            ("researcher.yaml", DataClass::Private),
+            ("api-scout.yaml", DataClass::Public),
+        ] {
+            let text = std::fs::read_to_string(dir.join(file)).expect("profile readable");
+            let p: ContextProfile = serde_yaml::from_str(&text).expect("profile parses");
+            assert_eq!(p.data_class, Some(want), "{file}");
+        }
+    }
+}

@@ -17,6 +17,10 @@ struct ScheduleFile {
     /// OFF for human review before it ever runs.
     #[serde(default)]
     enabled: Option<bool>,
+    /// Default data class for every step that does not set its own
+    /// (`services/routing.rs`). Absent ⇒ steps stay private.
+    #[serde(default)]
+    data_class: Option<crate::services::routing::DataClass>,
 }
 
 /// Read every `*.yaml` file from `dir`, parse each as a ScheduledTask definition,
@@ -60,7 +64,11 @@ pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow:
             }
         };
 
-        let steps_json = match serde_json::to_string(&schedule.steps) {
+        let mut steps = schedule.steps.clone();
+        if let Some(class) = schedule.data_class {
+            crate::services::routing::stamp_data_class(&mut steps, class);
+        }
+        let steps_json = match serde_json::to_string(&steps) {
             Ok(s) => s,
             Err(e) => {
                 warn!(name = %schedule.name, error = %e, "seed_schedules: steps serialization error");

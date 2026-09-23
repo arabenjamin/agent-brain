@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 
 use crate::repository::TelemetryClient;
 use crate::services::queue::{CURRENT_TOOL, SELECTED_LLM, USE_LOCAL_LLM};
+use crate::services::routing::{RouteContext, RoutingPolicy};
 use crate::services::traits::LlmProvider;
 use crate::services::{LlmClient, LlmConfig};
 
@@ -170,34 +171,75 @@ impl LlmProvider for SharedLlm {
             )
         };
 
+        // Every rung — primary included — must be admitted by the routing policy
+        // for the work this call belongs to (`ROUTE_CONTEXT`: the queue step, the
+        // chat turn or the sub-agent run). A refused primary is not a failure of
+        // the model: the chain is walked for a permitted rung instead, and when
+        // none exists the call fails with every reason rather than quietly
+        // sending private work somewhere it may not go.
+        let ctx = RouteContext::current();
+        let policy = RoutingPolicy::from_env();
         let primary_model = primary.model.clone();
+        let mut refusals: Vec<String> = Vec::new();
         // The primary attempt is recorded (success or failure) inside the
         // helper, so a failed cloud call still lands in the ledger before any
         // fallback — those rows are how the model router learns observed
         // availability and must not vanish.
-        let result = self.run_and_record(primary, prompt, system, tool).await;
+        let result = match policy.admit(&primary, ctx) {
+            Ok(()) => self.run_and_record(primary, prompt, system, tool).await,
+            Err(reason) => {
+                warn!(
+                    model = %primary_model,
+                    provider = %primary.provider_label(),
+                    purpose = %ctx.purpose,
+                    data_class = %ctx.data_class,
+                    reason = %reason,
+                    "SharedLlm: routing policy refused the primary model"
+                );
+                refusals.push(format!("{primary_model} ({reason})"));
+                Err(anyhow::anyhow!(
+                    "routing policy refused {primary_model}: {reason}"
+                ))
+            }
+        };
+        let refused_primary = !refusals.is_empty();
 
         // If the call failed in a way that says "this provider cannot answer
         // right now" — as opposed to "this prompt is bad" — walk a fallback
         // chain before giving up. Only for cloud routes: a local model has
         // nowhere better to fall back to and must not retry against itself.
-        let unavailable_kind = result.as_ref().err().and_then(classify_unavailable);
-        if !is_local_route && let Some(kind) = unavailable_kind {
+        // A policy refusal walks the chain too, whatever the route.
+        let unavailable_kind = if refused_primary {
+            None
+        } else {
+            result.as_ref().err().and_then(classify_unavailable)
+        };
+        if refused_primary || (!is_local_route && unavailable_kind.is_some()) {
             let active = self.config.read().await.clone();
             let local = self.local_config.read().await.clone();
             let chain = build_fallback_chain(is_selected, &primary_model, active, local);
             warn!(
-                error_kind = kind,
+                error_kind = unavailable_kind.unwrap_or("policy_refused"),
                 primary = %primary_model,
                 fallbacks = %chain
                     .iter()
                     .map(|c| c.model.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
-                "SharedLlm: cloud LLM unavailable, walking fallback chain"
+                "SharedLlm: primary model unusable, walking fallback chain"
             );
             let mut last_err: Option<anyhow::Error> = None;
             for cfg in chain {
+                if let Err(reason) = policy.admit(&cfg, ctx) {
+                    warn!(
+                        model = %cfg.model,
+                        provider = %cfg.provider_label(),
+                        reason = %reason,
+                        "SharedLlm: routing policy refused a fallback rung"
+                    );
+                    refusals.push(format!("{} ({reason})", cfg.model));
+                    continue;
+                }
                 let fb_model = cfg.model.clone();
                 match self.run_and_record(cfg, prompt, system, tool).await {
                     Ok(r) => return Ok(r.text),
@@ -211,6 +253,14 @@ impl LlmProvider for SharedLlm {
             // attempted any, otherwise the primary error falls through below.
             if let Some(e) = last_err {
                 return Err(e);
+            }
+            if refused_primary {
+                return Err(anyhow::anyhow!(
+                    "no provider the routing policy permits for {} {} work: {}",
+                    ctx.data_class,
+                    ctx.purpose,
+                    refusals.join("; ")
+                ));
             }
         }
 
