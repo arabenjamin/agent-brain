@@ -546,6 +546,8 @@ impl LlmClient {
         prompt: &str,
         system: Option<&str>,
     ) -> Result<LlmResponse, LlmError> {
+        // One provider concurrency slot for exactly this call (services/provider_gate.rs).
+        let _permit = crate::services::provider_gate::acquire(&self.config.provider_label()).await;
         self.provider
             .generate(prompt, system)
             .await
@@ -562,6 +564,7 @@ impl LlmClient {
 
     /// Chat with the model using message history.
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmError> {
+        let _permit = crate::services::provider_gate::acquire(&self.config.provider_label()).await;
         self.provider.chat(messages).await.map_err(LlmError::from)
     }
 }

@@ -2062,6 +2062,14 @@ impl ChatService {
                 "messages": messages,
             });
 
+            // One provider concurrency slot for this request only (services/provider_gate.rs):
+
+            // taken before the clock starts so a wait is not billed as call time, and
+
+            // dropped once the response is read, before any tool runs.
+
+            let gate_permit = crate::services::provider_gate::acquire(&provider_label).await;
+
             let call_start = std::time::Instant::now();
             let response = match client
                 .post(format!("{}/v1/messages", base_url))
@@ -2132,6 +2140,12 @@ impl ChatService {
                 let _ = tx.send(ChatEvent::Done).await;
                 return;
             }
+
+            // The response is fully read: free the provider slot before tools run. A
+
+            // delegated sub-agent on this same provider would otherwise wait on it.
+
+            drop(gate_permit);
 
             self.record_llm_call(
                 &provider_label,
@@ -2382,6 +2396,10 @@ impl ChatService {
             if let Some(ref key) = config.api_key {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
+            // One provider concurrency slot for this request only (services/provider_gate.rs):
+            // taken before the clock starts so a wait is not billed as call time, and
+            // dropped once the response is read, before any tool runs.
+            let gate_permit = crate::services::provider_gate::acquire(&provider_label).await;
             let call_start = std::time::Instant::now();
             let response = match req.send().await {
                 Ok(r) => r,
@@ -2500,6 +2518,12 @@ impl ChatService {
                     }
                 }
             }
+
+            // The response is fully read: free the provider slot before tools run. A
+
+            // delegated sub-agent on this same provider would otherwise wait on it.
+
+            drop(gate_permit);
 
             self.record_llm_call(
                 &provider_label,
@@ -2806,6 +2830,14 @@ impl ChatService {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
 
+            // One provider concurrency slot for this request only (services/provider_gate.rs):
+
+            // taken before the clock starts so a wait is not billed as call time, and
+
+            // dropped once the response is read, before any tool runs.
+
+            let gate_permit = crate::services::provider_gate::acquire(&provider_label).await;
+
             let call_start = std::time::Instant::now();
             let response = match req.send().await {
                 Ok(r) => r,
@@ -2985,6 +3017,12 @@ impl ChatService {
                     (id, name, args)
                 })
                 .collect();
+
+            // The response is fully read: free the provider slot before tools run. A
+
+            // delegated sub-agent on this same provider would otherwise wait on it.
+
+            drop(gate_permit);
 
             self.record_llm_call(
                 &provider_label,

@@ -16,6 +16,7 @@ pub mod media_source_seeder;
 pub mod model_config;
 pub mod model_router;
 pub mod procedure_executor;
+pub mod provider_gate;
 pub mod provider_registry;
 pub mod queue;
 pub mod repair;

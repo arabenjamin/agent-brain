@@ -301,7 +301,17 @@ Unchanged from the earlier draft:
     - Declared limits count per provider; provider-reported limits act per model through cooldowns.
     - The sub-agent loop thresholds (`rpm ≥ 20`, `rpd ≥ 500`) stay as a loop-shape gate in `routing.rs`, separate from quota.
     - `SharedLlm` keeps the selected → active → local chain rather than walking the full candidate list; with cooldowns now skipping benched rungs, a longer walk is a possible follow-up.
-- [ ] **Phase 4: Concurrency gate.** Registry-sized per-provider semaphores shared by queue, chat and sub-agents.
+- [x] **Phase 4: Concurrency gate.** Done 2026-09-23.
+  - **`services/provider_gate.rs`**: one gate per provider, sized from `limits.concurrency`. Providers with no declared concurrency are ungated. Configured by `provider_registry::install`, so startup and `reload_models` both resize it live: a raised limit wakes waiters, a removed one lets them proceed ungated, and a declared 0 is read as 1.
+  - **Verified limits.** Ollama Cloud free is "1 concurrent request" (Pro 3, Max/Team 10; ollama.com/pricing, checked 2026-09-23). llama.cpp is its `-np 2` slots.
+  - **Measured before sizing (30 days of `model_usage`).** No provider ever had more than 2 calls in flight.
+    - Ollama Cloud: only 16 of 1,520 calls started while another was running, so a gate of 1 costs ~1% of calls a wait. Its six 429s (all on 2026-08-26) each had nothing else in flight: quota, not concurrency.
+    - llama.cpp: 622 of 2,847 calls overlapped. This is where the gate earns its keep, by giving chat priority over background jobs.
+  - **The permit covers one request, never a job or a turn.** It is acquired in `LlmClient::generate_with_system` / `chat` (covering `SharedLlm`, the distiller, the context builder, synthesis and the text loop) and around the send in chat's three raw loops (Anthropic, native Ollama, OpenAI-compatible). In those loops it is dropped once the response is read, before tools run, because a turn delegating to a sub-agent on the same one-slot provider would otherwise wait on itself. It is taken before the call clock starts, so waits are not billed as call time.
+  - **Priority by `ROUTE_CONTEXT` purpose**: chat, then sub-agent, then background; FIFO within a class. A waiter that gives up (an abandoned turn) is skipped without leaking a slot. Waits are bounded by the holder's HTTP timeout, not a timer of their own, and logged at INFO from 1 s and WARN from 30 s.
+  - **Not gated: embeddings** (short, local; gating them behind generation would stall retrieval).
+  - **Observability**: `/api/llm/budget` and `get_llm_budget` show each gated provider's capacity, in-use slots, waiters per class, totals and max wait.
+  - **Deviation from the design: the queue's three job semaphores stay.** They cap how many jobs run, not how many requests a provider serves (a job also searches and writes the graph, and its `provider_hint` is not always the provider it calls). Making them the provider gate would have a job take the slot and then its model call take it again, deadlocking a one-slot provider. The queue docs now say so.
 - [ ] **Phase 5: GPU lease.** Router integration, `embedding_pending` backfill, `experiment` scripts acquire/release.
 
 ### Probe findings for Phase 3 (2026-09-13)

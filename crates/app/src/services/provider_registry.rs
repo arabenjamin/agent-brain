@@ -245,6 +245,8 @@ fn slot() -> &'static RwLock<BTreeMap<String, ProviderEntry>> {
 pub fn install(overrides: &HashMap<String, ProviderEntry>) -> usize {
     let table = merged(overrides);
     let n = table.len();
+    // The concurrency gates are sized from the same table (services/provider_gate.rs).
+    crate::services::provider_gate::configure(&table);
     *slot().write().unwrap_or_else(|p| p.into_inner()) = table;
     n
 }

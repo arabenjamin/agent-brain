@@ -381,6 +381,10 @@ impl BudgetBook {
                         "tokens_day": limits["tpd"].as_u64().map(|l| l.saturating_sub(u.tokens_today)),
                     }),
                 );
+                o.insert(
+                    "concurrency".into(),
+                    crate::services::provider_gate::snapshot_json(&name),
+                );
                 o.insert("models".into(), Value::Array(models));
             }
         }

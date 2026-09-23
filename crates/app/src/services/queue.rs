@@ -4,7 +4,12 @@
 //!
 //! - **Durability**: jobs are persisted to Neo4j so they survive server restarts.
 //! - **Priority**: an in-memory `BinaryHeap` orders jobs by priority (0–3) then FIFO.
-//! - **Concurrency**: a `tokio::sync::Semaphore` limits concurrent executions.
+//! - **Concurrency**: per-`provider_hint` semaphores cap how many JOBS run at
+//!   once. They are not the provider limit: a job also searches and writes the
+//!   graph, and its hint is not always the provider it calls. How many requests a
+//!   provider may serve at once is enforced per call by `services/provider_gate.rs`,
+//!   never here — a job holding a provider slot that then called the model would
+//!   take the slot twice and deadlock a one-slot provider.
 //! - **Wakeup**: a `Notify` wakes the coordinator immediately when a new job arrives or
 //!   when a running job finishes and frees a provider concurrency slot.
 //! - **Recovery**: on startup, `recover()` resets crashed `running` jobs to `queued`
@@ -12,10 +17,8 @@
 //!
 //! # Resizing concurrency at runtime
 //!
-//! `update_config()` stores the new `max_concurrent` value but the underlying semaphore
-//! is fixed at creation time.  To change effective concurrency, set `enabled = false`,
-//! recreate the service, then re-enable.  Phase-2 multi-provider support will introduce
-//! per-provider semaphores with dynamic resizing.
+//! `update_config()` swaps in a new job semaphore of the requested size; jobs
+//! already holding a permit from the old one finish on it.
 
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
