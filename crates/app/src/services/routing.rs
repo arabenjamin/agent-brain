@@ -168,17 +168,22 @@ pub struct RoutingPolicy {
     /// Where `billing` came from (`ROUTING_BILLING` or `CLOUD_TIER=N`), for
     /// rejection reasons and `/api/models`.
     pub source: String,
+    /// Set while a GPU lease is held (`services/gpu_lease.rs`): why every
+    /// `billing: local` provider is refused.
+    pub gpu_lease: Option<String>,
 }
 
 impl RoutingPolicy {
     /// Read the policy from the environment. Cheap; read per decision so an env
     /// change needs no cache invalidation.
     pub fn from_env() -> Self {
-        Self::from_values(
+        let mut policy = Self::from_values(
             std::env::var("ROUTING_BILLING").ok().as_deref(),
             std::env::var("CLOUD_TIER").ok().as_deref(),
             std::env::var("ROUTING_PAID_FOR").ok().as_deref(),
-        )
+        );
+        policy.gpu_lease = crate::services::gpu_lease::refusal();
+        policy
     }
 
     /// `ROUTING_BILLING` (comma list of `local,free,paid`) wins when non-empty.
@@ -232,6 +237,7 @@ impl RoutingPolicy {
             billing,
             paid_for: purposes,
             source,
+            gpu_lease: None,
         }
     }
 
@@ -252,6 +258,11 @@ impl RoutingPolicy {
         };
         if !e.enabled {
             return Err(format!("provider '{name}' is disabled"));
+        }
+        if e.billing == Billing::Local
+            && let Some(reason) = &self.gpu_lease
+        {
+            return Err(reason.clone());
         }
         if !key_present {
             return Err(format!(
@@ -341,6 +352,7 @@ impl RoutingPolicy {
             "source": self.source,
             "subagent_min_rpm": LOOP_MIN_RPM,
             "subagent_min_rpd": LOOP_MIN_RPD,
+            "gpu_lease": self.gpu_lease,
         })
     }
 }
@@ -743,6 +755,15 @@ mod tests {
         let names: Vec<_> = plan.candidates.iter().map(|c| c.model.as_str()).collect();
         assert_eq!(names, ["gemma4-e4b"]);
         assert!(plan.rejected[0].reason.contains("cooling down"));
+    }
+
+    #[test]
+    fn a_gpu_lease_refuses_local_providers_only() {
+        let mut p = tier("2");
+        p.gpu_lease = Some("the GPU is leased to finetune".into());
+        let err = check(&p, "llamacpp", Purpose::Chat, DataClass::Private).unwrap_err();
+        assert!(err.contains("leased to finetune"), "{err}");
+        assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
     }
 
     /// The classes chosen on 2026-09-15, read from the checked-in profiles. A

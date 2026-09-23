@@ -104,6 +104,30 @@ impl ModelSkill {
         }
     }
 
+    fn gpu_lease_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "gpu_lease".to_string(),
+            description: "Lease the GPU to a job that needs all of it (fine-tuning). While held, \
+                local models are refused, local-pinned background jobs wait, embeddings pause \
+                (search falls back to BM25) and the brain runs on cloud providers; on release, \
+                notes stored meanwhile are embedded and linked. Leases expire (default 12 h, \
+                max 72 h); acquire again as the same holder to extend. Actions: status, \
+                acquire (holder, reason, ttl_hours), release (holder, or force)."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["status", "acquire", "release"] },
+                    "holder": { "type": "string", "description": "Who holds the GPU, e.g. finetune." },
+                    "reason": { "type": "string" },
+                    "ttl_hours": { "type": "integer", "minimum": 1, "maximum": 72 },
+                    "force": { "type": "boolean", "description": "Release a lease held by someone else." }
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
     fn get_usage_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_usage".to_string(),
@@ -291,6 +315,7 @@ impl Skill for ModelSkill {
             Self::reload_models_def(),
             Self::get_usage_def(),
             Self::get_llm_budget_def(),
+            Self::gpu_lease_def(),
         ]
     }
 
@@ -302,6 +327,12 @@ impl Skill for ModelSkill {
             "get_llm_budget" => Some(ToolCallResult::success_json(
                 crate::services::budget::snapshot_json(),
             )),
+            "gpu_lease" => Some(
+                match crate::services::gpu_lease::handle(args.unwrap_or_else(|| json!({}))).await {
+                    Ok(v) => ToolCallResult::success_json(v),
+                    Err(e) => ToolCallResult::error(e),
+                },
+            ),
             _ => None,
         }
     }

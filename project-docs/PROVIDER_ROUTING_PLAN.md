@@ -312,7 +312,19 @@ Unchanged from the earlier draft:
   - **Not gated: embeddings** (short, local; gating them behind generation would stall retrieval).
   - **Observability**: `/api/llm/budget` and `get_llm_budget` show each gated provider's capacity, in-use slots, waiters per class, totals and max wait.
   - **Deviation from the design: the queue's three job semaphores stay.** They cap how many jobs run, not how many requests a provider serves (a job also searches and writes the graph, and its `provider_hint` is not always the provider it calls). Making them the provider gate would have a job take the slot and then its model call take it again, deadlocking a one-slot provider. The queue docs now say so.
-- [ ] **Phase 5: GPU lease.** Router integration, `embedding_pending` backfill, `experiment` scripts acquire/release.
+- [x] **Phase 5: GPU lease.** Done 2026-09-23.
+  - **`services/gpu_lease.rs`**: `LeaseBook` holds the rules. A different holder is refused; the same holder renews (keeping the start time); the TTL defaults to 12 h and is clamped to 1–72 h; only the holder or `force` releases a live lease; releasing when nothing is held is a no-op; an expired lease is simply not held. The lease persists as `(:GpuLease {id:'current'})` with native datetimes and is reloaded at startup, so a restart mid-training does not reclaim the GPU.
+  - **Driven by** the `gpu_lease` tool (`ModelSkill`), `GET`/`POST /api/gpu-lease` (409 with the reason when refused), and `workspace/finetune/scripts/gpu_lease.sh acquire|release|status`. `/api/llm/budget` and `/api/models` (`routing_policy.gpu_lease`) show the state.
+  - **While held:**
+    - `RoutingPolicy` refuses every `billing: local` provider with the lease as the reason. That covers capability routing, chat pins, ladders, sub-agents and `SharedLlm` fallback rungs.
+    - `LlmClient` refuses local generation and embeddings, a backstop for the distiller and context builder. bge-m3 lives on the GPU, and one search would reload it.
+    - The queue defers jobs with `provider_hint: ollama` and no capability routing: they keep their heap position and attempt count, and are counted in `deferred_for_gpu_lease` in the queue status.
+    - `store_note_raw` marks vector-less notes `embedding_pending`, and entity extraction is skipped.
+  - **On acquire** the brain unloads host Ollama via `/api/generate` with `keep_alive: 0`, which unloads embedding models too (verified on bge-m3). The llama.cpp and whisper sidecars are stopped from the host by the script, once the gates show no local request in flight; on release it restarts them and waits for their ready log lines (`model loaded`, `Application startup complete`) before returning the lease.
+  - **Release hook** (run on release, on expiry at the first check after it, and at startup with no lease): `run_embedding_backfill` embeds pending notes oldest first, links similar notes, and extracts entities for non-chunk notes with no `MENTIONS`.
+  - **Decision 4 resolved:** private background work *defers*, bounded by the lease's own expiry, rather than failing or moving to Ollama Cloud, whose one free slot and monthly credit could not carry ~240 local calls a day.
+  - **Verified live 2026-09-23** (acquire → release): bge-m3 unloaded on acquire; a second holder got 409; the policy and graph carried the lease; search answered from BM25 without reloading bge-m3; a stored note came back `embedding_pending` with no vector; on release the backfill embedded it (1024 dims) within ~4 s, bge-m3 was loaded again, and the lease node was removed. Not exercised live: queue deferral (nothing was queued, so it is covered by a unit test only), and a restart mid-lease.
+  - **Known limits:** `reason` and other tools that run on `local_llm` fail with the lease reason during a lease rather than moving to cloud. Jobs with a `ttl_secs` can expire while deferred. Notes that lost their vector before this phase are not marked pending, so the backfill does not reach them.
 
 ### Probe findings for Phase 3 (2026-09-13)
 
@@ -327,7 +339,7 @@ I sent one trivial public prompt to each provider, at the exact registry URL (`b
 1. `researcher` data class.
 2. Whether background work may ever use paid (`ROUTING_PAID_FOR`).
 3. Starting spend caps once a paid key is added.
-4. Whether private background work should defer indefinitely or fail after N hours during a long GPU lease.
+4. Whether private background work should defer indefinitely or fail after N hours during a long GPU lease. **Resolved (Phase 5): defer, bounded by the lease expiry.**
 
 ## Sources
 

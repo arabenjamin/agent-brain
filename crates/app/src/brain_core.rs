@@ -579,6 +579,26 @@ impl BrainCore {
             self.storage.telemetry.clone(),
         );
 
+        // GPU lease (services/gpu_lease.rs): reload a lease that survived a
+        // restart, and on release, expiry or a startup with none held, embed and
+        // link the notes stored without a vector. Re-run on every build_skills().
+        if let Some(neo4j) = &self.storage.neo4j {
+            let backfill = Arc::new(KnowledgeService::new(
+                neo4j.clone(),
+                Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
+            ));
+            crate::services::gpu_lease::init(
+                neo4j.clone(),
+                Arc::new(move || {
+                    let ks = Arc::clone(&backfill);
+                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                        rt.spawn(async move { ks.run_embedding_backfill().await });
+                    }
+                }),
+            )
+            .await;
+        }
+
         // Media service (yt-dlp captions + map-reduce summarization). Shared by
         // both the registry (tools/list) and handler (tools/call) skill passes.
         let media_svc = Arc::new(MediaService::from_env());

@@ -391,6 +391,7 @@ impl BudgetBook {
         json!({
             "generated_at": now.to_rfc3339(),
             "day_resets_at": "00:00 UTC",
+            "gpu_lease": crate::services::gpu_lease::status_json(),
             "providers": providers,
         })
     }

@@ -247,6 +247,9 @@ pub struct QueueService {
     coordinator_last_heartbeat: Arc<AtomicI64>,
     /// Result of the last orphan-chain audit: count of orphaned parked jobs found (and cancelled).
     last_orphan_audit_count: Arc<AtomicI64>,
+    /// Local-pinned jobs set aside on the last coordinator pass because a GPU
+    /// lease is held (`services/gpu_lease.rs`).
+    gpu_deferred: Arc<AtomicI64>,
     /// Local-Ollama config used to compress chain handoffs (`distill_prev`).
     ///
     /// Held as a config rather than a provider because distillation needs its own
@@ -282,6 +285,7 @@ impl QueueService {
             coordinator_alive: Arc::new(AtomicBool::new(false)),
             coordinator_last_heartbeat: Arc::new(AtomicI64::new(-1)),
             last_orphan_audit_count: Arc::new(AtomicI64::new(-1)),
+            gpu_deferred: Arc::new(AtomicI64::new(0)),
             distill_config: Arc::new(RwLock::new(None)),
         }
     }
@@ -779,6 +783,7 @@ impl QueueService {
                 "last_cancelled": if orphan_audit >= 0 { serde_json::json!(orphan_audit) } else { serde_json::Value::Null },
             },
             "in_memory_pending": heap_len,
+            "deferred_for_gpu_lease": self.gpu_deferred.load(Ordering::Relaxed),
             "running_now": running_ollama + running_anthropic + running_gemini,
             "max_concurrent": cfg.max_concurrent,
             "enabled": cfg.enabled,
@@ -976,6 +981,9 @@ impl QueueService {
             // provider queued behind them can still be dispatched this pass — no head-of-line
             // blocking across providers. Set-aside jobs return to the heap after the scan.
             let mut blocked: Vec<PrioritizedJob> = Vec::new();
+            // Read once per pass: a lease taken or released mid-pass applies next pass.
+            let gpu_leased = crate::services::gpu_lease::held().is_some();
+            let mut gpu_deferred = 0i64;
             loop {
                 if !self.config.read().await.enabled {
                     break;
@@ -990,6 +998,21 @@ impl QueueService {
                     if set.remove(&pjob.job.id) {
                         continue;
                     }
+                }
+
+                // A GPU lease (services/gpu_lease.rs) takes local generation away.
+                // Local-pinned jobs wait for it rather than fail against a stopped
+                // sidecar or crowd Ollama Cloud's single free slot; they keep their
+                // place in the heap and their attempt count.
+                if gpu_leased
+                    && defers_during_gpu_lease(
+                        pjob.job.provider_hint.as_deref(),
+                        pjob.job.arguments.as_ref(),
+                    )
+                {
+                    gpu_deferred += 1;
+                    blocked.push(pjob);
+                    continue;
                 }
 
                 // Pick the semaphore based on provider_hint.
@@ -1026,6 +1049,8 @@ impl QueueService {
                     notify.notify_one();
                 });
             }
+
+            self.gpu_deferred.store(gpu_deferred, Ordering::Relaxed);
 
             // Return set-aside jobs to the heap for the next wakeup / permit release.
             if !blocked.is_empty() {
@@ -2062,6 +2087,19 @@ fn should_meta_learn(tool_name: &str) -> bool {
 /// (rate limit, quota exhaustion, timeout, upstream 5xx) rather than a logic error the
 /// brain could fix. Meta-learning on these just burns LLM cycles hypothesising about a
 /// billing limit or a flaky network — e.g. repeated "SerpApi 429: run out of searches".
+/// Whether a job waits out a GPU lease: it is pinned to the local model
+/// (`provider_hint: ollama`) and has no capability routing, which would pick a
+/// permitted cloud model instead.
+fn defers_during_gpu_lease(
+    provider_hint: Option<&str>,
+    arguments: Option<&serde_json::Value>,
+) -> bool {
+    provider_hint == Some("ollama")
+        && arguments
+            .and_then(|a| a.get("__required_capabilities"))
+            .is_none()
+}
+
 fn is_transient_infra_error(error_text: &str) -> bool {
     let lower = error_text.to_lowercase();
     const NEEDLES: &[&str] = &[
@@ -2830,5 +2868,26 @@ distill_focus: "keep every source URL"
             "tool 'decompose_goal' returned invalid JSON: missing field `steps`"
         ));
         assert!(!is_transient_infra_error("task not found"));
+    }
+}
+
+#[cfg(test)]
+mod gpu_lease_deferral_tests {
+    use super::defers_during_gpu_lease;
+    use serde_json::json;
+
+    #[test]
+    fn only_local_pinned_jobs_without_capability_routing_wait_out_a_lease() {
+        assert!(defers_during_gpu_lease(Some("ollama"), None));
+        assert!(defers_during_gpu_lease(
+            Some("ollama"),
+            Some(&json!({"query": "x"}))
+        ));
+        assert!(!defers_during_gpu_lease(
+            Some("ollama"),
+            Some(&json!({"__required_capabilities": ["reasoning"]}))
+        ));
+        assert!(!defers_during_gpu_lease(Some("ollama-cloud"), None));
+        assert!(!defers_during_gpu_lease(None, None));
     }
 }

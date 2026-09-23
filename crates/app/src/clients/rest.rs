@@ -1168,6 +1168,21 @@ pub async fn handle_llm_budget() -> impl IntoResponse {
     Json(crate::services::budget::snapshot_json()).into_response()
 }
 
+/// GET /api/gpu-lease — whether the GPU is leased, to whom and until when.
+pub async fn handle_gpu_lease_status() -> impl IntoResponse {
+    Json(crate::services::gpu_lease::status_json()).into_response()
+}
+
+/// POST /api/gpu-lease — `{action: status|acquire|release, holder, reason,
+/// ttl_hours, force}`. A refused action (the GPU held by someone else, a
+/// missing holder) is 409 with the reason.
+pub async fn handle_gpu_lease(Json(body): Json<Value>) -> impl IntoResponse {
+    match crate::services::gpu_lease::handle(body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
 /// GET /api/tools/dynamic — list all runtime-defined DynamicTool nodes.
 /// GET /api/jobs?status=<filter>&limit=<n>
 ///

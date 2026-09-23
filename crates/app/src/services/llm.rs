@@ -530,6 +530,36 @@ impl LlmClient {
         &self.config
     }
 
+    /// Local generation stops while a GPU lease is held (`services/gpu_lease.rs`).
+    /// The routing policy already refuses local models; this backstop covers
+    /// callers that build a client directly (the distiller, the context builder).
+    fn refuse_local_if_gpu_leased(&self) -> Result<(), LlmError> {
+        let local = crate::services::provider_registry::get(&self.config.provider_label())
+            .map(|e| e.billing == crate::services::provider_registry::Billing::Local)
+            .unwrap_or(matches!(
+                self.config.provider,
+                LlmProviderType::Ollama | LlmProviderType::LlamaCpp
+            ));
+        match crate::services::gpu_lease::refusal() {
+            Some(reason) if local => Err(LlmError::ServerNotReachable(reason)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Embeddings run on host Ollama (bge-m3 lives on the GPU), so a GPU lease
+    /// pauses them: a single search would otherwise reload bge-m3 mid-training.
+    /// Callers already degrade (search to BM25; a stored note is marked
+    /// `embedding_pending` and backfilled on release).
+    fn refuse_embeddings_if_gpu_leased(&self) -> Result<(), LlmError> {
+        let local = self.config.embed_base_url.is_some()
+            || self.config.embed_model.is_some()
+            || matches!(self.config.provider, LlmProviderType::Ollama);
+        match crate::services::gpu_lease::refusal() {
+            Some(reason) if local => Err(LlmError::ServerNotReachable(reason)),
+            _ => Ok(()),
+        }
+    }
+
     /// Check if the provider is reachable.
     pub async fn health_check(&self) -> Result<bool, LlmError> {
         Ok(self.provider.health_check().await)
@@ -546,6 +576,7 @@ impl LlmClient {
         prompt: &str,
         system: Option<&str>,
     ) -> Result<LlmResponse, LlmError> {
+        self.refuse_local_if_gpu_leased()?;
         // One provider concurrency slot for exactly this call (services/provider_gate.rs).
         let _permit = crate::services::provider_gate::acquire(&self.config.provider_label()).await;
         self.provider
@@ -556,6 +587,7 @@ impl LlmClient {
 
     /// Generate embeddings for a text.
     pub async fn embeddings(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        self.refuse_embeddings_if_gpu_leased()?;
         self.embed_provider
             .embed(text)
             .await
@@ -564,6 +596,7 @@ impl LlmClient {
 
     /// Chat with the model using message history.
     pub async fn chat(&self, messages: &[ChatMessage]) -> Result<LlmResponse, LlmError> {
+        self.refuse_local_if_gpu_leased()?;
         let _permit = crate::services::provider_gate::acquire(&self.config.provider_label()).await;
         self.provider.chat(messages).await.map_err(LlmError::from)
     }

@@ -188,6 +188,15 @@ impl KnowledgeService {
 
         self.neo4j.run(query).await?;
 
+        // Stored without a vector (a GPU lease, or the embedder down): mark it so
+        // `backfill_pending_embeddings` embeds and links it later, rather than the
+        // note staying invisible to vector search for good.
+        if embedding.is_none() && self.llm.is_some() {
+            let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.embedding_pending = true")
+                .param("id", note_id.clone());
+            let _ = self.neo4j.run(q).await;
+        }
+
         // Optional fields written in separate SET queries to keep the CREATE clean.
         if let Some(sc) = source_context {
             let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.source_context = $sc")
@@ -313,6 +322,87 @@ impl KnowledgeService {
         self.spawn_extract_entities(note_id.to_string(), content.to_string());
 
         Ok((removed, created))
+    }
+
+    /// Embed and link notes stored while embeddings were unavailable (a GPU
+    /// lease, or the embedder down), oldest first, and extract entities for
+    /// those that have none (chunks excepted: their entities live on the
+    /// parent). Stops early if a GPU lease is taken again. Returns
+    /// `(embedded, failed)`; a failed note stays pending for the next run.
+    pub async fn backfill_pending_embeddings(&self, max: usize) -> Result<(usize, usize)> {
+        let Some(llm) = &self.llm else {
+            return Ok((0, 0));
+        };
+        let rows = self
+            .neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (n:Note) WHERE n.embedding_pending = true \
+                     RETURN n.id AS id, n.content AS content, \
+                            size([(n)-[:MENTIONS]->() | 1]) > 0 \
+                            OR size([(n)-[:PART_OF]->() | 1]) > 0 AS skip_entities \
+                     ORDER BY n.created_at ASC LIMIT $max",
+                )
+                .param("max", max as i64),
+            )
+            .await?;
+        let (mut embedded, mut failed) = (0usize, 0usize);
+        for row in rows {
+            if crate::services::gpu_lease::held().is_some() {
+                break;
+            }
+            let (Ok(id), Ok(content)) = (row.get::<String>("id"), row.get::<String>("content"))
+            else {
+                continue;
+            };
+            let skip_entities = row.get::<bool>("skip_entities").unwrap_or(true);
+            match llm.embed(&content).await {
+                Ok(emb) => {
+                    let q = neo4rs::query(
+                        "MATCH (n:Note {id: $id}) \
+                         SET n.embedding = $embedding REMOVE n.embedding_pending",
+                    )
+                    .param("id", id.clone())
+                    .param("embedding", emb.clone());
+                    self.neo4j.run(q).await?;
+                    let _ = self.link_similar_notes(&id, &emb).await;
+                    if !skip_entities {
+                        self.spawn_extract_entities(id, content);
+                    }
+                    embedded += 1;
+                }
+                Err(e) => {
+                    warn!(note_id = %id, error = %e, "Backfill: embedding still failing — left pending");
+                    failed += 1;
+                }
+            }
+        }
+        Ok((embedded, failed))
+    }
+
+    /// Run [`Self::backfill_pending_embeddings`] in batches until nothing is
+    /// left or a batch makes no progress. The GPU lease's release hook.
+    pub async fn run_embedding_backfill(&self) {
+        const BATCH: usize = 100;
+        let (mut embedded, mut failed) = (0usize, 0usize);
+        loop {
+            match self.backfill_pending_embeddings(BATCH).await {
+                Ok((e, f)) => {
+                    embedded += e;
+                    failed += f;
+                    if e == 0 || e + f < BATCH {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    warn!(error = %err, "Embedding backfill stopped");
+                    break;
+                }
+            }
+        }
+        if embedded + failed > 0 {
+            info!(embedded, failed, "Embedding backfill finished");
+        }
     }
 
     async fn link_similar_notes(&self, note_id: &str, embedding: &[f32]) -> Result<usize> {
@@ -580,6 +670,12 @@ impl KnowledgeService {
     /// nothing but the latency.
     fn spawn_extract_entities(&self, note_id: String, content: String) {
         let Some(llm) = self.llm.clone() else { return };
+        // Extraction runs on the local model. During a GPU lease it would fail
+        // for every note; the post-lease backfill extracts them instead.
+        if crate::services::gpu_lease::held().is_some() {
+            debug!(note_id = %note_id, "GPU leased: entity extraction left to the post-lease backfill");
+            return;
+        }
         let neo4j = self.neo4j.clone();
         tokio::spawn(async move {
             if let Err(e) = Self::extract_entities(neo4j, &note_id, &content, llm).await {
