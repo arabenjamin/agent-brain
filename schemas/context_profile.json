@@ -21,12 +21,11 @@
     },
     "model_preference": {
       "type": "string",
-      "description": "Overrides the chat model for this profile's turns. Honored on /chat; a sub-agent run CLAMPS it to the unmetered band. Blank/unresolvable keeps the default."
+      "description": "Overrides the chat model for this profile's turns when the routing policy admits it for the profile's data_class (a sub-agent run is judged as purpose: subagent, with the stricter of its caller's and the profile's class). A refused, blank or unresolvable preference keeps the default."
     },
     "provider_hint": {
       "type": "string",
-      "enum": ["ollama", "ollama-cloud", "anthropic", "gemini"],
-      "description": "Provider for model_preference. Inert without model_preference (the resolver is only reached via it)."
+      "description": "A provider-registry name from `providers:` in models.yaml (ollama, llamacpp, ollama-cloud, mistral, openrouter, anthropic, gemini, ...) or a historical spelling of one. Consulted only for a model_preference not in the catalog; inert without model_preference."
     },
     "spawnable": { "type": "boolean", "description": "Whether run_agent/delegate may spawn this profile as a sub-agent." },
     "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) keeps this profile's turns on no_log providers; public also admits free tiers that may train on prompts. A sub-agent run uses the stricter of this and its caller's class." },

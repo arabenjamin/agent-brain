@@ -42,6 +42,8 @@ use super::session::{SessionConfig, SessionManager, SessionState};
 use super::transport::OutgoingMessage;
 use super::transport_trait::{McpTransport, TransportError, TransportMessage};
 
+mod openai_compat;
+
 /// MCP protocol version header name.
 pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 /// MCP session ID header name.
@@ -311,6 +313,12 @@ impl HttpTransport {
             .route("/mcp", get(handle_get_mcp))
             .route("/mcp", delete(handle_delete_mcp))
             .route("/chat", post(handle_post_chat))
+            // OpenAI-compatible front door (Conduit and other OpenAI-wire clients).
+            .route("/v1/models", get(openai_compat::handle_list_models))
+            .route(
+                "/v1/chat/completions",
+                post(openai_compat::handle_chat_completions),
+            )
             .route("/health", get(handle_health))
             // --- REST routes (handlers defined in clients/rest.rs) ---
             .route(

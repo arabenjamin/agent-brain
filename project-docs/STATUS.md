@@ -135,8 +135,20 @@
 
 ## Recent Changes (auto)
 
+### 2026-09-23
+
+- feat: GPU lease — hand the whole GPU to a training run, keep the brain on cloud (`a6851e5`)
+- feat: provider concurrency gate — one slot per request, chat first (`717b536`)
+- feat: budget ledger — limits act before the call, not after a 429 (`7610cbd`)
+- feat: one routing policy decides where every LLM call may go (`af144b3`)
+
+### 2026-09-14
+
+- feat: provider registry — any OpenAI-compatible API is a YAML entry (`614c5d9`)
+
 ### 2026-09-12
 
+- feat: check the graph before searching the web; fix embedding, tokens, profiles (`79e419a`)
 - feat: give the brain a tool for its own inventory; stop guessed labels reading as absence (`f9b1750`)
 
 ### 2026-09-11
@@ -152,15 +164,6 @@
 - fix: robust chat fallback + lean job-applicant profile (`ed3edd4`)
 - fix: surface aidevboard job_id in the search list so reply-to-apply uses it (`7b6aeb5`)
 - fix: chat turn falls back on empty completion after a tool call; job search replaces not stacks (`f3c60ea`)
-- feat: outbound MCP client + aidevboard apply workflow (`d3a9e03`)
-- feat: deterministic write-boundary validation for schedules & chains (`41cd61d`)
-- Added Schema Validation (`da1f0d6`)
-- Tweaked some Scheduler business, and some context business (`39c8575`)
-- feat: http_request  — project JSON responses to fit local context (`c86a3c4`)
-
-### 2026-09-08
-
-- Tweaking ! yolo lol (`1ee3695`)
 
 ## Known Issues / Backlog
 

@@ -338,6 +338,13 @@ impl SearchSkill {
                         "description": "Name of a SourceList node in Neo4j (e.g. 'news'). \
                                         When set, restricts results to approved domains only — \
                                         adds site: operators to the query and post-filters results."
+                    },
+                    "prior_knowledge": {
+                        "type": "boolean",
+                        "description": "Prefix results with matching notes, APIs and media the graph \
+                                        already holds (default: true). Set false when you need \
+                                        EXTERNAL evidence only — e.g. verifying a claim, where our \
+                                        own notes restating it are not corroboration."
                     }
                 },
                 "required": ["query"]
@@ -978,7 +985,7 @@ impl SearchSkill {
 
         // Post-filter: drop any result whose URL is not from an approved domain.
         if allowed_domains.is_empty() {
-            return self.with_prior_knowledge(&input.query, result).await;
+            return self.finish_search(&input, result).await;
         }
         let content_text = result
             .content
@@ -992,7 +999,7 @@ impl SearchSkill {
             })
             .unwrap_or("[]");
         let Ok(items) = serde_json::from_str::<Vec<Value>>(content_text) else {
-            return self.with_prior_knowledge(&input.query, result).await;
+            return self.finish_search(&input, result).await;
         };
         let filtered: Vec<Value> = items
             .into_iter()
@@ -1008,8 +1015,17 @@ impl SearchSkill {
         // Source-list path returns here; it must carry the prior-knowledge
         // block too, or a domain-restricted search is the one route that
         // silently skips the "do we already know this?" check.
-        self.with_prior_knowledge(&input.query, ToolCallResult::success_json(filtered))
+        self.finish_search(&input, ToolCallResult::success_json(filtered))
             .await
+    }
+
+    /// Every return path of `search_web` ends here, so the `prior_knowledge`
+    /// opt-out cannot be honoured on one path and forgotten on another.
+    async fn finish_search(&self, input: &SearchInput, result: ToolCallResult) -> ToolCallResult {
+        if !input.prior_knowledge {
+            return result;
+        }
+        self.with_prior_knowledge(&input.query, result).await
     }
 
     async fn handle_get_search_usage(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -1523,6 +1539,17 @@ struct SearchInput {
         deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
     )]
     source_list: Option<String>,
+    /// Prefix the result with what the graph already holds (default on).
+    /// A claim verifier MUST turn this off: the block quotes our own notes —
+    /// often the very claim being verified — and a judge reading it answers
+    /// "supports" with the claim as its own source. Observed 2026-09-12..24:
+    /// the corroboration rate went 41% → 84%, 169 edges citing a graph note.
+    #[serde(default = "default_true")]
+    prior_knowledge: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn deserialize_optional_count<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
@@ -1579,6 +1606,17 @@ mod tests {
     fn query_words_ignore_short_tokens() {
         let w = SearchSkill::query_words("who is he in AI ml");
         assert!(w.is_empty(), "expected nothing usable, got {w:?}");
+    }
+
+    /// The graph-first block is on unless a caller opts out — and a verifier's
+    /// opt-out must actually parse, or it silently gets the block anyway.
+    #[test]
+    fn prior_knowledge_defaults_on_and_can_be_turned_off() {
+        let on: SearchInput = serde_json::from_value(json!({"query": "q"})).unwrap();
+        assert!(on.prior_knowledge);
+        let off: SearchInput =
+            serde_json::from_value(json!({"query": "q", "prior_knowledge": false})).unwrap();
+        assert!(!off.prior_knowledge);
     }
 
     /// The check must never be able to break a search: no graph, no block, and

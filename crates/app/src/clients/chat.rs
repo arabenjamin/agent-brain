@@ -3645,6 +3645,8 @@ impl ChatService {
         messages.push(ChatMessage::user(&request.message));
 
         let mut empty_completions = 0usize;
+        let mut malformed_calls = 0usize;
+        let mut tool_trace: Vec<(String, bool)> = Vec::new();
 
         // One guard per turn: grounding state and duplicate fingerprints are
         // per-turn, and the ladder may run this loop once per rung.
@@ -3685,7 +3687,46 @@ impl ChatService {
             let text = response.text.trim().to_string();
 
             // Check for tool calls.
-            if let Some((before, call, after)) = extract_tool_call(&text) {
+            let parsed = extract_tool_call(&text);
+            if let ToolCallParse::Malformed {
+                before,
+                tool,
+                error,
+            } = parsed
+            {
+                let _ = tx
+                    .send(ChatEvent::ToolResult {
+                        tool: tool
+                            .clone()
+                            .unwrap_or_else(|| "(unparsed tool call)".into()),
+                        success: false,
+                        preview: format!("Malformed tool call — not executed: {error}"),
+                        model_saw_chars: None,
+                    })
+                    .await;
+                if malformed_calls < MAX_MALFORMED_TOOL_CALL_RETRIES {
+                    malformed_calls += 1;
+                    warn!(model = %model, tool = ?tool, error = %error, "Malformed tool call — asking the model to re-emit it");
+                    messages.push(ChatMessage::assistant(&text));
+                    messages.push(ChatMessage::user(format!(
+                        "{}\n\n{}",
+                        malformed_tool_call_correction(tool.as_deref(), &error),
+                        tool_trace_receipt(&tool_trace)
+                    )));
+                    continue;
+                }
+                warn!(model = %model, tool = ?tool, error = %error, "Malformed tool call again — reporting it to the user");
+                let notice = malformed_tool_call_notice(tool.as_deref(), &error);
+                let prose = before.trim();
+                let content = if prose.is_empty() {
+                    notice
+                } else {
+                    format!("{prose}\n\n{notice}")
+                };
+                let _ = tx.send(ChatEvent::Message { content }).await;
+                break;
+            }
+            if let ToolCallParse::Call(before, call, after) = parsed {
                 // Emit thinking text before the tool call.
                 let thinking = before.trim().to_string();
                 if !thinking.is_empty() {
@@ -3713,6 +3754,7 @@ impl ChatService {
                         &tx,
                     )
                     .await;
+                tool_trace.push((tool_name.clone(), success));
 
                 let preview: String = result_text.chars().take(4000).collect();
                 let user_copy = user_facing_result(&preview, bulk.as_deref());
@@ -4011,21 +4053,72 @@ fn strip_xml_tool_calls(text: &str) -> String {
     result.trim().to_string()
 }
 
+/// What a text-loop reply contained, as far as tool calls go.
+#[derive(Debug)]
+enum ToolCallParse {
+    /// No `<tool_call>` opener at all — the reply is prose.
+    None,
+    /// A well-formed call: `(before, parsed_json, after)`.
+    Call(String, Value, String),
+    /// A `<tool_call>` opener whose payload could not be used. The call did
+    /// NOT run. `tool` is the name recovered by a lenient scan, when there is
+    /// one; `before` is the prose that preceded the tag.
+    Malformed {
+        before: String,
+        tool: Option<String>,
+        error: String,
+    },
+}
+
+/// Recover a tool name from a payload that is not valid JSON, so the notice
+/// can say WHICH action did not run.
+fn salvage_tool_name(payload: &str) -> Option<String> {
+    for key in ["\"tool\"", "\"name\""] {
+        let Some(i) = payload.find(key) else { continue };
+        let rest = payload[i + key.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        if let Some(end) = rest.find('"') {
+            let name = &rest[..end];
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Extract the first `<tool_call>...</tool_call>` block from a text.
 ///
-/// Returns `(before, parsed_json, after)` if found, or `None` if not found.
-fn extract_tool_call(text: &str) -> Option<(String, Value, String)> {
+/// A malformed block is reported, not swallowed. Returning "no tool call" for
+/// it made the loop treat the text as the final answer, so the user read
+/// "I am now setting this schedule up" while the upsert never ran — observed
+/// 2026-09-24 03:42 UTC on Gemini (a `manage_scheduled_task` payload whose
+/// third step object was never closed), with one WARN as the only trace.
+fn extract_tool_call(text: &str) -> ToolCallParse {
     let open = "<tool_call>";
     let close = "</tool_call>";
 
-    let start = text.find(open)?;
-    let end = text.find(close)?;
-    if end < start {
-        return None;
-    }
-
+    let Some(start) = text.find(open) else {
+        return ToolCallParse::None;
+    };
     let before = text[..start].to_string();
-    let json_str = &text[start + open.len()..end];
+    let body_start = start + open.len();
+    let Some(rel_end) = text[body_start..].find(close) else {
+        let payload = &text[body_start..];
+        warn!("tool_call block is never closed: {}", payload);
+        return ToolCallParse::Malformed {
+            before,
+            tool: salvage_tool_name(payload),
+            error: "the <tool_call> tag was never closed with </tool_call>".to_string(),
+        };
+    };
+    let end = body_start + rel_end;
+    let json_str = &text[body_start..end];
     let after = text[end + close.len()..].to_string();
 
     match serde_json::from_str::<Value>(json_str) {
@@ -4038,18 +4131,53 @@ fn extract_tool_call(text: &str) -> Option<(String, Value, String)> {
             {
                 obj.insert("tool".to_string(), Value::String(name));
             }
-            if v.get("tool").is_some() {
-                Some((before, v, after))
+            if v.get("tool").and_then(|t| t.as_str()).is_some() {
+                ToolCallParse::Call(before, v, after)
             } else {
                 warn!("Tool call JSON missing 'tool'/'name' key: {}", json_str);
-                None
+                ToolCallParse::Malformed {
+                    before,
+                    tool: None,
+                    error: "the JSON has no \"tool\" key naming the tool to call".to_string(),
+                }
             }
         }
         Err(e) => {
             warn!("Failed to parse tool_call JSON: {} — {}", json_str, e);
-            None
+            ToolCallParse::Malformed {
+                before,
+                tool: salvage_tool_name(json_str),
+                error: format!("the JSON is invalid: {e}"),
+            }
         }
     }
+}
+
+/// How many times the text loop asks the model to re-emit a malformed call
+/// before giving up and telling the user it did not run.
+const MAX_MALFORMED_TOOL_CALL_RETRIES: usize = 1;
+
+/// The correction fed back to the model after a malformed tool call.
+fn malformed_tool_call_correction(tool: Option<&str>, error: &str) -> String {
+    let which = tool.map(|t| format!(" to `{t}`")).unwrap_or_default();
+    format!(
+        "Your tool call{which} did NOT run: {error}. Nothing was executed. Re-emit the \
+         complete call as ONE valid JSON object inside <tool_call>...</tool_call>, checking \
+         that every {{ and [ is closed. If you cannot, answer without it and say plainly that \
+         the action was not performed."
+    )
+}
+
+/// The visible line appended to a reply whose tool call never ran. Prose that
+/// promises an action must not stand when the action did not happen.
+fn malformed_tool_call_notice(tool: Option<&str>, error: &str) -> String {
+    let which = tool
+        .map(|t| format!("`{t}`"))
+        .unwrap_or_else(|| "a tool".to_string());
+    format!(
+        "⚠ The call to {which} was malformed and did NOT run ({error}). Nothing described \
+         above as being done by that call has happened — ask again to retry it."
+    )
 }
 
 // ============================================================================
@@ -5625,5 +5753,172 @@ mod write_guard_tests {
         }
         assert_eq!(executed, 3, "one write per distinct note");
         assert_eq!(downgraded, 3, "all three ungrounded");
+    }
+}
+
+#[cfg(test)]
+mod malformed_tool_call_tests {
+    use super::empty_completion_tests::{chat_service, cloud_config, test_request};
+    use super::*;
+
+    /// The real reply from 2026-09-24 03:42 UTC (Gemini, front door). The
+    /// third step's `arguments` object is never closed, so the JSON is invalid;
+    /// the prose before it promises the schedule is being set up.
+    const REPLY_0342: &str = r#"I am now setting this schedule up.
+
+<tool_call>{"tool":"manage_scheduled_task","args":{"action":"upsert","name":"nia-actor-motivation-monitoring","interval_seconds":86400,"steps":[{"tool_name":"search_web","arguments":{"query":"actors influence, blackmail, bribery","limit":5},"provider_hint":"ollama","max_attempts":3,"description":"Fetch reports."},{"tool_name":"neo4j_query","arguments":{"cypher":"MATCH (a:Actor) RETURN a LIMIT 10","params":{},"readonly":true},"provider_hint":"ollama","max_attempts":3,"description":"Query."},{"tool_name":"reason","arguments":{"prompt":"Synthesize.","context":"{{_prev}}","provider_hint":"ollama","max_attempts":3,"description":"Analyze."},{"tool_name":"store_note","arguments":{"content":"{{_prev}}","source_context":"NIA_Actor_Motivation_Monitor","note_type":"source_record","provider_hint":"ollama","max_attempts":3,"description":"Persist."}}]}}</tool_call>"#;
+
+    #[test]
+    fn the_0342_payload_is_reported_malformed_with_its_tool_name() {
+        match extract_tool_call(REPLY_0342) {
+            ToolCallParse::Malformed {
+                before,
+                tool,
+                error,
+            } => {
+                assert_eq!(tool.as_deref(), Some("manage_scheduled_task"));
+                assert!(error.contains("invalid"), "{error}");
+                assert!(before.contains("setting this schedule up"));
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unclosed_tag_is_malformed_not_prose() {
+        let t = r#"Saving it now. <tool_call>{"tool":"store_note","args":{"content":"x"}}"#;
+        match extract_tool_call(t) {
+            ToolCallParse::Malformed { tool, error, .. } => {
+                assert_eq!(tool.as_deref(), Some("store_note"));
+                assert!(error.contains("never closed"), "{error}");
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_call_without_a_tool_key_is_malformed() {
+        let t = r#"<tool_call>{"args":{"q":"x"}}</tool_call>"#;
+        assert!(matches!(
+            extract_tool_call(t),
+            ToolCallParse::Malformed { tool: None, .. }
+        ));
+    }
+
+    #[test]
+    fn well_formed_calls_and_plain_prose_are_unchanged() {
+        let t = r#"Looking. <tool_call>{"name":"search_notes","args":{"query":"x"}}</tool_call>"#;
+        match extract_tool_call(t) {
+            ToolCallParse::Call(before, v, _) => {
+                assert_eq!(before, "Looking. ");
+                assert_eq!(v["tool"], "search_notes");
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+        assert!(matches!(
+            extract_tool_call("Just an answer."),
+            ToolCallParse::None
+        ));
+    }
+
+    fn completion(content: &str) -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
+                         "finish_reason": "stop"}]
+        }))
+    }
+
+    async fn drive_text_loop(server: &wiremock::MockServer) -> Vec<ChatEvent> {
+        let svc = chat_service(vec![]);
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(64);
+        svc.run_text_loop(
+            cloud_config(server),
+            vec![],
+            None,
+            test_request(),
+            "sys".into(),
+            tx,
+            false,
+            MAX_TOOL_ITERATIONS,
+        )
+        .await;
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seen.push(e);
+        }
+        seen
+    }
+
+    fn final_messages(seen: &[ChatEvent]) -> Vec<String> {
+        seen.iter()
+            .filter_map(|e| match e {
+                ChatEvent::Message { content } => Some(content.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The 03:42 turn, replayed: the model repeats the malformed call. The turn
+    /// must NOT end with "I am now setting this schedule up" standing alone.
+    #[tokio::test]
+    async fn a_repeated_malformed_call_ends_with_a_visible_did_not_run_notice() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(completion(REPLY_0342))
+            // The original attempt plus exactly one retry.
+            .expect(1 + MAX_MALFORMED_TOOL_CALL_RETRIES as u64)
+            .mount(&server)
+            .await;
+
+        let seen = drive_text_loop(&server).await;
+        let msgs = final_messages(&seen);
+        assert_eq!(msgs.len(), 1, "{seen:?}");
+        let m = &msgs[0];
+        assert!(m.contains("setting this schedule up"), "{m}");
+        assert!(m.contains("did NOT run"), "{m}");
+        assert!(m.contains("manage_scheduled_task"), "{m}");
+        assert!(!m.contains("<tool_call>"), "raw tag leaked: {m}");
+        assert!(
+            !seen
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolResult { success: true, .. })),
+            "nothing ran, so nothing may be reported as succeeding: {seen:?}"
+        );
+    }
+
+    /// One correction is enough when the model fixes itself: the retry's
+    /// answer is delivered and the correction named the failed tool.
+    #[tokio::test]
+    async fn a_malformed_call_gets_one_correction_round() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains("did NOT run"))
+            .respond_with(completion(
+                "I could not save the schedule; the action was not performed.",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(completion(REPLY_0342))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let seen = drive_text_loop(&server).await;
+        assert_eq!(
+            final_messages(&seen),
+            vec!["I could not save the schedule; the action was not performed.".to_string()],
+            "{seen:?}"
+        );
     }
 }

@@ -194,6 +194,7 @@ services:
       - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
       - CODEBASE_DIR=/home/agent/agent-brain
       - CHAINS_DIR=/home/agent/agent-brain/chains
+      - SCHEMAS_DIR=/home/agent/agent-brain/schemas              # envelope validation for schedules/chains (services/validation.rs)
       - SCHEDULES_DIR=/home/agent/agent-brain/schedules
       - SOURCES_DIR=/home/agent/agent-brain/sources
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)

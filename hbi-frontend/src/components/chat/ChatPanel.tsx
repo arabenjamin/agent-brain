@@ -136,6 +136,7 @@ const SESSION_KINDS: ReadonlyArray<readonly [string, string]> = [
   ["slmwatch-", "SLM benchmark watch"],
   ["tripwire-", "Hardware tripwire"],
   ["synthesis-", "Tech dependency synthesis"],
+  ["conduit-", "Phone (Conduit)"],
 ];
 
 /** `2026-08-20` → `Aug 20`. Returns null for anything that is not a bare date. */

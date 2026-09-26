@@ -434,37 +434,94 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
 /// One domain is not corroboration, however confidently a model reads it.
 pub const MIN_INDEPENDENT_DOMAINS: usize = 2;
 
-/// Registrable-ish domains appearing in a block of search results.
+/// Registrable-ish domain of a URL or bare host: the last two labels.
 ///
-/// Deliberately crude — the last two labels of the host. It over-merges a few
-/// country-code domains (`bbc.co.uk` → `co.uk`), which errs toward *under*-
-/// counting independence, and under-counting is the safe direction here.
+/// Deliberately crude — it over-merges a few country-code domains
+/// (`bbc.co.uk` → `co.uk`), which errs toward *under*-counting independence,
+/// and under-counting is the safe direction here.
+fn registrable_domain(url_or_host: &str) -> Option<String> {
+    let s = url_or_host.trim();
+    let rest = s.split_once("://").map(|x| x.1).unwrap_or(s);
+    let host = rest
+        .split(['/', '"', '\\', ' ', '\'', '?', '#', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_lowercase();
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    if labels.len() < 2 {
+        return None;
+    }
+    Some(labels[labels.len() - 2..].join("."))
+}
+
+/// The `link` (or `url`) field of every result in a `search_web` JSON array.
+///
+/// Only these count. Scanning the whole text for `http` — the old approach —
+/// also counted URLs quoted INSIDE a result or inside the graph-first "WHAT WE
+/// ALREADY KNOW" block, so a note of ours could add domains to the
+/// independence tally. Text that is not a result array yields nothing, which
+/// under-counts: the safe direction.
+pub fn evidence_links(evidence: &str) -> Vec<String> {
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(evidence.trim()) else {
+        return vec![];
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            item.get("link")
+                .or_else(|| item.get("url"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect()
+}
+
+/// Distinct registrable domains of the search results' own links.
 pub fn evidence_domains(evidence: &str) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
-    for part in evidence.split("http") {
-        let Some(rest) = part.split_once("://").map(|x| x.1) else {
-            continue;
-        };
-        let host = rest
-            .split(['/', '"', '\\', ' ', '\''])
-            .next()
-            .unwrap_or("")
-            .trim_start_matches("www.")
-            .to_lowercase();
-        if host.is_empty() || !host.contains('.') {
-            continue;
-        }
-        let labels: Vec<&str> = host.split('.').collect();
-        let registrable = if labels.len() >= 2 {
-            labels[labels.len() - 2..].join(".")
-        } else {
-            host.clone()
-        };
-        if !seen.contains(&registrable) {
-            seen.push(registrable);
+    for link in evidence_links(evidence) {
+        if let Some(d) = registrable_domain(&link)
+            && !seen.contains(&d)
+        {
+            seen.push(d);
         }
     }
     seen
+}
+
+/// Whether the judge's cited `source` is one of the search results.
+///
+/// A "supports" verdict must point at external evidence the search actually
+/// returned. Accepts a URL or domain whose registrable domain is among the
+/// result links, or an outlet name matching a result domain's name label
+/// ("Reuters" → `reuters.com`). Rejects anything else — a note id, "the
+/// knowledge graph", or an empty source — because that is the shape
+/// self-corroboration took (2026-09-12..24).
+pub fn source_is_in_results(source: Option<&str>, evidence: &str) -> bool {
+    let Some(source) = source.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let domains = evidence_domains(evidence);
+    if let Some(d) = registrable_domain(source)
+        && domains.contains(&d)
+    {
+        return true;
+    }
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let src = norm(source);
+    domains.iter().any(|d| {
+        let name = norm(d.split('.').next().unwrap_or(""));
+        name.len() >= 4 && (src == name || src.starts_with(&name) || src.ends_with(&name))
+    })
 }
 
 /// True when a source domain looks like it belongs to the claim's own subject.
@@ -548,7 +605,7 @@ pub async fn assess_evidence(
          \"unrelated\"   — the evidence is off-topic, or merely repeats the same \
          original source rather than confirming it independently\n\n\
          Respond with JSON only:\n\
-         {{\"verdict\": \"supports|contradicts|unrelated\", \"source\": \"url or outlet\", \"reasoning\": \"one sentence\"}}\n\n\
+         {{\"verdict\": \"supports|contradicts|unrelated\", \"source\": \"the link of the result you relied on, copied exactly\", \"reasoning\": \"one sentence\"}}\n\n\
          CLAIM:\n{claim}\n\nEVIDENCE:\n{evidence}"
     );
 
@@ -734,6 +791,33 @@ mod tests {
         assert_eq!(d.len(), 2, "got {d:?}");
         assert!(d.contains(&"reuters.com".to_string()));
         assert!(d.contains(&"apnews.com".to_string()));
+    }
+
+    #[test]
+    fn only_result_links_count_as_domains() {
+        // A URL quoted inside a snippet (or inside a graph-first block) is not a
+        // result, and must not add to the independence tally.
+        let ev = r#"[{"link":"https://sleep.com/dreams","snippet":"see https://reuters.com/x and https://apnews.com/y"}]"#;
+        assert_eq!(evidence_domains(ev), vec!["sleep.com".to_string()]);
+        assert!(check_independence(ev, "My legs!", None).is_err());
+    }
+
+    #[test]
+    fn non_array_evidence_yields_no_domains() {
+        let ev = "WHAT WE ALREADY KNOW\n- note: https://reuters.com/a https://apnews.com/b";
+        assert!(evidence_domains(ev).is_empty());
+    }
+
+    #[test]
+    fn a_support_citing_a_graph_note_is_not_in_the_results() {
+        let ev = r#"[{"link":"https://www.reuters.com/a"},{"link":"https://apnews.com/b"}]"#;
+        assert!(!source_is_in_results(Some("note 0020786f"), ev));
+        assert!(!source_is_in_results(Some("the knowledge graph"), ev));
+        assert!(!source_is_in_results(None, ev));
+        assert!(!source_is_in_results(Some("https://bbc.com/z"), ev));
+        assert!(source_is_in_results(Some("https://reuters.com/a"), ev));
+        assert!(source_is_in_results(Some("apnews.com"), ev));
+        assert!(source_is_in_results(Some("Reuters"), ev));
     }
 
     #[test]

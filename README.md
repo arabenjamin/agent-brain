@@ -1,6 +1,16 @@
 # Agent Brain
 
-A persistent, self-improving autonomous agent backed by a Neo4j knowledge graph. Exposes ~50 tools via MCP with built-in interactive chat.
+A persistent, self-improving ( lol hardly ) autonomous agent ( kinda ) backed by a Neo4j knowledge graph (thats true).
+
+## tl;dr
+Human here, this project got out of hand quickly. It started as an mcp server, that grew into something very different. 
+Let me just say I dont care for the name, but thats what I picked when I started it. 
+Despite my best attempts, this is a managed dumpster fire, though, it may yet have it's uses and some potential. 
+Did I vibe code this ? If you want to call it that. I'm certainly a sofware engineer and know my way around software and programming. 
+I have been using claude to put this together. Nothing about this is one-shot or from the hip, there has been a lot of planning and replanning, iteration after iteration, and careful evaluation. I've dog-fooded it, and make others do the same.
+I have a NVidia3060, and the goal was to get this to work locally on a small GPU, and to some degree of success. Though it looks like it works a lot better with a 5090. One could certainly use this with frontier cloud models and the quality and the richness of the results is definately felt. But the idea was to get this to run on smaller software.
+
+
 
 ## What It Does
 
@@ -15,9 +25,16 @@ A persistent, self-improving autonomous agent backed by a Neo4j knowledge graph.
 
 - Rust 1.75+
 - Docker & Docker Compose
-- Ollama (for LLM features)
+- Ollama (for LLM features, or llama.cpp)
 
 ## Getting Started
+
+### Quickest path to victory
+```bash
+docker compose up -d --build
+```
+
+### Longer path
 
 ```bash
 # Clone and build
@@ -138,21 +155,6 @@ docker compose up -d --build
 MCP_API_KEY=secret docker compose up -d --build
 ```
 
-## Using the API
-
-```bash
-# Ingest an OpenAPI spec
-cargo run --release -- api ingest ./openapi.yaml
-
-# Query endpoints
-cargo run --release -- api query "pets"
-
-# Execute HTTP request
-cargo run --release -- api execute -m GET https://api.example.com/users
-
-# Export healed spec
-cargo run --release -- api export -o healed.yaml
-```
 
 ## CLI Commands
 
@@ -180,12 +182,6 @@ status   Show brain status
 
 ## Development
 
-```bash
-cargo build
-cargo fmt
-cargo clippy
-cargo test --lib
-```
 
 ## License
 

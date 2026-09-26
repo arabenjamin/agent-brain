@@ -43,3 +43,6 @@ telemetry/
 
 # Workspace
 workspace/
+
+# Compiled Go ingress binary (build output)
+ingress/ingress

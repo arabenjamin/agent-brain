@@ -204,7 +204,14 @@ impl ClaimSkill {
             .search
             .execute(
                 "search_web",
-                Some(json!({ "query": claim_text, "count": EVIDENCE_RESULTS })),
+                // External evidence only. With the graph-first block on, the
+                // judge read our own note restating the claim and called it
+                // corroboration (2026-09-12..24: 41% → 84% corroborated).
+                Some(json!({
+                    "query": claim_text,
+                    "count": EVIDENCE_RESULTS,
+                    "prior_knowledge": false
+                })),
             )
             .await;
 
@@ -281,6 +288,31 @@ impl ClaimSkill {
         } else {
             Ok(vec![])
         };
+
+        // Provenance gate. A "supports" must cite a result the search actually
+        // returned. A judge that names a note id, "the knowledge graph", or
+        // nothing at all is corroborating from somewhere other than the
+        // evidence — the shape the 2026-09-12 self-corroboration took.
+        if verdict.verdict == "supports"
+            && !claims::source_is_in_results(verdict.source.as_deref(), &evidence_text)
+        {
+            warn!(claim_id = %claim_id, source = ?verdict.source, "Support rejected — cited source is not a search result");
+            let status = claims::recompute_status(&self.neo4j, claim_id)
+                .await
+                .map(|s| s.as_str().to_string())
+                .unwrap_or_else(|_| "unverified".to_string());
+            return json!({
+                "claim_id": claim_id,
+                "claim": claim_text,
+                "verdict": "support_rejected_unsourced",
+                "evidence_recorded": false,
+                "reasoning": format!(
+                    "cited source {:?} is not among the search results' links",
+                    verdict.source
+                ),
+                "status": status
+            });
+        }
 
         if let Err(ref reason) = independence {
             warn!(claim_id = %claim_id, reason = %reason, "Support rejected — evidence not independent");
