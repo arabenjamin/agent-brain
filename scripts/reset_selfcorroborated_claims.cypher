@@ -8,18 +8,19 @@
 // contaminated for EVERY verification in the window, so all corroborations in it
 // are reset, not only the 169; the fixed verifier re-earns the real ones.
 //
-// Run AFTER the verifier fix is deployed, with the brain stopped or the
-// verifier paused. Run the three statements one at a time; read step 1 first.
+// Run AFTER the verifier fix is deployed. The upper bound is the deploy time of
+// 8f8bd66 (2026-09-26 17:48 UTC): edges after it came from the fixed verifier
+// and must survive, so the verifier need not be paused. Run the three statements one at a time; read step 1 first.
 // See project-docs/BRAIN_ASSESSMENT_FIXES_PLAN.md, Step 2.
 
 // 1. Count (dry run)
 MATCH (c:Note {note_type:'claim'})-[r:CORROBORATED_BY]->()
-WHERE r.found_at >= datetime('2026-09-12')
+WHERE r.found_at >= datetime('2026-09-12') AND r.found_at < datetime('2026-09-26T17:48:00Z')
 RETURN count(DISTINCT c) AS claims, count(r) AS edges;
 
 // 2. Tag the evidence notes behind those edges. They stay as the audit trail.
 MATCH (c:Note {note_type:'claim'})-[r:CORROBORATED_BY]->(e:Note)
-WHERE r.found_at >= datetime('2026-09-12')
+WHERE r.found_at >= datetime('2026-09-12') AND r.found_at < datetime('2026-09-26T17:48:00Z')
 SET e.contaminated = true
 RETURN count(DISTINCT e) AS evidence_notes_tagged;
 
@@ -30,7 +31,7 @@ RETURN count(DISTINCT e) AS evidence_notes_tagged;
 //    Clearing last_verify_attempt_at puts these claims at the front of the
 //    verification queue (~1 web search each, spread over the daily sweeps).
 MATCH (c:Note {note_type:'claim'})-[r:CORROBORATED_BY]->()
-WHERE r.found_at >= datetime('2026-09-12')
+WHERE r.found_at >= datetime('2026-09-12') AND r.found_at < datetime('2026-09-26T17:48:00Z')
 WITH c, collect(r) AS rs
 FOREACH (x IN rs | DELETE x)
 WITH DISTINCT c

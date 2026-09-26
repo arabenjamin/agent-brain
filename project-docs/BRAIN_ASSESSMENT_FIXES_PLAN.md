@@ -2,7 +2,7 @@
 
 Written late at night after an assessment of recent notes, claim verification, chats and logs. Work top to bottom; each step says how to check it worked.
 
-**Progress (2026-09-26):** Step 6 done (compose line). Step 1 done in code (tests green; needs rebuild). Step 2 script written and parse-checked; **not run** — the live count had grown to 367 edges / 197 non-URL sources because the old verifier is still running, so deploy Step 1 first, then run it. Step 3 done (`ToolCallParse` in `clients/chat.rs`; the 03:42 payload is a test fixture, replayed end-to-end through `run_text_loop` against wiremock). Steps 4–5 await decisions.
+**Progress (2026-09-26):** Deployed as `8f8bd66`; schemas load (`count=4`). Step 6 done (compose line). Step 1 done in code (tests green; needs rebuild). Step 2 **run 2026-09-26** after deploying `8f8bd66`: 367 corroborations (09-12 → 17:48 UTC deploy) deleted, 367 evidence notes tagged `contaminated`, all 367 claims back to `unverified` (none had older support). Graph after: 316 corroborated / 19 refuted / 3228 unverified. The script is bounded at the deploy time so the fixed verifier's edges survive. Step 3 done (`ToolCallParse` in `clients/chat.rs`; the 03:42 payload is a test fixture, replayed end-to-end through `run_text_loop` against wiremock). Steps 4–5 await decisions.
 
 **Before starting:** the working tree already has uncommitted changes (`.env.example`, `CLAUDE.md`, `README.md`, `contexts/GeneralDefault-Orchrestator.yaml`, `project-docs/STATUS.md`, `schemas/context_profile.json`, `ingress/`, `scratch.pad`). Commit or set those aside first so these fixes land as their own commits. Per the branch rules, update the docs (CLAUDE.md, this plan) in the same change as the code.
 
