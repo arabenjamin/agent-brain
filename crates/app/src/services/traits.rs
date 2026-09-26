@@ -55,6 +55,14 @@ pub trait LlmProvider: Send + Sync {
         let mut attempt = 0u32;
         loop {
             let raw = self.generate(&current, system).await?;
+            // With required keys, take the first complete object that has them.
+            // Anything after it (a repeated answer, a second fence, prose) is
+            // ignored instead of costing a retry — see `first_json_object`.
+            if !required_keys.is_empty()
+                && let Some(v) = crate::services::llm::first_json_object(&raw, required_keys)
+            {
+                return Ok(v);
+            }
             let candidate = crate::services::llm::extract_json(&raw);
             let correction = match serde_json::from_str::<Value>(candidate) {
                 Ok(value) => {
@@ -449,6 +457,17 @@ mod generate_json_tests {
             1,
             "should not retry on success"
         );
+    }
+
+    /// A claim extraction whose model repeats its answer unfenced must not
+    /// burn a retry (or, after two, lose the claims).
+    #[tokio::test]
+    async fn a_repeated_answer_is_accepted_without_a_retry() {
+        let one = r#"{"claims": [{"claim": "X happened", "asserted_by": "Reuters"}]}"#;
+        let llm = ScriptedLlm::new(&[&format!("{one}\n{one}")]);
+        let v = llm.generate_json("q", None, &["claims"], 2).await.unwrap();
+        assert_eq!(v["claims"][0]["claim"], "X happened");
+        assert_eq!(llm.prompts.lock().unwrap().len(), 1, "no retry");
     }
 
     #[tokio::test]
