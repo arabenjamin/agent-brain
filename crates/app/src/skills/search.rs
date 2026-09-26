@@ -23,7 +23,20 @@ use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 /// SearXNG leads deliberately: it is self-hosted and unmetered, so it cannot
 /// produce the "account has run out of searches" failure that the keyed engines
 /// below it can. The keyed engines are backstops for when the sidecar is down.
-const DEFAULT_ENGINE_ORDER: &[&str] = &["searxng", "google", "serpapi", "brave"];
+///
+/// Among the keyed engines, the ones whose free allowance REFILLS monthly with
+/// no card on file come first (Tavily, Exa — overage is impossible by
+/// construction), then Serper's one-time 2,500, then SerpApi (whose quota the
+/// news brief's `google_news` needs), then Google CSE (closed to new customers,
+/// ends 2027-01-01) and Brave (card on file, no spend cap). An engine without a
+/// key is dropped from the ladder, so listing one costs nothing.
+const DEFAULT_ENGINE_ORDER: &[&str] = &[
+    "searxng", "tavily", "exa", "serper", "serpapi", "google", "brave",
+];
+
+/// Characters of page text Exa returns per result as a highlight. Exa bills
+/// contents per result, so this is a snippet, not the page.
+const EXA_HIGHLIGHT_CHARS: u32 = 400;
 
 /// Base URL used when neither the `searxng` ApiContext nor `SEARXNG_URL` is set.
 /// Matches the compose service name so the default deployment works unconfigured.
@@ -88,6 +101,65 @@ fn normalize_news_item(item: &Value) -> Option<Value> {
 /// `highlight` featured story and/or a `stories` sub-array (a topic cluster).
 /// All are unrolled so a clustered topic contributes several headlines rather
 /// than one opaque group, then the list is capped at `count`.
+/// Map one engine's result list onto the ladder's common shape:
+/// `{title, link, snippet, date}` — `link` is what `evidence_domains`, the
+/// source-list post-filter and the numbered source marker all read.
+fn normalized(title: &Value, link: &Value, snippet: Value, date: &Value) -> Option<Value> {
+    let link = link.as_str().filter(|l| !l.is_empty())?;
+    let mut out = json!({ "title": title, "link": link, "snippet": snippet });
+    if !date.is_null() {
+        out["date"] = date.clone();
+    }
+    Some(out)
+}
+
+fn take_results<'a>(json: &'a Value, key: &str, count: u8) -> impl Iterator<Item = &'a Value> {
+    json.get(key)
+        .and_then(|r| r.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .take(count as usize)
+}
+
+fn normalize_tavily(json: &Value, count: u8) -> Vec<Value> {
+    take_results(json, "results", count)
+        .filter_map(|r| {
+            normalized(
+                &r["title"],
+                &r["url"],
+                r["content"].clone(),
+                &r["published_date"],
+            )
+        })
+        .collect()
+}
+
+fn normalize_exa(json: &Value, count: u8) -> Vec<Value> {
+    take_results(json, "results", count)
+        .filter_map(|r| {
+            let snippet = r["highlights"]
+                .as_array()
+                .map(|h| {
+                    h.iter()
+                        .filter_map(|x| x.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" … ")
+                })
+                .filter(|s| !s.is_empty())
+                .map(Value::String)
+                .unwrap_or_else(|| r["text"].clone());
+            normalized(&r["title"], &r["url"], snippet, &r["publishedDate"])
+        })
+        .collect()
+}
+
+fn normalize_serper(json: &Value, count: u8) -> Vec<Value> {
+    take_results(json, "organic", count)
+        .filter_map(|r| normalized(&r["title"], &r["link"], r["snippet"].clone(), &r["date"]))
+        .collect()
+}
+
 fn flatten_google_news(news_results: &[Value], count: usize) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for entry in news_results {
@@ -134,6 +206,8 @@ fn format_unresponsive(failures: &[(String, String)]) -> String {
 fn classify_search_error(error_text: &str) -> &'static str {
     let lower = error_text.to_lowercase();
     if lower.contains("run out of searches")
+        || lower.contains("not enough credits")
+        || lower.contains("out of credits")
         || lower.contains("quota")
         || lower.contains("rate limit")
         || lower.contains("429")
@@ -324,10 +398,11 @@ impl SearchSkill {
                     "engine": {
                         "type": "string",
                         "description": "Preferred engine, tried first. Omit to use the configured \
-                                        ladder (default: searxng → google → serpapi → brave). \
+                                        ladder (default: searxng → tavily → exa → serper → serpapi → google → brave; \
+                                        engines without a key are skipped). \
                                         Remaining engines are still used as fallbacks. \
                                         'google_news' is SerpApi's Google News engine (news only).",
-                        "enum": ["searxng", "serpapi", "brave", "google", "google_news"]
+                        "enum": ["searxng", "tavily", "exa", "serper", "serpapi", "brave", "google", "google_news"]
                     },
                     "count": {
                         "type": "integer",
@@ -501,6 +576,9 @@ impl SearchSkill {
             }
             "serpapi" | "google_news" => self.resolve_key("serpapi", "SERPAPI_KEY").await.is_some(),
             "brave" => self.resolve_key("brave", "BRAVE_API_KEY").await.is_some(),
+            "tavily" => self.resolve_key("tavily", "TAVILY_API_KEY").await.is_some(),
+            "exa" => self.resolve_key("exa", "EXA_API_KEY").await.is_some(),
+            "serper" => self.resolve_key("serper", "SERPER_API_KEY").await.is_some(),
             _ => true,
         }
     }
@@ -909,6 +987,9 @@ impl SearchSkill {
                 "google_news" => self.search_serpapi_news(&effective_query, count).await,
                 "brave" => self.search_brave(&effective_query, count).await,
                 "google" => self.search_google(&effective_query, count).await,
+                "tavily" => self.search_tavily(&effective_query, count).await,
+                "exa" => self.search_exa(&effective_query, count).await,
+                "serper" => self.search_serper(&effective_query, count).await,
                 other => ToolCallResult::error(format!("Unsupported search engine: {other}")),
             };
             let duration_ms = started.elapsed().as_millis() as i64;
@@ -1427,6 +1508,113 @@ impl SearchSkill {
         }
     }
 
+    /// POST a JSON search request and return the parsed body, or a tool error
+    /// whose text the ladder classifies. A spent allowance is reported with the
+    /// word "quota" so `classify_search_error` demotes the engine: the status
+    /// codes differ per vendor (Exa 402, Tavily 432/433, Serper 400/403 with
+    /// "Not enough credits") and none of them is a 429.
+    async fn post_search(
+        &self,
+        engine: &str,
+        url: &str,
+        auth: (&str, String),
+        body: Value,
+    ) -> Result<Value, ToolCallResult> {
+        let resp = self
+            .client
+            .post(url)
+            .header(auth.0, auth.1)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ToolCallResult::error(format!("Request failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let spent = matches!(status.as_u16(), 402 | 432 | 433)
+                || text.to_lowercase().contains("credits");
+            let prefix = if spent { "quota exhausted — " } else { "" };
+            return Err(ToolCallResult::error(format!(
+                "{engine} search failed: {prefix}HTTP {status} - {text}"
+            )));
+        }
+        resp.json::<Value>()
+            .await
+            .map_err(|e| ToolCallResult::error(format!("Failed to parse {engine} response: {e}")))
+    }
+
+    /// Tavily: 1,000 searches/month free, refills, no card. `Authorization: Bearer`.
+    async fn search_tavily(&self, query: &str, count: u8) -> ToolCallResult {
+        let Some(key) = self.resolve_key("tavily", "TAVILY_API_KEY").await else {
+            return ToolCallResult::error(
+                "Tavily API key not configured (set TAVILY_API_KEY)".to_string(),
+            );
+        };
+        let body = json!({
+            "query": query,
+            "max_results": count,
+            "search_depth": "basic",
+            "include_published_date": true,
+        });
+        match self
+            .post_search(
+                "Tavily",
+                "https://api.tavily.com/search",
+                ("Authorization", format!("Bearer {key}")),
+                body,
+            )
+            .await
+        {
+            Ok(json) => ToolCallResult::success_json(normalize_tavily(&json, count)),
+            Err(e) => e,
+        }
+    }
+
+    /// Exa: $10 of credit/month free, refills, no card. Asks for a short
+    /// highlight per result — without `contents` Exa returns no snippet at all.
+    async fn search_exa(&self, query: &str, count: u8) -> ToolCallResult {
+        let Some(key) = self.resolve_key("exa", "EXA_API_KEY").await else {
+            return ToolCallResult::error(
+                "Exa API key not configured (set EXA_API_KEY)".to_string(),
+            );
+        };
+        let body = json!({
+            "query": query,
+            "numResults": count,
+            "type": "auto",
+            "contents": { "highlights": { "maxCharacters": EXA_HIGHLIGHT_CHARS } },
+        });
+        match self
+            .post_search("Exa", "https://api.exa.ai/search", ("x-api-key", key), body)
+            .await
+        {
+            Ok(json) => ToolCallResult::success_json(normalize_exa(&json, count)),
+            Err(e) => e,
+        }
+    }
+
+    /// Serper: Google results, 2,500 free queries ONCE (no refill), no card.
+    async fn search_serper(&self, query: &str, count: u8) -> ToolCallResult {
+        let Some(key) = self.resolve_key("serper", "SERPER_API_KEY").await else {
+            return ToolCallResult::error(
+                "Serper API key not configured (set SERPER_API_KEY)".to_string(),
+            );
+        };
+        let body = json!({ "q": query, "num": count });
+        match self
+            .post_search(
+                "Serper",
+                "https://google.serper.dev/search",
+                ("X-API-KEY", key),
+                body,
+            )
+            .await
+        {
+            Ok(json) => ToolCallResult::success_json(normalize_serper(&json, count)),
+            Err(e) => e,
+        }
+    }
+
     async fn search_google(&self, query: &str, count: u8) -> ToolCallResult {
         let api_key = match self.resolve_key("google_cse", "GOOGLE_API_KEY").await {
             Some(k) => k,
@@ -1653,7 +1841,9 @@ mod tests {
     fn default_ladder_leads_with_the_unmetered_engine() {
         assert_eq!(
             order_engines("", None, &[]),
-            v(&["searxng", "google", "serpapi", "brave"])
+            v(&[
+                "searxng", "tavily", "exa", "serper", "serpapi", "google", "brave"
+            ])
         );
     }
 
@@ -1951,6 +2141,80 @@ mod unresponsive_engine_tests {
         assert_eq!(
             parse_unresponsive_engines(&json),
             vec![("ok".to_string(), "reason".to_string())]
+        );
+    }
+}
+
+#[cfg(test)]
+mod keyed_engine_tests {
+    use super::*;
+
+    #[test]
+    fn tavily_results_map_to_link_snippet_date() {
+        let j = json!({"results": [
+            {"title": "A", "url": "https://apnews.com/a", "content": "snip", "published_date": "2026-09-25"},
+            {"title": "no url", "content": "dropped"}
+        ]});
+        let out = normalize_tavily(&j, 5);
+        assert_eq!(out.len(), 1, "a result with no url is not a result");
+        assert_eq!(out[0]["link"], "https://apnews.com/a");
+        assert_eq!(out[0]["snippet"], "snip");
+        assert_eq!(out[0]["date"], "2026-09-25");
+    }
+
+    #[test]
+    fn exa_highlights_become_the_snippet() {
+        let j = json!({"results": [
+            {"title": "B", "url": "https://reuters.com/b", "publishedDate": "2026-09-24T10:00:00Z",
+             "highlights": ["first", "second"]},
+            {"title": "C", "url": "https://bbc.com/c", "text": "fallback text"}
+        ]});
+        let out = normalize_exa(&j, 5);
+        assert_eq!(out[0]["snippet"], "first … second");
+        assert_eq!(out[0]["date"], "2026-09-24T10:00:00Z");
+        assert_eq!(out[1]["snippet"], "fallback text");
+        assert!(out[1].get("date").is_none());
+    }
+
+    #[test]
+    fn serper_reads_organic_and_respects_count() {
+        let j = json!({"organic": [
+            {"title": "1", "link": "https://a.com", "snippet": "s1"},
+            {"title": "2", "link": "https://b.com", "snippet": "s2", "date": "2 days ago"}
+        ]});
+        let out = normalize_serper(&j, 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["link"], "https://a.com");
+    }
+
+    /// Normalised results must feed the claim verifier's domain count.
+    #[test]
+    fn normalised_results_count_as_evidence_domains() {
+        let out = normalize_serper(
+            &json!({"organic": [{"title": "1", "link": "https://www.a.com/x"},
+                                 {"title": "2", "link": "https://b.org/y"}]}),
+            5,
+        );
+        let text = serde_json::to_string(&out).unwrap();
+        assert_eq!(
+            crate::services::claims::evidence_domains(&text),
+            vec!["a.com".to_string(), "b.org".to_string()]
+        );
+    }
+
+    /// Each vendor signals a spent allowance differently; all must demote.
+    #[test]
+    fn spent_allowances_classify_as_quota_exhausted() {
+        for msg in [
+            "Exa search failed: quota exhausted — HTTP 402 Payment Required - {}",
+            "Tavily search failed: quota exhausted — HTTP 432 <unknown status code> - {}",
+            "Serper search failed: quota exhausted — HTTP 400 Bad Request - Not enough credits",
+        ] {
+            assert_eq!(classify_search_error(msg), "quota_exhausted", "{msg}");
+        }
+        assert_eq!(
+            classify_search_error("Tavily API key not configured (set TAVILY_API_KEY)"),
+            "not_configured"
         );
     }
 }

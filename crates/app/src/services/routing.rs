@@ -766,15 +766,17 @@ mod tests {
         assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
     }
 
-    /// The classes chosen on 2026-09-15, read from the checked-in profiles. A
-    /// public front door is what keeps its gemini-2.5-flash pin; losing the
-    /// field (a hand edit, a UI save) would silently move chat to another model.
+    /// The classes decided for the checked-in profiles. The front door went
+    /// public on 2026-09-15 to keep a gemini-2.5-flash pin, and back to private
+    /// on 2026-09-26 with its move to gemma4:31b-cloud (no_log). Losing or
+    /// flipping the field (a hand edit, a UI save) would silently change which
+    /// providers may see what is typed into chat.
     #[test]
     fn the_checked_in_profiles_keep_their_decided_data_class() {
         use crate::services::context_builder::ContextProfile;
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contexts");
         for (file, want) in [
-            ("GeneralDefault-Orchrestator.yaml", DataClass::Public),
+            ("GeneralDefault-Orchrestator.yaml", DataClass::Private),
             ("researcher.yaml", DataClass::Private),
             ("api-scout.yaml", DataClass::Public),
         ] {
