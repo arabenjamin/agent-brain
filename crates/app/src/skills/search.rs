@@ -38,6 +38,22 @@ const DEFAULT_ENGINE_ORDER: &[&str] = &[
 /// contents per result, so this is a snippet, not the page.
 const EXA_HIGHLIGHT_CHARS: u32 = 400;
 
+/// Characters of Tavily's `content` kept per result. Tavily returns up to three
+/// page chunks (~1,500 chars measured 2026-09-26) — 3-10x the other engines —
+/// so a 10-result answer would put ~15K chars into a tool loop's context.
+const TAVILY_SNIPPET_CHARS: usize = 500;
+
+/// Trim to `max` chars on a char boundary, marking the cut.
+fn clip_snippet(v: &Value, max: usize) -> Value {
+    match v.as_str() {
+        Some(t) if t.chars().count() > max => Value::String(format!(
+            "{}…",
+            t.chars().take(max).collect::<String>().trim_end()
+        )),
+        _ => v.clone(),
+    }
+}
+
 /// Base URL used when neither the `searxng` ApiContext nor `SEARXNG_URL` is set.
 /// Matches the compose service name so the default deployment works unconfigured.
 const DEFAULT_SEARXNG_URL: &str = "http://searxng:8080";
@@ -128,7 +144,7 @@ fn normalize_tavily(json: &Value, count: u8) -> Vec<Value> {
             normalized(
                 &r["title"],
                 &r["url"],
-                r["content"].clone(),
+                clip_snippet(&r["content"], TAVILY_SNIPPET_CHARS),
                 &r["published_date"],
             )
         })
@@ -2160,6 +2176,20 @@ mod keyed_engine_tests {
         assert_eq!(out[0]["link"], "https://apnews.com/a");
         assert_eq!(out[0]["snippet"], "snip");
         assert_eq!(out[0]["date"], "2026-09-25");
+    }
+
+    #[test]
+    fn tavily_snippets_are_clipped_to_the_budget() {
+        let long = "é".repeat(TAVILY_SNIPPET_CHARS + 300);
+        let j = json!({"results": [{"title": "T", "url": "https://a.com", "content": long}]});
+        let out = normalize_tavily(&j, 5);
+        let snip = out[0]["snippet"].as_str().unwrap();
+        assert_eq!(
+            snip.chars().count(),
+            TAVILY_SNIPPET_CHARS + 1,
+            "clip + ellipsis"
+        );
+        assert!(snip.ends_with('…'));
     }
 
     #[test]

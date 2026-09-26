@@ -175,6 +175,70 @@ pub fn load_schema_dir(dir: &Path) -> HashMap<String, Value> {
 /// `arguments` against the tool's own `input_schema`. Shared by the scheduler's
 /// `manage_scheduled_task`/`manage_chain` write path and its `audit` action so a
 /// stored (e.g. YAML-seeded) task is checked by exactly the same rules as a new one.
+/// Fields a step carries beside `arguments` (`services/queue.rs::ChainStep`).
+/// Keep in step with that struct; it is Deserialize-only, so it cannot list
+/// them itself.
+const CHAIN_STEP_FIELDS: &[&str] = &[
+    "tool_name",
+    "arguments",
+    "priority",
+    "max_attempts",
+    "provider_hint",
+    "context_profile",
+    "ttl_secs",
+    "description",
+    "confidence_threshold",
+    "is_evaluator",
+    "min_score",
+    "evaluator_task_id",
+    "is_adversarial",
+    "n_hypotheses",
+    "min_robustness",
+    "adversarial_task_id",
+    "required_capabilities",
+    "data_class",
+    "distill_prev",
+    "distill_max_chars",
+    "distill_focus",
+];
+
+/// A tool argument written at step level instead of inside `arguments`.
+///
+/// Serde drops an unknown step field, so the argument never reaches the tool
+/// and nothing errors. Seen twice: `provider_hint` inside `arguments` (the
+/// 2026-09-08 GDELT schedule) and the reverse — `context: "{{_prev}}"` beside
+/// `arguments` on the Trump Benefit monitor, whose `reason` step therefore
+/// never saw its search results (found 2026-09-26). Only keys the tool's own
+/// schema declares are flagged, so harmless extra metadata passes.
+fn misplaced_arguments(
+    i: usize,
+    tool: &str,
+    step: &Value,
+    tool_schemas: &HashMap<String, Value>,
+) -> Vec<Violation> {
+    let (Some(obj), Some(props)) = (
+        step.as_object(),
+        tool_schemas
+            .get(tool)
+            .and_then(|s| s.get("properties"))
+            .and_then(|p| p.as_object()),
+    ) else {
+        return vec![];
+    };
+    obj.keys()
+        .filter(|k| !CHAIN_STEP_FIELDS.contains(&k.as_str()) && props.contains_key(*k))
+        .map(|k| {
+            Violation::hard(
+                format!("steps[{i}] (`{tool}`)"),
+                format!(
+                    "`{k}` is an argument of `{tool}` but sits at step level, where it is \
+                     silently ignored — move it inside `arguments`"
+                ),
+            )
+        })
+        .collect()
+}
+
 pub fn validate_step_array(
     steps: &[Value],
     live_tools: &[String],
@@ -202,6 +266,7 @@ pub fn validate_step_array(
             step.get("arguments"),
             tool_schemas,
         ));
+        out.extend(misplaced_arguments(i, tool, step, tool_schemas));
     }
     out
 }
@@ -229,6 +294,28 @@ mod tests {
                 "schema `{name}` does not compile"
             );
         }
+    }
+
+    /// The Trump Benefit monitor as it was: `context` beside `arguments`.
+    #[test]
+    fn a_tool_argument_at_step_level_is_rejected() {
+        let schemas = HashMap::from([(
+            "reason".to_string(),
+            json!({"type":"object","properties":{"question":{"type":"string"},"context":{"type":"string"}}}),
+        )]);
+        let steps = vec![json!({
+            "tool_name": "reason", "provider_hint": "ollama", "description": "d",
+            "arguments": {"question": "q"}, "context": "{{_prev}}"
+        })];
+        let v = validate_step_array(&steps, &[], &schemas);
+        assert!(has_hard(&v), "{v:?}");
+        assert!(render_hard(&v).contains("`context`"), "{}", render_hard(&v));
+        // Step fields and unknown metadata are fine.
+        let ok = vec![
+            json!({"tool_name": "reason", "arguments": {"question": "q", "context": "x"},
+                             "description": "d", "note": "free-form"}),
+        ];
+        assert!(!has_hard(&validate_step_array(&ok, &[], &schemas)));
     }
 
     fn http_request_schema() -> Value {

@@ -691,10 +691,11 @@ fn parse_and_validate_plan(
     max_steps: usize,
 ) -> Result<ValidatedPlan, String> {
     let text = raw.trim();
-    let start = text.find('{').ok_or("no JSON object in plan output")?;
-    let end = text.rfind('}').map(|i| i + 1).ok_or("unterminated JSON")?;
-    let parsed: Value =
-        serde_json::from_str(&text[start..end]).map_err(|e| format!("plan JSON invalid: {e}"))?;
+    if !text.contains('{') {
+        return Err("no JSON object in plan output".to_string());
+    }
+    let parsed: Value = crate::services::llm::first_json_object(text, &["steps"])
+        .ok_or("plan JSON invalid: no complete object with a `steps` field")?;
 
     let raw_steps = parsed["steps"]
         .as_array()

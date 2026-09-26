@@ -624,6 +624,27 @@ pub fn parse_corrected_body(response: &str) -> Result<Option<serde_json::Value>,
         .map_err(|e| LlmError::ParseError(format!("Failed to parse corrected body: {}", e)))
 }
 
+/// The first complete JSON object in `text` that has every key in `must_have`.
+///
+/// Parses from each `{` in turn and stops at the end of ONE value, so trailing
+/// text cannot break it. Slicing first-`{` to last-`}` could: on 2026-09-26 a
+/// model wrote its whole ```json answer twice, the slice spanned both objects,
+/// the parse failed, and the fenced raw reply was stored as the report. Keys
+/// are required so a broken outer object cannot yield one of its inner ones.
+pub fn first_json_object(text: &str, must_have: &[&str]) -> Option<serde_json::Value> {
+    for (i, _) in text.match_indices('{').take(64) {
+        let mut values =
+            serde_json::Deserializer::from_str(&text[i..]).into_iter::<serde_json::Value>();
+        if let Some(Ok(v)) = values.next()
+            && let Some(obj) = v.as_object()
+            && must_have.iter().all(|k| obj.contains_key(*k))
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
 /// Extract JSON from a response that might be wrapped in markdown code blocks.
 pub fn extract_json(text: &str) -> &str {
     let trimmed = text.trim();
@@ -670,6 +691,24 @@ pub fn extract_json(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 2026-09-26 reply: the same fenced answer emitted twice.
+    #[test]
+    fn first_json_object_survives_a_duplicated_fenced_answer() {
+        let one = "```json\n{\"answer\": \"## REPORT\\nline\", \"confidence\": 5}\n```";
+        let twice = format!("{one}\n{one}");
+        let v = first_json_object(&twice, &["answer"]).expect("first object parses");
+        assert_eq!(v["answer"], "## REPORT\nline");
+    }
+
+    #[test]
+    fn first_json_object_skips_prose_braces_and_requires_keys() {
+        let t = r#"Use {braces} freely. {"steps": [1]} trailing {"x":1}"#;
+        assert_eq!(first_json_object(t, &["steps"]).unwrap()["steps"][0], 1);
+        // A broken outer object must not yield its inner one.
+        let broken = r#"{"answer": "a", "meta": {"k": 1}, oops}"#;
+        assert!(first_json_object(broken, &["answer"]).is_none());
+    }
 
     #[test]
     fn test_llm_config_default() {

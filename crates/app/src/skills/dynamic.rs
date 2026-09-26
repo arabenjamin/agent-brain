@@ -308,6 +308,20 @@ impl DynamicSkill {
             }
         }
 
+        // A built-in tool's name is taken. Dispatch is first-match and the
+        // built-ins register first, so a same-named dynamic tool would never
+        // run — yet it would still be listed, and validated against.
+        {
+            let is_dynamic = self.tools_map.read().await.contains_key(&input.name);
+            if !is_dynamic && self.tool_registry.read().await.get(&input.name).is_some() {
+                return ToolCallResult::error(format!(
+                    "'{}' is a built-in tool. A dynamic tool with that name would never \
+                     run. Choose another name, or use the built-in.",
+                    input.name
+                ));
+            }
+        }
+
         // Check name uniqueness in-memory
         {
             let map = self.tools_map.read().await;

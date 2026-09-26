@@ -811,11 +811,21 @@ impl BrainCore {
         // Snapshot each tool's registered `input_schema`, keyed by name, so the
         // scheduler skill can validate a step's `arguments` against the tool it
         // calls (deterministic write-boundary check — see services/validation.rs).
-        let tool_schemas: std::collections::HashMap<String, serde_json::Value> = registry
-            .list()
-            .iter()
-            .map(|t| (t.name.clone(), t.input_schema.clone()))
-            .collect();
+        //
+        // FIRST definition wins, because dispatch is first-match too: a
+        // DynamicTool that reuses a built-in's name never runs, but a
+        // last-wins map validated steps against ITS schema. A 09-07 dynamic
+        // `ingest_api` (spec_url required) made the audit reject the
+        // brain-api-sync schedule's valid `codebase_path` call as broken.
+        let mut tool_schemas: std::collections::HashMap<String, serde_json::Value> =
+            std::collections::HashMap::new();
+        for t in registry.list() {
+            if tool_schemas.contains_key(&t.name) {
+                warn!(tool = %t.name, "Duplicate tool name in registry — only the first definition dispatches; later ones are shadowed");
+                continue;
+            }
+            tool_schemas.insert(t.name.clone(), t.input_schema.clone());
+        }
         let tool_schemas_arc: Arc<RwLock<std::collections::HashMap<String, serde_json::Value>>> =
             Arc::new(RwLock::new(tool_schemas));
 

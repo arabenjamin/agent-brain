@@ -2033,10 +2033,7 @@ fn parse_evaluator_score(text: &str) -> Option<f32> {
 /// defaults to 3.0 (neutral) if neither is found.
 fn parse_adversarial_robustness(text: &str) -> f32 {
     // Try to parse the JSON blob returned by the tool.
-    let trimmed = text.trim();
-    let json_start = trimmed.find('{').unwrap_or(0);
-    let json_end = trimmed.rfind('}').map(|i| i + 1).unwrap_or(trimmed.len());
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[json_start..json_end])
+    if let Some(v) = crate::services::llm::first_json_object(text, &["overall_robustness"])
         && let Some(r) = v.get("overall_robustness").and_then(|x| x.as_f64())
     {
         return (r as f32).clamp(1.0, 5.0);

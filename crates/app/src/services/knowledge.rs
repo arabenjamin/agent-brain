@@ -2536,18 +2536,15 @@ impl KnowledgeService {
             .map_err(|e| anyhow::anyhow!("LLM reasoning failed: {}", e))?;
 
         let text = response.trim();
-        let json_start = text.find('{').unwrap_or(0);
-        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-        let json_str = &text[json_start..json_end];
-
-        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap_or_else(|_| {
-            serde_json::json!({
-                "answer": text,
-                "inferences": [],
-                "confidence": 0.5,
-                "gaps": []
-            })
-        });
+        let parsed: serde_json::Value = crate::services::llm::first_json_object(text, &["answer"])
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "answer": text,
+                    "inferences": [],
+                    "confidence": 0.5,
+                    "gaps": []
+                })
+            });
 
         let answer = parsed
             .get("answer")
@@ -2925,11 +2922,9 @@ impl KnowledgeService {
         };
 
         let text = response.trim();
-        let json_start = text.find('{').unwrap_or(0);
-        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-        let parsed: serde_json::Value = match serde_json::from_str(&text[json_start..json_end]) {
-            Ok(v) => v,
-            Err(_) => return (initial_confidence, Vec::new()),
+        let parsed: serde_json::Value = match crate::services::llm::first_json_object(text, &[]) {
+            Some(v) => v,
+            None => return (initial_confidence, Vec::new()),
         };
 
         let counter_args: Vec<String> = parsed
@@ -3258,19 +3253,16 @@ impl KnowledgeService {
             .map_err(|e| anyhow::anyhow!("LLM audit failed: {}", e))?;
 
         let text = response.trim();
-        let json_start = text.find('{').unwrap_or(0);
-        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-        let json_str = &text[json_start..json_end];
-
-        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap_or_else(|_| {
-            serde_json::json!({
-                "aligned": true,
-                "confidence": 0.5,
-                "concerns": [],
-                "suggestions": [],
-                "reasoning": text
-            })
-        });
+        let parsed: serde_json::Value = crate::services::llm::first_json_object(text, &["aligned"])
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "aligned": true,
+                    "confidence": 0.5,
+                    "concerns": [],
+                    "suggestions": [],
+                    "reasoning": text
+                })
+            });
 
         let aligned = parsed
             .get("aligned")

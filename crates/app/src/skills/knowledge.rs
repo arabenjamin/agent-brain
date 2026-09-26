@@ -991,19 +991,16 @@ Respond with a JSON object only (no markdown, no explanation):
                     return match self.llm.generate(&prompt, None).await {
                         Ok(text_resp) => {
                             let text = text_resp.trim();
-                            let json_start = text.find('{').unwrap_or(0);
-                            let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-                            let mut parsed: Value = serde_json::from_str(
-                                &text[json_start..json_end],
-                            )
-                            .unwrap_or_else(|_| {
-                                json!({
-                                    "answer": text,
-                                    "inferences": [],
-                                    "confidence": 0.5,
-                                    "gaps": []
-                                })
-                            });
+                            let mut parsed: Value =
+                                crate::services::llm::first_json_object(text, &["answer"])
+                                    .unwrap_or_else(|| {
+                                        json!({
+                                            "answer": text,
+                                            "inferences": [],
+                                            "confidence": 0.5,
+                                            "gaps": []
+                                        })
+                                    });
                             // The context path must honor store_inference like the
                             // RAG path does — scheduler chains rely on the inference
                             // note as their durable output artifact.
@@ -1147,10 +1144,8 @@ Respond with a JSON object only (no markdown, no explanation):
         };
 
         let text = raw.trim();
-        let json_start = text.find('{').unwrap_or(0);
-        let json_end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-        let parsed: Value =
-            serde_json::from_str(&text[json_start..json_end]).unwrap_or_else(|_| {
+        let parsed: Value = crate::services::llm::first_json_object(text, &["overall_robustness"])
+            .unwrap_or_else(|| {
                 json!({
                     "hypotheses": [],
                     "overall_robustness": 3.0,
