@@ -110,6 +110,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "CIA NSA FBI intelligence agency claims allegations report"
+      recency: week
       count: 8
       source_list: news
       prior_knowledge: false
@@ -131,6 +132,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "Russian intelligence GRU FSB SVR operation accused"
+      recency: week
       count: 8
       source_list: news
       prior_knowledge: false
@@ -152,6 +154,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "Mossad MI6 Chinese Ministry of State Security spy agency claims"
+      recency: week
       count: 8
       source_list: news
       prior_knowledge: false

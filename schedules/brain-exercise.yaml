@@ -13,7 +13,11 @@ steps:
   #                    the exercise is graded, which is the point
   - tool_name: neo4j_query
     arguments:
-      cypher: "MATCH (e:Entity)<-[:MENTIONS]-(n:Note) WITH e, count(n) AS mentions, sum(CASE WHEN n.note_type = 'semantic' THEN 1 ELSE 0 END) AS semantic_notes WHERE mentions >= 2 RETURN e.name AS entity, e.entity_type AS type, mentions, semantic_notes ORDER BY mentions DESC, semantic_notes ASC LIMIT 30"
+      # Channel and watchlist names are excluded: every watched video mentions
+      # its channel, so "newsnation" and "c-span" topped the ranking and the
+      # exercise set out to "research NewsNation" (2026-09-30). URL entities and
+      # the "gap synthesis" heading are boilerplate, not topics.
+      cypher: "MATCH (e:Entity)<-[:MENTIONS]-(n:Note) WITH e, count(n) AS mentions, sum(CASE WHEN n.note_type = 'semantic' THEN 1 ELSE 0 END) AS semantic_notes WHERE mentions >= 2 AND coalesce(e.entity_type, '') <> 'url' AND NOT e.name IN ['gap synthesis', 'youtube'] AND NOT EXISTS { MATCH (m:Media) WHERE toLower(m.channel) = e.name } AND NOT EXISTS { MATCH (s:MediaSource) WHERE s.name = e.name } RETURN e.name AS entity, e.entity_type AS type, mentions, semantic_notes ORDER BY mentions DESC, semantic_notes ASC LIMIT 30"
     priority: 1
     max_attempts: 2
     provider_hint: ollama

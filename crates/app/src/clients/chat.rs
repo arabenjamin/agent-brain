@@ -1295,6 +1295,108 @@ enum AttemptOutcome {
     /// `error` is whatever the loop tried to report, held back so the ladder can
     /// decide whether the user ever sees it.
     Unanswered { error: Option<String> },
+    /// The model ran tools — every one of them read-only — and then failed
+    /// before answering. The next rung continues from `calls` instead of the
+    /// turn dying: re-running reads is harmless, and handing their results over
+    /// means it need not. A turn that ran any write stays `Delivered`, so a
+    /// write is never repeated by a second model.
+    Interrupted {
+        error: String,
+        calls: Vec<PriorCall>,
+    },
+}
+
+/// One tool call a failed attempt made, carried to the next ladder rung.
+#[derive(Debug, Clone, PartialEq)]
+struct PriorCall {
+    tool: String,
+    args: Value,
+    success: Option<bool>,
+    /// What the failed model read back, capped at [`HANDOVER_RESULT_CHARS`].
+    result: String,
+}
+
+/// Per-call cap on a handed-over tool result, and the cap on the whole block.
+const HANDOVER_RESULT_CHARS: usize = 4000;
+const HANDOVER_TOTAL_CHARS: usize = 16000;
+
+/// Whether a tool call has no effect outside the turn, so another model may
+/// safely continue from it (and even repeat it). Conservative: an unknown
+/// mutating shape counts as a write.
+fn call_is_read_only(tool: &str, args: &Value) -> bool {
+    if WRITE_TOOLS.contains(&tool) || tool == "run_agent" || tool == "use_model" {
+        return false;
+    }
+    const MUTATING_PREFIXES: [&str; 12] = [
+        "manage_",
+        "ingest_",
+        "store_",
+        "create_",
+        "update_",
+        "delete_",
+        "write_",
+        "push_",
+        "set_",
+        "register_",
+        "define_",
+        "scheduler_",
+    ];
+    if MUTATING_PREFIXES.iter().any(|p| tool.starts_with(p)) {
+        return false;
+    }
+    match tool {
+        "http_request" => {
+            let method = args["method"].as_str().unwrap_or("GET");
+            method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
+        }
+        "mcp_call" => {
+            // The remote tool is opaque; only names that read are trusted.
+            let inner = args["tool"].as_str().unwrap_or("").to_ascii_lowercase();
+            [
+                "search", "fetch", "get", "list", "read", "extract", "map", "crawl",
+            ]
+            .iter()
+            .any(|verb| inner.contains(verb))
+        }
+        // Chat sub-agents run with allow_writes: false.
+        _ => true,
+    }
+}
+
+/// The system-prompt block that hands a failed model's work to the next rung.
+fn handover_block(calls: &[PriorCall], error: &str) -> String {
+    let error: String = error.chars().take(200).collect();
+    let mut out = format!(
+        "WORK ALREADY DONE THIS TURN. Another model started answering this message, ran \
+         the tools below, and then failed ({error}). These results are real and current. \
+         Do NOT call these tools again with the same arguments — continue from them, call \
+         anything still missing, and answer the user.\n"
+    );
+    let mut used = out.len();
+    for (i, c) in calls.iter().enumerate() {
+        let mark = match c.success {
+            Some(true) => "✓",
+            Some(false) => "✗ failed",
+            None => "no result",
+        };
+        let entry = format!(
+            "\n{}. {}({}) {mark}\n{}\n",
+            i + 1,
+            c.tool,
+            serde_json::to_string(&c.args).unwrap_or_default(),
+            c.result
+        );
+        if used + entry.len() > HANDOVER_TOTAL_CHARS {
+            out.push_str(&format!(
+                "\n[{} further tool result(s) omitted for length]\n",
+                calls.len() - i
+            ));
+            break;
+        }
+        used += entry.len();
+        out.push_str(&entry);
+    }
+    out
 }
 
 // ============================================================================
@@ -1509,7 +1611,41 @@ impl ChatService {
             let mut answered = false;
             let mut streamed_progress = false;
             let mut error: Option<String> = None;
+            // This model's own tool calls, for a handover if it fails. A
+            // sub-agent's calls arrive prefixed `agent:tool` and are skipped:
+            // the `delegate` result already carries what the sub-agent found.
+            let mut calls: Vec<PriorCall> = Vec::new();
             while let Some(event) = attempt_rx.recv().await {
+                match &event {
+                    ChatEvent::ToolCall { tool, args } if !tool.contains(':') => {
+                        calls.push(PriorCall {
+                            tool: tool.clone(),
+                            args: args.clone(),
+                            success: None,
+                            result: String::new(),
+                        });
+                    }
+                    ChatEvent::ToolResult {
+                        tool,
+                        success,
+                        preview,
+                        model_saw_chars,
+                    } if !tool.contains(':') => {
+                        if let Some(c) = calls
+                            .iter_mut()
+                            .rev()
+                            .find(|c| c.tool == *tool && c.success.is_none())
+                        {
+                            let saw = model_saw_chars.unwrap_or(usize::MAX);
+                            c.success = Some(*success);
+                            c.result = preview
+                                .chars()
+                                .take(saw.min(HANDOVER_RESULT_CHARS))
+                                .collect();
+                        }
+                    }
+                    _ => {}
+                }
                 match &event {
                     ChatEvent::Done => continue,
                     ChatEvent::Error { message } => {
@@ -1543,11 +1679,24 @@ impl ChatService {
                     let _ = sink.send(ChatEvent::Error { message }).await;
                 }
                 AttemptOutcome::Delivered
-            } else if error.is_some() && !empty_completion && streamed_progress {
-                // A HARD error (NOT an empty completion) after tools ran: this
-                // model owns the turn. Handing it onward would re-execute those
-                // tool calls under a second answer, so report the failure in
-                // place (existing invariant — the 503-after-a-tool-call case).
+            } else if let Some(message) = error.clone().filter(|_| {
+                !empty_completion
+                    && streamed_progress
+                    && !calls.is_empty()
+                    && calls.iter().all(|c| call_is_read_only(&c.tool, &c.args))
+            }) {
+                // A HARD error after read-only tools: hand the results to the
+                // next rung instead of ending the turn (the 2026-09-26 case —
+                // a gemini 503 on the round after a delegate).
+                AttemptOutcome::Interrupted {
+                    error: message,
+                    calls,
+                }
+            } else if error.is_some() && !empty_completion && streamed_progress && !calls.is_empty()
+            {
+                // A HARD error after a WRITE ran: this model owns the turn.
+                // Handing it onward could repeat the write under a second
+                // model, so report the failure in place.
                 if let Some(message) = error {
                     let _ = sink.send(ChatEvent::Error { message }).await;
                 }
@@ -1571,6 +1720,12 @@ impl ChatService {
     }
 
     /// Record one chat LLM call in the usage ledger (tool_name = "chat").
+    ///
+    /// `error` is the failure's text when the call failed: it is classified into
+    /// `error_kind` (`rate_limited`, `server_error`, …) so the budget can cool the
+    /// model down and the next turn skips it. Chat used to record every failure
+    /// with a NULL kind, so a model answering 503 was re-tried on every turn.
+    #[allow(clippy::too_many_arguments)]
     fn record_llm_call(
         &self,
         provider: &str,
@@ -1579,8 +1734,14 @@ impl ChatService {
         duration_ms: i64,
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
+        error: Option<&str>,
     ) {
         let label = usage_tool_label();
+        let kind = (!success).then(|| {
+            error
+                .map(crate::services::shared_llm::failure_kind_of)
+                .unwrap_or("other")
+        });
         crate::services::budget::record_call(
             self.telemetry.as_ref(),
             provider,
@@ -1590,8 +1751,8 @@ impl ChatService {
             Some(duration_ms),
             tokens_in,
             tokens_out,
-            None,
-            None,
+            kind,
+            error,
         );
     }
 
@@ -1767,6 +1928,8 @@ impl ChatService {
         // `provider_hint`); resolved here and applied as this turn's active
         // model below. `None` = inherit the chat default.
         let mut profile_model: Option<LlmConfig> = None;
+        // The profile's own step-down models (`fallback_models`), resolved.
+        let mut profile_fallbacks: Vec<LlmConfig> = Vec::new();
         // The profile's data class — private unless it says public — decides
         // which providers the routing policy may send this turn to.
         let mut turn_class = DataClass::Private;
@@ -1798,6 +1961,23 @@ impl ChatService {
                     profile_model = self
                         .resolve_profile_model(&base, pref, bundle.profile.provider_hint.as_deref())
                         .await;
+                }
+                for name in bundle
+                    .profile
+                    .fallback_models
+                    .iter()
+                    .map(|n| n.trim())
+                    .filter(|n| !n.is_empty())
+                {
+                    let base = config.clone().unwrap_or_default();
+                    match self.resolve_profile_model(&base, name, None).await {
+                        Some(c) => profile_fallbacks.push(c),
+                        None => warn!(
+                            profile = %bundle.profile.name,
+                            model = %name,
+                            "profile fallback_models entry is not in the catalog — skipped"
+                        ),
+                    }
                 }
                 (filtered, prompt, notes)
             } else {
@@ -1854,6 +2034,9 @@ impl ChatService {
             },
             None => None,
         };
+        // A refused pin means the profile's own step-downs are next in line,
+        // ahead of the chat default.
+        let pin_was_refused = pin_refusal.is_some();
         let config = match profile_model {
             Some(m) => Some(m),
             None => config,
@@ -1967,7 +2150,24 @@ impl ChatService {
                         c.model.clone(),
                     )
                 };
-                let mut candidates = vec![active];
+                let mut candidates = if pin_was_refused {
+                    let mut c = profile_fallbacks.clone();
+                    c.push(active);
+                    c
+                } else {
+                    let mut c = vec![active];
+                    c.extend(profile_fallbacks.iter().cloned());
+                    c
+                };
+                let mut seen = Vec::new();
+                candidates.retain(|c| {
+                    let id = rung_id(c);
+                    let fresh = !seen.contains(&id);
+                    if fresh {
+                        seen.push(id);
+                    }
+                    fresh
+                });
                 for cfg in &self.fallback_ladder {
                     if !candidates.iter().any(|c| rung_id(c) == rung_id(cfg)) {
                         candidates.push(cfg.clone());
@@ -1995,9 +2195,30 @@ impl ChatService {
 
                 let last = candidates.len().saturating_sub(1);
                 let mut last_error: Option<String> = None;
+                // Read-only work a failed rung did, handed to the next one.
+                let mut prior_calls: Vec<PriorCall> = Vec::new();
 
                 for (i, cfg) in candidates.into_iter().enumerate() {
-                    if i > 0 {
+                    if i > 0 && !prior_calls.is_empty() {
+                        warn!(
+                            model = %cfg.model,
+                            provider = %cfg.provider,
+                            rung = i,
+                            handed_over = prior_calls.len(),
+                            previous_error = last_error.as_deref().unwrap_or("(none reported)"),
+                            "Chat model failed mid-turn — handing its tool results to the next model"
+                        );
+                        let _ = inner_tx
+                            .send(ChatEvent::Thinking {
+                                content: format!(
+                                    "⚙ the previous model failed mid-turn — continuing on {} ({}) with the {} tool result(s) it already gathered",
+                                    cfg.model,
+                                    cfg.provider,
+                                    prior_calls.len()
+                                ),
+                            })
+                            .await;
+                    } else if i > 0 {
                         warn!(
                             model = %cfg.model,
                             provider = %cfg.provider,
@@ -2020,9 +2241,20 @@ impl ChatService {
                     }
 
                     let model = cfg.model.clone();
+                    let attempt_prompt = if prior_calls.is_empty() {
+                        system_prompt.clone()
+                    } else {
+                        format!(
+                            "{system_prompt}\n\n{}",
+                            handover_block(
+                                &prior_calls,
+                                last_error.as_deref().unwrap_or("unknown error")
+                            )
+                        )
+                    };
                     // Scoped per attempt: every tool, synthesis pass and sub-agent
                     // this turn runs is judged as this turn's work.
-                    match ROUTE_CONTEXT
+                    let outcome = ROUTE_CONTEXT
                         .scope(
                             route_ctx,
                             self.run_one_attempt(
@@ -2030,36 +2262,38 @@ impl ChatService {
                                 tools.clone(),
                                 handler.clone(),
                                 request.clone(),
-                                system_prompt.clone(),
+                                attempt_prompt,
                                 true,
                                 MAX_TOOL_ITERATIONS,
                                 &inner_tx,
                             ),
                         )
-                        .await
-                    {
+                        .await;
+                    let error = match outcome {
                         AttemptOutcome::Delivered => break,
-                        AttemptOutcome::Unanswered { error } => {
-                            last_error = error.or(last_error);
-                            if i == last {
-                                // Every rung is spent. Report the concrete
-                                // failure rather than letting the dropped-turn
-                                // detector emit its generic one.
-                                warn!(
-                                    model = %model,
-                                    rungs_tried = i + 1,
-                                    "Every chat model produced nothing for this turn"
-                                );
-                                let _ = inner_tx
-                                    .send(ChatEvent::Error {
-                                        message: last_error.clone().unwrap_or_else(|| {
-                                            EMPTY_COMPLETION_MESSAGE.to_string()
-                                        }),
-                                    })
-                                    .await;
-                                let _ = inner_tx.send(ChatEvent::Done).await;
-                            }
+                        AttemptOutcome::Unanswered { error } => error,
+                        AttemptOutcome::Interrupted { error, calls } => {
+                            prior_calls.extend(calls);
+                            Some(error)
                         }
+                    };
+                    last_error = error.or(last_error);
+                    if i == last {
+                        // Every rung is spent. Report the concrete failure rather
+                        // than letting the dropped-turn detector emit its generic one.
+                        warn!(
+                            model = %model,
+                            rungs_tried = i + 1,
+                            "Every chat model produced nothing for this turn"
+                        );
+                        let _ = inner_tx
+                            .send(ChatEvent::Error {
+                                message: last_error
+                                    .clone()
+                                    .unwrap_or_else(|| EMPTY_COMPLETION_MESSAGE.to_string()),
+                            })
+                            .await;
+                        let _ = inner_tx.send(ChatEvent::Done).await;
                     }
                 }
             }
@@ -2225,6 +2459,7 @@ impl ChatService {
                         call_start.elapsed().as_millis() as i64,
                         None,
                         None,
+                        Some(&e.to_string()),
                     );
                     let _ = tx
                         .send(ChatEvent::Error {
@@ -2289,6 +2524,7 @@ impl ChatService {
                 call_start.elapsed().as_millis() as i64,
                 resp_json["usage"]["input_tokens"].as_i64(),
                 resp_json["usage"]["output_tokens"].as_i64(),
+                None,
             );
 
             let stop_reason = resp_json["stop_reason"].as_str().unwrap_or("").to_string();
@@ -2546,6 +2782,7 @@ impl ChatService {
                         call_start.elapsed().as_millis() as i64,
                         None,
                         None,
+                        Some(&e.to_string()),
                     );
                     let _ = tx
                         .send(ChatEvent::Error {
@@ -2667,6 +2904,7 @@ impl ChatService {
                 call_start.elapsed().as_millis() as i64,
                 usage_tokens.0,
                 usage_tokens.1,
+                None,
             );
 
             // If <think> was never seen, the model doesn't use thinking blocks.
@@ -2984,6 +3222,7 @@ impl ChatService {
                         call_start.elapsed().as_millis() as i64,
                         None,
                         None,
+                        Some(&e.to_string()),
                     );
                     let _ = tx
                         .send(ChatEvent::Error {
@@ -3014,11 +3253,9 @@ impl ChatService {
                 );
                 // 429s are the quota-pressure signal — mark them in the ledger
                 // and start the model's cooldown in the budget.
-                let error_kind = if status.as_u16() == 429 {
-                    Some("rate_limited")
-                } else {
-                    None
-                };
+                let error_kind = Some(crate::services::shared_llm::failure_kind_of(&format!(
+                    "Status {status}: {body_text}"
+                )));
                 let label = usage_tool_label();
                 crate::services::budget::record_call(
                     self.telemetry.as_ref(),
@@ -3103,16 +3340,24 @@ impl ChatService {
 
                     let delta = &chunk_json["choices"][0]["delta"];
 
-                    // Stream content tokens.
+                    // Stream content tokens — unless a voice model will compose
+                    // the reply. Then the worker's prose is not the answer: it
+                    // goes out as Thinking once the round ends. Streaming it
+                    // as Tokens sent the user TWO answers, the worker's and the
+                    // voice's (seen 2026-10-02, first turn with gpt-oss as the
+                    // front door and a Gemini voice; the Gemini front door ran
+                    // the non-streaming text loop and so never showed it).
                     if let Some(content) = delta["content"].as_str()
                         && !content.is_empty()
                     {
                         full_content.push_str(content);
-                        let _ = tx
-                            .send(ChatEvent::Token {
-                                content: content.to_string(),
-                            })
-                            .await;
+                        if !do_synthesis {
+                            let _ = tx
+                                .send(ChatEvent::Token {
+                                    content: content.to_string(),
+                                })
+                                .await;
+                        }
                     }
 
                     // Accumulate tool-call deltas.
@@ -3166,6 +3411,7 @@ impl ChatService {
                 call_start.elapsed().as_millis() as i64,
                 usage_tokens.0,
                 usage_tokens.1,
+                None,
             );
 
             // Fallback: some models (e.g. MiniMax) leak XML-style tool calls into the
@@ -3604,22 +3850,26 @@ impl ChatService {
         // the same routing policy as the turn.
         if let Err(reason) = RoutingPolicy::from_env().admit(&synth_config, RouteContext::current())
         {
-            let _ = tx
-                .send(ChatEvent::Error {
-                    message: format!("Synthesis model {model} refused by routing policy: {reason}"),
-                })
-                .await;
+            voice_fallback(
+                &tx,
+                &model,
+                &format!("refused by routing policy: {reason}"),
+                weak_answer,
+            )
+            .await;
             return;
         }
 
         let llm = match LlmClient::with_config(synth_config) {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx
-                    .send(ChatEvent::Error {
-                        message: format!("Failed to initialize synthesis model ({model}): {e}"),
-                    })
-                    .await;
+                voice_fallback(
+                    &tx,
+                    &model,
+                    &format!("could not initialise: {e}"),
+                    weak_answer,
+                )
+                .await;
                 return;
             }
         };
@@ -3701,6 +3951,7 @@ impl ChatService {
                 .ok()
                 .and_then(|r| r.tokens_out)
                 .map(i64::from),
+            chat_result.as_ref().err().map(|e| e.to_string()).as_deref(),
         );
         match chat_result {
             Ok(response) if !response.text.is_empty() => {
@@ -3710,14 +3961,8 @@ impl ChatService {
                     })
                     .await;
             }
-            Ok(_) => {}
-            Err(e) => {
-                let _ = tx
-                    .send(ChatEvent::Error {
-                        message: format!("Synthesis failed: {e}"),
-                    })
-                    .await;
-            }
+            Ok(_) => voice_fallback(&tx, &model, "returned an empty reply", weak_answer).await,
+            Err(e) => voice_fallback(&tx, &model, &e.to_string(), weak_answer).await,
         }
     }
 
@@ -3805,6 +4050,7 @@ impl ChatService {
                     .ok()
                     .and_then(|r| r.tokens_out)
                     .map(i64::from),
+                chat_result.as_ref().err().map(|e| e.to_string()).as_deref(),
             );
             let response = match chat_result {
                 Ok(r) => r,
@@ -4016,12 +4262,14 @@ impl SubagentLoopRunner for ChatService {
         }
 
         let mut last_error: Option<String> = None;
+        let mut prior_calls: Vec<PriorCall> = Vec::new();
         for (i, cand) in candidates.into_iter().enumerate() {
             if i > 0 {
                 warn!(
                     model = %cand.model,
                     provider = %cand.provider,
                     rung = i,
+                    handed_over = prior_calls.len(),
                     previous_error = last_error.as_deref().unwrap_or("(none reported)"),
                     "sub-agent turn produced nothing — falling back to the next model"
                 );
@@ -4034,13 +4282,24 @@ impl SubagentLoopRunner for ChatService {
                     })
                     .await;
             }
+            let attempt_prompt = if prior_calls.is_empty() {
+                system_prompt.clone()
+            } else {
+                format!(
+                    "{system_prompt}\n\n{}",
+                    handover_block(
+                        &prior_calls,
+                        last_error.as_deref().unwrap_or("unknown error")
+                    )
+                )
+            };
             match self
                 .run_one_attempt(
                     cand,
                     tools.clone(),
                     handler.clone(),
                     request.clone(),
-                    system_prompt.clone(),
+                    attempt_prompt,
                     allow_delegate,
                     max_iterations,
                     &tx,
@@ -4051,6 +4310,10 @@ impl SubagentLoopRunner for ChatService {
                 // the channel closing on return ends the turn.
                 AttemptOutcome::Delivered => return,
                 AttemptOutcome::Unanswered { error } => last_error = error.or(last_error),
+                AttemptOutcome::Interrupted { error, calls } => {
+                    prior_calls.extend(calls);
+                    last_error = Some(error);
+                }
             }
         }
 
@@ -4075,6 +4338,42 @@ impl SubagentLoopRunner for ChatService {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// The voice model could not compose the reply. The worker's own answer is
+/// still a real answer, so send that with a visible note rather than ending the
+/// turn on an error: on 2026-09-26 a `gemini-3.6-flash` 503 in the voice pass
+/// discarded a finished 1,312-token worker answer and the user got nothing.
+/// Only when the worker produced no prose does the failure surface as an error,
+/// which lets the ladder hand the gathered tool results to the next model.
+async fn voice_fallback(
+    tx: &mpsc::Sender<ChatEvent>,
+    voice_model: &str,
+    reason: &str,
+    worker_answer: &str,
+) {
+    let reason: String = reason.chars().take(200).collect();
+    warn!(voice_model, reason = %reason, has_worker_answer = !worker_answer.trim().is_empty(), "Synthesis failed");
+    if worker_answer.trim().is_empty() {
+        let _ = tx
+            .send(ChatEvent::Error {
+                message: format!("Synthesis failed ({voice_model}): {reason}"),
+            })
+            .await;
+        return;
+    }
+    let _ = tx
+        .send(ChatEvent::Thinking {
+            content: format!(
+                "⚠ voice model {voice_model} failed ({reason}) — showing the worker's own answer"
+            ),
+        })
+        .await;
+    let _ = tx
+        .send(ChatEvent::Message {
+            content: worker_answer.to_string(),
+        })
+        .await;
+}
 
 /// Filter a tool list to only those whose names appear in `names`.
 /// Returns `all` unchanged if `names` is empty.
@@ -5202,51 +5501,128 @@ mod fallback_ladder_tests {
         );
     }
 
-    /// A model that streamed something owns the turn even when it fails after.
-    /// Handing it onward would re-execute its tool calls and stream a second
-    /// answer underneath the first, so the failure is reported in place.
-    #[tokio::test]
-    async fn a_turn_that_streamed_before_failing_keeps_the_turn_and_its_error() {
-        let server = MockServer::start().await;
-        // Round 1 emits a tool call, which streams ToolCall/ToolResult events.
+    /// Round 1 streams one call to `tool` with `args_json` (a JSON string, as
+    /// the wire carries it); round 2 answers 503.
+    async fn tool_then_503(server: &MockServer, tool: &str, args_json: &str) {
+        let args = serde_json::to_string(args_json).unwrap();
+        let first = format!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\
+             \"tool_calls\":[{{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\
+             \"function\":{{\"name\":\"{tool}\",\"arguments\":{args}}}}}]}},\
+             \"finish_reason\":null}}]}}\n\n\
+             data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+             data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":10,\"completion_tokens\":8}}}}\n\n\
+             data: [DONE]\n\n"
+        );
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(sse(concat!(
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",",
-                "\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",",
-                "\"function\":{\"name\":\"search_notes\",\"arguments\":\"{}\"}}]},",
-                "\"finish_reason\":null}]}\n\n",
-                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8}}\n\n",
-                "data: [DONE]\n\n",
-            )))
+            .respond_with(sse(&first))
             .up_to_n_times(1)
-            .mount(&server)
+            .mount(server)
             .await;
-        // Round 2 dies.
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(503).set_body_string("upstream down"))
-            .mount(&server)
+            .mount(server)
             .await;
+    }
+
+    /// A model that ran only reads and then failed hands its work to the next
+    /// rung (2026-09-26: a gemini 503 on the round after a delegate ended the
+    /// turn with nothing). The error is held back — the next rung answers.
+    #[tokio::test]
+    async fn a_failure_after_read_only_tools_hands_the_work_over() {
+        let server = MockServer::start().await;
+        tool_then_503(&server, "search_notes", r#"{"query":"agency"}"#).await;
 
         let (seen, outcome) = attempt(&server).await;
 
+        let AttemptOutcome::Interrupted { error, calls } = outcome else {
+            panic!("expected a handover: {outcome:?}");
+        };
+        assert!(error.contains("503"), "{error}");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool, "search_notes");
+        assert_eq!(calls[0].args["query"], "agency");
         assert!(
-            matches!(outcome, AttemptOutcome::Delivered),
-            "a turn that streamed must not be handed to another model: {outcome:?}"
+            calls[0].success.is_some(),
+            "the result must be paired: {calls:?}"
         );
         assert!(
             seen.iter().any(|e| matches!(e, ChatEvent::ToolCall { .. })),
             "the tool call must have reached the client: {seen:?}"
         );
-        // Held back during the attempt, but not swallowed — it is this model's
-        // turn, so its explanation is the one the user needs.
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Error { .. })),
+            "a handed-over failure is not shown as the turn's error: {seen:?}"
+        );
+    }
+
+    /// A model that ran a WRITE owns the turn even when it fails after: a
+    /// second model could repeat the write, so the failure is reported in place.
+    #[tokio::test]
+    async fn a_failure_after_a_write_keeps_the_turn_and_its_error() {
+        let server = MockServer::start().await;
+        tool_then_503(&server, "store_note", r#"{"content":"x"}"#).await;
+
+        let (seen, outcome) = attempt(&server).await;
+
+        assert!(
+            matches!(outcome, AttemptOutcome::Delivered),
+            "a turn that wrote must not be handed to another model: {outcome:?}"
+        );
         assert!(
             seen.iter()
                 .any(|e| matches!(e, ChatEvent::Error { message } if message.contains("503"))),
             "the failure must still be reported: {seen:?}"
         );
+    }
+
+    #[test]
+    fn read_only_classification_is_conservative() {
+        let none = json!({});
+        assert!(call_is_read_only("search_notes", &none));
+        assert!(call_is_read_only(
+            "delegate",
+            &json!({"agent":"knowledge-worker"})
+        ));
+        assert!(call_is_read_only("http_request", &json!({"url":"x"})));
+        assert!(!call_is_read_only(
+            "http_request",
+            &json!({"method":"POST"})
+        ));
+        assert!(call_is_read_only(
+            "mcp_call",
+            &json!({"tool":"web_fetch_exa"})
+        ));
+        assert!(!call_is_read_only(
+            "mcp_call",
+            &json!({"tool":"apply_to_job"})
+        ));
+        for write in [
+            "store_note",
+            "manage_scheduled_task",
+            "ingest_api",
+            "run_agent",
+            "claim",
+        ] {
+            assert!(!call_is_read_only(write, &none), "{write}");
+        }
+    }
+
+    #[test]
+    fn the_handover_names_each_call_and_its_result() {
+        let calls = vec![PriorCall {
+            tool: "recall_recent".into(),
+            args: json!({"source_context":"news"}),
+            success: Some(true),
+            result: "12 notes".into(),
+        }];
+        let block = handover_block(&calls, "Status 503 Service Unavailable");
+        assert!(block.starts_with("WORK ALREADY DONE THIS TURN"));
+        assert!(block.contains("recall_recent({\"source_context\":\"news\"}) ✓"));
+        assert!(block.contains("12 notes"));
+        assert!(block.contains("Do NOT call these tools again"));
     }
 
     /// Regression for the "apply to #N choked" bug. A tool call streamed, then

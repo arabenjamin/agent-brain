@@ -178,7 +178,7 @@ impl KnowledgeSkill {
                     },
                     "sample_limit": {
                         "type": "integer",
-                        "description": "Max sample rows per page (default 24, or 50 when a filter is set; capped at 100). Raising this does NOT get you more notes if the result is being clipped in transit — page with `offset` instead."
+                        "description": "Max sample rows per page (default 10; capped at 100). Raising this does NOT get you more notes if the result is being clipped in transit — page with `offset` instead."
                     },
                     "full": {
                         "type": "boolean",
@@ -536,7 +536,7 @@ impl KnowledgeSkill {
     }
 
     async fn handle_recall_recent(&self, arguments: Option<Value>) -> ToolCallResult {
-        use chrono::{Duration, TimeZone, Utc};
+        use chrono::{Duration, Utc};
         let input: RecallRecentInput = match parse_args(arguments) {
             Ok(v) => v,
             Err(e) => return e,
@@ -561,7 +561,10 @@ impl KnowledgeSkill {
         let sample_limit = if full {
             input.sample_limit.unwrap_or(5000).clamp(1, 5000)
         } else {
-            input.sample_limit.unwrap_or(12).clamp(1, 100)
+            // 10, not 12: claim / source-record rows now carry their epistemic
+            // label (~100 chars each), and 12 rows already landed at ~7.2K of
+            // an 8K tool-result budget.
+            input.sample_limit.unwrap_or(10).clamp(1, 100)
         };
 
         // Windows are computed in the brain's LOCAL zone (stored timestamps are
@@ -569,14 +572,7 @@ impl KnowledgeSkill {
         // must mean the local day, not the UTC day, or part of every evening
         // reads as "yesterday". See services/clock.rs.
         let now_local = crate::services::clock::now_local();
-        let local_midnight = |d: chrono::NaiveDate| {
-            now_local
-                .timezone()
-                .from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
-                .single()
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(Utc::now)
-        };
+        let local_midnight = crate::services::clock::local_midnight_utc;
         let now_utc = now_local.with_timezone(&Utc);
         let today = now_local.date_naive();
 

@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::skills::Skill;
+use crate::skills::search_query::{QuerySpec, Recency};
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
 /// Failover order when `SEARCH_ENGINE_ORDER` is unset.
@@ -25,13 +26,15 @@ use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 /// below it can. The keyed engines are backstops for when the sidecar is down.
 ///
 /// Among the keyed engines, the ones whose free allowance REFILLS monthly with
-/// no card on file come first (Tavily, Exa — overage is impossible by
-/// construction), then Serper's one-time 2,500, then SerpApi (whose quota the
+/// no card on file come first (Exa, then Tavily — overage is impossible by
+/// construction; Exa leads because it surfaced the primary source — the bill,
+/// the PR, the paper — on 4 of 5 probe queries where Tavily returned blog
+/// posts about it, 2026-09-26), then Serper's one-time 2,500, then SerpApi (whose quota the
 /// news brief's `google_news` needs), then Google CSE (closed to new customers,
 /// ends 2027-01-01) and Brave (card on file, no spend cap). An engine without a
 /// key is dropped from the ladder, so listing one costs nothing.
 const DEFAULT_ENGINE_ORDER: &[&str] = &[
-    "searxng", "tavily", "exa", "serper", "serpapi", "google", "brave",
+    "searxng", "exa", "tavily", "serper", "serpapi", "google", "brave",
 ];
 
 /// Characters of page text Exa returns per result as a highlight. Exa bills
@@ -171,7 +174,12 @@ fn normalize_exa(json: &Value, count: u8) -> Vec<Value> {
 }
 
 fn normalize_serper(json: &Value, count: u8) -> Vec<Value> {
-    take_results(json, "organic", count)
+    let key = if json["news"].is_array() {
+        "news"
+    } else {
+        "organic"
+    };
+    take_results(json, key, count)
         .filter_map(|r| normalized(&r["title"], &r["link"], r["snippet"].clone(), &r["date"]))
         .collect()
 }
@@ -397,11 +405,18 @@ impl SearchSkill {
         ToolDefinition {
             name: "search_web".to_string(),
             description:
-                "Search the web. Tries engines in a failover ladder (self-hosted SearXNG first, \
-                 then Google CSE, SerpApi, Brave) so one exhausted quota does not fail the call. \
-                 Pass engine=\"google_news\" for SerpApi's Google News engine (richer, dated news \
-                 stories with sources) — it is promoted to the head of the ladder and falls back \
-                 through SearXNG when SerpApi's quota is spent. \
+                "Search the web. Tries engines in a failover ladder (self-hosted SearXNG first) so \
+                 one exhausted quota does not fail the call. \
+                 QUERY SYNTAX — Google operators work on EVERY engine (translated for the ones that \
+                 do not read them): \"exact phrase\", -word, -\"phrase\", site:example.com, \
+                 -site:example.com, filetype:pdf, after:2026-09-01, before:2026-10-01, a OR b. \
+                 Use them: site:/-site: to target or exclude outlets, quotes for names and titles, \
+                 -word to drop a wrong sense. \
+                 FOR CURRENT EVENTS set recency (day/week/month/year) and news:true instead of \
+                 writing a date or 'today' into the query — engines rank by relevance, so 'today' \
+                 alone returns months-old pages. Phrase it as 'latest …'. \
+                 engine=\"exa\" is best for primary sources and dated news; \"google_news\" is \
+                 SerpApi's Google News (250/month shared quota). \
                  Pass source_list to restrict results to an approved domain list stored in the graph."
                     .to_string(),
             input_schema: json!({
@@ -414,7 +429,7 @@ impl SearchSkill {
                     "engine": {
                         "type": "string",
                         "description": "Preferred engine, tried first. Omit to use the configured \
-                                        ladder (default: searxng → tavily → exa → serper → serpapi → google → brave; \
+                                        ladder (default: searxng → exa → tavily → serper → serpapi → google → brave; \
                                         engines without a key are skipped). \
                                         Remaining engines are still used as fallbacks. \
                                         'google_news' is SerpApi's Google News engine (news only).",
@@ -423,6 +438,17 @@ impl SearchSkill {
                     "count": {
                         "type": "integer",
                         "description": "Number of results to return (default: 5, max: 20)"
+                    },
+                    "recency": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year"],
+                        "description": "Only results from this window, applied through each engine's \
+                                        own date filter. Use it for anything current instead of \
+                                        putting a date or 'today' in the query."
+                    },
+                    "news": {
+                        "type": "boolean",
+                        "description": "News results only (news vertical on engines that have one)."
                     },
                     "source_list": {
                         "type": "string",
@@ -447,9 +473,12 @@ impl SearchSkill {
         ToolDefinition {
             name: "get_search_usage".to_string(),
             description:
-                "Report web-search usage from the telemetry ledger: per-engine totals, failures, \
-                 quota-exhaustion counts, and a per-day breakdown. Use this to check burn rate \
-                 against a provider's free-tier cap before it runs out."
+                "THE answer to any question about our own web searches: which search engines \
+                 (searxng, exa, tavily, serper, google_news, …) answered, how many searches each, \
+                 how many failed and why, and a per-day breakdown — read from the telemetry \
+                 ledger, exact. Use it for \"which engines did we use\", \"how many searches\", \
+                 quota burn against a free-tier cap. Notes do not record this; never infer it \
+                 from them. (LLM models and providers are a different question: get_llm_budget.)"
                     .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -464,32 +493,18 @@ impl SearchSkill {
         }
     }
 
-    /// Fetch approved domains from a SourceList node, then build a site: restriction suffix.
-    /// Returns (effective_query, allowed_domains) where allowed_domains is used for post-filtering.
-    async fn apply_source_list(
-        &self,
-        query: &str,
-        source_list_name: &str,
-    ) -> (String, Vec<String>) {
+    /// The approved domains of a SourceList node (empty when it does not
+    /// resolve, which degrades to an unrestricted search). They become `site:`
+    /// for the Google family and include-domain parameters for Exa/Tavily, and
+    /// the results are post-filtered against them either way.
+    async fn source_list_domains(&self, source_list_name: &str) -> Vec<String> {
         let Some(ref neo4j) = self.neo4j else {
-            return (query.to_string(), vec![]);
+            return vec![];
         };
-        let domains = neo4j
+        neo4j
             .get_source_list(source_list_name)
             .await
-            .unwrap_or_default();
-        if domains.is_empty() {
-            return (query.to_string(), vec![]);
-        }
-        // Use up to 15 domains in the site: restriction (Google query length limit).
-        let site_clause = domains
-            .iter()
-            .take(15)
-            .map(|d| format!("site:{d}"))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let effective_query = format!("{query} ({site_clause})");
-        (effective_query, domains)
+            .unwrap_or_default()
     }
 
     /// Return true if `url` matches any approved domain (host ends with domain or equals it).
@@ -959,12 +974,20 @@ impl SearchSkill {
 
         let count = input.count.unwrap_or(5).clamp(1, 20);
 
+        // Parse Google syntax once; each engine renders what it understands.
+        let mut spec = QuerySpec::parse(&input.query);
+        spec.recency = input.recency.as_deref().and_then(Recency::parse);
+        spec.news = input.news;
+
         // Resolve source list restriction if requested.
-        let (effective_query, allowed_domains) = if let Some(ref list_name) = input.source_list {
-            self.apply_source_list(&input.query, list_name).await
+        let allowed_domains = if let Some(ref list_name) = input.source_list {
+            let domains = self.source_list_domains(list_name).await;
+            spec.add_sites(&domains);
+            domains
         } else {
-            (input.query.clone(), vec![])
+            vec![]
         };
+        let effective_query = spec.display();
 
         // Build the failover ladder. A single dead engine must not take the
         // whole chain with it: an exhausted SerpApi free tier previously killed
@@ -998,14 +1021,14 @@ impl SearchSkill {
         for engine in &ladder {
             let started = Instant::now();
             let attempt = match engine.as_str() {
-                "searxng" => self.search_searxng(&effective_query, count).await,
-                "serpapi" => self.search_serpapi(&effective_query, count).await,
-                "google_news" => self.search_serpapi_news(&effective_query, count).await,
-                "brave" => self.search_brave(&effective_query, count).await,
-                "google" => self.search_google(&effective_query, count).await,
-                "tavily" => self.search_tavily(&effective_query, count).await,
-                "exa" => self.search_exa(&effective_query, count).await,
-                "serper" => self.search_serper(&effective_query, count).await,
+                "searxng" => self.search_searxng(&spec, count).await,
+                "serpapi" => self.search_serpapi(&spec, count).await,
+                "google_news" => self.search_serpapi_news(&spec, count).await,
+                "brave" => self.search_brave(&spec, count).await,
+                "google" => self.search_google(&spec, count).await,
+                "tavily" => self.search_tavily(&spec, count).await,
+                "exa" => self.search_exa(&spec, count).await,
+                "serper" => self.search_serper(&spec, count).await,
                 other => ToolCallResult::error(format!("Unsupported search engine: {other}")),
             };
             let duration_ms = started.elapsed().as_millis() as i64;
@@ -1153,7 +1176,22 @@ impl SearchSkill {
     /// Results are normalised to the `title`/`link`/`snippet` shape that SerpApi
     /// and Google CSE already emit, so downstream `reason` steps see one schema
     /// regardless of which rung of the ladder answered.
-    async fn search_searxng(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_searxng(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        // SearXNG fans out to Google, Bing, DuckDuckGo…: they all read `site:`,
+        // quotes and `-`, but not `after:`, so dates go in `time_range`.
+        let query = spec.google_syntax(false);
+        let mut params: Vec<(&str, String)> = vec![
+            ("q", query.clone()),
+            ("format", "json".into()),
+            ("language", "en".into()),
+            ("safesearch", "0".into()),
+        ];
+        if let Some(tr) = spec.searxng_time_range() {
+            params.push(("time_range", tr.into()));
+        }
+        if spec.news {
+            params.push(("categories", "news".into()));
+        }
         let base_url = self
             .resolve_context_field("searxng", "base_url", "SEARXNG_URL")
             .await
@@ -1163,12 +1201,7 @@ impl SearchSkill {
         let response = self
             .client
             .get(&endpoint)
-            .query(&[
-                ("q", query),
-                ("format", "json"),
-                ("language", "en"),
-                ("safesearch", "0"),
-            ])
+            .query(&params)
             .timeout(std::time::Duration::from_secs(SEARXNG_TIMEOUT_SECS))
             .send()
             .await;
@@ -1242,7 +1275,7 @@ impl SearchSkill {
                             && let Some(ref t) = self.telemetry
                         {
                             let _ = t.log_knowledge_gap(
-                                query,
+                                &query,
                                 Some("search_web:searxng"),
                                 "missing_info",
                             );
@@ -1258,7 +1291,9 @@ impl SearchSkill {
         }
     }
 
-    async fn search_serpapi(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_serpapi(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        let query = spec.google_syntax(true);
+        let query = query.as_str();
         let api_key = match self.resolve_key("serpapi", "SERPAPI_KEY").await {
             Some(k) => k,
             None => {
@@ -1285,6 +1320,12 @@ impl SearchSkill {
                 ("num", &count.to_string()),
                 ("engine", "google"),
             ])
+            .query(
+                &spec
+                    .google_tbs()
+                    .map(|t| vec![("tbs", t)])
+                    .unwrap_or_default(),
+            )
             .send()
             .await;
 
@@ -1368,7 +1409,15 @@ impl SearchSkill {
     ///
     /// Google News ignores `num`; it returns a full page, so the result set is
     /// flattened and capped locally via `flatten_google_news`.
-    async fn search_serpapi_news(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_serpapi_news(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        // Google News ranks by relevance; without `when:` a "today" query
+        // returned stories from March (2026-10-02, 0 of 8 current).
+        let mut query = spec.google_syntax(false);
+        if let Some(when) = spec.google_news_when() {
+            query.push(' ');
+            query.push_str(&when);
+        }
+        let query = query.as_str();
         let api_key = match self.resolve_key("serpapi", "SERPAPI_KEY").await {
             Some(k) => k,
             None => {
@@ -1464,7 +1513,9 @@ impl SearchSkill {
         }
     }
 
-    async fn search_brave(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_brave(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        let query = spec.google_syntax(false);
+        let query = query.as_str();
         let api_key =
             match self.resolve_key("brave", "BRAVE_API_KEY").await {
                 Some(k) => k,
@@ -1479,6 +1530,12 @@ impl SearchSkill {
             .get("https://api.search.brave.com/res/v1/web/search")
             .header("X-Subscription-Token", &api_key)
             .query(&[("q", query), ("count", &count.to_string())])
+            .query(
+                &spec
+                    .brave_freshness()
+                    .map(|f| vec![("freshness", f)])
+                    .unwrap_or_default(),
+            )
             .send()
             .await;
 
@@ -1560,18 +1617,42 @@ impl SearchSkill {
     }
 
     /// Tavily: 1,000 searches/month free, refills, no card. `Authorization: Bearer`.
-    async fn search_tavily(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_tavily(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
         let Some(key) = self.resolve_key("tavily", "TAVILY_API_KEY").await else {
             return ToolCallResult::error(
                 "Tavily API key not configured (set TAVILY_API_KEY)".to_string(),
             );
         };
-        let body = json!({
-            "query": query,
+        // Tavily reads no operators: domains, dates and news go in parameters.
+        let mut body = json!({
+            "query": spec.plain_text(true),
             "max_results": count,
             "search_depth": "basic",
             "include_published_date": true,
         });
+        if spec.news {
+            body["topic"] = json!("news");
+        }
+        if spec.has_phrases() {
+            body["exact_match"] = json!(true);
+        }
+        if !spec.sites.is_empty() {
+            body["include_domains"] = json!(spec.sites);
+        }
+        if !spec.exclude_sites.is_empty() {
+            body["exclude_domains"] = json!(spec.exclude_sites);
+        }
+        match (spec.recency, spec.tavily_dates()) {
+            (Some(r), (_, None)) => body["time_range"] = json!(r.word()),
+            (_, (start, end)) => {
+                if let Some(s) = start {
+                    body["start_date"] = json!(s);
+                }
+                if let Some(e) = end {
+                    body["end_date"] = json!(e);
+                }
+            }
+        }
         match self
             .post_search(
                 "Tavily",
@@ -1588,18 +1669,44 @@ impl SearchSkill {
 
     /// Exa: $10 of credit/month free, refills, no card. Asks for a short
     /// highlight per result — without `contents` Exa returns no snippet at all.
-    async fn search_exa(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_exa(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
         let Some(key) = self.resolve_key("exa", "EXA_API_KEY").await else {
             return ToolCallResult::error(
                 "Exa API key not configured (set EXA_API_KEY)".to_string(),
             );
         };
-        let body = json!({
-            "query": query,
+        // Exa is a neural ranker and reads no operators — `site:` there was the
+        // word "site". Domains, dates, news and a short exact phrase are API
+        // parameters. News + a one-day window returned CNBC, Al Jazeera,
+        // France24, Politico dated that day (2026-10-02).
+        let mut body = json!({
+            "query": spec.plain_text(false),
             "numResults": count,
             "type": "auto",
             "contents": { "highlights": { "maxCharacters": EXA_HIGHLIGHT_CHARS } },
         });
+        if spec.news {
+            body["category"] = json!("news");
+        }
+        if !spec.sites.is_empty() {
+            body["includeDomains"] = json!(spec.sites);
+        }
+        if !spec.exclude_sites.is_empty() {
+            body["excludeDomains"] = json!(spec.exclude_sites);
+        }
+        let (start, end) = spec.exa_dates();
+        if let Some(s) = start {
+            body["startPublishedDate"] = json!(s);
+        }
+        if let Some(e) = end {
+            body["endPublishedDate"] = json!(e);
+        }
+        if let Some(t) = spec.exa_include_text() {
+            body["includeText"] = json!([t]);
+        }
+        if let Some(t) = spec.exa_exclude_text() {
+            body["excludeText"] = json!([t]);
+        }
         match self
             .post_search("Exa", "https://api.exa.ai/search", ("x-api-key", key), body)
             .await
@@ -1610,20 +1717,24 @@ impl SearchSkill {
     }
 
     /// Serper: Google results, 2,500 free queries ONCE (no refill), no card.
-    async fn search_serper(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_serper(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
         let Some(key) = self.resolve_key("serper", "SERPER_API_KEY").await else {
             return ToolCallResult::error(
                 "Serper API key not configured (set SERPER_API_KEY)".to_string(),
             );
         };
-        let body = json!({ "q": query, "num": count });
+        let mut body = json!({ "q": spec.google_syntax(true), "num": count });
+        if let Some(tbs) = spec.google_tbs() {
+            body["tbs"] = json!(tbs);
+        }
+        // Serper's /news endpoint returns `news` instead of `organic`.
+        let endpoint = if spec.news {
+            "https://google.serper.dev/news"
+        } else {
+            "https://google.serper.dev/search"
+        };
         match self
-            .post_search(
-                "Serper",
-                "https://google.serper.dev/search",
-                ("X-API-KEY", key),
-                body,
-            )
+            .post_search("Serper", endpoint, ("X-API-KEY", key), body)
             .await
         {
             Ok(json) => ToolCallResult::success_json(normalize_serper(&json, count)),
@@ -1631,7 +1742,9 @@ impl SearchSkill {
         }
     }
 
-    async fn search_google(&self, query: &str, count: u8) -> ToolCallResult {
+    async fn search_google(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        let query = spec.google_syntax(true);
+        let query = query.as_str();
         let api_key = match self.resolve_key("google_cse", "GOOGLE_API_KEY").await {
             Some(k) => k,
             None => return ToolCallResult::error(
@@ -1655,6 +1768,12 @@ impl SearchSkill {
                 ("q", query),
                 ("num", &count.to_string()),
             ])
+            .query(
+                &spec
+                    .cse_date_restrict()
+                    .map(|d| vec![("dateRestrict", d)])
+                    .unwrap_or_default(),
+            )
             .send()
             .await;
 
@@ -1737,6 +1856,17 @@ struct SearchInput {
     /// ScheduledTask step definitions stored with quoted counts still work.
     #[serde(default, deserialize_with = "deserialize_optional_count")]
     count: Option<u8>,
+    /// `day` / `week` / `month` / `year`: only results from that window, mapped
+    /// to each engine's own date filter.
+    #[serde(
+        default,
+        deserialize_with = "crate::skills::serde_flex::empty_string_as_none"
+    )]
+    recency: Option<String>,
+    /// News results only (Exa `category`, Tavily `topic`, SearXNG and Serper
+    /// news verticals).
+    #[serde(default)]
+    news: bool,
     /// Name of a SourceList node in Neo4j. When set, restricts results to approved domains.
     #[serde(
         default,
@@ -1858,7 +1988,7 @@ mod tests {
         assert_eq!(
             order_engines("", None, &[]),
             v(&[
-                "searxng", "tavily", "exa", "serper", "serpapi", "google", "brave"
+                "searxng", "exa", "tavily", "serper", "serpapi", "google", "brave"
             ])
         );
     }

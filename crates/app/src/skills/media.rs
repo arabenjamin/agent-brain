@@ -253,8 +253,15 @@ impl MediaSkill {
         if let Err(e) = self.neo4j.upsert_media(&record).await {
             warn!(error = %e, "ingest_media: failed to upsert :Media node");
         }
-        if let Some(ref sm) = input.source_media_name {
-            let _ = self.neo4j.link_media_from_source(&meta.id, sm).await;
+        match input.source_media_name.as_deref().filter(|s| !s.is_empty()) {
+            Some(sm) => {
+                let _ = self.neo4j.link_media_from_source(&meta.id, sm).await;
+            }
+            None => {
+                if let Err(e) = self.neo4j.link_media_by_channel(&meta.id).await {
+                    warn!(error = %e, "ingest_media: failed to link :Media to its source");
+                }
+            }
         }
 
         let mut out = json!({
@@ -475,6 +482,16 @@ impl MediaSkill {
                             continue;
                         }
                         Ok(_) => {} // within cap — fall through to create the Task
+                        Err(e) if crate::services::media::is_not_yet_available(&e.to_string()) => {
+                            // A scheduled premiere / upcoming live event: yt-dlp
+                            // refuses it outright, so a task would fail 3× and
+                            // dead-letter (2 such on 2026-09-28 / 10-01). Like a
+                            // live stream it is TEMPORARY — no dedup node; it stays
+                            // in the feed and the next poll picks it up once aired.
+                            info!(source = %ms.name, url = %item.url, title = %item.title,
+                                "poll_media_sources: skipping a premiere that has not started");
+                            continue;
+                        }
                         Err(e) => {
                             // Transient probe failure (yt-dlp/network). Don't drop a
                             // possibly-good video; let ingest handle it as before.
@@ -763,10 +780,28 @@ impl MediaSkill {
             Ok(i) => i,
             Err(e) => return e,
         };
-        let max = input.max.unwrap_or(5);
-        let concepts = extract_follow_up(&input.text);
+        let max = input.max.unwrap_or(2);
+        let all = extract_follow_up(&input.text);
+        let (concepts, rejected): (Vec<String>, Vec<String>) =
+            all.into_iter().partition(|c| is_standalone_gap(c));
+        if !rejected.is_empty() {
+            info!(rejected = ?rejected, "spawn_gap_tasks: dropped follow-ups that only make sense inside their source");
+        }
+        // A daily ceiling across every source: 214 gap chains in the week to
+        // 2026-10-01, ~30/day, each a full search+reason run.
+        let daily_max = gap_tasks_daily_max();
+        let day_start = crate::services::clock::local_day_start_utc().to_rfc3339();
+        let mut today = self
+            .neo4j
+            .count_tasks_with_goal_prefix_since("fill knowledge gap:", &day_start)
+            .await
+            .unwrap_or(0);
         let mut created = 0usize;
         for concept in concepts.iter().take(max) {
+            if today >= daily_max {
+                info!(daily_max, "spawn_gap_tasks: daily gap-task ceiling reached");
+                break;
+            }
             let concept = truncate(concept, 160);
             let goal = format!("fill knowledge gap: {concept}");
             if self
@@ -786,7 +821,10 @@ impl MediaSkill {
                 )
                 .await
             {
-                Ok(_) => created += 1,
+                Ok(_) => {
+                    created += 1;
+                    today += 1;
+                }
                 Err(e) => warn!(error = %e, "spawn_gap_tasks: create_task failed"),
             }
         }
@@ -936,6 +974,54 @@ fn extract_follow_up(text: &str) -> Vec<String> {
     out
 }
 
+/// Default ceiling on `fill knowledge gap:` tasks created per local day.
+const GAP_TASKS_DAILY_MAX_DEFAULT: i64 = 20;
+
+fn gap_tasks_daily_max() -> i64 {
+    std::env::var("GAP_TASKS_DAILY_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|n| *n >= 0)
+        .unwrap_or(GAP_TASKS_DAILY_MAX_DEFAULT)
+}
+
+/// Whether a follow-up can be researched on its own. A gap task is a web +
+/// graph search with no access to the video it came from, so a concept that
+/// points back into its source ("the final scene", "this practice", "(Context:
+/// …)", "mentioned in the video") has nothing to find. Those made up much of
+/// the 2026-10-01 review's trivia — "the subtle wave from the daughter in the
+/// final scene", "the president's discomfort with Channel 5".
+fn is_standalone_gap(concept: &str) -> bool {
+    let c = concept.to_lowercase();
+    const SOURCE_BOUND: [&str; 20] = [
+        "(context",
+        "(inferred",
+        "(based on",
+        "inferred)",
+        "the video",
+        "this video",
+        "the podcast",
+        "the episode",
+        "the speaker",
+        "the host",
+        "the narrator",
+        "the interview",
+        "the documentary",
+        "the final scene",
+        "the scene",
+        "this practice",
+        "mentioned in",
+        "referenced in",
+        "the clip",
+        "the footage",
+    ];
+    if SOURCE_BOUND.iter().any(|m| c.contains(m)) {
+        return false;
+    }
+    // Too short to be a research question, or not a topic at all.
+    c.split_whitespace().count() >= 4
+}
+
 /// Strip a leading bullet marker (`-`/`*`/`•`) or `1.`/`1)` numbering.
 fn strip_bullet(line: &str) -> &str {
     let s = line.trim_start_matches(['-', '*', '•']).trim_start();
@@ -1021,6 +1107,25 @@ struct ManageInput {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn source_bound_follow_ups_are_not_gap_tasks() {
+        for bound in [
+            "Investigate the specific nature of the \"subtle wave\" from the daughter in the final scene",
+            "Investigate the economic impact of this practice, specifically quantifying losses",
+            "What defense arguments are anticipated regarding the missing weapon (Context: \"As anticipation builds\")",
+            "Research the historical outage referenced in the early 2000s (Inferred).",
+            "Tariffs",
+        ] {
+            assert!(!is_standalone_gap(bound), "{bound}");
+        }
+        for standalone in [
+            "What specific regulatory actions are international bodies taking regarding GLP-1 drug vision loss risk?",
+            "How do state-level policies drive variation in US gasoline prices?",
+        ] {
+            assert!(is_standalone_gap(standalone), "{standalone}");
+        }
+    }
     use super::*;
 
     #[test]

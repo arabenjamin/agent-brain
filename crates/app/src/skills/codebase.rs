@@ -892,7 +892,7 @@ impl CodebaseSkill {
         let re = match if case_sensitive {
             regex::Regex::new(&args.query)
         } else {
-            regex::Regex::new(&format!("(?i){}", &args.query))
+            regex::Regex::new(&format!("(?i){}", args.query))
         } {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(format!("Invalid regex: {e}")),

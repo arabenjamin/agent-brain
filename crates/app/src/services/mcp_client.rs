@@ -111,7 +111,12 @@ impl Default for McpClient {
 impl McpClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            // Some servers refuse a request with no User-Agent: Exa's hosted
+            // MCP answers 403 (found 2026-09-26), and reqwest sends none.
+            http: reqwest::Client::builder()
+                .user_agent(concat!("agent-brain/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .unwrap_or_default(),
             timeout: Duration::from_secs(30),
         }
     }

@@ -12,7 +12,8 @@
 //!   keeping its order and recording why every skipped model was skipped.
 //!
 //! **Privacy before budget.** Work is `private` unless it says otherwise, and
-//! private work only reaches `no_log` providers — not even as a last fallback.
+//! private work only reaches `no_log` providers — not even as a last fallback —
+//! unless the owner names the purpose in that provider's `private_ok_for`.
 //! **Paid is off until opted in**: a paid provider needs its billing class in
 //! the policy, the purpose in `ROUTING_PAID_FOR`, and a declared spend cap.
 
@@ -299,30 +300,38 @@ impl RoutingPolicy {
                 return Err(format!("paid provider '{name}' declares no spend cap"));
             }
         }
-        if ctx.data_class == DataClass::Private && e.data_policy != DataPolicy::NoLog {
+        if ctx.data_class == DataClass::Private
+            && e.data_policy != DataPolicy::NoLog
+            && !e.private_ok_for.contains(&ctx.purpose)
+        {
             return Err(format!(
-                "private work may not use a {} provider",
-                policy_str(e.data_policy)
+                "private {} work may not use a {} provider (models.yaml `private_ok_for` \
+                 does not name {})",
+                ctx.purpose,
+                policy_str(e.data_policy),
+                ctx.purpose
             ));
         }
-        if ctx.purpose == Purpose::Subagent {
-            if let Some(rpm) = e.limits.rpm
-                && rpm < LOOP_MIN_RPM
-            {
-                return Err(format!(
-                    "declared {rpm} requests/minute cannot carry a multi-round agent loop \
-                     (needs {LOOP_MIN_RPM})"
-                ));
-            }
-            if let Some(rpd) = e.limits.rpd
-                && rpd < LOOP_MIN_RPD
-            {
-                return Err(format!(
-                    "declared {rpd} requests/day cannot carry agent loops (needs {LOOP_MIN_RPD})"
-                ));
-            }
+        loop_capacity(&e.limits, ctx)
+    }
+
+    /// [`Self::check_entry`] plus the model's own declared limits
+    /// (`models.yaml` `limits:`), which the sub-agent loop floor must also clear:
+    /// a model limited to 5 rpm cannot carry a loop even when its provider
+    /// declares nothing.
+    pub fn check_model(
+        &self,
+        name: &str,
+        entry: Option<&ProviderEntry>,
+        key_present: bool,
+        model_limits: Option<&provider_registry::Limits>,
+        ctx: RouteContext,
+    ) -> Result<(), String> {
+        self.check_entry(name, entry, key_present, ctx)?;
+        match model_limits {
+            Some(l) => loop_capacity(l, ctx),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Judge a ready-to-call config against the live registry.
@@ -335,7 +344,14 @@ impl RoutingPolicy {
         let key_present = entry.as_ref().is_some_and(|e| {
             e.key_configured() || cfg.api_key.as_deref().is_some_and(|k| !k.trim().is_empty())
         });
-        self.check_entry(&name, entry.as_ref(), key_present, ctx)?;
+        let model_limits = provider_registry::model_limits(&name, &cfg.model);
+        self.check_model(
+            &name,
+            entry.as_ref(),
+            key_present,
+            model_limits.as_ref(),
+            ctx,
+        )?;
         // Budget last: only a provider the policy would otherwise use is worth
         // judging for headroom (`services/budget.rs`).
         match entry.as_ref() {
@@ -425,8 +441,9 @@ pub fn route(
         let provider = provider_registry::canonical_name(row["provider"].as_str().unwrap_or(""));
         let entry = lookup(&provider);
         let key = entry.as_ref().is_some_and(&key_present);
+        let model_limits = provider_registry::model_limits(&provider, &model);
         let verdict = policy
-            .check_entry(&provider, entry.as_ref(), key, ctx)
+            .check_model(&provider, entry.as_ref(), key, model_limits.as_ref(), ctx)
             .and_then(|()| match entry.as_ref() {
                 Some(e) => budget(&provider, &model, e),
                 None => Ok(()),
@@ -455,6 +472,29 @@ pub fn route(
         }
     }
     plan
+}
+
+/// Refuse a sub-agent loop on declared limits too small to carry one.
+fn loop_capacity(limits: &provider_registry::Limits, ctx: RouteContext) -> Result<(), String> {
+    if ctx.purpose != Purpose::Subagent {
+        return Ok(());
+    }
+    if let Some(rpm) = limits.rpm
+        && rpm < LOOP_MIN_RPM
+    {
+        return Err(format!(
+            "declared {rpm} requests/minute cannot carry a multi-round agent loop \
+             (needs {LOOP_MIN_RPM})"
+        ));
+    }
+    if let Some(rpd) = limits.rpd
+        && rpd < LOOP_MIN_RPD
+    {
+        return Err(format!(
+            "declared {rpd} requests/day cannot carry agent loops (needs {LOOP_MIN_RPD})"
+        ));
+    }
+    Ok(())
 }
 
 /// Stamp a chain or schedule file's top-level `data_class` onto every step that
@@ -588,6 +628,52 @@ mod tests {
         }
         assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
         assert!(check(&p, "llamacpp", Purpose::Chat, DataClass::Private).is_ok());
+    }
+
+    #[test]
+    fn private_ok_for_opens_a_training_provider_to_the_named_purpose_only() {
+        let p = tier("2");
+        let gemini = entry(
+            "kind: gemini\nbilling: free\ndata_policy: may_train\nlimits: { rpm: 5 }\n\
+             private_ok_for: [chat]",
+        );
+        let at = |purpose| {
+            p.check_entry(
+                "gemini",
+                Some(&gemini),
+                true,
+                RouteContext::new(purpose, DataClass::Private),
+            )
+        };
+        assert!(at(Purpose::Chat).is_ok());
+        let err = at(Purpose::Background).unwrap_err();
+        assert!(err.contains("private_ok_for"), "{err}");
+        // The override lifts the privacy filter, not the loop-capacity one.
+        assert!(at(Purpose::Subagent).is_err());
+    }
+
+    #[test]
+    fn a_models_own_rpm_keeps_it_out_of_subagent_loops() {
+        let p = tier("2");
+        let bare = entry("kind: gemini\nbilling: free\ndata_policy: no_log");
+        let five = provider_registry::Limits {
+            rpm: Some(5),
+            ..Default::default()
+        };
+        let sub = RouteContext::new(Purpose::Subagent, DataClass::Public);
+        assert!(
+            p.check_model("gemini", Some(&bare), true, None, sub)
+                .is_ok()
+        );
+        let err = p
+            .check_model("gemini", Some(&bare), true, Some(&five), sub)
+            .unwrap_err();
+        assert!(err.contains("5 requests/minute"), "{err}");
+        let chat = RouteContext::new(Purpose::Chat, DataClass::Public);
+        assert!(
+            p.check_model("gemini", Some(&bare), true, Some(&five), chat)
+                .is_ok()
+        );
     }
 
     #[test]

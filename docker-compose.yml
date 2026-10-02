@@ -184,7 +184,7 @@ services:
       # search_web failover ladder. SearXNG is self-hosted and unmetered, so it
       # leads; the keyed engines below it are backstops for a sidecar outage.
       # Reorder here to change preference without a rebuild.
-      - SEARCH_ENGINE_ORDER=searxng,tavily,exa,serper,serpapi,google,brave
+      - SEARCH_ENGINE_ORDER=searxng,exa,tavily,serper,serpapi,google,brave
       - SEARXNG_URL=http://searxng:8080
       # Sandboxed code execution. Unset => execute_code is not registered at
       # all, so a deployment without the sandbox service degrades cleanly.
@@ -205,7 +205,7 @@ services:
       - SCHEDULES_DIR=/home/agent/agent-brain/schedules
       - SOURCES_DIR=/home/agent/agent-brain/sources
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
-      - MCP_SERVERS_DIR=/home/agent/agent-brain/mcp-servers      # external MCP servers the brain may call (aidevboard, worklittle)
+      - MCP_SERVERS_DIR=/home/agent/agent-brain/mcp-servers      # external MCP servers the brain may call (aidevboard, worklittle, exa, tavily)
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
       # 1, paired with the 6h interval in schedules/media-watch.yaml — see the
@@ -213,6 +213,7 @@ services:
       # daily cap at 60. Lowered from 2 on 2026-09-01.
       - MEDIA_WATCH_MAX_PER_SOURCE=1                             # first-poll stampede guard: max new videos/source/poll
       - MEDIA_DISCOVERY_ENABLED=true                             # weekly autonomous watchlist curation (stages INACTIVE sources for review)
+      - GAP_TASKS_DAILY_MAX=${GAP_TASKS_DAILY_MAX:-20}            # curiosity engine: max 'fill knowledge gap' tasks per local day
       - MEDIA_DISCOVERY_MAX=3                                    # max new sources staged per discovery run
       - WHISPER_PROVIDER=http                                    # caption-less fallback via self-hosted Whisper sidecar
       - WHISPER_BASE_URL=http://whisper:8000/v1                  # OpenAI-compatible endpoint (faster-whisper-server)

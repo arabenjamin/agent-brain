@@ -1,0 +1,14 @@
+# Tavily — hosted MCP server. Same index as the `tavily` search_web engine
+# (probed 2026-09-26: identical sources), so search stays on search_web; what
+# this adds is tavily_extract (clean page text), tavily_map / tavily_crawl
+# (walk a site) and tavily_research. All draw on the 1,000 credits/month free
+# allowance — crawl and research cost several credits per call.
+name: tavily
+url: https://mcp.tavily.com/mcp/
+description: >
+  Tavily. Use tavily_extract(urls) to read pages as clean text, tavily_map(url)
+  to list a site's pages, tavily_crawl(url, instructions) to read a site.
+  tavily_search duplicates search_web's tavily engine — prefer search_web.
+auth_scheme: bearer
+auth_env_var: TAVILY_API_KEY
+enabled: true

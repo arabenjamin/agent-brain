@@ -95,6 +95,24 @@ pub fn now_local() -> DateTime<Local> {
     Local::now()
 }
 
+/// Local midnight of `day`, as a UTC instant — the bound to compare stored
+/// (UTC) timestamps against when "today" means the local day. A midnight that
+/// does not exist (a DST gap) falls back to now.
+pub fn local_midnight_utc(day: chrono::NaiveDate) -> DateTime<Utc> {
+    use chrono::TimeZone;
+    now_local()
+        .timezone()
+        .from_local_datetime(&day.and_hms_opt(0, 0, 0).expect("midnight exists"))
+        .single()
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now)
+}
+
+/// The start of the current local day, as a UTC instant.
+pub fn local_day_start_utc() -> DateTime<Utc> {
+    local_midnight_utc(now_local().date_naive())
+}
+
 /// Local calendar date, `YYYY-MM-DD`. This is what `{{date}}` expands to.
 pub fn today() -> String {
     now_local().format("%Y-%m-%d").to_string()

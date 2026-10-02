@@ -800,13 +800,13 @@ impl SchedulerService {
         // The exclusion list MUST match consolidate_memories' source filter: any type counted
         // here but refused as a source stays overdue forever and re-triggers consolidation
         // tasks that can never consume it (reflection notes drove ~10 consolidations/day).
-        let due_check = neo4rs::query(
+        let due_check = neo4rs::query(&format!(
             "MATCH (n:Note) \
              WHERE n.next_review_at <= datetime() \
-               AND NOT COALESCE(n.note_type, 'semantic') \
-                   IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome'] \
+               AND {} \
              RETURN count(n) AS cnt",
-        );
+            crate::services::knowledge::CONSOLIDATION_SOURCE_PREDICATE
+        ));
         let due_count: i64 = self
             .neo4j
             .execute(due_check)
@@ -1485,8 +1485,8 @@ impl SchedulerService {
                 arguments: Some(json!({
                     "task_id": task_id,
                     "status": "blocked",
-                    "note": format!("Guardrail halted dispatch: goal requires prerequisites assessment. \
-                                    See inference note for details. Unblock manually once ready.")
+                    "note": "Guardrail halted dispatch: goal requires prerequisites assessment. \
+                                    See inference note for details. Unblock manually once ready.".to_string()
                 })),
                 priority: Some(1),
                 max_attempts: Some(3),

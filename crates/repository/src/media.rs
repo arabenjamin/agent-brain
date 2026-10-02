@@ -110,6 +110,49 @@ impl Neo4jClient {
         Ok(c > 0)
     }
 
+    /// How many Tasks whose goal starts with `prefix` were created since
+    /// `since` (RFC 3339). Backs the curiosity engine's daily cap.
+    pub async fn count_tasks_with_goal_prefix_since(
+        &self,
+        prefix: &str,
+        since: &str,
+    ) -> Result<i64> {
+        let rows = self
+            .execute(
+                query(
+                    "MATCH (t:Task) WHERE t.goal STARTS WITH $prefix \
+                     AND t.created_at >= datetime($since) RETURN count(t) AS c",
+                )
+                .param("prefix", prefix)
+                .param("since", since),
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .and_then(|r| r.get::<i64>("c").ok())
+            .unwrap_or(0))
+    }
+
+    /// Link a video to the watchlist source whose `ref` is its channel id, and
+    /// record that source's name on the video. The watch task the poll creates
+    /// carries only the URL, so the source name never reached `ingest_media` —
+    /// no video had a `FROM_SOURCE` edge before 2026-10-01 (0 of 1,089). The
+    /// channel id is on every video and every YouTube `MediaSource.ref`.
+    pub async fn link_media_by_channel(&self, media_id: &str) -> Result<()> {
+        self.run(
+            query(
+                "MATCH (m:Media {id: $media_id}) WHERE coalesce(m.channel_id, '') <> '' \
+                 MATCH (s:MediaSource {ref: m.channel_id}) \
+                 MERGE (m)-[:FROM_SOURCE]->(s) \
+                 SET m.source_media_name = s.name",
+            )
+            .param("media_id", media_id),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Create `(:Note)-[:SUMMARIZES]->(:Media)` (best-effort; both must exist).
     pub async fn link_note_summarizes_media(&self, note_id: &str, media_id: &str) -> Result<()> {
         self.run(

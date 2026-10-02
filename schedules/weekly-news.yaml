@@ -4,7 +4,9 @@ interval_seconds: 604800
 steps:
   - tool_name: search_web
     arguments:
-      query: "major world news events this week AP Reuters BBC"
+      query: "latest major world news (site:apnews.com OR site:reuters.com OR site:bbc.com)"
+      recency: week
+      news: true
       count: 10
     priority: 1
     max_attempts: 3
@@ -12,7 +14,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "AI technology breakthroughs this week TechCrunch Wired"
+      query: "latest AI technology breakthroughs (site:techcrunch.com OR site:wired.com)"
+      recency: week
+      news: true
       count: 10
     priority: 1
     max_attempts: 3
@@ -20,7 +24,9 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "business economy politics week Financial Times Bloomberg"
+      query: "latest business economy politics news (site:ft.com OR site:bloomberg.com)"
+      recency: week
+      news: true
       count: 10
     priority: 1
     max_attempts: 3

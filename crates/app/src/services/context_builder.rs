@@ -50,6 +50,12 @@ pub struct ContextProfile {
     /// the stricter of this and its caller's class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_class: Option<crate::services::routing::DataClass>,
+    /// Models to step down to, in order, when `model_preference` fails or is
+    /// refused — before the global `chat_fallback_ladder`. Catalog names, so a
+    /// profile can say "another Gemini first, then Ollama Cloud". Every rung is
+    /// still judged by the routing policy and the budget. `/chat` only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].
@@ -269,6 +275,13 @@ impl ContextBuilderService {
             && let Some(existing) = self.profiles.read().await.get(&profile.name)
         {
             profile.data_class = existing.data_class;
+        }
+        // Same for `fallback_models`: a form that does not know the field must
+        // not erase the profile's ladder.
+        if profile.fallback_models.is_empty()
+            && let Some(existing) = self.profiles.read().await.get(&profile.name)
+        {
+            profile.fallback_models = existing.fallback_models.clone();
         }
         if profile.name == "boot" || profile.name == "init" {
             anyhow::bail!("Cannot overwrite reserved protocol files (boot/init)");

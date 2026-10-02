@@ -561,7 +561,14 @@ impl BrainCore {
 
         // Local-only LLM for internal knowledge ops (entity extraction, etc.)
         // Always routes to local Ollama regardless of the active provider.
-        let local_llm = SharedLlm::new(Arc::clone(&local_config_arc));
+        // It records to the usage ledger like every other LLM path: before
+        // 2026-10-01 it had no telemetry sink, so consolidation and entity
+        // extraction never appeared in `model_usage` at all.
+        let local_llm = SharedLlm::new_with_local(
+            Arc::clone(&local_config_arc),
+            Arc::clone(&local_config_arc),
+            self.storage.telemetry.clone(),
+        );
 
         // Give the queue the local config for distilled chain handoffs. It builds
         // its own client from this so it can raise num_ctx without affecting any

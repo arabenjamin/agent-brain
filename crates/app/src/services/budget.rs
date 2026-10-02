@@ -9,7 +9,10 @@
 //!   (UTC day) and spend this month, checked against the provider's declared
 //!   `limits` and, for a paid provider, its `spend` caps. Seeded at startup from
 //!   `model_usage`, so a restart does not hand back a spent quota.
-//! - **Per (provider, model):** cooldowns and the last rate-limit headers seen.
+//! - **Per (provider, model):** requests in the last 60 s and requests/tokens
+//!   today, checked against the model's own `limits:` in `models.yaml` when it
+//!   declares any (Google's free tier counts each model separately), plus
+//!   cooldowns and the last rate-limit headers seen.
 //!   On the providers measured, limits and 429s are per model (one Mistral model
 //!   was rate-limited while another answered; one OpenRouter `:free` model was
 //!   limited upstream while another worked), so a cooldown never benches a
@@ -19,7 +22,7 @@
 //! `remaining = 0` header with its reset time; a retry hint in the error body
 //! (Gemini's `retryDelay`); otherwise an escalating 1 m → 5 m → 1 h backoff that
 //! a success resets. A reported limit of `0` benches the model for an hour,
-//! after which one call re-probes it.
+//! after which one call re-probes it. A 5xx benches the model for a flat 60 s.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -29,19 +32,21 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::repository::TelemetryClient;
-use crate::services::provider_registry::{self, Billing, ProviderEntry};
+use crate::services::provider_registry::{self, Billing, Limits, ProviderEntry};
 
 /// Escalating cooldowns for consecutive 429s with no retry hint.
 const BACKOFF_STEPS_SECS: [i64; 3] = [60, 300, 3600];
 /// How long a model the provider reports a limit of 0 for stays benched before
 /// one call re-probes it.
 const LIMIT_ZERO_COOLDOWN_SECS: i64 = 3600;
+/// How long a model that answered 5xx is skipped before it is tried again.
+const SERVER_ERROR_COOLDOWN_SECS: i64 = 60;
 /// The sliding window a declared `rpm` is counted over.
 const MINUTE_SECS: i64 = 60;
 /// Retry hints outside this range are treated as noise.
 const MAX_HINT_SECS: f64 = 86_400.0;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ProviderCounters {
     day: Option<NaiveDate>,
     requests_today: u64,
@@ -77,6 +82,8 @@ impl ProviderCounters {
 
 #[derive(Debug, Default, Clone)]
 struct ModelState {
+    /// Request/token counts for this model alone; its spend fields stay unused.
+    counters: ProviderCounters,
     cooldown_until: Option<DateTime<Utc>>,
     cooldown_reason: Option<String>,
     backoff_step: usize,
@@ -105,6 +112,15 @@ pub struct CallOutcome<'a> {
     pub cost: f64,
     pub error_kind: Option<&'a str>,
     pub error_text: Option<&'a str>,
+}
+
+/// One model's requests and tokens today at startup, read from `model_usage`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSeedRow {
+    pub provider: String,
+    pub model: String,
+    pub requests_today: u64,
+    pub tokens_today: u64,
 }
 
 /// A provider's usage at startup, read from `model_usage`.
@@ -148,6 +164,10 @@ impl BudgetBook {
         c.window.push_back(now);
 
         let m = self.models.entry((name, o.model.to_string())).or_default();
+        m.counters.roll(now);
+        m.counters.requests_today += 1;
+        m.counters.tokens_today += o.tokens;
+        m.counters.window.push_back(now);
         if o.success {
             m.backoff_step = 0;
         } else if o.error_kind == Some("rate_limited") {
@@ -163,6 +183,14 @@ impl BudgetBook {
                 }
             };
             m.extend_cooldown(now + Duration::seconds(secs), reason);
+        } else if o.error_kind == Some("server_error") {
+            // A 5xx ("high demand", overloaded) is usually brief, but re-trying
+            // the same model on the very next call just spends a round trip on
+            // a known failure. A flat short bench, never escalated.
+            m.extend_cooldown(
+                now + Duration::seconds(SERVER_ERROR_COOLDOWN_SECS),
+                format!("server error (5xx); benched {SERVER_ERROR_COOLDOWN_SECS}s"),
+            );
         }
     }
 
@@ -240,6 +268,20 @@ impl BudgetBook {
         entry: &ProviderEntry,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
+        self.verdict_with(provider, model, entry, None, now)
+    }
+
+    /// [`Self::verdict`], also judging the model against its own declared
+    /// limits. The model is checked first: when both would refuse, the
+    /// narrower reason is the useful one.
+    pub fn verdict_with(
+        &self,
+        provider: &str,
+        model: &str,
+        entry: &ProviderEntry,
+        model_limits: Option<&Limits>,
+        now: DateTime<Utc>,
+    ) -> Result<(), String> {
         let name = provider_registry::canonical_name(provider);
         if let Some(m) = self.models.get(&(name.clone(), model.to_string()))
             && let Some(until) = m.cooldown_until
@@ -251,28 +293,16 @@ impl BudgetBook {
                 m.cooldown_reason.as_deref().unwrap_or("rate limited")
             ));
         }
+        if let Some(limits) = model_limits {
+            let u = self
+                .models
+                .get(&(name.clone(), model.to_string()))
+                .map(|m| counters_usage(&m.counters, now))
+                .unwrap_or_default();
+            check_limits(model, limits, &u)?;
+        }
         let u = self.usage(&name, now);
-        if let Some(rpm) = entry.limits.rpm
-            && u.last_minute >= u64::from(rpm)
-        {
-            return Err(format!("{name} is at its declared {rpm} requests/minute"));
-        }
-        if let Some(rpd) = entry.limits.rpd
-            && u.requests_today >= u64::from(rpd)
-        {
-            return Err(format!(
-                "{name} has used {} of its declared {rpd} requests today (resets 00:00 UTC)",
-                u.requests_today
-            ));
-        }
-        if let Some(tpd) = entry.limits.tpd
-            && u.tokens_today >= tpd
-        {
-            return Err(format!(
-                "{name} has used {} of its declared {tpd} tokens today (resets 00:00 UTC)",
-                u.tokens_today
-            ));
-        }
+        check_limits(&name, &entry.limits, &u)?;
         if entry.billing == Billing::Paid
             && let Some(spend) = &entry.spend
         {
@@ -312,22 +342,74 @@ impl BudgetBook {
         }
     }
 
-    fn usage(&self, name: &str, now: DateTime<Utc>) -> Usage {
-        let Some(c) = self.providers.get(name) else {
-            return Usage::default();
-        };
-        let fresh_day = c.day == Some(now.date_naive());
-        let fresh_month = c.month == Some((now.year(), now.month()));
-        let horizon = now - Duration::seconds(MINUTE_SECS);
-        Usage {
-            last_minute: c.window.iter().filter(|t| **t > horizon).count() as u64,
-            requests_today: if fresh_day { c.requests_today } else { 0 },
-            tokens_today: if fresh_day { c.tokens_today } else { 0 },
-            spend_today: if fresh_day { c.spend_today } else { 0.0 },
-            spend_month: if fresh_month { c.spend_month } else { 0.0 },
+    /// Replace each listed model's request/token counts with the ledger's.
+    pub fn seed_models(&mut self, rows: &[ModelSeedRow], now: DateTime<Utc>) {
+        for r in rows {
+            let m = self
+                .models
+                .entry((
+                    provider_registry::canonical_name(&r.provider),
+                    r.model.clone(),
+                ))
+                .or_default();
+            m.counters.day = Some(now.date_naive());
+            m.counters.month = Some((now.year(), now.month()));
+            m.counters.requests_today = r.requests_today;
+            m.counters.tokens_today = r.tokens_today;
         }
     }
 
+    fn usage(&self, name: &str, now: DateTime<Utc>) -> Usage {
+        self.providers
+            .get(name)
+            .map(|c| counters_usage(c, now))
+            .unwrap_or_default()
+    }
+}
+
+/// Refuse when usage has reached any of the declared limits. `who` names the
+/// provider or model in the reason.
+fn check_limits(who: &str, limits: &Limits, u: &Usage) -> Result<(), String> {
+    if let Some(rpm) = limits.rpm
+        && u.last_minute >= u64::from(rpm)
+    {
+        return Err(format!("{who} is at its declared {rpm} requests/minute"));
+    }
+    if let Some(rpd) = limits.rpd
+        && u.requests_today >= u64::from(rpd)
+    {
+        return Err(format!(
+            "{who} has used {} of its declared {rpd} requests today (resets 00:00 UTC)",
+            u.requests_today
+        ));
+    }
+    if let Some(tpd) = limits.tpd
+        && u.tokens_today >= tpd
+    {
+        return Err(format!(
+            "{who} has used {} of its declared {tpd} tokens today (resets 00:00 UTC)",
+            u.tokens_today
+        ));
+    }
+    Ok(())
+}
+
+/// Usage as of `now`: counts from a past day or month read as zero, and the
+/// minute window only holds the last 60 s.
+fn counters_usage(c: &ProviderCounters, now: DateTime<Utc>) -> Usage {
+    let fresh_day = c.day == Some(now.date_naive());
+    let fresh_month = c.month == Some((now.year(), now.month()));
+    let horizon = now - Duration::seconds(MINUTE_SECS);
+    Usage {
+        last_minute: c.window.iter().filter(|t| **t > horizon).count() as u64,
+        requests_today: if fresh_day { c.requests_today } else { 0 },
+        tokens_today: if fresh_day { c.tokens_today } else { 0 },
+        spend_today: if fresh_day { c.spend_today } else { 0.0 },
+        spend_month: if fresh_month { c.spend_month } else { 0.0 },
+    }
+}
+
+impl BudgetBook {
     /// Every registered provider with its declaration, today's usage, headroom
     /// against declared limits, and per-model cooldowns and headers.
     pub fn snapshot(&self, now: DateTime<Utc>) -> Value {
@@ -351,8 +433,18 @@ impl BudgetBook {
             let models: Vec<Value> = models
                 .into_iter()
                 .map(|(model, m)| {
+                    let mu = counters_usage(&m.counters, now);
+                    let ml = provider_registry::model_limits(&name, model);
                     json!({
                         "model": model,
+                        "limits": ml,
+                        "today": { "requests": mu.requests_today, "tokens": mu.tokens_today },
+                        "last_minute_requests": mu.last_minute,
+                        "headroom": ml.as_ref().map(|l| json!({
+                            "requests_minute": l.rpm.map(|x| u64::from(x).saturating_sub(mu.last_minute)),
+                            "requests_day": l.rpd.map(|x| u64::from(x).saturating_sub(mu.requests_today)),
+                            "tokens_day": l.tpd.map(|x| x.saturating_sub(mu.tokens_today)),
+                        })),
                         "cooling_down": m.cooldown_until.is_some_and(|t| t > now),
                         "cooldown_until": m.cooldown_until.map(|t| t.to_rfc3339()),
                         "cooldown_reason": m.cooldown_reason,
@@ -575,7 +667,8 @@ pub fn observe_headers(
 
 /// Whether a provider/model has headroom right now.
 pub fn verdict(provider: &str, model: &str, entry: &ProviderEntry) -> Result<(), String> {
-    let result = book().verdict(provider, model, entry, Utc::now());
+    let model_limits = provider_registry::model_limits(provider, model);
+    let result = book().verdict_with(provider, model, entry, model_limits.as_ref(), Utc::now());
     if let Err(ref reason) = result
         && entry.billing == Billing::Paid
         && reason.contains(" cap")
@@ -616,6 +709,24 @@ pub fn seed_from_ledger(tc: &TelemetryClient) {
             let n = rows.len();
             book().seed(&rows, now);
             info!(providers = n, "Seeded the budget ledger from model_usage");
+            match tc.budget_model_usage_since(&day_start.to_rfc3339()) {
+                Ok(rows) => {
+                    let rows: Vec<ModelSeedRow> = rows
+                        .into_iter()
+                        .map(|(provider, model, requests, tokens)| ModelSeedRow {
+                            provider,
+                            model,
+                            requests_today: requests.max(0) as u64,
+                            tokens_today: tokens.max(0) as u64,
+                        })
+                        .collect();
+                    book().seed_models(&rows, now);
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "Could not seed per-model budget counters — counting from zero"
+                ),
+            }
         }
         Err(e) => warn!(
             error = %e,
@@ -771,6 +882,88 @@ mod tests {
         assert!(
             b.verdict("mistral", "small", &e, at(12, 8, 1)).is_ok(),
             "back to one minute"
+        );
+    }
+
+    #[test]
+    fn a_model_limit_counts_that_model_alone() {
+        let e = entry("kind: gemini\nbilling: free");
+        let five = Limits {
+            rpm: Some(5),
+            ..Limits::default()
+        };
+        let mut b = BudgetBook::default();
+        for s in 0..5 {
+            b.record(&call("gemini", "gemini-3.8-flash"), at(12, 0, s));
+        }
+        let err = b
+            .verdict_with("gemini", "gemini-3.8-flash", &e, Some(&five), at(12, 0, 10))
+            .unwrap_err();
+        assert!(err.contains("gemini-3.8-flash"), "{err}");
+        // Another model of the same provider has its own bucket.
+        assert!(
+            b.verdict_with("gemini", "gemini-3.6-flash", &e, Some(&five), at(12, 0, 10))
+                .is_ok()
+        );
+        // The provider declares nothing, so it is not the one refusing.
+        assert!(
+            b.verdict("gemini", "gemini-3.8-flash", &e, at(12, 0, 10))
+                .is_ok()
+        );
+        // The minute window slides for the model as it does for a provider.
+        assert!(
+            b.verdict_with("gemini", "gemini-3.8-flash", &e, Some(&five), at(12, 1, 5))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn seeded_model_counts_survive_a_restart() {
+        let e = entry("kind: gemini\nbilling: free");
+        let rpd = Limits {
+            rpd: Some(20),
+            ..Limits::default()
+        };
+        let mut b = BudgetBook::default();
+        b.seed_models(
+            &[ModelSeedRow {
+                provider: "gemini".into(),
+                model: "gemini-3.8-flash".into(),
+                requests_today: 20,
+                tokens_today: 0,
+            }],
+            at(12, 0, 0),
+        );
+        assert!(
+            b.verdict_with("gemini", "gemini-3.8-flash", &e, Some(&rpd), at(12, 0, 1))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_server_error_benches_the_model_briefly() {
+        let e = entry("kind: gemini\nbilling: free");
+        let mut b = BudgetBook::default();
+        b.record(
+            &CallOutcome {
+                success: false,
+                error_kind: Some("server_error"),
+                error_text: Some("Status 503 Service Unavailable: high demand"),
+                ..call("gemini", "gemini-3.8-flash")
+            },
+            at(12, 0, 0),
+        );
+        let err = b
+            .verdict("gemini", "gemini-3.8-flash", &e, at(12, 0, 30))
+            .unwrap_err();
+        assert!(err.contains("5xx"), "{err}");
+        assert!(
+            b.verdict("gemini", "gemini-3.6-flash", &e, at(12, 0, 30))
+                .is_ok()
+        );
+        assert!(
+            b.verdict("gemini", "gemini-3.8-flash", &e, at(12, 1, 1))
+                .is_ok()
         );
     }
 

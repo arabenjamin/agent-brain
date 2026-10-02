@@ -106,6 +106,11 @@ providers:
   `openai_compat` is the generic kind: any OpenAI-wire API is a new YAML entry.
 - **`billing`**: `local` (own hardware), `free` (a free tier: rate-limited, $0), `paid` (metered money).
 - **`data_policy`**: `no_log | may_log | may_train`. **Unknown ⇒ `may_train`.**
+- **`private_ok_for`** (added 2026-09-26): purposes (`chat | subagent | background`) whose
+  *private* work may use this provider despite its `data_policy`. It is the owner's override,
+  deliberately separate from `data_policy` so the provider's terms stay recorded as written.
+  It lifts only the privacy filter; billing, spend caps and the sub-agent rpm/rpd floor still
+  apply. `gemini` sets `[chat]`.
 - **`limits`**: `rpm`, `rpd` (requests/day), `tpd` (tokens/day), `concurrency`. All optional;
   absent = unenforced.
 - **`spend`**: `daily_usd`, `monthly_usd`. **A `paid` provider with no `spend` block is not
@@ -285,6 +290,7 @@ Unchanged from the earlier draft:
   - **`services/budget.rs`** holds a `BudgetBook` behind a process-wide mutex. Every method takes `now`, so the rules are unit-tested.
   - **Per provider:** requests in a sliding 60 s window, plus requests, tokens and spend for the UTC day, and spend for the month. `verdict` checks them against the declared `limits` (`rpm`, `rpd`, `tpd`) and, for `billing: paid`, the `spend` caps, with a WARN when a cap blocks.
   - **Per (provider, model):** cooldowns and the last rate-limit headers seen. Limits and 429s were measured per model, so a cooldown never benches a whole provider.
+  - **Per-model limits (2026-09-26):** a `models.yaml` model entry may declare `limits:` (rpm/rpd/tpd). The budget counts that model alone (seeded from `model_usage` at startup like the provider counters) and checks it before the provider's limits, and the sub-agent loop floor applies to it too. The `gemini` provider no longer declares `rpm: 5`; each Gemini model carries its own, because Google's free-tier quotas are per model, per project. Before this, chat, the voice and background reasoning drew from one shared 5 rpm bucket across every Gemini model. Guard: `every_gemini_model_declares_its_own_rate_limit`.
   - **One write path:** `record_call` writes the DuckDB usage ledger and the budget together. `record_model_usage` now returns the computed cost. All four ledger sites use it: `SharedLlm::run_and_record`, chat's `record_llm_call`, and the Ollama Cloud and Anthropic error paths.
   - **Cooldowns, most trusted first:**
     - `Retry-After` on a 429 or 503, or a `…remaining…req…: 0` header with its reset time (RFC 3339, unit duration like `6m0s`, epoch ms/s, or seconds)

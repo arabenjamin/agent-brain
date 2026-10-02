@@ -1,0 +1,15 @@
+# Exa — hosted MCP server. Same index as the `exa` search_web engine (probed
+# 2026-09-26: identical sources), so search stays on search_web; what this adds
+# is web_fetch_exa (clean page text for given URLs) and agent_run (Exa's own
+# research agent — metered, bills the same $10/month credit, use sparingly).
+# The server 403s a request with no User-Agent; McpClient sets one.
+name: exa
+url: https://mcp.exa.ai/mcp
+description: >
+  Exa. Use web_fetch_exa(urls, maxCharacters) to read a page as clean text.
+  web_search_exa duplicates search_web's exa engine — prefer search_web.
+  agent_run is a paid multi-step research agent; only when asked.
+auth_scheme: header
+auth_param: x-api-key
+auth_env_var: EXA_API_KEY
+enabled: true

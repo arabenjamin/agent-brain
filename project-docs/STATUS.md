@@ -135,6 +135,14 @@
 
 ## Recent Changes (auto)
 
+### 2026-09-26
+
+- fix: generate_json takes the first complete object with the required keys (`65f2fb0`)
+- fix: cited ids are checked, the first JSON object wins, misplaced step arguments are rejected (`ca181f6`)
+- feat: Tavily, Exa and Serper search engines; intelligence monitor rebuilt on ApiTube + SearXNG (`8eaf51a`)
+- chore: bound claim reset at deploy time; record results (`b1bc695`)
+- fix: verifier reads external evidence only; a malformed tool call says it did not run (`8f8bd66`)
+
 ### 2026-09-23
 
 - feat: GPU lease — hand the whole GPU to a training run, keep the brain on cloud (`a6851e5`)
@@ -156,14 +164,6 @@
 - fix: stop a hung job living forever; reject live streams; enumerate notes by label (`2397e2e`)
 - fix: Ollama's silent 4096 context; read_codebase_file paging; keep code-analyst on cloud (`f2618f0`)
 - feat: local Gemma-4-E4B front door; move chat and sub-agents off gpt-oss (`d0bfb70`)
-- fix: make recall_recent counts drillable; real 16k local context; ffmpeg (`b802142`)
-- feat: local llama.cpp generation + graph self-knowledge tools & Cypher guard (`5345d97`)
-
-### 2026-09-09
-
-- fix: robust chat fallback + lean job-applicant profile (`ed3edd4`)
-- fix: surface aidevboard job_id in the search list so reply-to-apply uses it (`7b6aeb5`)
-- fix: chat turn falls back on empty completion after a tool call; job search replaces not stacks (`f3c60ea`)
 
 ## Known Issues / Backlog
 

@@ -27,7 +27,9 @@ steps:
   - tool_name: claim
     arguments:
       action: verify
-      limit: 8
+      # 20 per 6h ≈ 80/day, above video intake (3 claims × ~16 videos/day).
+      # At 8 the backlog grew by ~50 claims a day (2026-10-01 review).
+      limit: 20
     priority: 1
     max_attempts: 2
     provider_hint: ollama

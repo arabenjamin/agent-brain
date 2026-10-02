@@ -709,9 +709,14 @@ pub async fn mark_verify_attempt(neo4j: &Neo4jClient, claim_id: &str) -> Result<
 ///
 /// `last_verify_attempt_at` is the cursor. Neo4j sorts NULL *last* in ascending
 /// order, which is backwards for us — never-attempted claims must go first — so
-/// the COALESCE maps unset to the epoch. Rotation is also the cooldown: at 8
-/// claims per 6h a full backlog cycle takes weeks, so no separate retry gate is
-/// needed.
+/// never-attempted claims sort first. Rotation is also the cooldown, so no
+/// separate retry gate is needed.
+///
+/// Among never-attempted claims the NEWEST go first (2026-10-01). Intake ran
+/// ~83 claims/day against ~32 verified/day, oldest-first, so not one of the
+/// week's 584 new claims had been attempted — the sweep was working through
+/// August while the claims anyone might ask about went unchecked. A claim about
+/// current events is worth checking while it is current.
 pub async fn unverified_claims(neo4j: &Neo4jClient, limit: usize) -> Result<Vec<(String, String)>> {
     let rows = neo4j
         .execute(
@@ -719,8 +724,9 @@ pub async fn unverified_claims(neo4j: &Neo4jClient, limit: usize) -> Result<Vec<
                 "MATCH (c:Note {note_type: 'claim'}) \
                  WHERE COALESCE(c.claim_status, 'unverified') = 'unverified' \
                  RETURN c.id AS id, c.content AS content \
-                 ORDER BY COALESCE(c.last_verify_attempt_at, datetime('1970-01-01T00:00:00Z')) ASC, \
-                          c.created_at ASC \
+                 ORDER BY CASE WHEN c.last_verify_attempt_at IS NULL THEN 0 ELSE 1 END ASC, \
+                          CASE WHEN c.last_verify_attempt_at IS NULL THEN c.created_at END DESC, \
+                          c.last_verify_attempt_at ASC \
                  LIMIT $limit",
             )
             .param("limit", limit as i64),

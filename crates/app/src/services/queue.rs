@@ -193,6 +193,23 @@ pub struct ChainStep {
     /// is aimed at this step rather than generic.
     #[serde(default)]
     pub distill_focus: Option<String>,
+    /// When `true`, this step dying does not end the chain: it is still
+    /// dead-lettered (and reflected on), but the next step runs with an
+    /// explicit "optional step failed" note as its `{{_prev}}`, and the owning
+    /// Task is not failed. For enrichment a chain can do without — the weather
+    /// fetch that, failing during a brief internet outage, cancelled the whole
+    /// 2026-09-30 daily news brief. Stored as `__optional` in the job args.
+    #[serde(default)]
+    pub optional: bool,
+}
+
+/// The `{{_prev}}` a step receives when the optional step before it died.
+fn optional_step_failed_note(tool: &str, attempt: u32, max: u32, error: &str) -> String {
+    let error: String = error.chars().take(300).collect();
+    format!(
+        "[OPTIONAL STEP FAILED — '{tool}' died after {attempt}/{max} attempts: {error}. \
+         The chain continued without its result; say this section is unavailable.]"
+    )
 }
 
 /// Default length budget for a distilled handoff, and the threshold under which
@@ -511,6 +528,16 @@ impl QueueService {
                     if let Some(focus) = &step.distill_focus {
                         m.insert("__distill_focus".to_string(), serde_json::json!(focus));
                     }
+                }
+                Some(a)
+            } else {
+                effective_args
+            };
+
+            let effective_args: Option<serde_json::Value> = if step.optional {
+                let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut m) = a {
+                    m.insert("__optional".to_string(), serde_json::json!(true));
                 }
                 Some(a)
             } else {
@@ -1661,18 +1688,34 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
                     }
                 }
                 warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
-                // Parent chain is broken — cancel any waiting children.
-                let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                let optional = job
+                    .arguments
+                    .as_ref()
+                    .and_then(|a| a.get("__optional"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if optional {
+                    // An optional step: the chain carries on without its result,
+                    // told plainly that it is missing.
+                    let note = optional_step_failed_note(&job.tool_name, attempt, max, &error_text);
+                    info!(job_id = %job.id, tool = %job.tool_name, "Optional chain step died — continuing the chain");
+                    self.unpark_and_enqueue_children(&job.id, &note, "").await;
+                } else {
+                    // Parent chain is broken — cancel any waiting children.
+                    let _ = self.neo4j.cancel_parked_children(&job.id).await;
+                }
 
                 // If this job belongs to a scheduler-dispatched task chain, fail
                 // that Task now with the real error instead of leaving it stuck
                 // in_progress until the 6-hour stale reaper flips it blind. This
                 // is the concrete failure signal capability-mining reasons over.
-                if let Some(owner_task_id) = job
-                    .arguments
-                    .as_ref()
-                    .and_then(|a| a.get("__owner_task_id"))
-                    .and_then(|v| v.as_str())
+                // An optional step's death does not fail the Task.
+                if !optional
+                    && let Some(owner_task_id) = job
+                        .arguments
+                        .as_ref()
+                        .and_then(|a| a.get("__owner_task_id"))
+                        .and_then(|v| v.as_str())
                 {
                     let reason = format!(
                         "Chain step '{}' died after {}/{} attempts. Last error: {}",

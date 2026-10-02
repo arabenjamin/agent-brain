@@ -10,6 +10,9 @@ use tracing::info;
 /// [`TelemetryClient::budget_usage_since`]: `(provider, requests_today,
 /// tokens_today, spend_today_usd, spend_month_usd)`.
 pub type ProviderUsageRow = (String, i64, i64, f64, f64);
+/// [`TelemetryClient::budget_model_usage_since`]: `(provider, model, requests_today,
+/// tokens_today)`.
+pub type ModelUsageRow = (String, String, i64, i64);
 
 /// Client for the local DuckDB telemetry store.
 /// This serves as the "Hippocampus" - storing raw experiences for later "sleep" (fine-tuning).
@@ -535,6 +538,37 @@ impl TelemetryClient {
                 ))
             },
         )?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Per-model requests and tokens since `day_start` (RFC 3339), for models
+    /// that declare their own limits: `(provider, model, requests, tokens)`.
+    /// Provider resolution matches [`Self::budget_usage_since`].
+    pub fn budget_model_usage_since(&self, day_start: &str) -> Result<Vec<ModelUsageRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(u.provider, r.provider) AS provider, u.model_name,
+                    CAST(COUNT(*) AS BIGINT),
+                    CAST(SUM(COALESCE(u.tokens_in, 0) + COALESCE(u.tokens_out, 0)) AS BIGINT)
+             FROM model_usage u
+             LEFT JOIN (SELECT model, ANY_VALUE(provider) AS provider
+                        FROM model_registry GROUP BY model) r
+               ON r.model = u.model_name
+             WHERE u.created_at >= CAST(? AS TIMESTAMPTZ)
+               AND COALESCE(u.provider, r.provider) IS NOT NULL
+             GROUP BY 1, 2",
+        )?;
+        let rows = stmt.query_map(params![day_start], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 

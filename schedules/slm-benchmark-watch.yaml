@@ -43,6 +43,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "new small language model release 1B 3B 7B parameters Qwen Phi Gemma DeepSeek Mistral weights open"
+      recency: month
       count: 10
       source_list: ml-research
     priority: 1
@@ -63,6 +64,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "small language model benchmark results MMLU GPQA coding math arXiv evaluation 7B frontier parity"
+      recency: month
       count: 10
       source_list: ml-research
     priority: 1
@@ -83,6 +85,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "quantization GGUF local inference VRAM requirements small model Ollama llama.cpp throughput"
+      recency: month
       count: 10
       source_list: ml-research
     priority: 1

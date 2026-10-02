@@ -111,6 +111,12 @@ pub struct ProviderEntry {
     pub limits: Limits,
     #[serde(default)]
     pub spend: Option<Spend>,
+    /// The owner's override of `data_policy`: purposes whose PRIVATE work may
+    /// reach this provider anyway. `data_policy` stays the provider's terms as
+    /// written; this records that the owner has read them and accepts them for
+    /// these purposes. Empty (the default) leaves privacy-before-budget intact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_ok_for: Vec<crate::services::routing::Purpose>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// Where the `billing` / `data_policy` claim came from, and when it was checked.
@@ -251,6 +257,33 @@ pub fn install(overrides: &HashMap<String, ProviderEntry>) -> usize {
     n
 }
 
+fn model_slot() -> &'static RwLock<BTreeMap<(String, String), Limits>> {
+    static SLOT: OnceLock<RwLock<BTreeMap<(String, String), Limits>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Replace the per-model limits: `(provider, model id) → limits`, from each
+/// catalog entry's `limits:`. A model's limits are counted against that model
+/// alone, on top of its provider's. Returns how many models declare some.
+pub fn install_model_limits(limits: impl IntoIterator<Item = (String, String, Limits)>) -> usize {
+    let table: BTreeMap<(String, String), Limits> = limits
+        .into_iter()
+        .map(|(provider, model, l)| ((canonical_name(&provider), model), l))
+        .collect();
+    let n = table.len();
+    *model_slot().write().unwrap_or_else(|p| p.into_inner()) = table;
+    n
+}
+
+/// The limits a model declares for itself, if any.
+pub fn model_limits(provider: &str, model: &str) -> Option<Limits> {
+    model_slot()
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&(canonical_name(provider), model.to_string()))
+        .cloned()
+}
+
 /// Look up a provider by any of its accepted spellings.
 pub fn get(name: &str) -> Option<ProviderEntry> {
     slot()
@@ -279,6 +312,7 @@ pub fn snapshot_json() -> Value {
                     "key_configured": e.key_configured(),
                     "limits": e.limits,
                     "spend": e.spend,
+                    "private_ok_for": e.private_ok_for,
                     "terms": e.terms,
                 })
             })

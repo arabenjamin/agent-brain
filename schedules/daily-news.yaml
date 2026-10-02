@@ -1,7 +1,12 @@
 # Daily news briefing — expanded coverage (metro Detroit, Michigan, national,
 # world, tech, business, markets, weather).
 #
-# Engine note: the seven news searches request `engine: google_news`, which
+# Engine note (2026-10-02): the seven news searches request `engine: exa` with
+# `recency: day` and `news: true` — see the note above the first search step.
+# The history below is why google_news was used until then; it ranked by
+# relevance and returned stale stories once the queries said "today".
+#
+# Earlier engine note: the seven news searches requested `engine: google_news`, which
 # routes to SerpApi's Google News engine. `engine` only PROMOTES that engine to
 # the head of the failover ladder — SearXNG and the rest remain as fallbacks —
 # so once SerpApi's shared monthly quota is spent, the brief degrades to SearXNG
@@ -54,11 +59,20 @@ steps:
     provider_hint: ollama
 
   # ── Collect: search each topic, bank results in working memory ──────────
+  # 2026-10-02: Exa news + recency:day, not google_news. Google News ranks by
+  # relevance, so "… today" returned months-old pages (0 of 8 current for the
+  # world query); Exa with a one-day window returned CNBC, Al Jazeera, France24
+  # and Politico from that day. ~210 Exa searches/month of the $10 credit. The
+  # ladder still falls back to SearXNG and Tavily with the same recency/news
+  # filters. Queries say "latest", never a date: a literal date over-constrains.
+  # "-sports": the user does not want sports in the brief.
   - tool_name: search_web
     arguments:
-      query: "Detroit metro area local news today"
+      query: "latest Detroit metro news -sports"
       count: 6
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -74,9 +88,11 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "Michigan government politics and community news today"
+      query: "latest Michigan government politics news -sports"
       count: 6
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -92,9 +108,11 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "top United States national news stories today"
+      query: "latest US national news headlines"
       count: 8
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -110,9 +128,11 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "major world news stories today"
+      query: "latest world news headlines"
       count: 8
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -128,9 +148,11 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "artificial intelligence and technology news today"
+      query: "latest artificial intelligence technology news"
       count: 6
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -146,9 +168,11 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "US business economy and politics news today"
+      query: "latest US economy business news"
       count: 6
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -164,9 +188,11 @@ steps:
 
   - tool_name: search_web
     arguments:
-      query: "stock market today S&P 500 Dow Jones Nasdaq close summary"
+      query: "latest stock market close S&P 500 Dow Nasdaq"
       count: 5
-      engine: google_news
+      engine: exa
+      recency: day
+      news: true
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -209,6 +235,7 @@ steps:
         Accept: "application/geo+json"
     priority: 1
     max_attempts: 3
+    optional: true   # enrichment: a failed fetch must not cancel the brief (2026-09-30)
     provider_hint: ollama
 
   - tool_name: push_context
@@ -238,6 +265,7 @@ steps:
       context_name: apitube
     priority: 1
     max_attempts: 3
+    optional: true   # enrichment: a failed fetch must not cancel the brief (2026-09-30)
     provider_hint: ollama
 
   - tool_name: push_context
@@ -256,6 +284,7 @@ steps:
       context_name: apitube
     priority: 1
     max_attempts: 3
+    optional: true   # enrichment: a failed fetch must not cancel the brief (2026-09-30)
     provider_hint: ollama
 
   - tool_name: push_context
@@ -293,8 +322,14 @@ steps:
   - tool_name: neo4j_query
     arguments:
       cypher: >-
-        MATCH (t:Task) WITH t.status AS k, count(*) AS c
-        RETURN 'tasks_by_status: ' + k + ' = ' + toString(c) AS line
+        MATCH (t:Task) WHERE t.updated_at >= datetime() - duration('P1D')
+          AND t.status IN ['completed', 'failed']
+        WITH t.status AS k, count(*) AS c
+        RETURN 'tasks_finished_24h: ' + k + ' = ' + toString(c) AS line
+        UNION ALL
+        MATCH (t:Task) WHERE t.status IN ['created', 'in_progress', 'blocked']
+        WITH t.status AS k, count(*) AS c
+        RETURN 'tasks_open_now: ' + k + ' = ' + toString(c) AS line
         UNION ALL
         MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration('P1D')
         WITH j.status AS k, count(*) AS c
@@ -309,7 +344,7 @@ steps:
   - tool_name: push_context
     arguments:
       session_id: "news-raw-{{date}}"
-      content: "## SYSTEM STATUS — live counts from the graph (task statuses, AgentJob statuses over the last 24h, and enabled/disabled ScheduledTask totals). Report open/failed work plainly; a non-zero failed/dead count is worth flagging.\n{{_prev}}"
+      content: "## SYSTEM STATUS — live counts from the graph: tasks completed/failed in the LAST 24h, tasks open right now, AgentJob statuses over the last 24h, and enabled/disabled ScheduledTask totals. There are no all-time totals here; never describe a count as anything but the window its label names. Report open/failed work plainly; a non-zero failed/dead count is worth flagging.\n{{_prev}}"
       role: observation
     priority: 1
     max_attempts: 2

@@ -22,10 +22,15 @@ defaults:
 #   data_policy  no_log | may_log | may_train — what the provider may do with
 #                prompts. Omitted ⇒ may_train. Private work will only ever be
 #                routed to no_log providers.
-#   limits       rpm / rpd / tpd / concurrency. Declared now, enforced in Phase 3.
+#   limits       rpm / rpd / tpd / concurrency, shared by every model of the
+#                provider. A model entry may also declare `limits:` (rpm/rpd/tpd),
+#                counted for that model alone, on top of these.
 #   spend        daily_usd / monthly_usd. A paid provider without one is reported
 #                at startup and will not be routable under the policy router.
 #   terms        where the billing / data_policy claim came from, and when.
+#   private_ok_for  purposes (chat | subagent | background) whose PRIVATE work
+#                may use this provider despite its data_policy — the owner's
+#                override, kept apart from the provider's terms. Omitted ⇒ none.
 #
 # Phase 1 status: endpoints and keys come from here and `model_usage.provider`
 # records who served each call. Routing still runs on CLOUD_TIER, which does not
@@ -85,8 +90,13 @@ providers:
     billing: free
     data_policy: may_train
     api_key_env: GEMINI_API_KEY
-    limits: { rpm: 5 }
+    # No provider-wide rpm: Google's free-tier quotas are per model, per
+    # project, so each gemini model below declares its own `limits`.
     terms: "Free tier: Google may use prompts and responses to improve its products"
+    # Owner's decision (2026-09-26): private chat may use Gemini anyway — the
+    # material it would see (résumé etc.) already lives in Google's cloud.
+    # Chat only: background and sub-agent private work still stays on no_log.
+    private_ok_for: [chat]
 
 # ── selection_rank: which model a capability-routed step actually gets ────────
 #
@@ -432,19 +442,23 @@ models:
   # the free Ollama-Cloud tier. The 5 RPM cap is why Gemini is a reasoning-only
   # model here (1 call/step) and not the chat model (many calls/turn).
 
-  # Reasoning/summarizing winner. selection_rank 5 sits BELOW the ollama-cloud
-  # band (10-99) on purpose: at CLOUD_TIER=2, with cost tied at 0.0, this takes
-  # every `required_capabilities: ["reasoning"]` step ahead of gpt-oss:120b-cloud
-  # (rank 10). On a 429 the step falls back to the active config (gpt-oss) and
-  # then local — see `build_fallback_chain` in services/shared_llm.rs. Vision is
-  # deliberately NOT claimed here so vision steps stay on gemma4:31b-cloud.
+  # Was the reasoning winner at selection_rank 5 (below the ollama-cloud band)
+  # until 2026-10-02; now 98, a fallback behind the ollama-cloud models — see
+  # the note on selection_rank below. Vision is deliberately NOT claimed here so
+  # vision steps stay on gemma4:31b-cloud.
   gemini-2.5-flash:
     provider: gemini
     model: "gemini-2.5-flash"
+    limits: { rpm: 5 }   # per model; see the gemini provider note
     context_window: 1048576
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
-    selection_rank: 5
+    # 2026-10-02: 98, behind every ollama-cloud model, so public reasoning goes
+    # to gpt-oss:120b-cloud like private reasoning does. Measured over the week
+    # to 10-02: gemini-2.5-flash failed 2 of 8 `reason` calls (503) at an
+    # average 31s; gpt-oss:120b-cloud failed 0 of 79 calls, 9s on ~49K-token
+    # reasoning prompts. Still ahead of local, so it remains a fallback.
+    selection_rank: 98
     capabilities:
       - reasoning
       - code
@@ -462,10 +476,58 @@ models:
   # 17s and 429'd mid-turn. Chat moved back to gpt-oss:120b-cloud (unmetered);
   # Gemini stays a background-reasoning provider (gemini-2.5-flash above, 1
   # call/step). Re-add a flash entry here only for a low-call-rate use.
+  #
+  # 2026-09-26: re-added for profile pinning only (chat orchestrator / voice).
+  # Probed on the free-tier key that day with one tool-bearing request each:
+  # 3.8-flash 4.3s, 3.6-flash 2.2s, 3.5-flash 12.9s, 3.5-flash-lite 3.9s — all
+  # emitted a correct tool call. 3.7-flash answered 503 "high demand";
+  # 3.1-pro-preview has a zero free-tier quota (429 on the first call);
+  # 2.5-pro is closed to new users (404). selection_rank 300+ keeps them out of
+  # capability routing: only a profile `model_preference` reaches them. Each
+  # carries its own `rpm: 5` (per-model budget counters, 2026-09-26), so the
+  # voice, the orchestrator and background reasoning no longer share one bucket.
+  # 5 is 2.5-flash's measured cap applied as a guess; a 429 still sets a cooldown.
+  gemini-3.8-flash:
+    provider: gemini
+    model: "gemini-3.8-flash"
+    limits: { rpm: 5 }   # per model; see the gemini provider note
+    context_window: 1048576
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 300
+    capabilities: [reasoning, code, fast]
+  gemini-3.6-flash:
+    provider: gemini
+    model: "gemini-3.6-flash"
+    limits: { rpm: 5 }   # per model; see the gemini provider note
+    context_window: 1048576
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 301
+    capabilities: [reasoning, code, fast]
+  gemini-3.5-flash:
+    provider: gemini
+    model: "gemini-3.5-flash"
+    limits: { rpm: 5 }   # per model; see the gemini provider note
+    context_window: 1048576
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 302
+    capabilities: [reasoning, code, fast]
+  gemini-3.5-flash-lite:
+    provider: gemini
+    model: "gemini-3.5-flash-lite"
+    limits: { rpm: 5 }   # per model; see the gemini provider note
+    context_window: 1048576
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+    selection_rank: 303
+    capabilities: [reasoning, code, fast]
 
   gemini-2.5-flash-lite:
     provider: gemini
     model: "gemini-2.5-flash-lite"
+    limits: { rpm: 5 }   # per model; see the gemini provider note
     context_window: 1048576
     cost_per_1k_input: 0.0001
     cost_per_1k_output: 0.0004

@@ -80,6 +80,11 @@ pub struct ModelEntry {
     /// [`TelemetryClient::select_models`] and the `selection_rank` block
     /// comment in `models.yaml`.
     pub selection_rank: Option<i64>,
+    /// This model's own rate limits, counted apart from other models of the
+    /// same provider (Google's free-tier quotas are per model, per project).
+    /// The provider's `limits` still apply on top.
+    #[serde(default)]
+    pub limits: Option<provider_registry::Limits>,
 }
 
 impl ModelCatalog {
@@ -124,10 +129,20 @@ impl ModelCatalog {
     /// about every declaration that cannot work. Returns the provider count.
     pub fn install_providers(&self) -> usize {
         let n = provider_registry::install(&self.providers);
+        let limited =
+            provider_registry::install_model_limits(self.models.values().filter_map(|m| {
+                m.limits
+                    .clone()
+                    .map(|l| (m.provider.clone(), m.model.clone(), l))
+            }));
         for issue in self.provider_issues() {
             warn!("{issue}");
         }
-        info!(providers = n, "Installed provider registry");
+        info!(
+            providers = n,
+            models_with_limits = limited,
+            "Installed provider registry"
+        );
         n
     }
 
@@ -264,6 +279,7 @@ mod tests {
 
     fn entry(provider: &str, model: &str) -> ModelEntry {
         ModelEntry {
+            limits: None,
             provider: provider.into(),
             model: model.into(),
             context_window: 131072,
@@ -402,6 +418,56 @@ mod tests {
         .expect("models.yaml must parse")
     }
 
+    /// A profile's `fallback_models` must name catalog models: an unknown name
+    /// is skipped at runtime with a WARN, so a typo would silently shorten the
+    /// ladder exactly when it is needed.
+    #[test]
+    fn every_profile_fallback_model_is_in_the_catalog() {
+        use crate::services::context_builder::ContextProfile;
+        let c = real_catalog();
+        let known = |name: &str| c.models.iter().any(|(k, m)| k == name || m.model == name);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contexts");
+        let mut missing = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("contexts dir") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let Ok(p) = serde_yaml::from_str::<ContextProfile>(&text) else {
+                continue; // boot/init protocols are not profiles
+            };
+            for m in &p.fallback_models {
+                if !known(m) {
+                    missing.push(format!("{}: {m}", p.name));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "fallback_models not in models.yaml: {missing:?}"
+        );
+    }
+
+    /// Google's quotas are per model, so the `gemini` provider declares no rpm
+    /// and each model carries its own. A gemini entry without one would be
+    /// unmetered in the budget and admitted to sub-agent loops (the 5-RPM trap).
+    #[test]
+    fn every_gemini_model_declares_its_own_rate_limit() {
+        let c = real_catalog();
+        let unlimited: Vec<&String> = c
+            .models
+            .iter()
+            .filter(|(_, m)| m.provider == "gemini")
+            .filter(|(_, m)| m.limits.as_ref().and_then(|l| l.rpm).is_none())
+            .map(|(k, _)| k)
+            .collect();
+        assert!(
+            unlimited.is_empty(),
+            "gemini models without limits.rpm: {unlimited:?}"
+        );
+    }
+
     /// Which model a capability step resolves to, through the **real** path:
     /// `models.yaml` → `sync_to_duckdb` → the `select_models` ordering SQL,
     /// then the provider filter `resolve_model_config` applies for the tier.
@@ -477,10 +543,12 @@ mod tests {
     const TIER2: &[&str] = &["ollama", "ollama-cloud", "gemini", "anthropic"];
 
     #[test]
-    fn reasoning_at_tier2_routes_to_gemini_flash() {
+    fn reasoning_at_tier2_routes_to_gpt_oss() {
+        // 2026-10-02: gemini-2.5-flash moved behind the ollama-cloud band after
+        // a week of 503s and 31s reasoning calls; gpt-oss had none.
         assert_eq!(
             routes_to(&real_catalog(), "reasoning", TIER2),
-            "gemini-2.5-flash"
+            "gpt-oss:120b-cloud"
         );
     }
 
@@ -577,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn public_reasoning_still_routes_to_gemini_flash() {
+    fn public_reasoning_routes_to_gpt_oss_like_private() {
         use crate::services::routing::DataClass;
         let got = routes_under_policy(
             &real_catalog(),
@@ -585,7 +653,9 @@ mod tests {
             DataClass::Public,
             &deployed_policy(),
         );
-        assert_eq!(got.first().map(String::as_str), Some("gemini-2.5-flash"));
+        assert_eq!(got.first().map(String::as_str), Some("gpt-oss:120b-cloud"));
+        // Gemini stays reachable as a later rung, ahead of local.
+        assert!(got.iter().any(|m| m == "gemini-2.5-flash"), "{got:?}");
     }
 
     #[test]

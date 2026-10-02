@@ -320,6 +320,13 @@ fn classify_unavailable(e: &anyhow::Error) -> Option<&'static str> {
     }
 }
 
+/// Telemetry `error_kind` for a failure known only by its message: the classified
+/// reason, or `"other"`. For call sites that hold a formatted error rather than an
+/// `anyhow::Error` — the chat loops, which record their own usage.
+pub(crate) fn failure_kind_of(message: &str) -> &'static str {
+    classify_unavailable(&anyhow::anyhow!(message.to_string())).unwrap_or("other")
+}
+
 /// Telemetry `error_kind` for a finished call: `None` on success, otherwise the
 /// classified reason, falling back to `"other"`.
 ///

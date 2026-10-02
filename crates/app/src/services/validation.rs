@@ -200,6 +200,7 @@ const CHAIN_STEP_FIELDS: &[&str] = &[
     "distill_prev",
     "distill_max_chars",
     "distill_focus",
+    "optional",
 ];
 
 /// A tool argument written at step level instead of inside `arguments`.

@@ -210,15 +210,12 @@ fn todo_from_row(row: &neo4rs::Row) -> Option<Todo> {
     let description: Option<String> = row
         .get::<String>("description")
         .ok()
-        .and_then(|s| if s.is_empty() { None } else { Some(s) });
+        .filter(|s| !s.is_empty());
     let status: String = row.get("status").unwrap_or_else(|_| "pending".to_string());
     let priority: i64 = row.get("priority").unwrap_or(2);
     let tags_str: String = row.get("tags").unwrap_or_else(|_| "[]".to_string());
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-    let due_at: Option<String> = row
-        .get::<String>("due_at")
-        .ok()
-        .and_then(|s| if s.is_empty() { None } else { Some(s) });
+    let due_at: Option<String> = row.get::<String>("due_at").ok().filter(|s| !s.is_empty());
     let created_at: String = row.get("created_at").unwrap_or_default();
     let updated_at: String = row.get("updated_at").unwrap_or_default();
 

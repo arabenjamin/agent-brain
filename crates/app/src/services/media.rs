@@ -316,7 +316,10 @@ impl MediaService {
         // `is_live` is true only while the stream is actually broadcasting;
         // `was_live` (a finished stream, now a normal VOD with a real duration)
         // is deliberately NOT treated as live — those are safe to ingest.
-        let is_live = v.get("is_live").and_then(|x| x.as_bool()).unwrap_or(false);
+        // A scheduled premiere (`live_status: is_upcoming`) has no transcript
+        // yet either; treat it like a live stream so it is skipped, not ingested.
+        let is_live = v.get("is_live").and_then(|x| x.as_bool()).unwrap_or(false)
+            || v.get("live_status").and_then(|x| x.as_str()) == Some("is_upcoming");
 
         Ok(VideoMeta {
             id,
@@ -1039,9 +1042,36 @@ fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
+/// Whether a yt-dlp failure means the video simply has not aired yet — a
+/// scheduled premiere or an upcoming live event. Not transient on the scale of
+/// a job's retries, not permanent either: skip it now, pick it up later.
+pub fn is_not_yet_available(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("live event will begin")
+        || e.contains("premieres in")
+        || e.contains("premiere will begin")
+        || e.contains("is_upcoming")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_upcoming_premiere_is_recognised() {
+        assert!(is_not_yet_available(
+            "yt-dlp failed: ERROR: [youtube] zbGepvgR5qQ: This live event will begin in 7 hours."
+        ));
+        assert!(is_not_yet_available(
+            "ERROR: [youtube] x: Premieres in 2 days"
+        ));
+        assert!(!is_not_yet_available(
+            "ERROR: [youtube] x: Video unavailable"
+        ));
+        let svc = MediaService::from_env();
+        let upcoming = serde_json::json!({"id": "u1", "title": "t", "live_status": "is_upcoming"});
+        assert!(svc.parse_meta(&upcoming).unwrap().is_live);
+    }
 
     /// `is_live` is the only thing standing between a live broadcast and a job
     /// that hangs until the stream ends: yt-dlp reports `duration: null` for one,

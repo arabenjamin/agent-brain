@@ -70,8 +70,12 @@ steps:
         Compare it against what is already known and write three sections:
         ## NEW — concepts/claims genuinely new to the brain
         ## CHANGED — where this updates or contradicts prior understanding
-        ## FOLLOW UP — important concepts that are thinly covered and worth
-        researching further (one concise line each; these seed gap tasks)
+        ## FOLLOW UP — at most TWO general topics worth knowing a year from now,
+        each a self-contained research question that makes sense to someone who
+        has NOT seen this video (one line each; these seed gap tasks). Never a
+        detail of the video itself — not a scene, a remark, a person's reaction,
+        a case's evidence, "this practice", or anything that needs "(Context: …)"
+        to be understood. No sports. If nothing qualifies, write "NONE".
         Ground every point in the CONTEXT. If nothing is new, say so plainly.
       context: "{{_prev}}"
       store_inference: false
@@ -171,7 +175,9 @@ steps:
       text: "{{_prev}}"
       source_note_id: "{{_prev.id}}"
       source_context: video_learning
-      limit: 5
+      # 3, not 5: verification capacity is ~80 claims/day and ~16 videos/day
+      # arrive; at 5 the unverified backlog grew without bound.
+      limit: 3
     priority: 1
     max_attempts: 2
     provider_hint: ollama

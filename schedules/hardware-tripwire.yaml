@@ -49,6 +49,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "HBM3e HBM4 supply SK Hynix Micron Samsung memory yield capacity allocation"
+      recency: week
       count: 10
     priority: 1
     max_attempts: 3
@@ -68,6 +69,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "CoWoS advanced packaging TSMC capacity expansion substrate constraint AI accelerator"
+      recency: week
       count: 10
     priority: 1
     max_attempts: 3
@@ -87,6 +89,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "semiconductor raw materials export controls gallium neon ABF substrate rare earth supply disruption"
+      recency: week
       count: 10
     priority: 1
     max_attempts: 3
@@ -118,6 +121,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "alternative memory architecture 3D X-DRAM HBM substitute, sodium-ion nickel-zinc battery materials, gallium neon substitution qualification timeline"
+      recency: week
       count: 10
     priority: 1
     max_attempts: 3

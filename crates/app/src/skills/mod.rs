@@ -16,6 +16,7 @@ pub mod query;
 pub mod resource;
 pub mod scheduler;
 pub mod search;
+pub mod search_query;
 pub mod serde_flex;
 pub mod sleep;
 pub mod task;
