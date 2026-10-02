@@ -809,16 +809,14 @@ const DETAILS: Record<string, Detail> = {
     ],
   },
   "i-secrets": {
-    title: "Secret Store — 3 backends",
+    title: "Credentials — env var names, injected at call time",
     color: C.yellow,
-    body:  "Stores API credentials for automatic injection into execute_http_request calls. Three backend options selected by SECRET_PROVIDER env var.",
+    body:  "No secret store: keys live only in the process environment. :ApiContext and :McpServer nodes record the NAME of the env var holding a key, and http_request / mcp_call inject it in the brain process at call time. The graph never holds a key.",
     items: [
-      "local — AES-256-GCM encrypted .secrets.enc; key via SECRETS_ENCRYPTION_KEY",
-      "vault — HashiCorp Vault KV v2; VAULT_ADDR + VAULT_TOKEN + optional VAULT_NAMESPACE",
-      "aws   — AWS Secrets Manager; AWS_REGION + AWS_SECRET_PREFIX",
-      "none  — plaintext (dev only)",
-      "configure_api_credential: stores key for named API; injected as header or query param",
-      "Injection types: api_key · bearer · basic · oauth2_client_credentials",
+      ":ApiContext {auth_scheme, auth_param, auth_env_var} — http_request(context_name=…)",
+      ":McpServer {auth_scheme, auth_param, auth_env_var} — mcp_call(server=…)",
+      "Injection schemes: header · bearer · query param",
+      "Every key must be passed through in docker-compose.yml (the brain has no env_file)",
     ],
   },
   "i-persist": {
@@ -1097,12 +1095,12 @@ function DiagramView() {
           <text x={400} y={710} textAnchor="middle" fill={C.purple} fontSize={7.5}>runtime switch via use_model tool</text>
         </Box>
         <Box {...boxProps("i-secrets", "#12100a","#1c180e","#3a3010", C.yellow)} x={553} y={618} w={190} h={98}>
-          <text x={648} y={636} textAnchor="middle" fill={C.yellow} fontSize={10} fontWeight={700}>Secret Store</text>
-          <text x={648} y={650} textAnchor="middle" fill={C.dim}    fontSize={8}>automatic key injection</text>
-          <text x={563} y={666} fill={C.dim} fontSize={7.5}>Local  — AES-256-GCM</text>
-          <text x={563} y={680} fill={C.dim} fontSize={7.5}>Vault  — HashiCorp KV v2</text>
-          <text x={563} y={694} fill={C.dim} fontSize={7.5}>AWS    — Secrets Manager</text>
-          <text x={648} y={708} textAnchor="middle" fill={C.yellow} fontSize={7.5}>resource tool registration</text>
+          <text x={648} y={636} textAnchor="middle" fill={C.yellow} fontSize={10} fontWeight={700}>Credentials</text>
+          <text x={648} y={650} textAnchor="middle" fill={C.dim}    fontSize={8}>injected at call time</text>
+          <text x={563} y={666} fill={C.dim} fontSize={7.5}>:ApiContext — http_request</text>
+          <text x={563} y={680} fill={C.dim} fontSize={7.5}>:McpServer  — mcp_call</text>
+          <text x={563} y={694} fill={C.dim} fontSize={7.5}>graph stores env var NAME</text>
+          <text x={648} y={708} textAnchor="middle" fill={C.yellow} fontSize={7.5}>key stays in the environment</text>
         </Box>
         <Box {...boxProps("i-persist", "#140c0c","#1e1010","#3a1818", C.red)} x={753} y={618} w={177} h={98}>
           <text x={841} y={636} textAnchor="middle" fill={C.red}   fontSize={10} fontWeight={700}>Telemetry + Snapshots</text>

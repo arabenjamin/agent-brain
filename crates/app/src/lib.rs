@@ -4,7 +4,6 @@ pub mod clients;
 pub mod config;
 pub mod logging;
 pub mod mcp;
-pub mod repl;
 pub mod services;
 pub mod skills;
 

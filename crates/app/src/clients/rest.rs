@@ -87,12 +87,6 @@ impl RestAdapter {
         self
     }
 
-    /// No-op kept for call-site compatibility. Todos now live in Neo4j.
-    #[deprecated(note = "todos are now stored in Neo4j; use with_neo4j instead")]
-    pub fn with_todo_store_opt(self, _store: Option<Arc<Neo4jClient>>) -> Self {
-        self
-    }
-
     pub fn with_scheduler(mut self, handle: Arc<RwLock<Option<Arc<SchedulerService>>>>) -> Self {
         self.scheduler = Some(handle);
         self

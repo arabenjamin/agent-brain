@@ -373,73 +373,7 @@ impl SnapshotService {
         })
     }
 
-    /// List all snapshot files in the snapshot directory, sorted newest-first.
-    pub async fn list_snapshots(&self) -> Result<Vec<SnapshotMeta>> {
-        let mut dir = match tokio::fs::read_dir(&self.snapshot_dir).await {
-            Ok(d) => d,
-            Err(_) => return Ok(Vec::new()), // dir doesn't exist yet
-        };
-
-        let mut metas: Vec<SnapshotMeta> = Vec::new();
-
-        while let Some(entry) = dir
-            .next_entry()
-            .await
-            .context("Failed to read snapshot dir")?
-        {
-            let path = entry.path();
-            let file_name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-
-            if !file_name.ends_with(".json.gz") {
-                continue;
-            }
-
-            let size_bytes = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-
-            // Read and decompress just enough to parse the header fields.
-            match self.read_snapshot_meta(&path, &file_name, size_bytes).await {
-                Ok(meta) => metas.push(meta),
-                Err(e) => warn!("Skipping unreadable snapshot {}: {}", file_name, e),
-            }
-        }
-
-        // Sort newest-first by exported_at string (RFC 3339 sorts lexicographically).
-        metas.sort_by(|a, b| b.exported_at.cmp(&a.exported_at));
-
-        Ok(metas)
-    }
-
     // ─── Private helpers ──────────────────────────────────────────────────────
-
-    async fn read_snapshot_meta(
-        &self,
-        path: &Path,
-        file_name: &str,
-        size_bytes: u64,
-    ) -> Result<SnapshotMeta> {
-        let compressed = tokio::fs::read(path).await?;
-        let mut decoder = GzDecoder::new(compressed.as_slice());
-        let mut json_bytes = Vec::new();
-        decoder.read_to_end(&mut json_bytes)?;
-        let snapshot: KnowledgeSnapshot = serde_json::from_slice(&json_bytes)?;
-
-        Ok(SnapshotMeta {
-            file_name: file_name.to_string(),
-            file_path: path.to_string_lossy().to_string(),
-            exported_at: snapshot.exported_at,
-            schema_version: snapshot.schema_version,
-            note_count: snapshot.notes.len(),
-            task_count: snapshot.tasks.len(),
-            entity_count: snapshot.entities.len(),
-            procedure_count: snapshot.procedures.len(),
-            relationship_count: snapshot.relationships.len(),
-            size_bytes,
-        })
-    }
 
     // ─── Fetch helpers ────────────────────────────────────────────────────────
 

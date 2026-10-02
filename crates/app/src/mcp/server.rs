@@ -24,7 +24,7 @@ use super::protocol::{
     JsonRpcResponse, MCP_PROTOCOL_VERSION, ServerCapabilities, ServerInfo, ToolCallParams,
     ToolsCapability, ToolsListResult, error_codes,
 };
-use super::session::{SessionManager, SessionState};
+use super::session::SessionManager;
 use super::transport::{OutgoingMessage, StdioTransport};
 use super::transport_trait::{McpTransport, TransportMessage};
 
@@ -311,18 +311,6 @@ impl McpServerCore {
             return ServerState::from(state);
         }
         *self.state.read().await
-    }
-
-    /// Update the state for a specific session and the global state.
-    pub async fn update_session_state(&self, session_id: Option<&str>, new_state: ServerState) {
-        if let (Some(id), Some(manager)) = (session_id, &self.session_manager) {
-            let _ = manager
-                .set_session_state(id, SessionState::from(new_state))
-                .await;
-        }
-        // Always update global state for backward compatibility with stdio
-        let mut state = self.state.write().await;
-        *state = new_state;
     }
 
     /// Check if the server is shutting down.

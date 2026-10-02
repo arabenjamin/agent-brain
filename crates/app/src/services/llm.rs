@@ -612,18 +612,6 @@ impl Default for LlmClient {
 // Response Parsing
 // ============================================================================
 
-pub fn parse_corrected_body(response: &str) -> Result<Option<serde_json::Value>, LlmError> {
-    let json_str = extract_json(response);
-
-    if json_str.trim() == "null" {
-        return Ok(None);
-    }
-
-    serde_json::from_str(json_str)
-        .map(Some)
-        .map_err(|e| LlmError::ParseError(format!("Failed to parse corrected body: {}", e)))
-}
-
 /// The first complete JSON object in `text` that has every key in `must_have`.
 ///
 /// Parses from each `{` in turn and stops at the end of ONE value, so trailing
@@ -861,34 +849,6 @@ That's all."#;
     fn test_extract_json_surrounded_by_text() {
         let text = r#"The corrected body is: {"name": "test", "id": 123} and that should work."#;
         assert_eq!(extract_json(text), r#"{"name": "test", "id": 123}"#);
-    }
-
-    #[test]
-    fn test_parse_corrected_body() {
-        let response = r#"{"user_id": 123, "name": "test"}"#;
-        let body = parse_corrected_body(response).unwrap();
-        assert!(body.is_some());
-        let body = body.unwrap();
-        assert_eq!(body["user_id"], 123);
-        assert_eq!(body["name"], "test");
-    }
-
-    #[test]
-    fn test_parse_corrected_body_null() {
-        let response = "null";
-        let body = parse_corrected_body(response).unwrap();
-        assert!(body.is_none());
-    }
-
-    #[test]
-    fn test_parse_corrected_body_with_markdown() {
-        let response = r#"Here's the fix:
-```json
-{"user_id": 456}
-```"#;
-        let body = parse_corrected_body(response).unwrap();
-        assert!(body.is_some());
-        assert_eq!(body.unwrap()["user_id"], 456);
     }
 
     #[test]

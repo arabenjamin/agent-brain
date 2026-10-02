@@ -1,32 +1,27 @@
 # CLI Reference
 
+Generated from `crates/app/src/cli.rs`; keep the two in step.
+
 ```
 agent-brain [OPTIONS] [COMMAND]
 
 Commands:
-  repl     Interactive chat REPL (default when no command given)
-  serve    Run as MCP server
-  status   Show brain status
-  init-db  Initialize Neo4j schema
-  api      OpenAPI spec management
+  serve            Run as MCP server (default when no command is given: stdio)
+  init-db          Initialize the Neo4j database schema
+  repair-notes     One-off repair of notes that stored a query envelope instead of content
+  eval-retrieval   Score retrieval quality against a golden set (read-only)
+  todo             Manage todo items over HTTP (requires a running server)
 ```
 
-## Interactive REPL (default)
-
-```bash
-# Start REPL (same as running with no args)
-cargo run -- repl
-cargo run
-
-# With context profile and session continuity
-cargo run -- repl --profile knowledge-worker --session my-session
-```
+There is no interactive REPL: talk to the brain through `/chat` (the HBI
+frontend), the OpenAI-compatible `/v1` front door, or an MCP client.
 
 ## Serve as MCP Server
 
 ```bash
 # stdio transport (default — for Claude Desktop / local MCP clients)
 cargo run -- serve
+cargo run                       # same thing
 
 # HTTP transport
 cargo run -- serve --transport http                           # localhost:3000
@@ -34,53 +29,39 @@ cargo run -- serve --transport http --bind 0.0.0.0:8080      # custom bind
 cargo run -- serve --transport http --api-key my-secret-key  # with auth
 ```
 
-## Status
-
-```bash
-cargo run -- status
-```
-
-Shows API resource/endpoint/schema counts and healing event statistics.
-
 ## Database
 
 ```bash
-# Initialize schema (indexes, constraints)
+# Initialize schema (indexes, constraints) and seed chains/schedules
 cargo run -- init-db
 ```
 
-## OpenAPI Operations (`api` subcommand)
+## Repair notes
 
 ```bash
-# Ingest a spec
-cargo run -- api ingest path/to/spec.json
-cargo run -- api ingest https://example.com/openapi.json
+# Rewrite notes written before the 2026-08-10 extract_result_text fix.
+# Idempotent; run with the scheduler paused.
+cargo run -- repair-notes --dry-run
+cargo run -- repair-notes
+```
 
-# Query endpoints
-cargo run -- api query "users"
-cargo run -- api query "/api/v1"
+## Retrieval evaluation
 
-# Execute HTTP request
-cargo run -- api execute -m GET https://api.example.com/users
-cargo run -- api execute -m POST https://api.example.com/users \
-  -b '{"name":"test"}' \
-  -H "Content-Type: application/json"
+```bash
+cargo run -- eval-retrieval                                  # eval/retrieval_golden.yaml, k=10
+cargo run -- eval-retrieval --fixture my_cases.yaml --k 5
+cargo run -- eval-retrieval --bootstrap 20 > proposed.yaml   # sample notes to curate into cases
+```
 
-# Export healed graph to OpenAPI spec
-cargo run -- api export                          # YAML to stdout
-cargo run -- api export -o spec.yaml             # to file
-cargo run -- api export -f json -o spec.json     # as JSON
-cargo run -- api export --annotations=false      # without x-healed-by-ai
-cargo run -- api export --include-broken         # include broken endpoints
+## Todos
 
-# Generate diff report (original vs healed)
-cargo run -- api diff                            # Markdown report
-cargo run -- api diff -f changelog               # Git-style changelog
-cargo run -- api diff -f json                    # JSON format
-cargo run -- api diff --breaking-only            # only breaking changes
-
-# Generate missing endpoint embeddings
-cargo run -- api embed
+```bash
+cargo run -- todo add "Review PR" --priority 1 --due 2026-10-10 --tags review,code
+cargo run -- todo list --status pending
+cargo run -- todo done <id>
+cargo run -- todo status <id> in_progress
+cargo run -- todo delete <id>
+# --url (env BRAIN_URL, default http://localhost:3000) points at the server
 ```
 
 ## Global Options

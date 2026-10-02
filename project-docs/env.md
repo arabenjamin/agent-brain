@@ -38,20 +38,6 @@ Copy `.env.example` to `.env` and configure.
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address |
 | `MCP_API_KEY` | — | Bearer token for HTTP auth |
 
-## Secrets / Credentials
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SECRET_PROVIDER` | `local` | `local`/`vault`/`aws`/`none` |
-| `SECRETS_FILE` | `.secrets.enc` | Encrypted file path (local provider) |
-| `SECRETS_ENCRYPTION_KEY` | — | AES-256-GCM key (required for production) |
-| `VAULT_ADDR` | — | HashiCorp Vault server address |
-| `VAULT_TOKEN` | — | Vault authentication token |
-| `VAULT_MOUNT_PATH` | `secret` | Vault KV mount path |
-| `VAULT_NAMESPACE` | — | Vault namespace (Enterprise only) |
-| `AWS_REGION` | `us-east-1` | AWS region for Secrets Manager |
-| `AWS_SECRET_PREFIX` | — | Prefix for AWS secret names |
-
 ## Features
 
 | Variable | Default | Description |

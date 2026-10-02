@@ -210,7 +210,6 @@ impl HttpTransportConfig {
 }
 
 /// Shared state for the HTTP transport.
-#[allow(dead_code)]
 struct HttpTransportState {
     /// Session manager for tracking client sessions.
     sessions: Arc<SessionManager>,
@@ -218,8 +217,6 @@ struct HttpTransportState {
     auth: Arc<ApiKeyAuth>,
     /// Channel to send messages to the server core.
     message_tx: mpsc::Sender<TransportMessage>,
-    /// Configuration.
-    config: HttpTransportConfig,
     /// Optional chat service for the `/chat` SSE endpoint.
     chat_service: Option<Arc<ChatService>>,
     /// Optional Neo4j client for the `/todos` and `/scheduled-tasks` REST endpoints.
@@ -492,7 +489,6 @@ impl McpTransport for HttpTransport {
             telemetry: self.config.telemetry.clone(),
             log_buffer: self.config.log_buffer.clone(),
             tool_registry: self.config.tool_registry.clone(),
-            config: self.config.clone(),
         });
 
         // Spawn brain-event relay: subscribes to BrainEvents and forwards job

@@ -1,0 +1,109 @@
+//! Knowledge service: notes, their embeddings, and everything that reads them.
+//!
+//! One `impl KnowledgeService` block per concern:
+//! `store` (writes, chunking, embedding backfill) · `retrieval` (vector + BM25
+//! hybrid search) · `recall` (deterministic listings and local-day windows) ·
+//! `labels` (claim / source-record labelling on every retrieval path) ·
+//! `entities` · `maintenance` (review + pruning) · `reasoning` (`reason`, critic,
+//! gap tasks) · `analysis` (synthesize / audit / explain) · `consolidation` ·
+//! `export`. `store_trait` is the forwarding `KnowledgeStore` impl.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use anyhow::Result;
+use chrono::Utc;
+use serde_json::{Value, json};
+use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+use crate::repository::Neo4jClient;
+use crate::services::LlmProvider;
+use crate::services::snapshot::SnapshotService;
+use agent_brain_models::ProvenanceFlag;
+
+mod analysis;
+mod consolidation;
+mod entities;
+mod export;
+mod labels;
+mod maintenance;
+mod reasoning;
+mod recall;
+mod retrieval;
+mod store;
+mod store_trait;
+
+pub(crate) use consolidation::CONSOLIDATION_SOURCE_PREDICATE;
+pub use retrieval::sanitize_lucene_query;
+
+/// A source note referenced by a structured reasoning result.
+pub struct SourceRef {
+    pub note_id: String,
+    /// First 120 characters of the note content.
+    pub preview: String,
+}
+
+/// Structured output from `reason_structured()`.
+pub struct ReasonOutput {
+    pub answer: String,
+    pub sources: Vec<SourceRef>,
+    pub confidence: f64,
+    pub caveats: Vec<String>,
+    pub follow_up_questions: Vec<String>,
+    pub inferences: Vec<String>,
+    pub gaps: Vec<String>,
+    pub inference_note_id: Option<String>,
+    /// Counter-arguments from the adversarial critic pass (empty when `run_critic=false`).
+    pub critic_counter_arguments: Vec<String>,
+    /// True when the model never produced parseable JSON and `answer` is raw prose.
+    ///
+    /// Everything else on this struct is then a **placeholder, not a measurement**:
+    /// `confidence` was not reported, and empty `caveats`/`gaps` mean "the model
+    /// never answered the question" — not "the model declared no limits". Consumers
+    /// must not read those fields as the model's own assessment when this is set.
+    pub structured_output_failed: bool,
+}
+
+/// Service for managing general knowledge (RAG).
+pub struct KnowledgeService {
+    pub(crate) neo4j: Neo4jClient,
+    pub(crate) llm: Option<Arc<dyn LlmProvider>>,
+    pub(crate) snapshot_svc: Option<Arc<SnapshotService>>,
+    pub(crate) auto_snapshot: bool,
+    pub(crate) auto_snapshot_prune: bool,
+}
+
+/// Reserved envelope key carrying rows destined for the PERSON, not the model.
+/// Lifted into `ToolCallResult::bulk` and stripped by the skill layer.
+pub const BULK_ROWS_KEY: &str = "__bulk_rows";
+
+impl KnowledgeService {
+    /// Create a new knowledge service.
+    pub fn new(neo4j: Neo4jClient, llm: Option<Arc<dyn LlmProvider>>) -> Self {
+        Self {
+            neo4j,
+            llm,
+            snapshot_svc: None,
+            auto_snapshot: false,
+            auto_snapshot_prune: false,
+        }
+    }
+
+    /// Attach a snapshot service for auto-snapshotting before major operations.
+    pub fn with_snapshot(
+        mut self,
+        svc: Arc<SnapshotService>,
+        auto_consolidate: bool,
+        auto_prune: bool,
+    ) -> Self {
+        self.snapshot_svc = Some(svc);
+        self.auto_snapshot = auto_consolidate;
+        self.auto_snapshot_prune = auto_prune;
+        self
+    }
+
+    // =========================================================================
+    // Private helpers
+    // =========================================================================
+}

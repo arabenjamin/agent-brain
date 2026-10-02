@@ -45,7 +45,7 @@ sentence boundaries makes every sub-note independently searchable.
 - In `knowledge.rs`  `store_note`: replace the fixed-length chunker with a
   sentence-boundary splitter (split on `.  ` / `\n\n`, min 200 chars, max 1500 chars).
 - Each chunk still gets its own embedding and `PART_OF` edge.
-- Files: `src/services/knowledge.rs` (`store_note`, around the chunking block).
+- Files: `crates/app/src/services/knowledge/` (`store_note`, around the chunking block).
 
 ---
 
@@ -65,7 +65,7 @@ powers visualisation of which concepts are central to the knowledge base.
   just needs a better classifier feeding it).
 - Consider a second pass: co-reference collapse — if "the brain" and "agent-brain"
   both appear, merge to the same `Entity` node.
-- Files: `src/services/knowledge.rs` (`extract_entities`).
+- Files: `crates/app/src/services/knowledge/` (`extract_entities`).
 
 ---
 
@@ -86,7 +86,7 @@ through shared concepts, not just vector proximity.
 - Add `export_graph_visualization` tool to KnowledgeSkill: returns a JSON graph
   `{nodes:[{id,label,type}], edges:[{source,target,type,weight}]}` for the HBI
   graph panel to render. Expose all Note + Entity + Task nodes and their edges.
-- Files: `src/services/knowledge.rs`, `src/skills/knowledge.rs`.
+- Files: `crates/app/src/services/knowledge/`, `src/skills/knowledge.rs`.
 
 ---
 
@@ -102,7 +102,7 @@ with the node label as query is a fragile workaround.
 - Add `get_note_by_id(id: &str)` to `Neo4jClient` in `repository/` (or inline in
   `KnowledgeService`).
 - Expose as a new KnowledgeSkill tool `get_note` with input `{ "id": "..." }`.
-- Files: `src/services/knowledge.rs`, `src/skills/knowledge.rs`.
+- Files: `crates/app/src/services/knowledge/`, `src/skills/knowledge.rs`.
 - Tool count becomes 67.
 
 ---
@@ -276,7 +276,7 @@ Allow the brain to edit its own `chains/*.yaml` and `schedules/*.yaml` files (vi
 | Area | File |
 |---|---|
 | Scheduler / perception | `src/services/scheduler.rs` |
-| Knowledge / search / memory | `src/services/knowledge.rs` |
+| Knowledge / search / memory | `crates/app/src/services/knowledge/` |
 | Knowledge skill (tools) | `src/skills/knowledge.rs` |
 | Task skill | `src/skills/task.rs` |
 | Procedure executor | `src/services/procedure_executor.rs` |

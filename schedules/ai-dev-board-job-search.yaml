@@ -15,7 +15,7 @@
 # jobsearch-scratch-<date> WorkingMemory session under a unique MARKER line,
 # reassembled with neo4j_query, matched/ranked by execute_code, pushed into the
 # fresh jobsearch-<date> session so notify_user opens a resumable chat where a
-# reply routes to the job-applicant profile (session-pinned in clients/chat.rs).
+# reply routes to the job-applicant profile (session-pinned in clients/chat/turn.rs).
 name: AI Dev Board Job Search
 description: "Daily remote AI/ML engineering roles from aidevboard + worklittle, ranked by how well each JD matches Ara's resume, into a fresh resumable chat."
 interval_seconds: 86400

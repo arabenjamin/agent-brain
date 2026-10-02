@@ -286,14 +286,6 @@ impl BrainCore {
         self.event_tx.clone()
     }
 
-    /// Emit a brain event to all current subscribers.
-    ///
-    /// Ignores send errors (no subscribers is fine).
-    #[allow(dead_code)]
-    pub(crate) fn emit(&self, event: BrainEvent) {
-        let _ = self.event_tx.send(event);
-    }
-
     // ========================================================================
     // Builder methods
     // ========================================================================

@@ -721,11 +721,6 @@ impl QueueService {
         Ok(cancelled_ids.len())
     }
 
-    /// Fetch a single job record from Neo4j.
-    pub async fn get_job(&self, id: &str) -> Option<AgentJob> {
-        self.neo4j.get_agent_job(id).await.ok().flatten()
-    }
-
     /// Update the runtime worker configuration.  Returns the new config.
     ///
     /// Per-provider semaphore sizes are updated by swapping in a new semaphore with
@@ -823,16 +818,6 @@ impl QueueService {
             "by_status": db_stats,
             "provider_stats": provider_stats,
         })
-    }
-
-    /// List agent jobs from Neo4j, optionally filtered by status.
-    /// Returns up to `limit` jobs ordered by created_at DESC.
-    pub async fn list_jobs(
-        &self,
-        status: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<crate::models::AgentJob>, crate::repository::RepositoryError> {
-        self.neo4j.list_agent_jobs(status, limit).await
     }
 
     // =========================================================================

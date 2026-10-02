@@ -9,7 +9,6 @@ pub struct Config {
     /// Optional overrides for the chat client adapter's LLM.
     /// When all fields are `None`, chat falls back to `llm` (backward-compatible).
     pub chat_llm: ChatLlmConfig,
-    pub secrets: SecretsConfig,
     pub logging: LoggingConfig,
     pub telemetry: TelemetryConfig,
 }
@@ -128,28 +127,6 @@ impl ChatLlmConfig {
     }
 }
 
-/// Secret provider backend configuration.
-#[derive(Debug, Clone)]
-pub struct SecretsConfig {
-    pub provider: SecretProviderType,
-    /// Path to local encrypted secrets file (local provider).
-    pub secrets_file: Option<String>,
-    /// Encryption key for local secrets (local provider).
-    pub secrets_encryption_key: Option<String>,
-    /// Vault server address (vault provider).
-    pub vault_address: Option<String>,
-    /// Vault auth token (vault provider).
-    pub vault_token: Option<String>,
-    /// Vault KV mount path (vault provider).
-    pub vault_mount_path: Option<String>,
-    /// Vault namespace — enterprise only (vault provider).
-    pub vault_namespace: Option<String>,
-    /// AWS region (aws provider).
-    pub aws_region: Option<String>,
-    /// Prefix applied to all AWS secret names (aws provider).
-    pub aws_secret_prefix: Option<String>,
-}
-
 /// Structured logging configuration.
 #[derive(Debug, Clone)]
 pub struct LoggingConfig {
@@ -172,21 +149,6 @@ pub enum LogFormat {
     #[default]
     Pretty,
     Json,
-}
-
-/// Type of secret provider to use.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum SecretProviderType {
-    /// Local encrypted file storage.
-    #[default]
-    Local,
-    /// HashiCorp Vault.
-    Vault,
-    /// AWS Secrets Manager.
-    Aws,
-    /// No secret provider (credentials must be passed explicitly).
-    None,
 }
 
 impl Config {
@@ -250,24 +212,6 @@ impl Config {
                 api_key: env::var("CHAT_API_KEY").ok(),
                 base_url: env::var("CHAT_LLM_BASE_URL").ok(),
             },
-            secrets: SecretsConfig {
-                provider: env::var("SECRET_PROVIDER")
-                    .map(|s| match s.to_lowercase().as_str() {
-                        "vault" => SecretProviderType::Vault,
-                        "aws" => SecretProviderType::Aws,
-                        "none" => SecretProviderType::None,
-                        _ => SecretProviderType::Local,
-                    })
-                    .unwrap_or_default(),
-                secrets_file: env::var("SECRETS_FILE").ok(),
-                secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY").ok(),
-                vault_address: env::var("VAULT_ADDR").ok(),
-                vault_token: env::var("VAULT_TOKEN").ok(),
-                vault_mount_path: env::var("VAULT_MOUNT_PATH").ok(),
-                vault_namespace: env::var("VAULT_NAMESPACE").ok(),
-                aws_region: env::var("AWS_REGION").ok(),
-                aws_secret_prefix: env::var("AWS_SECRET_PREFIX").ok(),
-            },
             logging: LoggingConfig {
                 level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
                 format: env::var("LOG_FORMAT")
@@ -309,17 +253,6 @@ impl Config {
                 gemini_model: None,
             },
             chat_llm: ChatLlmConfig::default(),
-            secrets: SecretsConfig {
-                provider: SecretProviderType::Local,
-                secrets_file: Some(".secrets.enc".to_string()),
-                secrets_encryption_key: Some("test-key".to_string()),
-                vault_address: None,
-                vault_token: None,
-                vault_mount_path: None,
-                vault_namespace: None,
-                aws_region: None,
-                aws_secret_prefix: None,
-            },
             logging: LoggingConfig {
                 level: "debug".to_string(),
                 format: LogFormat::Pretty,

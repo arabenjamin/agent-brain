@@ -175,8 +175,10 @@ Rules that make it safe:
 
 ### 4.2 `crates/app/src/services/peer_identity.rs`
 
-Loads or generates the brain's keypair. Storage: `SECRET_PROVIDER` (the existing
-local AES-GCM / Vault / AWS abstraction), **not** a file next to the binary —
+Loads or generates the brain's keypair. Storage: a real secret store, **not** a
+file next to the binary. (The old `SECRET_PROVIDER` local AES-GCM / Vault / AWS
+module was never wired into anything and was removed as dead code on 2026-10-02;
+the replacement is the age-based vault design.) —
 this key is the brain's identity and leaking it lets anyone forge its assertions.
 
 Exposes `sign(&Envelope) -> Signature` and `verify(&Envelope) -> Result<PeerId>`.
@@ -421,7 +423,7 @@ higher-volume than expected, Transport B needs batching.
 ### Phase 1 — Identity and envelope
 
 `proto/brain_envelope.proto`, `crates/models/src/envelope.rs`,
-`services/peer_identity.rs`. Key stored via `SECRET_PROVIDER`.
+`services/peer_identity.rs`. Key stored via the secret store (see §4.2).
 
 **Tests:** sign/verify round-trip; canonical-encoding stability across
 re-serialization; tampered-field rejection; unknown-version rejection; unknown

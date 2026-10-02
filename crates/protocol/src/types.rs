@@ -121,10 +121,6 @@ impl JsonRpcErrorResponse {
         Self::new(None, error_codes::PARSE_ERROR, message)
     }
 
-    pub fn invalid_request(id: Option<RequestId>, message: impl Into<String>) -> Self {
-        Self::new(id, error_codes::INVALID_REQUEST, message)
-    }
-
     pub fn method_not_found(id: RequestId, method: &str) -> Self {
         Self::new(
             Some(id),
@@ -135,10 +131,6 @@ impl JsonRpcErrorResponse {
 
     pub fn invalid_params(id: RequestId, message: impl Into<String>) -> Self {
         Self::new(Some(id), error_codes::INVALID_PARAMS, message)
-    }
-
-    pub fn internal_error(id: RequestId, message: impl Into<String>) -> Self {
-        Self::new(Some(id), error_codes::INTERNAL_ERROR, message)
     }
 }
 
@@ -358,14 +350,6 @@ impl ToolCallResult {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    /// Everything a person should see: the model-facing text plus any bulk.
-    pub fn full_text(&self) -> String {
-        match &self.bulk {
-            Some(b) => format!("{}\n\n{}", self.model_text(), b),
-            None => self.model_text(),
-        }
     }
 }
 

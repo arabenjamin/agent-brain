@@ -187,12 +187,3 @@ pub fn init_with_buffer(config: &Config, buffer: Option<Arc<LogBuffer>>) {
         }
     }
 }
-
-/// Initialize logging with defaults (for tests or simple usage).
-/// Logs go to stderr to avoid interfering with stdout.
-pub fn init_default() {
-    let _ = tracing_subscriber::registry()
-        .with(EnvFilter::new("info"))
-        .with(fmt::layer().with_writer(io::stderr).pretty())
-        .try_init();
-}

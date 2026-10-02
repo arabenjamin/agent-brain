@@ -320,7 +320,7 @@ impl HttpSkill {
     async fn fetch_context(&self, name: &str) -> Option<ApiContext> {
         let neo4j = self.neo4j.as_ref()?;
         let cypher = "MATCH (c:ApiContext {name: $name}) \
-                      RETURN c.base_url AS base_url, c.auth_scheme AS auth_scheme, \
+                      RETURN c.auth_scheme AS auth_scheme, \
                              c.auth_param AS auth_param, c.auth_env_var AS auth_env_var, \
                              c.default_headers AS default_headers";
         let rows = neo4j
@@ -329,7 +329,6 @@ impl HttpSkill {
             .ok()?;
         let row = rows.first()?;
         Some(ApiContext {
-            base_url: row.get::<String>("base_url").unwrap_or_default(),
             auth_scheme: row
                 .get::<String>("auth_scheme")
                 .unwrap_or_else(|_| "none".into()),
@@ -1780,8 +1779,6 @@ fn find_route_files(root: &Path) -> Vec<PathBuf> {
 
 // Internal type used during auth injection
 struct ApiContext {
-    #[allow(dead_code)]
-    base_url: String,
     auth_scheme: String,
     auth_param: Option<String>,
     auth_env_var: Option<String>,

@@ -1,9 +1,8 @@
 //! MCP (Model Context Protocol) server implementation.
 //!
-//! This module provides a minimal MCP server that exposes the following tools:
-//! - `ingest_openapi`: Parse and load OpenAPI specifications into the knowledge graph
-//! - `graph_query_endpoint`: Search for API endpoints in the knowledge graph
-//! - `execute_http_request`: Execute HTTP requests with optional self-healing
+//! The MCP adapter in front of [`BrainCore`]: the JSON-RPC state machine,
+//! session management, and the tool registry that dispatches `tools/call` to
+//! the skills (see `crate::skills`).
 //!
 //! ## Transport Support
 //!

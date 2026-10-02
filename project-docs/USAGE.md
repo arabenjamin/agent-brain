@@ -1,57 +1,7 @@
 # Agent Brain — Usage Guide
 
-An autonomous AI agent backed by a persistent Neo4j knowledge graph, exposing 90 tools via MCP and an interactive REPL.
-
----
-
-## Interactive REPL
-
-The quickest way to use the brain directly — no MCP client required.
-
-```bash
-cargo run -- repl
-# With a context profile and persistent session
-cargo run -- repl --profile knowledge-worker --session my-project
-```
-
-**Welcome banner:**
-
-```
-Agent Brain v0.1.0
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LLM:       Ollama (qwen3.5:4b)
-Connected: bolt://localhost:7687
-
-Type anything to interact. /help for commands, /quit to exit.
->
-```
-
-### REPL meta-commands
-
-| Command | Action |
-|---------|--------|
-| `/quit`, `/exit` | Exit the REPL |
-| `/clear` | Clear conversation history (keeps session) |
-| `/new` | Clear history and start a new session ID |
-| `/profile <name>` | Activate a context profile (e.g. `knowledge-worker`) |
-| `/status` | Show session ID, turn count, and active profile |
-| `/help` | List meta-commands |
-
-### Example interactions
-
-```
-> Store a note: the brain uses qwen3.5:4b for Ollama generation
-
-> Search my notes for anything about authentication
-
-> Create a task to review all loaded API endpoints for broken schemas
-
-> What do I know about Neo4j indexing?
-
-> Run the scheduler tick and show me what jobs were dispatched
-```
-
-All 90 brain tools are available through natural language. The LLM decides which tools to call.
+An autonomous AI agent backed by a persistent Neo4j knowledge graph, exposing its tools via MCP, a `/chat` SSE endpoint, and an OpenAI-compatible `/v1` front door.
+CLI commands: see [cli.md](cli.md).
 
 ---
 
@@ -137,50 +87,6 @@ curl -s -X POST http://localhost:3000/mcp \
     "jsonrpc": "2.0", "id": 2, "method": "tools/call",
     "params": {"name": "get_scheduler_status", "arguments": {}}
   }'
-```
-
----
-
-## Status Command
-
-```bash
-cargo run -- status
-```
-
-Shows API resource/endpoint/schema counts and healing event statistics.
-
----
-
-## API Integration (subcommand)
-
-OpenAPI spec management is grouped under `api`:
-
-```bash
-# Ingest a spec
-cargo run -- api ingest https://petstore3.swagger.io/api/v3/openapi.json
-cargo run -- api ingest ./openapi.yaml
-
-# Query endpoints
-cargo run -- api query "pets"
-cargo run -- api query "/api/v1/payments"
-
-# Execute an HTTP request
-cargo run -- api execute -m GET https://petstore3.swagger.io/api/v3/pet/1
-cargo run -- api execute -m POST https://api.example.com/users \
-  -b '{"name": "Alice"}' -H "Authorization: Bearer token"
-
-# Export the healed graph back to OpenAPI
-cargo run -- api export -o healed.yaml
-cargo run -- api export -f json -o healed.json
-cargo run -- api export --annotations=false -o clean.yaml
-
-# Diff original spec vs healed graph
-cargo run -- api diff
-cargo run -- api diff -f changelog
-cargo run -- api diff --breaking-only
-
-# Generate missing endpoint embeddings
-cargo run -- api embed
 ```
 
 ---

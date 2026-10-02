@@ -28,9 +28,7 @@ use crate::skills::Skill;
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-#[allow(dead_code)]
 struct WsConn {
-    url: String,
     stream: Mutex<Option<WsStream>>,
 }
 
@@ -187,7 +185,6 @@ impl WsSkill {
         };
 
         let conn = Arc::new(WsConn {
-            url: input.url.clone(),
             stream: Mutex::new(Some(ws_stream)),
         });
 

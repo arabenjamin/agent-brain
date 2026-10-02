@@ -1,6 +1,5 @@
 //! Stdio transport for MCP server.
 
-use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -96,22 +95,6 @@ impl StdioTransport {
         } else {
             Err(mpsc::error::SendError(msg))
         }
-    }
-
-    /// Send a successful response.
-    pub async fn send_response(
-        &self,
-        response: JsonRpcResponse,
-    ) -> Result<(), mpsc::error::SendError<OutgoingMessage>> {
-        self.send(OutgoingMessage::Response(response)).await
-    }
-
-    /// Send an error response.
-    pub async fn send_error(
-        &self,
-        error: JsonRpcErrorResponse,
-    ) -> Result<(), mpsc::error::SendError<OutgoingMessage>> {
-        self.send(OutgoingMessage::Error(error)).await
     }
 
     /// Reader task that reads lines from stdin and parses them as JSON-RPC messages.
@@ -318,40 +301,6 @@ impl McpTransport for StdioTransport {
 
     fn name(&self) -> &'static str {
         "stdio"
-    }
-}
-
-/// Synchronous stdio transport for simpler use cases.
-pub struct SyncStdioTransport;
-
-impl SyncStdioTransport {
-    /// Read a single message from stdin (blocking).
-    pub fn read_message() -> Result<IncomingMessage, JsonRpcErrorResponse> {
-        let stdin = io::stdin();
-        let mut line = String::new();
-
-        stdin
-            .lock()
-            .read_line(&mut line)
-            .map_err(|e| JsonRpcErrorResponse::parse_error(format!("IO error: {}", e)))?;
-
-        IncomingMessage::parse(line.trim())
-    }
-
-    /// Write a response to stdout (blocking).
-    pub fn write_response(response: &JsonRpcResponse) -> io::Result<()> {
-        let json = serde_json::to_string(response).unwrap();
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{}", json)?;
-        stdout.flush()
-    }
-
-    /// Write an error to stdout (blocking).
-    pub fn write_error(error: &JsonRpcErrorResponse) -> io::Result<()> {
-        let json = serde_json::to_string(error).unwrap();
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "{}", json)?;
-        stdout.flush()
     }
 }
 

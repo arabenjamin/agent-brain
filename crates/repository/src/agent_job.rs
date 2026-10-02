@@ -119,36 +119,6 @@ impl Neo4jClient {
             .collect()
     }
 
-    /// List jobs with optional status filter and limit.
-    pub async fn list_agent_jobs(
-        &self,
-        status: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<AgentJob>, RepositoryError> {
-        let rows = if let Some(s) = status {
-            let q = query(
-                "MATCH (j:AgentJob {status: $status}) RETURN j \
-                 ORDER BY j.created_at DESC LIMIT $limit",
-            )
-            .param("status", s)
-            .param("limit", limit as i64);
-            self.execute(q).await?
-        } else {
-            let q = query("MATCH (j:AgentJob) RETURN j ORDER BY j.created_at DESC LIMIT $limit")
-                .param("limit", limit as i64);
-            self.execute(q).await?
-        };
-
-        rows.into_iter()
-            .map(|row| {
-                let node: Node = row
-                    .get("j")
-                    .map_err(|e| RepositoryError::InvalidData(e.to_string()))?;
-                Ok(node_to_agent_job(&node))
-            })
-            .collect()
-    }
-
     /// Recover jobs that were `running` when the process died: requeue those with
     /// attempts left, and **dead-letter those already at their cap**.
     ///
@@ -455,26 +425,6 @@ impl Neo4jClient {
         Ok(jobs)
     }
 
-    /// Cancel all parked jobs whose parent is in a terminal state or no longer exists.
-    ///
-    /// Count parked jobs whose parent is missing or terminal, without mutating anything.
-    pub async fn count_orphaned_parked_jobs(&self) -> Result<usize, RepositoryError> {
-        let q = query(
-            "MATCH (child:AgentJob {status: 'parked'}) \
-             WHERE child.parent_job_id IS NOT NULL AND child.parent_job_id <> '' \
-             OPTIONAL MATCH (parent:AgentJob {id: child.parent_job_id}) \
-             WITH child, parent \
-             WHERE parent IS NULL \
-                OR parent.status IN ['cancelled', 'dead', 'dead_letter'] \
-             RETURN count(child) AS n",
-        );
-        let rows = self.execute(q).await?;
-        Ok(rows
-            .first()
-            .and_then(|r| r.get::<i64>("n").ok())
-            .unwrap_or(0) as usize)
-    }
-
     /// Called at startup recovery and after bulk drain to clear orphaned chain steps
     /// that accumulated due to crashes or explicit cancellations.
     /// Returns the number of jobs cancelled.
@@ -669,25 +619,6 @@ impl Neo4jClient {
     // =========================================================================
     // Dead Letter Queue operations
     // =========================================================================
-
-    /// Move a job to the dead letter queue.
-    pub async fn move_to_dead_letter(&self, id: &str, reason: &str) -> Result<(), RepositoryError> {
-        let now = Utc::now().to_rfc3339();
-
-        // First, mark the job as dead_letter status
-        let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
-             SET j.status = 'dead_letter', \
-                 j.dead_lettered_at = datetime($now), \
-                 j.dead_letter_reason = $reason, \
-                 j.updated_at = datetime($now)",
-        )
-        .param("id", id)
-        .param("now", now.clone())
-        .param("reason", reason);
-
-        self.run(q).await
-    }
 
     /// List jobs in the dead letter queue.
     pub async fn list_dead_letter(&self, limit: usize) -> Result<Vec<AgentJob>, RepositoryError> {

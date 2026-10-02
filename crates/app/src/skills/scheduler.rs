@@ -1069,7 +1069,7 @@ const VALID_NOTE_TYPES: &[&str] = &[
     "unsourced_synthesis",
     // Written by the queue's meta-learning chain (services/queue.rs) and
     // excluded from consolidation source selection by name in
-    // services/knowledge.rs. It is a real type; it was simply never added here,
+    // services/knowledge/. It is a real type; it was simply never added here,
     // so the lint warned "not a recognized type" about the brain's own output.
     "meta_learning_result",
 ];

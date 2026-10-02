@@ -51,10 +51,7 @@ cp .env.example .env
 # Initialize database
 cargo run --release -- init-db
 
-# Run interactive chat
-cargo run --release -- repl
-
-# Or run as MCP server
+# Run as MCP server (stdio; add --transport http for the HTTP + /chat front door)
 cargo run --release -- serve
 ```
 
@@ -159,11 +156,11 @@ MCP_API_KEY=secret docker compose up -d --build
 ## CLI Commands
 
 ```
-repl     Interactive chat (default)
-serve    Run as MCP server
-init-db  Initialize Neo4j schema
-api      OpenAPI management
-status   Show brain status
+serve            Run as MCP server (default)
+init-db          Initialize Neo4j schema
+repair-notes     One-off note repair migration
+eval-retrieval   Score retrieval against a golden set
+todo             Manage todos over HTTP
 ```
 
 ## Environment Variables

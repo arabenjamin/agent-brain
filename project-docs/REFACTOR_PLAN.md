@@ -137,6 +137,10 @@ src/repository/credential.rs
   used by anything other than API credential injection. If not, remove it.
   The `SecretProvider` trait and implementations (local/vault/aws) may still
   be useful for general secrets — keep those.
+  **Done 2026-10-02:** nothing ever constructed a `SecretProvider`, so the
+  whole `services/secrets/` module (and the `aws` feature, aes-gcm, rand, the
+  AWS SDK) was removed as dead code. Credentials are env var names on
+  `:ApiContext`/`:McpServer` nodes, injected at call time.
 
 ### 0.3 Fix Direct "agent-api" References
 
@@ -975,6 +979,71 @@ This would significantly reduce compile times for developers who only need
 a subset of features.
 
 ---
+
+## Phase 8: Dead-Code Sweep + Module Splits (2026-10-02)
+
+### 8.1 Done
+
+Found by compiling with everything removed, not by grep alone. `pub` hides an
+item from the dead-code lint, so the sweep scanned every `pub` item for
+references outside its own definition, then deleted until the build stayed
+clean and the scan came back empty (each removal exposed the next layer).
+
+- **Never wired:** `services/secrets/` (local / Vault / AWS, ~1,350 LOC, never
+  constructed), `SecretsConfig`, the `aws` feature with `aws-config` and
+  `aws-sdk-secretsmanager`, `aes-gcm`, `rand`; `repl.rs` (no CLI command
+  reached it); `protocol/src/queue.rs` (a `JobQueue` trait nothing
+  implemented); `models/src/dead_letter.rs`; the `LimitParam` /
+  `PaginationParam` / `SearchOptions` structs.
+- **Unused functions:** `SyncStdioTransport`, `StdioTransport::send_response` /
+  `send_error`, `McpServerCore::update_session_state`,
+  `move_to_dead_letter`, `count_orphaned_parked_jobs`, `list_agent_jobs`,
+  `QueueService::get_job` / `list_jobs`, `SnapshotService::list_snapshots`,
+  `parse_corrected_body` (an agent-api leftover), `timezone_is_configured`,
+  `logging::init_default`, `RestAdapter::with_todo_store_opt`, and
+  `BrainCore::emit`.
+- **Unused dependencies:** `schemars` (all crates), `axum-extra`, `tower`,
+  `tokio-test`, `testcontainers(-modules)`, `temp-env`, plus `chrono`/`uuid`
+  in models, `uuid`/`tokio` in protocol, and `tokio` in repository.
+- **Docs that described nothing:** the `repl`, `status` and `api` CLI commands
+  (none exist; `project-docs/cli.md` is now generated from `cli.rs`).
+- **Splits (moves only, no logic change; every test passes unchanged):**
+  `clients/chat.rs` (6.5k lines) → `clients/chat/` with one file per concern
+  and one file per provider loop; `services/knowledge.rs` (4.1k) →
+  `services/knowledge/` with one `impl KnowledgeService` block per concern.
+  Each `mod.rs` doc comment maps the files.
+
+### 8.2 Remaining (logic changes, not moves)
+
+- **The four chat provider loops are near-duplicates, and they have already
+  drifted** (`anthropic_loop`, `ollama_loop`, `openai_loop`, `text_loop`,
+  230–570 lines each). Each carries its own copy of the round loop, and only
+  the wire format should differ. Measured 2026-10-02:
+  - `text_loop` (Gemini) passes tool results to the model **raw**: no
+    `prepare_tool_result`, so no truncation and none of the position-zero
+    markers (search source list, `reason` limits).
+  - `anthropic_loop` and `text_loop` have no `FINAL_ROUND_NUDGE` wrap-up
+    round, and `anthropic_loop` injects no `tool_trace_receipt`.
+  - Only `openai_loop` uses the derived `tool_result_budget`; the Anthropic
+    and Ollama loops still use the fixed `MAX_TOOL_RESULT_CHARS`.
+
+  Extract one round loop over a `ProviderTurn` trait (send →
+  `{text, tool_calls, usage}`) so a fix lands in every provider at once.
+- **`BrainCore::build_skills` (600 lines)**: registration is hand-written per
+  skill, and forgetting either the registry or the `skills` vec is the
+  documented trap. One `register(skill)` that does both removes the trap.
+- **`QueueService::execute_job` (520 lines)** and
+  **`SchedulerService::perception_scan` (490 lines)**: split into named steps
+  (routing scope, dispatch, outcome handling / one function per trigger).
+- **`--no-default-features` does not build**: `clients/rest.rs` uses `axum`
+  and `skills/ws.rs` uses `tokio_tungstenite` without feature gates. Either
+  gate them or drop the features.
+- **Advertised but ignored inputs**: `store_note.tags` ("stored but not
+  indexed" — it is not stored) and `adversarial_plan_review.task_id` ("link via
+  REFLECTS_ON" — it is not linked). Implement them or remove them from the schemas.
+- **`SessionManager::cleanup_expired` never runs**: expired HTTP sessions are
+  rejected on access but never evicted, and `SessionConfig.cleanup_interval`
+  is read by nothing.
 
 ## Phase Ordering and Dependencies
 

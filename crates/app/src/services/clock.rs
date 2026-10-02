@@ -66,11 +66,6 @@ pub fn timezone_name() -> &'static str {
     &resolved().0
 }
 
-/// Whether the zone was actually configured, as opposed to falling back to UTC.
-pub fn timezone_is_configured() -> bool {
-    resolved().1
-}
-
 /// Log the resolved zone once at startup.
 ///
 /// An unset zone is a warning rather than an error: UTC is a legitimate
