@@ -552,6 +552,35 @@ mod tests {
         );
     }
 
+    /// `deep_reasoning` is how a step asks to spend money: `cost ASC` sorts
+    /// every paid model behind every $0 one, so a paid model only wins a
+    /// capability nothing free holds. A second holder — any $0 model — would
+    /// silently take every paid synthesis step back, and a spent budget would
+    /// stop being the only reason it runs on gpt-oss.
+    #[test]
+    fn deep_reasoning_is_held_by_sonnet_5_alone() {
+        let c = real_catalog();
+        let holders: Vec<_> = c
+            .models
+            .iter()
+            .filter(|(_, e)| e.capabilities.iter().any(|x| x == "deep_reasoning"))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(holders, vec!["claude-sonnet-5"]);
+        assert_eq!(routes_to(&c, "deep_reasoning", TIER2), "claude-sonnet-5");
+        assert_eq!(routes_to(&c, "deep_reasoning", TIER1), "");
+    }
+
+    /// Adding a paid model that also claims `reasoning` must not move the
+    /// free reasoning route.
+    #[test]
+    fn a_paid_reasoner_does_not_capture_plain_reasoning() {
+        assert_eq!(
+            routes_to(&real_catalog(), "reasoning", TIER2),
+            "gpt-oss:120b-cloud"
+        );
+    }
+
     /// `gemini-2.5-flash` deliberately does not claim `vision`, and the one
     /// Gemini entry that does (`gemini-3-flash`) is ranked far below
     /// gemma4:31b-cloud, so vision stays on the free ollama-cloud vision model

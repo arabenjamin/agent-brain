@@ -397,6 +397,29 @@ models:
       before acting and use available tools for grounded answers.
 
   # ── Anthropic (https://www.anthropic.com) ─────────────────────────────────
+  #
+  # `deep_reasoning` is held by claude-sonnet-5 ALONE, on purpose. Selection is
+  # `cost ASC` first, so a paid model can never win a capability a $0 model also
+  # holds — a step that should spend money must ask for a capability only the
+  # paid model has. When the policy refuses it (ROUTING_PAID_FOR unset, the
+  # daily/monthly spend cap reached), no candidate survives and the step falls
+  # back to its own `provider_hint` (ollama-cloud → gpt-oss), so a spent budget
+  # degrades the step rather than failing it. Steps that ask for it: the
+  # synthesis `reason` in the five standing-investigation schedules (2026-10-02,
+  # ~$0.15-0.20 per run at ~55K in / ~3K out).
+  claude-sonnet-5:
+    provider: anthropic
+    model: "claude-sonnet-5"
+    context_window: 1000000
+    cost_per_1k_input: 0.002
+    cost_per_1k_output: 0.010
+    selection_rank: 315
+    capabilities:
+      - deep_reasoning
+      - reasoning
+      - code
+      - vision
+
   claude-sonnet-4-6:
     provider: anthropic
     model: "claude-sonnet-4-6"
@@ -418,8 +441,8 @@ models:
     provider: anthropic
     model: "claude-haiku-4-5-20251001"
     context_window: 200000
-    cost_per_1k_input: 0.0008
-    cost_per_1k_output: 0.004
+    cost_per_1k_input: 0.001
+    cost_per_1k_output: 0.005
     selection_rank: 310
     capabilities:
       - reasoning

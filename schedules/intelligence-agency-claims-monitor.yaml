@@ -226,8 +226,11 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
+    # Paid synthesis: `deep_reasoning` is held only by claude-sonnet-5. When the
+    # spend cap or ROUTING_PAID_FOR refuses it, the step runs on this
+    # provider_hint (gpt-oss) instead — see the note in models.yaml.
     provider_hint: ollama-cloud
-    required_capabilities: ["reasoning"]
+    required_capabilities: ["deep_reasoning"]
     description: "Dated delta report with attributed claims"
 
   - tool_name: push_context

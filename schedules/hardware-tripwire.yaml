@@ -194,8 +194,11 @@ steps:
     max_attempts: 3
     # Synthesis benefits from a stronger model; the router picks the best catalog
     # match within CLOUD_TIER. Any hint other than "ollama" uses the active config.
+    # Paid synthesis: `deep_reasoning` is held only by claude-sonnet-5. When the
+    # spend cap or ROUTING_PAID_FOR refuses it, the step runs on this
+    # provider_hint (gpt-oss) instead — see the note in models.yaml.
     provider_hint: ollama-cloud
-    required_capabilities: ["reasoning"]
+    required_capabilities: ["deep_reasoning"]
     description: "Delta analysis vs prior baseline"
 
   # 7. Persist. `source_context` is the retrieval key for the next run's step 1
