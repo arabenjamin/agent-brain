@@ -48,6 +48,7 @@ mod loop_policy;
 mod ollama_loop;
 mod openai_loop;
 mod prompt;
+mod round_loop;
 mod synthesis;
 #[cfg(test)]
 mod test_support;
@@ -66,6 +67,7 @@ use events::*;
 use handover::*;
 use loop_policy::*;
 pub(crate) use prompt::build_system_prompt;
+use round_loop::*;
 use tool_calls::*;
 use tool_results::*;
 use turn::*;

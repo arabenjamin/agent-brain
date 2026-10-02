@@ -42,11 +42,6 @@ impl KnowledgeSkill {
                         "type": "string",
                         "description": "Content of the note"
                     },
-                    "tags": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional tags for categorization (stored but not indexed)"
-                    },
                     "note_type": {
                         "type": "string",
                         "enum": ["semantic", "episodic", "reflection", "consolidated", "outcome", "inference", "claim", "source_record", "news", "unsourced_synthesis"],
@@ -1159,7 +1154,7 @@ Respond with a JSON object only (no markdown, no explanation):
             overall_robustness,
             serde_json::to_string_pretty(&parsed).unwrap_or_default()
         );
-        let _ = self
+        let stored = self
             .svc
             .store_note(
                 &note_content,
@@ -1169,6 +1164,20 @@ Respond with a JSON object only (no markdown, no explanation):
                 None,
             )
             .await;
+        // The schema promises the review is linked to its task; a review that
+        // is never linked cannot be found from the task it judged.
+        if let (Ok((note_id, _)), Some(task_id)) = (&stored, input.task_id.as_deref()) {
+            match self.svc.link_note_to_task(note_id, task_id).await {
+                Ok(true) => {}
+                Ok(false) => warn!(
+                    task_id,
+                    "adversarial review: task not found, note left unlinked"
+                ),
+                Err(e) => {
+                    warn!(task_id, error = %e, "adversarial review: linking note to task failed")
+                }
+            }
+        }
 
         ToolCallResult::success_json(parsed)
     }
@@ -1263,9 +1272,6 @@ impl Skill for KnowledgeSkill {
 #[derive(Debug, Deserialize)]
 struct StoreNoteInput {
     content: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    tags: Vec<String>,
     #[serde(default)]
     note_type: Option<String>,
     #[serde(default)]
@@ -1415,7 +1421,6 @@ struct AdversarialPlanReviewInput {
     #[serde(default = "default_n_hypotheses")]
     n_hypotheses: u8,
     #[serde(default)]
-    #[allow(dead_code)]
     task_id: Option<String>,
 }
 

@@ -32,6 +32,10 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         KnowledgeService::store_context_inference(self, question, answer, inferences).await
     }
 
+    async fn link_note_to_task(&self, note_id: &str, task_id: &str) -> anyhow::Result<bool> {
+        KnowledgeService::link_note_to_task(self, note_id, task_id).await
+    }
+
     async fn search_notes(
         &self,
         query: &str,

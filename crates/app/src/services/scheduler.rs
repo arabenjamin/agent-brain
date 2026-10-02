@@ -690,232 +690,21 @@ impl SchedulerService {
         }
     }
 
-    /// Scan recent outcome notes for repeated failure patterns and auto-create analysis tasks.
+    /// Scan the graph for conditions that need attention and create a Task for
+    /// each — at most one per condition while an earlier one is still open.
+    /// Returns how many tasks were created.
     async fn perception_scan(&self) -> Result<usize, String> {
-        // Find all outcome notes from the last 7 days that recorded failures.
-        let cypher = r#"
-        MATCH (n:Note)
-        WHERE n.note_type = 'outcome'
-          AND n.content CONTAINS 'Success: false'
-          AND n.created_at >= datetime() - duration({days: 7})
-        RETURN n.content AS content
-        "#;
+        let mut created = self.trigger_repeated_tool_failures().await?;
 
-        let rows = self
-            .neo4j
-            .execute(neo4rs::query(cypher))
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Count failures per tool name (content format: "Tool: <name> | Success: false\n...")
-        let mut tool_failures: HashMap<String, u32> = HashMap::new();
-        for row in &rows {
-            if let Ok(content) = row.get::<String>("content")
-                && let Some(rest) = content.strip_prefix("Tool: ")
-                && let Some(tool_name) = rest.split(" | ").next()
-            {
-                *tool_failures
-                    .entry(tool_name.trim().to_string())
-                    .or_insert(0) += 1;
-            }
+        // Consolidation triggers share one guard, evaluated once, so a task
+        // created by the first blocks the second within the same tick.
+        let mut consolidation_queued = self.open_consolidation_exists().await;
+        if !consolidation_queued && self.trigger_overdue_consolidation().await {
+            created += 1;
+            consolidation_queued = true;
         }
-
-        let mut created = 0usize;
-        for (tool, count) in tool_failures {
-            if count < 3 {
-                continue;
-            }
-            // Only create if no open task about this tool already exists.
-            let check = neo4rs::query(
-                "MATCH (t:Task) \
-                 WHERE t.goal CONTAINS $tool \
-                   AND t.status IN ['created', 'in_progress'] \
-                 RETURN count(t) AS cnt",
-            )
-            .param("tool", tool.as_str());
-
-            let existing: i64 = self
-                .neo4j
-                .execute(check)
-                .await
-                .ok()
-                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(0);
-
-            if existing == 0 {
-                let goal = format!(
-                    "meta-learn: Analyze repeated failures for '{}' — hypothesize root cause, \
-                     propose a concrete test, and integrate findings into permanent knowledge \
-                     ({} failures in 7 days)",
-                    tool, count
-                );
-                let context = serde_json::json!({
-                    "meta_learning_phase": "analyze",
-                    "failure_tool": tool,
-                    "failure_count": count,
-                    "cycle": 1
-                })
-                .to_string();
-                match self.neo4j.create_task(&goal, Some(&context), None).await {
-                    Ok(_) => {
-                        created += 1;
-                        info!(tool = %tool, failures = count, "Perception scan created meta-learning task");
-                    }
-                    Err(e) => {
-                        warn!(tool = %tool, error = %e, "Failed to create meta-learning task")
-                    }
-                }
-            }
-        }
-
-        // Helper: check if a consolidation task is active OR was completed recently (within 24h).
-        // Evaluated once and shared across all consolidation triggers so at most one new
-        // consolidation task can be created per perception_scan tick.
-        let open_consolidation_exists = || async {
-            let q = neo4rs::query(
-                "MATCH (t:Task) \
-                 WHERE toLower(t.goal) CONTAINS 'consolidat' \
-                   AND (t.status IN ['created', 'in_progress'] \
-                     OR (t.status = 'completed' \
-                         AND t.created_at >= datetime() - duration({hours: 24}))) \
-                 RETURN count(t) AS cnt",
-            );
-            // Default to 1 (assume consolidation exists) on any DB error so that
-            // a transient Neo4j failure never causes a spurious duplicate task to
-            // be created — the safe direction is to skip, not to enqueue.
-            self.neo4j
-                .execute(q)
-                .await
-                .ok()
-                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(1)
-                > 0
-        };
-
-        // Evaluate the guard once so both triggers share the same snapshot and a task created
-        // by trigger 1 is guaranteed to block trigger 2 within the same tick.
-        let mut consolidation_queued = open_consolidation_exists().await;
-
-        // Trigger 1: many overdue spaced-repetition notes.
-        // The exclusion list MUST match consolidate_memories' source filter: any type counted
-        // here but refused as a source stays overdue forever and re-triggers consolidation
-        // tasks that can never consume it (reflection notes drove ~10 consolidations/day).
-        let due_check = neo4rs::query(&format!(
-            "MATCH (n:Note) \
-             WHERE n.next_review_at <= datetime() \
-               AND {} \
-             RETURN count(n) AS cnt",
-            crate::services::knowledge::CONSOLIDATION_SOURCE_PREDICATE
-        ));
-        let due_count: i64 = self
-            .neo4j
-            .execute(due_check)
-            .await
-            .ok()
-            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-            .unwrap_or(0);
-
-        // Raised threshold from 10 → 25 → 50: lower values were too easily hit by normal note
-        // accumulation, causing consolidation to run too frequently and consume excess resources.
-        if due_count >= 50 && !consolidation_queued {
-            let goal = format!(
-                "Consolidate {} overdue spaced-repetition notes into long-term memory",
-                due_count
-            );
-            if self
-                .neo4j
-                .create_task(
-                    &goal,
-                    Some("Auto-generated by proactive perception scan (spaced-repetition backlog)"),
-                    None,
-                )
-                .await
-                .is_ok()
-            {
-                created += 1;
-                consolidation_queued = true;
-
-                // Immediately advance next_review_at on ALL currently-overdue notes so that
-                // subsequent perception scan ticks don't see them as still overdue and queue
-                // another consolidation task before this one has a chance to run.
-                // The actual consolidation job will extend dates further when it processes notes.
-                let bump = neo4rs::query(
-                    "MATCH (n:Note) \
-                     WHERE n.next_review_at <= datetime() \
-                       AND NOT COALESCE(n.note_type, 'semantic') \
-                           IN ['consolidated', 'reflection', 'news', 'news_raw', 'outcome'] \
-                     SET n.next_review_at = datetime() + duration({days: 14}), \
-                         n.review_interval_days = CASE \
-                             WHEN COALESCE(n.review_interval_days, 1) < 14 THEN 14 \
-                             ELSE COALESCE(n.review_interval_days, 14) \
-                         END",
-                );
-                if let Err(e) = self.neo4j.run(bump).await {
-                    warn!(
-                        "Failed to advance overdue note dates after scheduling consolidation: {e}"
-                    );
-                }
-
-                info!(
-                    due_count = due_count,
-                    "Perception scan created consolidation task (overdue notes)"
-                );
-            }
-        }
-
-        // Trigger 2: high episodic note volume (sleep-cycle analogue).
-        // Only count notes that are currently due so the post-creation bump suppresses re-firing.
-        let episodic_check = neo4rs::query(
-            "MATCH (n:Note) \
-             WHERE n.note_type = 'episodic' AND n.next_review_at <= datetime() \
-             RETURN count(n) AS cnt",
-        );
-        let episodic_count: i64 = self
-            .neo4j
-            .execute(episodic_check)
-            .await
-            .ok()
-            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-            .unwrap_or(0);
-
-        if episodic_count >= 75 && !consolidation_queued {
-            let goal = format!(
-                "Consolidate {} episodic notes — distil recurring patterns into semantic memory",
-                episodic_count
-            );
-            if self
-                .neo4j
-                .create_task(
-                    &goal,
-                    Some(
-                        "Auto-generated by proactive perception scan (episodic note volume threshold)",
-                    ),
-                    None,
-                )
-                .await
-                .is_ok()
-            {
-                created += 1;
-
-                // Bump all due episodic notes so subsequent ticks don't re-trigger before
-                // the consolidation job has a chance to run.
-                let bump = neo4rs::query(
-                    "MATCH (n:Note) \
-                     WHERE n.note_type = 'episodic' AND n.next_review_at <= datetime() \
-                     SET n.next_review_at = datetime() + duration({days: 14}), \
-                         n.review_interval_days = 14",
-                );
-                if let Err(e) = self.neo4j.run(bump).await {
-                    warn!(
-                        "Failed to advance episodic note dates after scheduling consolidation: {e}"
-                    );
-                }
-
-                info!(
-                    episodic_count,
-                    "Perception scan created consolidation task (episodic volume)"
-                );
-            }
+        if !consolidation_queued && self.trigger_episodic_consolidation().await {
+            created += 1;
         }
 
         // Trigger 3 (routing coverage gap) was REMOVED 2026-08-17. It fired a
@@ -935,73 +724,255 @@ impl SchedulerService {
         // A meaningful routing audit would measure /chat routing (where profiles DO apply),
         // not background jobs — build that deliberately if wanted; do not restore this.
 
-        // Trigger 4: codebase self-knowledge — bootstrap if none exists, refresh if stale (>7 days).
+        created += usize::from(self.trigger_codebase_self_knowledge().await);
+        created += self.trigger_dead_jobs().await;
+        created += usize::from(self.trigger_queue_backlog().await);
+        created += usize::from(self.trigger_knowledge_staleness().await);
+        Ok(created)
+    }
+
+    /// The first row's integer column `col`, or `None` on any error.
+    async fn count_query(&self, q: neo4rs::Query, col: &str) -> Option<i64> {
+        self.neo4j
+            .execute(q)
+            .await
+            .ok()
+            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>(col).ok()))
+    }
+
+    /// Create a perception-scan task; true when it was created.
+    async fn create_scan_task(&self, goal: &str, context: &str) -> bool {
+        match self.neo4j.create_task(goal, Some(context), None).await {
+            Ok(_) => true,
+            Err(e) => {
+                warn!(goal, error = %e, "Perception scan failed to create task");
+                false
+            }
+        }
+    }
+
+    /// The same tool failing ≥3 times in 7 days, per its outcome notes, gets a
+    /// meta-learning task.
+    async fn trigger_repeated_tool_failures(&self) -> Result<usize, String> {
+        let cypher = r#"
+        MATCH (n:Note)
+        WHERE n.note_type = 'outcome'
+          AND n.content CONTAINS 'Success: false'
+          AND n.created_at >= datetime() - duration({days: 7})
+        RETURN n.content AS content
+        "#;
+        let rows = self
+            .neo4j
+            .execute(neo4rs::query(cypher))
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let tool_failures =
+            count_tool_failures(rows.iter().filter_map(|r| r.get::<String>("content").ok()));
+
+        let mut created = 0usize;
+        for (tool, count) in tool_failures {
+            if count < 3 {
+                continue;
+            }
+            // Only create if no open task about this tool already exists.
+            let check = neo4rs::query(
+                "MATCH (t:Task) \
+                 WHERE t.goal CONTAINS $tool \
+                   AND t.status IN ['created', 'in_progress'] \
+                 RETURN count(t) AS cnt",
+            )
+            .param("tool", tool.as_str());
+            if self.count_query(check, "cnt").await.unwrap_or(0) > 0 {
+                continue;
+            }
+            let goal = format!(
+                "meta-learn: Analyze repeated failures for '{tool}' — hypothesize root cause, \
+                 propose a concrete test, and integrate findings into permanent knowledge \
+                 ({count} failures in 7 days)"
+            );
+            let context = serde_json::json!({
+                "meta_learning_phase": "analyze",
+                "failure_tool": tool,
+                "failure_count": count,
+                "cycle": 1
+            })
+            .to_string();
+            if self.create_scan_task(&goal, &context).await {
+                created += 1;
+                info!(tool = %tool, failures = count, "Perception scan created meta-learning task");
+            }
+        }
+        Ok(created)
+    }
+
+    /// Whether a consolidation task is active or completed within 24h.
+    async fn open_consolidation_exists(&self) -> bool {
+        let q = neo4rs::query(
+            "MATCH (t:Task) \
+             WHERE toLower(t.goal) CONTAINS 'consolidat' \
+               AND (t.status IN ['created', 'in_progress'] \
+                 OR (t.status = 'completed' \
+                     AND t.created_at >= datetime() - duration({hours: 24}))) \
+             RETURN count(t) AS cnt",
+        );
+        // Default to "exists" on any DB error so a transient Neo4j failure never
+        // causes a duplicate task — the safe direction is to skip.
+        self.count_query(q, "cnt").await.unwrap_or(1) > 0
+    }
+
+    /// Many overdue spaced-repetition notes → consolidate them.
+    ///
+    /// Counts AND bumps with `CONSOLIDATION_SOURCE_PREDICATE`, the predicate
+    /// consolidation selects its sources by: a type counted here but refused as
+    /// a source stays overdue forever and re-triggers tasks that can never
+    /// consume it (reflection notes drove ~10 consolidations/day). Until
+    /// 2026-10-02 the bump used its own hard-coded type list, which pushed back
+    /// review dates on notes the count had never included.
+    async fn trigger_overdue_consolidation(&self) -> bool {
+        let predicate = crate::services::knowledge::CONSOLIDATION_SOURCE_PREDICATE;
+        let due_check = neo4rs::query(&format!(
+            "MATCH (n:Note) WHERE n.next_review_at <= datetime() AND {predicate} \
+             RETURN count(n) AS cnt"
+        ));
+        let due_count = self.count_query(due_check, "cnt").await.unwrap_or(0);
+
+        // Raised 10 → 25 → 50: lower values were hit by normal note accumulation,
+        // so consolidation ran too often.
+        if due_count < 50 {
+            return false;
+        }
+        let goal = format!(
+            "Consolidate {due_count} overdue spaced-repetition notes into long-term memory"
+        );
+        if !self
+            .create_scan_task(
+                &goal,
+                "Auto-generated by proactive perception scan (spaced-repetition backlog)",
+            )
+            .await
+        {
+            return false;
+        }
+
+        // Advance the counted notes now so later ticks don't see them as still
+        // overdue and queue another task before this one runs. The consolidation
+        // job extends the dates further for the notes it actually merges.
+        let bump = neo4rs::query(&format!(
+            "MATCH (n:Note) WHERE n.next_review_at <= datetime() AND {predicate} \
+             SET n.next_review_at = datetime() + duration({{days: 14}}), \
+                 n.review_interval_days = CASE \
+                     WHEN COALESCE(n.review_interval_days, 1) < 14 THEN 14 \
+                     ELSE COALESCE(n.review_interval_days, 14) \
+                 END"
+        ));
+        if let Err(e) = self.neo4j.run(bump).await {
+            warn!("Failed to advance overdue note dates after scheduling consolidation: {e}");
+        }
+        info!(
+            due_count,
+            "Perception scan created consolidation task (overdue notes)"
+        );
+        true
+    }
+
+    /// High episodic note volume → consolidate (the sleep-cycle analogue).
+    /// Counts only notes currently due, so the post-creation bump suppresses
+    /// re-firing.
+    async fn trigger_episodic_consolidation(&self) -> bool {
+        let episodic_check = neo4rs::query(
+            "MATCH (n:Note) \
+             WHERE n.note_type = 'episodic' AND n.next_review_at <= datetime() \
+             RETURN count(n) AS cnt",
+        );
+        let episodic_count = self.count_query(episodic_check, "cnt").await.unwrap_or(0);
+        if episodic_count < 75 {
+            return false;
+        }
+        let goal = format!(
+            "Consolidate {episodic_count} episodic notes — distil recurring patterns into semantic memory"
+        );
+        if !self
+            .create_scan_task(
+                &goal,
+                "Auto-generated by proactive perception scan (episodic note volume threshold)",
+            )
+            .await
+        {
+            return false;
+        }
+        let bump = neo4rs::query(
+            "MATCH (n:Note) \
+             WHERE n.note_type = 'episodic' AND n.next_review_at <= datetime() \
+             SET n.next_review_at = datetime() + duration({days: 14}), \
+                 n.review_interval_days = 14",
+        );
+        if let Err(e) = self.neo4j.run(bump).await {
+            warn!("Failed to advance episodic note dates after scheduling consolidation: {e}");
+        }
+        info!(
+            episodic_count,
+            "Perception scan created consolidation task (episodic volume)"
+        );
+        true
+    }
+
+    /// Codebase self-knowledge: bootstrap if none exists, refresh if >7 days old.
+    async fn trigger_codebase_self_knowledge(&self) -> bool {
         let codebase_check = neo4rs::query(
             "MATCH (n:Note) \
              WHERE n.source_context = 'codebase_self_analysis' \
              RETURN count(n) AS cnt, \
                     toString(max(n.created_at)) AS newest",
         );
-        let codebase_rows = self.neo4j.execute(codebase_check).await.ok();
-        let codebase_note_count: i64 = codebase_rows
-            .as_ref()
-            .and_then(|rows| rows.first())
-            .and_then(|r| r.get::<i64>("cnt").ok())
-            .unwrap_or(0);
-        // newest is None when count == 0; treat missing/parse error as stale → trigger re-analysis.
-        let codebase_is_stale: bool = codebase_rows
-            .as_ref()
-            .and_then(|rows| rows.first())
+        let rows = self.neo4j.execute(codebase_check).await.ok();
+        let first = rows.as_ref().and_then(|rows| rows.first());
+        let note_count = first.and_then(|r| r.get::<i64>("cnt").ok()).unwrap_or(0);
+        // `newest` is absent when there are no notes; missing or unparseable
+        // counts as stale.
+        let is_stale = first
             .and_then(|r| r.get::<String>("newest").ok())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
             .map(|dt| (Utc::now() - dt.to_utc()).num_days() >= 7)
             .unwrap_or(true);
-
-        if codebase_note_count == 0 || codebase_is_stale {
-            let check_existing = neo4rs::query(
-                "MATCH (t:Task) \
-                 WHERE (t.goal CONTAINS 'codebase' OR t.goal CONTAINS 'self-knowledge') \
-                   AND t.status IN ['created', 'in_progress'] \
-                 RETURN count(t) AS cnt",
-            );
-            let existing: i64 = self
-                .neo4j
-                .execute(check_existing)
-                .await
-                .ok()
-                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(0);
-
-            if existing == 0 {
-                let (goal, context) = if codebase_note_count == 0 {
-                    (
-                        "Analyze own codebase structure and store self-knowledge in graph",
-                        "Auto-generated: no codebase self-analysis note found in graph",
-                    )
-                } else {
-                    (
-                        "Refresh codebase self-knowledge — re-analyze structure and recent changes",
-                        "Auto-generated: codebase self-analysis note is more than 7 days old",
-                    )
-                };
-                if self
-                    .neo4j
-                    .create_task(goal, Some(context), None)
-                    .await
-                    .is_ok()
-                {
-                    created += 1;
-                    info!(
-                        stale = codebase_is_stale,
-                        count = codebase_note_count,
-                        "Perception scan created codebase self-analysis task"
-                    );
-                }
-            }
+        if note_count > 0 && !is_stale {
+            return false;
         }
 
-        // Trigger 5: dead jobs accumulating — same tool dying repeatedly in 24h
-        // signals a broken tool definition or bad external dependency.
+        let check_existing = neo4rs::query(
+            "MATCH (t:Task) \
+             WHERE (t.goal CONTAINS 'codebase' OR t.goal CONTAINS 'self-knowledge') \
+               AND t.status IN ['created', 'in_progress'] \
+             RETURN count(t) AS cnt",
+        );
+        if self.count_query(check_existing, "cnt").await.unwrap_or(0) > 0 {
+            return false;
+        }
+        let (goal, context) = if note_count == 0 {
+            (
+                "Analyze own codebase structure and store self-knowledge in graph",
+                "Auto-generated: no codebase self-analysis note found in graph",
+            )
+        } else {
+            (
+                "Refresh codebase self-knowledge — re-analyze structure and recent changes",
+                "Auto-generated: codebase self-analysis note is more than 7 days old",
+            )
+        };
+        let created = self.create_scan_task(goal, context).await;
+        if created {
+            info!(
+                stale = is_stale,
+                count = note_count,
+                "Perception scan created codebase self-analysis task"
+            );
+        }
+        created
+    }
+
+    /// The same tool dying ≥3 times in 24h signals a broken tool definition or
+    /// a bad external dependency.
+    async fn trigger_dead_jobs(&self) -> usize {
         let dead_jobs_check = neo4rs::query(
             "MATCH (j:AgentJob) \
              WHERE j.status = 'dead' \
@@ -1009,66 +980,57 @@ impl SchedulerService {
              RETURN j.tool_name AS tool_name, count(j) AS n \
              ORDER BY n DESC",
         );
-        if let Ok(dead_rows) = self.neo4j.execute(dead_jobs_check).await {
-            for row in &dead_rows {
-                let tool_name = row.get::<String>("tool_name").unwrap_or_default();
-                let n = row.get::<i64>("n").unwrap_or(0);
-                if n < 3 || tool_name.is_empty() {
-                    continue;
-                }
-                let check_existing = neo4rs::query(
-                    "MATCH (t:Task) \
-                     WHERE t.goal CONTAINS $tool \
-                       AND toLower(t.goal) CONTAINS 'dead' \
-                       AND t.status IN ['created', 'in_progress'] \
-                     RETURN count(t) AS cnt",
+        let Ok(dead_rows) = self.neo4j.execute(dead_jobs_check).await else {
+            return 0;
+        };
+        let mut created = 0usize;
+        for row in &dead_rows {
+            let tool_name = row.get::<String>("tool_name").unwrap_or_default();
+            let n = row.get::<i64>("n").unwrap_or(0);
+            if n < 3 || tool_name.is_empty() {
+                continue;
+            }
+            let check_existing = neo4rs::query(
+                "MATCH (t:Task) \
+                 WHERE t.goal CONTAINS $tool \
+                   AND toLower(t.goal) CONTAINS 'dead' \
+                   AND t.status IN ['created', 'in_progress'] \
+                 RETURN count(t) AS cnt",
+            )
+            .param("tool", tool_name.as_str());
+            if self.count_query(check_existing, "cnt").await.unwrap_or(0) > 0 {
+                continue;
+            }
+            let goal = format!(
+                "Investigate dead jobs: '{tool_name}' died {n} times in the last 24 hours — \
+                 diagnose the tool definition, input schema, or external dependency"
+            );
+            if self
+                .create_scan_task(
+                    &goal,
+                    "Auto-generated by proactive perception scan (dead job accumulation)",
                 )
-                .param("tool", tool_name.as_str());
-                let existing: i64 = self
-                    .neo4j
-                    .execute(check_existing)
-                    .await
-                    .ok()
-                    .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                    .unwrap_or(0);
-                if existing == 0 {
-                    let goal = format!(
-                        "Investigate dead jobs: '{}' died {} times in the last 24 hours — \
-                         diagnose the tool definition, input schema, or external dependency",
-                        tool_name, n
-                    );
-                    if self
-                        .neo4j
-                        .create_task(
-                            &goal,
-                            Some(
-                                "Auto-generated by proactive perception scan \
-                                 (dead job accumulation)",
-                            ),
-                            None,
-                        )
-                        .await
-                        .is_ok()
-                    {
-                        created += 1;
-                        info!(tool = %tool_name, dead_count = n, "Perception scan created dead-job investigation task");
-                    }
-                }
+                .await
+            {
+                created += 1;
+                info!(tool = %tool_name, dead_count = n, "Perception scan created dead-job investigation task");
             }
         }
+        created
+    }
 
-        // Trigger 6: queue backlog — many jobs stuck *queued* with nothing running
-        // may indicate the coordinator is blocked or a semaphore is exhausted.
-        // Parked jobs are deliberately excluded: parked is the normal state for chain
-        // steps 2..N awaiting their parent, so counting them fires on healthy busy
-        // periods (this trigger previously created 153 duplicate investigation tasks).
+    /// Many jobs stuck *queued* with nothing running: the coordinator may be
+    /// blocked or a semaphore exhausted. Parked jobs are deliberately excluded —
+    /// parked is the normal state for chain steps 2..N awaiting their parent, so
+    /// counting them fired on healthy busy periods (153 duplicate tasks).
+    async fn trigger_queue_backlog(&self) -> bool {
         let backlog_check = neo4rs::query(
             "MATCH (j:AgentJob {status: 'queued'}) \
              WITH count(j) AS queued \
              OPTIONAL MATCH (r:AgentJob {status: 'running'}) \
              RETURN queued, count(r) AS running",
         );
-        let (backlog_count, running_count): (i64, i64) = self
+        let (backlog, running) = self
             .neo4j
             .execute(backlog_check)
             .await
@@ -1082,55 +1044,46 @@ impl SchedulerService {
                 })
             })
             .unwrap_or((0, 0));
-
-        if backlog_count >= 20 && running_count == 0 {
-            // Dedup against open investigations AND a 24h cooldown on completed/failed
-            // ones — investigating cannot itself drain the queue, so re-creating the
-            // task every tick while the backlog persists just multiplies noise.
-            // created_at is stored as an ISO-8601 string; lexicographic compare is safe.
-            let check_existing = neo4rs::query(
-                "MATCH (t:Task) \
-                 WHERE toLower(t.goal) CONTAINS 'queue' \
-                   AND toLower(t.goal) CONTAINS 'backlog' \
-                   AND (t.status IN ['created', 'in_progress'] \
-                        OR t.created_at >= toString(datetime() - duration({hours: 24}))) \
-                 RETURN count(t) AS cnt",
-            );
-            let existing: i64 = self
-                .neo4j
-                .execute(check_existing)
-                .await
-                .ok()
-                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(0);
-            if existing == 0 {
-                let goal = format!(
-                    "Investigate queue backlog: {} jobs are queued or parked — \
-                     check if the coordinator is running, semaphores are free, \
-                     and whether any jobs are stuck in a dependency cycle",
-                    backlog_count
-                );
-                if self
-                    .neo4j
-                    .create_task(
-                        &goal,
-                        Some("Auto-generated by proactive perception scan (queue backlog)"),
-                        None,
-                    )
-                    .await
-                    .is_ok()
-                {
-                    created += 1;
-                    info!(
-                        backlog = backlog_count,
-                        "Perception scan created queue backlog task"
-                    );
-                }
-            }
+        if backlog < 20 || running > 0 {
+            return false;
         }
 
-        // Trigger 7: knowledge staleness — no semantic notes created or accessed
-        // in the last 14 days means the knowledge base may be going cold.
+        // Dedup against open investigations AND a 24h cooldown on finished ones:
+        // investigating cannot itself drain the queue, so re-creating the task
+        // every tick while the backlog persists only multiplies noise. The
+        // cooldown compared the DATETIME `created_at` to a string until
+        // 2026-10-02 — always null, so it never applied.
+        let check_existing = neo4rs::query(
+            "MATCH (t:Task) \
+             WHERE toLower(t.goal) CONTAINS 'queue' \
+               AND toLower(t.goal) CONTAINS 'backlog' \
+               AND (t.status IN ['created', 'in_progress'] \
+                    OR t.created_at >= datetime() - duration({hours: 24})) \
+             RETURN count(t) AS cnt",
+        );
+        if self.count_query(check_existing, "cnt").await.unwrap_or(0) > 0 {
+            return false;
+        }
+        let goal = format!(
+            "Investigate queue backlog: {backlog} jobs are queued with none running — \
+             check if the coordinator is running, semaphores are free, \
+             and whether any jobs are stuck in a dependency cycle"
+        );
+        let created = self
+            .create_scan_task(
+                &goal,
+                "Auto-generated by proactive perception scan (queue backlog)",
+            )
+            .await;
+        if created {
+            info!(backlog, "Perception scan created queue backlog task");
+        }
+        created
+    }
+
+    /// No semantic note created or accessed in 14 days: the knowledge base may
+    /// be going cold.
+    async fn trigger_knowledge_staleness(&self) -> bool {
         let staleness_check = neo4rs::query(
             "MATCH (n:Note) \
              WHERE n.note_type = 'semantic' \
@@ -1138,52 +1091,31 @@ impl SchedulerService {
                     OR n.created_at >= datetime() - duration({days: 14})) \
              RETURN count(n) AS n",
         );
-        let recent_semantic: i64 = self
-            .neo4j
-            .execute(staleness_check)
-            .await
-            .ok()
-            .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("n").ok()))
-            .unwrap_or(1); // default to 1 → skip trigger on DB error
-
-        if recent_semantic == 0 {
-            let check_existing = neo4rs::query(
-                "MATCH (t:Task) \
-                 WHERE toLower(t.goal) CONTAINS 'stale' \
-                   AND t.status IN ['created', 'in_progress'] \
-                 RETURN count(t) AS cnt",
-            );
-            let existing: i64 = self
-                .neo4j
-                .execute(check_existing)
-                .await
-                .ok()
-                .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("cnt").ok()))
-                .unwrap_or(0);
-            if existing == 0 {
-                let goal = "Knowledge base is stale: no semantic notes created or accessed \
-                            in the last 14 days — review recent episodic notes, run \
-                            consolidation, and synthesize fresh semantic knowledge";
-                if self
-                    .neo4j
-                    .create_task(
-                        goal,
-                        Some(
-                            "Auto-generated by proactive perception scan \
-                             (knowledge staleness)",
-                        ),
-                        None,
-                    )
-                    .await
-                    .is_ok()
-                {
-                    created += 1;
-                    info!("Perception scan created knowledge staleness task");
-                }
-            }
+        // Default to 1 → skip the trigger on a DB error.
+        if self.count_query(staleness_check, "n").await.unwrap_or(1) > 0 {
+            return false;
         }
-
-        Ok(created)
+        let check_existing = neo4rs::query(
+            "MATCH (t:Task) \
+             WHERE toLower(t.goal) CONTAINS 'stale' \
+               AND t.status IN ['created', 'in_progress'] \
+             RETURN count(t) AS cnt",
+        );
+        if self.count_query(check_existing, "cnt").await.unwrap_or(0) > 0 {
+            return false;
+        }
+        let created = self
+            .create_scan_task(
+                "Knowledge base is stale: no semantic notes created or accessed \
+                 in the last 14 days — review recent episodic notes, run \
+                 consolidation, and synthesize fresh semantic knowledge",
+                "Auto-generated by proactive perception scan (knowledge staleness)",
+            )
+            .await;
+        if created {
+            info!("Perception scan created knowledge staleness task");
+        }
+        created
     }
 
     // =========================================================================
@@ -1301,7 +1233,7 @@ impl SchedulerService {
             return if no_adversarial {
                 steps
             } else {
-                self.maybe_prepend_adversarial(
+                Self::maybe_prepend_adversarial(
                     steps,
                     task_id,
                     goal,
@@ -1368,7 +1300,6 @@ impl SchedulerService {
     /// - `no_adversarial` is `true` at the chain YAML level
     /// - `task_context` already contains `"ADVERSARIAL ABORT"` (retry from prior abort)
     fn maybe_prepend_adversarial(
-        &self,
         mut steps: Vec<ChainStep>,
         task_id: &str,
         goal: &str,
@@ -1399,7 +1330,8 @@ impl SchedulerService {
                 arguments: Some(json!({
                     "goal": goal,
                     "proposed_plan": plan_description,
-                    "n_hypotheses": 3
+                    "n_hypotheses": 3,
+                    "task_id": task_id
                 })),
                 priority: Some(1),
                 max_attempts: Some(2),
@@ -1679,5 +1611,77 @@ impl SchedulerService {
                 Err(e)
             }
         }
+    }
+}
+
+/// Failures per tool from outcome-note contents, which read
+/// `"Tool: <name> | Success: false\n..."`. Anything else is ignored.
+fn count_tool_failures(contents: impl IntoIterator<Item = String>) -> HashMap<String, u32> {
+    let mut failures: HashMap<String, u32> = HashMap::new();
+    for content in contents {
+        if let Some(rest) = content.strip_prefix("Tool: ")
+            && let Some(tool_name) = rest.split(" | ").next()
+        {
+            *failures.entry(tool_name.trim().to_string()).or_insert(0) += 1;
+        }
+    }
+    failures
+}
+
+#[cfg(test)]
+mod count_tool_failures_tests {
+    use super::*;
+
+    #[test]
+    fn counts_each_tool_and_ignores_other_content() {
+        let failures = count_tool_failures(vec![
+            "Tool: search_web | Success: false\nquota".to_string(),
+            "Tool: search_web | Success: false\nquota".to_string(),
+            "Tool: ingest_media | Success: false".to_string(),
+            "unrelated outcome text".to_string(),
+        ]);
+        assert_eq!(failures.get("search_web"), Some(&2));
+        assert_eq!(failures.get("ingest_media"), Some(&1));
+        assert_eq!(failures.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod adversarial_prepend_tests {
+    use super::*;
+
+    fn step(tool: &str) -> ChainStep {
+        ChainStep {
+            tool_name: tool.into(),
+            ..Default::default()
+        }
+    }
+
+    /// The review is told which task it judges, so its note can be linked to
+    /// that task (`REFLECTS_ON`) — the schema has always promised the link.
+    #[test]
+    fn the_prepended_review_names_its_task() {
+        let steps = SchedulerService::maybe_prepend_adversarial(
+            vec![step("search_web")],
+            "task-123",
+            "learn about X",
+            Some("a cited summary exists"),
+            None,
+        );
+        assert_eq!(steps[0].tool_name, "adversarial_plan_review");
+        assert_eq!(steps[0].arguments.as_ref().unwrap()["task_id"], "task-123");
+        assert_eq!(steps[0].adversarial_task_id.as_deref(), Some("task-123"));
+    }
+
+    #[test]
+    fn no_success_criteria_means_no_review() {
+        let steps = SchedulerService::maybe_prepend_adversarial(
+            vec![step("search_web")],
+            "task-123",
+            "learn about X",
+            None,
+            None,
+        );
+        assert_eq!(steps.len(), 1);
     }
 }

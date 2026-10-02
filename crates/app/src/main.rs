@@ -235,6 +235,7 @@ fn build_llm_config(config: &Config) -> LlmConfig {
 /// Starts from the brain's LLM config and applies any `CHAT_LLM_*` overrides
 /// from [`Config::chat_llm`].  When all overrides are `None` the result is
 /// identical to the brain's config (single-model deployments are unchanged).
+#[cfg(feature = "http-transport")]
 fn build_chat_llm_config(config: &Config) -> LlmConfig {
     let chat = &config.chat_llm;
 
@@ -519,6 +520,8 @@ async fn run_todo(url: &str, action: TodoAction) -> Result<()> {
     Ok(())
 }
 
+// `bind`, `api_key` and `log_buffer` only feed the HTTP transport.
+#[cfg_attr(not(feature = "http-transport"), allow(unused_variables))]
 async fn run_serve(
     config: &Config,
     transport_type: TransportType,
@@ -632,6 +635,7 @@ async fn run_serve(
             let session_manager = Arc::new(agent_brain::mcp::SessionManager::with_config(
                 session_config,
             ));
+            session_manager.spawn_cleanup();
 
             // Create thread-safe server core
             let neo4j_for_http = client.clone();

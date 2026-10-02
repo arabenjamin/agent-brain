@@ -206,6 +206,12 @@ impl SessionManager {
     pub async fn create_session(&self) -> Result<String, SessionError> {
         let mut sessions = self.sessions.write().await;
 
+        // Expired sessions are dead weight, not capacity: evict them before
+        // refusing a new one.
+        if sessions.len() >= self.config.max_sessions {
+            let timeout = self.config.session_timeout;
+            sessions.retain(|_, session| !session.is_expired(timeout));
+        }
         if sessions.len() >= self.config.max_sessions {
             return Err(SessionError::MaxSessionsReached(self.config.max_sessions));
         }
@@ -229,6 +235,12 @@ impl SessionManager {
     ) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
 
+        // Expired sessions are dead weight, not capacity: evict them before
+        // refusing a new one.
+        if sessions.len() >= self.config.max_sessions {
+            let timeout = self.config.session_timeout;
+            sessions.retain(|_, session| !session.is_expired(timeout));
+        }
         if sessions.len() >= self.config.max_sessions {
             return Err(SessionError::MaxSessionsReached(self.config.max_sessions));
         }
@@ -337,6 +349,28 @@ impl SessionManager {
         let before = sessions.len();
         sessions.retain(|_, session| !session.is_expired(timeout));
         before - sessions.len()
+    }
+
+    /// Sweep expired sessions every `cleanup_interval` for the life of the
+    /// process.
+    ///
+    /// Nothing ran `cleanup_expired` before 2026-10-02: an expired session was
+    /// refused on access but stayed in the map, and `create_session` counted it
+    /// against `max_sessions` — so after 1,000 sessions since the last restart
+    /// the HTTP transport refused every new one.
+    pub fn spawn_cleanup(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(manager.config.cleanup_interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let removed = manager.cleanup_expired().await;
+                if removed > 0 {
+                    tracing::debug!(removed, "Expired MCP sessions evicted");
+                }
+            }
+        })
     }
 
     /// Get the session configuration.
@@ -556,6 +590,41 @@ mod tests {
         // Third should fail
         let result = manager.create_session().await;
         assert!(matches!(result, Err(SessionError::MaxSessionsReached(2))));
+    }
+
+    /// A full map of EXPIRED sessions is not a full server.
+    #[tokio::test]
+    async fn test_session_manager_expired_sessions_do_not_count_against_capacity() {
+        let config = SessionConfig {
+            max_sessions: 2,
+            session_timeout: Duration::from_millis(10),
+            ..Default::default()
+        };
+        let manager = SessionManager::with_config(config);
+        manager.create_session().await.expect("First session");
+        manager.create_session().await.expect("Second session");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        manager
+            .create_session()
+            .await
+            .expect("expired sessions are evicted to make room");
+        assert_eq!(manager.count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_cleanup_task_evicts_expired_sessions() {
+        let config = SessionConfig {
+            session_timeout: Duration::from_millis(10),
+            cleanup_interval: Duration::from_millis(15),
+            ..Default::default()
+        };
+        let manager = Arc::new(SessionManager::with_config(config));
+        manager.create_session().await.expect("session");
+        let task = manager.spawn_cleanup();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(manager.count().await, 0);
+        task.abort();
     }
 
     #[tokio::test]

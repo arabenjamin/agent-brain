@@ -6,6 +6,23 @@ use super::*;
 pub(super) const CHUNK_THRESHOLD_CHARS: usize = 1500;
 
 impl KnowledgeService {
+    /// `(note)-[:REFLECTS_ON]->(task)`, idempotent. `false` when either node
+    /// is missing, so a caller can tell an unlinked note from a linked one.
+    pub(super) async fn link_note_to_task(&self, note_id: &str, task_id: &str) -> Result<bool> {
+        let q = neo4rs::query(
+            "MATCH (n:Note {id: $note_id}), (t:Task {id: $task_id}) \
+             MERGE (n)-[:REFLECTS_ON]->(t) RETURN count(t) AS linked",
+        )
+        .param("note_id", note_id)
+        .param("task_id", task_id);
+        let rows = self.neo4j.execute(q).await?;
+        Ok(rows
+            .first()
+            .and_then(|r| r.get::<i64>("linked").ok())
+            .unwrap_or(0)
+            > 0)
+    }
+
     /// Core CREATE logic: embed content, persist the Note node, return (id, embedding).
     /// Does NOT call link_similar_notes or extract_entities — the caller handles that.
     pub(super) async fn store_note_raw(

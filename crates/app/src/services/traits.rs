@@ -159,6 +159,12 @@ pub trait KnowledgeStore: Send + Sync {
         None
     }
 
+    /// Link a note to the task it reflects on (`REFLECTS_ON`). `Ok(false)` when
+    /// either node is missing. Default no-op so test mocks compile unchanged.
+    async fn link_note_to_task(&self, _note_id: &str, _task_id: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     async fn search_notes(
         &self,
         query: &str,

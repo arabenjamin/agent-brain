@@ -8,7 +8,9 @@
 //! - [`rest`] — REST API adapter for todos, scheduled tasks, and scheduler config
 
 pub mod chat;
+#[cfg(feature = "http-transport")]
 pub mod rest;
 
 pub use chat::{ChatEvent, ChatHistoryMessage, ChatRequest, ChatService};
+#[cfg(feature = "http-transport")]
 pub use rest::RestAdapter;

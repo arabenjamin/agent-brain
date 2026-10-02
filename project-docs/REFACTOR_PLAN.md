@@ -1013,37 +1013,38 @@ clean and the scan came back empty (each removal exposed the next layer).
   `services/knowledge/` with one `impl KnowledgeService` block per concern.
   Each `mod.rs` doc comment maps the files.
 
-### 8.2 Remaining (logic changes, not moves)
+### 8.2 Logic refactors and bug fixes ✅ (2026-10-02)
 
-- **The four chat provider loops are near-duplicates, and they have already
-  drifted** (`anthropic_loop`, `ollama_loop`, `openai_loop`, `text_loop`,
-  230–570 lines each). Each carries its own copy of the round loop, and only
-  the wire format should differ. Measured 2026-10-02:
-  - `text_loop` (Gemini) passes tool results to the model **raw**: no
-    `prepare_tool_result`, so no truncation and none of the position-zero
-    markers (search source list, `reason` limits).
-  - `anthropic_loop` and `text_loop` have no `FINAL_ROUND_NUDGE` wrap-up
-    round, and `anthropic_loop` injects no `tool_trace_receipt`.
-  - Only `openai_loop` uses the derived `tool_result_budget`; the Anthropic
-    and Ollama loops still use the fixed `MAX_TOOL_RESULT_CHARS`.
-
-  Extract one round loop over a `ProviderTurn` trait (send →
-  `{text, tool_calls, usage}`) so a fix lands in every provider at once.
-- **`BrainCore::build_skills` (600 lines)**: registration is hand-written per
-  skill, and forgetting either the registry or the `skills` vec is the
-  documented trap. One `register(skill)` that does both removes the trap.
-- **`QueueService::execute_job` (520 lines)** and
-  **`SchedulerService::perception_scan` (490 lines)**: split into named steps
-  (routing scope, dispatch, outcome handling / one function per trigger).
-- **`--no-default-features` does not build**: `clients/rest.rs` uses `axum`
-  and `skills/ws.rs` uses `tokio_tungstenite` without feature gates. Either
-  gate them or drop the features.
-- **Advertised but ignored inputs**: `store_note.tags` ("stored but not
-  indexed" — it is not stored) and `adversarial_plan_review.task_id` ("link via
-  REFLECTS_ON" — it is not linked). Implement them or remove them from the schemas.
-- **`SessionManager::cleanup_expired` never runs**: expired HTTP sessions are
-  rejected on access but never evicted, and `SessionConfig.cleanup_interval`
-  is read by nothing.
+- **One chat round loop** (`clients/chat/round_loop.rs`). The four provider
+  loops are now `ProviderTurn` implementations (wire format only) driven by
+  one `run_round_loop`. This fixed the drift measured before the change: the
+  Gemini text loop sent tool results raw (no budget, no markers); the Anthropic
+  and text loops had no wrap-up round, ignored the voice split, spent tool
+  rounds on empty-completion retries and ended silently when rounds ran out;
+  Anthropic sent no receipt; the host-Ollama loop streamed a worker's tokens
+  under a voice model; only the OpenAI loop used the derived
+  `tool_result_budget`. Contract tests run against a scripted `FakeTurn`.
+- **`build_skills` builds each skill once**; the registry and handler share an
+  `Arc` (`impl Skill for Arc<T>`). The registry's copies had drifted (no
+  knowledge store on `MediaSkill`, no tool snapshots on `SchedulerSkill`).
+- **`execute_job`** split into `resolve_step_args`, `on_job_succeeded`
+  (`evaluator_gate`, `adversarial_gate`), `on_job_failed`, `on_job_dead`,
+  `maybe_meta_learn`, plus pure `route_context_for` / `select_step_model` /
+  `meta_learning_chain`.
+- **`perception_scan`** split into one method per trigger with shared
+  `count_query` / `create_scan_task`. Two bugs fixed on the way: the
+  queue-backlog 24h cooldown compared a DATETIME to a string (always null, never
+  applied), and the overdue-consolidation bump used its own type list instead of
+  `CONSOLIDATION_SOURCE_PREDICATE`, pushing back notes it had never counted.
+- **`--no-default-features` builds**: `skills/ws.rs` gated on `websocket`,
+  `clients/rest.rs` on `http-transport`.
+- **Tool contracts**: `store_note` no longer advertises `tags` (never stored;
+  callers that pass it are unaffected). `adversarial_plan_review.task_id` now
+  links the review note `REFLECTS_ON` its task, and the scheduler passes it.
+- **HTTP sessions**: `SessionManager::spawn_cleanup` evicts expired sessions,
+  and `create_session` evicts them before refusing. Without either, expired
+  sessions counted against `max_sessions` (1,000), so the transport refused
+  every new session once that many had been created since the last restart.
 
 ## Phase Ordering and Dependencies
 

@@ -31,13 +31,15 @@ use crate::services::{
     AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, MediaService, SharedLlm,
     SnapshotService,
 };
+#[cfg(feature = "websocket")]
+use crate::skills::ws::WsSkill;
 use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
     codebase::CodebaseSkill, constructor::ConstructorSkill, context::ContextSkill,
     dynamic::DynamicSkill, exec::ExecSkill, git::GitSkill, http::HttpSkill,
     knowledge::KnowledgeSkill, mcp_client::McpClientSkill, media::MediaSkill, model::ModelSkill,
     query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill,
-    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill, ws::WsSkill,
+    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -598,236 +600,31 @@ impl BrainCore {
             .await;
         }
 
-        // Media service (yt-dlp captions + map-reduce summarization). Shared by
-        // both the registry (tools/list) and handler (tools/call) skill passes.
-        let media_svc = Arc::new(MediaService::from_env());
-
-        let mut registry = self.tool_registry.write().await;
-
-        // Clear registry to allow safe re-registration on reload.
-        registry.clear();
-
-        // ── Register all skills in the tool registry ──────────────────────
-
-        // Knowledge Skill
-        if let Some(neo4j) = &self.storage.neo4j {
-            let mut ks = KnowledgeService::new(
-                neo4j.clone(),
-                Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-            );
-            if let Some(ref snap) = snapshot_svc {
-                ks = ks.with_snapshot(Arc::clone(snap), true, true);
-            }
-            let knowledge_svc: Arc<dyn crate::services::KnowledgeStore> = Arc::new(ks);
-            let knowledge_skill = KnowledgeSkill::new(
-                knowledge_svc,
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-            );
-            registry.register_skill(Box::new(knowledge_skill));
-        }
-
-        // Task Skill
-        let task_store: Option<Arc<dyn crate::services::TaskStore>> = self
-            .storage
-            .neo4j
-            .as_ref()
-            .map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
-        let task_skill = TaskSkill::new(
-            Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-            task_store.clone(),
-            queue_arc.as_ref().map(Arc::clone),
-        );
-        registry.register_skill(Box::new(task_skill));
-
-        // Search Skill. The knowledge store gives its prior-knowledge probe
-        // hybrid recall — see `SearchSkill::with_knowledge`.
-        {
-            let mut search =
-                SearchSkill::new(self.storage.telemetry.clone(), self.storage.neo4j.clone());
-            if let Some(neo4j) = &self.storage.neo4j {
-                search = search.with_knowledge(Arc::new(KnowledgeService::new(
-                    neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ))
-                    as Arc<dyn crate::services::KnowledgeStore>);
-            }
-            registry.register_skill(Box::new(search));
-        }
-
-        // Claim Skill — epistemic status for ingested assertions.
-        if let Some(ref neo4j) = self.storage.neo4j {
-            registry.register_skill(Box::new(ClaimSkill::new(
-                neo4j.clone(),
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-                self.storage.telemetry.clone(),
-            )));
-        }
-
-        // Query Skill (generic Neo4j + DuckDB primitives)
-        registry.register_skill(Box::new(QuerySkill::new(
-            self.storage.neo4j.clone(),
-            self.storage.telemetry.clone(),
-        )));
-
-        // HTTP Skill (generic http_request + ApiContext management)
-        registry.register_skill(Box::new(HttpSkill::new(
-            self.storage.neo4j.clone(),
-            Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
-        )));
-
-        // MCP Client Skill — call tools on external MCP servers (:McpServer nodes).
-        registry.register_skill(Box::new(McpClientSkill::new(self.storage.neo4j.clone())));
-
-        // Code Execution Skill (sandboxed Python). Absent SANDBOX_URL the tool
-        // is not registered at all, rather than registered and always failing.
-        if let Some(exec_skill) = ExecSkill::from_env() {
-            registry.register_skill(Box::new(exec_skill));
-        }
-
-        // Media Learning Skill (video/podcast ingestion + watchlist). The
-        // registry copy only supplies tool definitions; execution goes through
-        // the handler copy below, which carries the KnowledgeStore.
-        if let Some(neo4j) = &self.storage.neo4j {
-            registry.register_skill(Box::new(MediaSkill::new(
-                Arc::clone(&media_svc),
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-                neo4j.clone(),
-                None,
-                self.storage.telemetry.clone(),
-            )));
-        }
-
-        // Codebase Skill
-        {
-            let knowledge_store: Option<Arc<dyn crate::services::KnowledgeStore>> =
-                if let Some(neo4j) = &self.storage.neo4j {
-                    Some(Arc::new(KnowledgeService::new(
-                        neo4j.clone(),
-                        Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                    ))
-                        as Arc<dyn crate::services::KnowledgeStore>)
-                } else {
-                    None
-                };
-            let codebase_skill = CodebaseSkill::new(
-                self.codebase.codebase_dir.clone(),
-                self.codebase.workspace_dir.clone(),
-                self.codebase.proposals_dir.clone(),
-                knowledge_store,
-                self.storage.neo4j.clone(),
-            );
-            registry.register_skill(Box::new(codebase_skill));
-        }
-
-        // Git Skill (branch/commit/push/PR — always registered; requires CODEBASE_DIR)
-        registry.register_skill(Box::new(GitSkill::new(self.codebase.codebase_dir.clone())));
-
-        // Model Skill (DuckDB-backed catalog, shares live LLM config Arc)
-        let model_skill = ModelSkill::new(
-            self.llm_config.clone(),
-            self.storage.telemetry.clone(),
-            self.catalog_path.clone(),
-        );
-        registry.register_skill(Box::new(model_skill));
-
-        // Sleep Skill (requires telemetry / DuckDB)
-        if let Some(ref telemetry) = self.storage.telemetry {
-            let sleep_skill = SleepSkill::new(telemetry.clone(), self.storage.dataset_dir.clone());
-            registry.register_skill(Box::new(sleep_skill));
-        }
-
-        // Working Memory Skill
-        if let Some(neo4j) = &self.storage.neo4j {
-            let knowledge_svc2: Arc<dyn crate::services::KnowledgeStore> =
+        // ── Build every skill ONCE ─────────────────────────────────────────
+        // The registry (tools/list) and the handler (tools/call) each hold an
+        // `Arc` of the same instance. They used to be two separately built
+        // lists, kept in step by hand: forgetting one side made a tool
+        // invisible or undispatchable, and the copies had already drifted (the
+        // registry's MediaSkill had no knowledge store, its SchedulerSkill no
+        // tool snapshots). Order matters — dispatch is first-match.
+        let llm: Arc<dyn crate::services::LlmProvider> = Arc::clone(&shared_llm) as _;
+        let local: Arc<dyn crate::services::LlmProvider> = Arc::clone(&local_llm) as _;
+        // One plain knowledge store shared by every skill that reads notes;
+        // KnowledgeSkill gets its own, snapshot-enabled, because consolidation
+        // runs through it and must snapshot first.
+        let knowledge: Option<Arc<dyn crate::services::KnowledgeStore>> =
+            self.storage.neo4j.as_ref().map(|neo4j| {
                 Arc::new(KnowledgeService::new(
                     neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ));
-            let wm_store: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
-            let wm_skill = WorkingMemorySkill::new(
-                wm_store,
-                knowledge_svc2,
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-            )
-            .with_notification_support(Arc::new(neo4j.clone()), self.event_tx.clone());
-            registry.register_skill(Box::new(wm_skill));
-        }
+                    Some(Arc::clone(&local)),
+                )) as _
+            });
 
-        // Agent Skill (queue management)
-        if let Some(ref qs) = queue_arc {
-            registry.register_skill(Box::new(AgentSkill::new(Arc::clone(qs))));
-        }
-
-        // Scheduler Skill
-        if let Some(ref sched) = scheduler_arc {
-            registry.register_skill(Box::new(SchedulerSkill::new(
-                Arc::clone(sched),
-                self.storage.neo4j.clone(),
-            )));
-        }
-
-        // Context Skill (profile management)
-        if let Some(ref cb) = context_builder_arc {
-            registry.register_skill(Box::new(ContextSkill::new(Arc::clone(cb))));
-        }
-
-        // Agent Constructor (needs the self-model in Neo4j + queue for dispatch)
-        if let Some(ref neo4j) = self.storage.neo4j {
-            registry.register_skill(Box::new(ConstructorSkill::new(
-                neo4j.clone(),
-                queue_arc.clone(),
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-                self.storage.telemetry.clone(),
-            )));
-        }
-
-        // WebSocket Skill
-        registry.register_skill(Box::new(WsSkill::new()));
-
-        // Resource Skill
-        let resource_registry = Arc::new(ResourceRegistry::new());
-        registry.register_skill(Box::new(ResourceSkill::new(Arc::clone(&resource_registry))));
-
-        // Agent Runner Skill (`run_agent`) — gated on SUBAGENT_ENABLED (the same
-        // switch that turns on chat `delegate`; sub-agents are the mechanism).
-        // The runner slot is empty until the ChatService (its loop engine) is
-        // created; the tool reports itself unavailable until then.
-        if agent_runner_enabled() {
-            registry.register_skill(Box::new(AgentRunnerSkill::new(Arc::clone(
-                &self.agent_runner,
-            ))));
-        }
-
-        // DynamicSkill — registry clone shares tools_map with the handler original
-        if let Some(ref d) = dynamic_skill {
-            registry.register_skill(Box::new(d.clone_shared()));
-        }
-
-        // Snapshot live tool names for the scheduler audit action.
-        let live_tool_names: Vec<String> = registry.list().iter().map(|t| t.name.clone()).collect();
-        let live_tools_arc: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(live_tool_names));
-
-        // Snapshot each tool's registered `input_schema`, keyed by name, so the
-        // scheduler skill can validate a step's `arguments` against the tool it
-        // calls (deterministic write-boundary check — see services/validation.rs).
-        //
-        // FIRST definition wins, because dispatch is first-match too: a
-        // DynamicTool that reuses a built-in's name never runs, but a
-        // last-wins map validated steps against ITS schema. A 09-07 dynamic
-        // `ingest_api` (spec_url required) made the audit reject the
-        // brain-api-sync schedule's valid `codebase_path` call as broken.
-        let mut tool_schemas: std::collections::HashMap<String, serde_json::Value> =
-            std::collections::HashMap::new();
-        for t in registry.list() {
-            if tool_schemas.contains_key(&t.name) {
-                warn!(tool = %t.name, "Duplicate tool name in registry — only the first definition dispatches; later ones are shadowed");
-                continue;
-            }
-            tool_schemas.insert(t.name.clone(), t.input_schema.clone());
-        }
+        // Filled from the finished registry below; the SchedulerSkill reads them
+        // per call to validate chain steps against the tools that exist.
+        let live_tools_arc: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
         let tool_schemas_arc: Arc<RwLock<std::collections::HashMap<String, serde_json::Value>>> =
-            Arc::new(RwLock::new(tool_schemas));
-
+            Arc::new(RwLock::new(std::collections::HashMap::new()));
         // Object-envelope JSON Schemas from the `schemas/` seed dir (SCHEMAS_DIR,
         // default ./schemas). Loaded once; a missing dir or bad file degrades to
         // no envelope validation (the per-step arg gate still runs). See
@@ -838,185 +635,189 @@ impl BrainCore {
                 std::path::Path::new(&schemas_dir),
             ));
 
-        drop(registry);
-
-        // ── Build the ToolHandler skill list ──────────────────────────────
-        // Re-creates non-dynamic skills; the DynamicSkill *original* goes here
-        // so it holds the live tools_map that the registry clone already references.
-
-        let mut skills: Vec<Box<dyn Skill>> = Vec::new();
+        let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
 
         if let Some(neo4j) = &self.storage.neo4j {
-            let mut ks3 = KnowledgeService::new(
-                neo4j.clone(),
-                Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-            );
+            let mut ks = KnowledgeService::new(neo4j.clone(), Some(Arc::clone(&local)));
             if let Some(ref snap) = snapshot_svc {
-                ks3 = ks3.with_snapshot(Arc::clone(snap), true, true);
+                ks = ks.with_snapshot(Arc::clone(snap), true, true);
             }
-            let knowledge_svc3: Arc<dyn crate::services::KnowledgeStore> = Arc::new(ks3);
-            skills.push(Box::new(KnowledgeSkill::new(
-                knowledge_svc3,
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            skills.push(Arc::new(KnowledgeSkill::new(
+                Arc::new(ks),
+                Arc::clone(&llm),
             )));
         }
 
-        skills.push(Box::new(TaskSkill::new(
-            Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+        let task_store: Option<Arc<dyn crate::services::TaskStore>> = self
+            .storage
+            .neo4j
+            .as_ref()
+            .map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
+        skills.push(Arc::new(TaskSkill::new(
+            Arc::clone(&llm),
             task_store,
-            queue_arc.as_ref().map(Arc::clone),
+            queue_arc.clone(),
         )));
 
-        {
-            let mut search =
-                SearchSkill::new(self.storage.telemetry.clone(), self.storage.neo4j.clone());
-            if let Some(neo4j) = &self.storage.neo4j {
-                search = search.with_knowledge(Arc::new(KnowledgeService::new(
-                    neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ))
-                    as Arc<dyn crate::services::KnowledgeStore>);
-            }
-            skills.push(Box::new(search));
+        // The knowledge store gives search_web's prior-knowledge probe hybrid
+        // recall — see `SearchSkill::with_knowledge`.
+        let mut search =
+            SearchSkill::new(self.storage.telemetry.clone(), self.storage.neo4j.clone());
+        if let Some(k) = &knowledge {
+            search = search.with_knowledge(Arc::clone(k));
         }
+        skills.push(Arc::new(search));
 
-        if let Some(ref neo4j) = self.storage.neo4j {
-            skills.push(Box::new(ClaimSkill::new(
+        // Claims — epistemic status for ingested assertions.
+        if let Some(neo4j) = &self.storage.neo4j {
+            skills.push(Arc::new(ClaimSkill::new(
                 neo4j.clone(),
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                Arc::clone(&llm),
                 self.storage.telemetry.clone(),
             )));
         }
 
-        skills.push(Box::new(QuerySkill::new(
+        // Generic Neo4j + DuckDB primitives.
+        skills.push(Arc::new(QuerySkill::new(
             self.storage.neo4j.clone(),
             self.storage.telemetry.clone(),
         )));
-
-        skills.push(Box::new(HttpSkill::new(
+        // http_request + ApiContext management.
+        skills.push(Arc::new(HttpSkill::new(
             self.storage.neo4j.clone(),
-            Some(Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>),
+            Some(Arc::clone(&llm)),
         )));
-
-        // MCP Client Skill (handler copy).
-        skills.push(Box::new(McpClientSkill::new(self.storage.neo4j.clone())));
-
+        // Tools on external MCP servers (:McpServer nodes).
+        skills.push(Arc::new(McpClientSkill::new(self.storage.neo4j.clone())));
+        // Sandboxed code execution. Absent SANDBOX_URL the tool is not
+        // registered at all, rather than registered and always failing.
         if let Some(exec_skill) = ExecSkill::from_env() {
-            skills.push(Box::new(exec_skill));
+            skills.push(Arc::new(exec_skill));
         }
 
-        // Media Learning Skill (handler copy — carries the KnowledgeStore used
-        // by the ingest_media store=true path).
+        // Video/podcast ingestion + watchlist (yt-dlp captions, map-reduce
+        // summarization inside the tool).
         if let Some(neo4j) = &self.storage.neo4j {
-            let media_knowledge: Arc<dyn crate::services::KnowledgeStore> =
-                Arc::new(KnowledgeService::new(
-                    neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ));
-            skills.push(Box::new(MediaSkill::new(
-                Arc::clone(&media_svc),
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+            skills.push(Arc::new(MediaSkill::new(
+                Arc::new(MediaService::from_env()),
+                Arc::clone(&llm),
                 neo4j.clone(),
-                Some(media_knowledge),
+                knowledge.clone(),
                 self.storage.telemetry.clone(),
             )));
         }
 
-        {
-            let knowledge_store2: Option<Arc<dyn crate::services::KnowledgeStore>> =
-                if let Some(neo4j) = &self.storage.neo4j {
-                    Some(Arc::new(KnowledgeService::new(
-                        neo4j.clone(),
-                        Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                    ))
-                        as Arc<dyn crate::services::KnowledgeStore>)
-                } else {
-                    None
-                };
-            skills.push(Box::new(CodebaseSkill::new(
-                self.codebase.codebase_dir.clone(),
-                self.codebase.workspace_dir.clone(),
-                self.codebase.proposals_dir.clone(),
-                knowledge_store2,
-                self.storage.neo4j.clone(),
-            )));
-        }
-
-        skills.push(Box::new(GitSkill::new(self.codebase.codebase_dir.clone())));
-
-        skills.push(Box::new(ModelSkill::new(
+        skills.push(Arc::new(CodebaseSkill::new(
+            self.codebase.codebase_dir.clone(),
+            self.codebase.workspace_dir.clone(),
+            self.codebase.proposals_dir.clone(),
+            knowledge.clone(),
+            self.storage.neo4j.clone(),
+        )));
+        // Branch/commit/push/PR — always registered; requires CODEBASE_DIR.
+        skills.push(Arc::new(GitSkill::new(self.codebase.codebase_dir.clone())));
+        // DuckDB-backed model catalog; shares the live LLM config.
+        skills.push(Arc::new(ModelSkill::new(
             self.llm_config.clone(),
             self.storage.telemetry.clone(),
             self.catalog_path.clone(),
         )));
-
-        if let Some(ref telemetry) = self.storage.telemetry {
-            skills.push(Box::new(SleepSkill::new(
+        if let Some(telemetry) = &self.storage.telemetry {
+            skills.push(Arc::new(SleepSkill::new(
                 telemetry.clone(),
                 self.storage.dataset_dir.clone(),
             )));
         }
 
-        if let Some(neo4j) = &self.storage.neo4j {
-            let knowledge_svc4: Arc<dyn crate::services::KnowledgeStore> =
-                Arc::new(KnowledgeService::new(
-                    neo4j.clone(),
-                    Some(Arc::clone(&local_llm) as Arc<dyn crate::services::LlmProvider>),
-                ));
-            let wm_store2: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
-            skills.push(Box::new(
-                WorkingMemorySkill::new(
-                    wm_store2,
-                    knowledge_svc4,
-                    Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
-                )
-                .with_notification_support(Arc::new(neo4j.clone()), self.event_tx.clone()),
+        if let (Some(neo4j), Some(k)) = (&self.storage.neo4j, &knowledge) {
+            let wm_store: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
+            skills.push(Arc::new(
+                WorkingMemorySkill::new(wm_store, Arc::clone(k), Arc::clone(&llm))
+                    .with_notification_support(Arc::new(neo4j.clone()), self.event_tx.clone()),
             ));
         }
 
-        if let Some(ref qs) = queue_arc {
-            skills.push(Box::new(AgentSkill::new(Arc::clone(qs))));
+        if let Some(qs) = &queue_arc {
+            skills.push(Arc::new(AgentSkill::new(Arc::clone(qs))));
         }
-
-        if let Some(ref sched) = scheduler_arc {
-            skills.push(Box::new(
+        if let Some(sched) = &scheduler_arc {
+            skills.push(Arc::new(
                 SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())
                     .with_live_tools(Arc::clone(&live_tools_arc))
                     .with_tool_schemas(Arc::clone(&tool_schemas_arc))
                     .with_envelope_schemas(Arc::clone(&envelope_schemas_arc)),
             ));
         }
-
-        if let Some(ref cb) = context_builder_arc {
-            skills.push(Box::new(ContextSkill::new(Arc::clone(cb))));
+        if let Some(cb) = &context_builder_arc {
+            skills.push(Arc::new(ContextSkill::new(Arc::clone(cb))));
         }
-
-        if let Some(ref neo4j) = self.storage.neo4j {
-            skills.push(Box::new(ConstructorSkill::new(
+        // Agent Constructor (needs the self-model in Neo4j + queue for dispatch).
+        if let Some(neo4j) = &self.storage.neo4j {
+            skills.push(Arc::new(ConstructorSkill::new(
                 neo4j.clone(),
                 queue_arc.clone(),
-                Arc::clone(&shared_llm) as Arc<dyn crate::services::LlmProvider>,
+                Arc::clone(&llm),
                 self.storage.telemetry.clone(),
             )));
         }
 
-        skills.push(Box::new(WsSkill::new()));
-        skills.push(Box::new(ResourceSkill::new(Arc::clone(&resource_registry))));
+        #[cfg(feature = "websocket")]
+        skills.push(Arc::new(WsSkill::new()));
+        skills.push(Arc::new(ResourceSkill::new(Arc::new(
+            ResourceRegistry::new(),
+        ))));
 
-        // Agent Runner Skill (`run_agent`) — see the registry registration above.
+        // `run_agent` — gated on SUBAGENT_ENABLED (the same switch that turns on
+        // chat `delegate`; sub-agents are the mechanism). The runner slot is
+        // empty until the ChatService (its loop engine) is created; the tool
+        // reports itself unavailable until then.
         if agent_runner_enabled() {
-            skills.push(Box::new(AgentRunnerSkill::new(Arc::clone(
+            skills.push(Arc::new(AgentRunnerSkill::new(Arc::clone(
                 &self.agent_runner,
             ))));
         }
 
-        // Original DynamicSkill goes to the handler (shares tools_map with registry clone).
+        // Runtime-defined tools last: a DynamicTool can never shadow a built-in.
         if let Some(d) = dynamic_skill {
-            skills.push(Box::new(d));
+            skills.push(Arc::new(d));
         }
 
+        // ── Registry (tools/list) ─────────────────────────────────────────
+        let mut registry = self.tool_registry.write().await;
+        // Cleared so a reload re-registers rather than duplicating.
+        registry.clear();
+        for skill in &skills {
+            registry.register_skill(Box::new(Arc::clone(skill)));
+        }
+
+        // Snapshot each tool's `input_schema`, keyed by name, for the scheduler's
+        // step validation (services/validation.rs). FIRST definition wins,
+        // because dispatch is first-match too: a DynamicTool reusing a
+        // built-in's name never runs, but a last-wins map validated steps
+        // against ITS schema — a 09-07 dynamic `ingest_api` (spec_url required)
+        // made the audit reject the brain-api-sync schedule's valid call.
+        let mut tool_schemas = std::collections::HashMap::new();
+        let mut live_tool_names = Vec::new();
+        for t in registry.list() {
+            live_tool_names.push(t.name.clone());
+            if tool_schemas.contains_key(&t.name) {
+                warn!(tool = %t.name, "Duplicate tool name in registry — only the first definition dispatches; later ones are shadowed");
+                continue;
+            }
+            tool_schemas.insert(t.name.clone(), t.input_schema.clone());
+        }
+        drop(registry);
+        *live_tools_arc.write().await = live_tool_names;
+        *tool_schemas_arc.write().await = tool_schemas;
+
+        // ── Handler (tools/call) ──────────────────────────────────────────
         let mut handler = self.tool_handler.write().await;
-        let mut tool_handler = ToolHandler::new(skills);
+        let mut tool_handler = ToolHandler::new(
+            skills
+                .iter()
+                .map(|s| Box::new(Arc::clone(s)) as Box<dyn Skill>)
+                .collect(),
+        );
         if let Some(ref tel) = self.storage.telemetry {
             tool_handler = tool_handler.with_telemetry(tel.clone());
         }
@@ -1388,4 +1189,87 @@ pub(crate) fn filter_tools_by_names(
     all.into_iter()
         .filter(|t| allowed.contains(t.name.as_str()))
         .collect()
+}
+
+#[cfg(test)]
+mod build_skills_tests {
+    use super::*;
+
+    fn text(r: &ToolCallResult) -> String {
+        r.content
+            .iter()
+            .filter_map(|c| match c {
+                agent_brain_protocol::Content::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every skill is built once and shared by the registry and the handler,
+    /// so what `tools/list` advertises is what `tools/call` can dispatch.
+    #[tokio::test]
+    async fn listed_tools_are_dispatchable_without_neo4j() {
+        let core = BrainCore::new();
+        core.build_skills().await;
+
+        let names: Vec<String> = core
+            .tool_registry
+            .read()
+            .await
+            .list()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        for expected in [
+            "neo4j_query",
+            "http_request",
+            "search_web",
+            "list_capabilities",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} missing: {names:?}"
+            );
+        }
+
+        let handler = core.tool_handler.read().await;
+        let handler = handler.as_ref().expect("handler installed");
+        // Dispatched to QuerySkill, which reports the missing database —
+        // not the handler's "Unknown tool".
+        let reached = handler
+            .execute(
+                "neo4j_query",
+                Some(serde_json::json!({"cypher": "RETURN 1"})),
+            )
+            .await;
+        assert!(
+            !text(&reached).contains("Unknown tool"),
+            "{}",
+            text(&reached)
+        );
+        let unknown = handler.execute("no_such_tool", None).await;
+        assert!(text(&unknown).contains("Unknown tool"));
+    }
+
+    /// Rebuilding (a `use_model` reload) replaces the registry, not appends.
+    /// Asserted as "no name twice" rather than an equal count: one skill is
+    /// gated on SUBAGENT_ENABLED, which other tests in this process toggle.
+    #[tokio::test]
+    async fn rebuilding_does_not_duplicate_tools() {
+        let core = BrainCore::new();
+        core.build_skills().await;
+        core.build_skills().await;
+        let mut names: Vec<String> = core
+            .tool_registry
+            .read()
+            .await
+            .list()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        let total = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), total, "a rebuild duplicated tools");
+    }
 }

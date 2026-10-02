@@ -1,6 +1,241 @@
-//! Anthropic native tool_use loop.
+//! Anthropic wire format: `/v1/messages` with native `tool_use` /
+//! `tool_result` content blocks (non-streaming).
 
 use super::*;
+
+struct AnthropicTurn {
+    url: String,
+    api_key: String,
+    config: LlmConfig,
+    provider_label: String,
+    client: reqwest::Client,
+    system_prompt: String,
+    tools: Vec<Value>,
+    messages: Vec<Value>,
+    /// The content blocks of the last reply, echoed back verbatim (thinking
+    /// blocks included) in the assistant turn.
+    last_blocks: Vec<Value>,
+}
+
+impl AnthropicTurn {
+    fn new(
+        config: LlmConfig,
+        tools: &[agent_brain_protocol::ToolDefinition],
+        request: &ChatRequest,
+        system_prompt: String,
+    ) -> Result<Self, String> {
+        let api_key = config
+            .api_key
+            .clone()
+            .ok_or_else(|| "Anthropic API key not set in LLM config.".to_string())?;
+        let base_url = config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com");
+        let mut messages: Vec<Value> = request
+            .history
+            .iter()
+            .map(|h| json!({ "role": h.role, "content": h.content }))
+            .collect();
+        messages.push(json!({ "role": "user", "content": request.message }));
+        Ok(Self {
+            url: format!("{base_url}/v1/messages"),
+            api_key,
+            provider_label: config.provider_label(),
+            client: reqwest::Client::new(),
+            system_prompt,
+            tools: tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    })
+                })
+                .collect(),
+            messages,
+            last_blocks: Vec::new(),
+            config,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderTurn for AnthropicTurn {
+    fn label(&self) -> &'static str {
+        "Anthropic"
+    }
+
+    fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    async fn call(
+        &mut self,
+        svc: &ChatService,
+        offer_tools: bool,
+        _stream_to: Option<&mpsc::Sender<ChatEvent>>,
+    ) -> Result<RoundReply, String> {
+        let model = self.config.model.clone();
+        let mut body = json!({
+            "model": model,
+            "max_tokens": 4096,
+            "system": self.system_prompt,
+            "tools": self.tools,
+            "messages": self.messages,
+        });
+        // The wrap-up round keeps `tools` defined — the history holds tool_use
+        // blocks — and forbids using them instead.
+        if !offer_tools {
+            body["tool_choice"] = json!({ "type": "none" });
+        }
+
+        // One provider concurrency slot for this request only
+        // (services/provider_gate.rs), dropped before any tool runs.
+        let gate_permit = crate::services::provider_gate::acquire(&self.provider_label).await;
+        let call_start = std::time::Instant::now();
+        let response = match self
+            .client
+            .post(&self.url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .timeout(self.config.timeout)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                svc.record_llm_call(
+                    &self.provider_label,
+                    &model,
+                    false,
+                    call_start.elapsed().as_millis() as i64,
+                    None,
+                    None,
+                    Some(&e.to_string()),
+                );
+                return Err(format!("Anthropic request failed: {e}"));
+            }
+        };
+
+        let resp_json: Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse Anthropic response: {e}"))?;
+
+        if resp_json["type"].as_str() == Some("error") {
+            let msg = resp_json["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown Anthropic error")
+                .to_string();
+            let rate_limited = msg.contains("rate") || msg.contains("429");
+            let tool_label = usage_tool_label();
+            crate::services::budget::record_call(
+                svc.telemetry.as_ref(),
+                &self.provider_label,
+                &model,
+                Some(tool_label.as_str()),
+                false,
+                Some(call_start.elapsed().as_millis() as i64),
+                None,
+                None,
+                rate_limited.then_some("rate_limited"),
+                Some(msg.as_str()),
+            );
+            return Err(msg);
+        }
+
+        drop(gate_permit);
+        svc.record_llm_call(
+            &self.provider_label,
+            &model,
+            true,
+            call_start.elapsed().as_millis() as i64,
+            resp_json["usage"]["input_tokens"].as_i64(),
+            resp_json["usage"]["output_tokens"].as_i64(),
+            None,
+        );
+
+        let blocks = resp_json["content"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "No content in Anthropic response".to_string())?;
+        let end_turn = resp_json["stop_reason"].as_str() == Some("end_turn");
+
+        let mut text = String::new();
+        let mut calls = Vec::new();
+        for block in &blocks {
+            match block["type"].as_str() {
+                Some("text") => text.push_str(block["text"].as_str().unwrap_or("")),
+                // A tool_use block on an `end_turn` reply is not a request to
+                // run anything.
+                Some("tool_use") if !end_turn => calls.push(ToolCallReq {
+                    id: block["id"].as_str().unwrap_or("").to_string(),
+                    name: block["name"].as_str().unwrap_or("").to_string(),
+                    args: block["input"].clone(),
+                }),
+                _ => {}
+            }
+        }
+        self.last_blocks = blocks;
+
+        Ok(RoundReply {
+            text,
+            calls,
+            malformed: None,
+        })
+    }
+
+    fn push_user(&mut self, text: String) {
+        // Fold into a trailing user turn (the tool_result turn, on the wrap-up
+        // round) rather than sending two user turns in a row.
+        if let Some(last) = self.messages.last_mut()
+            && last["role"] == "user"
+        {
+            let block = json!({ "type": "text", "text": text });
+            match last["content"].take() {
+                Value::Array(mut blocks) => {
+                    blocks.push(block);
+                    last["content"] = Value::Array(blocks);
+                }
+                Value::String(s) => {
+                    last["content"] = json!([{ "type": "text", "text": s }, block]);
+                }
+                _ => last["content"] = json!([block]),
+            }
+            return;
+        }
+        self.messages
+            .push(json!({ "role": "user", "content": text }));
+    }
+
+    fn push_assistant(&mut self, _reply: &RoundReply) {
+        self.messages.push(json!({
+            "role": "assistant",
+            "content": std::mem::take(&mut self.last_blocks),
+        }));
+    }
+
+    fn push_tool_results(&mut self, results: Vec<ToolOutcome>) {
+        // Every tool_result goes back in ONE user turn.
+        let blocks: Vec<Value> = results
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "type": "tool_result",
+                    "tool_use_id": r.id,
+                    "content": r.model_text,
+                    "is_error": !r.success,
+                })
+            })
+            .collect();
+        self.messages
+            .push(json!({ "role": "user", "content": blocks }));
+    }
+}
 
 impl ChatService {
     #[allow(clippy::too_many_arguments)]
@@ -15,305 +250,80 @@ impl ChatService {
         allow_delegate: bool,
         max_iterations: usize,
     ) {
-        let api_key = match &config.api_key {
-            Some(k) => k.clone(),
-            None => {
-                let _ = tx
-                    .send(ChatEvent::Error {
-                        message: "Anthropic API key not set in LLM config.".into(),
-                    })
-                    .await;
+        let turn = match AnthropicTurn::new(config, &tools, &request, system_prompt) {
+            Ok(t) => t,
+            Err(message) => {
+                let _ = tx.send(ChatEvent::Error { message }).await;
                 let _ = tx.send(ChatEvent::Done).await;
                 return;
             }
         };
+        self.run_round_loop(
+            turn,
+            &tools,
+            handler,
+            &request,
+            tx,
+            allow_delegate,
+            max_iterations,
+        )
+        .await;
+    }
+}
 
-        let model = config.model.clone();
+#[cfg(test)]
+mod anthropic_turn_tests {
+    use super::*;
+    use crate::clients::chat::test_support::test_request;
 
-        let provider_label = config.provider_label();
-
-        // Build Anthropic tools array.
-        let anthropic_tools: Vec<Value> = tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.input_schema,
-                })
-            })
-            .collect();
-
-        // Build initial messages array.
-        let mut messages: Vec<Value> = request
-            .history
-            .iter()
-            .map(|h| json!({ "role": h.role, "content": h.content }))
-            .collect();
-        messages.push(json!({ "role": "user", "content": request.message }));
-
-        let client = reqwest::Client::new();
-        let base_url = config
-            .base_url
-            .as_deref()
-            .unwrap_or("https://api.anthropic.com");
-
-        let mut empty_completions = 0usize;
-
-        // One guard per turn: grounding state and duplicate fingerprints are
-        // per-turn, and the ladder may run this loop once per rung.
-        let mut write_guard = TurnWriteGuard::default();
-
-        for _iteration in 0..max_iterations {
-            let body = json!({
-                "model": model,
-                "max_tokens": 4096,
-                "system": system_prompt,
-                "tools": anthropic_tools,
-                "messages": messages,
-            });
-
-            // One provider concurrency slot for this request only (services/provider_gate.rs):
-
-            // taken before the clock starts so a wait is not billed as call time, and
-
-            // dropped once the response is read, before any tool runs.
-
-            let gate_permit = crate::services::provider_gate::acquire(&provider_label).await;
-
-            let call_start = std::time::Instant::now();
-            let response = match client
-                .post(format!("{}/v1/messages", base_url))
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&body)
-                .timeout(config.timeout)
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    self.record_llm_call(
-                        &provider_label,
-                        &model,
-                        false,
-                        call_start.elapsed().as_millis() as i64,
-                        None,
-                        None,
-                        Some(&e.to_string()),
-                    );
-                    let _ = tx
-                        .send(ChatEvent::Error {
-                            message: format!("Anthropic request failed: {e}"),
-                        })
-                        .await;
-                    let _ = tx.send(ChatEvent::Done).await;
-                    return;
-                }
-            };
-
-            let resp_json: Value = match response.json().await {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = tx
-                        .send(ChatEvent::Error {
-                            message: format!("Failed to parse Anthropic response: {e}"),
-                        })
-                        .await;
-                    let _ = tx.send(ChatEvent::Done).await;
-                    return;
-                }
-            };
-
-            // Check for API-level error.
-            if let Some(err_type) = resp_json.get("type").and_then(|v| v.as_str())
-                && err_type == "error"
-            {
-                let msg = resp_json["error"]["message"]
-                    .as_str()
-                    .unwrap_or("Unknown Anthropic error")
-                    .to_string();
-                let rate_limited = msg.contains("rate") || msg.contains("429");
-                let label = usage_tool_label();
-                crate::services::budget::record_call(
-                    self.telemetry.as_ref(),
-                    &provider_label,
-                    &model,
-                    Some(label.as_str()),
-                    false,
-                    Some(call_start.elapsed().as_millis() as i64),
-                    None,
-                    None,
-                    rate_limited.then_some("rate_limited"),
-                    Some(msg.as_str()),
-                );
-                let _ = tx.send(ChatEvent::Error { message: msg }).await;
-                let _ = tx.send(ChatEvent::Done).await;
-                return;
-            }
-
-            // The response is fully read: free the provider slot before tools run. A
-
-            // delegated sub-agent on this same provider would otherwise wait on it.
-
-            drop(gate_permit);
-
-            self.record_llm_call(
-                &provider_label,
-                &model,
-                true,
-                call_start.elapsed().as_millis() as i64,
-                resp_json["usage"]["input_tokens"].as_i64(),
-                resp_json["usage"]["output_tokens"].as_i64(),
-                None,
-            );
-
-            let stop_reason = resp_json["stop_reason"].as_str().unwrap_or("").to_string();
-            let content_blocks = match resp_json["content"].as_array() {
-                Some(arr) => arr.clone(),
-                None => {
-                    let _ = tx
-                        .send(ChatEvent::Error {
-                            message: "No content in Anthropic response".into(),
-                        })
-                        .await;
-                    let _ = tx.send(ChatEvent::Done).await;
-                    return;
-                }
-            };
-
-            // Collect tool-use blocks and text blocks.
-            let mut tool_use_blocks: Vec<Value> = Vec::new();
-            let mut final_text = String::new();
-
-            for block in &content_blocks {
-                match block["type"].as_str() {
-                    Some("text") => {
-                        let text = block["text"].as_str().unwrap_or("").to_string();
-                        if !text.is_empty() {
-                            if stop_reason == "tool_use" {
-                                let _ = tx.send(ChatEvent::Thinking { content: text }).await;
-                            } else {
-                                final_text.push_str(&text);
-                            }
-                        }
-                    }
-                    Some("tool_use") => {
-                        tool_use_blocks.push(block.clone());
-                    }
-                    _ => {}
-                }
-            }
-
-            if stop_reason == "end_turn" || tool_use_blocks.is_empty() {
-                // Nothing at all came back: no text and no tool use. Same failure
-                // as the other loops — retry rather than exit silently.
-                // See MAX_EMPTY_COMPLETION_RETRIES.
-                if final_text.is_empty() && tool_use_blocks.is_empty() {
-                    if empty_completions < MAX_EMPTY_COMPLETION_RETRIES {
-                        empty_completions += 1;
-                        warn!(
-                            model = %model,
-                            stop_reason = %stop_reason,
-                            attempt = empty_completions,
-                            "Anthropic returned an empty completion — retrying"
-                        );
-                        continue;
-                    }
-                    warn!(
-                        model = %model,
-                        attempts = empty_completions + 1,
-                        "Anthropic returned an empty completion on every attempt — giving up"
-                    );
-                    let _ = tx
-                        .send(ChatEvent::Error {
-                            message: EMPTY_COMPLETION_MESSAGE.into(),
-                        })
-                        .await;
-                    let _ = tx.send(ChatEvent::Done).await;
-                    return;
-                }
-
-                // Emit the final message.
-                if !final_text.is_empty() {
-                    let _ = tx
-                        .send(ChatEvent::Message {
-                            content: final_text,
-                        })
-                        .await;
-                }
-                break;
-            }
-
-            // Append assistant turn to messages.
-            messages.push(json!({ "role": "assistant", "content": content_blocks }));
-
-            // Execute each tool call and build the user tool_result turn.
-            let mut tool_results: Vec<Value> = Vec::new();
-            for tool_block in &tool_use_blocks {
-                let tool_name = tool_block["name"].as_str().unwrap_or("").to_string();
-                let tool_id = tool_block["id"].as_str().unwrap_or("").to_string();
-                let tool_input = tool_block["input"].clone();
-
-                let _ = tx
-                    .send(ChatEvent::ToolCall {
-                        tool: tool_name.clone(),
-                        args: tool_input.clone(),
-                    })
-                    .await;
-
-                let (success, result_text, bulk) = self
-                    .dispatch_tool_call(
-                        allow_delegate,
-                        &handler,
-                        &mut write_guard,
-                        &tool_name,
-                        &tool_input,
-                        &tx,
-                    )
-                    .await;
-
-                let preview: String =
-                    prepare_tool_result(&tool_name, &result_text, MAX_TOOL_RESULT_CHARS);
-                // The person's copy carries the bulk; the model's `preview`
-                // below never does.
-                let user_copy = user_facing_result(&preview, bulk.as_deref());
-                let model_saw = (preview.chars().count() < user_copy.chars().count())
-                    .then(|| preview.chars().count());
-                let _ = tx
-                    .send(ChatEvent::ToolResult {
-                        tool: tool_name.clone(),
-                        success,
-                        preview: user_copy,
-                        model_saw_chars: model_saw,
-                    })
-                    .await;
-
-                tool_results.push(json!({
-                    "type": "tool_result",
-                    "tool_use_id": tool_id,
-                    "content": preview,
-                    "is_error": !success,
-                }));
-            }
-
-            // Append tool results as a user message.
-            messages.push(json!({ "role": "user", "content": tool_results }));
-        }
-
-        let _ = tx.send(ChatEvent::Done).await;
+    fn turn() -> AnthropicTurn {
+        let config = LlmConfig {
+            provider: LlmProviderType::Anthropic,
+            api_key: Some("k".into()),
+            ..Default::default()
+        };
+        AnthropicTurn::new(config, &[], &test_request(), "sys".into()).unwrap()
     }
 
-    // ========================================================================
-    // Ollama native tool-use loop
-    // ========================================================================
-    //
-    // Uses Ollama's /api/chat endpoint with the `tools` field (OpenAI-compatible
-    // function-calling format), rather than injecting tool descriptions into the
-    // system prompt and hoping the model emits a magic XML tag.
-    //
-    // Ollama response when a tool is called:
-    //   message.tool_calls = [{ function: { name, arguments: {…} } }]
-    // When no tool is called the message has normal `content` text.
+    /// The wrap-up nudge follows a tool_result turn; it must join that turn as
+    /// a text block, not open a second user turn in a row.
+    #[test]
+    fn a_nudge_after_tool_results_joins_the_same_user_turn() {
+        let mut t = turn();
+        t.last_blocks = vec![json!({"type": "tool_use", "id": "u1", "name": "x", "input": {}})];
+        t.push_assistant(&RoundReply::default());
+        t.push_tool_results(vec![ToolOutcome {
+            id: "u1".into(),
+            name: "x".into(),
+            success: true,
+            model_text: "result".into(),
+        }]);
+        t.push_user("wrap up".into());
+
+        let roles: Vec<&str> = t
+            .messages
+            .iter()
+            .filter_map(|m| m["role"].as_str())
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"]);
+        let last = t.messages.last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(last[0]["type"], "tool_result");
+        assert_eq!(last[1], json!({"type": "text", "text": "wrap up"}));
+    }
+
+    #[test]
+    fn a_missing_api_key_is_reported_not_sent() {
+        let config = LlmConfig {
+            provider: LlmProviderType::Anthropic,
+            api_key: None,
+            ..Default::default()
+        };
+        let err = AnthropicTurn::new(config, &[], &test_request(), "sys".into())
+            .err()
+            .unwrap();
+        assert!(err.contains("API key"), "{err}");
+    }
 }

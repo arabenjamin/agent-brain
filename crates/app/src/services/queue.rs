@@ -51,6 +51,7 @@ tokio::task_local! {
 }
 
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, broadcast};
 use tracing::{debug, error, info, warn};
 
@@ -1374,96 +1375,9 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
             return;
         };
 
-        // Resolve {{_prev}} / {{result}} in arguments if the job carries a prior step result.
-        // {{result}} is treated as an alias for {{_prev}} — brain-generated chains often use
-        // the more natural name.
-        //
-        // Two forms, resolved in order of specificity:
-        //   {{_prev.id}}  — a path into the previous output parsed as JSON
-        //   {{_prev}}     — the previous output pasted whole
-        // The two can never collide: "{{_prev}}" is not a substring of
-        // "{{_prev.id}}" (the char after `_prev` is `.`, not `}`).
-        let resolved_args = match &job.prev_result {
-            Some(prev_text) => {
-                let (wants_whole, wants_path) = job
-                    .arguments
-                    .as_ref()
-                    .map(|a| {
-                        let s = a.to_string();
-                        (
-                            s.contains("{{_prev}}") || s.contains("{{result}}"),
-                            s.contains("{{_prev.") || s.contains("{{result."),
-                        )
-                    })
-                    .unwrap_or((false, false));
-
-                let mut args = job.arguments.clone();
-
-                // Paths first, and always against the structured envelope, never
-                // the extracted text: `{{_prev}}` is the *unwrapped* result (the
-                // note body), so the sibling fields a path wants — `id` above all
-                // — exist only in `prev_result_raw`. Distillation is skipped here
-                // too, since it rewrites prose and would destroy the structure.
-                if wants_path {
-                    let root = job.prev_result_raw.as_deref().unwrap_or(prev_text);
-                    args = args.map(|a| substitute_prev_paths(&a, root));
-                }
-
-                // Distilled handoff: when the step opted in, compress the upstream
-                // output down to what this step needs before it lands in the prompt.
-                // Returns None (use the raw text) whenever distillation is off, the
-                // payload is already small, or the compression call fails.
-                if wants_whole {
-                    let distilled = self.maybe_distill_prev(&job, prev_text).await;
-                    let effective_prev = distilled.as_deref().unwrap_or(prev_text.as_str());
-                    args = args.map(|a| substitute_prev(&a, effective_prev));
-                }
-
-                args
-            }
-            None => job.arguments.clone(),
-        };
-
-        // The work's route context: a queued step is background work, private
-        // unless the step (or its chain/schedule file) declared `data_class:
-        // public`. Scoped around the tool call below so every LLM call it makes —
-        // capability-selected or not — is judged by the routing policy.
-        let route_ctx = crate::services::routing::RouteContext::new(
-            crate::services::routing::Purpose::Background,
-            job.arguments
-                .as_ref()
-                .and_then(|a| a.get("__data_class"))
-                .and_then(|v| v.as_str())
-                .map(crate::services::routing::DataClass::parse_or_private)
-                .unwrap_or_default(),
-        );
-
-        // Per-step model routing: when the step declared required_capabilities,
-        // resolve a model the routing policy admits for this work. Falls back to
-        // normal routing (None) when nothing qualifies or telemetry is unavailable.
-        let selected_llm: Option<crate::services::LlmConfig> = job
-            .arguments
-            .as_ref()
-            .and_then(|a| a.get("__required_capabilities"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|c| c.as_str().map(String::from))
-                    .collect::<Vec<String>>()
-            })
-            .filter(|caps| !caps.is_empty())
-            .and_then(|caps| {
-                handler.telemetry().and_then(|tc| {
-                    // Base config only contributes timeout/temperature defaults;
-                    // provider, model, URL, and key are set by the router.
-                    crate::services::model_router::resolve_model_config(
-                        tc,
-                        &caps,
-                        &crate::services::LlmConfig::default(),
-                        route_ctx,
-                    )
-                })
-            });
+        let resolved_args = self.resolve_step_args(&job).await;
+        let route_ctx = route_context_for(&job);
+        let selected_llm = select_step_model(&job, handler, route_ctx);
 
         // Run the tool call inside task-local scopes so `SharedLlm` can route:
         // SELECTED_LLM (capability-resolved) takes precedence over USE_LOCAL_LLM
@@ -1488,385 +1402,359 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         // Drop the read lock before any awaits below.
         drop(handler_guard);
 
-        let is_error = result.is_error.unwrap_or(false);
-        let result_json = serde_json::to_string(&result).unwrap_or_default();
-
-        // Extract plain text from the result to pass to child steps via {{_prev}}.
-        let result_text = extract_result_text(&result);
-
-        if !is_error {
-            match self.neo4j.set_job_completed(&job.id, &result_json).await {
-                Err(e) => {
-                    error!(job_id = %job.id, "Failed to store completed result: {}", e);
-                }
-                Ok(false) => {
-                    // The job was cancelled while executing: set_job_completed's
-                    // status='running' guard matched nothing. Do NOT unpark chain children
-                    // or emit a completion event for a job the user cancelled.
-                    info!(job_id = %job.id, "Job cancelled during execution — chain children not promoted");
-                }
-                Ok(true) => {
-                    info!(job_id = %job.id, "AgentJob completed");
-
-                    // Evaluator step: parse score and re-queue the parent task if below threshold.
-                    // When score fails, cancel parked children (e.g. update_task) so the task is
-                    // not prematurely marked completed — the retry task created by
-                    // handle_evaluator_requeue will drive the next attempt.
-                    let evaluator_blocked = if let Some(min_score) = job
-                        .arguments
-                        .as_ref()
-                        .and_then(|a| a.get("__evaluator_min_score"))
-                        .and_then(|v| v.as_f64())
-                    {
-                        let task_id = job
-                            .arguments
-                            .as_ref()
-                            .and_then(|a| a.get("__evaluator_task_id"))
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-
-                        match parse_evaluator_score(&result_text) {
-                            None => {
-                                // No parseable score or verdict keyword. Treating this as a
-                                // failing 3.0 (the old behaviour) burned up to 3 retry chains on
-                                // mere format drift from the local model. Treat unparseable output
-                                // as a pass, and do NOT grade the AgentSpec with an invented number.
-                                warn!(
-                                    job_id = %job.id,
-                                    "Evaluator output unparseable (no Score line or verdict) — treating as pass"
-                                );
-                                false
-                            }
-                            Some(score) => {
-                                // Phase 3 learning edge: if this task was built by the Agent
-                                // Constructor, record the graded outcome on its AgentSpec —
-                                // pass AND fail (failures are the more valuable signal).
-                                if let Some(tid) = &task_id {
-                                    match self
-                                        .neo4j
-                                        .record_agent_spec_performance(
-                                            tid,
-                                            score as f64,
-                                            score >= min_score as f32,
-                                        )
-                                        .await
-                                    {
-                                        Ok(true) => {
-                                            info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
-                                        }
-                                        Ok(false) => {} // not a constructed task — nothing to learn onto
-                                        Err(e) => {
-                                            warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
-                                        }
-                                    }
-                                }
-
-                                if score < min_score as f32 {
-                                    warn!(
-                                        job_id = %job.id,
-                                        score = score,
-                                        min_score = min_score,
-                                        "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
-                                    );
-                                    let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                                    if let Some(tid) = &task_id {
-                                        self.handle_evaluator_requeue(tid, score, &result_text)
-                                            .await;
-                                    }
-                                    true
-                                } else {
-                                    info!(job_id = %job.id, score = score, "Evaluator: score passed");
-                                    false
-                                }
-                            }
-                        }
-                    } else {
-                        false
-                    };
-
-                    // Adversarial pre-flight: parse overall_robustness and abort the chain
-                    // if the plan is too risky.  Mirrors the evaluator gate but fires on
-                    // the first step rather than the last.
-                    let adversarial_blocked = if let Some(min_robustness) = job
-                        .arguments
-                        .as_ref()
-                        .and_then(|a| a.get("__adversarial_min_robustness"))
-                        .and_then(|v| v.as_f64())
-                    {
-                        let robustness = parse_adversarial_robustness(&result_text);
-                        let task_id = job
-                            .arguments
-                            .as_ref()
-                            .and_then(|a| a.get("__adversarial_task_id"))
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-
-                        if robustness < min_robustness as f32 {
-                            warn!(
-                                job_id = %job.id,
-                                robustness,
-                                min_robustness,
-                                "Adversarial: robustness below threshold — cancelling chain and re-queuing task"
-                            );
-                            let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                            if let Some(tid) = &task_id {
-                                self.handle_adversarial_requeue(tid, robustness, &result_text)
-                                    .await;
-                            }
-                            true
-                        } else {
-                            info!(job_id = %job.id, robustness, "Adversarial: robustness passed — proceeding");
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    // Promote any chained children waiting on this job, unless the evaluator
-                    // or adversarial gate already cancelled them.
-                    if !evaluator_blocked && !adversarial_blocked {
-                        let raw = structured_prev_to_preserve(&result, &result_text);
-                        self.unpark_and_enqueue_children(&job.id, &result_text, &raw)
-                            .await;
-                    }
-                    self.emit_job_event(BrainEvent::JobCompleted {
-                        job_id: job.id.clone(),
-                        tool_name: job.tool_name.clone(),
-                        session_id: job.session_id.clone(),
-                        result_preview: Some(result_text.chars().take(200).collect()),
-                    });
-                }
-            }
+        if result.is_error.unwrap_or(false) {
+            self.on_job_failed(&job, &result).await;
         } else {
-            let error_text = result
-                .content
-                .first()
-                .and_then(|c| {
-                    if let Content::Text { text } = c {
-                        Some(text.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "Unknown error".to_string());
+            self.on_job_succeeded(&job, &result).await;
+        }
+    }
 
-            // Re-fetch to get the updated attempt_count (set by set_job_started).
-            let (attempt, max) = if let Ok(Some(updated)) = self.neo4j.get_agent_job(&job.id).await
-            {
-                (updated.attempt_count, updated.max_attempts)
-            } else {
-                (job.attempt_count + 1, job.max_attempts)
-            };
+    /// Resolve `{{_prev}}` / `{{result}}` in the step's arguments from the prior
+    /// step's result. `{{result}}` is an alias — brain-generated chains often
+    /// use the more natural name.
+    ///
+    /// Two forms, resolved in order of specificity:
+    ///   `{{_prev.id}}` — a path into the previous output parsed as JSON
+    ///   `{{_prev}}`    — the previous output pasted whole
+    /// They never collide: "{{_prev}}" is not a substring of "{{_prev.id}}".
+    async fn resolve_step_args(&self, job: &AgentJob) -> Option<Value> {
+        let Some(prev_text) = &job.prev_result else {
+            return job.arguments.clone();
+        };
+        let (wants_whole, wants_path) = job
+            .arguments
+            .as_ref()
+            .map(|a| {
+                let s = a.to_string();
+                (
+                    s.contains("{{_prev}}") || s.contains("{{result}}"),
+                    s.contains("{{_prev.") || s.contains("{{result."),
+                )
+            })
+            .unwrap_or((false, false));
 
-            if attempt >= max {
-                match self.neo4j.set_job_dead(&job.id, &error_text).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        // Cancelled while executing: the status='running' guard matched
-                        // nothing. Don't dead-letter, reflect, or meta-learn a cancelled job.
-                        info!(job_id = %job.id, "Job cancelled during execution — not dead-lettering");
-                        return;
-                    }
-                    Err(e) => {
-                        warn!(job_id = %job.id, error = %e, "Failed to mark job dead");
-                        return;
-                    }
-                }
-                warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
-                let optional = job
-                    .arguments
-                    .as_ref()
-                    .and_then(|a| a.get("__optional"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if optional {
-                    // An optional step: the chain carries on without its result,
-                    // told plainly that it is missing.
-                    let note = optional_step_failed_note(&job.tool_name, attempt, max, &error_text);
-                    info!(job_id = %job.id, tool = %job.tool_name, "Optional chain step died — continuing the chain");
-                    self.unpark_and_enqueue_children(&job.id, &note, "").await;
-                } else {
-                    // Parent chain is broken — cancel any waiting children.
-                    let _ = self.neo4j.cancel_parked_children(&job.id).await;
-                }
+        let mut args = job.arguments.clone();
 
-                // If this job belongs to a scheduler-dispatched task chain, fail
-                // that Task now with the real error instead of leaving it stuck
-                // in_progress until the 6-hour stale reaper flips it blind. This
-                // is the concrete failure signal capability-mining reasons over.
-                // An optional step's death does not fail the Task.
-                if !optional
-                    && let Some(owner_task_id) = job
-                        .arguments
-                        .as_ref()
-                        .and_then(|a| a.get("__owner_task_id"))
-                        .and_then(|v| v.as_str())
-                {
-                    let reason = format!(
-                        "Chain step '{}' died after {}/{} attempts. Last error: {}",
-                        job.tool_name,
-                        attempt,
-                        max,
-                        error_text.chars().take(500).collect::<String>(),
-                    );
-                    match self
-                        .neo4j
-                        .fail_task_with_reason(owner_task_id, &reason)
-                        .await
-                    {
-                        Ok(true) => {
-                            info!(task_id = %owner_task_id, tool = %job.tool_name, "Marked owning task failed with error context")
-                        }
-                        // Already terminal (e.g. completed, or failed via evaluator) — leave it.
-                        Ok(false) => {}
-                        Err(e) => {
-                            warn!(task_id = %owner_task_id, error = %e, "Failed to record chain-death reason on owning task")
-                        }
-                    }
-                }
-                // Store a reflection note so the brain can learn from this failure.
-                let reflection_content = format!(
-                    "Dead job: tool '{}' (job_id: {}) exhausted {}/{} attempts and was marked dead.\n\
-                     Last error: {}\n\
-                     This is an automated failure record. Investigate the tool definition, \
-                     its input arguments, or any external dependencies to prevent recurrence.",
-                    job.tool_name, job.id, attempt, max, error_text
-                );
-                if let Err(e) = self
-                    .neo4j
-                    .store_reflection_note(&reflection_content, None)
-                    .await
-                {
-                    warn!(job_id = %job.id, error = %e, "Failed to store dead-job reflection note");
-                } else {
-                    debug!(job_id = %job.id, tool = %job.tool_name, "Stored dead-job reflection note");
-                }
+        // Paths first, and always against the structured envelope, never the
+        // extracted text: `{{_prev}}` is the *unwrapped* result (the note body),
+        // so the sibling fields a path wants — `id` above all — exist only in
+        // `prev_result_raw`. Distillation is skipped here too, since it rewrites
+        // prose and would destroy the structure.
+        if wants_path {
+            let root = job.prev_result_raw.as_deref().unwrap_or(prev_text);
+            args = args.map(|a| substitute_prev_paths(&a, root));
+        }
 
-                // Enqueue a targeted meta-learning chain for non-infrastructure tools.
-                // This triggers the Analyze→Hypothesize→Test→Integrate cycle immediately
-                // rather than waiting for perception_scan to accumulate 3+ failures.
-                // Skip it for transient/infra errors (quota, rate limits, timeouts) the
-                // brain can't fix, and dedupe to at most once per tool per 24h.
-                // A spent quota is transient for meta-learning purposes but not
-                // for the operator: it needs a human to restore or reroute it,
-                // so it gets a notification even though the chain below skips.
-                if is_quota_exhausted_error(&error_text) {
-                    self.notify_quota_exhausted(&job.tool_name, &error_text)
+        // Distilled handoff: when the step opted in, compress the upstream output
+        // down to what this step needs before it lands in the prompt. None (use
+        // the raw text) whenever distillation is off, the payload is already
+        // small, or the compression call fails.
+        if wants_whole {
+            let distilled = self.maybe_distill_prev(job, prev_text).await;
+            let effective_prev = distilled.as_deref().unwrap_or(prev_text.as_str());
+            args = args.map(|a| substitute_prev(&a, effective_prev));
+        }
+
+        args
+    }
+
+    async fn on_job_succeeded(self: &Arc<Self>, job: &AgentJob, result: &ToolCallResult) {
+        let result_json = serde_json::to_string(result).unwrap_or_default();
+        // Plain text passed to child steps via {{_prev}}.
+        let result_text = extract_result_text(result);
+
+        match self.neo4j.set_job_completed(&job.id, &result_json).await {
+            Err(e) => {
+                error!(job_id = %job.id, "Failed to store completed result: {}", e);
+            }
+            Ok(false) => {
+                // The job was cancelled while executing: set_job_completed's
+                // status='running' guard matched nothing. Do NOT unpark chain
+                // children or emit a completion event for a job the user cancelled.
+                info!(job_id = %job.id, "Job cancelled during execution — chain children not promoted");
+            }
+            Ok(true) => {
+                info!(job_id = %job.id, "AgentJob completed");
+                // Both gates run (each records its own outcome); either one
+                // blocking stops the chain.
+                let evaluator_blocked = self.evaluator_gate(job, &result_text).await;
+                let adversarial_blocked = self.adversarial_gate(job, &result_text).await;
+                if !evaluator_blocked && !adversarial_blocked {
+                    let raw = structured_prev_to_preserve(result, &result_text);
+                    self.unpark_and_enqueue_children(&job.id, &result_text, &raw)
                         .await;
                 }
-
-                let do_meta_learn = should_meta_learn(&job.tool_name)
-                    && if is_transient_infra_error(&error_text) {
-                        info!(job_id = %job.id, tool = %job.tool_name, "Dead job is a transient/infra error — skipping meta-learning");
-                        false
-                    } else if self.recently_meta_learned(&job.tool_name).await {
-                        info!(job_id = %job.id, tool = %job.tool_name, "Meta-learning already ran for this tool in the last 24h — skipping");
-                        false
-                    } else {
-                        true
-                    };
-                if do_meta_learn {
-                    let search_query = format!("failure {} root cause error", job.tool_name);
-                    let hypothesis_question = format!(
-                        "You are a meta-learning system. Respond in English only.\n\
-                         A job running '{}' just died after {} \
-                         attempts with error: {}\n\n\
-                         Based on any related notes above:\n\
-                         1. ANALYZE: What is causing this failure?\n\
-                         2. HYPOTHESIZE: Form a specific, testable hypothesis.\n\
-                         3. TEST: Propose a concrete test to confirm/refute the hypothesis.\n\
-                         4. INTEGRATE: What single change would prevent this failure from recurring?",
-                        job.tool_name, attempt, error_text
-                    );
-                    let meta_steps = vec![
-                        crate::services::queue::ChainStep {
-                            tool_name: "search_notes".to_string(),
-                            arguments: Some(serde_json::json!({
-                                "query": search_query,
-                                "limit": 6
-                            })),
-                            priority: Some(0),
-                            max_attempts: Some(2),
-                            provider_hint: Some("ollama".to_string()),
-                            description: Some(format!(
-                                "Meta-learn: gather evidence for '{}' failure",
-                                job.tool_name
-                            )),
-                            ..Default::default()
-                        },
-                        crate::services::queue::ChainStep {
-                            tool_name: "reason".to_string(),
-                            arguments: Some(serde_json::json!({
-                                "question": hypothesis_question,
-                                "store_inference": true
-                            })),
-                            priority: Some(0),
-                            max_attempts: Some(2),
-                            provider_hint: Some("ollama".to_string()),
-                            description: Some(format!(
-                                "Meta-learn: hypothesize root cause for '{}'",
-                                job.tool_name
-                            )),
-                            ..Default::default()
-                        },
-                        crate::services::queue::ChainStep {
-                            tool_name: "store_note".to_string(),
-                            arguments: Some(serde_json::json!({
-                                "content": "{{_prev}}",
-                                "note_type": "meta_learning_result",
-                                "source_context": format!("dead_job:{}", job.tool_name),
-                                "provenance": "synthesis_inference"
-                            })),
-                            priority: Some(0),
-                            max_attempts: Some(2),
-                            provider_hint: Some("ollama".to_string()),
-                            description: Some(format!(
-                                "Meta-learn: store result for '{}'",
-                                job.tool_name
-                            )),
-                            ..Default::default()
-                        },
-                    ];
-                    if let Err(e) = self
-                        .enqueue_chain(&meta_steps, job.session_id.as_deref())
-                        .await
-                    {
-                        warn!(job_id = %job.id, error = %e, "Failed to enqueue meta-learning chain for dead job");
-                    } else {
-                        info!(job_id = %job.id, tool = %job.tool_name, "Enqueued meta-learning chain for dead job");
-                    }
-                }
-
-                self.emit_job_event(BrainEvent::JobDead {
+                self.emit_job_event(BrainEvent::JobCompleted {
                     job_id: job.id.clone(),
                     tool_name: job.tool_name.clone(),
                     session_id: job.session_id.clone(),
-                    error: error_text.clone(),
+                    result_preview: Some(result_text.chars().take(200).collect()),
                 });
-            } else {
-                // Re-queue for automatic retry: set status back to 'queued' so the
-                // coordinator picks it up again.  Children remain parked and will be
-                // unparked when the retry eventually succeeds.
-                match self.neo4j.requeue_for_retry(&job.id, &error_text).await {
-                    Ok(true) => {
-                        warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed — re-queued for retry");
-                        self.notify.notify_one(); // wake coordinator immediately
-                        self.emit_job_event(BrainEvent::JobFailed {
-                            job_id: job.id.clone(),
-                            tool_name: job.tool_name.clone(),
-                            session_id: job.session_id.clone(),
-                            error: error_text.clone(),
-                        });
-                    }
-                    Ok(false) => {
-                        // Cancelled while executing — leave it cancelled, don't re-queue.
-                        info!(job_id = %job.id, "Job cancelled during execution — not re-queuing for retry");
-                    }
-                    Err(e) => {
-                        warn!(job_id = %job.id, error = %e, "Failed to re-queue job for retry");
-                    }
+            }
+        }
+    }
+
+    /// Evaluator step: parse the score and re-queue the task if it is below the
+    /// threshold. Returns whether the chain is blocked. When the score fails,
+    /// parked children (e.g. `update_task`) are cancelled so the task is not
+    /// prematurely marked completed — the retry task created by
+    /// `handle_evaluator_requeue` drives the next attempt.
+    async fn evaluator_gate(&self, job: &AgentJob, result_text: &str) -> bool {
+        let Some(min_score) = job_arg(job, "__evaluator_min_score").and_then(Value::as_f64) else {
+            return false;
+        };
+        let task_id = job_arg(job, "__evaluator_task_id").and_then(Value::as_str);
+
+        let Some(score) = parse_evaluator_score(result_text) else {
+            // No parseable score or verdict keyword. Treating this as a failing
+            // 3.0 (the old behaviour) burned up to 3 retry chains on mere format
+            // drift from the local model. Unparseable output is a pass, and the
+            // AgentSpec is NOT graded with an invented number.
+            warn!(
+                job_id = %job.id,
+                "Evaluator output unparseable (no Score line or verdict) — treating as pass"
+            );
+            return false;
+        };
+
+        // Learning edge: if this task was built by the Agent Constructor, record
+        // the graded outcome on its AgentSpec — pass AND fail (failures are the
+        // more valuable signal).
+        if let Some(tid) = task_id {
+            match self
+                .neo4j
+                .record_agent_spec_performance(tid, score as f64, score >= min_score as f32)
+                .await
+            {
+                Ok(true) => {
+                    info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
+                }
+                Ok(false) => {} // not a constructed task — nothing to learn onto
+                Err(e) => {
+                    warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
                 }
             }
+        }
+
+        if score >= min_score as f32 {
+            info!(job_id = %job.id, score = score, "Evaluator: score passed");
+            return false;
+        }
+        warn!(
+            job_id = %job.id,
+            score = score,
+            min_score = min_score,
+            "Evaluator: score below threshold — cancelling downstream steps and re-queuing task"
+        );
+        let _ = self.neo4j.cancel_parked_children(&job.id).await;
+        if let Some(tid) = task_id {
+            self.handle_evaluator_requeue(tid, score, result_text).await;
+        }
+        true
+    }
+
+    /// Adversarial pre-flight: abort the chain if the plan is too risky. Mirrors
+    /// the evaluator gate but fires on the first step rather than the last.
+    async fn adversarial_gate(&self, job: &AgentJob, result_text: &str) -> bool {
+        let Some(min_robustness) =
+            job_arg(job, "__adversarial_min_robustness").and_then(Value::as_f64)
+        else {
+            return false;
+        };
+        let robustness = parse_adversarial_robustness(result_text);
+        if robustness >= min_robustness as f32 {
+            info!(job_id = %job.id, robustness, "Adversarial: robustness passed — proceeding");
+            return false;
+        }
+        warn!(
+            job_id = %job.id,
+            robustness,
+            min_robustness,
+            "Adversarial: robustness below threshold — cancelling chain and re-queuing task"
+        );
+        let _ = self.neo4j.cancel_parked_children(&job.id).await;
+        if let Some(tid) = job_arg(job, "__adversarial_task_id").and_then(Value::as_str) {
+            self.handle_adversarial_requeue(tid, robustness, result_text)
+                .await;
+        }
+        true
+    }
+
+    async fn on_job_failed(self: &Arc<Self>, job: &AgentJob, result: &ToolCallResult) {
+        let error_text = result
+            .content
+            .first()
+            .and_then(|c| {
+                if let Content::Text { text } = c {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "Unknown error".to_string());
+
+        // Re-fetch to get the updated attempt_count (set by set_job_started).
+        let (attempt, max) = if let Ok(Some(updated)) = self.neo4j.get_agent_job(&job.id).await {
+            (updated.attempt_count, updated.max_attempts)
+        } else {
+            (job.attempt_count + 1, job.max_attempts)
+        };
+
+        if attempt >= max {
+            self.on_job_dead(job, attempt, max, &error_text).await;
+            return;
+        }
+
+        // Re-queue for automatic retry: status back to 'queued' so the
+        // coordinator picks it up again. Children stay parked and are unparked
+        // when the retry eventually succeeds.
+        match self.neo4j.requeue_for_retry(&job.id, &error_text).await {
+            Ok(true) => {
+                warn!(job_id = %job.id, attempt = attempt, max = max, "AgentJob failed — re-queued for retry");
+                self.notify.notify_one(); // wake coordinator immediately
+                self.emit_job_event(BrainEvent::JobFailed {
+                    job_id: job.id.clone(),
+                    tool_name: job.tool_name.clone(),
+                    session_id: job.session_id.clone(),
+                    error: error_text,
+                });
+            }
+            Ok(false) => {
+                // Cancelled while executing — leave it cancelled, don't re-queue.
+                info!(job_id = %job.id, "Job cancelled during execution — not re-queuing for retry");
+            }
+            Err(e) => {
+                warn!(job_id = %job.id, error = %e, "Failed to re-queue job for retry");
+            }
+        }
+    }
+
+    /// Retries are exhausted: dead-letter the job, settle its chain and owning
+    /// task, and record what the brain can learn from it.
+    async fn on_job_dead(
+        self: &Arc<Self>,
+        job: &AgentJob,
+        attempt: u32,
+        max: u32,
+        error_text: &str,
+    ) {
+        match self.neo4j.set_job_dead(&job.id, error_text).await {
+            Ok(true) => {}
+            Ok(false) => {
+                // Cancelled while executing: the status='running' guard matched
+                // nothing. Don't dead-letter, reflect, or meta-learn a cancelled job.
+                info!(job_id = %job.id, "Job cancelled during execution — not dead-lettering");
+                return;
+            }
+            Err(e) => {
+                warn!(job_id = %job.id, error = %e, "Failed to mark job dead");
+                return;
+            }
+        }
+        warn!(job_id = %job.id, attempts = attempt, "AgentJob exhausted retries → dead");
+
+        let optional = job_arg(job, "__optional")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if optional {
+            // An optional step: the chain carries on without its result, told
+            // plainly that it is missing.
+            let note = optional_step_failed_note(&job.tool_name, attempt, max, error_text);
+            info!(job_id = %job.id, tool = %job.tool_name, "Optional chain step died — continuing the chain");
+            self.unpark_and_enqueue_children(&job.id, &note, "").await;
+        } else {
+            // Parent chain is broken — cancel any waiting children.
+            let _ = self.neo4j.cancel_parked_children(&job.id).await;
+        }
+
+        // If this job belongs to a scheduler-dispatched task chain, fail that
+        // Task now with the real error instead of leaving it in_progress until
+        // the 6-hour stale reaper flips it blind. This is the concrete failure
+        // signal capability-mining reasons over. An optional step's death does
+        // not fail the Task.
+        if !optional
+            && let Some(owner_task_id) = job_arg(job, "__owner_task_id").and_then(Value::as_str)
+        {
+            let reason = format!(
+                "Chain step '{}' died after {}/{} attempts. Last error: {}",
+                job.tool_name,
+                attempt,
+                max,
+                error_text.chars().take(500).collect::<String>(),
+            );
+            match self
+                .neo4j
+                .fail_task_with_reason(owner_task_id, &reason)
+                .await
+            {
+                Ok(true) => {
+                    info!(task_id = %owner_task_id, tool = %job.tool_name, "Marked owning task failed with error context")
+                }
+                // Already terminal (e.g. completed, or failed via evaluator) — leave it.
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(task_id = %owner_task_id, error = %e, "Failed to record chain-death reason on owning task")
+                }
+            }
+        }
+
+        // A reflection note so the brain can learn from this failure.
+        let reflection_content = format!(
+            "Dead job: tool '{}' (job_id: {}) exhausted {}/{} attempts and was marked dead.\n\
+             Last error: {}\n\
+             This is an automated failure record. Investigate the tool definition, \
+             its input arguments, or any external dependencies to prevent recurrence.",
+            job.tool_name, job.id, attempt, max, error_text
+        );
+        if let Err(e) = self
+            .neo4j
+            .store_reflection_note(&reflection_content, None)
+            .await
+        {
+            warn!(job_id = %job.id, error = %e, "Failed to store dead-job reflection note");
+        } else {
+            debug!(job_id = %job.id, tool = %job.tool_name, "Stored dead-job reflection note");
+        }
+
+        // A spent quota is transient for meta-learning purposes but not for the
+        // operator: it needs a human to restore or reroute it, so it gets a
+        // notification even though meta-learning skips it.
+        if is_quota_exhausted_error(error_text) {
+            self.notify_quota_exhausted(&job.tool_name, error_text)
+                .await;
+        }
+        self.maybe_meta_learn(job, attempt, error_text).await;
+
+        self.emit_job_event(BrainEvent::JobDead {
+            job_id: job.id.clone(),
+            tool_name: job.tool_name.clone(),
+            session_id: job.session_id.clone(),
+            error: error_text.to_string(),
+        });
+    }
+
+    /// Enqueue the Analyze→Hypothesize→Test→Integrate chain for a dead job —
+    /// immediately, rather than waiting for perception_scan to accumulate 3+
+    /// failures. Skipped for infrastructure tools, for transient/infra errors
+    /// (quota, rate limits, timeouts) the brain cannot fix, and when the tool
+    /// was already meta-learned in the last 24h.
+    async fn maybe_meta_learn(&self, job: &AgentJob, attempt: u32, error_text: &str) {
+        if !should_meta_learn(&job.tool_name) {
+            return;
+        }
+        if is_transient_infra_error(error_text) {
+            info!(job_id = %job.id, tool = %job.tool_name, "Dead job is a transient/infra error — skipping meta-learning");
+            return;
+        }
+        if self.recently_meta_learned(&job.tool_name).await {
+            info!(job_id = %job.id, tool = %job.tool_name, "Meta-learning already ran for this tool in the last 24h — skipping");
+            return;
+        }
+        let steps = meta_learning_chain(&job.tool_name, attempt, error_text);
+        if let Err(e) = self.enqueue_chain(&steps, job.session_id.as_deref()).await {
+            warn!(job_id = %job.id, error = %e, "Failed to enqueue meta-learning chain for dead job");
+        } else {
+            info!(job_id = %job.id, tool = %job.tool_name, "Enqueued meta-learning chain for dead job");
         }
     }
 
@@ -2054,6 +1942,101 @@ fn parse_evaluator_score(text: &str) -> Option<f32> {
 // ---------------------------------------------------------------------------
 // Adversarial helpers
 // ---------------------------------------------------------------------------
+
+/// One of the `__`-prefixed metadata keys the scheduler stamps on a step's
+/// arguments (`__owner_task_id`, `__optional`, `__evaluator_min_score`, …).
+fn job_arg<'a>(job: &'a AgentJob, key: &str) -> Option<&'a Value> {
+    job.arguments.as_ref().and_then(|a| a.get(key))
+}
+
+/// The work's route context: a queued step is background work, private unless
+/// the step (or its chain/schedule file) declared `data_class: public`. Scoped
+/// around the tool call so every LLM call it makes is judged by the routing
+/// policy.
+fn route_context_for(job: &AgentJob) -> crate::services::routing::RouteContext {
+    crate::services::routing::RouteContext::new(
+        crate::services::routing::Purpose::Background,
+        job_arg(job, "__data_class")
+            .and_then(Value::as_str)
+            .map(crate::services::routing::DataClass::parse_or_private)
+            .unwrap_or_default(),
+    )
+}
+
+/// Per-step model routing: when the step declared `required_capabilities`,
+/// the model the routing policy admits for this work. `None` (normal routing)
+/// when nothing qualifies or telemetry is unavailable.
+fn select_step_model(
+    job: &AgentJob,
+    handler: &ToolHandler,
+    route_ctx: crate::services::routing::RouteContext,
+) -> Option<crate::services::LlmConfig> {
+    let caps: Vec<String> = job_arg(job, "__required_capabilities")?
+        .as_array()?
+        .iter()
+        .filter_map(|c| c.as_str().map(String::from))
+        .collect();
+    if caps.is_empty() {
+        return None;
+    }
+    // The base config only contributes timeout/temperature defaults; provider,
+    // model, URL, and key are set by the router.
+    crate::services::model_router::resolve_model_config(
+        handler.telemetry()?,
+        &caps,
+        &crate::services::LlmConfig::default(),
+        route_ctx,
+    )
+}
+
+/// The Analyze→Hypothesize→Test→Integrate chain enqueued for a dead job, all on
+/// the local model.
+fn meta_learning_chain(tool_name: &str, attempt: u32, error_text: &str) -> Vec<ChainStep> {
+    let hypothesis_question = format!(
+        "You are a meta-learning system. Respond in English only.\n\
+         A job running '{tool_name}' just died after {attempt} \
+         attempts with error: {error_text}\n\n\
+         Based on any related notes above:\n\
+         1. ANALYZE: What is causing this failure?\n\
+         2. HYPOTHESIZE: Form a specific, testable hypothesis.\n\
+         3. TEST: Propose a concrete test to confirm/refute the hypothesis.\n\
+         4. INTEGRATE: What single change would prevent this failure from recurring?"
+    );
+    let step = |tool: &str, arguments: Value, what: &str| ChainStep {
+        tool_name: tool.to_string(),
+        arguments: Some(arguments),
+        priority: Some(0),
+        max_attempts: Some(2),
+        provider_hint: Some("ollama".to_string()),
+        description: Some(format!("Meta-learn: {what} for '{tool_name}'")),
+        ..Default::default()
+    };
+    vec![
+        step(
+            "search_notes",
+            serde_json::json!({
+                "query": format!("failure {tool_name} root cause error"),
+                "limit": 6
+            }),
+            "gather evidence",
+        ),
+        step(
+            "reason",
+            serde_json::json!({ "question": hypothesis_question, "store_inference": true }),
+            "hypothesize root cause",
+        ),
+        step(
+            "store_note",
+            serde_json::json!({
+                "content": "{{_prev}}",
+                "note_type": "meta_learning_result",
+                "source_context": format!("dead_job:{tool_name}"),
+                "provenance": "synthesis_inference"
+            }),
+            "store result",
+        ),
+    ]
+}
 
 /// Parse `overall_robustness` (1.0–5.0) from `adversarial_plan_review` JSON output.
 ///
@@ -2914,5 +2897,33 @@ mod gpu_lease_deferral_tests {
         ));
         assert!(!defers_during_gpu_lease(Some("ollama-cloud"), None));
         assert!(!defers_during_gpu_lease(None, None));
+    }
+}
+
+#[cfg(test)]
+mod meta_learning_chain_tests {
+    use super::*;
+
+    /// The dead-job chain is background work: every step must run on the local
+    /// model (an omitted provider_hint falls through to cloud), and its result
+    /// must be persisted with a source_context naming the tool that died.
+    #[test]
+    fn the_meta_learning_chain_stays_local_and_names_the_dead_tool() {
+        let steps = meta_learning_chain("ingest_media", 3, "m3u8 download detected");
+        let tools: Vec<&str> = steps.iter().map(|s| s.tool_name.as_str()).collect();
+        assert_eq!(tools, vec!["search_notes", "reason", "store_note"]);
+        assert!(
+            steps
+                .iter()
+                .all(|s| s.provider_hint.as_deref() == Some("ollama"))
+        );
+        let question = steps[1].arguments.as_ref().unwrap()["question"]
+            .as_str()
+            .unwrap();
+        assert!(question.contains("'ingest_media' just died after 3 attempts"));
+        assert!(question.contains("m3u8 download detected"));
+        let store = steps[2].arguments.as_ref().unwrap();
+        assert_eq!(store["content"], "{{_prev}}");
+        assert_eq!(store["source_context"], "dead_job:ingest_media");
     }
 }

@@ -16,9 +16,10 @@ pub(super) fn user_facing_result(model_text: &str, bulk: Option<&str>) -> String
     }
 }
 
-/// Maximum characters of a tool result fed back to the LLM.
-/// Prevents context-window overflow (OllamaCloud/Ollama models often have 4K–32K token limits).
-/// The display preview uses the same cap so the UI stays consistent.
+/// A representative tool-result budget for the marker tests. Every loop now
+/// sizes its budget with [`tool_result_budget`]; this was the fixed cap the
+/// Anthropic and Ollama loops used until the loops were unified (2026-10-02).
+#[cfg(test)]
 pub(super) const MAX_TOOL_RESULT_CHARS: usize = 6000;
 
 /// Floor for the OllamaCloud/Ollama streaming loops' tool-result cap — what a
@@ -42,10 +43,8 @@ pub(super) const CHARS_PER_TOKEN: usize = 4;
 /// behaves exactly as before rather than surprising anyone.
 pub(super) const ASSUMED_CONTEXT_TOKENS: usize = 17_000;
 
-/// Ceiling for the streaming loops' tool-result cap.
+/// Ceiling for the tool-result cap on a small context window.
 ///
-/// Deliberately ABOVE [`MAX_TOOL_RESULT_CHARS`], which is the non-streaming
-/// preview cap and a different concern that was being conflated with this one.
 /// Set from measurement: `knowledge-worker` (11-12 tools, ~11K chars of schema)
 /// peaks at 8080 `tokens_in` against E4B's 16384, so ~8K chars (~2K tokens) of
 /// tool result still leaves roughly a third of the window free.

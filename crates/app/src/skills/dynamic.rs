@@ -1,9 +1,9 @@
 //! Dynamic Skill — allows defining new MCP tools at runtime backed by procedure pipelines.
 //!
 //! DynamicTool nodes are persisted in Neo4j so they survive restarts. On startup
-//! `load_from_neo4j` populates the in-memory map. Two skill instances share the
-//! same `Arc<RwLock<HashMap>>` so both the ToolRegistry and ToolHandler see
-//! changes instantly.
+//! `load_from_neo4j` populates the in-memory map. The ToolRegistry and the
+//! ToolHandler hold the same instance (`build_skills`), so a tool defined at
+//! runtime is listed and dispatchable at once.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,17 +59,6 @@ impl DynamicSkill {
             tools_map: Arc::new(RwLock::new(HashMap::new())),
             tool_handler_ref,
             tool_registry,
-        }
-    }
-
-    /// Create a second instance sharing the same `tools_map` Arc.
-    /// Used to populate both the ToolRegistry and the ToolHandler without duplication.
-    pub fn clone_shared(&self) -> Self {
-        Self {
-            neo4j: self.neo4j.clone(),
-            tools_map: Arc::clone(&self.tools_map),
-            tool_handler_ref: Arc::clone(&self.tool_handler_ref),
-            tool_registry: Arc::clone(&self.tool_registry),
         }
     }
 
