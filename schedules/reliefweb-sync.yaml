@@ -1,0 +1,17 @@
+# ReliefWeb reports ETL — one pass an hour.
+#
+# Loads reports created since the newest one held, within max_calls_per_run
+# and the daily call ceiling (datasets/reliefweb.yaml; ReliefWeb allows 1,000
+# calls/day). Needs RELIEFWEB_APPNAME (the approved appname) in .env.
+#
+# The `name` is the Neo4j MERGE key.
+name: "ReliefWeb sync: load new humanitarian reports"
+description: "ETL pass for ReliefWeb reports into the datasets DuckDB: pages through reports created since the last load within the call budgets, prunes past retention, and logs the run to etl_runs."
+interval_seconds: 3600
+steps:
+  - tool_name: dataset_sync
+    arguments:
+      dataset: reliefweb
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

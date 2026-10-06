@@ -1,0 +1,63 @@
+# Weekly review of the ETL datasets — the "watch and review" half of loading
+# GDELT and ReliefWeb.
+#
+# dataset_status reports freshness, failed runs, and WHO the data came from:
+# GDELT's source mix by SourceList class plus its top unlisted outlets, and
+# ReliefWeb's publishers and publisher types. A local reason step turns that
+# into a short report, delivered to the user. Raw counts stay in the
+# `datasets-review-{{date}}` session for drilling into.
+#
+# The `name` is the Neo4j MERGE key.
+name: "Dataset review: freshness, failures and source mix of GDELT and ReliefWeb"
+description: "Weekly review of the ETL-loaded datasets: whether they are current, which runs failed, and which outlets and publishers the last week of data came from. Reported to the user."
+interval_seconds: 604800   # weekly
+steps:
+  - tool_name: dataset_status
+    arguments: {}
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "datasets-review-{{date}}"
+      content: "## DATASET STATUS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'datasets-review-{{date}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT is this week's status of two datasets the brain loads
+        (GDELT news-event data, ReliefWeb humanitarian reports). Write a short
+        review, under 250 words, in four parts:
+        FRESHNESS — is each current (latest event/report time), any backlog?
+        FAILURES — failed runs in the last 24h and their errors, or "none".
+        SOURCES — GDELT's source mix by class and the three largest unlisted
+        outlets; ReliefWeb's top publishers and publisher types.
+        ACTION — at most two concrete suggestions (an outlet to add to a list
+        or discount, a failure to fix), or "none".
+        Use only numbers in the CONTEXT.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{_prev}}"
+      context: "Dataset review {{date}}"
+      related_session_id: "datasets-review-{{date}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama

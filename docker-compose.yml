@@ -210,6 +210,9 @@ services:
       - SCHEMAS_DIR=/home/agent/agent-brain/schemas              # envelope validation for schedules/chains (services/validation.rs)
       - SCHEDULES_DIR=/home/agent/agent-brain/schedules
       - SOURCES_DIR=/home/agent/agent-brain/sources
+      - DATASETS_DIR=/home/agent/agent-brain/datasets                # GDELT/ReliefWeb ETL config (datasets/*.yaml)
+      - DATASETS_DB_PATH=/home/agent/telemetry/datasets.duckdb       # ETL'd rows; separate file from telemetry
+      - RELIEFWEB_APPNAME=${RELIEFWEB_APPNAME:-}                     # ReliefWeb's pre-approved appname (not a secret)
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
       - MCP_SERVERS_DIR=/home/agent/agent-brain/mcp-servers      # external MCP servers the brain may call (aidevboard, worklittle, exa, tavily)
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image

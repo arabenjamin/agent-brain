@@ -8,6 +8,8 @@ mod temporal;
 mod todo;
 
 #[cfg(feature = "telemetry")]
+pub mod datasets;
+#[cfg(feature = "telemetry")]
 pub mod telemetry;
 
 pub use agent_brain_models::ScheduledTask;
@@ -18,6 +20,8 @@ pub use scheduled_task::YamlSyncOutcome;
 pub use temporal::node_ts;
 pub use todo::Todo;
 
+#[cfg(feature = "telemetry")]
+pub use datasets::{DatasetStore, ReliefwebRow};
 #[cfg(feature = "telemetry")]
 pub use telemetry::TelemetryClient;
 

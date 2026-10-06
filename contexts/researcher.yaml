@@ -10,6 +10,8 @@ tools:
 - http_request
 - mcp_call
 - ingest_api
+- gdelt_events
+- reliefweb_reports
 - reason
 - store_note
 system_prompt: |
@@ -31,6 +33,10 @@ system_prompt: |
        mcp_call(server:"exa", tool:"web_fetch_exa", arguments:{urls:["<url>"], maxCharacters:6000})
        (fallback: mcp_call(server:"tavily", tool:"tavily_extract", arguments:{urls:["<url>"]})).
        Use http_request to call a live API directly, not to read an HTML page.
+    3b. Conflict, protest, crises: gdelt_events counts news-coded events
+       (coverage, not ground truth; check a sample URL) and shows which outlets
+       reported them; reliefweb_reports finds UN/NGO humanitarian reports.
+       Cite the outlet or publisher, not the dataset alone.
     4. Use reason to synthesize and identify gaps
     5. Use store_note to save important findings for future reference
 

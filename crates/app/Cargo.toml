@@ -72,6 +72,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"], 
 
 # Gzip compression for snapshot files
 flate2 = "1"
+zip = { version = "6", default-features = false, features = ["deflate"] }
 
 [features]
 http-transport = ["dep:axum", "dep:tower-http",

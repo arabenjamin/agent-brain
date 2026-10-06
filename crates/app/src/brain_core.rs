@@ -677,6 +677,14 @@ impl BrainCore {
             )));
         }
 
+        // ETL-loaded datasets (GDELT events, ReliefWeb reports) in their own
+        // DuckDB file. Absent the file, the tools are not registered.
+        if let Some(ds) =
+            crate::skills::datasets::DatasetSkill::from_env(self.storage.neo4j.clone())
+        {
+            skills.push(Arc::new(ds));
+        }
+
         // ACLED conflict-event data. Absent credentials the tool is not
         // registered at all, rather than registered and always failing.
         match crate::skills::acled::AcledSkill::from_env() {

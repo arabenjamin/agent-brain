@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::repository::Neo4jClient;
 use crate::services::traits::LlmProvider;
-use crate::services::web_result::is_search_page;
+use crate::services::web_result::{is_search_page, registrable_domain};
 
 /// What the evidence currently says about a claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,44 +455,6 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
 ///
 /// One domain is not corroboration, however confidently a model reads it.
 pub const MIN_INDEPENDENT_DOMAINS: usize = 2;
-
-/// Second-level labels that sit under a two-letter country code as part of the
-/// public suffix (`co.uk`, `com.cn`, `re.kr`). A parsing rule, not a source list.
-const CC_SECOND_LEVEL: &[&str] = &[
-    "co", "com", "net", "org", "gov", "ac", "edu", "or", "go", "re", "ne", "gob", "nic",
-];
-
-/// Registrable-ish domain of a URL or bare host: the last two labels, or three
-/// under a country-code second level (`bbc.co.uk`, `chinadaily.com.cn`).
-///
-/// Taking two labels everywhere merged every UK site into `co.uk` and every
-/// Korean research site into `re.kr`. That under-counted independence when
-/// every result's domain counted; now that only the cited ones do, and the
-/// state-media list names `chinadaily.com.cn`, the merge was simply wrong.
-fn registrable_domain(url_or_host: &str) -> Option<String> {
-    let s = url_or_host.trim();
-    let rest = s.split_once("://").map(|x| x.1).unwrap_or(s);
-    let host = rest
-        .split(['/', '"', '\\', ' ', '\'', '?', '#', ':'])
-        .next()
-        .unwrap_or("")
-        .trim_start_matches("www.")
-        .to_lowercase();
-    if host.is_empty() || !host.contains('.') {
-        return None;
-    }
-    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    if labels.len() < 2 {
-        return None;
-    }
-    let n = labels.len();
-    let take = if n >= 3 && labels[n - 1].len() == 2 && CC_SECOND_LEVEL.contains(&labels[n - 2]) {
-        3
-    } else {
-        2
-    };
-    Some(labels[n - take..].join("."))
-}
 
 /// True when `domain` is `entry` or a subdomain of it.
 fn domain_matches(domain: &str, entry: &str) -> bool {

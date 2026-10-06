@@ -1,0 +1,19 @@
+# GDELT 2.0 events ETL — one extract → transform → load pass every 15 minutes.
+#
+# GDELT publishes an export file every 15 minutes; dataset_sync loads every
+# file published since the last one recorded (max_files_per_run per pass, so a
+# backlog — or the 7-day first backfill — clears over successive passes), then
+# prunes past 90 days. Config: datasets/gdelt.yaml. No LLM is involved.
+#
+# The `name` is the Neo4j MERGE key — do not change it without deleting the old
+# (:ScheduledTask) node.
+name: "GDELT sync: load new 15-minute event files"
+description: "ETL pass for GDELT 2.0 events into the datasets DuckDB: downloads each export file published since the last load, loads it, prunes past retention, and logs the run to etl_runs."
+interval_seconds: 900
+steps:
+  - tool_name: dataset_sync
+    arguments:
+      dataset: gdelt
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

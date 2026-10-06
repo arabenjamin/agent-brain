@@ -1,0 +1,54 @@
+# GDELT 2.0 Events — ETL configuration (read at runtime from DATASETS_DIR).
+#
+# GDELT machine-codes events from world news every 15 minutes: who did what to
+# whom, where, how many outlets reported it. It is open data, so rows are
+# stored (unlike ACLED). It is also noisy: a single tabloid article can produce
+# a miscoded "assault", geocoding puts Gaza in "Israel", and a file loaded
+# today carries events dated a year back. Counts measure COVERAGE, not ground
+# truth — the query tool says so and defaults to events with >= 2 sources.
+#
+# Extract: lastupdate_url names the newest export file; files are named by a
+# 15-minute UTC stamp, so a missed run catches up by stamp arithmetic.
+# The DOC (article search) API is NOT used: it refused ~12 of 13 requests from
+# this host on 2026-10-06 whatever the spacing. The raw files are a static
+# download and were reliable.
+name: gdelt
+lastupdate_url: https://data.gdeltproject.org/gdeltv2/lastupdate.txt
+file_url_template: https://data.gdeltproject.org/gdeltv2/{stamp}.export.CSV.zip
+retention_days: 90
+# First run loads this much history; later runs resume from the last file.
+initial_backfill_days: 7
+# Bounds one run (~80 KB a file). A backlog clears at this pace per run.
+max_files_per_run: 48
+# Query default: an event reported by one outlet is too often a miscoding.
+default_min_sources: 2
+
+# QuadClass — GDELT's four-way summary of an event.
+quad_classes:
+  1: verbal cooperation
+  2: material cooperation
+  3: verbal conflict
+  4: material conflict
+
+# CAMEO root event codes (EventRootCode).
+cameo_root_codes:
+  "01": make public statement
+  "02": appeal
+  "03": express intent to cooperate
+  "04": consult
+  "05": engage in diplomatic cooperation
+  "06": engage in material cooperation
+  "07": provide aid
+  "08": yield
+  "09": investigate
+  "10": demand
+  "11": disapprove
+  "12": reject
+  "13": threaten
+  "14": protest
+  "15": exhibit force posture
+  "16": reduce relations
+  "17": coerce
+  "18": assault
+  "19": fight
+  "20": use unconventional mass violence

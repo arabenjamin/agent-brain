@@ -19,6 +19,44 @@ pub fn strip_fallback_banner(text: &str) -> (bool, &str) {
     }
 }
 
+/// Second-level labels that sit under a two-letter country code as part of the
+/// public suffix (`co.uk`, `com.cn`, `re.kr`). A parsing rule, not a source list.
+const CC_SECOND_LEVEL: &[&str] = &[
+    "co", "com", "net", "org", "gov", "ac", "edu", "or", "go", "re", "ne", "gob", "nic",
+];
+
+/// Registrable-ish domain of a URL or bare host: the last two labels, or three
+/// under a country-code second level (`bbc.co.uk`, `chinadaily.com.cn`).
+///
+/// Taking two labels everywhere merged every UK site into `co.uk` and every
+/// Korean research site into `re.kr`. That under-counted independence when
+/// every result's domain counted; now that only the cited ones do, and the
+/// state-media list names `chinadaily.com.cn`, the merge was simply wrong.
+pub fn registrable_domain(url_or_host: &str) -> Option<String> {
+    let s = url_or_host.trim();
+    let rest = s.split_once("://").map(|x| x.1).unwrap_or(s);
+    let host = rest
+        .split(['/', '"', '\\', ' ', '\'', '?', '#', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_lowercase();
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    if labels.len() < 2 {
+        return None;
+    }
+    let n = labels.len();
+    let take = if n >= 3 && labels[n - 1].len() == 2 && CC_SECOND_LEVEL.contains(&labels[n - 2]) {
+        3
+    } else {
+        2
+    };
+    Some(labels[n - take..].join("."))
+}
+
 /// Whether a result link is a search engine's own results page.
 ///
 /// `ecosia.org/search?q=<query>`, `dailymotion.com/search/<query>/`,

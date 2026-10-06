@@ -5,6 +5,7 @@ pub mod claims;
 pub mod codebase;
 pub mod constructor;
 pub mod context;
+pub mod datasets;
 pub mod dynamic;
 pub mod exec;
 pub mod git;
