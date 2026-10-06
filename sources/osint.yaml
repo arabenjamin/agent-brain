@@ -1,0 +1,33 @@
+# Bootstrap definition for the `osint` SourceList.
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query
+# (MATCH (s:SourceList {name:'osint'}) SET s.domains = [...]), delete the node
+# to re-seed from this file.
+#
+# Open-source investigation, conflict-data and threat-intelligence outlets that
+# publish their methods or data. Two uses: `search_web(source_list: "osint")`
+# restricts a search to them, and claim verification labels corroboration from
+# them "established sources" (role-less list). Analysis and commentary outlets
+# (War on the Rocks, Lawfare, Just Security) are deliberately absent: opinion
+# is context, not corroboration. So is news.theater-strategy.org: an automated
+# aggregator linking to Google News, run by a party to the war it covers.
+# Keep under 15 domains — Google caps the length of the site: list.
+name: osint
+description: >
+  OSINT investigators, conflict data, and threat intelligence. Graph-owned
+  after first seed — edit via neo4j_query; delete the node to re-seed from
+  sources/osint.yaml.
+domains:
+  - bellingcat.com
+  - c4ads.org
+  - oryxspioenkop.com
+  - understandingwar.org
+  - acleddata.com
+  - janes.com
+  - citizenlab.ca
+  - dfrlab.org
+  - occrp.org
+  - icij.org
+  - airwars.org
+  - 38north.org
+  - sipri.org
+  - otx.alienvault.com

@@ -13,6 +13,10 @@
 //! local files always transcribe. Subprocess safety: `yt-dlp` is always invoked
 //! with an **argument array** (never a shell string), URLs are scheme-validated,
 //! and `file://` inputs are canonicalized and confined to `MEDIA_DIR`.
+//!
+//! **Articles** (2026-10-06) ride the same summarizer without yt-dlp: an
+//! `article_rss` source's items are web pages, fetched by `fetch_article` and
+//! reduced to their readable text by `extract_article_text`.
 
 use std::sync::Arc;
 
@@ -49,6 +53,41 @@ pub struct FeedItem {
     pub published_at: String,
     pub channel_id: String,
 }
+
+/// What is being summarized, so the summarizer's prompts name it correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Medium {
+    Video,
+    Article,
+}
+
+impl Medium {
+    /// How the map pass describes its input ("the transcript of a video").
+    fn source_phrase(self) -> &'static str {
+        match self {
+            Medium::Video => "the transcript of a video",
+            Medium::Article => "the text of an article",
+        }
+    }
+    fn noun(self) -> &'static str {
+        match self {
+            Medium::Video => "video",
+            Medium::Article => "article",
+        }
+    }
+}
+
+/// Largest article page read, in bytes. A news "page" can be a 36 MB
+/// single-page app (news.theater-strategy.org, 2026-10-06); the article text is
+/// never more than a sliver of that.
+const ARTICLE_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Article text kept for summarizing: six map windows on the local model.
+const ARTICLE_MAX_CHARS: usize = 36_000;
+/// Below this, extraction found no article — a paywall, a script-rendered
+/// page, or an index page. Permanent for that URL, unlike a network error.
+const ARTICLE_MIN_CHARS: usize = 800;
+/// Prefix of the error `fetch_article` returns for a page with no article.
+pub const ARTICLE_UNEXTRACTABLE: &str = "no extractable article text";
 
 /// Video metadata extracted from `yt-dlp -J`.
 #[derive(Debug, Clone)]
@@ -604,6 +643,7 @@ impl MediaService {
         meta: &VideoMeta,
         transcript: &str,
         llm: &Arc<dyn LlmProvider>,
+        medium: Medium,
     ) -> anyhow::Result<(String, Vec<String>)> {
         let windows = chunk_transcript(transcript, self.window_chars);
         debug!(video = %meta.id, windows = windows.len(), "summarizing transcript");
@@ -614,11 +654,12 @@ impl MediaService {
             let mut partials = Vec::with_capacity(windows.len());
             for (i, w) in windows.iter().enumerate() {
                 let prompt = format!(
-                    "This is segment {}/{} of the transcript of a video titled \"{}\". \
+                    "This is segment {}/{} of {} titled \"{}\". \
                      Summarize its key points, claims, and any named concepts as concise \
                      bullet points. Do not add preamble.\n\nSEGMENT:\n{}",
                     i + 1,
                     windows.len(),
+                    medium.source_phrase(),
                     meta.title,
                     w
                 );
@@ -634,11 +675,20 @@ impl MediaService {
         };
 
         let reduce_prompt = format!(
-            "You are summarizing a video titled \"{}\" by {}. Below are notes taken from its \
-             transcript. Write a cohesive 200-400 word prose summary and extract the key \
+            "You are summarizing {} {} titled \"{}\" by {}. Below are notes taken from {}. \
+             Write a cohesive 200-400 word prose summary and extract the key \
              concepts.\n\nNOTES:\n{}\n\nReturn ONLY a JSON object of the form:\n\
              {{\"summary\": \"<prose summary>\", \"key_concepts\": [\"concept\", ...]}}",
-            meta.title, meta.channel, notes
+            if medium == Medium::Article { "an" } else { "a" },
+            medium.noun(),
+            meta.title,
+            meta.channel,
+            if medium == Medium::Article {
+                "it"
+            } else {
+                "its transcript"
+            },
+            notes
         );
         let v = llm
             .generate_json(
@@ -686,7 +736,7 @@ impl MediaService {
             "youtube_playlist" => Some(format!(
                 "https://www.youtube.com/feeds/videos.xml?playlist_id={reference}"
             )),
-            "podcast_rss" => Some(reference.to_string()),
+            "podcast_rss" | "article_rss" => Some(reference.to_string()),
             _ => None,
         }
     }
@@ -746,9 +796,297 @@ impl MediaService {
         };
         Ok(match kind {
             "podcast_rss" => parse_rss_feed(&body),
+            "article_rss" => parse_article_feed(&body),
             _ => parse_youtube_feed(&body),
         })
     }
+
+    // ========================================================================
+    // Articles
+    // ========================================================================
+
+    /// Stable `:Media` id of an article: `art-` + FNV-1a of its URL. The same
+    /// function serves poll-time dedup and ingest, so the two line up.
+    pub fn article_id(url: &str) -> String {
+        format!("art-{:016x}", fnv1a(url))
+    }
+
+    /// Fetch a web article and reduce it to readable text.
+    ///
+    /// Reads at most [`ARTICLE_MAX_BYTES`]. A page whose extracted text is
+    /// under [`ARTICLE_MIN_CHARS`] fails with [`ARTICLE_UNEXTRACTABLE`]: a
+    /// paywall or a script-rendered page, permanent for that URL.
+    pub async fn fetch_article(&self, url: &str) -> anyhow::Result<(VideoMeta, String)> {
+        Self::validate_url(url)?;
+        let mut resp = self
+            .http
+            .get(url)
+            .header(
+                reqwest::header::USER_AGENT,
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/126 Safari/537.36",
+            )
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await?
+            .error_for_status()?;
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() >= ARTICLE_MAX_BYTES {
+                break;
+            }
+        }
+        let html = String::from_utf8_lossy(&bytes);
+        let text = extract_article_text(&html);
+        if text.len() < ARTICLE_MIN_CHARS {
+            anyhow::bail!(
+                "{ARTICLE_UNEXTRACTABLE} ({} chars) — paywalled, script-rendered, or not an article",
+                text.len()
+            );
+        }
+        let text: String = if text.len() > ARTICLE_MAX_CHARS {
+            let mut cut = ARTICLE_MAX_CHARS;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text[..cut].to_string()
+        } else {
+            text
+        };
+        Ok((article_meta(url, &html), text))
+    }
+}
+
+/// Whether an error from [`MediaService::fetch_article`] is permanent for that
+/// URL (no article on the page) rather than a network failure.
+pub fn is_unextractable(err: &str) -> bool {
+    err.contains(ARTICLE_UNEXTRACTABLE)
+}
+
+/// Whether two URLs are on the same site, ignoring a leading `www.`.
+pub fn same_site(a: &str, b: &str) -> bool {
+    let h = |u: &str| host_of(u).trim_start_matches("www.").to_lowercase();
+    let (ha, hb) = (h(a), h(b));
+    !ha.is_empty() && ha == hb
+}
+
+/// `content` of the first `<meta>` whose `property` or `name` is `key`.
+fn meta_content(html: &str, key: &str) -> Option<String> {
+    let tag_re = Regex::new(r"(?is)<meta\b[^>]*>").unwrap();
+    let key_re = Regex::new(&format!(
+        r#"(?i)\b(?:property|name)\s*=\s*["']{}["']"#,
+        regex::escape(key)
+    ))
+    .unwrap();
+    let content_re = Regex::new(r#"(?is)\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')"#).unwrap();
+    tag_re
+        .find_iter(html)
+        .map(|m| m.as_str())
+        .filter(|t| key_re.is_match(t))
+        .find_map(|t| {
+            content_re.captures(t).and_then(|c| {
+                c.get(1)
+                    .or_else(|| c.get(2))
+                    .map(|v| decode_entities(v.as_str().trim()))
+            })
+        })
+        .filter(|v| !v.is_empty())
+}
+
+/// Title, site and publish time of an article page, from its meta tags.
+fn article_meta(url: &str, html: &str) -> VideoMeta {
+    let title = meta_content(html, "og:title")
+        .or_else(|| {
+            Regex::new(r"(?is)<title[^>]*>(.*?)</title>")
+                .unwrap()
+                .captures(html)
+                .map(|c| decode_entities(c[1].trim()))
+        })
+        .unwrap_or_else(|| url.to_string());
+    let site = meta_content(html, "og:site_name")
+        .unwrap_or_else(|| host_of(url).trim_start_matches("www.").to_string());
+    let published_at = meta_content(html, "article:published_time")
+        .or_else(|| {
+            Regex::new(r#"(?is)<time\b[^>]*\bdatetime\s*=\s*["']([^"']+)["']"#)
+                .unwrap()
+                .captures(html)
+                .map(|c| c[1].to_string())
+        })
+        .unwrap_or_default();
+    VideoMeta {
+        id: MediaService::article_id(url),
+        title,
+        channel: site,
+        channel_id: String::new(),
+        url: url.to_string(),
+        published_at,
+        duration_secs: 0,
+        is_live: false,
+    }
+}
+
+/// Decode the HTML entities article text actually carries.
+fn decode_entities(s: &str) -> String {
+    let named = s
+        .replace("&nbsp;", " ")
+        .replace("&rsquo;", "\u{2019}")
+        .replace("&lsquo;", "\u{2018}")
+        .replace("&rdquo;", "\u{201D}")
+        .replace("&ldquo;", "\u{201C}")
+        .replace("&mdash;", "\u{2014}")
+        .replace("&ndash;", "\u{2013}")
+        .replace("&hellip;", "\u{2026}");
+    let numeric = Regex::new(r"&#(x[0-9a-fA-F]+|[0-9]+);").unwrap();
+    let decoded = numeric.replace_all(&named, |c: &regex::Captures| {
+        let n = &c[1];
+        let code = if let Some(hex) = n.strip_prefix('x').or_else(|| n.strip_prefix('X')) {
+            u32::from_str_radix(hex, 16).ok()
+        } else {
+            n.parse().ok()
+        };
+        code.and_then(char::from_u32)
+            .map(|ch| ch.to_string())
+            .unwrap_or_default()
+    });
+    // `&amp;` last, so "&amp;lt;" stays the literal text "&lt;".
+    unescape_xml(&decoded)
+}
+
+/// Readable text of an article page.
+///
+/// Drops non-content blocks (scripts, navigation, headers, footers, sidebars,
+/// forms, figures), takes the largest `<article>` — else `<main>`, else
+/// `<body>` — and keeps lines of at least six words that are not wholly the
+/// text of one link, so menus, bylines, share buttons and related-story cards
+/// fall away and paragraphs stay. Regex, not a DOM parser: the
+/// sources are server-rendered CMS pages, and a page this cannot read fails
+/// [`ARTICLE_MIN_CHARS`] visibly rather than yielding a wrong summary.
+pub fn extract_article_text(html: &str) -> String {
+    let mut h = Regex::new(r"(?s)<!--.*?-->")
+        .unwrap()
+        .replace_all(html, " ")
+        .into_owned();
+    for tag in [
+        "script", "style", "noscript", "svg", "nav", "header", "footer", "aside", "form", "iframe",
+        "figure", "button", "select",
+    ] {
+        let re = Regex::new(&format!(r"(?is)<{tag}\b[^>]*>.*?</{tag}\s*>")).unwrap();
+        h = re.replace_all(&h, " ").into_owned();
+    }
+    let largest = |tag: &str| -> Option<String> {
+        Regex::new(&format!(r"(?is)<{tag}\b[^>]*>(.*?)</{tag}\s*>"))
+            .unwrap()
+            .captures_iter(&h)
+            .map(|c| c[1].to_string())
+            .max_by_key(|s| s.len())
+    };
+    let region = largest("article")
+        .filter(|s| s.len() > 2_000)
+        .or_else(|| largest("main"))
+        .or_else(|| largest("body"))
+        .unwrap_or_else(|| h.clone());
+    // Text that lies wholly inside one link is navigation: "related
+    // articles" cards (title + excerpt wrapped in a single <a>), "read the
+    // summary in Chinese". It is another story's headline, which claim
+    // extraction would otherwise take as an assertion of this one. A real
+    // paragraph contains links but is longer than any of them.
+    let link_texts: Vec<String> = Regex::new(r"(?is)<a\b[^>]*>(.*?)</a>")
+        .unwrap()
+        .captures_iter(&region)
+        .map(|c| {
+            let inner = Regex::new(r"(?s)<[^>]+>").unwrap().replace_all(&c[1], " ");
+            decode_entities(&inner)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|t| t.split(' ').count() >= 4)
+        .collect();
+    let breaks = Regex::new(r"(?i)</(?:p|div|h[1-6]|li|blockquote|tr|section|dd|dt)\s*>|<br\s*/?>")
+        .unwrap()
+        .replace_all(&region, "\n");
+    let stripped = Regex::new(r"(?s)<[^>]+>")
+        .unwrap()
+        .replace_all(&breaks, " ");
+    let decoded = decode_entities(&stripped);
+    let mut lines: Vec<String> = Vec::new();
+    for line in decoded.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Cookie notices and unrendered client templates are page chrome.
+        let lower = line.to_lowercase();
+        if lower.contains("cookie") || line.contains("{{") {
+            continue;
+        }
+        if link_texts.iter().any(|t| t.contains(&line)) {
+            continue;
+        }
+        if line.split(' ').count() >= 6 && !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
+
+/// Parse an article feed (RSS 2.0 `<item>` or Atom `<entry>`) into
+/// [`FeedItem`]s in feed order. `url` is the article's page and `video_id` is
+/// [`MediaService::article_id`] of it, matching ingest-time `:Media` ids.
+fn parse_article_feed(xml: &str) -> Vec<FeedItem> {
+    let cdata = |raw: &str| -> String {
+        let raw = raw.trim();
+        let inner = raw
+            .strip_prefix("<![CDATA[")
+            .and_then(|r| r.strip_suffix("]]>"))
+            .unwrap_or(raw);
+        decode_entities(inner.trim())
+    };
+    let field = |block: &str, tag: &str| -> Option<String> {
+        Regex::new(&format!(r"(?is)<{tag}\b[^>]*>(.*?)</{tag}>"))
+            .unwrap()
+            .captures(block)
+            .map(|c| cdata(&c[1]))
+            .filter(|v| !v.is_empty())
+    };
+    let atom_link = Regex::new(r#"(?is)<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>"#).unwrap();
+
+    let (blocks, atom): (Vec<&str>, bool) = if xml.contains("<item") {
+        (xml.split("<item").skip(1).collect(), false)
+    } else {
+        (xml.split("<entry").skip(1).collect(), true)
+    };
+    let mut items = Vec::new();
+    for block in blocks {
+        let end = if atom { "</entry>" } else { "</item>" };
+        let block = block.split(end).next().unwrap_or(block);
+        let link = if atom {
+            atom_link
+                .captures_iter(block)
+                .find(|c| {
+                    let tag = c.get(0).map(|m| m.as_str()).unwrap_or("");
+                    !tag.contains("rel=\"") || tag.contains("rel=\"alternate\"")
+                })
+                .map(|c| decode_entities(c[1].trim()))
+        } else {
+            field(block, "link").or_else(|| field(block, "guid"))
+        };
+        let Some(link) = link.filter(|l| l.starts_with("http://") || l.starts_with("https://"))
+        else {
+            continue;
+        };
+        let title = field(block, "title").unwrap_or_default();
+        let published_at = ["pubDate", "published", "updated", "dc:date"]
+            .iter()
+            .find_map(|t| field(block, t))
+            .unwrap_or_default();
+        items.push(FeedItem {
+            video_id: MediaService::article_id(&link),
+            url: link,
+            title,
+            published_at,
+            channel_id: String::new(),
+        });
+    }
+    items
 }
 
 // ============================================================================
@@ -1251,6 +1589,141 @@ mod tests {
         assert_eq!(m.title, "My Talk");
         assert_eq!(m.channel, "local");
         assert_eq!(m.url, "file:///home/agent/media/My_Talk.m4a");
+    }
+
+    #[test]
+    fn parses_an_rss_article_feed() {
+        let xml = r#"<rss><channel><title>Bellingcat</title>
+            <item><title><![CDATA[Tracking a Drone &amp; Its Operators]]></title>
+              <link>https://www.bellingcat.com/news/2026/10/06/drone/</link>
+              <pubDate>Tue, 06 Oct 2026 16:00:41 +0000</pubDate></item>
+            <item><title>No link here</title></item>
+            <item><title>Guid only</title><guid isPermaLink="true">https://c4ads.org/reports/x/</guid></item>
+            </channel></rss>"#;
+        let items = parse_article_feed(xml);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Tracking a Drone & Its Operators");
+        assert_eq!(
+            items[0].url,
+            "https://www.bellingcat.com/news/2026/10/06/drone/"
+        );
+        assert_eq!(items[0].published_at, "Tue, 06 Oct 2026 16:00:41 +0000");
+        assert_eq!(items[0].video_id, MediaService::article_id(&items[0].url));
+        assert!(items[0].video_id.starts_with("art-"));
+        assert_eq!(items[1].url, "https://c4ads.org/reports/x/");
+    }
+
+    #[test]
+    fn parses_an_atom_article_feed_preferring_the_alternate_link() {
+        let xml = r#"<feed><entry><title>Report</title>
+            <link rel="self" href="https://x.org/feeds/1"/>
+            <link rel="alternate" type="text/html" href="https://x.org/2026/report.html"/>
+            <published>2026-10-01T10:00:00Z</published></entry></feed>"#;
+        let items = parse_article_feed(xml);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].url, "https://x.org/2026/report.html");
+        assert_eq!(items[0].published_at, "2026-10-01T10:00:00Z");
+    }
+
+    #[test]
+    fn article_feeds_use_the_reference_as_the_feed_url() {
+        assert_eq!(
+            MediaService::feed_url("article_rss", "https://www.bellingcat.com/feed/").as_deref(),
+            Some("https://www.bellingcat.com/feed/")
+        );
+    }
+
+    #[test]
+    fn extracts_article_paragraphs_and_drops_page_furniture() {
+        let html = r#"<html><head><title>T</title><script>var x = "a b c d e f g";</script></head>
+            <body><nav><a>Home</a> <a>About us and our very long menu item here</a></nav>
+            <header><h1>Site banner with many many words in it</h1></header>
+            <article><h1>Short title</h1>
+              <p>The first paragraph of the investigation explains what was found and how.</p>
+              <figure><figcaption>A caption that should not appear in the text at all</figcaption></figure>
+              <p>A second paragraph &mdash; with entities &amp; a quote &#8220;like this&#8221; inside it.</p>
+              <div class="share">Share</div>
+            </article>
+            <footer><p>Copyright notice that has more than six words in it</p></footer></body></html>"#;
+        let text = extract_article_text(html);
+        assert!(text.contains("The first paragraph of the investigation"));
+        assert!(text.contains(
+            "A second paragraph \u{2014} with entities & a quote \u{201C}like this\u{201D}"
+        ));
+        for gone in [
+            "var x",
+            "menu item",
+            "Site banner",
+            "caption",
+            "Copyright",
+            "Share",
+        ] {
+            assert!(!text.contains(gone), "{gone} leaked: {text}");
+        }
+    }
+
+    #[test]
+    fn related_story_cards_are_not_article_text() {
+        // C4ADS/OCCRP shape: a teaser whose title and excerpt are one link.
+        let html = r#"<main>
+            <p>The report maps a procurement network across three provinces and two shell firms.</p>
+            <p>It cites <a href="/a">customs records filed in 2025</a> as the primary evidence for the finding.</p>
+            <div class="card"><a href="/other"><h3>Tweaking the Record: Mapping a Chinese Fentanyl Network</h3>
+              <div class="excerpt">C4ADS built out the larger networks behind synthetic drug sales here</div></a></div>
+            </main>"#;
+        let text = extract_article_text(html);
+        assert!(text.contains("procurement network"));
+        assert!(
+            text.contains("customs records filed in 2025"),
+            "inline links stay: {text}"
+        );
+        assert!(!text.contains("Fentanyl"), "card title leaked: {text}");
+        assert!(
+            !text.contains("synthetic drug sales"),
+            "card excerpt leaked: {text}"
+        );
+    }
+
+    #[test]
+    fn article_meta_reads_og_tags_in_any_attribute_order() {
+        let html = r#"<meta content="Inside the Network" property="og:title">
+            <meta property='og:site_name' content='C4ADS'>
+            <meta property="article:published_time" content="2026-09-29T13:17:38+00:00">"#;
+        let m = article_meta("https://c4ads.org/reports/x/", html);
+        assert_eq!(m.title, "Inside the Network");
+        assert_eq!(m.channel, "C4ADS");
+        assert_eq!(m.published_at, "2026-09-29T13:17:38+00:00");
+        assert_eq!(
+            m.id,
+            MediaService::article_id("https://c4ads.org/reports/x/")
+        );
+        let bare = article_meta(
+            "https://www.citizenlab.ca/2026/10/x/",
+            "<title>Fallback &amp; Title</title>",
+        );
+        assert_eq!(bare.title, "Fallback & Title");
+        assert_eq!(bare.channel, "citizenlab.ca");
+    }
+
+    #[test]
+    fn same_site_ignores_www_and_paths() {
+        assert!(same_site(
+            "https://www.bellingcat.com/feed/",
+            "https://bellingcat.com/news/a"
+        ));
+        assert!(!same_site(
+            "https://www.occrp.org/en/feed",
+            "https://icij.org/x"
+        ));
+        assert!(!same_site("", ""));
+    }
+
+    #[test]
+    fn unextractable_errors_are_recognised() {
+        assert!(is_unextractable(&format!(
+            "{ARTICLE_UNEXTRACTABLE} (12 chars) — paywalled"
+        )));
+        assert!(!is_unextractable("error sending request: timed out"));
     }
 
     #[test]

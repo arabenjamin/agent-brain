@@ -260,7 +260,12 @@ mod tests {
 
     #[test]
     fn current_models_get_no_temperature() {
-        for m in ["claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"] {
+        for m in [
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-fable-5-1",
+        ] {
             assert!(!accepts_sampling(m), "{m} rejects sampling params");
         }
         for m in ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"] {

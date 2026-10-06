@@ -26,7 +26,7 @@ struct MediaSourceEntry {
     /// Optional explicit node name. Defaults to `"{group}-{ref}"`.
     #[serde(default)]
     name: Option<String>,
-    /// `youtube_channel` | `youtube_playlist` | `podcast_rss`
+    /// `youtube_channel` | `youtube_playlist` | `podcast_rss` | `article_rss`
     kind: String,
     /// channel_id / playlist_id / rss_url.
     #[serde(rename = "ref")]

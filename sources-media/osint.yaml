@@ -1,0 +1,47 @@
+# MediaSource watchlist — OSINT investigation feeds (kind: article_rss).
+#
+# Seeded ON CREATE only; graph-owned after (edit via `manage_media_source`).
+# Each new feed item becomes a "read article: <url>" Task routed to
+# chains/article-learning.yaml, capped per poll by MEDIA_WATCH_MAX_PER_SOURCE.
+#
+# Each feed was checked live on 2026-10-06 and its newest article extracted
+# cleanly. Left out on purpose: Oryx (feed's newest post is Dec 2024 — its
+# loss lists are edited in place), ISW (blocks automated fetches, 403),
+# Airwars (feed items are press coverage on other sites), SIPRI (feed mixes in
+# course and event notices), Arms Control Association (items are news-roundup
+# stubs). They stay searchable through the `osint` SourceList.
+name: osint
+description: OSINT investigators and investigative journalism, read as articles.
+sources:
+  - name: bellingcat
+    kind: article_rss
+    ref: https://www.bellingcat.com/feed/
+    description: Bellingcat — open-source investigations with published methods.
+  - name: c4ads
+    kind: article_rss
+    ref: https://c4ads.org/feed/
+    description: C4ADS — illicit networks, sanctions evasion, supply chains.
+  - name: citizen-lab
+    kind: article_rss
+    ref: https://citizenlab.ca/feed/
+    description: The Citizen Lab (University of Toronto) — spyware and digital espionage forensics.
+  - name: dfrlab
+    kind: article_rss
+    ref: https://dfrlab.org/feed/
+    description: DFRLab (Atlantic Council) — influence operations and disinformation. NATO-aligned institution.
+  - name: 38-north
+    kind: article_rss
+    ref: https://www.38north.org/feed/
+    description: 38 North (Stimson Center) — North Korea, including satellite-imagery analysis.
+  - name: occrp
+    kind: article_rss
+    ref: https://www.occrp.org/en/feed
+    description: OCCRP — organized crime and corruption investigations. High-volume feed.
+  - name: icij
+    kind: article_rss
+    ref: https://www.icij.org/feed/
+    description: ICIJ — cross-border leak investigations.
+  - name: the-record
+    kind: article_rss
+    ref: https://therecord.media/feed
+    description: The Record — cyber and intelligence news. Owned by Recorded Future, a threat-intel vendor.

@@ -1,92 +1,98 @@
 # Environment Variables
 
-Copy `.env.example` to `.env` and configure.
+Copy `.env.example` to `.env` and configure. **The brain container has no `env_file`** — every key it needs must also be passed through in `docker-compose.yml`, or it never reaches the process.
 
-## Core
+This is the full reference (moved verbatim from `CLAUDE.md` on 2026-10-06). The previous version of this file listed vLLM variables that no longer exist in the code; they were dropped.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection URI |
+Copy `.env.example` to `.env` and configure:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEO4J_URI` | `bolt://localhost:7688` | Neo4j connection URI |
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | *required* | Neo4j password |
-| `LOG_LEVEL` | `info` | `trace`/`debug`/`info`/`warn`/`error` |
-| `LOG_FORMAT` | `pretty` | `pretty`/`json` |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint. Set to `https://ollama.com` for Ollama Cloud |
+| `OLLAMA_LOCAL_URL` | `http://localhost:11434` | Local Ollama endpoint. Background scheduler jobs with `provider_hint="ollama"` use the local backend (see `LOCAL_LLM_BACKEND`). **Embeddings ALWAYS go here** (bge-m3), even when generation is on llama.cpp — a single-model `llama-server` doesn't serve `/api/embeddings`, so `build_local_llm_config` pins `embed()` to this URL regardless of backend |
+| `LOCAL_LLM_BACKEND` | `ollama` | Generation backend for background/scheduled jobs (`provider_hint:"ollama"` steps). `ollama` = host Ollama at `OLLAMA_LOCAL_URL`/`OLLAMA_LOCAL_MODEL`. `llamacpp` = the llama.cpp `llama-server` sidecar (OpenAI-compatible) at `LLAMACPP_URL`/`LLAMACPP_MODEL`. **Compose sets `llamacpp`.** Embeddings are unaffected either way. Selected in `services/llm.rs::build_local_llm_config`. See "llama.cpp backend" below |
+| `LLAMACPP_URL` | `http://localhost:8080` | `llama-server` OpenAI-compatible endpoint, used only when `LOCAL_LLM_BACKEND=llamacpp`. **Compose sets `http://llamacpp:8080`** (the sidecar service). One model per instance; context/GPU-offload are launch flags on the service, not per-request. **`-c` is divided by `-np`** — it is the total KV pool, not the per-request limit, whenever the server reports `kv_unified = 'false'` (which it does). Size it as *(per-request context × `-np`)* and read the startup line `srv load_model: initializing, n_slots = N, n_ctx_slot = M` — `n_ctx_slot` is the only number that matters, and `-c` alone does not tell you what it will be. Compose runs `-c 32768 -np 2` ⇒ 16384/request |
+| `LLAMACPP_MODEL` | `local` | Model label sent in the OpenAI request when `LOCAL_LLM_BACKEND=llamacpp` (falls back to `OLLAMA_LOCAL_MODEL`). Cosmetic/ledger only — a single-model `llama-server` serves whatever GGUF it was launched with (see the service `--alias`) regardless. **Compose sets `gemma4-e4b`** (Gemma-4-E4B; the `llamacpp` service `-hf`'s `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M`) |
+| `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model to use for text generation |
+| `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
+| `OLLAMA_API_KEY` | - | API key for Ollama Cloud authentication. Get one at `ollama.com/settings/keys` |
+| `OLLAMA_LOCAL_MODEL` | `gemma4:latest` (**compose sets `granite4:latest`**) | Model used exclusively for all background/scheduled jobs. Always routes to `OLLAMA_LOCAL_URL` — never touches cloud quota. The code default is stale: it names a model that does not fit this GPU. See "Pick the local model by residency, not by leaderboard" below |
+| `OLLAMA_NUM_CTX` | `16384` | Context window for **host-Ollama generation** (`options.num_ctx`). Ollama serves **4096 by default whatever the model claims and drops the overflow silently**, so every host-Ollama config must set this — leaving it unset is the bug, not the default. Measured 2026-09-11: 103 of 874 `reason` calls over 30 days came back with `tokens_in` sitting exactly on 4096 (granite4 58, gemma4 45; the llama.cpp and cloud paths zero) — answered from a clipped prompt, no error, no marker. Applied in `llm::build_local_llm_config` AND `model_router`'s ollama branch (which builds on `LlmConfig::default()` and previously set `base_url`/`keep_alive` but not this, so a capability-routed granite4 ran at 4096). Not applied to llama.cpp, which fixes context at launch (`-c`/`-np`) and ignores a per-request value. Raising it costs KV-cache VRAM on the shared GPU |
+| `OLLAMA_LOCAL_TIMEOUT_SECS` | `600` | Request timeout for the **local** background model only; every cloud call keeps the shared 120s default. A cloud model that has not answered in 120s is not going to; a local one on a shared consumer GPU routinely is. Non-positive or unparseable values warn and fall back to the default rather than disabling the timeout. See "The local model has its own timeout" below |
+| `OLLAMA_KEEP_ALIVE` | - | How long Ollama keeps a model resident in VRAM after a request, as a **Go duration** (`30m`, `2h`, `1h30m`). A negative duration (`-1m`) pins it indefinitely. Unset leaves Ollama's own 5m default. Sent on every generate/chat/**embeddings** request; ignored by non-Ollama providers. Compose sets `30m`. Malformed values are dropped with a warning (`validate_go_duration` in `config.rs`) rather than 400-ing every LLM call |
+| `TZ` | *(unset ⇒ UTC)* | IANA zone the container runs in (`America/Detroit`). Everything the brain **says** about time is local; everything it **stores** stays UTC. Unset means the brain's "today" is UTC's, which is wrong for part of every day outside UTC — see "The brain's sense of time" below |
+| `BRAIN_TIMEZONE` | *(falls back to `TZ`)* | Overrides `TZ` for the brain's own clock only, when the image's zone must differ from the brain's |
+| `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
+| `LOG_FORMAT` | `pretty` | Log format (pretty/json) |
+| `CHAT_DEFAULT_PROFILE` | `general` | Context profile used when a chat request names none. **Compose sets `GeneralDefault-Orchrestator`** (the local-E4B front door). When set non-empty the chat path skips `auto_assign` entirely — see "The front door" below. Set empty to restore keyword routing |
+| `MCP_TOOL_PROFILE` | - | Bounds MCP `tools/list` to one profile's allowlist (`tools/call` is NOT filtered). **Compose sets `GeneralDefault-Orchrestator`** ⇒ 7 tools instead of ~42, which keeps a connecting client's context small. Any profile used here MUST include `run_agent`: `delegate` is chat-loop only and never registered, so without it the client has no dispatch path |
+| `MCP_TRANSPORT` | `stdio` | MCP transport type (stdio/http) |
+| `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address (for http transport) |
+| `MCP_API_KEY` | - | API key for HTTP transport authentication |
+| `DATASET_DIR` | `./datasets` | Directory for training data export (`digest_experiences`) |
+| `TELEMETRY_DB_PATH` | - | Path to DuckDB file for interaction logging (enables `SleepSkill`). **Reading it from the host: copy the `.wal` alongside the `.duckdb`.** The brain holds the write lock, so analysis runs against a copy — and DuckDB keeps recent commits in `telemetry.duckdb.wal` until a checkpoint, so copying the `.duckdb` alone silently returns a database that is correct but stale by minutes to hours. It does not error; it reports zero rows for the window you are asking about, which is indistinguishable from "nothing ran" and is exactly the reading you take when investigating whether something is still running. Copy both files (same basename) and open the copy `-readonly` |
+| `SEARCH_ENGINE_ORDER` | `exa,tavily,serper,serpapi,google,searxng,brave` | Comma-separated `search_web` failover ladder, most-preferred first. SearXNG is the last resort before Brave (uncapped card) and its answers carry a `⚠ SEARXNG FALLBACK` banner. Engines without a key are dropped, so listing one costs nothing. Each engine is tried until one answers, so a single exhausted quota no longer fails the call. Reorder to change preference without a rebuild |
+| `SEARXNG_URL` | `http://searxng:8080` | Base URL of the self-hosted SearXNG metasearch sidecar — the default first rung of the ladder. No API key, no quota. Also readable from a `searxng` `ApiContext` node (`base_url` field) |
+| `SERPAPI_KEY` | - | SerpApi key for `search_web` tool. Free tier is **250 searches/month** (re-verified 2026-09-04; the earlier "100" was wrong). Backs both the `serpapi` (Google organic) and `google_news` engines, which **share one account quota**. The daily news brief now requests `engine: google_news` on its 7 news searches (~210/month), so this is a primary for news; general/background mining stays on unmetered SearXNG |
+| `BRAVE_API_KEY` | - | Brave Search API key for `search_web` tool. $5/month of free credit (~1,000 queries) but a **card is required and there is no spending cap** — last rung by default, and deliberately left unset. Passed through in compose |
+| `TAVILY_API_KEY` | - | Tavily search (`search_tavily`). **1,000 searches/month, refills, no card** — overage impossible. First keyed rung. Snippets clipped to 500 chars (`TAVILY_SNIPPET_CHARS`; raw `content` is ~1,500). Quota: HTTP 432/433. Passed through in compose |
+| `EXA_API_KEY` | - | Exa search (`search_exa`, `x-api-key`). **$10 credit/month, refills, no card.** Requests a ~400-char highlight per result (Exa returns no snippet otherwise; contents bill per result). Quota: HTTP 402. Passed through in compose |
+| `SERPER_API_KEY` | - | Serper (Google results, `search_serper`). **2,500 queries ONCE, no refill, no card** — after the refilling engines so it lasts. Quota: "Not enough credits". Passed through in compose |
+| `GOOGLE_API_KEY` | - | Google Custom Search API key for `search_web` tool. **Closed to new customers and discontinued 2027-01-01** (verified 2026-09-26) — a new key cannot be obtained, so this rung stays unconfigured and is dropped from the ladder. Free tier was 100 queries/day |
+| `GOOGLE_CX` | - | Google Custom Search Engine ID for `search_web` tool |
+| `CLOUD_TIER` | `1` | Legacy billing switch for the routing policy (`services/routing.rs`), used when `ROUTING_BILLING` is empty: `0` = local only; `1` = local + free tiers; `2` = local + free + paid. **Compose sets `2`.** It no longer decides alone: the work's `data_class` must fit each provider's `data_policy`, and paid also needs `ROUTING_PAID_FOR` plus a spend cap. Since 2026-10-02 public and private reasoning both go to `gpt-oss:120b-cloud`; `gemini-2.5-flash` (rank 98) is a later rung. A 429 walks active config → local, each rung judged by the policy (`build_fallback_chain`) |
+| `ROUTING_BILLING` | *(empty ⇒ `CLOUD_TIER` mapping)* | Comma list of billing classes the routing policy may use at all: `local`, `free`, `paid`. Overrides `CLOUD_TIER` when non-empty. Passed through in compose |
+| `ROUTING_PAID_FOR` | *(empty ⇒ nothing may spend)* | Purposes allowed to use a `billing: paid` provider: any of `chat`, `subagent`, `background`. **`chat,background,subagent` since 2026-10-05** — `subagent` so a `deep dive (hard):` task can run `deep-diver-hard` on Claude Sonnet; it is the only spawnable profile pinned to a paid model, and it is `explicit_only` (see Curiosity engine). `chat,background` from 2026-10-02 (set in `.env`; empty from 2026-09-15, `background` only earlier on 10-02). Without `chat`, a profile pinned to an Anthropic model is refused (`⚙ profile model … refused`, WARN `routing policy refused the profile's model_preference`) and the turn silently runs on the chat default — chat had not reached Anthropic since 2026-09-07. Only steps asking for `deep_reasoning` reach Anthropic — see "Paid synthesis" under Externalized Agent Chains; a paid provider without a `spend` cap stays unroutable regardless. Passed through in compose |
+| `MISTRAL_API_KEY` | - | Key for the `mistral` provider in `models.yaml` `providers:` (named there by `api_key_env`; the YAML never holds a key). Free "Experiment" plan, declared **`data_policy: may_train`**: inputs and outputs may train Mistral models. Passed through in `docker-compose.yml`. **Only `data_class: public` work may reach it**, and its models rank 350+, behind every `no_log` model |
+| `OPENROUTER_API_KEY` | - | Key for the `openrouter` provider (`https://openrouter.ai/api` + `/v1/chat/completions`). `:free` models allow 20 rpm / 50 requests/day without credits and are declared **`may_train`** (public work only). The routing policy also refuses it for sub-agent loops (declared rpd below 500). A 429 may come from **one model's upstream host** ("temporarily rate-limited upstream", seen 2026-09-13), not the account, so a cooldown belongs on the model, not the provider |
+| `SCHEDULER_INTERVAL_SECS` | `300` | How often the scheduler polls for pending tasks (seconds) |
+| `SCHEDULER_ENABLED` | `true` | Set to `false` to start with the autonomous scheduler disabled |
+| `CHAINS_DIR` | `./chains` | Directory containing `*.yaml` SchedulerChain definitions. Seeded by `init-db` and force-refreshed on the first scheduler tick after every startup (YAML edits propagate on restart) |
+| `SCHEDULES_DIR` | `./schedules` | Directory containing `*.yaml` ScheduledTask definitions. Seeded by `init-db` and on every startup. A missing/unreadable directory is a **fatal startup error**. See "ScheduledTask ownership" below |
+| `SOURCES_DIR` | `./sources` | Directory containing `*.yaml` SourceList definitions (approved-domain lists for `search_web`; a list with `role: platform` / `role: state_media` classifies claim evidence instead). Seeded **ON CREATE only** — the graph owns each list after first creation; runtime edits via `neo4j_query` persist across restarts. Delete a node to re-seed it from YAML. Missing directory is non-fatal |
+| `SOURCES_MEDIA_DIR` | `./sources-media` | Directory containing `*.yaml` MediaSource watchlist definitions (channels/playlists to watch, podcast and article RSS feeds). Seeded **ON CREATE only** — graph-owned after first creation, like SourceLists. Missing directory is non-fatal |
+| `YT_DLP_PATH` | `yt-dlp` | Path to the `yt-dlp` binary used by the Media Learning skill for metadata + caption extraction |
+| `FFMPEG_PATH` | `ffmpeg` | Path to `ffmpeg`. **Installed in the image and REQUIRED whenever `WHISPER_PROVIDER` is enabled** — a caption-less video reaches yt-dlp's audio download, YouTube serves it as m3u8, and only ffmpeg can mux that. Without it the job fails `m3u8 download detected but ffmpeg could not be found`, retries 3×, and dead-letters (3 such jobs on 2026-09-11, from a Dockerfile comment that outlived the condition it described) |
+| `MEDIA_CAPTION_LANG` | `en` | Preferred caption language for `ingest_media` / `fetch_transcript` |
+| `MEDIA_MAX_DURATION_SECS` | `10800` | Skip videos longer than this (cost guard; `0` = unlimited) |
+| `MEDIA_WATCH_ENABLED` | `false` | Enable autonomous channel polling. When unset/false, `poll_media_sources` is a no-op (the `media-watch` schedule is inert) |
+| `MEDIA_WATCH_MAX_PER_SOURCE` | `3` | Max new videos enqueued per source per poll (first-poll stampede guard). A fresh channel's RSS carries ~15 recent uploads; this caps how many become tasks at once |
+| `MEDIA_DISCOVERY_ENABLED` | `false` | Enable autonomous watchlist curation. When unset/false, `discover_media_sources` is a no-op (the `discover-media-sources` weekly schedule is inert) |
+| `GAP_TASKS_DAILY_MAX` | `20` | Ceiling on `fill knowledge gap:` tasks `spawn_gap_tasks` creates per local day, across every source. 214 were created in the week to 2026-10-01 (~30/day), each a full search+reason chain. Passed through in compose |
+| `MEDIA_DISCOVERY_MAX` | `3` | Max new sources staged per discovery run. Discovered channels/podcasts are added **inactive** (`active:false`) for human review — never polled until activated |
+| `WHISPER_PROVIDER` | `none` | Whisper backend for caption-less media. `none` = disabled (videos without captions error cleanly). `http`/`local`/`openai` = POST audio to an **OpenAI-compatible** `/audio/transcriptions` endpoint at `WHISPER_BASE_URL` (intended for a self-hosted server — the `whisper` compose sidecar). Phase 4 — implemented |
+| `WHISPER_BASE_URL` | - | Base URL of the self-hosted Whisper server (e.g. `http://whisper:8000/v1`). Required when `WHISPER_PROVIDER` is enabled |
+| `WHISPER_MODEL` | `Systran/faster-whisper-base` | Whisper model name sent to the endpoint |
+| `WHISPER_API_KEY` | - | Optional bearer token for the Whisper endpoint (the self-hosted sidecar needs none) |
+| `SANDBOX_URL` | - | Base URL of the code-execution sandbox (compose: `http://sandbox:8000`). **Unset ⇒ `execute_code` is not registered at all**, so a deployment without the sandbox service lacks the tool rather than failing every call |
+| `RUST_SANDBOX_URL` | - | Base URL of the offline Rust compile/test sandbox (compose: `http://rust-sandbox:8000`). **Unset ⇒ `execute_code` offers no `language: "rust"`**; with neither this nor `SANDBOX_URL` set the tool is not registered. Crates come from a read-only cache fetched at image build from `rust-sandbox/crates/Cargo.toml` — add a crate there and rebuild |
+| `CODEBASE_DIR` | auto-detected | Root of the codebase for `CodebaseSkill`. Auto-detected by walking up from cwd until `Cargo.toml` is found |
+| `WORKSPACE_DIR` | - | Writable workspace directory for generated code, scripts, and experiments. Enables `write_workspace_file` and `list_workspace_files` tools. Injected into Chat Agent system prompt. |
+| `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
+| `APITUBE_API_KEY` | - | ApiTube news API key. Read by the seeded `apitube` `ApiContext` (header `X-API-Key`) and injected into `http_request` with `context_name="apitube"`. The Daily Brief uses it (`.../v1/news/everything`) alongside `google_news`. Free tier **100 req/day**. Passed through in `docker-compose.yml` (no `env_file` on the brain). **Gotchas (verified 2026-09-08):** each `results[]` article carries 33 fields incl. `body`+`body_html`+`story` (full text ×3) ≈ **8K tokens/article**, and `fields`/`response.fields` are IGNORED — un-trimmable, so keep `per_page` tiny (2) or it overflows a 131K context. Topical filtering works ONLY via `title=<kw>` (`category`/`source.country.code` return unrelated/global). Language is `language.code=en` (plain `language=en` is silently ignored) |
+| `ACLED_EMAIL` / `ACLED_PASSWORD` | - | ACLED account login for `acled_events`. ACLED has no API keys: the client does an OAuth password grant (`client_id=acled`; access token 24 h, refresh 14 d, cached in memory, re-login on 401). Both unset ⇒ the tool is not registered. Put them in `.env`; passed through in compose |
+| `CHAT_LLM_PROVIDER` | *(same as brain)* | Override the LLM provider for human-facing `/chat` sessions. Accepted values: `ollama`, `ollama-cloud`, `anthropic`, `gemini`. When unset, chat uses the same provider as the brain. |
+| `CHAT_LLM_MODEL` | *(same as brain)* | Override the model name for chat (e.g. `claude-opus-4-5`). When unset, chat uses the brain's model. |
+| `CHAT_API_KEY` | *(same as brain)* | Override the API key used by the chat LLM. When unset, inherits the brain's key. |
+| `CHAT_LLM_BASE_URL` | *(same as brain)* | Override the base URL for the chat LLM endpoint. |
+| `CHAT_SYNTHESIS_PROVIDER` | *(unset ⇒ OFF)* | Enables the **worker/voice split** for `/chat`: the model in `CHAT_LLM_MODEL` runs the tool loop, and this provider composes the final reply from what it gathered. **Compose leaves it EMPTY since 2026-09-11** — it existed to replace `NO_ANSWER_AFTER_TOOLS` when gpt-oss ran the loop, and the local E4B front door speaks for itself faster (21.9s vs ~28s) with **better provenance**: measured, the voice pass rewrote "based on what the knowledge-worker found" into the brain's own voice, stripping the attribution `TOOL-RESULT RULE` exists to preserve. Turning it on re-adds one cloud call per turn. See "The worker/voice split" below |
+| `CHAT_SYNTHESIS_MODEL` | `gemma4:31b-cloud` | Model used for the synthesis pass. Only consulted when `CHAT_SYNTHESIS_PROVIDER` is set |
+| `SUBAGENT_ENABLED` | `false` | Phase 0 spike for in-chat sub-agent delegation. When `true`/`1`/`yes`, the chat orchestrator gains a `delegate(agent, task)` pseudo-tool (intercepted in `run_ollama_cloud_loop`, not dispatched to ToolHandler) that runs a bounded, read-only worker sub-agent from a curated roster (`researcher`/`code-analyst`/`knowledge-worker`) and folds its findings back into the turn. Depth cap 1 (sub-agents get no `delegate`). Default OFF. See `project-docs/SUBAGENT_ORCHESTRATION_PLAN.md` |
 
-## LLM Providers
+## Other variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | `ollama`/`anthropic`/`gemini`/`vllm` |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `qwen3.5:4b` | Model for text generation |
-| `OLLAMA_EMBED_MODEL` | — | Embeddings model (falls back to `OLLAMA_MODEL`) |
+| `LLM_PROVIDER` | `ollama` | `ollama`/`anthropic`/`gemini` |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `ANTHROPIC_MODEL` | — | Anthropic model name |
 | `GEMINI_API_KEY` | — | Gemini API key |
 | `GEMINI_MODEL` | — | Gemini model name |
-| `VLLM_URL` | `http://localhost:8000` | vLLM / OpenAI-compat server URL |
-| `VLLM_MODEL` | — | Inference model (recommended: `Qwen/Qwen3-8B-AWQ` for 8 GB GPU) |
-| `VLLM_API_KEY` | — | Optional Bearer token for secured deployments |
-| `VLLM_EMBED_URL` | — | Separate vLLM endpoint for embeddings (e.g. `http://localhost:8001`) |
-| `VLLM_EMBED_MODEL` | — | Embedding model (recommended: `BAAI/bge-m3`, 1024-dim) |
-
-## MCP Transport
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_TRANSPORT` | `stdio` | `stdio`/`http` |
-| `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind address |
-| `MCP_API_KEY` | — | Bearer token for HTTP auth |
-
-## Features
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATASET_DIR` | `./datasets` | Training data export directory (`digest_experiences`) |
-| `TELEMETRY_DB_PATH` | — | DuckDB file path (enables `SleepSkill`) |
-| `SERPAPI_KEY` | — | SerpApi key for `search_web` |
-| `BRAVE_API_KEY` | — | Brave Search API key |
-| `GOOGLE_API_KEY` | — | Google Custom Search API key |
-| `GOOGLE_CX` | — | Google Custom Search Engine ID |
-| `SCHEDULER_INTERVAL_SECS` | `300` | Autonomous scheduler poll interval (seconds) |
-| `SCHEDULER_ENABLED` | `true` | Set `false` to start with scheduler disabled |
 | `IDLE_SLEEP_AFTER_TICKS` | `3` | Consecutive idle ticks before entering sleep mode |
 | `SLEEP_INTERVAL_SECS` | `1800` | Scheduler tick interval while in sleep mode (seconds) |
 | `KNOWLEDGE_SNAPSHOT_DIR` | `./snapshots` | Directory for knowledge graph snapshots |
-| `AUTO_SNAPSHOT_BEFORE_CONSOLIDATION` | `true` | Snapshot before `consolidate_memories` |
-| `AUTO_SNAPSHOT_BEFORE_PRUNE` | `false` | Snapshot before `prune_old_notes` |
-
----
-
-## Local Development
-
-```bash
-# Start Neo4j and Ollama
-docker compose up -d
-
-# Initialize database schema
-cargo run -- init-db
-
-# Run the application
-cargo run
-```
-
-## Docker Deployment (HTTP Transport)
-
-```bash
-# Build and start all services (Neo4j + MCP Server)
-docker compose up -d --build
-
-# With API key authentication
-MCP_API_KEY=your-secret-key docker compose up -d --build
-
-# View logs
-docker compose logs -f agent-brain
-
-# Health check
-curl http://localhost:3000/health
-```
-
-**OpenWebUI Integration:**
-- MCP URL: `http://host.docker.internal:3000/mcp` (from Docker) or `http://localhost:3000/mcp` (from host)
-- Authentication: Bearer token (if `MCP_API_KEY` is set)

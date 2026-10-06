@@ -32,7 +32,7 @@ pub struct MediaRecord {
 #[derive(Debug, Clone)]
 pub struct MediaSourceRecord {
     pub name: String,
-    /// `youtube_channel` | `youtube_playlist` | `podcast_rss`
+    /// `youtube_channel` | `youtube_playlist` | `podcast_rss` | `article_rss`
     pub kind: String,
     /// channel_id / playlist_id / rss_url (stored as the `ref` property).
     pub reference: String,

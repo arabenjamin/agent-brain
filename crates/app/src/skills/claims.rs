@@ -242,8 +242,12 @@ impl ClaimSkill {
             }
         };
 
+        // A SearXNG answer leads with a fallback banner; the results follow it.
+        let (searxng_fallback, results_text) =
+            crate::services::web_result::strip_fallback_banner(&raw_evidence);
+
         // Search pages that echo the claim back are the query, not evidence.
-        let (evidence_text, echoes_dropped) = claims::drop_echo_results(&raw_evidence, claim_text);
+        let (evidence_text, echoes_dropped) = claims::drop_echo_results(results_text, claim_text);
         if echoes_dropped > 0 {
             info!(claim_id = %claim_id, dropped = echoes_dropped, "Dropped echo results before judging");
         }
@@ -257,12 +261,19 @@ impl ClaimSkill {
                 "claim": claim_text,
                 "verdict": "no_evidence_found",
                 "echo_results_dropped": echoes_dropped,
+                "searxng_fallback": searxng_fallback,
                 "status": "unverified"
             });
         }
 
         // 2. Record the evidence itself, so the verdict is auditable later.
-        let evidence_note = format!("Evidence gathered for claim: {claim_text}\n\n{evidence_text}");
+        let via = if searxng_fallback {
+            " (via the SearXNG fallback — keyed engines were unavailable)"
+        } else {
+            ""
+        };
+        let evidence_note =
+            format!("Evidence gathered for claim{via}: {claim_text}\n\n{evidence_text}");
         let evidence_id = match self
             .neo4j
             .store_episodic_note(&evidence_note, Some("claim_evidence"))
@@ -367,6 +378,7 @@ impl ClaimSkill {
             "cited_sources": cited,
             "counted_domains": domains,
             "echo_results_dropped": echoes_dropped,
+            "searxng_fallback": searxng_fallback,
             "evidence_recorded": attached,
             "reasoning": verdict.reasoning,
             "status": status

@@ -141,7 +141,10 @@ impl AcledClient {
             .ok()
             .filter(|v| !v.is_empty())?;
         Some(Self {
+            // Explicit agent: ACLED's Cloudflare blocks some default ones
+            // outright (error 1010 for Python's urllib, 2026-10-06).
             http: reqwest::Client::builder()
+                .user_agent(concat!("agent-brain/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),
@@ -257,13 +260,33 @@ impl AcledClient {
                 .await
                 .with_context(|| format!("ACLED returned HTTP {status} with a non-JSON body"))?;
             if !status.is_success() {
-                return Err(anyhow!("ACLED HTTP {status}: {}", error_text(&body)));
+                return Err(anyhow!(
+                    "{}",
+                    read_error(status.as_u16(), &error_text(&body))
+                ));
             }
             return rows_of(&body);
         }
         Err(anyhow!(
             "ACLED rejected a fresh token (HTTP 401) — check the account's API access"
         ))
+    }
+}
+
+/// A read failure, with the likely cause named. A 403 after a successful
+/// login is ACLED's access tier, not the request: the free "Open" tier (the
+/// one any generic-domain address such as gmail.com gets) has no API access,
+/// and its answer to every read is a bare "Access denied" (2026-10-06).
+fn read_error(status: u16, message: &str) -> String {
+    if status == 403 {
+        format!(
+            "ACLED HTTP 403: {message}. The login succeeded, so this account is not \
+             authorized for API data: ACLED's Open tier (assigned to generic email \
+             domains such as gmail.com) has no API access; the Research tier and above do. \
+             Access is changed by contacting ACLED, not by changing the query."
+        )
+    } else {
+        format!("ACLED HTTP {status}: {message}")
     }
 }
 
@@ -456,6 +479,13 @@ mod tests {
         assert_eq!(param(&p, "event_type"), Some("Battles"));
         assert_eq!(param(&p, "actor1"), Some("Wagner"));
         assert_eq!(param(&p, "limit"), Some("2000"), "clamped to MAX_LIMIT");
+    }
+
+    #[test]
+    fn a_403_after_login_names_the_access_tier() {
+        let m = read_error(403, "Access denied");
+        assert!(m.contains("Open tier") && m.contains("not authorized for API data"));
+        assert_eq!(read_error(500, "boom"), "ACLED HTTP 500: boom");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 // Before the 2026-10-06 verifier fix, a "supports" verdict needed only (a) a
 // cited link that was among the results and (b) any two distinct result
 // domains, cited or not. So the judge's single cited source was the whole
-// corroboration, and 97 of the 269 since 2026-09-26 were a Facebook/Instagram/
+// corroboration, and 86 of the 269 since 2026-09-26 were a Facebook/Instagram/
 // YouTube-type post or a search engine's own results page echoing the claim
 // verbatim ("Search for <claim> with Ecosia"). This resets those.
 //

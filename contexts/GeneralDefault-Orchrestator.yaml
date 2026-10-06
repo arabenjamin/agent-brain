@@ -102,11 +102,6 @@ pre_load_query: |-
     AS content
   ORDER BY t.priority ASC, t.due_at ASC
   LIMIT 15
-# 2026-10-05: back on gemma4:31b-cloud after a Sonnet pin (10-02..10-05).
-# Paid Sonnet is kept for work marked hard ("deep dive (hard):"); routing does
-# not need it, and gemma4 delegated reliably as the front door before.
-# Ollama Cloud is no_log, so private turns never leave it. gpt-oss next (0
-# failures in 79 calls over the week to 10-02), then gemini-2.5-flash.
 model_preference: gemma4:31b-cloud
 provider_hint: ollama-cloud
 spawnable: false

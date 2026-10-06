@@ -198,6 +198,29 @@ function sessionLabel(s: Session): { label: string; datedInLabel: boolean } {
 
 // ── Event bubble ─────────────────────────────────────────────────────────────
 
+/**
+ * The model that actually answered this turn, from the server's own `⚙`
+ * announcements: the opening `⚙ provider=… | model=…` line, then any fallback
+ * (`… continuing on <model> (<provider>)`, `… retrying on <model> (<provider>)`).
+ * The last one wins. A sub-agent's lines arrive prefixed `[agent]`, so they never
+ * match — the worker's model is not the answerer's.
+ *
+ * The label used to be the panel's selected chat model, stamped when the message
+ * was created. With a profile pinning another model (the front door on
+ * claude-sonnet-5) every reply was labelled gpt-oss — the delegated sub-agent's
+ * model — so a Sonnet answer read as the sub-agent's.
+ */
+function answeringModel(events: ChatEvent[]): string | null {
+  let model: string | null = null;
+  for (const e of events) {
+    if (e.type !== "thinking" || !e.content?.startsWith("⚙")) continue;
+    const opening = e.content.match(/^⚙ provider=[^ |]+ \| model=([^ |]+)/);
+    const fallback = e.content.match(/^⚙ .*?(?:continuing|retrying) on (\S+) \(/);
+    model = opening?.[1] ?? fallback?.[1] ?? model;
+  }
+  return model;
+}
+
 function EventBubble({ evt, isActive }: { evt: ChatEvent; isActive?: boolean }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -1006,7 +1029,8 @@ export default function ChatPanel({
     const displayText = finalText || tokenText;
     const streamEvents = nonDoneEvents.filter((e) => e.type !== "message" && e.type !== "token");
     const showTyping = !m.done && streaming && displayText.length === 0 && streamEvents.length === 0;
-    const modelLabel = m.model ? m.model.split("::")[1] || m.model : "";
+    const modelLabel =
+      answeringModel(m.events) ?? (m.model ? m.model.split("::")[1] || m.model : "");
 
     return (
       <div key={m.id} className="chat-msg assistant">

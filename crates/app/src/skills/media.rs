@@ -20,6 +20,7 @@ use tracing::{info, warn};
 
 use crate::repository::{MediaRecord, Neo4jClient, TelemetryClient};
 use crate::services::MediaService;
+use crate::services::media::{Medium, is_unextractable, same_site};
 use crate::services::traits::{KnowledgeStore, LlmProvider};
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
@@ -78,6 +79,27 @@ impl MediaSkill {
         }
     }
 
+    fn ingest_article_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "ingest_article".to_string(),
+            description:
+                "Read a web article: fetch the page, extract its readable text, summarize it, \
+                 record a :Media dedup node linked to the article_rss source it came from, and \
+                 return a structured summary with key concepts. `url` may be a bare URL or a goal \
+                 like 'read article: <url>'. A paywalled or script-rendered page fails and is \
+                 recorded so it is not retried."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Article URL, or text containing one"},
+                    "force": {"type": "boolean", "description": "Re-summarize even if already ingested (default false)"}
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
     fn fetch_transcript_def() -> ToolDefinition {
         ToolDefinition {
             name: "fetch_transcript".to_string(),
@@ -107,7 +129,7 @@ impl MediaSkill {
                 "type": "object",
                 "properties": {
                     "source": {"type": "string", "description": "MediaSource name, a channel_id/playlist_id, or a podcast feed URL"},
-                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss"], "description": "Explicit source kind"},
+                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss", "article_rss"], "description": "Explicit source kind"},
                     "ref": {"type": "string", "description": "Explicit channel_id / playlist_id / podcast feed URL"},
                     "limit": {"type": "integer", "description": "Max items to return (default 15)"}
                 }
@@ -139,7 +161,7 @@ impl MediaSkill {
                 "properties": {
                     "action": {"type": "string", "enum": ["list", "upsert", "delete"], "description": "Operation (default list)"},
                     "name": {"type": "string", "description": "Watchlist entry name"},
-                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss"]},
+                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss", "article_rss"]},
                     "ref": {"type": "string", "description": "channel_id / playlist_id / rss_url"},
                     "description": {"type": "string"},
                     "active": {"type": "boolean", "description": "Whether the watch loop polls it (default true)"}
@@ -232,7 +254,10 @@ impl MediaSkill {
             }));
         }
 
-        let (summary, key_concepts) = match self.svc.summarize(&meta, &transcript, &self.llm).await
+        let (summary, key_concepts) = match self
+            .svc
+            .summarize(&meta, &transcript, &self.llm, Medium::Video)
+            .await
         {
             Ok(s) => s,
             Err(e) => return ToolCallResult::error(format!("Summarization failed: {e}")),
@@ -309,6 +334,105 @@ impl MediaSkill {
         }
 
         ToolCallResult::success_json(out)
+    }
+
+    async fn handle_ingest_article(&self, arguments: Option<Value>) -> ToolCallResult {
+        let input: IngestArticleInput = match parse_args(arguments) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let url = MediaService::extract_first_url(&input.url)
+            .unwrap_or_else(|| input.url.trim().to_string());
+        let id = MediaService::article_id(&url);
+
+        if !input.force.unwrap_or(false) && self.neo4j.media_exists(&id).await.unwrap_or(false) {
+            return ToolCallResult::success_json(json!({
+                "already_ingested": true,
+                "article_id": id,
+                "url": url,
+                "message": "Already ingested; pass force=true to re-summarize."
+            }));
+        }
+
+        // The feed that surfaced it, by site: an article's link and its feed
+        // share a host (www.bellingcat.com/feed/ → www.bellingcat.com/news/…).
+        let source_name = self
+            .neo4j
+            .list_media_sources(false)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|s| s.kind == "article_rss" && same_site(&s.reference, &url))
+            .map(|s| s.name);
+
+        let (meta, text) = match self.svc.fetch_article(&url).await {
+            Ok(t) => t,
+            Err(e) => {
+                let msg = e.to_string();
+                // Permanent for this URL: record it so the next poll does not
+                // turn it into a Task again. A network error records nothing.
+                if is_unextractable(&msg) {
+                    let record = MediaRecord {
+                        id: id.clone(),
+                        url: url.clone(),
+                        title: String::new(),
+                        channel: String::new(),
+                        channel_id: String::new(),
+                        published_at: String::new(),
+                        duration_secs: 0,
+                        transcript_source: "unextractable".to_string(),
+                        source_media_name: source_name.clone().unwrap_or_default(),
+                    };
+                    if let Err(e) = self.neo4j.upsert_media(&record).await {
+                        warn!(error = %e, "ingest_article: failed to record unextractable page");
+                    }
+                }
+                if let Some(ref t) = self.telemetry {
+                    let _ =
+                        t.log_knowledge_gap(&url, Some("ingest_article"), "article_unavailable");
+                }
+                return ToolCallResult::error(format!("Could not read article: {msg}"));
+            }
+        };
+
+        let (summary, key_concepts) = match self
+            .svc
+            .summarize(&meta, &text, &self.llm, Medium::Article)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(format!("Summarization failed: {e}")),
+        };
+
+        let record = MediaRecord {
+            id: meta.id.clone(),
+            url: meta.url.clone(),
+            title: meta.title.clone(),
+            channel: meta.channel.clone(),
+            channel_id: String::new(),
+            published_at: meta.published_at.clone(),
+            duration_secs: 0,
+            transcript_source: "article".to_string(),
+            source_media_name: source_name.clone().unwrap_or_default(),
+        };
+        if let Err(e) = self.neo4j.upsert_media(&record).await {
+            warn!(error = %e, "ingest_article: failed to upsert :Media node");
+        }
+        if let Some(ref sm) = source_name {
+            let _ = self.neo4j.link_media_from_source(&meta.id, sm).await;
+        }
+
+        ToolCallResult::success_json(json!({
+            "article_id": meta.id,
+            "title": meta.title,
+            "site": meta.channel,
+            "source": source_name,
+            "url": meta.url,
+            "published_at": meta.published_at,
+            "text_len": text.len(),
+            "summary": summary,
+            "key_concepts": key_concepts,
+        }))
     }
 
     async fn handle_fetch_transcript(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -405,7 +529,12 @@ impl MediaSkill {
                 if per_source >= max_per_source {
                     break;
                 }
-                let goal = format!("watch video: {}", item.url);
+                let is_article = ms.kind == "article_rss";
+                let goal = if is_article {
+                    format!("read article: {}", item.url)
+                } else {
+                    format!("watch video: {}", item.url)
+                };
                 if self
                     .neo4j
                     .media_exists(&item.video_id)
@@ -434,7 +563,9 @@ impl MediaSkill {
                 // (unlimited), because a live broadcast is unbounded regardless
                 // of what cap is configured.
                 let max = self.svc.max_duration_secs();
-                {
+                // Articles have no duration, live state, or premiere: the
+                // yt-dlp probe below is for video and would fail on a web page.
+                if !is_article {
                     match self.svc.fetch_meta(&item.url).await {
                         // ── Live broadcast: skip WITHOUT a dedup record ──────
                         // `ingest_media` also refuses a live stream, but catching
@@ -929,6 +1060,7 @@ impl Skill for MediaSkill {
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![
             Self::ingest_media_def(),
+            Self::ingest_article_def(),
             Self::fetch_transcript_def(),
             Self::list_channel_videos_def(),
             Self::poll_media_sources_def(),
@@ -941,6 +1073,7 @@ impl Skill for MediaSkill {
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
             "ingest_media" => Some(self.handle_ingest_media(arguments).await),
+            "ingest_article" => Some(self.handle_ingest_article(arguments).await),
             "fetch_transcript" => Some(self.handle_fetch_transcript(arguments).await),
             "list_channel_videos" => Some(self.handle_list_channel_videos(arguments).await),
             "poll_media_sources" => Some(self.handle_poll_media_sources().await),
@@ -1083,6 +1216,13 @@ struct IngestInput {
     force: Option<bool>,
     #[serde(default)]
     source_media_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestArticleInput {
+    url: String,
+    #[serde(default)]
+    force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

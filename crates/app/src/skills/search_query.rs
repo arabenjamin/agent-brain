@@ -346,11 +346,6 @@ impl QuerySpec {
             .map(|w| format!("p{}", w.letter()))
     }
 
-    /// SearXNG `time_range` (`day`/`week`/`month`/`year`).
-    pub fn searxng_time_range(&self) -> Option<&'static str> {
-        self.window(Self::today()).map(Recency::word)
-    }
-
     /// Exa `startPublishedDate` / `endPublishedDate` (ISO 8601).
     pub fn exa_dates(&self) -> (Option<String>, Option<String>) {
         (
@@ -465,7 +460,6 @@ mod tests {
         assert_eq!(q.google_tbs().as_deref(), Some("qdr:d"));
         assert_eq!(q.cse_date_restrict().as_deref(), Some("d1"));
         assert_eq!(q.brave_freshness().as_deref(), Some("pd"));
-        assert_eq!(q.searxng_time_range(), Some("day"));
         assert_eq!(q.google_news_when().as_deref(), Some("when:1d"));
         assert!(q.exa_dates().0.is_some());
         let plain = QuerySpec::parse("rust async");

@@ -36,6 +36,7 @@ use uuid::Uuid;
 
 use crate::repository::Neo4jClient;
 use crate::services::traits::LlmProvider;
+use crate::services::web_result::is_search_page;
 
 /// What the evidence currently says about a claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,25 +497,6 @@ fn registrable_domain(url_or_host: &str) -> Option<String> {
 /// True when `domain` is `entry` or a subdomain of it.
 fn domain_matches(domain: &str, entry: &str) -> bool {
     domain == entry || domain.ends_with(&format!(".{entry}"))
-}
-
-/// Whether a result link is a search engine's own results page.
-///
-/// `ecosia.org/search?q=<claim>`, `dailymotion.com/search/<claim>/`,
-/// `us.search.yahoo.com/search?p=<claim>`: an index page for the query, not a
-/// page about the subject.
-fn is_search_page(link: &str) -> bool {
-    let rest = link.split_once("://").map(|x| x.1).unwrap_or(link);
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = host.to_lowercase();
-    let path = path.to_lowercase();
-    let segments: Vec<&str> = path
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("")
-        .split('/')
-        .collect();
-    segments.contains(&"search") || (host.starts_with("search.") && path.contains('?'))
 }
 
 /// Lowercase alphanumeric words, with the HTML entities search snippets carry
