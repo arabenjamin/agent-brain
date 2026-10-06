@@ -51,6 +51,10 @@ impl OpenAiTurn {
 
 #[async_trait::async_trait]
 impl ProviderTurn for OpenAiTurn {
+    fn provider_name(&self) -> Option<String> {
+        Some(self.provider_label.clone())
+    }
+
     fn label(&self) -> &'static str {
         "OllamaCloud"
     }

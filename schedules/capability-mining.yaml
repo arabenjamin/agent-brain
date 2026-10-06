@@ -32,6 +32,13 @@ steps:
   #                    self-contamination loop where reason retrieves its own
   #                    prior capability_mining notes). Emits JSON candidates.
   #   3. store_note  → persists the candidates as a reflection for review.
+  #   4. run_agent   → deep-diver takes the FIRST candidate and grounds it in
+  #                    this codebase: the files and functions it touches, and
+  #                    a Rust sketch of the change, compile-checked in the
+  #                    sandbox where it can stand alone. Before this step every
+  #                    run ended in general advice ("add retry logic", "improve
+  #                    validation") with no file, no function, and no code.
+  #   5. store_note  → persists the grounded proposal.
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (t:Task) WHERE t.status IN ['failed','blocked'] WITH split(t.goal, ':')[0] AS capability, t ORDER BY t.updated_at DESC WITH capability, count(*) AS failures, collect(DISTINCT t.status) AS statuses, collect(substring(coalesce(t.context,''), 0, 600))[0..3] AS sample_context WHERE failures >= 2 RETURN capability, failures, statuses, sample_context ORDER BY failures DESC LIMIT 20"
@@ -77,6 +84,45 @@ steps:
         {{_prev}}
       note_type: reflection
       source_context: capability_mining
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: run_agent
+    arguments:
+      agent: deep-diver
+      max_rounds: 14
+      # A grounded proposal must have opened the code it talks about.
+      verify:
+        require_tools: [read_codebase_file]
+        cited_paths_exist: true
+      task: |
+        Below are capability-gap candidates mined from this agent's own
+        repeatedly-failing tasks. Take the FIRST candidate only and ground it
+        in agent-brain's Rust code:
+          1. Find the exact files and functions involved (search_codebase with
+             identifiers from the failure text, file_pattern ".rs"; then
+             read_codebase_file at the hit).
+          2. Say what is wrong there, citing file:line.
+          3. Write the change as Rust. Compile-check any part that can stand
+             alone with execute_code(language:"rust"); for the rest, show the
+             diff against the lines you read.
+        Use the ANSWER / RUST / IN AGENT-BRAIN / NEXT format. If the candidate
+        names nothing you can find in the code, say so with the searches you ran.
+
+        {{_prev}}
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama-cloud
+
+  - tool_name: store_note
+    arguments:
+      content: |
+        ## Capability mining — grounded proposal ({{date}})
+
+        {{_prev}}
+      note_type: reflection
+      source_context: capability_mining_grounded
     priority: 1
     max_attempts: 2
     provider_hint: ollama

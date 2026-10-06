@@ -772,9 +772,10 @@ impl BrainCore {
         // empty until the ChatService (its loop engine) is created; the tool
         // reports itself unavailable until then.
         if agent_runner_enabled() {
-            skills.push(Arc::new(AgentRunnerSkill::new(Arc::clone(
-                &self.agent_runner,
-            ))));
+            skills.push(Arc::new(
+                AgentRunnerSkill::new(Arc::clone(&self.agent_runner))
+                    .with_codebase_dir(self.codebase.codebase_dir.clone()),
+            ));
         }
 
         // Runtime-defined tools last: a DynamicTool can never shadow a built-in.

@@ -582,6 +582,39 @@ impl KnowledgeService {
                 }
             }
         }
+        // 4.77 Agent exclusion: an agent whose profile sets `retrieval_exclude`
+        // never sees those notes (see `RetrievalExclude`). Fails open: if the
+        // lookup errors, nothing is dropped.
+        if let Some(ex) = current_retrieval_exclude() {
+            let ids: Vec<String> = merged.iter().map(|(id, _)| id.clone()).collect();
+            if !ids.is_empty() {
+                let q = neo4rs::query(
+                    "MATCH (n:Note) WHERE n.id IN $ids \
+                       AND (COALESCE(n.note_type, 'semantic') IN $types \
+                            OR COALESCE(n.source_context, '') IN $sources) \
+                     RETURN n.id AS id",
+                )
+                .param("ids", ids)
+                .param("types", ex.note_types.clone())
+                .param("sources", ex.source_contexts.clone());
+                match self.neo4j.execute(q).await {
+                    Ok(rows) => {
+                        let drop: std::collections::HashSet<String> = rows
+                            .into_iter()
+                            .filter_map(|r| r.get::<String>("id").ok())
+                            .collect();
+                        if !drop.is_empty() {
+                            info!(
+                                excluded = drop.len(),
+                                "retrieval: dropped notes the running agent may not see"
+                            );
+                        }
+                        merged.retain(|(id, _)| !drop.contains(id));
+                    }
+                    Err(e) => warn!("retrieval exclusion query failed: {}", e),
+                }
+            }
+        }
         merged.truncate(limit);
 
         // Label claims before they leave retrieval. This is the second of two

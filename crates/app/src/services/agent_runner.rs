@@ -35,6 +35,7 @@ use crate::clients::chat::{
 };
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::services::context_builder::ContextBuilderService;
+use crate::services::knowledge::RETRIEVAL_EXCLUDE;
 use crate::services::llm::LlmConfig;
 use crate::services::routing::{Purpose, ROUTE_CONTEXT, RouteContext, RoutingPolicy};
 
@@ -79,6 +80,10 @@ pub struct AgentBudget {
     /// read-only (one writer per turn); a background agent writes (writing *is*
     /// the job) but still runs the engine's own `TurnWriteGuard`.
     pub allow_writes: bool,
+    /// Whether an `explicit_only` profile may run. True only for `run_agent`
+    /// (a step a human wrote into a chain); chat `delegate` passes false, so
+    /// an orchestrating model can never pick a paid agent on its own.
+    pub allow_explicit_only: bool,
 }
 
 /// One tool the sub-agent actually invoked, with the outcome the loop reported.
@@ -90,6 +95,280 @@ pub struct AgentBudget {
 pub struct ToolInvocation {
     pub tool: String,
     pub success: bool,
+    /// For an `execute_code` call that ran tests and all of them passed: how
+    /// many. `None` for every other call, including a run with no tests, a
+    /// compile failure, or any failing test. Read from the tool's own result,
+    /// never from the agent's prose.
+    pub tests_passed: Option<u64>,
+    /// For an `execute_code` clippy run: `Some(true)` when it built and
+    /// reported no findings, `Some(false)` otherwise. `None` for anything else.
+    pub clippy_clean: Option<bool>,
+}
+
+/// Whether an `execute_code` result is a clean clippy run, read from the
+/// sandbox's own `lint_findings` count (clippy exits 0 on warnings, so the exit
+/// code alone says nothing). `None` when the result is not a clippy run.
+pub fn clippy_clean(tool: &str, result: &str) -> Option<bool> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static CLIPPY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""command"\s*:\s*"clippy""#).expect("regex"));
+    static FINDINGS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""lint_findings"\s*:\s*(\d+)"#).expect("regex"));
+    static SUCCESS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""success"\s*:\s*true"#).expect("regex"));
+    if tool != "execute_code" || !CLIPPY.is_match(result) {
+        return None;
+    }
+    let findings = FINDINGS
+        .captures(result)
+        .and_then(|c| c[1].parse::<u64>().ok());
+    Some(SUCCESS.is_match(result) && findings == Some(0))
+}
+
+/// How many sandbox tests passed, from an `execute_code` result payload: only
+/// when the run built, at least one test passed, and none failed.
+pub fn passing_tests(tool: &str, result: &str) -> Option<u64> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static PASSED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""tests_passed"\s*:\s*(\d+)"#).expect("regex"));
+    static FAILED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""tests_failed"\s*:\s*(\d+)"#).expect("regex"));
+    static COMPILE_FAILED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""compile_failed"\s*:\s*true"#).expect("regex"));
+    if tool != "execute_code" || COMPILE_FAILED.is_match(result) {
+        return None;
+    }
+    let count = |re: &Regex| re.captures(result).and_then(|c| c[1].parse::<u64>().ok());
+    let passed = count(&PASSED)?;
+    (passed > 0 && count(&FAILED).unwrap_or(0) == 0).then_some(passed)
+}
+
+/// The Rust code an answer presents: the first ```rust block that holds a
+/// `#[test]`, else the longest ```rust block. `None` when there is none.
+pub fn answer_rust_code(answer: &str) -> Option<String> {
+    let mut blocks = Vec::new();
+    let mut rest = answer;
+    while let Some(start) = rest.find("```rust") {
+        let after = &rest[start + "```rust".len()..];
+        let body_start = after.find('\n').map_or(after.len(), |i| i + 1);
+        let body = &after[body_start..];
+        let Some(end) = body.find("```") else { break };
+        blocks.push(body[..end].to_string());
+        rest = &body[end + 3..];
+    }
+    blocks
+        .iter()
+        .find(|b| b.contains("#[test]"))
+        .or_else(|| blocks.iter().max_by_key(|b| b.len()))
+        .cloned()
+}
+
+/// The `[dependencies]` lines of the sandbox's crate manifest
+/// (`rust-sandbox/crates/Cargo.toml`), keyed by the name code `use`s
+/// (`ed25519-dalek` → `ed25519_dalek`). Each line is copied verbatim into a
+/// generated manifest, so versions and features stay what the cache holds.
+pub fn sandbox_dependencies(manifest: &str) -> Vec<(String, String)> {
+    let mut in_deps = false;
+    let mut deps = Vec::new();
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_deps = trimmed == "[dependencies]";
+            continue;
+        }
+        if !in_deps || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = trimmed.split_once('=') {
+            let name = name.trim();
+            if !name.is_empty() {
+                deps.push((name.replace('-', "_"), trimmed.to_string()));
+            }
+        }
+    }
+    deps
+}
+
+/// A crate that compiles `code` as written: `src/main.rs` when it has a
+/// `fn main`, else `src/lib.rs`, with a manifest declaring every sandbox crate
+/// the code names (`sha2::…`, `use hex::…`).
+pub fn answer_crate(code: &str, deps: &[(String, String)]) -> serde_json::Value {
+    let used: Vec<&str> = deps
+        .iter()
+        .filter(|(name, _)| {
+            code.contains(&format!("{name}::")) || code.contains(&format!("use {name}"))
+        })
+        .map(|(_, line)| line.as_str())
+        .collect();
+    let manifest = format!(
+        "[package]\nname = \"answer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{}\n",
+        used.join("\n")
+    );
+    let src = if code.contains("fn main") {
+        "src/main.rs"
+    } else {
+        "src/lib.rs"
+    };
+    serde_json::json!({ "Cargo.toml": manifest, src: code })
+}
+
+/// What a caller requires an agent run to have actually done, checked against
+/// its tool trace after the run (`run_agent`'s `verify` argument).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct VerifySpec {
+    /// Tools that must have succeeded at least once.
+    #[serde(default)]
+    pub require_tools: Vec<String>,
+    /// If the answer contains a ```rust block, an `execute_code` run with
+    /// passing tests must be in the trace.
+    #[serde(default)]
+    pub code_requires_tests: bool,
+    /// Every `path:line` the answer cites must be a file in the codebase with
+    /// at least that many lines. A path without a line number may name a file
+    /// to create, so it is not checked.
+    /// If the answer contains a ```rust block, the LAST clippy run in the
+    /// trace must be clean. The last, so a clean run followed by edits that
+    /// were linted again and failed does not count.
+    #[serde(default)]
+    pub code_requires_clippy_clean: bool,
+    /// Re-run the answer's own Rust code in the sandbox after the agent
+    /// finishes (`run_agent`), instead of trusting the trace: the code shown
+    /// must pass `cargo test` (and clippy, with `code_requires_clippy_clean`).
+    /// On 2026-10-05 an agent ran some other code that passed, then showed a
+    /// test with an invented expected hash and "test result: ok. 1 passed" —
+    /// the code shown returns a different value and could never pass.
+    #[serde(default)]
+    pub rerun_answer_code: bool,
+    #[serde(default)]
+    pub cited_paths_exist: bool,
+    /// The question the agent was asked (a chain passes `{{goal_topic}}`).
+    #[serde(default)]
+    pub question: String,
+    /// If `question` names any of these words (case-insensitive, whole word),
+    /// the answer MUST contain a ```rust block backed by a passing sandbox test.
+    /// Without this, an agent asked for Rust could write "RUST: not applicable"
+    /// and pass every other check (2026-10-05: a Reticulum answer declined the
+    /// code as "std-only has no SHA-256", passed, and carried a wrong identity
+    /// hash that a test against a known example would have exposed).
+    #[serde(default)]
+    pub require_code_if_question_mentions: Vec<String>,
+}
+
+/// Whether `text` contains any of `words` as a whole word, ignoring case
+/// ("rust" matches "Rust" and "rust:", never "trust").
+fn mentions_any(text: &str, words: &[String]) -> bool {
+    let lower = text.to_lowercase();
+    words.iter().any(|w| {
+        let w = w.to_lowercase();
+        lower.match_indices(&w).any(|(i, _)| {
+            let before = lower[..i].chars().next_back();
+            let after = lower[i + w.len()..].chars().next();
+            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+        })
+    })
+}
+
+/// `path:line` citations in `answer` that do not exist under `root`: the file
+/// is missing, or shorter than the cited line. URLs are not paths and are
+/// skipped (a citation must start at a word boundary, never after `://`).
+///
+/// Why: a 2026-10-03 deep dive placed its code at `crates/app/src/reticulum.rs:12`
+/// and `crates/app/src/lib.rs:45` "via the ReticulumSkill" — neither the file
+/// nor the skill exists. A citation with a line number asserts the file says
+/// something there, and that is checkable.
+pub fn missing_cited_paths(answer: &str, root: &std::path::Path) -> Vec<String> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static CITED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?:^|[\s(`'"\[])((?:[A-Za-z0-9_.\-]+/)+[A-Za-z0-9_.\-]+\.[A-Za-z0-9]+):(\d+)"#,
+        )
+        .expect("regex")
+    });
+    let mut missing = Vec::new();
+    for cap in CITED.captures_iter(answer) {
+        let path = &cap[1];
+        let line: usize = cap[2].parse().unwrap_or(0);
+        let cited = format!("{path}:{line}");
+        if missing.contains(&cited) {
+            continue;
+        }
+        let lines = std::fs::read_to_string(root.join(path))
+            .map(|text| text.lines().count())
+            .ok();
+        if lines.is_none_or(|n| line == 0 || line > n) {
+            missing.push(cited);
+        }
+    }
+    missing
+}
+
+/// Each requirement of `spec` the run did not meet, in plain words. Empty
+/// means verified. A `NO FINDINGS` answer claims nothing and is not checked.
+pub fn verification_failures(
+    spec: &VerifySpec,
+    answer: &str,
+    trace: &[ToolInvocation],
+    codebase_root: Option<&std::path::Path>,
+) -> Vec<String> {
+    if answer.contains("NO FINDINGS") {
+        return Vec::new();
+    }
+    let mut failures = Vec::new();
+    for tool in &spec.require_tools {
+        if !trace.iter().any(|t| &t.tool == tool && t.success) {
+            failures.push(format!("no successful `{tool}` call this run"));
+        }
+    }
+    if spec.code_requires_tests
+        && answer.contains("```rust")
+        && !trace.iter().any(|t| t.tests_passed.is_some())
+    {
+        failures.push(
+            "the answer shows Rust code, but no sandbox test run passed (execute_code with \
+             command \"test\" and at least one passing #[test])"
+                .to_string(),
+        );
+    }
+    if spec.code_requires_clippy_clean && answer.contains("```rust") {
+        match trace.iter().rev().find_map(|t| t.clippy_clean) {
+            Some(true) => {}
+            Some(false) => {
+                failures.push("the last clippy run on the Rust code reported findings".to_string())
+            }
+            None => failures.push(
+                "the answer shows Rust code, but clippy was never run on it \
+                 (execute_code with command \"clippy\")"
+                    .to_string(),
+            ),
+        }
+    }
+    if mentions_any(&spec.question, &spec.require_code_if_question_mentions)
+        && !answer.contains("```rust")
+    {
+        failures.push(
+            "the question asks for Rust, but the answer contains no Rust code (a ```rust \
+             block with a passing sandbox test is required)"
+                .to_string(),
+        );
+    }
+    if spec.cited_paths_exist {
+        match codebase_root {
+            Some(root) => {
+                let missing = missing_cited_paths(answer, root);
+                if !missing.is_empty() {
+                    failures.push(format!(
+                        "cited file:line that does not exist in the codebase: {}",
+                        missing.join(", ")
+                    ));
+                }
+            }
+            None => failures.push("cited paths could not be checked: no CODEBASE_DIR".to_string()),
+        }
+    }
+    failures
 }
 
 /// Structured result of one agent run — the same information
@@ -145,6 +424,18 @@ pub struct AgentRunner {
 }
 
 impl AgentRunner {
+    /// Call one registered tool directly, outside any agent loop. `None` when
+    /// no tool handler is wired yet. Used by `run_agent`'s verifier to re-run
+    /// an answer's code in the sandbox.
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Option<agent_brain_protocol::ToolCallResult> {
+        let handler = self.tool_handler.read().await.clone()?;
+        Some(handler.execute(name, Some(arguments)).await)
+    }
+
     pub fn new(
         tool_handler: Arc<RwLock<Option<ToolHandler>>>,
         tool_registry: Arc<RwLock<ToolRegistry>>,
@@ -220,7 +511,14 @@ impl AgentRunner {
         // building the bundle, so a rejected agent never runs its pre_load_query.
         // A non-spawnable or unknown name gets the live roster of what it could
         // have picked.
-        let spawnable_ok = cb.get_profile(agent).await.is_some_and(|p| p.spawnable);
+        let profile = cb.get_profile(agent).await;
+        if !budget.allow_explicit_only && profile.as_ref().is_some_and(|p| p.explicit_only) {
+            return AgentFindings::rejected(format!(
+                "'{agent}' runs only from a task a human marked for it (e.g. a \
+                 \"deep dive (hard):\" goal), never by delegation. Use a regular agent."
+            ));
+        }
+        let spawnable_ok = profile.is_some_and(|p| p.spawnable);
         if !spawnable_ok {
             let roster = cb
                 .spawnable_profiles()
@@ -339,19 +637,25 @@ impl AgentRunner {
         // reach the loop through here, so this is the one place that fixes both.
         // ROUTE_CONTEXT is scoped the same way, so the ladder walk and every tool
         // the agent runs are judged as this sub-agent's work.
+        // RETRIEVAL_EXCLUDE binds the profile's `retrieval_exclude` to every
+        // search the agent makes; an absent one scopes an empty (no-op) value.
+        let retrieval_exclude = bundle.profile.retrieval_exclude.clone().unwrap_or_default();
         let provider_loop = ROUTE_CONTEXT.scope(
             route_ctx,
             USAGE_TOOL_LABEL.scope(
                 format!("subagent:{agent}"),
-                engine.run_bounded_loop(
-                    cfg,
-                    sub_tools,
-                    handler,
-                    sub_request,
-                    sub_system,
-                    sub_tx,
-                    false,
-                    budget.max_iterations,
+                RETRIEVAL_EXCLUDE.scope(
+                    retrieval_exclude,
+                    engine.run_bounded_loop(
+                        cfg,
+                        sub_tools,
+                        handler,
+                        sub_request,
+                        sub_system,
+                        sub_tx,
+                        false,
+                        budget.max_iterations,
+                    ),
                 ),
             ),
         );
@@ -393,6 +697,8 @@ impl AgentRunner {
                         trace.push(ToolInvocation {
                             tool: tool.clone(),
                             success,
+                            tests_passed: passing_tests(&tool, &preview),
+                            clippy_clean: clippy_clean(&tool, &preview),
                         });
                         if success {
                             gathered.push(preview.clone());
@@ -723,7 +1029,139 @@ mod tests {
         ToolInvocation {
             tool: tool.to_string(),
             success,
+            tests_passed: None,
+            clippy_clean: None,
         }
+    }
+
+    #[test]
+    fn the_answer_crate_is_built_from_the_code_shown() {
+        let answer = "## RUST\n```rust\nfn helper() {}\n```\nand\n```rust\nuse sha2::{Digest, Sha256};\npub fn h() -> Vec<u8> { hex::decode(\"00\").unwrap() }\n#[test]\nfn t() {}\n```\n";
+        let code = answer_rust_code(answer).unwrap();
+        assert!(code.contains("#[test]") && code.contains("sha2"));
+
+        let manifest = "[package]\nname = \"seed\"\n\n[dependencies]\n# comment\nsha2 = \"0.10\"\ned25519-dalek = \"2\"\nhex = \"0.4\"\nregex = \"1\"\n";
+        let deps = sandbox_dependencies(manifest);
+        assert_eq!(deps.len(), 4);
+        assert_eq!(deps[1].0, "ed25519_dalek");
+
+        let files = answer_crate(&code, &deps);
+        let cargo = files["Cargo.toml"].as_str().unwrap();
+        assert!(cargo.contains("sha2 = \"0.10\"") && cargo.contains("hex = \"0.4\""));
+        assert!(!cargo.contains("regex") && !cargo.contains("dalek"));
+        assert!(files.get("src/lib.rs").is_some());
+        assert!(answer_rust_code("no code here").is_none());
+    }
+
+    #[test]
+    fn clippy_clean_reads_the_finding_count_not_the_exit_code() {
+        let clean = r#"{"success": true, "command": "clippy", "lint_findings": 0}"#;
+        assert_eq!(clippy_clean("execute_code", clean), Some(true));
+        // clippy exits 0 on warnings: success alone is not clean.
+        let warned = r#"{"success": true, "command": "clippy", "lint_findings": 3}"#;
+        assert_eq!(clippy_clean("execute_code", warned), Some(false));
+        let test_run = r#"{"success": true, "command": "test", "tests_passed": 2}"#;
+        assert_eq!(clippy_clean("execute_code", test_run), None);
+    }
+
+    #[test]
+    fn the_last_clippy_run_decides() {
+        let spec = VerifySpec {
+            code_requires_clippy_clean: true,
+            ..Default::default()
+        };
+        let answer = "## RUST\n```rust\nfn f() {}\n```";
+        let run = |clean: bool| {
+            let mut t = inv("execute_code", true);
+            t.clippy_clean = Some(clean);
+            t
+        };
+        assert_eq!(verification_failures(&spec, answer, &[], None).len(), 1);
+        assert!(verification_failures(&spec, answer, &[run(false), run(true)], None).is_empty());
+        assert_eq!(
+            verification_failures(&spec, answer, &[run(true), run(false)], None).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn passing_tests_reads_the_sandbox_result_not_prose() {
+        let ok = r#"{"success": true, "command": "test", "tests_passed": 3, "tests_failed": 0}"#;
+        assert_eq!(passing_tests("execute_code", ok), Some(3));
+        let failing = r#"{"tests_passed": 2, "tests_failed": 1}"#;
+        assert_eq!(passing_tests("execute_code", failing), None);
+        let no_tests = r#"{"success": true, "stdout": "Destination hash: e301"}"#;
+        assert_eq!(passing_tests("execute_code", no_tests), None);
+        let broken = r#"{"compile_failed": true, "tests_passed": 1}"#;
+        assert_eq!(passing_tests("execute_code", broken), None);
+        assert_eq!(passing_tests("search_web", ok), None);
+    }
+
+    #[test]
+    fn verification_flags_a_copied_answer_with_untested_code() {
+        // The 2026-10-03 re-run: a note found, a program run, no page read, no test.
+        let spec = VerifySpec {
+            require_tools: vec!["mcp_call".into()],
+            code_requires_tests: true,
+            cited_paths_exist: false,
+            ..Default::default()
+        };
+        let trace = vec![inv("search_notes", true), inv("execute_code", true)];
+        let answer = "## ANSWER\n- x\n## RUST\n```rust\nfn main(){}\n```";
+        let failures = verification_failures(&spec, answer, &trace, None);
+        assert_eq!(failures.len(), 2, "{failures:?}");
+
+        let mut tested = inv("execute_code", true);
+        tested.tests_passed = Some(4);
+        let trace = vec![inv("mcp_call", true), tested];
+        assert!(verification_failures(&spec, answer, &trace, None).is_empty());
+    }
+
+    #[test]
+    fn a_cited_line_must_exist_but_a_new_path_or_url_is_not_checked() {
+        let root = std::env::temp_dir().join(format!("cited-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("crates/app/src")).unwrap();
+        std::fs::write(root.join("crates/app/src/real.rs"), "a\nb\nc\n").unwrap();
+        let answer = "- `crates/app/src/real.rs:2` fine\n\
+                      - crates/app/src/real.rs:9 past the end\n\
+                      - (crates/app/src/reticulum.rs:12) invented\n\
+                      - add crates/app/src/new_module.rs\n\
+                      - https://github.com/o/r/blob/main/x.py:10";
+        let missing = missing_cited_paths(answer, &root);
+        assert_eq!(
+            missing,
+            vec!["crates/app/src/real.rs:9", "crates/app/src/reticulum.rs:12"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rust_question_cannot_opt_out_of_code() {
+        let spec = VerifySpec {
+            code_requires_tests: true,
+            question: "How is a Reticulum destination hash computed, in Rust?".into(),
+            require_code_if_question_mentions: vec!["rust".into()],
+            ..Default::default()
+        };
+        let declined = "## ANSWER\n- name hash …\n## RUST\nnot applicable";
+        assert_eq!(verification_failures(&spec, declined, &[], None).len(), 1);
+
+        let trust = VerifySpec {
+            question: "How does zero trust networking work?".into(),
+            ..spec.clone()
+        };
+        assert!(verification_failures(&trust, declined, &[], None).is_empty());
+    }
+
+    #[test]
+    fn a_no_findings_answer_is_not_verified() {
+        let spec = VerifySpec {
+            require_tools: vec!["mcp_call".into()],
+            code_requires_tests: true,
+            cited_paths_exist: false,
+            ..Default::default()
+        };
+        assert!(verification_failures(&spec, "NO FINDINGS — nothing", &[], None).is_empty());
     }
 
     #[test]

@@ -1,0 +1,85 @@
+# chains/deep-dive.yaml
+#
+# Answers one specific question drilled out of a broad theme. Tasks come from
+# schedules/deep-dive.yaml, which reasons over open todos and what the brain
+# has been learning and narrows one theme to a question; they can also be
+# created by hand with the "deep dive:" prefix.
+#
+# The work is a single run_agent step because it iterates on its own results:
+# a search hit to read, a compile error to fix, a grep hit to open. A fixed
+# chain of tool calls cannot react to any of those. The agent (contexts/
+# deep-diver.yaml) is bounded at 16 rounds (the cap): graph, web, reading the
+# primary source, write, compile, fix, compile, then locate in code and docs.
+#
+# The answer's last section, "## NEXT", is the narrower follow-up question; the
+# next exercise run sees it among prior deep dives and can go one level deeper.
+name: deep-dive
+pattern: "deep dive:"
+# Ahead of learn (50), whose "research"/"understand" patterns appear in most
+# questions, and of fill-knowledge-gap (15).
+priority: 12
+description: "Drill-down: answer one specific question with cited facts and, for technical topics, a sandbox-tested Rust example placed in this codebase."
+# The agent's output is the deliverable; a pre-flight plan review of a single
+# agent step is noise, and an evaluator retry would re-run the whole agent.
+no_adversarial: true
+no_evaluator: true
+data_class: private
+steps:
+  - tool_name: run_agent
+    arguments:
+      agent: deep-diver
+      max_rounds: 16
+      # Checked against the agent's real tool trace: it must have read a page,
+      # and Rust code must come with a passing sandbox test run. A failure
+      # prefixes the answer UNVERIFIED and store_note keeps it out of semantic.
+      # Checked against the agent's real tool trace: it must have read a page;
+      # Rust code needs a passing sandbox test; every cited path:line must
+      # exist; the last clippy run must be clean; and a question that asks
+      # for Rust cannot answer "not
+      # applicable". A failure prefixes the answer UNVERIFIED and store_note
+      # keeps it out of semantic.
+      #
+      # There is no chain-made "first read" any more: two versions (a search
+      # + a model-picked URL, then a GitHub tree lookup) fetched nothing on
+      # 2026-10-05, while the agent found Reticulum's source by itself.
+      verify:
+        require_tools: [mcp_call]
+        code_requires_tests: true
+        code_requires_clippy_clean: true
+        # The verifier compiles, tests and lints the code SHOWN in the answer
+        # itself; the agent's own sandbox runs are not trusted for this.
+        rerun_answer_code: true
+        cited_paths_exist: true
+        question: "{{goal_topic}}"
+        require_code_if_question_mentions: [rust]
+      task: |
+        Question: {{goal_topic}}
+
+        Answer this one question concretely, in the ANSWER / RUST / IN
+        AGENT-BRAIN / NEXT format. If the topic is technical, write and run a
+        minimal Rust example in the sandbox and find where it would fit in
+        agent-brain. Today is {{date}}.
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama-cloud
+    description: "Deep dive: investigate, prototype, place"
+
+  - tool_name: store_note
+    arguments:
+      content: "## Deep dive: {{goal_topic}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: deep_dive
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Deep dive: store the answer"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Deep dive: complete the task"

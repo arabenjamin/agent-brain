@@ -90,19 +90,20 @@ steps:
         this gap). Using ONLY the CONTEXT, write:
 
         ## ANSWER
-        The concrete, verifiable answer to the gap. State facts, not process.
-        Cite a source URL for every claim drawn from the web results.
+        At most 5 bullets, each one concrete fact (a name, number, date,
+        mechanism, or version) with its source URL. No introduction.
 
         ## WHAT THIS ADDS
-        What the web evidence establishes that the stored notes did not.
+        One sentence: what the web evidence adds to the stored notes.
 
         ## STILL UNKNOWN
-        What remains unresolved, stated specifically enough to search for later.
-        If the evidence is insufficient, say exactly what is missing rather than
-        speculating.
+        At most 2 bullets, each a question specific enough to search for.
 
-        Do not describe the source material or comment on the nature of the
-        task — answer the gap itself.
+        Do not describe the source material or comment on the task.
+
+        If the CONTEXT does not answer the gap, write exactly
+        "NO FINDINGS — " followed by one line naming what was missing, and
+        nothing else.
       context: "{{_prev}}"
       store_inference: false
     priority: 2

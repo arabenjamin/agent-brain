@@ -1,0 +1,84 @@
+# chains/deep-dive-hard.yaml
+#
+# The paid twin of chains/deep-dive.yaml (read that file for the steps and the
+# verify rules — they are identical). Reached ONLY by a goal you write with the
+# "deep dive (hard):" prefix, e.g. from chat:
+#   create_task("deep dive (hard): How does age's X25519 recipient stanza wrap the file key?")
+# Nothing scheduled produces that prefix, so the brain never decides on its own
+# to spend. It runs `deep-diver-hard` (Claude Sonnet 5), which on 2026-10-05
+# was the only model to answer the Reticulum hash question correctly.
+#
+# Cost: ~$2 for a 16-round run before prompt caching; less with it. Bounded by
+# the anthropic spend cap (checked before every call) and ROUTING_PAID_FOR
+# naming `subagent`.
+name: deep-dive-hard
+pattern: "deep dive (hard):"
+# Ahead of deep-dive (12). The patterns cannot collide ("deep dive:" never
+# appears inside "deep dive (hard):"), but the order is kept explicit.
+priority: 11
+description: "PAID drill-down on Claude Sonnet for a question you marked hard. Answer one specific question with cited facts and, for technical topics, a sandbox-tested Rust example placed in this codebase."
+# The agent's output is the deliverable; a pre-flight plan review of a single
+# agent step is noise, and an evaluator retry would re-run the whole agent.
+no_adversarial: true
+no_evaluator: true
+data_class: private
+steps:
+  - tool_name: run_agent
+    arguments:
+      agent: deep-diver-hard
+      max_rounds: 16
+      # Checked against the agent's real tool trace: it must have read a page,
+      # and Rust code must come with a passing sandbox test run. A failure
+      # prefixes the answer UNVERIFIED and store_note keeps it out of semantic.
+      # Checked against the agent's real tool trace: it must have read a page;
+      # Rust code needs a passing sandbox test; every cited path:line must
+      # exist; the last clippy run must be clean; and a question that asks
+      # for Rust cannot answer "not
+      # applicable". A failure prefixes the answer UNVERIFIED and store_note
+      # keeps it out of semantic.
+      #
+      # There is no chain-made "first read" any more: two versions (a search
+      # + a model-picked URL, then a GitHub tree lookup) fetched nothing on
+      # 2026-10-05, while the agent found Reticulum's source by itself.
+      verify:
+        require_tools: [mcp_call]
+        code_requires_tests: true
+        code_requires_clippy_clean: true
+        # The verifier compiles, tests and lints the code SHOWN in the answer
+        # itself; the agent's own sandbox runs are not trusted for this.
+        rerun_answer_code: true
+        cited_paths_exist: true
+        question: "{{goal_topic}}"
+        require_code_if_question_mentions: [rust]
+      task: |
+        Question: {{goal_topic}}
+
+        Answer this one question concretely, in the ANSWER / RUST / IN
+        AGENT-BRAIN / NEXT format. If the topic is technical, write and run a
+        minimal Rust example in the sandbox and find where it would fit in
+        agent-brain. Today is {{date}}.
+    priority: 1
+    # One attempt: a retry repeats a paid run.
+    max_attempts: 1
+    provider_hint: anthropic
+    description: "Deep dive (hard): investigate, prototype, place"
+
+  - tool_name: store_note
+    arguments:
+      content: "## Deep dive: {{goal_topic}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: deep_dive
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Deep dive: store the answer"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Deep dive: complete the task"

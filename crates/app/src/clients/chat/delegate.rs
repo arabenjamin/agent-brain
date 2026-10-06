@@ -227,6 +227,7 @@ impl ChatService {
                 AgentBudget {
                     max_iterations: MAX_SUBAGENT_ITERATIONS,
                     allow_writes: false,
+                    allow_explicit_only: false,
                 },
                 Some(main_tx.clone()),
             )

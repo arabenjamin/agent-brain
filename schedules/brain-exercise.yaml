@@ -1,3 +1,10 @@
+# PAUSED 2026-10-03, superseded by schedules/deep-dive.yaml. Picking the entity
+# with the most mentions and fewest notes chose the brain's own vocabulary
+# ("knowledge gap", "brain") and source names, and asked to research each as a
+# whole topic: 0 of 9 runs succeeded. `enabled` is graph-owned, so the live node
+# stays paused across restarts; `enabled: false` keeps a fresh graph from seeding
+# it on.
+enabled: false
 name: "Brain exercise: pick a topic from the knowledge graph and create a self-directed research task"
 description: "Weekly self-directed exercise — analyses entity mentions to find a topic the brain encounters often but knows little about, then creates a research Task with success criteria so the evaluator loop grades the outcome."
 interval_seconds: 604800

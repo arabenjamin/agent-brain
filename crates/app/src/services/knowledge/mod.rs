@@ -37,6 +37,43 @@ mod store_trait;
 pub(crate) use consolidation::CONSOLIDATION_SOURCE_PREDICATE;
 pub use retrieval::sanitize_lucene_query;
 
+/// Notes a caller must not get back from retrieval, by `note_type` or
+/// `source_context`. Set per agent in its profile (`retrieval_exclude:`) and
+/// scoped around the agent's loop with [`RETRIEVAL_EXCLUDE`], so it binds every
+/// `search_notes` the agent makes without depending on the agent asking.
+///
+/// Why: on 2026-10-03 a `deep-diver` re-run of the Reticulum question found the
+/// first run's wrong answer (re-typed `unsourced_synthesis`) through
+/// `search_notes`, cited it as its evidence, and never read the spec. An
+/// instruction not to trust its own notes was ignored, so the notes are not
+/// shown at all.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RetrievalExclude {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_contexts: Vec<String>,
+}
+
+impl RetrievalExclude {
+    pub fn is_empty(&self) -> bool {
+        self.note_types.is_empty() && self.source_contexts.is_empty()
+    }
+}
+
+tokio::task_local! {
+    /// The running agent's [`RetrievalExclude`]. Unset outside an agent run.
+    pub static RETRIEVAL_EXCLUDE: RetrievalExclude;
+}
+
+/// The exclusion in scope for this task, if any.
+pub(crate) fn current_retrieval_exclude() -> Option<RetrievalExclude> {
+    RETRIEVAL_EXCLUDE
+        .try_with(|e| e.clone())
+        .ok()
+        .filter(|e| !e.is_empty())
+}
+
 /// A source note referenced by a structured reasoning result.
 pub struct SourceRef {
     pub note_id: String,

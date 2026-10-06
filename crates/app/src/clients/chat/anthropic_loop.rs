@@ -61,8 +61,63 @@ impl AnthropicTurn {
     }
 }
 
+// ---- Prompt caching -------------------------------------------------------
+//
+// Every round of a tool loop re-sends the system prompt, the tool schemas and
+// the whole conversation so far. A 16-round Claude Sonnet sub-agent run on
+// 2026-10-05 sent 903K input tokens for $2.03, most of it the same prefix
+// again. Two cache breakpoints (Anthropic allows four) — the system prompt
+// (tools render before it, so it caches the tool schemas too) and the last
+// block of the latest message — let each round read everything before its
+// newest turn from cache at a tenth of the price. Sonnet 5 caches nothing
+// under a 1,024-token prefix; every tool loop here is well over that.
+// Breakpoints are added to a copy of the history for the request body only, so
+// they never pile up in the stored turns.
+
+fn ephemeral() -> Value {
+    json!({ "type": "ephemeral" })
+}
+
+fn cached_system(system: &str) -> Value {
+    json!([{ "type": "text", "text": system, "cache_control": ephemeral() }])
+}
+
+fn cached_messages(messages: &[Value]) -> Value {
+    let mut messages = messages.to_vec();
+    if let Some(last) = messages.last_mut() {
+        match last["content"].take() {
+            Value::String(text) => {
+                last["content"] =
+                    json!([{ "type": "text", "text": text, "cache_control": ephemeral() }]);
+            }
+            Value::Array(mut blocks) => {
+                if let Some(block) = blocks.last_mut() {
+                    block["cache_control"] = ephemeral();
+                }
+                last["content"] = Value::Array(blocks);
+            }
+            other => last["content"] = other,
+        }
+    }
+    Value::Array(messages)
+}
+
+/// Input tokens priced as the provider bills them, so the ledger's cost (tokens
+/// × the catalog's input rate) and the spend cap stay right under caching: an
+/// uncached token counts once, a cache write 1.25×, a cache read 0.1×.
+fn billed_input_tokens(usage: &Value) -> Option<i64> {
+    let input = usage["input_tokens"].as_i64()?;
+    let write = usage["cache_creation_input_tokens"].as_i64().unwrap_or(0);
+    let read = usage["cache_read_input_tokens"].as_i64().unwrap_or(0);
+    Some(input + (write * 5 + 3) / 4 + (read + 9) / 10)
+}
+
 #[async_trait::async_trait]
 impl ProviderTurn for AnthropicTurn {
+    fn provider_name(&self) -> Option<String> {
+        Some(self.provider_label.clone())
+    }
+
     fn label(&self) -> &'static str {
         "Anthropic"
     }
@@ -81,9 +136,9 @@ impl ProviderTurn for AnthropicTurn {
         let mut body = json!({
             "model": model,
             "max_tokens": 4096,
-            "system": self.system_prompt,
+            "system": cached_system(&self.system_prompt),
             "tools": self.tools,
-            "messages": self.messages,
+            "messages": cached_messages(&self.messages),
         });
         // The wrap-up round keeps `tools` defined — the history holds tool_use
         // blocks — and forbids using them instead.
@@ -149,13 +204,23 @@ impl ProviderTurn for AnthropicTurn {
         }
 
         drop(gate_permit);
+        let usage = &resp_json["usage"];
+        // INFO, not debug: the usage fields are the only proof caching works,
+        // and a silent cache miss just makes every round cost full price.
+        tracing::info!(
+            model = %model,
+            input = usage["input_tokens"].as_i64(),
+            cache_write = usage["cache_creation_input_tokens"].as_i64(),
+            cache_read = usage["cache_read_input_tokens"].as_i64(),
+            "Anthropic token usage"
+        );
         svc.record_llm_call(
             &self.provider_label,
             &model,
             true,
             call_start.elapsed().as_millis() as i64,
-            resp_json["usage"]["input_tokens"].as_i64(),
-            resp_json["usage"]["output_tokens"].as_i64(),
+            billed_input_tokens(usage),
+            usage["output_tokens"].as_i64(),
             None,
         );
 
@@ -312,6 +377,36 @@ mod anthropic_turn_tests {
             .clone();
         assert_eq!(last[0]["type"], "tool_result");
         assert_eq!(last[1], json!({"type": "text", "text": "wrap up"}));
+    }
+
+    #[test]
+    fn cache_breakpoints_go_on_the_system_prompt_and_the_last_block_only() {
+        let system = cached_system("be brief");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+
+        let history = vec![
+            json!({"role": "user", "content": "first"}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "x"}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "u", "content": "r"}]}),
+        ];
+        let sent = cached_messages(&history);
+        assert_eq!(sent[2]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(sent[0]["content"], "first", "earlier turns are left alone");
+        assert!(
+            history[2]["content"][0].get("cache_control").is_none(),
+            "stored history untouched"
+        );
+
+        let plain = cached_messages(&[json!({"role": "user", "content": "hi"})]);
+        assert_eq!(plain[0]["content"][0]["text"], "hi");
+        assert_eq!(plain[0]["content"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn cached_tokens_are_billed_at_their_own_rates() {
+        let usage = json!({"input_tokens": 100, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 10000, "output_tokens": 5});
+        assert_eq!(billed_input_tokens(&usage), Some(100 + 1250 + 1000));
+        assert_eq!(billed_input_tokens(&json!({"input_tokens": 42})), Some(42));
     }
 
     #[test]

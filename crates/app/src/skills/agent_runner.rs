@@ -30,7 +30,10 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::services::agent_runner::{AgentBudget, AgentRunner};
+use crate::services::agent_runner::{
+    AgentBudget, AgentRunner, VerifySpec, answer_crate, answer_rust_code, sandbox_dependencies,
+    verification_failures,
+};
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
@@ -38,6 +41,20 @@ use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 /// a task-level agent has more to do than an in-chat lookup, but it stays bounded
 /// so the worst-case model-call count is small (the step is one agent, depth 1).
 const MAX_BACKGROUND_AGENT_ITERATIONS: usize = 8;
+
+/// Ceiling on a step's `max_rounds`. An agent that writes code and compiles it
+/// in the sandbox needs room to read the error and try again (search, read,
+/// compile, fix, compile is five rounds before any answer); the cap keeps a
+/// single step's worst case bounded.
+const MAX_BACKGROUND_AGENT_ROUNDS_CAP: usize = 16;
+
+/// Rounds for one run: the step's `max_rounds` clamped to
+/// `1..=MAX_BACKGROUND_AGENT_ROUNDS_CAP`, or the default when absent.
+fn effective_rounds(requested: Option<usize>) -> usize {
+    requested.map_or(MAX_BACKGROUND_AGENT_ITERATIONS, |n| {
+        n.clamp(1, MAX_BACKGROUND_AGENT_ROUNDS_CAP)
+    })
+}
 
 /// Exposes `run_agent`. Holds a **lazy** handle to the shared [`AgentRunner`]:
 /// the runner is created with the `ChatService` (the loop engine) after skills
@@ -47,11 +64,22 @@ const MAX_BACKGROUND_AGENT_ITERATIONS: usize = 8;
 /// failing obscurely.
 pub struct AgentRunnerSkill {
     runner: Arc<RwLock<Option<Arc<AgentRunner>>>>,
+    /// Root for `verify.cited_paths_exist`.
+    codebase_dir: Option<std::path::PathBuf>,
 }
 
 impl AgentRunnerSkill {
     pub fn new(runner: Arc<RwLock<Option<Arc<AgentRunner>>>>) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            codebase_dir: None,
+        }
+    }
+
+    /// The codebase root `verify.cited_paths_exist` checks citations against.
+    pub fn with_codebase_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.codebase_dir = dir;
+        self
     }
 
     fn run_agent_def() -> ToolDefinition {
@@ -80,6 +108,48 @@ impl AgentRunnerSkill {
                     "task": {
                         "type": "string",
                         "description": "A complete, self-contained instruction for the agent (it has no other context)."
+                    },
+                    "max_rounds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16,
+                        "description": "Tool-use rounds the agent may take (default 8, capped at 16). Raise it for work that must iterate on a result, such as compiling code and fixing the errors."
+                    },
+                    "verify": {
+                        "type": "object",
+                        "description": "Checked against the agent's real tool trace after it runs. If any requirement is unmet, the answer is prefixed with an `UNVERIFIED — …` line naming what was missing, and store_note then stores it as unsourced_synthesis, never semantic.",
+                        "properties": {
+                            "require_tools": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Tools that must have succeeded at least once (e.g. [\"mcp_call\"] to require a page was read)."
+                            },
+                            "code_requires_tests": {
+                                "type": "boolean",
+                                "description": "If the answer contains a ```rust block, require an execute_code run whose tests all passed (at least one)."
+                            },
+                            "rerun_answer_code": {
+                                "type": "boolean",
+                                "description": "Compile and test the answer's own ```rust code in the sandbox after the run (and clippy it, with code_requires_clippy_clean), instead of trusting the agent's reported runs."
+                            },
+                            "code_requires_clippy_clean": {
+                                "type": "boolean",
+                                "description": "If the answer contains a ```rust block, the last execute_code clippy run must have reported no findings."
+                            },
+                            "cited_paths_exist": {
+                                "type": "boolean",
+                                "description": "Every `path:line` the answer cites must exist in the codebase with at least that many lines."
+                            },
+                            "question": {
+                                "type": "string",
+                                "description": "The question the agent was asked; read by require_code_if_question_mentions."
+                            },
+                            "require_code_if_question_mentions": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "If `question` names any of these words (whole word, any case), the answer must contain a ```rust block; with code_requires_tests it must also be backed by a passing test."
+                            }
+                        }
                     }
                 },
                 "required": ["agent", "task"]
@@ -178,10 +248,11 @@ impl AgentRunnerSkill {
                 agent,
                 task,
                 AgentBudget {
-                    max_iterations: MAX_BACKGROUND_AGENT_ITERATIONS,
+                    max_iterations: effective_rounds(input.max_rounds),
                     // Writing IS the background job; the inner agent keeps its
                     // own TurnWriteGuard for grounding/duplicate suppression.
                     allow_writes: true,
+                    allow_explicit_only: true,
                 },
                 // No sink: collect the findings, do not stream to a user.
                 None,
@@ -208,13 +279,117 @@ impl AgentRunnerSkill {
             .iter()
             .map(|inv| json!({ "tool": inv.tool, "success": inv.success }))
             .collect();
+        // The caller's requirements, checked against what actually ran. A
+        // failure does not fail the step (the answer may still be useful); it
+        // marks the answer so it is never stored as knowledge.
+        let failures = match input.verify.as_ref() {
+            None => Vec::new(),
+            Some(spec) => {
+                self.verify(&runner, spec, &findings.findings, &findings.tool_trace)
+                    .await
+            }
+        };
+        let answer = if failures.is_empty() {
+            findings.findings
+        } else {
+            warn!(agent, failures = ?failures, "run_agent: answer failed verification");
+            format!(
+                "UNVERIFIED — {}. Treat everything below as unchecked.\n\n{}",
+                failures.join("; "),
+                findings.findings
+            )
+        };
         ToolCallResult::success_json(json!({
-            "answer": findings.findings,
+            "answer": answer,
             "ok": findings.ok,
             "retrieved": findings.retrieved,
             "agent": agent,
             "tool_trace": tool_trace,
+            "verified": input.verify.is_some().then_some(failures.is_empty()),
+            "verification_failures": failures,
         }))
+    }
+}
+
+impl AgentRunnerSkill {
+    /// Check a finished run against the caller's `verify` spec. With
+    /// `rerun_answer_code`, the answer's own Rust code is compiled and tested
+    /// here, so the trace's test and clippy results are not consulted: what is
+    /// shown is what is checked.
+    async fn verify(
+        &self,
+        runner: &AgentRunner,
+        spec: &VerifySpec,
+        answer: &str,
+        trace: &[crate::services::agent_runner::ToolInvocation],
+    ) -> Vec<String> {
+        let code = answer_rust_code(answer).filter(|_| !answer.contains("NO FINDINGS"));
+        if !spec.rerun_answer_code || code.is_none() {
+            return verification_failures(spec, answer, trace, self.codebase_dir.as_deref());
+        }
+        let trace_spec = VerifySpec {
+            code_requires_tests: false,
+            code_requires_clippy_clean: false,
+            ..spec.clone()
+        };
+        let mut failures =
+            verification_failures(&trace_spec, answer, trace, self.codebase_dir.as_deref());
+        failures.extend(self.rerun(runner, spec, &code.unwrap_or_default()).await);
+        failures
+    }
+
+    /// Compile and test `code` as shown, then lint it, in the rust-sandbox.
+    async fn rerun(&self, runner: &AgentRunner, spec: &VerifySpec, code: &str) -> Vec<String> {
+        let manifest = self
+            .codebase_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join("rust-sandbox/crates/Cargo.toml")).ok())
+            .unwrap_or_default();
+        let files = answer_crate(code, &sandbox_dependencies(&manifest));
+        let run = |command: &'static str| {
+            let files = files.clone();
+            async move {
+                let result = runner
+                    .call_tool(
+                        "execute_code",
+                        json!({ "language": "rust", "command": command, "files": files }),
+                    )
+                    .await?;
+                let text = result.content.iter().find_map(|c| match c {
+                    agent_brain_protocol::Content::Text { text } => Some(text.clone()),
+                    _ => None,
+                })?;
+                serde_json::from_str::<Value>(&text).ok()
+            }
+        };
+        let mut failures = Vec::new();
+        match run("test").await {
+            None => failures
+                .push("the verifier could not re-run the answer's code in the sandbox".to_string()),
+            Some(r) => {
+                let passed = r["tests_passed"].as_u64().unwrap_or(0);
+                let failed = r["tests_failed"].as_u64().unwrap_or(0);
+                if !(r["success"] == true && passed > 0 && failed == 0) {
+                    let summary = r["summary"].as_str().unwrap_or("no summary");
+                    failures.push(format!(
+                        "the answer's own Rust code, re-run by the verifier, did not pass: {summary}"
+                    ));
+                    info!(stderr = %r["stderr"].as_str().unwrap_or("").chars().take(1500).collect::<String>(), "run_agent verifier: answer code failed");
+                }
+            }
+        }
+        if spec.code_requires_clippy_clean && failures.is_empty() {
+            match run("clippy").await {
+                Some(r) if r["success"] == true && r["lint_findings"].as_u64() == Some(0) => {}
+                Some(r) => failures.push(format!(
+                    "clippy on the answer's own code, re-run by the verifier: {}",
+                    r["summary"].as_str().unwrap_or("not clean")
+                )),
+                None => failures
+                    .push("the verifier could not run clippy on the answer's code".to_string()),
+            }
+        }
+        failures
     }
 }
 
@@ -243,6 +418,10 @@ struct RunAgentInput {
     agent: String,
     #[serde(default)]
     task: String,
+    #[serde(default)]
+    max_rounds: Option<usize>,
+    #[serde(default)]
+    verify: Option<VerifySpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,6 +436,14 @@ mod tests {
 
     fn skill_with_no_runner() -> AgentRunnerSkill {
         AgentRunnerSkill::new(Arc::new(RwLock::new(None)))
+    }
+
+    #[test]
+    fn max_rounds_defaults_and_is_clamped() {
+        assert_eq!(effective_rounds(None), MAX_BACKGROUND_AGENT_ITERATIONS);
+        assert_eq!(effective_rounds(Some(12)), 12);
+        assert_eq!(effective_rounds(Some(0)), 1);
+        assert_eq!(effective_rounds(Some(500)), MAX_BACKGROUND_AGENT_ROUNDS_CAP);
     }
 
     #[test]

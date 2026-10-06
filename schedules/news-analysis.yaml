@@ -30,12 +30,15 @@ steps:
         What context makes them more or less significant?
 
         ## Open Questions
-        2-3 specific questions that the brain does NOT know the answer to,
-        where researching would genuinely improve its understanding.
+        2-3 questions the brain does NOT know the answer to, each answerable
+        with facts a few web searches can settle (what, how it works, who,
+        when, how much) and naming the concrete law, agency, product, or event.
+        Not essay prompts: never "What are the long-term implications of…" or
+        "How might X affect Y…".
 
         ## Priority Research Topic
-        One clear, specific topic from the Open Questions above that is the most
-        valuable to investigate deeply right now. Write it as a concise phrase.
+        The one Open Question above most worth answering now, copied as a
+        single question.
       context: "{{_prev}}"
       store_inference: false
     priority: 2

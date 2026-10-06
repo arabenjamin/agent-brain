@@ -70,12 +70,16 @@ steps:
         Compare it against what is already known and write three sections:
         ## NEW — concepts/claims genuinely new to the brain
         ## CHANGED — where this updates or contradicts prior understanding
-        ## FOLLOW UP — at most TWO general topics worth knowing a year from now,
-        each a self-contained research question that makes sense to someone who
-        has NOT seen this video (one line each; these seed gap tasks). Never a
-        detail of the video itself — not a scene, a remark, a person's reaction,
-        a case's evidence, "this practice", or anything that needs "(Context: …)"
-        to be understood. No sports. If nothing qualifies, write "NONE".
+        ## FOLLOW UP — at most TWO questions worth knowing a year from now,
+        each one line, each answerable with facts a few web searches can settle:
+        what something is, how it works, who makes or decides it, when, or how
+        much. Name the concrete thing (a technology, law, product, organisation,
+        method). Good: "How does CATL's Naxtra sodium-ion cell compare to LFP on
+        energy density and cost per kWh?" Bad: "What are the long-term
+        implications of sodium batteries for society?" It must make sense to
+        someone who has NOT seen this video: never a scene, a remark, a person's
+        reaction, "this practice", or anything needing "(Context: …)". No sports.
+        If nothing qualifies, write "NONE".
         Ground every point in the CONTEXT. If nothing is new, say so plainly.
       context: "{{_prev}}"
       store_inference: false

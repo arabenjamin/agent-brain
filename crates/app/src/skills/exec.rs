@@ -37,7 +37,7 @@ const PYTHON_DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const RUST_MAX_TIMEOUT_MS: u64 = 300_000;
 const RUST_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
-const RUST_COMMANDS: &[&str] = &["test", "check", "clippy", "run", "build"];
+const RUST_COMMANDS: &[&str] = &["test", "check", "clippy", "fmt", "run", "build"];
 
 /// Code Execution Skill.
 pub struct ExecSkill {
@@ -320,11 +320,27 @@ fn summarize_run(body: &Value, timeout_ms: u64) -> Value {
     let compile_failed = body.get("compile_failed").and_then(|v| v.as_bool());
     let tests_passed = body.get("tests_passed").and_then(|v| v.as_i64());
     let tests_failed = body.get("tests_failed").and_then(|v| v.as_i64());
+    let command = body.get("command").and_then(|v| v.as_str());
+    let lint_findings = body.get("lint_findings").and_then(|v| v.as_i64());
 
     let summary = if timed_out {
         format!("Execution timed out after {timeout_ms}ms.")
     } else if compile_failed == Some(true) {
         "Compilation failed — see stderr for the compiler errors.".to_string()
+    } else if command == Some("clippy") && exit_code == 0 {
+        match lint_findings {
+            Some(0) | None => "Clippy is clean: no findings.".to_string(),
+            Some(n) => {
+                format!("Clippy reported {n} findings — see stderr; fix them and run clippy again.")
+            }
+        }
+    } else if command == Some("fmt") {
+        if exit_code == 0 {
+            "Formatting is clean: rustfmt would change nothing.".to_string()
+        } else {
+            "rustfmt would change the code — stdout holds the diff; apply it and run fmt again."
+                .to_string()
+        }
     } else if exit_code == 0 {
         match tests_passed {
             Some(passed) => format!("Build succeeded; {passed} tests passed."),
@@ -351,7 +367,13 @@ fn summarize_run(body: &Value, timeout_ms: u64) -> Value {
     });
     // Rust-only fields: present only when the sandbox reported them, so a
     // Python result is unchanged.
-    for key in ["command", "compile_failed", "tests_passed", "tests_failed"] {
+    for key in [
+        "command",
+        "compile_failed",
+        "tests_passed",
+        "tests_failed",
+        "lint_findings",
+    ] {
         if let Some(value) = body.get(key).filter(|v| !v.is_null()) {
             result[key] = value.clone();
         }
@@ -395,6 +417,23 @@ struct ExecuteCodeInput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clippy_and_fmt_results_say_what_to_do() {
+        let warned = summarize_run(
+            &serde_json::json!({"exit_code": 0, "command": "clippy", "lint_findings": 2, "compile_failed": false}),
+            1000,
+        );
+        assert_eq!(warned["lint_findings"], 2);
+        assert!(warned["summary"].as_str().unwrap().contains("2 findings"));
+        let clean = summarize_run(
+            &serde_json::json!({"exit_code": 0, "command": "clippy", "lint_findings": 0}),
+            1000,
+        );
+        assert!(clean["summary"].as_str().unwrap().contains("clean"));
+        let fmt = summarize_run(&serde_json::json!({"exit_code": 1, "command": "fmt"}), 1000);
+        assert!(fmt["summary"].as_str().unwrap().contains("diff"));
+    }
+
     use super::*;
 
     /// `SANDBOX_URL` is process-global and cargo runs these in parallel threads,

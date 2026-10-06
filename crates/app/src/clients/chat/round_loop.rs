@@ -73,6 +73,27 @@ pub(super) trait ProviderTurn: Send {
     fn push_tool_results(&mut self, results: Vec<ToolOutcome>);
     /// Bound history growth between rounds. Default: keep everything.
     fn trim_history(&mut self) {}
+    /// Registry name of the provider this turn bills, for the per-call spend
+    /// check. `None` skips it (the default: local and free loops).
+    fn provider_name(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Why a paid provider must not take another call right now, or `None`.
+///
+/// The routing policy admits a model once, when a turn or agent run starts,
+/// and nothing re-checked the spend cap between rounds: on 2026-10-05 a single
+/// Claude Sonnet sub-agent run spent $2.03 against a $1.00 daily cap, 16 calls
+/// on one admission. Checked before every call, a run can now overshoot by at
+/// most the one call that crosses the cap.
+fn paid_cap_refusal(provider: &str, model: &str) -> Option<String> {
+    use crate::services::provider_registry::{self, Billing};
+    let entry = provider_registry::get(provider)?;
+    if entry.billing != Billing::Paid {
+        return None;
+    }
+    crate::services::budget::verdict(provider, model, &entry).err()
 }
 
 impl ChatService {
@@ -149,6 +170,21 @@ impl ChatService {
                     FINAL_ROUND_NUDGE,
                     tool_trace_receipt(&tool_trace)
                 ));
+            }
+
+            if let Some(reason) = provider
+                .provider_name()
+                .and_then(|p| paid_cap_refusal(&p, &model))
+            {
+                warn!(provider = label, model = %model, reason = %reason,
+                      "Spend cap reached mid-turn — refusing the next paid call");
+                let _ = tx
+                    .send(ChatEvent::Error {
+                        message: format!("{model} stopped before its next call: {reason}"),
+                    })
+                    .await;
+                let _ = tx.send(ChatEvent::Done).await;
+                return;
             }
 
             let stream_to = (!do_synthesis).then_some(&tx);

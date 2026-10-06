@@ -1018,6 +1018,26 @@ fn is_standalone_gap(concept: &str) -> bool {
     if SOURCE_BOUND.iter().any(|m| c.contains(m)) {
         return false;
     }
+    // Essay prompts: no search settles them, so the gap chain answers with
+    // "the provided context does not contain…" and the task fails. After the
+    // 2026-10-01 prompt asked for "general topics worth knowing a year from
+    // now", most gap tasks took this shape ("What are the long-term
+    // implications of…", "How might X intersect with Y…").
+    const ESSAY_SHAPED: [&str; 10] = [
+        "implications",
+        "long-term effect",
+        "long-term impact",
+        "long-term consequence",
+        "how might",
+        "how will",
+        "intersect",
+        "broader",
+        "what factors",
+        "societal impact",
+    ];
+    if ESSAY_SHAPED.iter().any(|m| c.contains(m)) {
+        return false;
+    }
     // Too short to be a research question, or not a topic at all.
     c.split_whitespace().count() >= 4
 }
@@ -1118,6 +1138,13 @@ mod tests {
             "Tariffs",
         ] {
             assert!(!is_standalone_gap(bound), "{bound}");
+        }
+        for essay in [
+            "What are the long-term economic implications of increasing wealth concentration on national social stability?",
+            "How might shifts in domestic herd size affect the viability of international agricultural trade agreements?",
+            "How do historical precedents for emergency powers intersect with modern electoral challenges?",
+        ] {
+            assert!(!is_standalone_gap(essay), "{essay}");
         }
         for standalone in [
             "What specific regulatory actions are international bodies taking regarding GLP-1 drug vision loss risk?",

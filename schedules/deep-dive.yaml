@@ -1,0 +1,80 @@
+# schedules/deep-dive.yaml
+#
+# The brain's self-directed exercise, replacing schedules/brain-exercise.yaml
+# (paused 2026-10-03). That one picked the entity with the most mentions and
+# fewest notes, which picked the brain's own vocabulary ("knowledge gap",
+# "brain") and source names ("c-span", "newsnation"), and asked to "research"
+# it as a whole: 0 of 9 runs succeeded.
+#
+# This one starts from what the brain is actually working on and narrows:
+#   open todos + technologies in recent notes + recent research topics
+#   + the "NEXT" question of each prior deep dive
+#   → one theme → one specific, answerable question
+#   → a "deep dive:" Task, answered by chains/deep-dive.yaml (the deep-diver
+#     agent: graph, web, and for a technical topic a sandbox-tested Rust
+#     example placed in this codebase).
+# Each answer ends with a narrower NEXT question, which the next run sees, so a
+# theme is followed down over several runs instead of restated at the top.
+name: "Deep dive: narrow a broad theme into one specific question and answer it"
+description: "Every two days: reasons over open todos, recent technologies and research topics, and prior deep dives; picks one theme and narrows it to a specific question (preferring a concrete Rust/agent-brain angle for technical themes); creates a 'deep dive:' Task that the deep-diver agent answers."
+interval_seconds: 172800
+data_class: private
+steps:
+  - tool_name: neo4j_query
+    arguments:
+      cypher: >-
+        CALL { MATCH (t:Todo) WHERE NOT coalesce(t.status, '') IN ['done', 'completed', 'cancelled'] RETURN collect(t.title + CASE WHEN coalesce(t.description, '') = '' THEN '' ELSE ' — ' + left(t.description, 200) END) AS open_todos }
+        CALL { MATCH (n:Note {note_type: 'semantic'}) WHERE n.created_at > datetime() - duration('P30D') AND NOT (n)-[:PART_OF]->() AND (n.content STARTS WITH '## Research:' OR n.content STARTS WITH '## Gap synthesis:') WITH n ORDER BY n.created_at DESC WITH collect(DISTINCT left(replace(replace(split(n.content, '\n')[0], '## Research: ', ''), '## Gap synthesis: ', ''), 160)) AS topics RETURN topics[0..30] AS recent_learning }
+        CALL { MATCH (n:Note)-[:MENTIONS]->(e:Entity) WHERE n.created_at > datetime() - duration('P30D') AND e.entity_type IN ['technology', 'tool'] AND NOT (n)-[:PART_OF]->() WITH e.name AS tech, count(DISTINCT n) AS notes WHERE notes >= 3 WITH tech, notes ORDER BY notes DESC RETURN collect(tech + ' (' + toString(notes) + ')')[0..25] AS recent_technologies }
+        CALL { OPTIONAL MATCH (n:Note {source_context: 'deep_dive'}) WHERE NOT (n)-[:PART_OF]->() WITH n ORDER BY n.created_at DESC RETURN collect(left(replace(split(n.content, '\n')[0], '## Deep dive: ', ''), 200) + CASE WHEN n.content CONTAINS '## NEXT' THEN ' → NEXT: ' + left(trim(split(n.content, '## NEXT')[1]), 200) ELSE '' END)[0..15] AS prior_deep_dives }
+        RETURN open_todos, recent_technologies, prior_deep_dives, recent_learning
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # Cloud, deliberately. One call every two days. The first run on local E4B
+  # (2026-10-03) ignored the narrowing instruction and returned "How should a
+  # Vault service be built in Rust…" — the todo restated as a question.
+  # Narrowing a theme to an answerable question is the judgement this whole
+  # schedule exists for.
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT lists open todos, technologies that recur in recent notes,
+        prior deep dives (each with the narrower NEXT question it raised), and
+        recent research topics.
+
+        Pick ONE theme and narrow it to ONE specific question that a few
+        searches, and for a technical theme a small Rust program, can answer.
+        Prefer, in order: a prior deep dive's NEXT question; an open todo; a
+        recurring technology. For a technical theme, ask how it works or how
+        to build it in Rust, as it would apply to agent-brain (a Rust MCP
+        server on tokio and Neo4j).
+
+        Good: "How does the age crate's X25519 recipient model let a process
+        decrypt secrets without holding a key that can encrypt them?"
+        Good: "How does a Reticulum destination hash derive from an Ed25519
+        identity, and can it be computed with std-only Rust?"
+        Bad: "Research zero trust architecture." Bad: "What are the long-term
+        implications of sodium batteries?"
+
+        Too broad: anything a whole design document would answer ("How should
+        a Vault be built?"). Narrow it to one mechanism, one algorithm, or one
+        decision ("How does age's X25519 recipient stanza wrap the file key?").
+
+        Never repeat a prior deep dive's question. No sports. Answer with the
+        question alone, one line, at most 30 words, no prefix.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    required_capabilities: ["reasoning"]
+
+  - tool_name: create_task
+    arguments:
+      goal: "deep dive: {{_prev}}"
+      context: "Self-directed deep dive ({{date}}), narrowed from open todos, recent technologies and prior deep dives by schedules/deep-dive.yaml."
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

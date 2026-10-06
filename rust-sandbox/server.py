@@ -44,7 +44,11 @@ BUILD_JOBS = os.environ.get("RUST_SANDBOX_BUILD_JOBS", "4")
 SCRATCH_ROOT = os.environ.get("RUST_SANDBOX_SCRATCH", "/work")
 LISTEN_PORT = int(os.environ.get("SANDBOX_PORT", "8000"))
 
-COMMANDS = {"test", "check", "clippy", "run", "build"}
+COMMANDS = {"test", "check", "clippy", "fmt", "run", "build"}
+# One per rustc/clippy diagnostic that points at code ("  --> src/lib.rs:3:5").
+# Cargo-level notices (an unused manifest key, "generated N warnings") carry no
+# location and are not findings.
+DIAGNOSTIC_LOCATION = re.compile(r"^\s*--> ", re.MULTILINE)
 SAFE_PATH = re.compile(r"^[A-Za-z0-9_\-./]+$")
 TEST_RESULT = re.compile(r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed")
 
@@ -124,6 +128,10 @@ def validate_files(files: object) -> tuple[dict[str, str] | None, str | None]:
 
 
 def build_command(command: str, include_ignored: bool) -> list[str]:
+    if command == "fmt":
+        # --check: report the diff rustfmt would apply (stdout, exit 1) and
+        # change nothing. cargo fmt takes no --offline; it needs no network.
+        return ["cargo", "fmt", "--check"]
     cmd = ["cargo", command, "--offline", "--color", "never"]
     if command == "clippy":
         cmd += ["--all-targets"]
@@ -205,6 +213,11 @@ def run_crate(files: dict[str, str], command: str, include_ignored: bool, timeou
         stderr, err_truncated = _truncate(err)
         tests_passed, tests_failed = summarize_tests(stdout)
         compile_failed = "could not compile" in stderr or "error[E" in stderr
+        # clippy exits 0 on warnings, so its findings are counted, not read
+        # from the exit code. None for every other command.
+        lint_findings = (
+            len(DIAGNOSTIC_LOCATION.findall(stderr)) if command == "clippy" else None
+        )
 
         # Two shapes of the same offline miss: an unknown crate name, and a
         # known crate at a version that isn't cached ("failed to download ...
@@ -233,6 +246,7 @@ def run_crate(files: dict[str, str], command: str, include_ignored: bool, timeou
             "tests_passed": tests_passed,
             "tests_failed": tests_failed,
             "compile_failed": compile_failed,
+            "lint_findings": lint_findings,
         }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

@@ -56,6 +56,16 @@ pub struct ContextProfile {
     /// still judged by the routing policy and the budget. `/chat` only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_models: Vec<String>,
+    /// Notes this profile's `search_notes` never returns, applied when it runs
+    /// as an agent (`run_agent`/`delegate`). See `RetrievalExclude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_exclude: Option<crate::services::knowledge::RetrievalExclude>,
+    /// Runnable only when named in a `run_agent` step, never offered to a
+    /// model: left out of the `delegate` roster and `run_agent(agent:"auto")`,
+    /// and refused by chat `delegate`. For a paid agent (`deep-diver-hard`), so
+    /// spending stays a decision a human made by writing the task.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub explicit_only: bool,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].
@@ -261,7 +271,7 @@ impl ContextBuilderService {
         self.list_profiles()
             .await
             .into_iter()
-            .filter(|p| p.spawnable)
+            .filter(|p| p.spawnable && !p.explicit_only)
             .collect()
     }
 
@@ -690,6 +700,19 @@ mod tests {
             count += 1;
         }
         assert!(count > 0, "no context profiles found at {}", dir.display());
+    }
+
+    /// The paid deep diver is reachable only by a step that names it: if it
+    /// lost `explicit_only`, the orchestrator could delegate to Claude Sonnet
+    /// on its own and spend without anyone asking.
+    #[test]
+    fn the_paid_deep_diver_is_explicit_only() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contexts/deep-diver-hard.yaml");
+        let text = std::fs::read_to_string(path).unwrap();
+        let profile: ContextProfile = serde_yaml::from_str(&text).unwrap();
+        assert!(profile.spawnable && profile.explicit_only);
+        assert_eq!(profile.model_preference.as_deref(), Some("claude-sonnet-5"));
     }
 
     /// The schedule-author drafting specialist must be spawnable — the

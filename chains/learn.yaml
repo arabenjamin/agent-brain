@@ -35,11 +35,14 @@ steps:
         Research goal: {{goal}}
 
         The CONTEXT contains web search results gathered for this goal. Based
-        ONLY on the CONTEXT, write the concrete, verifiable findings that answer
-        the research goal. Name the topic explicitly. Cite source URLs for each
-        claim. Do NOT describe your process or the nature of the task — state
-        the facts themselves. If the results are insufficient to answer, say
-        exactly what is missing instead of speculating.
+        ONLY on the CONTEXT, answer the goal in at most 6 bullets, each one
+        concrete fact (a name, number, date, mechanism, or version) with its
+        source URL. Name the topic explicitly. No introduction, no summary,
+        no description of the sources or the task.
+
+        If the CONTEXT does not answer the goal, write exactly
+        "NO FINDINGS — " followed by one line naming what was missing, and
+        nothing else.
       context: "{{_prev}}"
       store_inference: false
     priority: 1

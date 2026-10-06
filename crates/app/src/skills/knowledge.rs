@@ -340,11 +340,29 @@ impl KnowledgeSkill {
             .and_then(|s| s.parse::<ProvenanceFlag>().ok())
             .unwrap_or(ProvenanceFlag::UserInput);
 
+        let null_result = is_null_result(&input.content, input.note_type.as_deref());
+        let unverified = !null_result && is_unverified(&input.content, input.note_type.as_deref());
+        let note_type = if null_result {
+            info!(
+                source_context = ?input.source_context,
+                "store_note: research found nothing — storing as episodic, not semantic"
+            );
+            Some("episodic")
+        } else if unverified {
+            info!(
+                source_context = ?input.source_context,
+                "store_note: agent answer failed verification — storing as unsourced_synthesis"
+            );
+            Some("unsourced_synthesis")
+        } else {
+            input.note_type.as_deref()
+        };
+
         match self
             .svc
             .store_note(
                 &input.content,
-                input.note_type.as_deref(),
+                note_type,
                 input.source_context.as_deref(),
                 input.event_at.as_deref(),
                 Some(provenance),
@@ -354,13 +372,27 @@ impl KnowledgeSkill {
             Ok((id, links_created)) => {
                 // "answer" echoes the stored content so downstream {{_prev}} steps
                 // (e.g. notify_user after store_note) receive the original text, not metadata JSON.
-                let response = json!({
+                let mut response = json!({
                     "success": true,
                     "id": id,
                     "links_created": links_created,
                     "message": "Note stored successfully",
                     "answer": input.content
                 });
+                if unverified {
+                    response["note_type"] = json!("unsourced_synthesis");
+                    response["message"] = json!(
+                        "Note stored as `unsourced_synthesis`: it carries an UNVERIFIED marker \
+                         (the agent did not do what its caller required), so it is not knowledge."
+                    );
+                }
+                if null_result {
+                    response["note_type"] = json!("episodic");
+                    response["message"] = json!(
+                        "Note stored as `episodic`: it reports that the evidence did not answer \
+                         the question, which is a record of a search, not knowledge."
+                    );
+                }
                 ToolCallResult::success_json(response)
             }
             Err(e) => ToolCallResult::error(format!("Failed to store note: {}", e)),
@@ -1269,6 +1301,76 @@ impl Skill for KnowledgeSkill {
 // Input structs
 // ============================================================================
 
+/// Marker a research step writes as the first line of its answer when the
+/// evidence did not answer the question. Chain prompts ask for it by name.
+pub const NO_FINDINGS_MARKER: &str = "NO FINDINGS";
+
+/// The opening of a body paragraph that says the evidence did not cover the
+/// question: "The provided context does not contain …". Only short notes are
+/// checked, so an answer that lists what is missing at the end is not caught.
+static NULL_RESULT_OPENER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)^(\*\*)?(the provided|based on the provided|regarding|the web search|the search)[^\n]{0,240}\b(do|does) not (contain|provide|offer|include|mention|address)\b",
+    )
+    .expect("null-result opener regex")
+});
+
+/// Longest note the opener fallback applies to; matches
+/// `scripts/retype_null_result_notes.cypher`.
+const NULL_RESULT_MAX_CHARS: usize = 900;
+
+/// Whether a note that would be stored as knowledge (`semantic`, or no type)
+/// only reports that a search came up empty.
+///
+/// Research and gap chains store their `reason` output as `semantic`, and
+/// consolidation merges semantic notes. A note saying "the sources do not
+/// contain anything about X" was therefore merged as a finding: 4 of the 8
+/// sources of the "what is a knowledge gap" consolidation (2026-10-03) were
+/// such notes, and 104 more were waiting. Stored as `episodic`, the note still
+/// records that the search ran and leaves consolidation alone.
+///
+/// Two signals: the `NO FINDINGS` marker on any line (what the prompts ask
+/// for), or, for a short note, a first body paragraph that opens by saying the
+/// evidence lacks the answer (what local models write when they skip the marker).
+fn is_null_result(content: &str, note_type: Option<&str>) -> bool {
+    if !matches!(note_type.map(str::trim), None | Some("") | Some("semantic")) {
+        return false;
+    }
+    let marked = content.lines().any(|line| {
+        line.trim_start_matches(|c: char| c == '#' || c == '*' || c == '-' || c.is_whitespace())
+            .starts_with(NO_FINDINGS_MARKER)
+    });
+    if marked {
+        return true;
+    }
+    if content.chars().count() >= NULL_RESULT_MAX_CHARS {
+        return false;
+    }
+    // First paragraph after an optional markdown heading line.
+    let body = match content.trim_start().strip_prefix('#') {
+        Some(_) => content
+            .trim_start()
+            .split_once('\n')
+            .map_or("", |(_, rest)| rest),
+        None => content,
+    };
+    NULL_RESULT_OPENER.is_match(body.trim_start())
+}
+
+/// Marker `run_agent` puts on the first line of an answer that failed its
+/// caller's `verify` requirements.
+pub const UNVERIFIED_MARKER: &str = "UNVERIFIED —";
+
+/// Whether a note headed for `semantic` (or untyped) carries the UNVERIFIED
+/// marker on a line of its own. Such a note is stored as `unsourced_synthesis`.
+fn is_unverified(content: &str, note_type: Option<&str>) -> bool {
+    matches!(note_type.map(str::trim), None | Some("") | Some("semantic"))
+        && content.lines().any(|line| {
+            line.trim_start_matches(|c: char| c == '#' || c == '*' || c.is_whitespace())
+                .starts_with(UNVERIFIED_MARKER)
+        })
+}
+
 #[derive(Debug, Deserialize)]
 struct StoreNoteInput {
     content: String,
@@ -1461,6 +1563,72 @@ mod tests {
             Arc::new(MockKnowledgeStore::default()),
             Arc::new(MockLlm::ok("{}")),
         )
+    }
+
+    // -- null-result notes ----------------------------------------------------
+
+    #[test]
+    fn a_no_findings_marker_makes_a_research_note_episodic() {
+        let note =
+            "## Research: sodium battery cost\n\nNO FINDINGS — no result gave a $/kWh figure.";
+        assert!(is_null_result(note, Some("semantic")));
+        assert!(is_null_result(note, None));
+        assert!(is_null_result(
+            "## Deep dive: x\n\n**NO FINDINGS** nothing",
+            None
+        ));
+    }
+
+    #[test]
+    fn a_short_note_opening_with_absence_is_a_null_result() {
+        let note = "## Gap synthesis: IRA captivity context\n\nThe provided context does not \
+                    contain any specific information detailing the nature of the context.";
+        assert!(is_null_result(note, Some("semantic")));
+    }
+
+    #[test]
+    fn an_answer_that_lists_what_is_missing_afterwards_stays_semantic() {
+        let note = "## Gap synthesis: sodium batteries\n\n## ANSWER\n- CATL ships Naxtra cells \
+                    (https://example.com).\n\n## STILL UNKNOWN\nThe provided sources do not \
+                    contain a price per kWh.";
+        assert!(!is_null_result(note, Some("semantic")));
+    }
+
+    #[test]
+    fn a_long_note_is_not_judged_by_its_opener() {
+        let note = format!(
+            "## Research: x\n\nThe provided context does not contain a definition, but: {}",
+            "fact. ".repeat(200)
+        );
+        assert!(!is_null_result(&note, Some("semantic")));
+    }
+
+    #[test]
+    fn other_note_types_are_never_retyped() {
+        let note = "NO FINDINGS — nothing turned up.";
+        assert!(!is_null_result(note, Some("reflection")));
+        assert!(!is_null_result(note, Some("source_record")));
+    }
+
+    #[tokio::test]
+    async fn store_note_reports_the_episodic_type_for_a_null_result() {
+        let skill = skill_ok();
+        let args =
+            json!({"content": "## Research: x\n\nNO FINDINGS — nothing.", "note_type": "semantic"});
+        let r = result_json(skill.execute("store_note", Some(args)).await.unwrap());
+        assert_eq!(r["note_type"], "episodic");
+    }
+
+    #[tokio::test]
+    async fn an_unverified_agent_answer_is_stored_as_unsourced_synthesis() {
+        let skill = skill_ok();
+        let args = json!({
+            "content": "## Deep dive: x\n\nUNVERIFIED — no successful `mcp_call` call this run.\n\n## ANSWER\n- y",
+            "note_type": "semantic"
+        });
+        let r = result_json(skill.execute("store_note", Some(args)).await.unwrap());
+        assert_eq!(r["note_type"], "unsourced_synthesis");
+        assert!(!is_unverified("UNVERIFIED — x", Some("reflection")));
     }
 
     // -- tool registry --------------------------------------------------------
