@@ -130,6 +130,8 @@ pub struct MediaService {
     /// Scratch dir for yt-dlp subtitle/audio downloads (cleaned per call).
     media_dir: std::path::PathBuf,
     http: reqwest::Client,
+    /// Anakin.io key for the rendering fallback in `fetch_article`.
+    anakin_key: Option<String>,
 }
 
 impl MediaService {
@@ -147,6 +149,9 @@ impl MediaService {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::env::temp_dir()),
             http: reqwest::Client::new(),
+            anakin_key: std::env::var("ANAKINIO_API_KEY")
+                .ok()
+                .filter(|k| !k.trim().is_empty()),
         }
     }
 
@@ -818,6 +823,61 @@ impl MediaService {
     /// paywall or a script-rendered page, permanent for that URL.
     pub async fn fetch_article(&self, url: &str) -> anyhow::Result<(VideoMeta, String)> {
         Self::validate_url(url)?;
+        // 1. Our own fetch: free, and enough for server-rendered CMS pages.
+        let (html, own_status) = match self.fetch_html(url).await {
+            Ok(h) => (Some(h), None),
+            Err(FetchError::Status(code)) => (None, Some(code)),
+            Err(FetchError::Other(e)) => return Err(e),
+        };
+        let own_text = html
+            .as_deref()
+            .map(extract_article_text)
+            .unwrap_or_default();
+        if own_text.len() >= ARTICLE_MIN_CHARS {
+            let html = html.unwrap_or_default();
+            return Ok((article_meta(url, &html), clip_article(own_text)));
+        }
+        if let Some(code) = own_status
+            && !is_block_status(code)
+        {
+            anyhow::bail!("article fetch failed: HTTP {code}");
+        }
+        // 2. Blocked, or no article in what we got: a headless browser may
+        //    still read it (paywall-lite, script-rendered, bot-blocked).
+        let fallback = match self.anakin_key.as_deref() {
+            Some(key) => match self.anakin_markdown(url, key).await {
+                Ok(md) => {
+                    let text = markdown_article_text(&md);
+                    if text.len() >= ARTICLE_MIN_CHARS {
+                        let meta = match &html {
+                            Some(h) => article_meta(url, h),
+                            None => meta_from_markdown(url, &md),
+                        };
+                        tracing::info!(url, chars = text.len(), "article read via Anakin fallback");
+                        return Ok((meta, clip_article(text)));
+                    }
+                    format!(
+                        "Anakin rendered it but found {} chars of article text",
+                        text.len()
+                    )
+                }
+                Err(e) => format!("Anakin fallback failed: {e}"),
+            },
+            None => "no Anakin key for a rendering fallback".to_string(),
+        };
+        let first = match own_status {
+            Some(code) => format!("HTTP {code} to a direct fetch"),
+            None => format!("{} chars extracted directly", own_text.len()),
+        };
+        anyhow::bail!(
+            "{ARTICLE_UNEXTRACTABLE} ({first}; {fallback}) — paywalled, script-rendered, or not an article"
+        )
+    }
+
+    /// GET a page as text, at most [`ARTICLE_MAX_BYTES`]. A non-2xx status is
+    /// returned as `FetchError::Status` so the caller can tell "blocked" from
+    /// "gone".
+    async fn fetch_html(&self, url: &str) -> Result<String, FetchError> {
         let mut resp = self
             .http
             .get(url)
@@ -828,33 +888,96 @@ impl MediaService {
             )
             .timeout(std::time::Duration::from_secs(30))
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .map_err(|e| FetchError::Other(e.into()))?;
+        if !resp.status().is_success() {
+            return Err(FetchError::Status(resp.status().as_u16()));
+        }
         let mut bytes: Vec<u8> = Vec::new();
-        while let Some(chunk) = resp.chunk().await? {
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| FetchError::Other(e.into()))?
+        {
             bytes.extend_from_slice(&chunk);
             if bytes.len() >= ARTICLE_MAX_BYTES {
                 break;
             }
         }
-        let html = String::from_utf8_lossy(&bytes);
-        let text = extract_article_text(&html);
-        if text.len() < ARTICLE_MIN_CHARS {
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Render a page with Anakin's headless browser and return its markdown.
+    /// ~1 credit (300/month free). Synchronous endpoint; a 202 (still running
+    /// after ~90 s) is treated as a failure rather than polled.
+    async fn anakin_markdown(&self, url: &str, key: &str) -> anyhow::Result<String> {
+        let resp = self
+            .http
+            .post("https://api.anakin.io/v1/url-scraper/scrape")
+            .header("X-API-Key", key)
+            .json(&serde_json::json!({"url": url, "useBrowser": true}))
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        if status.as_u16() != 200 {
+            let msg = body
+                .get("error")
+                .or_else(|| body.get("message"))
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            anyhow::bail!("HTTP {status} {}", msg.replace(key, "<redacted>"));
+        }
+        if body.get("status").and_then(|v| v.as_str()) != Some("completed") {
             anyhow::bail!(
-                "{ARTICLE_UNEXTRACTABLE} ({} chars) — paywalled, script-rendered, or not an article",
-                text.len()
+                "job not completed: {}",
+                body.get("status").cloned().unwrap_or(Value::Null)
             );
         }
-        let text: String = if text.len() > ARTICLE_MAX_CHARS {
-            let mut cut = ARTICLE_MAX_CHARS;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            text[..cut].to_string()
-        } else {
-            text
-        };
-        Ok((article_meta(url, &html), text))
+        Ok(body
+            .get("markdown")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+}
+
+enum FetchError {
+    Status(u16),
+    Other(anyhow::Error),
+}
+
+/// Cut article text to [`ARTICLE_MAX_CHARS`] on a char boundary.
+fn clip_article(text: String) -> String {
+    if text.len() <= ARTICLE_MAX_CHARS {
+        return text;
+    }
+    let mut cut = ARTICLE_MAX_CHARS;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text[..cut].to_string()
+}
+
+/// Metadata when only Anakin's markdown was readable: the first `# ` heading
+/// as title, the host as site.
+fn meta_from_markdown(url: &str, md: &str) -> VideoMeta {
+    let title = md
+        .lines()
+        .find_map(|l| l.strip_prefix("# "))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| url.to_string());
+    VideoMeta {
+        id: MediaService::article_id(url),
+        title,
+        channel: host_of(url).trim_start_matches("www.").to_string(),
+        channel_id: String::new(),
+        url: url.to_string(),
+        published_at: String::new(),
+        duration_secs: 0,
+        is_live: false,
     }
 }
 
@@ -1010,10 +1133,16 @@ pub fn extract_article_text(html: &str) -> String {
         .unwrap()
         .replace_all(&breaks, " ");
     let decoded = decode_entities(&stripped);
+    keep_article_lines(&decoded, &link_texts)
+}
+
+/// The paragraph filter shared by both extractors: lines of at least six
+/// words that are not wholly one link's text, cookie notices or unrendered
+/// `{{templates}}`, deduplicated.
+fn keep_article_lines(text: &str, link_texts: &[String]) -> String {
     let mut lines: Vec<String> = Vec::new();
-    for line in decoded.lines() {
+    for line in text.lines() {
         let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-        // Cookie notices and unrendered client templates are page chrome.
         let lower = line.to_lowercase();
         if lower.contains("cookie") || line.contains("{{") {
             continue;
@@ -1026,6 +1155,49 @@ pub fn extract_article_text(html: &str) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// Readable text of an article from Anakin's markdown: images dropped, links
+/// reduced to their text, block markers stripped, then the same paragraph
+/// filter as HTML extraction (a line that was wholly a link is navigation).
+pub fn markdown_article_text(md: &str) -> String {
+    let image = Regex::new(r"!\[[^\]]*\]\([^)]*\)").unwrap();
+    let link = Regex::new(r"\[([^\]]*)\]\([^)]*\)").unwrap();
+    let no_images = image.replace_all(md, "");
+    let link_texts: Vec<String> = link
+        .captures_iter(&no_images)
+        .map(|c| c[1].split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|t| t.split(' ').count() >= 4)
+        .collect();
+    let mut out = String::new();
+    for line in no_images.lines() {
+        let line = line.trim();
+        // A line that is nothing but links is a menu or a related-stories row.
+        if !line.is_empty()
+            && link
+                .replace_all(line, "")
+                .trim()
+                .trim_matches(['|', ',', '-', '*', ' '])
+                .is_empty()
+            && link.is_match(line)
+        {
+            continue;
+        }
+        let text = link.replace_all(line, "$1");
+        let text = text
+            .trim_start_matches(['#', '>', '*', '-', '+', ' '])
+            .replace("**", "")
+            .replace("__", "");
+        out.push_str(&text);
+        out.push('\n');
+    }
+    keep_article_lines(&decode_entities(&out), &link_texts)
+}
+
+/// A status that means "this site refuses automated readers", which a
+/// rendering scraper can often get past — not "the page is gone".
+fn is_block_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429 | 451 | 503)
 }
 
 /// Parse an article feed (RSS 2.0 `<item>` or Atom `<entry>`) into
@@ -1660,6 +1832,63 @@ mod tests {
         ] {
             assert!(!text.contains(gone), "{gone} leaked: {text}");
         }
+    }
+
+    #[test]
+    fn anakin_markdown_becomes_article_text() {
+        let md = "# Toronto-Based VPN Provider Plans to Quit Canada\n\n\
+            ### Date Published\n\nOctober 6, 2026\n\n\
+            [Law & Policy](https://citizenlab.ca/focus-area/law-policy/) | [bill c-22](https://citizenlab.ca/topic/bill-c-22/)\n\n\
+            ![logo](https://x/logo.png)\n\n\
+            Psiphon, a software company spun out of the [Citizen Lab](https://citizenlab.ca), plans to **leave Canada** if the bill passes.\n\n\
+            - The bill would require providers to retain metadata for one full year.\n\n\
+            [Read our earlier analysis of lawful access in Canada](https://citizenlab.ca/older)\n\n\
+            We use cookies to improve your experience on this website today.";
+        let text = markdown_article_text(md);
+        assert!(text.contains(
+            "Psiphon, a software company spun out of the Citizen Lab, plans to leave Canada"
+        ));
+        assert!(
+            text.contains("The bill would require providers to retain metadata"),
+            "list marker stripped: {text}"
+        );
+        for gone in [
+            "Law & Policy",
+            "logo",
+            "Read our earlier analysis",
+            "cookies",
+            "Date Published",
+        ] {
+            assert!(!text.contains(gone), "{gone} leaked: {text}");
+        }
+    }
+
+    #[test]
+    fn only_refusals_trigger_the_rendering_fallback() {
+        for code in [401, 403, 429, 451, 503] {
+            assert!(is_block_status(code));
+        }
+        for code in [404, 410, 500] {
+            assert!(
+                !is_block_status(code),
+                "{code} means gone or broken, not blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_metadata_takes_the_first_heading() {
+        let m = meta_from_markdown(
+            "https://www.understandingwar.org/backgrounder/x",
+            "intro\n# Russian Offensive Campaign Assessment\nbody",
+        );
+        assert_eq!(m.title, "Russian Offensive Campaign Assessment");
+        assert_eq!(m.channel, "understandingwar.org");
+        assert_eq!(
+            m.id,
+            MediaService::article_id("https://www.understandingwar.org/backgrounder/x")
+        );
+        assert!(clip_article("é".repeat(ARTICLE_MAX_CHARS)).len() <= ARTICLE_MAX_CHARS);
     }
 
     #[test]

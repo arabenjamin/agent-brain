@@ -177,6 +177,13 @@ services:
       - EXA_API_KEY=${EXA_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      # News engines (search_web): for a news/recency search they lead the
+      # ladder. Currents 250/day (7-day windows); Webz Lite 1,000/month.
+      - CURRENTS_API_KEY=${CURRENTS_API_KEY:-}
+      - WEBZIO_API_KEY=${WEBZIO_API_KEY:-}
+      # Anakin.io: headless-browser fallback when ingest_article cannot read a
+      # page itself (blocked or script-rendered). ~1 of 300 credits/month each.
+      - ANAKINIO_API_KEY=${ANAKINIO_API_KEY:-}
       # ApiTube news API key — injected into http_request via the seeded `apitube`
       # ApiContext (X-API-Key header). Used by the daily news brief for structured,
       # dated articles alongside google_news. Free tier is 100 requests/day.
@@ -190,7 +197,7 @@ services:
       # foreign-index results, and it always answers, so leading with it starved
       # the keyed engines). Brave stays behind it: card on file, no spend cap.
       # Reorder here to change preference without a rebuild.
-      - SEARCH_ENGINE_ORDER=exa,tavily,serper,serpapi,google,searxng,brave
+      - SEARCH_ENGINE_ORDER=exa,tavily,serper,serpapi,google,currents,webz,searxng,brave
       - SEARXNG_URL=http://searxng:8080
       # Sandboxed code execution. Unset => execute_code is not registered at
       # all, so a deployment without the sandbox service degrades cleanly.

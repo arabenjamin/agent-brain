@@ -284,6 +284,12 @@ impl QuerySpec {
 
     /// For Exa and Tavily, which read no operators: the words and phrases,
     /// with `OR` dropped (it is a noise word to a neural / keyword ranker).
+    /// Words, quoted phrases and OR — the free text engines with real query
+    /// syntax (Currents, Webz) read as-is.
+    pub fn free_text_for_engines(&self) -> String {
+        self.free_text(true, true)
+    }
+
     pub fn plain_text(&self, quote_phrases: bool) -> String {
         self.free_text(quote_phrases, false)
     }

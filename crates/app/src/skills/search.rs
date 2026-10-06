@@ -43,8 +43,28 @@ use chrono::NaiveDate;
 /// ends 2027-01-01) and Brave (card on file, no spend cap). An engine without a
 /// key is dropped from the ladder, so listing one costs nothing.
 const DEFAULT_ENGINE_ORDER: &[&str] = &[
-    "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave",
+    "exa", "tavily", "serper", "serpapi", "google", "currents", "webz", "searxng", "brave",
 ];
+
+/// News-native engines. For a news or recency search they move to the front
+/// of the ladder (`promote_news_engines`): they filter by publish date for
+/// real and Currents has the largest daily allowance (250/day free). For other
+/// searches they sit just before SearXNG — news results beat its fallback.
+const NEWS_ENGINES: &[&str] = &["currents", "webz"];
+
+/// Currents' free plan rejects a date range over 7 days ("Max range is 7
+/// days", 2026-10-06); a window is clamped to the newest 7 days when it is at
+/// most this long (a "week" recency from midnight is 7 days and a few hours),
+/// and the engine is skipped for anything longer.
+const CURRENTS_MAX_WINDOW_DAYS: i64 = 8;
+/// Results per call on Currents' free plan.
+const CURRENTS_MAX_RESULTS: u8 = 20;
+/// Webz News API Lite holds 30 days of history. A window up to this long (a
+/// "month" recency is 31 days) is clamped to those 30; longer is skipped.
+const WEBZ_MAX_WINDOW_DAYS: i64 = 31;
+const WEBZ_HISTORY_DAYS: i64 = 30;
+/// Characters of Webz's full article `text` kept per result.
+const WEBZ_SNIPPET_CHARS: usize = 700;
 
 /// Characters of page text Exa returns per result as a highlight. Exa bills
 /// contents per result, so this is a snippet, not the page.
@@ -191,6 +211,187 @@ fn normalize_serper(json: &Value, count: u8) -> Vec<Value> {
     take_results(json, key, count)
         .filter_map(|r| normalized(&r["title"], &r["link"], r["snippet"].clone(), &r["date"]))
         .collect()
+}
+
+fn normalize_currents(json: &Value, count: u8) -> Vec<Value> {
+    take_results(json, "news", count)
+        .filter_map(|r| {
+            normalized(
+                &r["title"],
+                &r["url"],
+                r["description"].clone(),
+                &r["published"],
+            )
+        })
+        .collect()
+}
+
+fn normalize_webz(json: &Value, count: u8) -> Vec<Value> {
+    take_results(json, "posts", count)
+        .filter_map(|r| {
+            normalized(
+                &r["title"],
+                &r["url"],
+                clip_snippet(&r["text"], WEBZ_SNIPPET_CHARS),
+                &r["published"],
+            )
+        })
+        .collect()
+}
+
+/// Remove a credential from text that will be logged or returned. Webz
+/// echoes the token in its 401 body ("Unknown API token <token>").
+fn redact(text: &str, secret: &str) -> String {
+    if secret.len() < 6 {
+        return text.to_string();
+    }
+    text.replace(secret, "<redacted>")
+}
+
+/// Why an engine cannot serve this query, if it cannot. Checked before the
+/// call, so a skip costs no quota and is not recorded as a failure.
+fn engine_unsupported(engine: &str, spec: &QuerySpec, today: NaiveDate) -> Option<String> {
+    let window_days = spec.since(today).map(|s| (today - s).num_days());
+    match engine {
+        "currents" => {
+            if spec.sites.len() > 1 {
+                Some("restricts to one domain only".into())
+            } else if spec.exclude_sites.len() > 1 {
+                Some("excludes one domain only".into())
+            } else if spec.filetype.is_some() {
+                Some("no filetype filter".into())
+            } else if window_days.is_some_and(|d| d > CURRENTS_MAX_WINDOW_DAYS) {
+                Some(format!(
+                    "free plan searches at most {CURRENTS_MAX_WINDOW_DAYS} days"
+                ))
+            } else {
+                None
+            }
+        }
+        "webz" => {
+            if spec.filetype.is_some() {
+                Some("no filetype filter".into())
+            } else if window_days.is_some_and(|d| d > WEBZ_MAX_WINDOW_DAYS) {
+                Some(format!("Lite searches at most {WEBZ_MAX_WINDOW_DAYS} days"))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Move the news engines to just after a requested engine (or the front) for
+/// a news/recency search. Exhausted engines stay where `order_engines` put
+/// them — at the back.
+fn promote_news_engines(
+    ladder: Vec<String>,
+    requested: Option<&str>,
+    exhausted: &[String],
+) -> Vec<String> {
+    let promote: Vec<String> = NEWS_ENGINES
+        .iter()
+        .map(|e| e.to_string())
+        .filter(|e| ladder.contains(e) && !exhausted.contains(e))
+        .filter(|e| requested.map(|r| r.trim().to_lowercase()) != Some(e.clone()))
+        .collect();
+    let mut rest: Vec<String> = ladder
+        .into_iter()
+        .filter(|e| !promote.contains(e))
+        .collect();
+    let at = match requested.map(|r| r.trim().to_lowercase()) {
+        Some(r) if rest.first() == Some(&r) => 1,
+        _ => 0,
+    };
+    for (i, e) in promote.into_iter().enumerate() {
+        rest.insert(at + i, e);
+    }
+    rest
+}
+
+/// Currents query parameters. A window longer than 7 days (never more than
+/// `CURRENTS_MAX_WINDOW_DAYS` here — `engine_unsupported` skips longer) is
+/// clamped to its newest 7 days, because the free plan rejects more.
+fn currents_params(
+    spec: &QuerySpec,
+    count: u8,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(String, String)> {
+    let mut keywords = vec![spec.free_text_for_engines()];
+    keywords.extend(spec.exclude_words.iter().map(|w| format!("-{w}")));
+    keywords.extend(spec.exclude_phrases.iter().map(|p| format!("-\"{p}\"")));
+    keywords.retain(|k| !k.trim().is_empty());
+    let mut p: Vec<(String, String)> = vec![
+        ("keywords".into(), keywords.join(" ")),
+        ("language".into(), "en".into()),
+        (
+            "page_size".into(),
+            count.min(CURRENTS_MAX_RESULTS).to_string(),
+        ),
+    ];
+    if let Some(d) = spec.sites.first() {
+        p.push(("domain".into(), d.clone()));
+    }
+    if let Some(d) = spec.exclude_sites.first() {
+        p.push(("domain_not".into(), d.clone()));
+    }
+    if let Some(since) = spec.since(now.date_naive()) {
+        let end = spec
+            .before
+            .and_then(|b| b.and_hms_opt(0, 0, 0))
+            .map(|b| b.and_utc())
+            .filter(|b| *b < now)
+            .unwrap_or(now);
+        let earliest = end - chrono::Duration::days(7) + chrono::Duration::minutes(1);
+        let start = since
+            .and_hms_opt(0, 0, 0)
+            .map(|s| s.and_utc())
+            .unwrap_or(earliest)
+            .max(earliest);
+        let fmt = "%Y-%m-%dT%H:%M:%SZ";
+        p.push(("start_date".into(), start.format(fmt).to_string()));
+        p.push(("end_date".into(), end.format(fmt).to_string()));
+    }
+    p
+}
+
+/// Webz Lite query parameters (without the token).
+fn webz_params(spec: &QuerySpec, today: NaiveDate) -> Vec<(String, String)> {
+    let mut q = vec![spec.free_text_for_engines()];
+    q.extend(spec.exclude_words.iter().map(|w| format!("-{w}")));
+    q.extend(spec.exclude_phrases.iter().map(|p| format!("-\"{p}\"")));
+    match spec.sites.len() {
+        0 => {}
+        1 => q.push(format!("site:{}", spec.sites[0])),
+        _ => q.push(format!(
+            "({})",
+            spec.sites
+                .iter()
+                .take(15)
+                .map(|s| format!("site:{s}"))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        )),
+    }
+    q.extend(spec.exclude_sites.iter().map(|s| format!("-site:{s}")));
+    q.push("language:english".into());
+    let epoch_ms = |d: NaiveDate| {
+        d.and_hms_opt(0, 0, 0)
+            .map(|t| t.and_utc().timestamp_millis())
+    };
+    if let Some(ms) = spec.before.and_then(epoch_ms) {
+        q.push(format!("published:<{ms}"));
+    }
+    q.retain(|k| !k.trim().is_empty());
+    let mut p: Vec<(String, String)> = vec![("q".into(), q.join(" "))];
+    if let Some(ms) = spec
+        .since(today)
+        .map(|s| s.max(today - chrono::Duration::days(WEBZ_HISTORY_DAYS)))
+        .and_then(epoch_ms)
+    {
+        p.push(("ts".into(), ms.to_string()));
+    }
+    p
 }
 
 fn flatten_google_news(news_results: &[Value], count: usize) -> Vec<Value> {
@@ -494,11 +695,11 @@ impl SearchSkill {
                     "engine": {
                         "type": "string",
                         "description": "Preferred engine, tried first. Omit to use the configured \
-                                        ladder (default: exa → tavily → serper → serpapi → google → searxng → brave; \
+                                        ladder (default: exa → tavily → serper → serpapi → google → currents → webz → searxng → brave, with currents → webz first for news/recency searches; \
                                         engines without a key are skipped). \
                                         Remaining engines are still used as fallbacks. \
                                         'google_news' is SerpApi's Google News engine (news only).",
-                        "enum": ["searxng", "tavily", "exa", "serper", "serpapi", "brave", "google", "google_news"]
+                        "enum": ["searxng", "tavily", "exa", "serper", "serpapi", "brave", "google", "google_news", "currents", "webz"]
                     },
                     "count": {
                         "type": "integer",
@@ -612,7 +813,7 @@ impl SearchSkill {
     /// moved to the back rather than dropped — a quota that reset overnight
     /// should recover on its own, but should not cost a round-trip on all eight
     /// searches of the daily news chain until it does.
-    async fn engine_ladder(&self, requested: Option<&str>) -> Vec<String> {
+    async fn engine_ladder(&self, requested: Option<&str>, news_first: bool) -> Vec<String> {
         let configured = std::env::var("SEARCH_ENGINE_ORDER").unwrap_or_default();
         let mut exhausted = self
             .telemetry
@@ -635,7 +836,10 @@ impl SearchSkill {
         if has_news && !has_serpapi {
             exhausted.push("serpapi".to_string());
         }
-        let ladder = order_engines(&configured, requested, &exhausted);
+        let mut ladder = order_engines(&configured, requested, &exhausted);
+        if news_first {
+            ladder = promote_news_engines(ladder, requested, &exhausted);
+        }
 
         // Drop engines with no credentials configured. A missing key produces
         // `not_configured` on every call — the 2026-09-08 GDELT session put
@@ -675,6 +879,11 @@ impl SearchSkill {
             "tavily" => self.resolve_key("tavily", "TAVILY_API_KEY").await.is_some(),
             "exa" => self.resolve_key("exa", "EXA_API_KEY").await.is_some(),
             "serper" => self.resolve_key("serper", "SERPER_API_KEY").await.is_some(),
+            "currents" => self
+                .resolve_key("currents", "CURRENTS_API_KEY")
+                .await
+                .is_some(),
+            "webz" => self.resolve_key("webz", "WEBZIO_API_KEY").await.is_some(),
             _ => true,
         }
     }
@@ -1086,7 +1295,9 @@ impl SearchSkill {
         // Build the failover ladder. A single dead engine must not take the
         // whole chain with it: an exhausted SerpApi free tier previously killed
         // 39 jobs and 38 tasks because `search_web` hard-failed on one engine.
-        let ladder = self.engine_ladder(input.engine.as_deref()).await;
+        let ladder = self
+            .engine_ladder(input.engine.as_deref(), spec.news || spec.recency.is_some())
+            .await;
 
         info!(
             query = %effective_query,
@@ -1115,9 +1326,17 @@ impl SearchSkill {
         // chain-death attribution.
         let mut empty_success: Option<ToolCallResult> = None;
 
+        let today = chrono::Utc::now().date_naive();
         for engine in &ladder {
+            if let Some(why) = engine_unsupported(engine, &spec, today) {
+                info!(engine = %engine, reason = %why, "Search engine skipped — cannot serve this query");
+                passed_over.push(format!("{engine} (skipped: {why})"));
+                continue;
+            }
             let started = Instant::now();
             let attempt = match engine.as_str() {
+                "currents" => self.search_currents(&spec, count).await,
+                "webz" => self.search_webz(&spec, count).await,
                 "searxng" => self.search_searxng(&spec, count).await,
                 "serpapi" => self.search_serpapi(&spec, count).await,
                 "google_news" => self.search_serpapi_news(&spec, count).await,
@@ -1874,6 +2093,87 @@ impl SearchSkill {
         }
     }
 
+    /// Currents (news). GET with a Bearer key; keywords take quoted phrases,
+    /// OR and -exclusion; one include and one exclude domain; a date range
+    /// needs both ends and at most 7 days on the free plan.
+    async fn search_currents(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        let Some(key) = self.resolve_key("currents", "CURRENTS_API_KEY").await else {
+            return ToolCallResult::error("Currents API key not configured (set CURRENTS_API_KEY)");
+        };
+        let now = chrono::Utc::now();
+        let params = currents_params(spec, count, now);
+        let resp = match self
+            .client
+            .get("https://api.currentsapi.services/v1/search")
+            .bearer_auth(&key)
+            .query(&params)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return ToolCallResult::error(format!("Request failed: {e}")),
+        };
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let spent = status.as_u16() == 429 || text.to_lowercase().contains("limit");
+            let prefix = if spent { "quota exhausted — " } else { "" };
+            return ToolCallResult::error(format!(
+                "Currents search failed: {prefix}HTTP {status} - {}",
+                redact(&text, &key).chars().take(400).collect::<String>()
+            ));
+        }
+        match serde_json::from_str::<Value>(&text) {
+            Ok(json) => ToolCallResult::success_json(normalize_currents(&json, count)),
+            Err(e) => ToolCallResult::error(format!("Failed to parse Currents response: {e}")),
+        }
+    }
+
+    /// Webz News API Lite (news, full text). GET with `token`; Lucene-style
+    /// query with `site:`/`-site:`, `language:english`, `published:<ms`; the
+    /// start of the window goes in `ts` (epoch ms). Its error bodies echo the
+    /// token, so every error text is redacted.
+    async fn search_webz(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
+        let Some(key) = self.resolve_key("webz", "WEBZIO_API_KEY").await else {
+            return ToolCallResult::error("Webz API key not configured (set WEBZIO_API_KEY)");
+        };
+        let mut params = webz_params(spec, chrono::Utc::now().date_naive());
+        params.push(("token".into(), key.clone()));
+        let resp = match self
+            .client
+            .get("https://api.webz.io/newsApiLite")
+            .query(&params)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return ToolCallResult::error(format!(
+                    "Request failed: {}",
+                    redact(&e.to_string(), &key)
+                ));
+            }
+        };
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let lower = text.to_lowercase();
+            let spent =
+                status.as_u16() == 429 || lower.contains("limit") || lower.contains("quota");
+            let prefix = if spent { "quota exhausted — " } else { "" };
+            return ToolCallResult::error(format!(
+                "Webz search failed: {prefix}HTTP {status} - {}",
+                redact(&text, &key).chars().take(400).collect::<String>()
+            ));
+        }
+        match serde_json::from_str::<Value>(&text) {
+            Ok(json) => ToolCallResult::success_json(normalize_webz(&json, count)),
+            Err(e) => ToolCallResult::error(format!("Failed to parse Webz response: {e}")),
+        }
+    }
+
     async fn search_google(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
         let query = spec.google_syntax(true);
         let query = query.as_str();
@@ -2120,8 +2420,137 @@ mod tests {
         assert_eq!(
             order_engines("", None, &[]),
             v(&[
-                "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave"
+                "exa", "tavily", "serper", "serpapi", "google", "currents", "webz", "searxng",
+                "brave"
             ])
+        );
+    }
+
+    #[test]
+    fn news_searches_lead_with_the_news_engines() {
+        let base = order_engines("", None, &[]);
+        let l = promote_news_engines(base.clone(), None, &[]);
+        assert_eq!(&l[..3], &v(&["currents", "webz", "exa"])[..]);
+        assert_eq!(l.len(), base.len());
+        // A requested engine keeps the head; news engines follow it.
+        let req = order_engines("", Some("tavily"), &[]);
+        let l = promote_news_engines(req, Some("tavily"), &[]);
+        assert_eq!(&l[..3], &v(&["tavily", "currents", "webz"])[..]);
+        // A spent news engine stays at the back.
+        let spent = v(&["currents"]);
+        let l = promote_news_engines(order_engines("", None, &spent), None, &spent);
+        assert_eq!(l[0], "webz");
+        assert_eq!(l.last().unwrap(), "currents");
+    }
+
+    #[test]
+    fn engines_that_cannot_serve_a_query_say_why() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let mut spec = QuerySpec::parse("Sudan El Fasher");
+        assert!(engine_unsupported("currents", &spec, today).is_none());
+        spec.recency = Some(Recency::Week);
+        assert!(
+            engine_unsupported("currents", &spec, today).is_none(),
+            "a week fits"
+        );
+        spec.recency = Some(Recency::Month);
+        assert!(
+            engine_unsupported("currents", &spec, today)
+                .unwrap()
+                .contains("days")
+        );
+        assert!(engine_unsupported("webz", &spec, today).is_none());
+        spec.recency = Some(Recency::Year);
+        assert!(engine_unsupported("webz", &spec, today).is_some());
+        let multi = QuerySpec::parse("x site:bbc.co.uk site:reuters.com");
+        assert!(
+            engine_unsupported("currents", &multi, today)
+                .unwrap()
+                .contains("one domain")
+        );
+        assert!(engine_unsupported("webz", &multi, today).is_none());
+        assert!(engine_unsupported("exa", &multi, today).is_none());
+    }
+
+    #[test]
+    fn currents_dates_are_clamped_to_seven_days_and_domains_mapped() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-06T18:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut spec =
+            QuerySpec::parse(r#""El Fasher" -sports site:bbc.co.uk -site:dailymail.com"#);
+        spec.recency = Some(Recency::Week);
+        let p = currents_params(&spec, 50, now);
+        let get = |k: &str| p.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("keywords"), Some(r#""El Fasher" -sports"#));
+        assert_eq!(get("domain"), Some("bbc.co.uk"));
+        assert_eq!(get("domain_not"), Some("dailymail.com"));
+        assert_eq!(get("page_size"), Some("20"), "free-plan cap");
+        assert_eq!(get("end_date"), Some("2026-10-06T18:30:00Z"));
+        assert_eq!(
+            get("start_date"),
+            Some("2026-09-29T18:31:00Z"),
+            "7 days minus a minute"
+        );
+        let plain = currents_params(&QuerySpec::parse("Sudan"), 5, now);
+        assert!(
+            plain.iter().all(|(k, _)| k != "start_date"),
+            "no window, no dates"
+        );
+    }
+
+    #[test]
+    fn webz_queries_carry_sites_language_and_the_window() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let mut spec =
+            QuerySpec::parse(r#""El Fasher" site:bbc.co.uk site:reuters.com -site:dailymail.com"#);
+        spec.recency = Some(Recency::Week);
+        let p = webz_params(&spec, today);
+        let q = &p.iter().find(|(k, _)| k == "q").unwrap().1;
+        assert!(q.starts_with(r#""El Fasher""#));
+        assert!(q.contains("(site:bbc.co.uk OR site:reuters.com)"));
+        assert!(q.contains("-site:dailymail.com") && q.contains("language:english"));
+        let ts = &p.iter().find(|(k, _)| k == "ts").unwrap().1;
+        assert_eq!(ts, "1790640000000", "2026-09-29T00:00Z in ms");
+        spec.recency = Some(Recency::Month);
+        let p = webz_params(&spec, today);
+        let ts = &p.iter().find(|(k, _)| k == "ts").unwrap().1;
+        assert_eq!(
+            ts, "1788652800000",
+            "a month is clamped to Webz's 30 days: 2026-09-06T00:00Z"
+        );
+        assert!(
+            p.iter().all(|(k, _)| k != "token"),
+            "the token is added at call time only"
+        );
+    }
+
+    #[test]
+    fn news_engine_results_normalise() {
+        let c = json!({"status": "ok", "news": [
+            {"title": "T", "url": "https://a.com/x", "description": "D", "published": "2026-10-06 11:02:31 +0000"},
+            {"title": "no url"}]});
+        let out = normalize_currents(&c, 10);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["snippet"], "D");
+        assert_eq!(out[0]["date"], "2026-10-06 11:02:31 +0000");
+        let w = json!({"posts": [{"title": "W", "url": "https://b.com/y", "published": "2026-10-05T10:00:00.000+03:00",
+                                  "text": "x".repeat(2000), "thread": {"site": "b.com"}}], "moreResultsAvailable": 0});
+        let out = normalize_webz(&w, 10);
+        assert_eq!(out[0]["link"], "https://b.com/y");
+        assert!(out[0]["snippet"].as_str().unwrap().chars().count() <= WEBZ_SNIPPET_CHARS + 1);
+    }
+
+    #[test]
+    fn credentials_are_redacted_from_error_text() {
+        assert_eq!(
+            redact("Unknown API token abcdef123456", "abcdef123456"),
+            "Unknown API token <redacted>"
+        );
+        assert_eq!(
+            redact("short", "abc"),
+            "short",
+            "too short to be a key; left alone"
         );
     }
 
