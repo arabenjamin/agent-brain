@@ -178,7 +178,8 @@ services:
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
       # News engines (search_web): for a news/recency search they lead the
-      # ladder. Currents 250/day (7-day windows); Webz Lite 1,000/month.
+      # ladder. Currents 250/day (7-day windows); Webz is prepaid credit
+      # (~$0.01/result, balance logged per call; 5 results per search).
       - CURRENTS_API_KEY=${CURRENTS_API_KEY:-}
       - WEBZIO_API_KEY=${WEBZIO_API_KEY:-}
       # Anakin.io: headless-browser fallback when ingest_article cannot read a

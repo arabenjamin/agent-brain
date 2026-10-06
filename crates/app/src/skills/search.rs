@@ -59,12 +59,15 @@ const NEWS_ENGINES: &[&str] = &["currents", "webz"];
 const CURRENTS_MAX_WINDOW_DAYS: i64 = 8;
 /// Results per call on Currents' free plan.
 const CURRENTS_MAX_RESULTS: u8 = 20;
-/// Webz News API Lite holds 30 days of history. A window up to this long (a
+/// Webz search holds 30 days of history here. A window up to this long (a
 /// "month" recency is 31 days) is clamped to those 30; longer is skipped.
 const WEBZ_MAX_WINDOW_DAYS: i64 = 31;
 const WEBZ_HISTORY_DAYS: i64 = 30;
 /// Characters of Webz's full article `text` kept per result.
 const WEBZ_SNIPPET_CHARS: usize = 700;
+/// Results per Webz call. The self-serve plan bills prepaid credit per result
+/// (~$0.01 each, measured 2026-10-06: `cost: 0.02` for 2), so it stays small.
+const WEBZ_MAX_RESULTS: u8 = 5;
 
 /// Characters of page text Exa returns per result as a highlight. Exa bills
 /// contents per result, so this is a snippet, not the page.
@@ -2130,19 +2133,26 @@ impl SearchSkill {
         }
     }
 
-    /// Webz News API Lite (news, full text). GET with `token`; Lucene-style
-    /// query with `site:`/`-site:`, `language:english`, `published:<ms`; the
-    /// start of the window goes in `ts` (epoch ms). Its error bodies echo the
-    /// token, so every error text is redacted.
+    /// Webz news search (full text). The key is a self-serve News API key, so
+    /// the endpoint is `/api/news` — `newsApiLite` answers it "Unknown API
+    /// token", and `/api/nbd_search` also covers blogs and forums (2026-10-06).
+    /// `includeSyndicated=false` asks Webz to drop syndicated copies. GET
+    /// with `token`; Lucene-style query with `site:`/`-site:`,
+    /// `language:english`, `published:<ms`; the window start goes in `ts`
+    /// (epoch ms). Each answer reports the prepaid `balance`, which is logged;
+    /// an empty balance reads as quota exhausted. Error bodies echo the token,
+    /// so every error text is redacted.
     async fn search_webz(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
         let Some(key) = self.resolve_key("webz", "WEBZIO_API_KEY").await else {
             return ToolCallResult::error("Webz API key not configured (set WEBZIO_API_KEY)");
         };
         let mut params = webz_params(spec, chrono::Utc::now().date_naive());
         params.push(("token".into(), key.clone()));
+        params.push(("size".into(), count.min(WEBZ_MAX_RESULTS).to_string()));
+        params.push(("includeSyndicated".into(), "false".into()));
         let resp = match self
             .client
-            .get("https://api.webz.io/newsApiLite")
+            .get("https://api.webz.io/api/news")
             .query(&params)
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -2160,8 +2170,10 @@ impl SearchSkill {
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
             let lower = text.to_lowercase();
-            let spent =
-                status.as_u16() == 429 || lower.contains("limit") || lower.contains("quota");
+            let spent = matches!(status.as_u16(), 402 | 429)
+                || ["limit", "quota", "balance", "credit"]
+                    .iter()
+                    .any(|w| lower.contains(w));
             let prefix = if spent { "quota exhausted — " } else { "" };
             return ToolCallResult::error(format!(
                 "Webz search failed: {prefix}HTTP {status} - {}",
@@ -2169,7 +2181,14 @@ impl SearchSkill {
             ));
         }
         match serde_json::from_str::<Value>(&text) {
-            Ok(json) => ToolCallResult::success_json(normalize_webz(&json, count)),
+            Ok(json) => {
+                let balance = json["balance"].as_f64();
+                info!(balance = ?balance, cost = ?json["cost"].as_f64(), "Webz search");
+                if balance.is_some_and(|b| b < 0.5) {
+                    warn!(balance = ?balance, "Webz prepaid balance is nearly spent");
+                }
+                ToolCallResult::success_json(normalize_webz(&json, count))
+            }
             Err(e) => ToolCallResult::error(format!("Failed to parse Webz response: {e}")),
         }
     }
