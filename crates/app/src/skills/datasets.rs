@@ -242,17 +242,7 @@ impl DatasetSkill {
     /// report's age. Paused is read from the schedule, so a pause is never
     /// mistaken for an outage.
     async fn reliefweb_freshness(&self) -> Value {
-        let enabled = match &self.neo4j {
-            Some(n) => n
-                .execute(neo4rs::query(
-                    "MATCH (t:ScheduledTask) WHERE t.name STARTS WITH 'ReliefWeb sync' \
-                     RETURN t.enabled AS enabled",
-                ))
-                .await
-                .ok()
-                .and_then(|rows| rows.first().and_then(|r| r.get::<bool>("enabled").ok())),
-            None => None,
-        };
+        let enabled = self.schedule_enabled("ReliefWeb sync").await;
         let newest = self.store.reliefweb_newest().ok().flatten();
         let last_error = self
             .store
@@ -272,6 +262,21 @@ impl DatasetSkill {
             (_, Some(n), None) => ("loaded", format!("Newest report created {n}.")),
         };
         json!({"state": state, "schedule_enabled": enabled, "newest_report_utc": newest, "summary": summary})
+    }
+
+    /// Whether the sync schedule whose name starts with `prefix` is enabled
+    /// (`None` without Neo4j or schedule).
+    async fn schedule_enabled(&self, prefix: &str) -> Option<bool> {
+        let n = self.neo4j.as_ref()?;
+        n.execute(
+            neo4rs::query(
+                "MATCH (t:ScheduledTask) WHERE t.name STARTS WITH $p RETURN t.enabled AS enabled",
+            )
+            .param("p", prefix),
+        )
+        .await
+        .ok()
+        .and_then(|rows| rows.first().and_then(|r| r.get::<bool>("enabled").ok()))
     }
 
     async fn classes(&self) -> SourceClasses {
@@ -357,10 +362,19 @@ impl DatasetSkill {
             out.insert(
                 "gdelt".into(),
                 json!({
-                    "freshness": gdelt::freshness(
-                        self.store.last_file("gdelt").ok().flatten().as_deref(),
-                        chrono::Utc::now().naive_utc(),
-                    ),
+                    "freshness": if self.schedule_enabled("GDELT sync").await == Some(false) {
+                        json!({
+                            "state": "paused",
+                            "summary": "Paused: the GDELT sync schedule is disabled (retired as a \
+                                        source; see schedules/gdelt-sync.yaml). Rows already loaded \
+                                        remain but no agent queries them.",
+                        })
+                    } else {
+                        gdelt::freshness(
+                            self.store.last_file("gdelt").ok().flatten().as_deref(),
+                            chrono::Utc::now().naive_utc(),
+                        )
+                    },
                     "rows": self.q("SELECT count(*) AS events, CAST(min(event_date) AS VARCHAR) AS earliest_event, \
                                     CAST(max(event_date) AS VARCHAR) AS latest_event FROM gdelt_events"),
                     "files": self.q("SELECT status, count(*) AS files, max(file) AS newest FROM etl_files \
