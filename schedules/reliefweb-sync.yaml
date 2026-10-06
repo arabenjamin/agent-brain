@@ -8,6 +8,10 @@
 name: "ReliefWeb sync: load new humanitarian reports"
 description: "ETL pass for ReliefWeb reports into the datasets DuckDB: pages through reports created since the last load within the call budgets, prunes past retention, and logs the run to etl_runs."
 interval_seconds: 3600
+# Paused 2026-10-06: ReliefWeb answers 403 "You are not using an approved
+# appname" — the appname in .env is not approved yet. Set true once a manual
+# dataset_sync(dataset: "reliefweb") succeeds.
+enabled: false
 steps:
   - tool_name: dataset_sync
     arguments:

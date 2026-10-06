@@ -163,8 +163,8 @@ impl DatasetSkill {
                     Returns counts by event type, country, day and actor, the SOURCE MIX (which \
                     outlets: osint/news lists, state media, platforms, unlisted), and a sample of \
                     the most-corroborated events with their article URLs. Counts measure news \
-                    coverage, not ground truth; by default only events reported by >= 2 outlets \
-                    count. Good for: is coverage of fighting/protest in X rising? who is reported \
+                    coverage, not ground truth, and most events rest on one article (the answer \
+                    says what share were multi-source; min_sources: 2 keeps only those). Good for: is coverage of fighting/protest in X rising? who is reported \
                     acting against whom? Check a sample URL before relying on a number."
                     .into(),
                 input_schema: json!({
@@ -180,7 +180,7 @@ impl DatasetSkill {
                         "since": {"type": "string", "description": "YYYY-MM-DD (default: `days` before `until`)"},
                         "until": {"type": "string", "description": "YYYY-MM-DD (default: today)"},
                         "days": {"type": "integer", "minimum": 1, "maximum": 90, "description": "Window length (default 7)"},
-                        "min_sources": {"type": "integer", "minimum": 1, "description": "Minimum outlets reporting an event (default 2)"},
+                        "min_sources": {"type": "integer", "minimum": 1, "description": "Minimum outlets reporting an event when coded (default 1; 2 keeps the ~3% multi-source events)"},
                         "root_only": {"type": "boolean", "description": "Only events from an article's lead paragraph"},
                         "sample": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Sample events (default 12)"}
                     }
@@ -236,6 +236,42 @@ impl DatasetSkill {
                 }),
             },
         ]
+    }
+
+    /// ReliefWeb's state, stated: paused, never run, failing, or its newest
+    /// report's age. Paused is read from the schedule, so a pause is never
+    /// mistaken for an outage.
+    async fn reliefweb_freshness(&self) -> Value {
+        let enabled = match &self.neo4j {
+            Some(n) => n
+                .execute(neo4rs::query(
+                    "MATCH (t:ScheduledTask) WHERE t.name STARTS WITH 'ReliefWeb sync' \
+                     RETURN t.enabled AS enabled",
+                ))
+                .await
+                .ok()
+                .and_then(|rows| rows.first().and_then(|r| r.get::<bool>("enabled").ok())),
+            None => None,
+        };
+        let newest = self.store.reliefweb_newest().ok().flatten();
+        let last_error = self
+            .store
+            .query_json(
+                "SELECT error FROM etl_runs WHERE dataset = 'reliefweb' ORDER BY finished_at DESC LIMIT 1",
+                &[],
+            )
+            .ok()
+            .and_then(|r| r.first().and_then(|row| row["error"].as_str().map(String::from)));
+        let (state, summary) = match (enabled, &newest, &last_error) {
+            (Some(false), _, _) => (
+                "paused",
+                "Paused: the ReliefWeb sync schedule is disabled (see schedules/reliefweb-sync.yaml for why).".to_string(),
+            ),
+            (_, _, Some(e)) => ("failing", format!("Last run failed: {e}")),
+            (_, None, None) => ("never loaded", "No ReliefWeb report has been loaded yet.".to_string()),
+            (_, Some(n), None) => ("loaded", format!("Newest report created {n}.")),
+        };
+        json!({"state": state, "schedule_enabled": enabled, "newest_report_utc": newest, "summary": summary})
     }
 
     async fn classes(&self) -> SourceClasses {
@@ -321,6 +357,10 @@ impl DatasetSkill {
             out.insert(
                 "gdelt".into(),
                 json!({
+                    "freshness": gdelt::freshness(
+                        self.store.last_file("gdelt").ok().flatten().as_deref(),
+                        chrono::Utc::now().naive_utc(),
+                    ),
                     "rows": self.q("SELECT count(*) AS events, CAST(min(event_date) AS VARCHAR) AS earliest_event, \
                                     CAST(max(event_date) AS VARCHAR) AS latest_event FROM gdelt_events"),
                     "files": self.q("SELECT status, count(*) AS files, max(file) AS newest FROM etl_files \
@@ -346,6 +386,7 @@ impl DatasetSkill {
             out.insert(
                 "reliefweb".into(),
                 json!({
+                    "freshness": self.reliefweb_freshness().await,
                     "rows": self.q("SELECT count(*) AS reports, strftime(min(date_created), '%Y-%m-%d') AS earliest, \
                                     strftime(max(date_created), '%Y-%m-%d %H:%M') AS latest_utc FROM reliefweb_reports"),
                     "api_calls_today": self.store.api_calls_today("reliefweb").ok(),

@@ -40,7 +40,8 @@ steps:
         The CONTEXT is this week's status of two datasets the brain loads
         (GDELT news-event data, ReliefWeb humanitarian reports). Write a short
         review, under 250 words, in four parts:
-        FRESHNESS — is each current (latest event/report time), any backlog?
+        FRESHNESS — copy each dataset's `freshness.summary` as given; do not
+        judge freshness from the other timestamps.
         FAILURES — failed runs in the last 24h and their errors, or "none".
         SOURCES — GDELT's source mix by class and the three largest unlisted
         outlets; ReliefWeb's top publishers and publisher types.

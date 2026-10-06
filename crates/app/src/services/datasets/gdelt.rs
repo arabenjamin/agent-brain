@@ -79,6 +79,34 @@ pub fn pending_stamps(
     out
 }
 
+/// Freshness of the loaded GDELT data, stated rather than left to a reader:
+/// `newest` is the newest file recorded, `now` the current UTC time. GDELT
+/// publishes every 15 minutes, so more than two slots behind is not current.
+pub fn freshness(newest: Option<&str>, now: NaiveDateTime) -> Value {
+    let Some(t) = newest.and_then(parse_stamp) else {
+        return json!({"state": "never loaded", "summary": "No GDELT file has been loaded yet."});
+    };
+    let behind = ((floor_slot(now) - t).num_minutes() / 15).max(0);
+    let age_h = (now - t).num_minutes() as f64 / 60.0;
+    let state = if behind <= 2 { "current" } else { "behind" };
+    json!({
+        "state": state,
+        "newest_file_utc": t.format("%Y-%m-%d %H:%M").to_string(),
+        "hours_behind": (age_h * 10.0).round() / 10.0,
+        "files_behind": behind,
+        "summary": if state == "current" {
+            format!("Current: newest file {} UTC.", t.format("%Y-%m-%d %H:%M"))
+        } else {
+            format!(
+                "NOT current: newest file is {:.1} hours old ({behind} files behind). \
+                 If the last runs loaded files and show no error, this is the backfill \
+                 catching up (48 files per 15-minute run); otherwise the sync is stuck.",
+                age_h
+            )
+        },
+    })
+}
+
 /// Slots between `after` and `latest` still to load after this run.
 fn backlog(after: &str, latest: &str) -> i64 {
     match (parse_stamp(after), parse_stamp(latest)) {
@@ -343,6 +371,7 @@ pub fn run_query(
     let totals = store.query_json(
         &format!(
             "SELECT count(*) AS events, count(DISTINCT source_url) AS articles, \
+             count(*) FILTER (WHERE num_sources >= 2) AS multi_source_events, \
              round(avg(goldstein), 2) AS avg_goldstein, round(avg(avg_tone), 2) AS avg_tone \
              FROM gdelt_events WHERE {filter}"
         ),
@@ -440,7 +469,17 @@ pub fn run_query(
     let min_sources = q.min_sources.unwrap_or(cfg.default_min_sources).max(1);
     if min_sources > 1 {
         notes.push(format!(
-            "Only events reported by >= {min_sources} outlets are counted (min_sources)."
+            "Only events reported by >= {min_sources} outlets when coded are counted \
+             (min_sources) — typically ~3% of GDELT rows, since each row counts only the \
+             outlets in its own 15-minute window."
+        ));
+    } else if events > 0 {
+        let multi = totals["multi_source_events"].as_i64().unwrap_or(0);
+        notes.push(format!(
+            "{multi} of {events} events ({:.0}%) were reported by more than one outlet when \
+             coded; the rest rest on a single article. Pass min_sources: 2 to keep only the \
+             multi-source ones.",
+            100.0 * multi as f64 / events as f64
         ));
     }
     if let Some(first) = coverage["first_file"].as_str()
@@ -470,7 +509,15 @@ pub fn run_query(
                 close.push(text(&r["country"]));
             }
         }
-        notes.push(if close.is_empty() {
+        let exact = q
+            .countries
+            .iter()
+            .any(|c| close.iter().any(|l| l.eq_ignore_ascii_case(c.trim())));
+        notes.push(if exact {
+            "No events matched, but the country IS loaded — the other filters (event_type, \
+             actor, min_sources, the window) narrowed it to nothing. Relax one at a time."
+                .into()
+        } else if close.is_empty() {
             "No events matched. GDELT country names are English (\"Russia\", \"United States\"); no loaded country resembles the one asked for.".into()
         } else {
             format!("No events matched. Loaded country names resembling the request: {close:?}.")
@@ -505,7 +552,7 @@ file_url_template: "https://d/{stamp}.export.CSV.zip"
 retention_days: 90
 initial_backfill_days: 7
 max_files_per_run: 48
-default_min_sources: 2
+default_min_sources: 1
 quad_classes: {1: verbal cooperation, 4: material conflict}
 cameo_root_codes: {"14": protest, "18": assault, "19": fight}
 "#,
@@ -550,6 +597,17 @@ cameo_root_codes: {"14": protest, "18": assault, "19": fight}
     }
 
     #[test]
+    fn freshness_is_stated_not_inferred() {
+        let now = NaiveDateTime::parse_from_str("20261006220700", STAMP_FMT).unwrap();
+        assert_eq!(freshness(Some("20261006214500"), now)["state"], "current");
+        let old = freshness(Some("20260930094500"), now);
+        assert_eq!(old["state"], "behind");
+        assert!(old["files_behind"].as_i64().unwrap() > 600);
+        assert!(old["summary"].as_str().unwrap().starts_with("NOT current"));
+        assert_eq!(freshness(None, now)["state"], "never loaded");
+    }
+
+    #[test]
     fn backlog_counts_remaining_slots() {
         assert_eq!(backlog("20261006200000", "20261006210000"), 4);
         assert_eq!(backlog("20261006210000", "20261006210000"), 0);
@@ -581,7 +639,7 @@ cameo_root_codes: {"14": protest, "18": assault, "19": fight}
         assert_eq!(sql.matches('?').count(), args.len());
         assert_eq!(
             args[..3],
-            ["2026-09-29".to_string(), "2026-10-06".into(), "2".into()]
+            ["2026-09-29".to_string(), "2026-10-06".into(), "1".into()]
         );
         assert!(args.contains(&"Ukraine".to_string()) && args.contains(&"19".to_string()));
         assert!(args.contains(&"%Wagner%".to_string()));

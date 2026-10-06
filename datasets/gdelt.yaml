@@ -5,7 +5,7 @@
 # stored (unlike ACLED). It is also noisy: a single tabloid article can produce
 # a miscoded "assault", geocoding puts Gaza in "Israel", and a file loaded
 # today carries events dated a year back. Counts measure COVERAGE, not ground
-# truth — the query tool says so and defaults to events with >= 2 sources.
+# truth — the query tool says so and reports how many were multi-source.
 #
 # Extract: lastupdate_url names the newest export file; files are named by a
 # 15-minute UTC stamp, so a missed run catches up by stamp arithmetic.
@@ -20,8 +20,12 @@ retention_days: 90
 initial_backfill_days: 7
 # Bounds one run (~80 KB a file). A backlog clears at this pace per run.
 max_files_per_run: 48
-# Query default: an event reported by one outlet is too often a miscoding.
-default_min_sources: 2
+# Query default. NOT 2: an export row counts only the outlets seen in its own
+# 15-minute window (later coverage goes to the separate mentions file), so ~97%
+# of rows say 1 — measured 2026-10-06: 1,381 of 50,654 events had >= 2, and a
+# Ukraine fighting query went from 88 events to 0. Answers report the
+# multi-source share instead; ask for min_sources: 2 to keep only those.
+default_min_sources: 1
 
 # QuadClass — GDELT's four-way summary of an event.
 quad_classes:
