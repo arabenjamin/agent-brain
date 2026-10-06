@@ -20,7 +20,9 @@ use crate::skills::search::SearchSkill;
 use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition};
 
 /// How many search results are gathered as candidate evidence per claim.
-const EVIDENCE_RESULTS: u8 = 6;
+/// 8, not 6: echo pages are dropped before judging, and corroboration now
+/// needs two CITED independent results rather than any two results.
+const EVIDENCE_RESULTS: u8 = 8;
 
 /// Default number of claims a single `verify` sweep will process.
 const DEFAULT_VERIFY_BATCH: usize = 5;
@@ -215,7 +217,7 @@ impl ClaimSkill {
             )
             .await;
 
-        let evidence_text = match search_result {
+        let raw_evidence = match search_result {
             Some(r) if r.is_error != Some(true) => r
                 .content
                 .first()
@@ -240,6 +242,12 @@ impl ClaimSkill {
             }
         };
 
+        // Search pages that echo the claim back are the query, not evidence.
+        let (evidence_text, echoes_dropped) = claims::drop_echo_results(&raw_evidence, claim_text);
+        if echoes_dropped > 0 {
+            info!(claim_id = %claim_id, dropped = echoes_dropped, "Dropped echo results before judging");
+        }
+
         if evidence_text.trim().is_empty() || evidence_text.trim() == "[]" {
             // No evidence found is NOT refutation — the claim stays unverified.
             // Treating absence of evidence as evidence of absence would quietly
@@ -248,6 +256,7 @@ impl ClaimSkill {
                 "claim_id": claim_id,
                 "claim": claim_text,
                 "verdict": "no_evidence_found",
+                "echo_results_dropped": echoes_dropped,
                 "status": "unverified"
             });
         }
@@ -275,28 +284,16 @@ impl ClaimSkill {
             }
         };
 
-        // Independence gate. A model reading a claim's own promoters will happily
-        // answer "supports" — observed 2026-08-10, where a claim about Skywatcher
-        // was "corroborated" by psionicresearch.com and skywatcher.ai, the
-        // subject's own site. Recording that as corroboration is worse than
-        // recording nothing: it launders an assertion through a verification that
-        // never happened. Contradiction is NOT gated — a single credible refutation
-        // is worth surfacing, and gating it would bias the system toward belief.
-        let asserted_by = self.claim_asserted_by(claim_id).await;
-        let independence = if verdict.verdict == "supports" {
-            claims::check_independence(&evidence_text, claim_text, asserted_by.as_deref())
-        } else {
-            Ok(vec![])
-        };
+        // The results the judge relied on, resolved against what the search
+        // actually returned. Everything below counts only these.
+        let cited = claims::resolve_cited_links(&verdict.sources, &evidence_text);
 
         // Provenance gate. A "supports" must cite a result the search actually
         // returned. A judge that names a note id, "the knowledge graph", or
         // nothing at all is corroborating from somewhere other than the
         // evidence — the shape the 2026-09-12 self-corroboration took.
-        if verdict.verdict == "supports"
-            && !claims::source_is_in_results(verdict.source.as_deref(), &evidence_text)
-        {
-            warn!(claim_id = %claim_id, source = ?verdict.source, "Support rejected — cited source is not a search result");
+        if verdict.verdict == "supports" && cited.is_empty() {
+            warn!(claim_id = %claim_id, sources = ?verdict.sources, "Support rejected — cited source is not a search result");
             let status = claims::recompute_status(&self.neo4j, claim_id)
                 .await
                 .map(|s| s.as_str().to_string())
@@ -307,36 +304,53 @@ impl ClaimSkill {
                 "verdict": "support_rejected_unsourced",
                 "evidence_recorded": false,
                 "reasoning": format!(
-                    "cited source {:?} is not among the search results' links",
-                    verdict.source
+                    "cited sources {:?} are not among the search results' links",
+                    verdict.sources
                 ),
                 "status": status
             });
         }
 
-        if let Err(ref reason) = independence {
-            warn!(claim_id = %claim_id, reason = %reason, "Support rejected — evidence not independent");
-            let status = claims::recompute_status(&self.neo4j, claim_id)
-                .await
-                .map(|s| s.as_str().to_string())
-                .unwrap_or_else(|_| "unverified".to_string());
-            return json!({
-                "claim_id": claim_id,
-                "claim": claim_text,
-                "verdict": "support_rejected_not_independent",
-                "evidence_recorded": false,
-                "reasoning": reason,
-                "status": status
-            });
-        }
+        // Independence gate, over the CITED results only. A model reading a
+        // claim's own promoters will happily answer "supports" — observed
+        // 2026-08-10, where a claim about Skywatcher was "corroborated" by
+        // skywatcher.ai, the subject's own site. Platform posts (facebook.com,
+        // instagram.com) are cited but not counted. Contradiction is NOT
+        // gated — a single credible refutation is worth surfacing, and gating
+        // it would bias the system toward belief.
+        let domains = if verdict.verdict == "supports" {
+            let asserted_by = self.claim_asserted_by(claim_id).await;
+            let roles = claims::load_domain_roles(&self.neo4j).await;
+            match claims::check_independence(&cited, claim_text, asserted_by.as_deref(), &roles) {
+                Ok(independent) => independent,
+                Err(reason) => {
+                    warn!(claim_id = %claim_id, reason = %reason, "Support rejected — evidence not independent");
+                    let status = claims::recompute_status(&self.neo4j, claim_id)
+                        .await
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_else(|_| "unverified".to_string());
+                    return json!({
+                        "claim_id": claim_id,
+                        "claim": claim_text,
+                        "verdict": "support_rejected_not_independent",
+                        "evidence_recorded": false,
+                        "cited_sources": cited,
+                        "reasoning": reason,
+                        "status": status
+                    });
+                }
+            }
+        } else {
+            claims::link_domains(&cited)
+        };
 
         let attached = claims::attach_evidence(
             &self.neo4j,
             claim_id,
             &evidence_id,
             &verdict.verdict,
-            verdict.source.as_deref(),
-            &claims::evidence_domains(&evidence_text),
+            &cited,
+            &domains,
         )
         .await
         .unwrap_or(false);
@@ -350,7 +364,9 @@ impl ClaimSkill {
             "claim_id": claim_id,
             "claim": claim_text,
             "verdict": verdict.verdict,
-            "evidence_domains": claims::evidence_domains(&evidence_text),
+            "cited_sources": cited,
+            "counted_domains": domains,
+            "echo_results_dropped": echoes_dropped,
             "evidence_recorded": attached,
             "reasoning": verdict.reasoning,
             "status": status

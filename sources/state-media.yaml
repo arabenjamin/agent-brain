@@ -1,0 +1,38 @@
+# Bootstrap definition for the `state-media` SourceList (role: state_media).
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query,
+# delete the node to re-seed.
+#
+# Outlets under direct government editorial control or ownership, from any
+# country, including the US government's own broadcasters. LABEL ONLY: a
+# corroboration that includes one is marked "incl. state media" in the claim's
+# label. It still counts toward independence — verification is never gated on
+# who an outlet is, only on whether it is a source at all (see platforms.yaml).
+name: state-media
+role: state_media
+description: >
+  Government-controlled outlets. Labelled on corroborated claims, never
+  excluded. Graph-owned after first seed — edit via neo4j_query; delete the
+  node to re-seed from sources/state-media.yaml.
+domains:
+  - xinhuanet.com
+  - news.cn
+  - globaltimes.cn
+  - chinadaily.com.cn
+  - cgtn.com
+  - people.cn
+  - rt.com
+  - sputniknews.com
+  - sputnikglobe.com
+  - tass.com
+  - tass.ru
+  - ria.ru
+  - presstv.ir
+  - irna.ir
+  - trtworld.com
+  - trtafrika.com
+  - trt.net.tr
+  - aa.com.tr
+  - kcna.kp
+  - telesurenglish.net
+  - voanews.com
+  - rferl.org

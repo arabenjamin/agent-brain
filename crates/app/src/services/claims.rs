@@ -313,7 +313,9 @@ pub async fn classify_domains(
     }
     let listed: Vec<String> = neo4j
         .execute(neo4rs::query(
-            "MATCH (s:SourceList) UNWIND s.domains AS d RETURN collect(DISTINCT d) AS listed",
+            // Role-tagged lists (platforms, state media) are not "established".
+            "MATCH (s:SourceList) WHERE s.role IS NULL \
+             UNWIND s.domains AS d RETURN collect(DISTINCT d) AS listed",
         ))
         .await
         .ok()
@@ -353,6 +355,16 @@ pub fn corroboration_tier(primary: usize, established: usize, unclassified: usiz
         (p, _, _) if p > 0 => "primary sources",
         (_, e, _) if e > 0 => "established sources",
         _ => "unclassified sources only",
+    }
+}
+
+/// The tier as stored and rendered in the claim label, with any state-media
+/// corroborators named. A label, never a gate: state media still counts.
+pub fn tier_label(tier: &str, state_media: &[String]) -> String {
+    if state_media.is_empty() || tier == "none" {
+        tier.to_string()
+    } else {
+        format!("{tier} · incl. state media ({})", state_media.join(", "))
     }
 }
 
@@ -405,7 +417,16 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
         })
         .unwrap_or_default();
     let (primary, established, unclassified) = classify_domains(neo4j, &domains).await;
-    let tier = corroboration_tier(primary.len(), established.len(), unclassified.len());
+    let roles = load_domain_roles(neo4j).await;
+    let state_media: Vec<String> = domains
+        .iter()
+        .filter(|d| roles.is_state_media(d))
+        .cloned()
+        .collect();
+    let tier = tier_label(
+        corroboration_tier(primary.len(), established.len(), unclassified.len()),
+        &state_media,
+    );
 
     neo4j
         .run(
@@ -420,12 +441,12 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
             .param("now", chrono::Utc::now().to_rfc3339())
             .param("cor", cor as i64)
             .param("con", con as i64)
-            .param("tier", tier)
+            .param("tier", tier.as_str())
             .param("domains", domains.clone()),
         )
         .await?;
 
-    info!(claim_id = %claim_id, status = status.as_str(), corroborating = cor, contradicting = con, tier, "Claim status recomputed");
+    info!(claim_id = %claim_id, status = status.as_str(), corroborating = cor, contradicting = con, tier = %tier, "Claim status recomputed");
     Ok(status)
 }
 
@@ -434,11 +455,19 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
 /// One domain is not corroboration, however confidently a model reads it.
 pub const MIN_INDEPENDENT_DOMAINS: usize = 2;
 
-/// Registrable-ish domain of a URL or bare host: the last two labels.
+/// Second-level labels that sit under a two-letter country code as part of the
+/// public suffix (`co.uk`, `com.cn`, `re.kr`). A parsing rule, not a source list.
+const CC_SECOND_LEVEL: &[&str] = &[
+    "co", "com", "net", "org", "gov", "ac", "edu", "or", "go", "re", "ne", "gob", "nic",
+];
+
+/// Registrable-ish domain of a URL or bare host: the last two labels, or three
+/// under a country-code second level (`bbc.co.uk`, `chinadaily.com.cn`).
 ///
-/// Deliberately crude — it over-merges a few country-code domains
-/// (`bbc.co.uk` → `co.uk`), which errs toward *under*-counting independence,
-/// and under-counting is the safe direction here.
+/// Taking two labels everywhere merged every UK site into `co.uk` and every
+/// Korean research site into `re.kr`. That under-counted independence when
+/// every result's domain counted; now that only the cited ones do, and the
+/// state-media list names `chinadaily.com.cn`, the merge was simply wrong.
 fn registrable_domain(url_or_host: &str) -> Option<String> {
     let s = url_or_host.trim();
     let rest = s.split_once("://").map(|x| x.1).unwrap_or(s);
@@ -455,7 +484,108 @@ fn registrable_domain(url_or_host: &str) -> Option<String> {
     if labels.len() < 2 {
         return None;
     }
-    Some(labels[labels.len() - 2..].join("."))
+    let n = labels.len();
+    let take = if n >= 3 && labels[n - 1].len() == 2 && CC_SECOND_LEVEL.contains(&labels[n - 2]) {
+        3
+    } else {
+        2
+    };
+    Some(labels[n - take..].join("."))
+}
+
+/// True when `domain` is `entry` or a subdomain of it.
+fn domain_matches(domain: &str, entry: &str) -> bool {
+    domain == entry || domain.ends_with(&format!(".{entry}"))
+}
+
+/// Whether a result link is a search engine's own results page.
+///
+/// `ecosia.org/search?q=<claim>`, `dailymotion.com/search/<claim>/`,
+/// `us.search.yahoo.com/search?p=<claim>`: an index page for the query, not a
+/// page about the subject.
+fn is_search_page(link: &str) -> bool {
+    let rest = link.split_once("://").map(|x| x.1).unwrap_or(link);
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.to_lowercase();
+    let path = path.to_lowercase();
+    let segments: Vec<&str> = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .split('/')
+        .collect();
+    segments.contains(&"search") || (host.starts_with("search.") && path.contains('?'))
+}
+
+/// Lowercase alphanumeric words, with the HTML entities search snippets carry
+/// (`&quot;`, `&#039;`) removed first so they do not become words.
+fn normalise_words(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            // Skip an entity up to its ';' (bounded, so a bare '&' survives).
+            let ent: String = chars.clone().take(8).collect();
+            if let Some(end) = ent.find(';') {
+                for _ in 0..=end {
+                    chars.next();
+                }
+                out.push(' ');
+                continue;
+            }
+        }
+        out.push(if c.is_alphanumeric() {
+            c.to_ascii_lowercase()
+        } else {
+            ' '
+        });
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Remove results that only echo the query back, before the judge sees them.
+///
+/// Returns the remaining results (re-serialised) and how many were dropped.
+/// From 2026-10-01 searches for a claim returned pages like "Search for <the
+/// claim, verbatim> with Ecosia"; the judge read its own claim restated and
+/// called it support (25 corroborations in six days). Two tests, either drops:
+/// the link is a search-results page, or the title/snippet contains the whole
+/// claim word for word. Text that is not a result array is returned unchanged.
+pub fn drop_echo_results(evidence: &str, claim: &str) -> (String, usize) {
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(evidence.trim()) else {
+        return (evidence.to_string(), 0);
+    };
+    let claim_norm = normalise_words(claim);
+    // A short claim ("My legs!") appears inside plenty of real pages.
+    let check_text = claim_norm.len() >= 40;
+    let before = items.len();
+    let kept: Vec<serde_json::Value> = items
+        .into_iter()
+        .filter(|item| {
+            let link = item
+                .get("link")
+                .or_else(|| item.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if is_search_page(link) {
+                return false;
+            }
+            if check_text {
+                let text = format!(
+                    "{} {}",
+                    item.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                    item.get("snippet").and_then(|v| v.as_str()).unwrap_or("")
+                );
+                if normalise_words(&text).contains(&claim_norm) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+    let dropped = before - kept.len();
+    let text = serde_json::to_string_pretty(&kept).unwrap_or_else(|_| "[]".to_string());
+    (text, dropped)
 }
 
 /// The `link` (or `url`) field of every result in a `search_web` JSON array.
@@ -502,26 +632,110 @@ pub fn evidence_domains(evidence: &str) -> Vec<String> {
 /// knowledge graph", or an empty source — because that is the shape
 /// self-corroboration took (2026-09-12..24).
 pub fn source_is_in_results(source: Option<&str>, evidence: &str) -> bool {
-    let Some(source) = source.map(str::trim).filter(|s| !s.is_empty()) else {
-        return false;
-    };
-    let domains = evidence_domains(evidence);
-    if let Some(d) = registrable_domain(source)
-        && domains.contains(&d)
-    {
-        return true;
-    }
+    let cited: Vec<String> = source.map(|s| vec![s.to_string()]).unwrap_or_default();
+    !resolve_cited_links(&cited, evidence).is_empty()
+}
+
+/// Map the judge's cited sources onto the result links they name.
+///
+/// Each cited source resolves to a result link by exact link, by registrable
+/// domain, or by outlet name ("Reuters" → the `reuters.com` result). Anything
+/// that names no result — a note id, "the knowledge graph", a URL the search
+/// never returned — resolves to nothing. Deduplicated, in citation order.
+pub fn resolve_cited_links(cited: &[String], evidence: &str) -> Vec<String> {
+    let links = evidence_links(evidence);
     let norm = |s: &str| -> String {
         s.chars()
             .filter(|c| c.is_ascii_alphanumeric())
             .collect::<String>()
             .to_lowercase()
     };
-    let src = norm(source);
-    domains.iter().any(|d| {
-        let name = norm(d.split('.').next().unwrap_or(""));
-        name.len() >= 4 && (src == name || src.starts_with(&name) || src.ends_with(&name))
-    })
+    let mut out: Vec<String> = Vec::new();
+    for source in cited.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let hit = links
+            .iter()
+            .find(|l| l.as_str() == source)
+            .or_else(|| {
+                let d = registrable_domain(source)?;
+                links
+                    .iter()
+                    .find(|l| registrable_domain(l).as_deref() == Some(d.as_str()))
+            })
+            .or_else(|| {
+                let src = norm(source);
+                links.iter().find(|l| {
+                    let Some(d) = registrable_domain(l) else {
+                        return false;
+                    };
+                    let name = norm(d.split('.').next().unwrap_or(""));
+                    name.len() >= 4
+                        && (src == name || src.starts_with(&name) || src.ends_with(&name))
+                })
+            });
+        if let Some(l) = hit
+            && !out.contains(l)
+        {
+            out.push(l.clone());
+        }
+    }
+    out
+}
+
+/// Distinct registrable domains of a set of links.
+pub fn link_domains(links: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for link in links {
+        if let Some(d) = registrable_domain(link)
+            && !seen.contains(&d)
+        {
+            seen.push(d);
+        }
+    }
+    seen
+}
+
+/// The `platform` and `state_media` SourceLists, loaded per sweep.
+///
+/// Graph-owned (seeded from `sources/platforms.yaml`, `sources/state-media.yaml`)
+/// so the lists are edited with `neo4j_query`, never in Rust.
+#[derive(Debug, Clone, Default)]
+pub struct DomainRoles {
+    /// Hosts of anyone's posts. Citable, never counted toward independence.
+    pub platforms: Vec<String>,
+    /// Government-controlled outlets. Labelled, never excluded.
+    pub state_media: Vec<String>,
+}
+
+impl DomainRoles {
+    pub fn is_platform(&self, domain: &str) -> bool {
+        self.platforms.iter().any(|e| domain_matches(domain, e))
+    }
+    pub fn is_state_media(&self, domain: &str) -> bool {
+        self.state_media.iter().any(|e| domain_matches(domain, e))
+    }
+}
+
+/// Load the role-tagged SourceLists. Fails open to empty lists: a missing list
+/// means no platform is excluded, which is how verification behaved before.
+pub async fn load_domain_roles(neo4j: &Neo4jClient) -> DomainRoles {
+    let rows = neo4j
+        .execute(neo4rs::query(
+            "MATCH (s:SourceList) WHERE s.role IN ['platform','state_media'] \
+             UNWIND s.domains AS d \
+             RETURN s.role AS role, collect(DISTINCT d) AS domains",
+        ))
+        .await
+        .unwrap_or_default();
+    let mut roles = DomainRoles::default();
+    for row in rows {
+        let domains = row.get::<Vec<String>>("domains").unwrap_or_default();
+        match row.get::<String>("role").unwrap_or_default().as_str() {
+            "platform" => roles.platforms = domains,
+            "state_media" => roles.state_media = domains,
+            _ => {}
+        }
+    }
+    roles
 }
 
 /// True when a source domain looks like it belongs to the claim's own subject.
@@ -544,30 +758,43 @@ pub fn is_self_referential(domain: &str, claim: &str, asserted_by: Option<&str>)
     haystack.contains(name)
 }
 
-/// Whether gathered evidence is independent enough to support a claim.
+/// Whether the results the judge relied on are independent enough to support
+/// a claim. Returns the independent domains, or `Err(reason)` so the caller
+/// can record *why* a claim stayed unverified.
 ///
-/// Returns `Err(reason)` when it is not, so the caller can record *why* a claim
-/// stayed unverified rather than silently dropping the verdict.
+/// Counts only `supporting_links` — the results the judge cited, already
+/// resolved against the search results. It used to count every result's
+/// domain, so any search returning two sites passed: a LinkedIn post was the
+/// support and anglish.org, an unrelated hit, was the second "independent"
+/// domain. Platform domains (`DomainRoles::platforms`) and the subject's own
+/// site are cited but never counted.
 pub fn check_independence(
-    evidence: &str,
+    supporting_links: &[String],
     claim: &str,
     asserted_by: Option<&str>,
+    roles: &DomainRoles,
 ) -> Result<Vec<String>, String> {
-    let all = evidence_domains(evidence);
-    let independent: Vec<String> = all
+    let cited = link_domains(supporting_links);
+    let self_refs: Vec<&String> = cited
         .iter()
-        .filter(|d| !is_self_referential(d, claim, asserted_by))
+        .filter(|d| is_self_referential(d, claim, asserted_by))
+        .collect();
+    let platforms: Vec<&String> = cited.iter().filter(|d| roles.is_platform(d)).collect();
+    let independent: Vec<String> = cited
+        .iter()
+        .filter(|d| !self_refs.contains(d) && !platforms.contains(d))
         .cloned()
         .collect();
 
-    let self_refs = all.len() - independent.len();
     if independent.len() < MIN_INDEPENDENT_DOMAINS {
         return Err(format!(
-            "insufficient independence: {} independent domain(s) ({} self-referential, {} needed). Domains: {:?}",
+            "insufficient independence: {} independent supporting domain(s), {} needed \
+             (cited: {:?}; self-referential: {:?}; platforms, not counted: {:?})",
             independent.len(),
-            self_refs,
             MIN_INDEPENDENT_DOMAINS,
-            all
+            cited,
+            self_refs,
+            platforms
         ));
     }
     Ok(independent)
@@ -578,8 +805,9 @@ pub fn check_independence(
 pub struct EvidenceVerdict {
     /// `supports` | `contradicts` | `unrelated`
     pub verdict: String,
+    /// Every result link the verdict relies on, as the judge cited them.
     #[serde(default)]
-    pub source: Option<String>,
+    pub sources: Vec<String>,
     #[serde(default)]
     pub reasoning: Option<String>,
 }
@@ -604,8 +832,12 @@ pub async fn assess_evidence(
          \"contradicts\" — the evidence independently asserts it is false\n\
          \"unrelated\"   — the evidence is off-topic, or merely repeats the same \
          original source rather than confirming it independently\n\n\
+         Each result that bears on the claim counts separately: list EVERY result \
+         link that independently supports (or contradicts) it, not just the best \
+         one. A social-media post, a video page, or a page that only repeats the \
+         claim's wording is weaker than reporting about it.\n\n\
          Respond with JSON only:\n\
-         {{\"verdict\": \"supports|contradicts|unrelated\", \"source\": \"the link of the result you relied on, copied exactly\", \"reasoning\": \"one sentence\"}}\n\n\
+         {{\"verdict\": \"supports|contradicts|unrelated\", \"sources\": [\"each result link you relied on, copied exactly\"], \"reasoning\": \"one sentence\"}}\n\n\
          CLAIM:\n{claim}\n\nEVIDENCE:\n{evidence}"
     );
 
@@ -626,10 +858,20 @@ pub async fn assess_evidence(
 
     Ok(EvidenceVerdict {
         verdict,
-        source: value
-            .get("source")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        // `sources` is the contract; a bare `source` string (the old shape,
+        // which a model may still emit) is accepted as a one-element list.
+        sources: match value.get("sources") {
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            _ => value
+                .get("source")
+                .and_then(|v| v.as_str())
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default(),
+        },
         reasoning: value
             .get("reasoning")
             .and_then(|v| v.as_str())
@@ -643,7 +885,7 @@ pub async fn attach_evidence(
     claim_id: &str,
     evidence_note_id: &str,
     verdict: &str,
-    source: Option<&str>,
+    sources: &[String],
     domains: &[String],
 ) -> Result<bool> {
     let rel = match verdict {
@@ -661,14 +903,16 @@ pub async fn attach_evidence(
     let cypher = format!(
         "MATCH (c:Note {{id: $cid}}), (e:Note {{id: $eid}}) \
          MERGE (c)-[r:{rel}]->(e) \
-         ON CREATE SET r.source = $source, r.found_at = datetime($now), r.domains = $domains"
+         ON CREATE SET r.source = $source, r.sources = $sources, \
+                       r.found_at = datetime($now), r.domains = $domains"
     );
     neo4j
         .run(
             neo4rs::query(&cypher)
                 .param("cid", claim_id)
                 .param("eid", evidence_note_id)
-                .param("source", source.unwrap_or(""))
+                .param("source", sources.first().map(String::as_str).unwrap_or(""))
+                .param("sources", sources.to_vec())
                 .param("domains", domains.to_vec())
                 .param("now", chrono::Utc::now().to_rfc3339()),
         )
@@ -805,7 +1049,8 @@ mod tests {
         // result, and must not add to the independence tally.
         let ev = r#"[{"link":"https://sleep.com/dreams","snippet":"see https://reuters.com/x and https://apnews.com/y"}]"#;
         assert_eq!(evidence_domains(ev), vec!["sleep.com".to_string()]);
-        assert!(check_independence(ev, "My legs!", None).is_err());
+        let cited = resolve_cited_links(&["https://reuters.com/x".into()], ev);
+        assert!(cited.is_empty(), "a URL inside a snippet is not a result");
     }
 
     #[test]
@@ -854,8 +1099,9 @@ mod tests {
 
     #[test]
     fn single_domain_support_is_rejected_as_not_independent() {
-        let ev = r#"[{"link":"https://psionicresearch.com/x"}]"#;
-        let err = check_independence(ev, "psionic summoning demonstrated", None).unwrap_err();
+        let links = vec!["https://psionicresearch.com/x".to_string()];
+        let err = check_independence(&links, "psionic summoning demonstrated", None, &no_roles())
+            .unwrap_err();
         assert!(err.contains("insufficient independence"), "{err}");
     }
 
@@ -863,16 +1109,184 @@ mod tests {
     fn subject_owned_domains_do_not_count_toward_independence() {
         // Two domains, but one is the subject's own — leaving one independent
         // source, which is not corroboration.
-        let ev =
-            r#"[{"link":"https://skywatcher.ai/media"},{"link":"https://psionicresearch.com/x"}]"#;
-        assert!(check_independence(ev, "Skywatcher demonstrated summoning", None).is_err());
+        let links = vec![
+            "https://skywatcher.ai/media".to_string(),
+            "https://psionicresearch.com/x".to_string(),
+        ];
+        assert!(
+            check_independence(
+                &links,
+                "Skywatcher demonstrated summoning",
+                None,
+                &no_roles()
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn two_independent_domains_pass() {
-        let ev = r#"[{"link":"https://apnews.com/a"},{"link":"https://reuters.com/b"}]"#;
-        let ok = check_independence(ev, "Congress held UAP hearings", None).unwrap();
+        let links = vec![
+            "https://apnews.com/a".to_string(),
+            "https://reuters.com/b".to_string(),
+        ];
+        let ok =
+            check_independence(&links, "Congress held UAP hearings", None, &no_roles()).unwrap();
         assert_eq!(ok.len(), 2);
+    }
+
+    fn no_roles() -> DomainRoles {
+        DomainRoles::default()
+    }
+
+    fn roles() -> DomainRoles {
+        DomainRoles {
+            platforms: vec!["facebook.com".into(), "instagram.com".into()],
+            state_media: vec!["trtafrika.com".into(), "chinadaily.com.cn".into()],
+        }
+    }
+
+    #[test]
+    fn uncited_results_do_not_count_toward_independence() {
+        // 2026-10 anglish.org case: the judge cited one LinkedIn post, and four
+        // unrelated results (anglish.org among them) made up "independence".
+        let ev = r#"[{"link":"https://www.linkedin.com/posts/x"},{"link":"https://anglish.org/wiki/y"},
+                     {"link":"https://darkreading.com/z"},{"link":"https://ibm.com/w"}]"#;
+        let cited = resolve_cited_links(&["https://www.linkedin.com/posts/x".into()], ev);
+        assert_eq!(cited.len(), 1);
+        assert!(
+            check_independence(
+                &cited,
+                "Dark Sorcery attacks poison the internet",
+                None,
+                &no_roles()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn platform_posts_are_cited_but_not_counted() {
+        let links = vec![
+            "https://www.facebook.com/Reuters/posts/1".to_string(),
+            "https://www.instagram.com/p/2".to_string(),
+            "https://apnews.com/a".to_string(),
+        ];
+        let err = check_independence(&links, "The Nasdaq hit a record close", None, &roles())
+            .unwrap_err();
+        assert!(err.contains("platforms, not counted"), "{err}");
+        let links = [links, vec!["https://reuters.com/b".to_string()]].concat();
+        let ok =
+            check_independence(&links, "The Nasdaq hit a record close", None, &roles()).unwrap();
+        assert_eq!(
+            ok,
+            vec!["apnews.com".to_string(), "reuters.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn every_cited_source_resolves_to_its_result_link() {
+        let ev = r#"[{"link":"https://www.reuters.com/a"},{"link":"https://apnews.com/b"},{"link":"https://bbc.com/c"}]"#;
+        let cited = resolve_cited_links(
+            &[
+                "Reuters".into(),
+                "https://apnews.com/b".into(),
+                "note 0020786f".into(),
+                "Reuters".into(),
+            ],
+            ev,
+        );
+        assert_eq!(
+            cited,
+            vec![
+                "https://www.reuters.com/a".to_string(),
+                "https://apnews.com/b".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn search_pages_that_echo_the_claim_are_dropped() {
+        // Captured shape, 2026-10-02: the snippet restates the claim verbatim.
+        let claim = "Sonnet 5.5 matched the quality of more expensive predecessors while being five times cheaper";
+        let ev = serde_json::json!([
+            {"link": "https://www.ecosia.org/search?q=Sonnet%205.5%20matched",
+             "title": "Search Sonnet 5.5 Matched with Ecosia",
+             "snippet": format!("Ecosia is the search engine that plants trees. Search for {claim} with Ecosia")},
+            {"link": "https://www.dailymotion.com/search/Sonnet%205.5/", "title": "x", "snippet": "videos"},
+            {"link": "https://us.search.yahoo.com/search?p=Sonnet", "title": "y", "snippet": "z"},
+            {"link": "https://spam.example/page", "title": "t", "snippet": format!("&quot;{claim}&quot;")},
+            {"link": "https://www.anthropic.com/news/claude-sonnet-5-5", "title": "Claude Sonnet 5.5",
+             "snippet": "Sonnet 5.5 is priced below Opus"}
+        ])
+        .to_string();
+        let (kept, dropped) = drop_echo_results(&ev, claim);
+        assert_eq!(dropped, 4);
+        assert_eq!(
+            evidence_links(&kept),
+            vec!["https://www.anthropic.com/news/claude-sonnet-5-5".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_short_claim_is_not_dropped_for_appearing_in_a_real_page() {
+        let ev = r#"[{"link":"https://bbc.com/a","title":"t","snippet":"He shouted My legs! and fell"}]"#;
+        assert_eq!(drop_echo_results(ev, "My legs!").1, 0);
+    }
+
+    #[test]
+    fn non_array_evidence_passes_the_echo_filter_unchanged() {
+        assert_eq!(drop_echo_results("not json", "a claim").0, "not json");
+    }
+
+    #[test]
+    fn country_code_second_levels_stay_distinct() {
+        assert_eq!(
+            registrable_domain("https://www.bbc.co.uk/news").as_deref(),
+            Some("bbc.co.uk")
+        );
+        assert_eq!(
+            registrable_domain("https://theguardian.co.uk/x").as_deref(),
+            Some("theguardian.co.uk")
+        );
+        assert_eq!(
+            registrable_domain("https://www.chinadaily.com.cn/a").as_deref(),
+            Some("chinadaily.com.cn")
+        );
+        assert_eq!(
+            registrable_domain("https://edition.cnn.com/a").as_deref(),
+            Some("cnn.com")
+        );
+        assert_eq!(
+            registrable_domain("https://news.cn/a").as_deref(),
+            Some("news.cn")
+        );
+    }
+
+    #[test]
+    fn state_media_is_labelled_not_excluded() {
+        let r = roles();
+        assert!(r.is_state_media("trtafrika.com"));
+        assert!(r.is_state_media("chinadaily.com.cn"));
+        assert!(!r.is_state_media("bbc.co.uk"));
+        let links = vec![
+            "https://trtafrika.com/a".to_string(),
+            "https://apnews.com/b".to_string(),
+        ];
+        assert_eq!(
+            check_independence(&links, "Iran gave up its nuclear program", None, &r)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            tier_label("established sources", &["trtafrika.com".into()]),
+            "established sources · incl. state media (trtafrika.com)"
+        );
+        assert_eq!(
+            tier_label("established sources", &[]),
+            "established sources"
+        );
     }
 
     #[test]

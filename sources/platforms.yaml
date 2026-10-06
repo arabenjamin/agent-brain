@@ -1,0 +1,38 @@
+# Bootstrap definition for the `platforms` SourceList (role: platform).
+# Seeded ON CREATE only — once the node exists, the graph owns it and runtime
+# edits (neo4j_query readonly=false: MATCH (s:SourceList {name:'platforms'})
+# SET s.domains = [...]) persist across restarts. Delete the node to re-seed.
+#
+# Hosts of anyone's posts, not sources. A post here can still be cited as
+# evidence, but its domain never counts toward the two independent domains a
+# corroboration needs: facebook.com/Reuters and facebook.com/groups/<anyone>
+# share one domain and say nothing about who is speaking. Not an "established"
+# list — `classify_domains` only reads role-less (approved) lists for that.
+name: platforms
+role: platform
+description: >
+  User-content platforms. Citable, but never counted toward claim-verification
+  independence. Graph-owned after first seed — edit via neo4j_query; delete the
+  node to re-seed from sources/platforms.yaml.
+domains:
+  - facebook.com
+  - instagram.com
+  - threads.net
+  - x.com
+  - twitter.com
+  - tiktok.com
+  - reddit.com
+  - pinterest.com
+  - imgur.com
+  - youtube.com
+  - youtu.be
+  - dailymotion.com
+  - rumble.com
+  - linkedin.com
+  - medium.com
+  - substack.com
+  - quora.com
+  - tumblr.com
+  - telegram.org
+  - t.me
+  - bsky.app

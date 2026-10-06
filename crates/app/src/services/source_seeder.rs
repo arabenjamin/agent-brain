@@ -10,6 +10,10 @@ struct SourceListFile {
     name: String,
     description: String,
     domains: Vec<String>,
+    /// Absent for an approved list; `platform` / `state_media` for the lists
+    /// claim verification classifies evidence with.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 /// Read every `*.yaml` file from `dir`, parse each as a SourceList definition,
@@ -57,7 +61,12 @@ pub async fn seed_sources_from_dir(neo4j: &Neo4jClient, dir: &Path) -> usize {
         };
 
         match neo4j
-            .seed_source_list_if_absent(&list.name, &list.domains, &list.description)
+            .seed_source_list_if_absent(
+                &list.name,
+                &list.domains,
+                &list.description,
+                list.role.as_deref(),
+            )
             .await
         {
             Ok(true) => {

@@ -250,11 +250,15 @@ impl Neo4jClient {
     /// Seed a SourceList node if absent (MERGE on name, ON CREATE SET only).
     /// The graph owns the node after creation — runtime edits to `domains`
     /// persist across restarts. Returns true when the node was created.
+    ///
+    /// `role` is absent for an approved list (search restriction, "established"
+    /// tier); `platform` and `state_media` lists classify claim evidence instead.
     pub async fn seed_source_list_if_absent(
         &self,
         name: &str,
         domains: &[String],
         description: &str,
+        role: Option<&str>,
     ) -> Result<bool> {
         let now = chrono::Utc::now().to_rfc3339();
         let rows = self
@@ -262,10 +266,12 @@ impl Neo4jClient {
                 neo4rs::query(
                     "MERGE (s:SourceList {name: $name}) \
                      ON CREATE SET s.domains = $domains, s.description = $description, \
+                                   s.role = $role, \
                                    s.created_at = datetime($now), s.updated_at = datetime($now) \
-                     RETURN s.created_at = $now AS created",
+                     RETURN s.created_at = datetime($now) AS created",
                 )
                 .param("name", name)
+                .param("role", role)
                 .param("domains", domains.to_vec())
                 .param("description", description)
                 .param("now", now.as_str()),
