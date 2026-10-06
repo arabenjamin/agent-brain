@@ -1,3 +1,4 @@
+pub mod acled;
 pub mod agent_runner;
 pub mod budget;
 pub mod chain_seeder;
@@ -35,6 +36,7 @@ pub mod store_impls;
 pub mod traits;
 pub mod transcribe;
 pub mod validation;
+pub mod web_result;
 
 pub use agent_runner::{
     AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,

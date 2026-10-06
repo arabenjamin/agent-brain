@@ -677,6 +677,15 @@ impl BrainCore {
             )));
         }
 
+        // ACLED conflict-event data. Absent credentials the tool is not
+        // registered at all, rather than registered and always failing.
+        match crate::skills::acled::AcledSkill::from_env() {
+            Some(acled) => skills.push(Arc::new(acled)),
+            None => debug!(
+                "ACLED not configured (ACLED_EMAIL/ACLED_PASSWORD) — acled_events not registered"
+            ),
+        }
+
         // Generic Neo4j + DuckDB primitives.
         skills.push(Arc::new(QuerySkill::new(
             self.storage.neo4j.clone(),
