@@ -1,0 +1,37 @@
+# Bootstrap definition for the `batteries-materials` SourceList.
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query,
+# delete the node to re-seed.
+#
+# Battery chemistries (sodium-ion, nickel-zinc, solid-state), energy storage,
+# and the critical materials behind chips and cells (gallium, neon, lithium,
+# graphite, rare earths): the hardware tripwire's substitution sweep. Energy-
+# storage and EV trade press, Chinese and Korean battery-industry coverage
+# (where CATL / BYD / LGES / Samsung SDI news breaks), chemistry journalism,
+# commodity-price reporters, and the IEA as the primary source on critical
+# minerals. Several are paywalled — search snippets still work. Max 15 domains.
+#
+# Revised after testing (2026-10-06): ft.com dropped — its markets.ft.com
+# subdomain is a company press-release feed and filled 4 of 10 gallium results;
+# electrek.co and batterytechonline.com dropped (no hits in any test); Argus,
+# ESS News and SMM added (each surfaced unrestricted on a probe query).
+name: batteries-materials
+description: >
+  Battery, energy-storage and critical-materials reporting. Graph-owned after
+  first seed — edit via neo4j_query; delete the node to re-seed from
+  sources/batteries-materials.yaml.
+domains:
+  - reuters.com
+  - bloomberg.com            # paywalled; BloombergNEF coverage
+  - energy-storage.news      # Solar Media; grid and battery storage trade press
+  - pv-magazine.com          # solar and storage trade press
+  - electrive.com            # EV and battery industry trade press (Germany)
+  - cnevpost.com             # China EV and battery industry: CATL, BYD, sodium-ion rollouts
+  - thelec.net               # The Elec; Korean battery makers (LGES, Samsung SDI, SK On)
+  - cen.acs.org              # Chemical & Engineering News (American Chemical Society)
+  - spectrum.ieee.org        # IEEE Spectrum; technical journalism
+  - iea.org                  # International Energy Agency: critical-minerals data (primary)
+  - benchmarkminerals.com    # Benchmark Mineral Intelligence: lithium/graphite/sodium-ion pricing and capacity
+  - fastmarkets.com          # commodity price reporting (minor metals incl. gallium)
+  - argusmedia.com           # Argus: price reporting agency; gallium/germanium, lithium
+  - ess-news.com             # ESS News (pv magazine's storage site): sodium-ion and BESS
+  - news.metal.com           # SMM (Shanghai Metals Market): Chinese battery-material and metals pricing

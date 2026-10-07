@@ -150,20 +150,24 @@ steps:
     provider_hint: ollama
     description: "Bank memory-substitution signal"
 
+  #     batteries-materials list and battery-only query (2026-10-06): gallium
+  #     and neon are already covered by the raw-materials sweep above, and the
+  #     list returned generic metals updates for them, not gallium news.
   - tool_name: search_web
     arguments:
-      query: "sodium-ion nickel-zinc battery materials, gallium neon substitution qualification timeline"
+      query: "sodium-ion nickel-zinc solid-state battery materials commercialization qualification timeline"
+      source_list: batteries-materials
       recency: week
       count: 10
     priority: 1
     max_attempts: 3
     provider_hint: ollama
-    description: "Signal sweep: battery and material substitution"
+    description: "Signal sweep: battery chemistries"
 
   - tool_name: push_context
     arguments:
       session_id: "tripwire-{{task_id}}"
-      content: "## SIGNAL — SUBSTITUTION: BATTERIES / MATERIALS\n{{_prev}}"
+      content: "## SIGNAL — SUBSTITUTION: BATTERY CHEMISTRIES\n{{_prev}}"
       role: observation
     priority: 1
     max_attempts: 2
@@ -188,7 +192,7 @@ steps:
         The CONTEXT contains a PRIOR BASELINE for the AI accelerator supply chain
         followed by five fresh signal sweeps (memory/HBM, advanced packaging,
         raw materials/geopolitics, and substitution: memory architectures, and
-        batteries/materials).
+        battery chemistries).
 
         Write a tripwire report with exactly these sections:
 

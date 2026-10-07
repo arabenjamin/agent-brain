@@ -456,6 +456,16 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
 /// One domain is not corroboration, however confidently a model reads it.
 pub const MIN_INDEPENDENT_DOMAINS: usize = 2;
 
+/// The host of a link, lowercased, without a leading `www.`.
+fn link_host(link: &str) -> String {
+    let rest = link.split_once("://").map(|x| x.1).unwrap_or(link);
+    rest.split(['/', '?', '#', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_lowercase()
+}
+
 /// True when `domain` is `entry` or a subdomain of it.
 fn domain_matches(domain: &str, entry: &str) -> bool {
     domain == entry || domain.ends_with(&format!(".{entry}"))
@@ -654,6 +664,13 @@ impl DomainRoles {
     pub fn is_platform(&self, domain: &str) -> bool {
         self.platforms.iter().any(|e| domain_matches(domain, e))
     }
+    /// Whether a link's host is a platform: an entry may name a subdomain
+    /// (`markets.ft.com`) that a registrable-domain check would never see.
+    pub fn is_platform_link(&self, link: &str) -> bool {
+        let host = link_host(link);
+        self.is_platform(&host) || registrable_domain(link).is_some_and(|d| self.is_platform(&d))
+    }
+
     pub fn is_state_media(&self, domain: &str) -> bool {
         self.state_media.iter().any(|e| domain_matches(domain, e))
     }
@@ -781,14 +798,21 @@ pub fn check_independence_titled(
     roles: &DomainRoles,
 ) -> Result<Vec<String>, String> {
     let cited = link_domains(supporting_links);
-    let self_refs: Vec<&String> = cited
+    // Platforms are matched on each link's HOST, not its registrable domain:
+    // markets.ft.com (a press-release feed) and ft.com (FT journalism) share
+    // `ft.com`, and only the first is a platform.
+    let (platform_links, counted_links): (Vec<&String>, Vec<&String>) = supporting_links
+        .iter()
+        .partition(|l| roles.is_platform_link(l));
+    let platforms: Vec<String> = platform_links.iter().map(|l| link_host(l)).collect();
+    let counted = link_domains(&counted_links.into_iter().cloned().collect::<Vec<_>>());
+    let self_refs: Vec<&String> = counted
         .iter()
         .filter(|d| is_self_referential(d, claim, asserted_by))
         .collect();
-    let platforms: Vec<&String> = cited.iter().filter(|d| roles.is_platform(d)).collect();
-    let independent: Vec<String> = cited
+    let independent: Vec<String> = counted
         .iter()
-        .filter(|d| !self_refs.contains(d) && !platforms.contains(d))
+        .filter(|d| !self_refs.contains(d))
         .cloned()
         .collect();
 
@@ -809,6 +833,9 @@ pub fn check_independence_titled(
         ) else {
             continue;
         };
+        if roles.is_platform_link(link) {
+            continue;
+        }
         let Some(i) = independent.iter().position(|d| *d == domain) else {
             continue;
         };
@@ -1268,6 +1295,31 @@ mod tests {
         assert_eq!(
             story_key("Sudan — army retakes El Fasher district").as_deref(),
             Some("sudan army retakes el fasher district")
+        );
+    }
+
+    #[test]
+    fn a_platform_subdomain_is_excluded_without_excluding_its_parent() {
+        let r = DomainRoles {
+            platforms: vec!["markets.ft.com".into()],
+            state_media: vec![],
+        };
+        let claim = "A Japanese chemical company signed a gallium supply agreement";
+        let press_release_plus_one = vec![
+            "https://markets.ft.com/data/announce/detail?id=123".to_string(),
+            "https://www.reuters.com/markets/gallium".to_string(),
+        ];
+        let err = check_independence(&press_release_plus_one, claim, None, &r).unwrap_err();
+        assert!(err.contains("markets.ft.com"), "{err}");
+        let journalism = vec![
+            "https://www.ft.com/content/abc".to_string(),
+            "https://www.reuters.com/markets/gallium".to_string(),
+        ];
+        assert_eq!(
+            check_independence(&journalism, claim, None, &r)
+                .unwrap()
+                .len(),
+            2
         );
     }
 

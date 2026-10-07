@@ -37,3 +37,4 @@ domains:
   - t.me
   - bsky.app
   - flipboard.com   # link curation; Currents returns its pages (2026-10-06)
+  - markets.ft.com  # company press-release feed under ft.com, not FT journalism (2026-10-06)
