@@ -46,9 +46,14 @@ steps:
     description: "Bank prior baseline"
 
   # 2-4. Three independent signal sweeps, each banked immediately.
+  #     source_list: semiconductors (2026-10-06). Unrestricted, these returned
+  #     mostly unrecognised SEO-style sites (dailysynapse.com, sotkn.com,
+  #     eastasiabrief.com…); restricted, TrendForce, DigiTimes, The Elec, EE
+  #     Times, Nikkei Asia, Reuters and the FT — where this news breaks.
   - tool_name: search_web
     arguments:
       query: "HBM3e HBM4 supply SK Hynix Micron Samsung memory yield capacity allocation"
+      source_list: semiconductors
       recency: week
       count: 10
     priority: 1
@@ -69,6 +74,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "CoWoS advanced packaging TSMC capacity expansion substrate constraint AI accelerator"
+      source_list: semiconductors
       recency: week
       count: 10
     priority: 1
@@ -89,6 +95,7 @@ steps:
   - tool_name: search_web
     arguments:
       query: "semiconductor raw materials export controls gallium neon ABF substrate rare earth supply disruption"
+      source_list: semiconductors
       recency: week
       count: 10
     priority: 1
@@ -118,27 +125,52 @@ steps:
   #     raw-materials query above: each sweep is deliberately narrow, and one
   #     query spanning export controls, memory architectures, and battery
   #     chemistries returns worse results for all three.
+  #     Split in two on 2026-10-06: memory alternatives are covered by the
+  #     semiconductors list, battery and material substitution are not (no
+  #     battery outlets on it yet), and one query mixing both pulled EE Times
+  #     archive pages mis-dated as current.
   - tool_name: search_web
     arguments:
-      query: "alternative memory architecture 3D X-DRAM HBM substitute, sodium-ion nickel-zinc battery materials, gallium neon substitution qualification timeline"
+      query: "alternative memory architecture 3D X-DRAM HBM substitute qualification timeline"
+      source_list: semiconductors
       recency: week
       count: 10
     priority: 1
     max_attempts: 3
     provider_hint: ollama
-    description: "Signal sweep: substitution / alternative architectures"
+    description: "Signal sweep: alternative memory architectures"
 
   - tool_name: push_context
     arguments:
       session_id: "tripwire-{{task_id}}"
-      content: "## SIGNAL — SUBSTITUTION / ALTERNATIVES\n{{_prev}}"
+      content: "## SIGNAL — SUBSTITUTION: MEMORY ARCHITECTURES\n{{_prev}}"
       role: observation
     priority: 1
     max_attempts: 2
     provider_hint: ollama
-    description: "Bank substitution signal"
+    description: "Bank memory-substitution signal"
 
-  # 5. Reassemble baseline + all four sweeps into one blob for the reason step.
+  - tool_name: search_web
+    arguments:
+      query: "sodium-ion nickel-zinc battery materials, gallium neon substitution qualification timeline"
+      recency: week
+      count: 10
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Signal sweep: battery and material substitution"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "tripwire-{{task_id}}"
+      content: "## SIGNAL — SUBSTITUTION: BATTERIES / MATERIALS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank battery/material-substitution signal"
+
+  # 5. Reassemble baseline + all five sweeps into one blob for the reason step.
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'tripwire-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
@@ -154,8 +186,9 @@ steps:
     arguments:
       question: |
         The CONTEXT contains a PRIOR BASELINE for the AI accelerator supply chain
-        followed by four fresh signal sweeps (memory/HBM, advanced packaging,
-        raw materials/geopolitics, and substitution/alternatives).
+        followed by five fresh signal sweeps (memory/HBM, advanced packaging,
+        raw materials/geopolitics, and substitution: memory architectures, and
+        batteries/materials).
 
         Write a tripwire report with exactly these sections:
 
@@ -176,7 +209,7 @@ steps:
         ## SUBSTITUTION OUTLOOK
         For each bottleneck marked TIGHTENING above, say whether a credible
         substitute exists and how far from production it is — qualified and
-        shipping, in qualification, or still a paper. If the substitution sweep
+        shipping, in qualification, or still a paper. If the substitution sweeps
         surfaced nothing about a given bottleneck, write "no signal" for it
         rather than reasoning from general knowledge about the technology. A
         named alternative with no stated timeline is not a mitigation, and must

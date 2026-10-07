@@ -134,7 +134,10 @@ steps:
       query: "Russian intelligence GRU FSB SVR operation accused"
       recency: week
       count: 8
-      source_list: news
+      # national-security, not news (2026-10-06): adds the cyber/intel
+      # specialists (The Record, CyberScoop) where Russian-service operations
+      # are reported; the other two sweeps stay on the general news list.
+      source_list: national-security
       prior_knowledge: false
     priority: 1
     max_attempts: 3

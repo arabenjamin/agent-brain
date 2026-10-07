@@ -1,0 +1,32 @@
+# Bootstrap definition for the `national-security` SourceList.
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query,
+# delete the node to re-seed.
+#
+# Newsrooms with dedicated national-security / intelligence / defense beats and
+# public correction policies, plus specialist trade press for defense and cyber.
+# For searching intelligence-agency and defense stories (the intelligence-agency
+# claims monitor). Analysis and commentary outlets (Lawfare, Just Security, War
+# on the Rocks) are left out on purpose: opinion is context, not corroboration.
+# State media is labelled elsewhere, never listed here. Max 15 domains (Google
+# caps the site: list).
+name: national-security
+description: >
+  National-security, intelligence and defense reporting. Graph-owned after
+  first seed — edit via neo4j_query; delete the node to re-seed from
+  sources/national-security.yaml.
+domains:
+  - apnews.com
+  - reuters.com
+  - nytimes.com
+  - washingtonpost.com
+  - wsj.com
+  - nbcnews.com
+  - npr.org
+  - politico.com
+  - theguardian.com
+  - bbc.com
+  - defenseone.com        # Government Executive Media; defense policy
+  - breakingdefense.com   # defense industry and policy trade press
+  - defensenews.com       # Sightline Media; defense trade press
+  - therecord.media       # cyber/intel; owned by Recorded Future (threat-intel vendor)
+  - cyberscoop.com        # cyber policy and government security

@@ -1,0 +1,30 @@
+# Bootstrap definition for the `semiconductors` SourceList.
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query,
+# delete the node to re-seed.
+#
+# Chip supply chain, memory (HBM/DRAM), advanced packaging and export controls:
+# the hardware tripwire's beat. Business wires with semiconductor desks, Asian
+# supply-chain trade press (where HBM/CoWoS news breaks first), engineering
+# trade journals, market-data firms, and the export-control regulator itself.
+# Several are paywalled — search snippets still work; the article reader may
+# not. Max 15 domains.
+name: semiconductors
+description: >
+  Semiconductor supply chain, memory, packaging and export-control reporting.
+  Graph-owned after first seed — edit via neo4j_query; delete the node to
+  re-seed from sources/semiconductors.yaml.
+domains:
+  - reuters.com
+  - bloomberg.com          # paywalled
+  - ft.com                 # paywalled
+  - wsj.com                # paywalled; strong on export controls
+  - asia.nikkei.com        # Nikkei Asia; Japan/Taiwan/Korea supply chain
+  - digitimes.com          # Taiwan supply-chain trade press; early, sometimes rumour-stage
+  - thelec.net             # The Elec; Korean component and memory industry
+  - trendforce.com         # market research: DRAM/HBM/foundry pricing and capacity data
+  - eetimes.com            # electronics engineering trade press
+  - semiengineering.com    # Semiconductor Engineering; technical depth on packaging/process
+  - spectrum.ieee.org      # IEEE Spectrum; technical journalism
+  - tomshardware.com       # hardware news; solid on memory/GPU supply
+  - semianalysis.com       # analysis newsletter; influential, partly paywalled
+  - bis.gov                # US Bureau of Industry and Security: export-control rules (primary)
