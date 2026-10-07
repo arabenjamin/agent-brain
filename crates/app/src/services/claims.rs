@@ -703,6 +703,61 @@ pub fn is_self_referential(domain: &str, claim: &str, asserted_by: Option<&str>)
 }
 
 /// Whether the results the judge relied on are independent enough to support
+/// a claim, with no headline information. See [`check_independence_titled`].
+pub fn check_independence(
+    supporting_links: &[String],
+    claim: &str,
+    asserted_by: Option<&str>,
+    roles: &DomainRoles,
+) -> Result<Vec<String>, String> {
+    check_independence_titled(
+        supporting_links,
+        &std::collections::HashMap::new(),
+        claim,
+        asserted_by,
+        roles,
+    )
+}
+
+/// Each result's title by its link, from a `search_web` result array.
+pub fn result_titles(evidence: &str) -> std::collections::HashMap<String, String> {
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(evidence.trim()) else {
+        return Default::default();
+    };
+    items
+        .iter()
+        .filter_map(|i| {
+            let link = i.get("link").or_else(|| i.get("url"))?.as_str()?;
+            let title = i.get("title")?.as_str()?;
+            Some((link.to_string(), title.to_string()))
+        })
+        .collect()
+}
+
+/// A headline reduced to the story: outlet suffix dropped ("… - Al Jazeera",
+/// "… | Yahoo News"), words normalised. `None` under four words — "Home" or
+/// "Live updates" on two sites is not the same story.
+pub fn story_key(title: &str) -> Option<String> {
+    let mut head = title.trim();
+    // Peel outlet suffixes from the end: a short tail after a separator
+    // ("BBC News", "Yahoo News", "Al Jazeera") is the outlet, not the story.
+    // A long tail is part of the headline ("Sudan — army retakes El Fasher
+    // district") and stops the peeling.
+    loop {
+        let cut = [" | ", " - ", " — ", " – "]
+            .iter()
+            .filter_map(|sep| head.rsplit_once(sep))
+            .max_by_key(|(before, _)| before.len());
+        match cut {
+            Some((before, after)) if after.split_whitespace().count() <= 4 => head = before.trim(),
+            _ => break,
+        }
+    }
+    let key = normalise_words(head);
+    (key.split(' ').count() >= 4).then_some(key)
+}
+
+/// Whether the results the judge relied on are independent enough to support
 /// a claim. Returns the independent domains, or `Err(reason)` so the caller
 /// can record *why* a claim stayed unverified.
 ///
@@ -712,8 +767,15 @@ pub fn is_self_referential(domain: &str, claim: &str, asserted_by: Option<&str>)
 /// support and anglish.org, an unrelated hit, was the second "independent"
 /// domain. Platform domains (`DomainRoles::platforms`) and the subject's own
 /// site are cited but never counted.
-pub fn check_independence(
+///
+/// **Syndication counts once.** Domains whose cited results carry the same
+/// headline (`story_key`) are one story republished — Webz returned an Al
+/// Jazeera piece on aljazeera.com and as a Yahoo News repost, neither flagged
+/// syndicated (2026-10-06) — so independence is the number of headline-merged
+/// groups of domains, not domains.
+pub fn check_independence_titled(
     supporting_links: &[String],
+    titles: &std::collections::HashMap<String, String>,
     claim: &str,
     asserted_by: Option<&str>,
     roles: &DomainRoles,
@@ -730,15 +792,59 @@ pub fn check_independence(
         .cloned()
         .collect();
 
-    if independent.len() < MIN_INDEPENDENT_DOMAINS {
+    // Union domains that share a story: group id per domain, merged by key.
+    let mut group: Vec<usize> = (0..independent.len()).collect();
+    fn root(g: &mut [usize], mut i: usize) -> usize {
+        while g[i] != i {
+            g[i] = g[g[i]];
+            i = g[i];
+        }
+        i
+    }
+    let mut first_by_story: std::collections::HashMap<String, usize> = Default::default();
+    for link in supporting_links {
+        let (Some(domain), Some(key)) = (
+            crate::services::web_result::registrable_domain(link),
+            titles.get(link).and_then(|t| story_key(t)),
+        ) else {
+            continue;
+        };
+        let Some(i) = independent.iter().position(|d| *d == domain) else {
+            continue;
+        };
+        match first_by_story.get(&key) {
+            Some(&j) => {
+                let (a, b) = (root(&mut group, i), root(&mut group, j));
+                group[a] = b;
+            }
+            None => {
+                first_by_story.insert(key, i);
+            }
+        }
+    }
+    let mut stories: Vec<Vec<String>> = Vec::new();
+    let mut seen: std::collections::HashMap<usize, usize> = Default::default();
+    for (i, domain) in independent.iter().enumerate() {
+        let r = root(&mut group, i);
+        let slot = *seen.entry(r).or_insert_with(|| {
+            stories.push(Vec::new());
+            stories.len() - 1
+        });
+        stories[slot].push(domain.clone());
+    }
+    let syndicated: Vec<&Vec<String>> = stories.iter().filter(|g| g.len() > 1).collect();
+
+    if stories.len() < MIN_INDEPENDENT_DOMAINS {
         return Err(format!(
-            "insufficient independence: {} independent supporting domain(s), {} needed \
-             (cited: {:?}; self-referential: {:?}; platforms, not counted: {:?})",
-            independent.len(),
+            "insufficient independence: {} independent supporting source(s), {} needed \
+             (cited: {:?}; self-referential: {:?}; platforms, not counted: {:?}; \
+             same headline on several domains, counted once: {:?})",
+            stories.len(),
             MIN_INDEPENDENT_DOMAINS,
             cited,
             self_refs,
-            platforms
+            platforms,
+            syndicated
         ));
     }
     Ok(independent)
@@ -1106,6 +1212,62 @@ mod tests {
                 &no_roles()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_syndicated_story_counts_once() {
+        // 2026-10-06: the same Al Jazeera article on aljazeera.com and as a
+        // Yahoo News repost, neither flagged syndicated.
+        let ev = r#"[
+          {"link": "https://www.aljazeera.com/news/2026/10/4/sudan", "title": "Is the Sudanese army gaining momentum against the RSF? | Al Jazeera"},
+          {"link": "https://www.yahoo.com/news/world/articles/sudan", "title": "Is the Sudanese army gaining momentum against the RSF? - Yahoo News"},
+          {"link": "https://apnews.com/article/sudan-x", "title": "Sudan's army retakes key town from RSF fighters"}
+        ]"#;
+        let titles = result_titles(ev);
+        let two: Vec<String> = vec![
+            "https://www.aljazeera.com/news/2026/10/4/sudan".into(),
+            "https://www.yahoo.com/news/world/articles/sudan".into(),
+        ];
+        let err = check_independence_titled(
+            &two,
+            &titles,
+            "The Sudanese army is gaining momentum",
+            None,
+            &no_roles(),
+        )
+        .unwrap_err();
+        assert!(err.contains("1 independent supporting source"), "{err}");
+        assert!(
+            err.contains("aljazeera.com") && err.contains("counted once"),
+            "{err}"
+        );
+        let three = [two, vec!["https://apnews.com/article/sudan-x".to_string()]].concat();
+        assert!(
+            check_independence_titled(
+                &three,
+                &titles,
+                "The Sudanese army is gaining momentum",
+                None,
+                &no_roles()
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn short_or_generic_titles_never_merge_stories() {
+        assert_eq!(story_key("Home"), None);
+        assert_eq!(story_key("Live updates - BBC News"), None);
+        assert_eq!(
+            story_key("Fed holds rates steady as inflation cools | Reuters"),
+            story_key("Fed holds rates steady as inflation cools - CNBC")
+        );
+        // An em-dash inside a real headline is not an outlet suffix if the
+        // part before it is too short to be the story.
+        assert_eq!(
+            story_key("Sudan — army retakes El Fasher district").as_deref(),
+            Some("sudan army retakes el fasher district")
         );
     }
 

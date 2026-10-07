@@ -332,7 +332,14 @@ impl ClaimSkill {
         let domains = if verdict.verdict == "supports" {
             let asserted_by = self.claim_asserted_by(claim_id).await;
             let roles = claims::load_domain_roles(&self.neo4j).await;
-            match claims::check_independence(&cited, claim_text, asserted_by.as_deref(), &roles) {
+            let titles = claims::result_titles(&evidence_text);
+            match claims::check_independence_titled(
+                &cited,
+                &titles,
+                claim_text,
+                asserted_by.as_deref(),
+                &roles,
+            ) {
                 Ok(independent) => independent,
                 Err(reason) => {
                     warn!(claim_id = %claim_id, reason = %reason, "Support rejected — evidence not independent");
