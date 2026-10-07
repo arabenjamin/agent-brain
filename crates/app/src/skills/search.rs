@@ -42,15 +42,18 @@ use chrono::NaiveDate;
 /// news brief's `google_news` needs), then Google CSE (closed to new customers,
 /// ends 2027-01-01) and Brave (card on file, no spend cap). An engine without a
 /// key is dropped from the ladder, so listing one costs nothing.
+///
+/// Currents and Webz are NOT in the ladder; they run only when a caller names
+/// them (`engine: "currents"` / `"webz"`). Measured 2026-10-06 on the brain's
+/// own schedule queries, 7-day news searches: Currents ANDs every keyword and
+/// returned 0 results for all four long queries; Webz returned QAnon-style,
+/// partisan and off-topic pages (a Michigan politics query got Bangladesh and
+/// Nigeria) — not one result from any SourceList — and, being non-empty,
+/// stopped the ladder before Exa/Tavily. Leading news searches with them was
+/// reverted the same day.
 const DEFAULT_ENGINE_ORDER: &[&str] = &[
-    "exa", "tavily", "serper", "serpapi", "google", "currents", "webz", "searxng", "brave",
+    "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave",
 ];
-
-/// News-native engines. For a news or recency search they move to the front
-/// of the ladder (`promote_news_engines`): they filter by publish date for
-/// real and Currents has the largest daily allowance (250/day free). For other
-/// searches they sit just before SearXNG — news results beat its fallback.
-const NEWS_ENGINES: &[&str] = &["currents", "webz"];
 
 /// Currents' free plan rejects a date range over 7 days ("Max range is 7
 /// days", 2026-10-06); a window is clamped to the newest 7 days when it is at
@@ -282,34 +285,6 @@ fn engine_unsupported(engine: &str, spec: &QuerySpec, today: NaiveDate) -> Optio
         }
         _ => None,
     }
-}
-
-/// Move the news engines to just after a requested engine (or the front) for
-/// a news/recency search. Exhausted engines stay where `order_engines` put
-/// them — at the back.
-fn promote_news_engines(
-    ladder: Vec<String>,
-    requested: Option<&str>,
-    exhausted: &[String],
-) -> Vec<String> {
-    let promote: Vec<String> = NEWS_ENGINES
-        .iter()
-        .map(|e| e.to_string())
-        .filter(|e| ladder.contains(e) && !exhausted.contains(e))
-        .filter(|e| requested.map(|r| r.trim().to_lowercase()) != Some(e.clone()))
-        .collect();
-    let mut rest: Vec<String> = ladder
-        .into_iter()
-        .filter(|e| !promote.contains(e))
-        .collect();
-    let at = match requested.map(|r| r.trim().to_lowercase()) {
-        Some(r) if rest.first() == Some(&r) => 1,
-        _ => 0,
-    };
-    for (i, e) in promote.into_iter().enumerate() {
-        rest.insert(at + i, e);
-    }
-    rest
 }
 
 /// Currents query parameters. A window longer than 7 days (never more than
@@ -698,7 +673,7 @@ impl SearchSkill {
                     "engine": {
                         "type": "string",
                         "description": "Preferred engine, tried first. Omit to use the configured \
-                                        ladder (default: exa → tavily → serper → serpapi → google → currents → webz → searxng → brave, with currents → webz first for news/recency searches; \
+                                        ladder (default: exa → tavily → serper → serpapi → google → searxng → brave; currents and webz only when named here; \
                                         engines without a key are skipped). \
                                         Remaining engines are still used as fallbacks. \
                                         'google_news' is SerpApi's Google News engine (news only).",
@@ -816,7 +791,7 @@ impl SearchSkill {
     /// moved to the back rather than dropped — a quota that reset overnight
     /// should recover on its own, but should not cost a round-trip on all eight
     /// searches of the daily news chain until it does.
-    async fn engine_ladder(&self, requested: Option<&str>, news_first: bool) -> Vec<String> {
+    async fn engine_ladder(&self, requested: Option<&str>) -> Vec<String> {
         let configured = std::env::var("SEARCH_ENGINE_ORDER").unwrap_or_default();
         let mut exhausted = self
             .telemetry
@@ -839,10 +814,7 @@ impl SearchSkill {
         if has_news && !has_serpapi {
             exhausted.push("serpapi".to_string());
         }
-        let mut ladder = order_engines(&configured, requested, &exhausted);
-        if news_first {
-            ladder = promote_news_engines(ladder, requested, &exhausted);
-        }
+        let ladder = order_engines(&configured, requested, &exhausted);
 
         // Drop engines with no credentials configured. A missing key produces
         // `not_configured` on every call — the 2026-09-08 GDELT session put
@@ -1298,9 +1270,7 @@ impl SearchSkill {
         // Build the failover ladder. A single dead engine must not take the
         // whole chain with it: an exhausted SerpApi free tier previously killed
         // 39 jobs and 38 tasks because `search_web` hard-failed on one engine.
-        let ladder = self
-            .engine_ladder(input.engine.as_deref(), spec.news || spec.recency.is_some())
-            .await;
+        let ladder = self.engine_ladder(input.engine.as_deref()).await;
 
         info!(
             query = %effective_query,
@@ -2439,27 +2409,9 @@ mod tests {
         assert_eq!(
             order_engines("", None, &[]),
             v(&[
-                "exa", "tavily", "serper", "serpapi", "google", "currents", "webz", "searxng",
-                "brave"
+                "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave"
             ])
         );
-    }
-
-    #[test]
-    fn news_searches_lead_with_the_news_engines() {
-        let base = order_engines("", None, &[]);
-        let l = promote_news_engines(base.clone(), None, &[]);
-        assert_eq!(&l[..3], &v(&["currents", "webz", "exa"])[..]);
-        assert_eq!(l.len(), base.len());
-        // A requested engine keeps the head; news engines follow it.
-        let req = order_engines("", Some("tavily"), &[]);
-        let l = promote_news_engines(req, Some("tavily"), &[]);
-        assert_eq!(&l[..3], &v(&["tavily", "currents", "webz"])[..]);
-        // A spent news engine stays at the back.
-        let spent = v(&["currents"]);
-        let l = promote_news_engines(order_engines("", None, &spent), None, &spent);
-        assert_eq!(l[0], "webz");
-        assert_eq!(l.last().unwrap(), "currents");
     }
 
     #[test]

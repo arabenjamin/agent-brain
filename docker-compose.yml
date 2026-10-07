@@ -177,8 +177,9 @@ services:
       - EXA_API_KEY=${EXA_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
-      # News engines (search_web): for a news/recency search they lead the
-      # ladder. Currents 250/day (7-day windows); Webz is prepaid credit
+      # News engines (search_web) — explicit `engine:` only, not in the ladder
+      # (fringe/off-topic results on the brain's queries, 2026-10-06).
+      # Currents 250/day (7-day windows); Webz is prepaid credit
       # (~$0.01/result, balance logged per call; 5 results per search).
       - CURRENTS_API_KEY=${CURRENTS_API_KEY:-}
       - WEBZIO_API_KEY=${WEBZIO_API_KEY:-}
@@ -198,7 +199,7 @@ services:
       # foreign-index results, and it always answers, so leading with it starved
       # the keyed engines). Brave stays behind it: card on file, no spend cap.
       # Reorder here to change preference without a rebuild.
-      - SEARCH_ENGINE_ORDER=exa,tavily,serper,serpapi,google,currents,webz,searxng,brave
+      - SEARCH_ENGINE_ORDER=exa,tavily,serper,serpapi,google,searxng,brave
       - SEARXNG_URL=http://searxng:8080
       # Sandboxed code execution. Unset => execute_code is not registered at
       # all, so a deployment without the sandbox service degrades cleanly.
