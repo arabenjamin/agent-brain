@@ -2,20 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { getBrainUrl, getApiKey } from "../../api/config";
-
-async function apiFetch(path: string, init: RequestInit = {}) {
-  const url = new URL(`${getBrainUrl()}${path}`, window.location.href).toString();
-  const headers: Record<string, string> = { Authorization: `Bearer ${getApiKey()}` };
-  if (init.body) headers["Content-Type"] = "application/json";
-  const res = await fetch(url, { ...init, headers: { ...headers, ...(init.headers as Record<string, string> ?? {}) } });
-  if (res.status === 204) return null;
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err?.error ?? `HTTP ${res.status}`);
-  }
-  return res.json();
-}
+import { apiJson } from "../../api/client";
+import { asEntityId } from "../../lib/ids";
+import { openEntity } from "../drawer/entities";
 
 interface Note {
   id: string;
@@ -64,7 +53,7 @@ export default function KnowledgePanel() {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch("/api/notes?limit=50");
+      const data = await apiJson<{ notes?: Note[] }>("/api/notes?limit=50");
       setNotes(data.notes ?? []);
     } catch (e) {
       setError(String(e));
@@ -77,6 +66,10 @@ export default function KnowledgePanel() {
 
   const search = useCallback(async (q: string) => {
     if (!q.trim()) { loadInitial(); return; }
+    // A pasted note id is a lookup, not a phrase: substring search on an id
+    // matches nothing, so open the note itself.
+    const id = asEntityId(q);
+    if (id) { openEntity("note", id); return; }
     setLoading(true);
     setError(null);
     setSelected(null);
@@ -84,7 +77,7 @@ export default function KnowledgePanel() {
     setEditing(false);
     setConfirmDelete(false);
     try {
-      const data = await apiFetch(`/api/notes?q=${encodeURIComponent(q)}&limit=30`);
+      const data = await apiJson<{ notes?: Note[] }>(`/api/notes?q=${encodeURIComponent(q)}&limit=30`);
       setNotes(data.notes ?? []);
     } catch (e) {
       setError(String(e));
@@ -103,7 +96,7 @@ export default function KnowledgePanel() {
     setRelatedOpen(false);
     setLoadingRelated(true);
     try {
-      const data = await apiFetch(`/api/notes/${note.id}/related`);
+      const data = await apiJson<{ related_notes?: Note[] }>(`/api/notes/${note.id}/related`);
       setRelated(data.related_notes ?? []);
     } catch {
       // related notes are optional
@@ -132,7 +125,7 @@ export default function KnowledgePanel() {
     setSaving(true);
     setError(null);
     try {
-      const data = await apiFetch("/api/notes", {
+      const data = await apiJson<{ note_id?: string }>("/api/notes", {
         method: "POST",
         body: JSON.stringify({ content: newContent.trim(), note_type: newNoteType }),
       });
@@ -171,7 +164,7 @@ export default function KnowledgePanel() {
     setSaving(true);
     setError(null);
     try {
-      await apiFetch(`/api/notes/${selected.id}`, {
+      await apiJson<unknown>(`/api/notes/${selected.id}`, {
         method: "PUT",
         body: JSON.stringify({ content: editContent.trim() }),
       });
@@ -193,7 +186,7 @@ export default function KnowledgePanel() {
     setDeleting(true);
     setError(null);
     try {
-      await apiFetch(`/api/notes/${selected.id}`, { method: "DELETE" });
+      await apiJson<unknown>(`/api/notes/${selected.id}`, { method: "DELETE" });
       setNotes(prev => prev.filter(n => n.id !== selected.id));
       setSelected(null);
       setConfirmDelete(false);
@@ -365,7 +358,7 @@ export default function KnowledgePanel() {
 
       <div className="input-row">
         <input
-          placeholder="Search notes… (Enter)"
+          placeholder="Search notes, or paste a note id… (Enter)"
           value={query}
           onChange={e => setQuery(e.target.value)}
           onKeyDown={handleKey}

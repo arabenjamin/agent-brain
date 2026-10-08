@@ -1,32 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest } from "../../api/client";
+import { useQueueStatus, useSchedulerStatus } from "../../api/queries";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface QueueStatus {
-  in_memory_pending: number;
-  running_now: number;
-  max_concurrent: number;
-  enabled: boolean;
-  by_status: Record<string, number>;
-}
-
-interface SchedulerStatus {
-  config: {
-    interval_secs: number;
-    enabled: boolean;
-    max_tasks_per_run: number;
-    error_budget: number;
-  };
-  state: {
-    tasks_dispatched: number;
-    consecutive_errors: number;
-    last_run_at: string | null;
-    last_error: string | null;
-    is_running: boolean;
-    is_sleeping: boolean;
-  };
-}
 
 interface Task {
   id: string;
@@ -43,15 +19,6 @@ interface LogEntry {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function authHeaders(): Record<string, string> {
-  const key = getApiKey();
-  return key ? { Authorization: `Bearer ${key}` } : {};
-}
-
-async function apiFetch(path: string) {
-  return fetch(`${getBrainUrl()}${path}`, { headers: authHeaders() });
-}
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
 
@@ -84,8 +51,9 @@ const LOG_LEVEL_COLORS: Record<string, string> = {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function LogsPanel() {
-  const [queueStatus,     setQueueStatus]     = useState<QueueStatus | null>(null);
-  const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
+  // Shared queries: the same keys the Tasks and Architecture views read.
+  const queueStatus     = useQueueStatus(10_000).data ?? null;
+  const schedulerStatus = useSchedulerStatus(10_000).data ?? null;
   const [recentTasks,     setRecentTasks]     = useState<Task[]>([]);
   const [logEntries,      setLogEntries]      = useState<LogEntry[]>([]);
   const [logLevel,        setLogLevel]        = useState<string>("info");
@@ -96,21 +64,11 @@ export default function LogsPanel() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [queueRes, schedulerRes, tasksRes, logsRes] = await Promise.allSettled([
-        apiFetch("/api/queue/status"),
-        apiFetch("/api/scheduler/status"),
-        apiFetch("/api/tasks?limit=20"),
-        apiFetch(`/api/logs?limit=200&level=${logLevel}`),
+      const [tasksRes, logsRes] = await Promise.allSettled([
+        apiRequest("/api/tasks?limit=20"),
+        apiRequest(`/api/logs?limit=200&level=${logLevel}`),
       ]);
 
-      if (queueRes.status === "fulfilled" && queueRes.value.ok) {
-        const data = await queueRes.value.json();
-        setQueueStatus(data);
-      }
-      if (schedulerRes.status === "fulfilled" && schedulerRes.value.ok) {
-        const data = await schedulerRes.value.json();
-        setSchedulerStatus(data);
-      }
       if (tasksRes.status === "fulfilled" && tasksRes.value.ok) {
         const data = await tasksRes.value.json();
         setRecentTasks(data.tasks ?? []);

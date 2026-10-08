@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest } from "../../api/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,19 +35,7 @@ interface SchedulerChain {
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
 function stUrl(path = "") {
-  return `${getBrainUrl()}/scheduled-tasks${path}`;
-}
-
-function authHeaders(): Record<string, string> {
-  const key = getApiKey();
-  return key ? { Authorization: `Bearer ${key}` } : {};
-}
-
-async function apiFetch(url: string, init: RequestInit = {}) {
-  return fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers ?? {}) },
-  });
+  return `/scheduled-tasks${path}`;
 }
 
 function fmtInterval(secs: number): string {
@@ -200,7 +188,7 @@ function useMergedToolGroups(): ToolGroup[] {
       // MCP_TOOL_PROFILE. Fall back to the (profile-bounded) MCP tools/list on an
       // older backend that lacks the route.
       try {
-        const res = await apiFetch(`${getBrainUrl()}/api/tools`, { method: "GET" });
+        const res = await apiRequest(`/api/tools`, { method: "GET" });
         if (res.ok) {
           const data = await res.json();
           const names: string[] = (data?.tools ?? []).filter(Boolean);
@@ -209,7 +197,7 @@ function useMergedToolGroups(): ToolGroup[] {
       } catch { /* fall through to tools/list */ }
 
       try {
-        const res = await apiFetch(`${getBrainUrl()}/mcp`, {
+        const res = await apiRequest(`/mcp`, {
           method: "POST",
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
         });
@@ -360,7 +348,7 @@ function ScheduledTasksView() {
     setError(null);
     try {
       const url = enabledOnly ? stUrl("?enabled_only=true") : stUrl();
-      const res = await apiFetch(url);
+      const res = await apiRequest(url);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
       setTasks(data.scheduled_tasks ?? []);
@@ -373,7 +361,7 @@ function ScheduledTasksView() {
 
   const fetchSchedulerConfig = useCallback(async () => {
     try {
-      const res = await apiFetch(`${getBrainUrl()}/scheduler-config`);
+      const res = await apiRequest(`/scheduler-config`);
       if (!res.ok) return;
       const data = await res.json();
       setSchedulerConfig(data.config ?? null);
@@ -386,7 +374,7 @@ function ScheduledTasksView() {
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Delete scheduled task "${name}"?`)) return;
     try {
-      const res = await apiFetch(stUrl(`/${id}`), { method: "DELETE" });
+      const res = await apiRequest(stUrl(`/${id}`), { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`${res.status}`);
       await refresh();
     } catch (e) {
@@ -396,7 +384,7 @@ function ScheduledTasksView() {
 
   const handleToggleEnabled = async (task: ScheduledTask) => {
     try {
-      const res = await apiFetch(stUrl(`/${task.id}`), {
+      const res = await apiRequest(stUrl(`/${task.id}`), {
         method: "PUT",
         body: JSON.stringify({ enabled: !task.enabled }),
       });
@@ -505,7 +493,7 @@ function ChainsView() {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch(`${getBrainUrl()}/api/scheduler/chains`);
+      const res = await apiRequest(`/api/scheduler/chains`);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
       setChains(data.chains ?? []);
@@ -787,7 +775,7 @@ function ChainForm({
     setSaving(true);
     setError(null);
     try {
-      const res = await apiFetch(`${getBrainUrl()}/mcp`, {
+      const res = await apiRequest(`/mcp`, {
         method: "POST",
         body: JSON.stringify({
           jsonrpc: "2.0", id: 1, method: "tools/call",
@@ -1150,7 +1138,7 @@ function SchedulerSettingsPanel({
     setSaveError(null);
     setSaved(false);
     try {
-      const res = await apiFetch(`${getBrainUrl()}/scheduler-config`, {
+      const res = await apiRequest(`/scheduler-config`, {
         method: "PUT",
         body: JSON.stringify({ local_model: localModel, enabled }),
       });
@@ -1628,7 +1616,7 @@ function ScheduledTaskForm({
       `Output ONLY the final JSON array of steps inside a \`\`\`json code block.`;
 
     try {
-      const res = await apiFetch(`${getBrainUrl()}/mcp`, {
+      const res = await apiRequest(`/mcp`, {
         method: "POST",
         body: JSON.stringify({
           jsonrpc: "2.0", id: 1, method: "tools/call",
@@ -1692,8 +1680,8 @@ function ScheduledTaskForm({
 
     try {
       const res = existing
-        ? await apiFetch(stUrl(`/${existing.id}`), { method: "PUT", body: JSON.stringify(body) })
-        : await apiFetch(stUrl(), { method: "POST", body: JSON.stringify(body) });
+        ? await apiRequest(stUrl(`/${existing.id}`), { method: "PUT", body: JSON.stringify(body) })
+        : await apiRequest(stUrl(), { method: "POST", body: JSON.stringify(body) });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

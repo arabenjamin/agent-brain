@@ -1,8 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import "./styles/main.css";
+import "./styles/ui.css";
 import type { AgentNotification } from "./api/notifications";
 import { fetchUnreadNotifications, markNotificationRead } from "./api/notifications";
 import { getMcpClient, onNotification } from "./api/mcp";
+import { invalidateOnJobPush } from "./api/queries";
+import { navigate, useRoute } from "./router";
+import EntityDrawer from "./components/drawer/EntityDrawer";
 
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
 const TaskPanel          = lazy(() => import("./components/tasks/TaskPanel"));
@@ -29,12 +33,22 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "architecture",    icon: "🏗", label: "Architecture" },
 ];
 
+function isTab(path: string): path is Tab {
+  return TABS.some((t) => t.id === path);
+}
+
 function Fallback() {
   return <div className="loading" style={{ padding: 24 }}>Loading…</div>;
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("chat");
+  // The URL owns the workspace: `#/knowledge?note=<id>` opens Knowledge with
+  // that note in the drawer, and Back/Forward move between workspaces.
+  const route = useRoute();
+  const tab: Tab = isTab(route.path) ? route.path : "chat";
+  useEffect(() => {
+    if (!isTab(route.path)) navigate({ path: "chat" }, { replace: true });
+  }, [route.path]);
   const [showSettings, setShowSettings] = useState(false);
   // Single source of truth for agent notifications: the nav badge counts this
   // list and ChatPanel renders it, so the badge can never advertise a message
@@ -91,8 +105,11 @@ export default function App() {
     }
   }, []);
 
+  // One subscription keeps every shared status query fresh on job pushes.
+  useEffect(() => invalidateOnJobPush(), []);
+
   const handleTabClick = useCallback((id: Tab) => {
-    setTab(id);
+    navigate({ path: id });
   }, []);
 
   return (
@@ -148,6 +165,8 @@ export default function App() {
           {tab === "architecture"    && <ArchitecturePanel />}
         </Suspense>
       </main>
+
+      <EntityDrawer />
 
       {showSettings && (
         <Suspense fallback={null}>

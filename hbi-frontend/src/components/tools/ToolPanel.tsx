@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getMcpClient } from "../../api/mcp";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiJson } from "../../api/client";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -121,13 +121,8 @@ function metaFor(skillName: string): SkillMeta {
 // ── Fetch helpers ─────────────────────────────────────────────────────────────
 
 async function fetchLiveSkills(): Promise<LiveSkill[]> {
-  const url = `${getBrainUrl()}/api/skills`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${getApiKey()}` },
-  });
-  if (!res.ok) throw new Error(`GET /api/skills → ${res.status}`);
-  const data = await res.json();
-  return (data.skills ?? []) as LiveSkill[];
+  const data = await apiJson<{ skills?: LiveSkill[] }>("/api/skills");
+  return data.skills ?? [];
 }
 
 // ── Schema view ───────────────────────────────────────────────────────────────

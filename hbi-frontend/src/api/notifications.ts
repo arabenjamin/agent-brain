@@ -7,7 +7,7 @@
  * fetched independently they could (and did) disagree, leaving a badge that
  * announced messages the chat panel never showed.
  */
-import { getBrainUrl, getApiKey } from "./config";
+import { apiJson, apiRequest } from "./client";
 
 export interface AgentNotification {
   id: string;
@@ -21,17 +21,10 @@ export interface AgentNotification {
 }
 
 export async function fetchUnreadNotifications(): Promise<AgentNotification[]> {
-  const res = await fetch(`${getBrainUrl()}/api/notifications?unread=true`, {
-    headers: { Authorization: `Bearer ${getApiKey()}` },
-  });
-  if (!res.ok) throw new Error(`GET /api/notifications failed: ${res.status}`);
-  const data = (await res.json()) as { notifications?: AgentNotification[] };
+  const data = await apiJson<{ notifications?: AgentNotification[] }>("/api/notifications?unread=true");
   return data.notifications ?? [];
 }
 
 export async function markNotificationRead(id: string): Promise<void> {
-  await fetch(`${getBrainUrl()}/api/notifications/${id}/read`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${getApiKey()}` },
-  });
+  await apiRequest(`/api/notifications/${id}/read`, { method: "POST" });
 }

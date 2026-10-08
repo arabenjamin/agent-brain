@@ -1,7 +1,7 @@
 /**
  * /chat SSE streaming client.
  */
-import { getChatUrl, getApiKey } from "./config";
+import { apiRequest } from "./client";
 
 export type ChatEventType =
   | "thinking"
@@ -51,12 +51,8 @@ export interface StreamChatOptions {
  * POST /chat and stream SSE events until `done` or abort.
  */
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
-  const res = await fetch(getChatUrl(), {
+  const res = await apiRequest("/chat", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${getApiKey()}`,
-    },
     body: JSON.stringify({
       message: opts.message,
       history: opts.history ?? [],

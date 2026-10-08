@@ -19,6 +19,16 @@
   --yellow: #fbbf24;
   --purple: #a78bfa;
   --cyan: #22d3ee;
+  --orange: #fb923c;
+  /* Names components already used but :root never defined, so each fell back
+     to nothing (queued/created status colours, code-block and graph-tooltip
+     backgrounds, secondary text). Aliases of the palette above. */
+  --blue: var(--accent);
+  --surface: var(--bg-card);
+  --bg-base: var(--bg);
+  --text-secondary: var(--text-dim);
+  --drawer-width: 440px;
+  --drawer-width-wide: 720px;
   --radius: 8px;
   --radius-sm: 4px;
   --font: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;

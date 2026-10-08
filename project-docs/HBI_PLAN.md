@@ -2,6 +2,8 @@
 
 Status as of 2026-02-28: **Phases 1–3 complete. Frontend running.**
 
+> **Layout superseded (2026-10-08)** by `HBI_REDESIGN_PLAN.md`. The transport, SSE and MCP-client notes below still hold.
+
 ---
 
 ## 1. Objectives & Features

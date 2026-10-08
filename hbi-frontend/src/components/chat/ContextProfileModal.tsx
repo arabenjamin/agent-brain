@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest } from "../../api/client";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -127,12 +127,11 @@ export default function ContextProfileModal({
   // Fetch skills and models when the modal opens
   useEffect(() => {
     if (!isOpen) return;
-    const h = { Authorization: `Bearer ${getApiKey()}` };
-    fetch(`${getBrainUrl()}/api/skills`, { headers: h })
+    apiRequest(`/api/skills`)
       .then((r) => r.json())
       .then((data: { skills?: SkillGroup[] }) => setSkillGroups(data.skills ?? []))
       .catch(() => {});
-    fetch(`${getBrainUrl()}/api/models`, { headers: h })
+    apiRequest(`/api/models`)
       .then((r) => r.json())
       .then((data: { available_providers?: AvailableProvider[]; catalog_models?: CatalogModel[] }) => {
         setAvailableProviders(data.available_providers ?? []);
@@ -164,9 +163,7 @@ export default function ContextProfileModal({
     setFetchingEdit(true);
     setError(null);
     try {
-      const res = await fetch(`${getBrainUrl()}/api/contexts/${name}`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/contexts/${name}`);
       const data = (await res.json()) as AgentDetail;
       setForm({
         name: data.name ?? name,
@@ -202,14 +199,7 @@ export default function ContextProfileModal({
         model_preference: form.model_preference?.trim() || undefined,
         provider_hint: form.provider_hint?.trim() || undefined,
       };
-      const res = await fetch(`${getBrainUrl()}/api/contexts`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${getApiKey()}`,
-        },
-        body: JSON.stringify(payload),
-      });
+      const res = await apiRequest(`/api/contexts`, { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
@@ -229,10 +219,7 @@ export default function ContextProfileModal({
       setDeleting(name);
       setError(null);
       try {
-        await fetch(`${getBrainUrl()}/api/contexts/${name}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${getApiKey()}` },
-        });
+        await apiRequest(`/api/contexts/${name}`, { method: "DELETE" });
         if (activeProfile === name) onProfileChange("general");
         onProfilesChanged();
       } catch {

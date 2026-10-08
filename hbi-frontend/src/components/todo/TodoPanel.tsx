@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest } from "../../api/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,20 +65,7 @@ const STATUS_LABELS: Record<string, string> = {
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
 function todosUrl(path = "") {
-  return `${getBrainUrl()}/todos${path}`;
-}
-
-function authHeaders(): Record<string, string> {
-  const key = getApiKey();
-  return key ? { Authorization: `Bearer ${key}` } : {};
-}
-
-async function apiFetch(url: string, init: RequestInit = {}) {
-  const res = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers ?? {}) },
-  });
-  return res;
+  return `/todos${path}`;
 }
 
 // ─── TodoPanel ───────────────────────────────────────────────────────────────
@@ -113,7 +100,7 @@ export default function TodoPanel() {
     setError(null);
     try {
       const url = filter === "all" ? todosUrl() : todosUrl(`?status=${filter}`);
-      const res = await apiFetch(url);
+      const res = await apiRequest(url);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
       setTodos(data.todos ?? []);
@@ -129,7 +116,7 @@ export default function TodoPanel() {
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this todo?")) return;
     try {
-      const res = await apiFetch(todosUrl(`/${id}`), { method: "DELETE" });
+      const res = await apiRequest(todosUrl(`/${id}`), { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`${res.status}`);
       await refresh();
     } catch (e) {
@@ -140,7 +127,7 @@ export default function TodoPanel() {
   const handleToggleDone = async (todo: Todo) => {
     const newStatus = todo.status === "done" ? "pending" : "done";
     try {
-      const res = await apiFetch(todosUrl(`/${todo.id}`), {
+      const res = await apiRequest(todosUrl(`/${todo.id}`), {
         method: "PUT",
         body: JSON.stringify({ status: newStatus }),
       });
@@ -158,7 +145,7 @@ export default function TodoPanel() {
     setLoading(true);
     try {
       const results = await Promise.allSettled(
-        done.map((t) => apiFetch(todosUrl(`/${t.id}`), { method: "DELETE" })),
+        done.map((t) => apiRequest(todosUrl(`/${t.id}`), { method: "DELETE" })),
       );
       const failed = results.filter(
         (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok && r.value.status !== 204),
@@ -460,8 +447,8 @@ function TodoForm({
 
     try {
       const res = existing
-        ? await apiFetch(todosUrl(`/${existing.id}`), { method: "PUT", body: JSON.stringify(body) })
-        : await apiFetch(todosUrl(), { method: "POST", body: JSON.stringify(body) });
+        ? await apiRequest(todosUrl(`/${existing.id}`), { method: "PUT", body: JSON.stringify(body) })
+        : await apiRequest(todosUrl(), { method: "POST", body: JSON.stringify(body) });
 
       if (!res.ok) {
         const data = await res.json();

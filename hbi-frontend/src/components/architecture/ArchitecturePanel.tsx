@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
-import { callTool, onNotification } from "../../api/mcp";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { callTool } from "../../api/mcp";
+import { apiRequest } from "../../api/client";
+import { useQueueStatus, useSchedulerStatus } from "../../api/queries";
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 const C = {
@@ -36,36 +37,6 @@ function parseJson<T>(raw: string): T | null {
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface SchedulerStatus {
-  config: {
-    enabled: boolean;
-    interval_secs: number;
-    sleep_interval_secs: number;
-    idle_sleep_after_ticks: number;
-    max_tasks_per_run: number;
-    error_budget: number;
-    session_id: string | null;
-  };
-  state: {
-    is_running: boolean;
-    is_sleeping: boolean;
-    idle_ticks: number;
-    tasks_dispatched: number;
-    consecutive_errors: number;
-    last_run_at: string | null;
-    last_activity_at: string | null;
-    last_error: string | null;
-  };
-}
-
-interface QueueStatus {
-  in_memory_pending: number;
-  running_now: number;
-  max_concurrent: number;
-  enabled: boolean;
-  by_status: Record<string, number>;
-}
-
 interface IntegrityResult {
   total_issues: number;
   checks: {
@@ -172,40 +143,19 @@ function Card({ children, accent }: { children: React.ReactNode; accent?: string
 
 // ── Scheduler Card ─────────────────────────────────────────────────────────────
 function SchedulerCard() {
-  const [data, setData]     = useState<SchedulerStatus | null>(null);
-  const [error, setError]   = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Shared query: polled every 20 s and refreshed by the app-wide job push.
+  const sched = useSchedulerStatus(20_000);
+  const data = sched.data ?? null;
+  const error = sched.error ? sched.error.message : null;
+  const loading = sched.isPending;
+  const { refetch } = sched;
+  const fetch = useCallback(async () => { await refetch(); }, [refetch]);
   const [toast, setToast]   = useState<string | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
   };
-
-  const fetch = useCallback(async () => {
-    try {
-      const res = await window.fetch(`${getBrainUrl()}/api/scheduler/status`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
-      const parsed = await res.json() as SchedulerStatus;
-      setData(parsed);
-      setError(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Poll every 20s; also refresh immediately on any job notification
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 20_000);
-    const unsub = onNotification((n) => {
-      if (n.method === "notifications/agent_job") fetch();
-    });
-    return () => { clearInterval(interval); unsub(); };
-  }, [fetch]);
 
   const s = data?.state;
   const cfg = data?.config;
@@ -316,9 +266,13 @@ function SchedulerCard() {
 
 // ── Queue Card ─────────────────────────────────────────────────────────────────
 function QueueCard() {
-  const [data, setData]     = useState<QueueStatus | null>(null);
-  const [error, setError]   = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Shared query: polled every 5 s and refreshed by the app-wide job push.
+  const queue = useQueueStatus(5_000);
+  const data = queue.data ?? null;
+  const error = queue.error ? queue.error.message : null;
+  const loading = queue.isPending;
+  const { refetch } = queue;
+  const fetch = useCallback(async () => { await refetch(); }, [refetch]);
   const [toast, setToast]   = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -326,41 +280,13 @@ function QueueCard() {
     setTimeout(() => setToast(null), 2500);
   };
 
-  const fetch = useCallback(async () => {
-    try {
-      const res = await window.fetch(`${getBrainUrl()}/api/queue/status`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
-      const parsed = await res.json() as QueueStatus;
-      setData(parsed);
-      setError(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Poll every 5s; also update instantly on job push notifications
-  useEffect(() => {
-    fetch();
-    const interval = setInterval(fetch, 5_000);
-    const unsub = onNotification((n) => {
-      if (n.method === "notifications/agent_job") fetch();
-    });
-    return () => { clearInterval(interval); unsub(); };
-  }, [fetch]);
-
   const busy  = (data?.running_now ?? 0) > 0;
   const stuck = (data?.in_memory_pending ?? 0) > 20;
   const statusColor = !data?.enabled ? C.yellow : busy ? C.green : stuck ? C.red : C.dim;
 
   const handleDrain = async () => {
     if (!confirm("Drain all pending jobs? Running jobs continue.")) return;
-    await window.fetch(`${getBrainUrl()}/api/queue/drain`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${getApiKey()}` },
-    });
+    await apiRequest("/api/queue/drain", { method: "POST" });
     showToast("Queue drained");
     fetch();
   };
@@ -496,9 +422,7 @@ function LlmCard() {
 
   const fetch = useCallback(async () => {
     try {
-      const res = await window.fetch(`${getBrainUrl()}/api/models`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest("/api/models");
       const json = await res.json() as {
         active_provider?: string;
         active_model?: string;

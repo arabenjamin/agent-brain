@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import type { ForceGraphMethods } from "react-force-graph-2d";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest } from "../../api/client";
+import { openEntity } from "../drawer/entities";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -293,9 +294,7 @@ export default function GraphPanel() {
     setFocusNodeId(null);
     setSelectedNode(null);
     try {
-      const res = await fetch(`${getBrainUrl()}/api/graph?max_nodes=200`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/graph?max_nodes=200`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAllNodes(data.nodes ?? []);
@@ -334,9 +333,7 @@ export default function GraphPanel() {
       return;
     }
     try {
-      const res = await fetch(`${getBrainUrl()}/api/notes/${node.id}`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/notes/${node.id}`);
       if (res.ok) {
         const data = await res.json();
         setSelectedNode({
@@ -654,6 +651,16 @@ export default function GraphPanel() {
                     onClick={() => setFocusNodeId(null)}
                   >
                     Unfocus
+                  </button>
+                )}
+                {selectedNode.type === "note" && (
+                  <button
+                    className="btn"
+                    style={{ padding: "2px 8px", fontSize: 11 }}
+                    title="Open the full note (rendered, with related notes) in the side drawer"
+                    onClick={() => openEntity("note", selectedNode.id)}
+                  >
+                    Open
                   </button>
                 )}
                 <button className="close-btn" onClick={() => setSelectedNode(null)}>×</button>

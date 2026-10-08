@@ -6,7 +6,8 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { getMcpUrl, getApiKey } from "./config";
+import { getMcpUrl } from "./config";
+import { authHeaders } from "./client";
 
 let _client: Client | null = null;
 let _connecting: Promise<Client> | null = null;
@@ -33,7 +34,7 @@ export async function getMcpClient(): Promise<Client> {
       new URL(getMcpUrl(), window.location.href),
       {
         requestInit: {
-          headers: { Authorization: `Bearer ${getApiKey()}` },
+          headers: authHeaders(),
         },
       }
     );

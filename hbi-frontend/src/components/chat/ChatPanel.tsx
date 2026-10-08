@@ -6,7 +6,7 @@ import "highlight.js/styles/github-dark.css";
 import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest } from "../../api/client";
 import type { AgentNotification } from "../../api/notifications";
 import ContextProfileModal from "./ContextProfileModal";
 
@@ -582,9 +582,7 @@ export default function ChatPanel({
   const loadSessions = useCallback(async () => {
     setLoadingSessions(true);
     try {
-      const res = await fetch(`${getBrainUrl()}/api/sessions?limit=50`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/sessions?limit=50`);
       const data = (await res.json()) as { sessions?: Session[] };
       setSessions(data.sessions ?? []);
     } catch {
@@ -641,9 +639,7 @@ export default function ChatPanel({
     });
 
     try {
-      const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/sessions/${sid}/entries?limit=200`);
       const parsed = (await res.json()) as {
         entries?: Array<{ role: string; content: string }>;
       };
@@ -728,9 +724,7 @@ export default function ChatPanel({
   }, [thread, contextProfile, loadSessions]);
 
   const loadProfiles = useCallback(() => {
-    fetch(`${getBrainUrl()}/api/contexts`, {
-      headers: { Authorization: `Bearer ${getApiKey()}` },
-    })
+    apiRequest(`/api/contexts`)
       .then((r) => r.json())
       .then((data: { profiles?: Array<{ name: string; description?: string; tools?: string[] }> }) => {
         const list = data.profiles ?? [];
@@ -747,9 +741,7 @@ export default function ChatPanel({
 
   const loadModels = useCallback(async () => {
     try {
-      const res = await fetch(`${getBrainUrl()}/api/models`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/models`);
       const data = (await res.json()) as {
         active_provider?: string;
         active_model?: string;
@@ -771,9 +763,7 @@ export default function ChatPanel({
     try {
       // 24h window: "spend" only means something against a period. All-time
       // totals never move visibly and cannot answer "what is this costing me".
-      const res = await fetch(`${getBrainUrl()}/api/models/usage?hours=24`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/models/usage?hours=24`);
       if (res.ok) {
         const data = (await res.json()) as { models?: ModelUsageStat[]; available?: boolean };
         setModelUsage(data.models ?? []);
@@ -816,9 +806,7 @@ export default function ChatPanel({
     // out left History advertising "8 msgs" next to a session that opened
     // completely blank, with nothing on screen to say why.
     try {
-      const res = await fetch(`${getBrainUrl()}/api/sessions/${sid}/entries?limit=200`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest(`/api/sessions/${sid}/entries?limit=200`);
       const parsed = (await res.json()) as {
         entries?: Array<{ role: string; content: string }>;
       };
@@ -852,10 +840,7 @@ export default function ChatPanel({
   const archiveSession = useCallback(async (sid: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await fetch(`${getBrainUrl()}/api/sessions/${sid}/archive`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      await apiRequest(`/api/sessions/${sid}/archive`, { method: "POST" });
       setSessions((prev) => prev.filter((s) => s.session_id !== sid));
       // If the archived session was active, start a new chat
       if (sid === sessionId) {

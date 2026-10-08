@@ -12,4 +12,3 @@ export const getApiKey = (): string =>
   localStorage.getItem("api_key") ?? import.meta.env.VITE_API_KEY ?? "openclaw";
 
 export const getMcpUrl  = (): string => `${getBrainUrl()}/mcp`;
-export const getChatUrl = (): string => `${getBrainUrl()}/chat`;

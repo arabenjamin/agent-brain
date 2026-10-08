@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { callTool } from "../../api/mcp";
-import { getBrainUrl, getApiKey } from "../../api/config";
+import { apiRequest, query } from "../../api/client";
+import { useQueueStatus, type QueueStatus } from "../../api/queries";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,19 +26,6 @@ interface Job {
   parent_job_id?: string;
   created_at: string;
   updated_at: string;
-}
-
-interface QueueStatus {
-  in_memory_pending: number;
-  running_now: number;
-  max_concurrent: number;
-  enabled: boolean;
-  by_status: Record<string, number>;
-  per_provider?: {
-    ollama: { running: number; max: number };
-    anthropic: { running: number; max: number };
-    gemini: { running: number; max: number };
-  };
 }
 
 type Tab = "queue" | "tasks";
@@ -94,7 +82,9 @@ export default function TaskPanel() {
 
   // Queue tab state
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [queue, setQueue] = useState<QueueStatus | null>(null);
+  // Shared with every other view that shows queue counts (one request per tick).
+  const queueQuery = useQueueStatus(tab === "queue" ? 2_000 : 5_000);
+  const queue: QueueStatus | null = queueQuery.data ?? null;
   const [jobFilter, setJobFilter] = useState<JobFilter>("active");
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
 
@@ -118,15 +108,8 @@ export default function TaskPanel() {
 
       const limit = jobFilter === "all" ? 100 : 50;
 
-      const jobsUrl = new URL(`${getBrainUrl()}/api/jobs`, window.location.href);
-      if (statusFilter) jobsUrl.searchParams.set("status", statusFilter);
-      jobsUrl.searchParams.set("limit", String(limit));
-
-      const headers = { Authorization: `Bearer ${getApiKey()}` };
-      const [jobsRes, queueRes] = await Promise.all([
-        fetch(jobsUrl.toString(), { headers }).then((r) => r.json()),
-        fetch(`${getBrainUrl()}/api/queue/status`, { headers }).then((r) => r.json()),
-      ]);
+      const jobsRes = await apiRequest(`/api/jobs${query({ status: statusFilter, limit })}`)
+        .then((r) => r.json());
 
       let allJobs: Job[] = jobsRes.jobs ?? [];
 
@@ -138,7 +121,6 @@ export default function TaskPanel() {
       }
 
       setJobs(allJobs);
-      setQueue(queueRes);
       setLastRefresh(new Date());
     } catch (e) {
       setError(String(e));
@@ -147,9 +129,7 @@ export default function TaskPanel() {
 
   const refreshTasks = useCallback(async () => {
     try {
-      const res = await fetch(`${getBrainUrl()}/api/tasks?limit=100`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+      const res = await apiRequest("/api/tasks?limit=100");
       const data = await res.json();
       setTasks(data.tasks ?? []);
       setLastRefresh(new Date());
@@ -179,12 +159,12 @@ export default function TaskPanel() {
 
   const cancelJob = async (id: string) => {
     await callTool("manage_job", { action: "cancel", job_id: id });
-    await refreshQueue();
+    await Promise.all([refreshQueue(), queueQuery.refetch()]);
   };
 
   const retryJob = async (id: string) => {
     await callTool("manage_job", { action: "retry", job_id: id });
-    await refreshQueue();
+    await Promise.all([refreshQueue(), queueQuery.refetch()]);
   };
 
   // ── Queue tab rendering ────────────────────────────────────────────────────

@@ -1,73 +1,40 @@
-# React + TypeScript + Vite
+# HBI — Human Brain Interface
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The web UI for Agent Brain: React 19 + Vite + TypeScript, served by nginx in the `hbi-frontend` compose service (host port 3002), which proxies `/mcp`, `/chat`, `/api`, `/todos`, `/scheduled-tasks` and `/scheduler-config` to the brain.
 
-Currently, two official plugins are available:
+The redesign from tabs to workspaces is planned in [`project-docs/HBI_REDESIGN_PLAN.md`](../project-docs/HBI_REDESIGN_PLAN.md). The rules for new code are in `project-docs/subsystem-rules.md` § HBI frontend foundations.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Commands
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev      # Vite on :5173, proxied to the brain on localhost:3001
+npm test         # vitest (api client, router, helpers, shared polling)
+npm run lint
+npm run build    # tsc -b + vite build
+docker compose up -d --build hbi-frontend   # rebuild the served UI
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Settings (brain URL, API key) live in the browser's localStorage via the ⚙ Settings modal; `VITE_BRAIN_URL` / `VITE_API_KEY` are the defaults.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Layout
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
 ```
+src/
+  api/client.ts      the one HTTP client: apiRequest (raw Response), apiJson (throws ApiError)
+  api/queries.ts     shared TanStack queries (queue/scheduler status, notes) + job-push invalidation
+  api/mcp.ts         MCP SDK client (Streamable HTTP) + server-push fan-out
+  api/chat.ts        /chat SSE stream
+  router.ts          hash routing: #/<workspace>?<kind>=<id>
+  lib/               time (UTC in, local out), ids
+  components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer
+  components/drawer/ entity drawer (openEntity / closeEntity)
+  components/<panel>/ the workspaces
+  styles/main.css    tokens (:root) + panel styles; styles/ui.css for the kit
+```
+
+## Conventions
+
+- Fetch through `api/client.ts`; never build an auth header in a component.
+- Anything shown in more than one view is a shared query in `api/queries.ts`.
+- Open an entity with `openEntity("note", id)`. It is URL state, so every open note is a link.
+- Colours come from the `:root` tokens. Empty and error states say what was checked.
