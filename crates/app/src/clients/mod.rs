@@ -8,6 +8,7 @@
 //! - [`entities`] — entity merge proposals, answers to them, and undo
 //! - [`rest`] — REST API adapter for todos, scheduled tasks, and scheduler config
 //! - [`search`] — semantic / keyword / id search, entity and id lookup for the HBI's Knowledge workspace
+//! - [`topics`] — the domains notes are classified into, the topic map, coverage
 //! - [`work`] — lineage of tasks, jobs, schedules and todos for the HBI's Work workspace
 
 pub mod chat;
@@ -17,6 +18,8 @@ pub mod entities;
 pub mod rest;
 #[cfg(feature = "http-transport")]
 pub mod search;
+#[cfg(feature = "http-transport")]
+pub mod topics;
 #[cfg(feature = "http-transport")]
 pub mod work;
 

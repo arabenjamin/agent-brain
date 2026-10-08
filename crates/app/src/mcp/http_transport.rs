@@ -354,6 +354,13 @@ impl HttpTransport {
                 "/api/lookup/{id}",
                 get(crate::clients::search::handle_lookup),
             )
+            // --- Topics (clients/topics.rs) ---
+            .route("/api/topics", get(crate::clients::topics::handle_list))
+            .route("/api/topics/map", get(crate::clients::topics::handle_map))
+            .route(
+                "/api/topics/{name}",
+                get(crate::clients::topics::handle_topic),
+            )
             // --- Entity resolution (clients/entities.rs) ---
             .route(
                 "/api/entities/candidates",

@@ -1,0 +1,12 @@
+# Topic: Off-grid & mesh networking.
+# The description is the definition: the local model reads it to decide which
+# notes belong here. Edit freely; every note is classified again after a restart
+# when a name or description changes. Keep it short (it is part of a
+# local-model prompt shared by every topic).
+name: off-grid-networking
+label: Off-grid & mesh networking
+description: >-
+  Communications that work without the grid or carriers: mesh networks, LoRa
+  and Meshtastic, ham radio and resilient community networks.
+schedules:   # ScheduledTasks that watch this topic (by name)
+  - "Off-Grid Networking Monitor"

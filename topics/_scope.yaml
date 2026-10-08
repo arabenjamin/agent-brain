@@ -1,0 +1,12 @@
+# Which notes the topic classifier looks at (services/topics.rs). Files whose
+# name starts with "_" are settings, not topics.
+#
+# skip: notes that record what the brain did rather than what it knows. They
+# are counted as "skipped" in the coverage line, never silently dropped.
+# Each rule matches when every field it gives matches the note.
+skip:
+  # "Scheduler dispatched task (id: …): <goal>" — one per dispatched task.
+  # Their text is a goal, so they would land in the goal's topic and drown the
+  # notes that actually hold what was learned.
+  - note_type: episodic
+    source_context: scheduler_dispatch

@@ -400,6 +400,14 @@ async fn run_init_db(config: &Config) -> Result<()> {
         warn!(error = %e, "Entity resolution failed (non-fatal)");
     }
 
+    // Topics from topics/*.yaml (TOPICS_DIR); notes are classified later, by
+    // the idle-time assigner in `serve`.
+    let topics = agent_brain::services::topics::Topics::global();
+    match agent_brain::services::topics::sync(&client, topics).await {
+        Ok(n) => info!(count = n, version = %topics.version, "Synced Topics from topics/"),
+        Err(e) => warn!(error = %e, "Topic sync failed (non-fatal)"),
+    }
+
     Ok(())
 }
 
@@ -586,6 +594,20 @@ async fn run_serve(
     // Before anything builds a config from the catalog: endpoints and key env
     // var names for every provider come from here.
     catalog.install_providers();
+
+    // Topic assignment: the local model classifies notes against topics/*.yaml
+    // while the brain is idle (services/topics.rs). The HTTP server is the
+    // deployed brain; a stdio session alongside it must not classify too.
+    if matches!(transport_type, TransportType::Http) {
+        let local = Arc::new(tokio::sync::RwLock::new(Some(
+            agent_brain::services::llm::build_local_llm_config(),
+        )));
+        agent_brain::services::topics::spawn_assigner(
+            client.clone(),
+            agent_brain::services::shared_llm::SharedLlm::new(local),
+        );
+    }
+
     let active_model = match config.llm.provider {
         LlmProviderType::Anthropic => config
             .llm

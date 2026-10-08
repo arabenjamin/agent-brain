@@ -131,7 +131,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `id` | String | UUID |
 | `content` | String | The note body |
 | `note_type` | String | `semantic` \| `episodic` \| `reflection` \| `consolidated` \| `outcome` \| `inference` |
-| `embedding` | Float[] | 1024-dim bge-m3 vector (nullable — absent if no embed model configured) |
+| `embedding` | Float[] | 1024-dim bge-m3 vector (nullable — absent if no embed model configured). Measured 2026-10-08: 223 notes hold an **empty** list and 3 a 4096-dim one; neither is searchable, so test `size(n.embedding) = 1024`, not `IS NOT NULL` |
 | `access_count` | Integer | Number of times retrieved |
 | `last_accessed_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `next_review_at` | DateTime | Native Neo4j `DATETIME`, UTC — spaced repetition due date |
@@ -139,6 +139,23 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `source_context` | String? | Where/how the note was created |
 | `event_at` | DateTime | Native Neo4j `DATETIME`, UTC — when the described event occurred (episodic notes) |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `topics_version` | String? | The topic-definitions hash it was classified against (`services/topics.rs`). Equal to the current version and no `IN_TOPIC` ⇒ assessed, fits no topic; anything else ⇒ waiting |
+| `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
+| `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
+
+#### `Topic`
+
+A domain the brain tracks, one per `topics/*.yaml` (`TOPICS_DIR`), synced by `init-db`; a topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | String | Slug, unique (`us-politics`) |
+| `label` | String | Display name |
+| `description` | String | What belongs here — also the classifier's definition |
+| `schedules` | String[] | ScheduledTask names that watch it |
+| `source_lists` | String[] | SourceLists its searches use |
+| `version` | String | Hash of every topic's name + description and the skip scope |
+| `created_at` / `synced_at` | DateTime | Native `DATETIME`, UTC |
 
 #### `Entity`
 
@@ -288,6 +305,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `PART_OF` | `(Note)→(Note)` | — | Semantic chunk pointing to its parent note |
 | `MENTIONS` | `(Note)→(Entity)` | `count: int`, `surface: string` (as written), `type: string` (as extracted), `via: string?` (the name it resolved or was merged through), `merged_from: string?`, `absorbed: ["<entity id>:<count>"]?` (counts folded in from a merged entity the note also mentioned) | Entity mention extracted from note content. `via`/`absorbed` are what an unmerge reverses |
 | `ALIAS_OF` | `(EntityAlias)→(Entity)` | — | The alias's canonical entity |
+| `IN_TOPIC` | `(Note)→(Topic)` | `rank: int` (1 = main topic, 2 = as central), `method: 'llm'`, `assigned_at: datetime` | Written by the topic assigner; replaced whenever the note is classified again |
 | `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
 | `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |
@@ -307,6 +325,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `working_memory_id` | `WorkingMemory` | `id` | UNIQUE |
 | `entity_name` | `Entity` | `name` | UNIQUE |
 | `entity_alias_name` | `EntityAlias` | `name` | UNIQUE |
+| `topic_name` | `Topic` | `name` | UNIQUE |
 | `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
 | `todo_id` | `Todo` | `id` | UNIQUE |

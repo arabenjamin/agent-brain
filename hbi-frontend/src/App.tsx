@@ -138,7 +138,8 @@ export default function App() {
   const openId = p.task ?? p.job ?? p.schedule ?? p.todo ?? p.proposal;
   const knowledgeParams = {
     q: p.q, mode: p.mode, type: p.type, hops: p.hops,
-    since: p.since, verified_since: p.verified_since, note: p.note, entity: p.entity,
+    since: p.since, verified_since: p.verified_since, within: p.within,
+    note: p.note, entity: p.entity, topic: p.topic,
   };
 
   return (

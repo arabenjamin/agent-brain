@@ -1,0 +1,17 @@
+# Topic: National security & intelligence.
+# The description is the definition: the local model reads it to decide which
+# notes belong here. Edit freely; every note is classified again after a restart
+# when a name or description changes. Keep it short (it is part of a
+# local-model prompt shared by every topic).
+name: national-security
+label: National security & intelligence
+description: >-
+  Intelligence agencies, espionage, military operations and defense
+  capabilities, influence operations and disinformation campaigns. Not every
+  war, foreign-policy or government story: those are geopolitics or us-
+  politics unless intelligence or the military is the subject.
+schedules:   # ScheduledTasks that watch this topic (by name)
+  - "intelligence-agency-claims-monitor"
+source_lists:   # SourceLists its searches use
+  - national-security
+  - osint

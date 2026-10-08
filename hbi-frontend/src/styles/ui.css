@@ -572,3 +572,20 @@ details.dw-section > summary { cursor: pointer; }
 .kn-tl-bar:hover, .kn-tl-bar.active { background: var(--accent); }
 .kn-tl-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); }
 .kn-tl-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+
+/* ── Topics: the domain map, chips, Home's domains tile ── */
+.tm { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.tm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.tm-bar .btn, .tm-bar .btn-ghost { padding: 2px 10px; font-size: 11px; }
+.tm-cov { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+.tm-canvas { position: relative; flex: 1; min-height: 360px; overflow: hidden; }
+.tm-legend { position: absolute; left: 12px; bottom: 10px; max-width: min(560px, calc(100% - 24px)); background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 11px; line-height: 1.6; color: var(--text); pointer-events: none; }
+.tm-ring { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--text); vertical-align: -1px; }
+.tm-hover { position: absolute; top: 10px; right: 12px; max-width: 320px; display: flex; flex-direction: column; gap: 2px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--text-dim); pointer-events: none; }
+.tm-hover strong { color: var(--text); font-size: 12px; }
+.kn-topic { font-size: 10px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--accent-dim); color: var(--accent); cursor: pointer; }
+.kn-topic.second { border-color: var(--border); color: var(--text-dim); }
+.home-domains li { position: relative; display: flex; gap: 8px; align-items: baseline; }
+.home-domains li a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; z-index: 1; }
+.home-domains li .home-dim { z-index: 1; }
+.home-bar { position: absolute; left: 0; top: 2px; bottom: 2px; background: var(--accent-glow); border-radius: 3px; z-index: 0; }

@@ -49,10 +49,11 @@ export const WORKSPACES: Workspace[] = [
     id: "knowledge",
     icon: "🔍",
     label: "Knowledge",
-    keywords: "notes search graph memory entities semantic keyword timeline",
-    shared: ["q", "mode", "type", "hops", "since", "verified_since"],
+    keywords: "notes search graph memory entities semantic keyword timeline map topics domains",
+    shared: ["q", "mode", "type", "hops", "since", "verified_since", "within"],
     views: [
       { id: "list", label: "Results" },
+      { id: "map", label: "Map" },
       { id: "graph", label: "Neighbourhood" },
       { id: "timeline", label: "Timeline" },
     ],

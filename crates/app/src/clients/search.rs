@@ -88,6 +88,54 @@ pub(crate) fn keyword_query(query: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" "))
 }
 
+/// A note's topics, main topic first.
+pub(crate) fn topic_names(maps: Vec<neo4rs::BoltMap>) -> Vec<String> {
+    let mut v: Vec<(i64, String)> = maps
+        .into_iter()
+        .filter_map(|m| {
+            let name: String = m.get("name").ok()?;
+            Some((m.get::<i64>("rank").unwrap_or(9), name))
+        })
+        .collect();
+    v.sort();
+    v.into_iter().map(|(_, n)| n).collect()
+}
+
+/// Note ids in a topic, newest first.
+async fn topic_note_ids(neo4j: &Neo4jClient, topic: &str, limit: usize) -> Vec<String> {
+    neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (n:Note)-[:IN_TOPIC]->(:Topic {name: $t}) \
+                 RETURN n.id AS id ORDER BY n.created_at DESC LIMIT $limit",
+            )
+            .param("t", topic)
+            .param("limit", limit as i64),
+        )
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r.get::<String>("id").ok())
+        .collect()
+}
+
+/// Which of `ids` are in `topic`.
+async fn in_topic(neo4j: &Neo4jClient, topic: &str, ids: &[String]) -> HashSet<String> {
+    neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (n:Note)-[:IN_TOPIC]->(:Topic {name: $t}) WHERE n.id IN $ids RETURN n.id AS id",
+            )
+            .param("t", topic)
+            .param("ids", ids.to_vec()),
+        )
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r.get::<String>("id").ok())
+        .collect()
+}
+
 /// Note fields shown in a result, keyed by id (content raw, not claim-labelled).
 async fn note_meta(neo4j: &Neo4jClient, ids: &[String]) -> HashMap<String, Value> {
     if ids.is_empty() {
@@ -99,7 +147,8 @@ async fn note_meta(neo4j: &Neo4jClient, ids: &[String]) -> HashMap<String, Value
                 "MATCH (n:Note) WHERE n.id IN $ids \
                  RETURN n.id AS id, n.note_type AS note_type, n.content AS content, \
                         toString(n.created_at) AS created_at, n.claim_status AS claim_status, \
-                        n.source_context AS source_context, n.verification AS verification",
+                        n.source_context AS source_context, n.verification AS verification, \
+                        [(n)-[r:IN_TOPIC]->(t:Topic) | {name: t.name, rank: r.rank}] AS topics",
             )
             .param("ids", ids.to_vec()),
         )
@@ -119,6 +168,7 @@ async fn note_meta(neo4j: &Neo4jClient, ids: &[String]) -> HashMap<String, Value
                 "claim_status": r.get::<String>("claim_status").ok(),
                 "source_context": r.get::<String>("source_context").ok(),
                 "verification": r.get::<String>("verification").ok(),
+                "topics": topic_names(r.get::<Vec<neo4rs::BoltMap>>("topics").unwrap_or_default()),
             });
             (id, v)
         })
@@ -263,6 +313,17 @@ pub async fn handle_search(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_LIMIT)
         .clamp(1, MAX_LIMIT);
+    // Narrow to one topic. The search fetches more, then keeps the topic's
+    // notes, so a topic filter doesn't silently shrink the result.
+    let topic = params
+        .get("topic")
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let fetch = if topic.is_some() {
+        (limit * 4).min(MAX_LIMIT * 2)
+    } else {
+        limit
+    };
     let hops = params
         .get("hops")
         .and_then(|v| v.parse::<usize>().ok())
@@ -275,6 +336,7 @@ pub async fn handle_search(
             "mode": mode.as_str(),
             "requested_mode": params.get("mode").cloned().unwrap_or_else(|| "auto".into()),
             "type": note_type,
+            "topic": topic,
             "limit": limit,
         });
         if let (Value::Object(m), Value::Object(e)) = (&mut v, extra) {
@@ -284,6 +346,25 @@ pub async fn handle_search(
     };
 
     if query.is_empty() {
+        // A topic alone lists its newest notes.
+        if let Some(t) = topic.as_deref() {
+            let ids = topic_note_ids(neo4j, t, limit).await;
+            let meta = note_meta(neo4j, &ids).await;
+            // Same shape as a search hit: rank is the order (newest first).
+            let notes: Vec<Value> = ids
+                .iter()
+                .filter_map(|i| meta.get(i).cloned())
+                .enumerate()
+                .map(|(rank, mut v)| {
+                    v["match"] = json!({ "rank": rank + 1 });
+                    v
+                })
+                .collect();
+            let truncated = notes.len() >= limit;
+            return base(
+                json!({ "mode": "topic", "notes": notes, "entities": [], "truncated": truncated }),
+            );
+        }
         return base(
             json!({ "notes": [], "entities": [], "error": "Type something to search for." }),
         );
@@ -303,7 +384,7 @@ pub async fn handle_search(
                     );
                 };
                 match ks
-                    .search_notes_explained(&query, limit, hops, note_type)
+                    .search_notes_explained(&query, fetch, hops, note_type)
                     .await
                 {
                     Ok((results, mut trace)) => {
@@ -319,7 +400,7 @@ pub async fn handle_search(
                 }
             }
             Mode::Keyword => match keyword_query(&query) {
-                Some(lucene) => match keyword_hits(neo4j, &lucene, note_type, limit).await {
+                Some(lucene) => match keyword_hits(neo4j, &lucene, note_type, fetch).await {
                     Ok(h) => (h, None, None),
                     Err(e) => (
                         Vec::new(),
@@ -336,6 +417,16 @@ pub async fn handle_search(
             Mode::Id => unreachable!(),
         };
 
+    let mut hits = hits;
+    let mut topic_filtered = Value::Null;
+    if let Some(t) = topic.as_deref() {
+        let ids: Vec<String> = hits.iter().map(|(id, _)| id.clone()).collect();
+        let keep = in_topic(neo4j, t, &ids).await;
+        let before = hits.len();
+        hits.retain(|(id, _)| keep.contains(id));
+        hits.truncate(limit);
+        topic_filtered = json!({ "searched": before, "in_topic": hits.len() });
+    }
     let ids: Vec<String> = hits.iter().map(|(id, _)| id.clone()).collect();
     let meta = note_meta(neo4j, &ids).await;
     let notes: Vec<Value> = hits
@@ -354,6 +445,7 @@ pub async fn handle_search(
         "entities": entities,
         "truncated": truncated,
         "vector_available": vector_available,
+        "topic_filtered": topic_filtered,
         "error": error,
     }))
 }

@@ -101,6 +101,10 @@ export interface Note {
   /** How many chunks this note was split into. */
   chunks?: number;
   entities?: { id: string; name: string | null; entity_type: string | null }[];
+  /** Topics, main first. */
+  topics?: string[];
+  /** False while the note waits to be classified for the current topics. */
+  topics_assessed?: boolean;
 }
 
 export interface RelatedNote {

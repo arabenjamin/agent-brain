@@ -35,6 +35,7 @@ pub mod sleep;
 pub mod snapshot;
 pub mod source_seeder;
 pub mod store_impls;
+pub mod topics;
 pub mod traits;
 pub mod transcribe;
 pub mod validation;

@@ -1,0 +1,15 @@
+# Topic: AI & machine learning.
+# The description is the definition: the local model reads it to decide which
+# notes belong here. Edit freely; every note is classified again after a restart
+# when a name or description changes. Keep it short (it is part of a
+# local-model prompt shared by every topic).
+name: ai-ml
+label: AI & machine learning
+description: >-
+  Artificial intelligence and machine learning as a field: models, research,
+  training, inference, benchmarks, AI products and AI policy. The brain's own
+  operation is agent-brain, not this.
+schedules:   # ScheduledTasks that watch this topic (by name)
+  - "Bi-weekly SLM benchmark watch: track frontier-equivalent small models in the 1B-7B range"
+source_lists:   # SourceLists its searches use
+  - ml-research

@@ -1,12 +1,15 @@
 /**
- * Knowledge: one search over what the brain knows, seen three ways that share
- * a selection (the drawer). `#/knowledge?view=list|graph|timeline&q=&mode=&type=&hops=`.
+ * Knowledge: one search over what the brain knows, seen four ways that share
+ * a selection (the drawer). `#/knowledge?view=list|map|graph|timeline&q=&mode=&type=&hops=&within=`.
  *
  * - Results: the matches, each saying why it matched; entities named in the
  *   query alongside. With no query: the newest notes, or a drill-down from
  *   Home (`since`, `type`, `verified_since`).
  * - Neighbourhood: the graph around the results (or the open note).
+ * - Map: the domains — topic hubs and the entities their notes mention (TopicMap).
  * - Timeline: when the results were written.
+ *
+ * `within=<topic>` narrows everything to one topic.
  *
  * Search is non-perturbing: browsing never moves what retrieval ranks on.
  */
@@ -14,6 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { apiJson, query } from "../../api/client";
 import { useSearch, type MatchTrace, type SearchMode, type SearchNote } from "../../api/search";
+import { useTopics } from "../../api/topics";
 import { noteTone } from "../../lib/noteTypes";
 import { statusTone } from "../../lib/status";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
@@ -22,6 +26,7 @@ import { openEntity } from "../drawer/entities";
 import { EntityLink } from "../drawer/parts";
 import GraphPanel from "../graph/GraphPanel";
 import { DrillBanner, EmptyState, Pill } from "../ui";
+import TopicMap from "./TopicMap";
 
 export interface KnowledgeParams {
   q?: string;
@@ -30,8 +35,10 @@ export interface KnowledgeParams {
   hops?: string;
   since?: string;
   verified_since?: string;
+  within?: string;
   note?: string;
   entity?: string;
+  topic?: string;
 }
 
 const MODES: { id: SearchMode; label: string; hint: string }[] = [
@@ -62,10 +69,13 @@ export default function KnowledgeWorkspace({ view, params }: { view: string; par
       mode: (next.mode ?? mode) === "auto" ? undefined : next.mode ?? mode,
       type: next.type ?? params.type,
       hops: next.hops ?? (hops ? String(hops) : undefined),
+      within: next.within ?? params.within,
       // Keep the open entity: a search doesn't close what you are reading.
       note: params.note,
       entity: params.entity,
+      topic: params.topic,
     });
+  const topics = useTopics();
 
   return (
     <div className="kn">
@@ -85,14 +95,22 @@ export default function KnowledgeWorkspace({ view, params }: { view: string; par
           <option value="">All types</option>
           {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
+        <select className="ui-input auto" value={params.within ?? ""} onChange={(e) => run({ within: e.target.value })}
+          title="Narrow to one topic (the domains on the Map)">
+          <option value="">All topics</option>
+          {topics.data?.topics.map((t) => <option key={t.name} value={t.name}>{t.label} ({t.notes.toLocaleString()})</option>)}
+        </select>
         <label className="wk-check" title="Also add each match's graph neighbours, as the brain's search_notes does (2 hops)">
           <input type="checkbox" checked={hops > 0} onChange={(e) => run({ hops: e.target.checked ? "2" : "" })} /> + neighbours
         </label>
         <button type="submit" className="btn">Search</button>
         <button type="button" className="btn-ghost" onClick={() => openEntity("note", "new")}>+ New note</button>
       </form>
-      {q ? (
-        <SearchBody view={view} q={q} mode={mode} type={params.type} hops={hops} openId={params.note ?? params.entity} />
+      {view === "map" ? (
+        <TopicMap />
+      ) : q || params.within ? (
+        <SearchBody view={view} q={q} mode={mode} type={params.type} hops={hops} within={params.within}
+          openId={params.note ?? params.entity} />
       ) : (
         <BrowseBody view={view} params={params} />
       )}
@@ -102,11 +120,12 @@ export default function KnowledgeWorkspace({ view, params }: { view: string; par
 
 // ── With a query ─────────────────────────────────────────────────────────────
 
-function SearchBody({ view, q, mode, type, hops, openId }: {
-  view: string; q: string; mode: SearchMode; type?: string; hops: number; openId?: string;
+function SearchBody({ view, q, mode, type, hops, within, openId }: {
+  view: string; q: string; mode: SearchMode; type?: string; hops: number; within?: string; openId?: string;
 }) {
   const limit = view === "timeline" ? 100 : 30;
-  const s = useSearch({ q, mode, type, hops, limit });
+  const s = useSearch({ q, mode, type, hops, limit, topic: within });
+  const label = q ? `“${q}”` : `topic ${within}`;
   const d = s.data;
 
   // An id search opens what it found.
@@ -131,9 +150,11 @@ function SearchBody({ view, q, mode, type, hops, openId }: {
   const header = (
     <div className="kn-summary">
       <span>
-        <strong>{d.notes.length}{d.truncated ? "+" : ""}</strong> notes by <strong>{d.mode}</strong>
+        <strong>{d.notes.length}{d.truncated ? "+" : ""}</strong> notes {d.mode === "topic" ? <>in topic <strong>{d.topic}</strong>, newest first</> : <>by <strong>{d.mode}</strong></>}
         {d.type && <> · type <strong>{d.type}</strong></>}
-        {d.requested_mode === "auto" && <span className="wk-dim"> (auto: {d.mode === "keyword" ? "a quoted phrase" : "a phrase"})</span>}
+        {d.topic && d.mode !== "topic" && <> · within <strong>{d.topic}</strong></>}
+        {d.topic_filtered && <span className="wk-dim"> ({d.topic_filtered.in_topic} of the {d.topic_filtered.searched} best matches are in the topic)</span>}
+        {d.requested_mode === "auto" && d.mode !== "topic" && <span className="wk-dim"> (auto: {d.mode === "keyword" ? "a quoted phrase" : "a phrase"})</span>}
       </span>
       {d.truncated && <span className="tone-text-yellow">the best {d.limit}; there are more</span>}
       {d.vector_available === false && <span className="tone-text-yellow">the query could not be embedded — these are keyword matches only</span>}
@@ -162,7 +183,7 @@ function SearchBody({ view, q, mode, type, hops, openId }: {
         {header}
         {seeds.length === 0
           ? <EmptyState title="No matches to draw" checked={`Nothing matched “${q}”.`} />
-          : <GraphPanel seedIds={seeds} seedLabel={`“${q}” (${seeds.length} best matches)`} selectedId={openId} />}
+          : <GraphPanel seedIds={seeds} seedLabel={`${label} (${seeds.length} ${q ? "best matches" : "newest notes"})`} selectedId={openId} />}
       </div>
     );
   }
@@ -171,7 +192,7 @@ function SearchBody({ view, q, mode, type, hops, openId }: {
     return (
       <div className="kn-body scroll">
         {header}
-        <Timeline notes={d.notes} caption={`When the ${d.notes.length} best matches for “${q}” were written`} openId={openId} />
+        <Timeline notes={d.notes} caption={`When the ${d.notes.length} ${q ? `best matches for ${label}` : `newest notes in ${label}`} were written`} openId={openId} />
       </div>
     );
   }
@@ -183,9 +204,11 @@ function SearchBody({ view, q, mode, type, hops, openId }: {
       {d.notes.length === 0 ? (
         <EmptyState
           title="No notes match"
-          checked={d.mode === "keyword"
-            ? `No note contains every word of “${q}”${d.type ? ` among ${d.type} notes` : ""}. Try Semantic to search by meaning.`
-            : `Nothing matched “${q}”${d.type ? ` among ${d.type} notes` : ""}.`}
+          checked={d.mode === "topic"
+            ? `No note is in topic ${d.topic} yet. Notes are classified while the brain is idle (the Map shows how far along it is).`
+            : d.mode === "keyword"
+            ? `No note contains every word of “${q}”${d.type ? ` among ${d.type} notes` : ""}${d.topic ? ` within ${d.topic}` : ""}. Try Semantic to search by meaning.`
+            : `Nothing matched “${q}”${d.type ? ` among ${d.type} notes` : ""}${d.topic ? ` within ${d.topic} (${d.topic_filtered?.searched ?? 0} matches searched)` : ""}.`}
         />
       ) : (
         d.notes.map((n) => <ResultRow key={n.id} n={n} active={openId === n.id} />)
@@ -214,6 +237,11 @@ function ResultRow({ n, active }: { n: SearchNote; active: boolean }) {
         {n.claim_status && <Pill tone={statusTone(n.claim_status)}>{n.claim_status}</Pill>}
         {n.verification === "failed" && <Pill tone="red">verification failed</Pill>}
         <MatchChips m={n.match} />
+        {n.topics?.map((t, i) => (
+          <span key={t} role="link" tabIndex={0} className={`kn-topic${i > 0 ? " second" : ""}`} title={i === 0 ? "Main topic" : "Second topic"}
+            onClick={(e) => { e.stopPropagation(); openEntity("topic", t); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); openEntity("topic", t); } }}>{t}</span>
+        ))}
         <span className="wk-dim kn-when" title={formatLocal(n.created_at)}>{relTime(n.created_at)}{n.source_context ? ` · ${n.source_context}` : ""}</span>
       </span>
       <span className="kn-preview">{n.preview}{n.preview_truncated ? "…" : ""}</span>

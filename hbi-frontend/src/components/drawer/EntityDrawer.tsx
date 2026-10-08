@@ -4,7 +4,7 @@
  * drawer survives reloads and every open entity is a shareable link.
  *
  * Kinds: note (Phase 0, enriched in Phase 3); task, job, schedule, todo,
- * proposal (Phase 2); entity (Phase 3). Topics join in Phase 4.
+ * proposal (Phase 2); entity (Phase 3); topic (Phase 4b).
  */
 import { useRoute } from "../../router";
 import { drawerTarget } from "./entities";
@@ -15,6 +15,7 @@ import ProposalView from "./ProposalView";
 import ScheduleView from "./ScheduleView";
 import TaskView from "./TaskView";
 import TodoView from "./TodoView";
+import TopicView from "./TopicView";
 
 export default function EntityDrawer() {
   const route = useRoute();
@@ -27,6 +28,8 @@ export default function EntityDrawer() {
       return <NoteView key={target.id} id={target.id} />;
     case "entity":
       return <EntityView key={target.id} id={target.id} />;
+    case "topic":
+      return <TopicView key={target.id} name={target.id} />;
     case "task":
       return <TaskView key={target.id} id={target.id} />;
     case "job":

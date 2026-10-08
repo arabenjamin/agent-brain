@@ -726,6 +726,17 @@ Entity extraction merged on the exact lowercased string, so one real thing was s
 
 Testing note: the host's `.env` points `NEO4J_URI` at a port nothing listens on, and the live graph is host port 7689. A host-built binary run without explicit env therefore hangs rather than touching data. Scratch testing used a throwaway Neo4j container, with `SCHEDULER_ENABLED=false` and empty seed dirs for `serve`.
 
+### Topics (`services/topics.rs`, 2026-10-08)
+
+The plan said to assign notes to topics "by embedding": compare each note's bge-m3 vector with a centroid built from the topic's description and seed phrases. The measurements came first, and they decided against it. Scoring all 10,164 notes against 11 draft topics took under 5 s in Neo4j, but the scores were compressed: nearly everything sat between 0.42 and 0.64, and the median gap between a note's best and second-best topic was 0.023. Reading samples at each score band showed wrong assignments even above 0.52. An empty "Overdue Todo Agent Review" scored national security, a note on pet acclimation scored AI, and the brain-itself topic attracted anything written in the brain's own house style. Against 80 hand-labelled notes, the best centroid rule reached F1 0.61 (precision 0.53). Per-topic z-scores corrected the house-style bias but gave the rare topics their noise (career reached 1,576 notes at z ≥ 1). Re-centring each topic on its top 100 notes (pseudo-relevance feedback) made it worse (F1 0.51), because those top notes were the brain's own syntheses.
+
+The local model (Gemma-4-E4B on the llama.cpp sidecar) asked to pick topics from the same descriptions scored F1 0.77 on the first try. Its errors followed patterns: it added national security to any war or government story, and it mixed the brain itself with AI/ML. Two prompt changes fixed most of them: sharper descriptions that say what does not belong, and "the ONE main topic, a second only if as central". That brought it to F1 0.86 on the tuning set. On 40 notes labelled before seeing any prediction it scored **F1 0.83** (precision 0.77, recall 0.91), so the prompt is not overfitted. At about 0.3 s per note it costs roughly an hour for the whole graph, run only while the brain is idle. A side benefit: notes without an embedding (6,878 top-level, mostly episodic) can have topics too.
+
+Three things found on the way:
+- **Broken embeddings.** 223 notes hold an empty embedding and 3 a 4096-dim one, invisible to semantic search, and the note drawer reported them as "embedded" because it tested `IS NOT NULL`. Now fixed to test the size.
+- **Activity records.** 3,742 `scheduler_dispatch` episodic notes are a goal plus a task id. Classified, they landed in the goal's topic and buried the notes that held what was learned, so a `topics/_scope.yaml` skip rule leaves them out, with the count shown.
+- **A Cypher null trap.** The first skip filter compared `n.source_context` directly, so notes without one evaluated to null and vanished from every coverage bucket except "waiting". The coverage line, which must sum to the note total, is what exposed it.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

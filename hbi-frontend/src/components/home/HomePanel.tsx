@@ -2,8 +2,8 @@
  * Home: what the brain is doing, and whether anything needs the user.
  *
  * Rule for every tile: each number links to the rows behind it, and an
- * empty tile says what it checked. Domain activity joins in Phase 4, once
- * notes are assigned to topics (HBI_REDESIGN_PLAN.md §3).
+ * empty tile says what it checked. Domains are the topics notes are
+ * classified into (HBI_REDESIGN_PLAN.md §3, `services/topics.rs`).
  */
 import type { ReactNode } from "react";
 import type { AgentNotification } from "../../api/notifications";
@@ -19,6 +19,7 @@ import {
   type Breakdown,
   type ScheduledTask,
 } from "../../api/queries";
+import { assessedShare, useTopics } from "../../api/topics";
 import { summariseScheduler } from "../../lib/scheduler";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
@@ -39,6 +40,7 @@ export default function HomePanel({ notifications }: { notifications: AgentNotif
         <BrainTile />
         <NeedsYouTile notifications={notifications} />
         <NextUpTile />
+        <DomainsTile />
         <LastDayTile />
         <LlmTile />
       </div>
@@ -221,6 +223,42 @@ function NextUpTile() {
           {due.length} past their run time{paused ? " — the scheduler is paused, so they will not run until it is started" : " — they run at the next scheduler tick"}.
         </div>
       )}
+    </Card>
+  );
+}
+
+// ── Domains ──────────────────────────────────────────────────────────────────
+
+function DomainsTile() {
+  const topics = useTopics(120_000);
+  if (!topics.data) {
+    return <Card title="Domains"><Pending what="topics" error={topics.error} onRetry={() => topics.refetch()} /></Card>;
+  }
+  const { coverage: c } = topics.data;
+  const list = [...topics.data.topics].sort((a, b) => b.week - a.week || b.notes - a.notes);
+  const peak = Math.max(1, ...list.map((t) => t.week));
+  return (
+    <Card title="Domains" actions={<a className="home-dim" href={hrefTo("knowledge", { view: "map" })}>map →</a>}>
+      {list.length === 0 ? (
+        <EmptyState title="No topics declared" checked="topics/*.yaml defines none (TOPICS_DIR)." />
+      ) : (
+        <ul className="home-list home-domains">
+          {list.map((t) => (
+            <li key={t.name} title={`${t.description}\n${t.notes.toLocaleString()} notes in all`}>
+              <span className="home-bar" style={{ width: `${(t.week / peak) * 100}%` }} />
+              <a href={hrefTo("knowledge", { view: "list", within: t.name })}>{t.label}</a>
+              <span className="home-dim">{t.week} this week · {t.notes.toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="home-dim home-detail">
+        {c.waiting > 0
+          ? `${Math.round(assessedShare(c) * 100)}% of ${c.notes.toLocaleString()} notes classified so far; ${c.waiting.toLocaleString()} wait for an idle moment.`
+          : `All ${c.notes.toLocaleString()} notes classified.`}
+        {" "}{c.no_topic.toLocaleString()} fit no topic{c.failed > 0 ? `, ${c.failed} failed` : ""}
+        {c.skipped > 0 ? `; ${c.skipped.toLocaleString()} activity records skipped` : ""}.
+      </div>
     </Card>
   );
 }

@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–3 and 4a done (2026-10-08); 4b–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–3 and 4a done (2026-10-08); 4b built, awaiting topic review + live backfill; 5–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -135,7 +135,7 @@ A full page with a left nav and a filter box, also reachable through Ctrl-K:
 - "Domain" already means a **web hostname** in the codebase (`SourceList.domains`, `corroborating_domains`). To avoid the collision the node is **`:Topic`**. The UI can still say "Domains".
 - 16,236 / 23,078 notes carry an embedding on the note itself. Long notes embed through chunks, and the rest must be checked before assignment relies on embeddings. An unassignable note goes in a visible `unassigned` bucket. It is never dropped.
 
-**Proposal: declared topics, assigned by embedding.**
+**Proposal: declared topics, assigned by embedding.** *(Changed in Phase 4b, measured: the local model assigns them. Embedding centroids reached F1 0.61 against hand labels, against 0.83 held-out for the classifier. See the Phase 4b outcome.)*
 
 - `topics/*.yaml` seed dir (`TOPICS_DIR` in compose). Each file names a topic and gives a description, seed phrases, and optional links to the ScheduledTasks and SourceLists that watch it. Starting set from what the schedules already watch: national security / intelligence, semiconductors & AI hardware, batteries & materials, small/local models & ML research, off-grid / mesh networking, Michigan civic news, US politics, the brain itself (self-knowledge), the user's career. The user reviews this list. The `api-scout` profile's hardcoded "OUR INTERESTS" list could later read from it.
 - `(:Note)-[:IN_TOPIC {score, method}]->(:Topic)`. Assignment compares the note embedding with the topic centroid (embedded seed phrases), above a threshold, and may give several topics. It runs at note write time (alongside entity extraction, async), plus a one-off backfill. Assignments are recomputed when a topic's YAML changes.
@@ -337,6 +337,36 @@ Built:
 **Live dry-run (read-only, 2026-10-08):** 91 merges, 24 from the seed and 67 same-spelling. The first dry-run planned 108, and reading them is what changed the title rule. `senator johnson` and `johnson` were heading into `speaker johnson` (different people), `bush` into `president bush`, `president bio` into `bio`, and `911` into `9/11`. Titles now fold only before a full name, all-digit keys never fold, and title + surname is a proposal. Retrieval baseline just before: recall@10 0.920, MRR 0.757.
 
 **Applied (commit 762f246):** the `pre_entity_merge` snapshot was taken, then all 91 merges went in with 0 failures. Entities went from 8,575 to 8,487, with 100 aliases. `donald trump` has 368 mentions and `united states` 267. **Done criterion met:** each is one node, `eval-retrieval` is unchanged (0.920 / 0.757, all 25 cases identical), and every merge can be undone from its alias. 188 merge proposals are open in the Inbox.
+
+### Phase 4b outcome (2026-10-08, built; live backfill runs after the rebuild)
+
+Built:
+- **Topics:** `topics/*.yaml` (`TOPICS_DIR`), 11 starting topics for the user to review: national security, geopolitics, US politics, AI/ML, semiconductors, batteries & materials, off-grid networking, Michigan, cybersecurity, the brain itself, career. `topics/_scope.yaml` skips activity records. `init-db` syncs `(:Topic)`.
+- **Assignment by the local model, not embeddings** (`services/topics.rs`). Measured first, on the live graph and hand labels:
+  - *Embedding centroids:* best rule F1 0.61, precision 0.53. Z-scores and re-centring did no better.
+  - *The classifier:* F1 0.83 on a held-out set (precision 0.77, recall 0.91).
+  - *Unexpected gain:* the 6,878 unembedded notes get topics too.
+  - *How it writes:* main topic first, a second only if as central, as `IN_TOPIC {rank}`.
+  - *When it runs:* an idle-time assigner in `serve` (no job queued or running, no GPU lease), about 0.3 s per note.
+- **Coverage:** every top-level note is in a topic, fits none, waiting, failed or skipped, and `GET /api/topics` returns the five counts, which sum to the total.
+- **Endpoints:** `GET /api/topics` (counts, coverage, what the no-topic notes mention), `GET /api/topics/map` (hubs, the top entities per topic, size metrics) and `GET /api/topics/{name}`. `/api/search?topic=` narrows a search, or with no query lists the topic's newest notes. Note detail and search results carry their topics.
+- **HBI:**
+  - *Map:* Knowledge **Map** view, the force graph with topic hubs. Entities take the colour of their strongest topic, and bridges get a ring. Size by connections / certainty / activity, stated in the legend. 30 labels at rest, the rest on zoom. Drag to pin. Click to open, double-click an entity for its neighbourhood. Fits once on load. urls and dates hidden.
+  - *Topic drawer:* definition, counts, schedules watching it, top entities, newest notes, "Search within".
+  - *Filter and chips:* a topic picker (`within=`), and topic chips on results and in the note drawer.
+  - *Home:* the **Domains** tile went live.
+- **Tests:** 4 Rust unit tests (817 lib tests) and 4 vitest tests (69). End to end on a throwaway Neo4j loaded with a 192-note slice of the live graph, with the assigner calling the real llama.cpp sidecar: full coverage, the map in 0.16 s, and every view driven in headless Chrome.
+
+Fixed on the way:
+- **Broken embeddings shown as embedded.** The note drawer called 223 notes with an *empty* embedding "embedded" because it tested `IS NOT NULL`.
+- **A Cypher null trap in the first skip filter.** Notes without a `source_context` fell out of every coverage bucket. The sum check exposed it.
+
+Left before 4b is done:
+- The user reviews `topics/*.yaml`.
+- The rebuild runs the live backfill.
+- Check the live map loads in under 2 s, and that coverage sums with nothing stuck waiting.
+
+Not built (planned as optional): suggested topics from clusters of no-topic notes (for now the tile and endpoint list what those notes mention most), and the 3D toggle.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

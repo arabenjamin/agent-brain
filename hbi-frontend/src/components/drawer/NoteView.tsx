@@ -236,6 +236,16 @@ function Provenance({ n }: { n: Note }) {
         <span>Written by</span><span>{n.source_context ?? "—"}</span>
         <span>Provenance</span><span>{n.provenance ?? "—"}</span>
         <span>Embedded</span><span>{n.embedded ? "yes" : n.chunks ? `through ${n.chunks} chunks` : "no — semantic search cannot find it"}</span>
+        <span>Topics</span>
+        <span>
+          {(n.topics?.length ?? 0) > 0
+            ? n.topics!.map((t, i) => (
+              <EntityLink key={t} kind="topic" id={t} title={i === 0 ? "Main topic" : "Second topic"}>
+                <Pill tone={i === 0 ? "accent" : "muted"}>{t}</Pill>
+              </EntityLink>
+            ))
+            : n.topics_assessed === false ? "not classified yet (runs while the brain is idle)" : "none: classified as fitting no topic"}
+        </span>
         {claim && (
           <>
             <span>Claim</span>

@@ -7,6 +7,8 @@ import { useQuery } from "@tanstack/react-query";
 import { apiJson, query } from "./client";
 
 export type SearchMode = "auto" | "semantic" | "keyword" | "id";
+/** What the server ran: a search mode, or `topic` (a topic's newest notes, no query). */
+export type ServedMode = Exclude<SearchMode, "auto"> | "topic";
 
 /** Why a note is in the results. Ranks are 1-based within each stage. */
 export interface MatchTrace {
@@ -28,6 +30,8 @@ export interface SearchNote {
   claim_status?: string | null;
   source_context?: string | null;
   verification?: string | null;
+  /** Topics, main first (`services/topics.rs`). */
+  topics?: string[];
   match: MatchTrace;
 }
 
@@ -48,10 +52,14 @@ export interface IdMatch {
 
 export interface SearchResponse {
   query: string;
-  mode: Exclude<SearchMode, "auto">;
+  mode: ServedMode;
   requested_mode: string;
   type?: string | null;
   limit: number;
+  /** The topic the search was narrowed to, if any. */
+  topic?: string | null;
+  /** With a topic: how many matches were searched, and how many were in it. */
+  topic_filtered?: { searched: number; in_topic: number } | null;
   notes: SearchNote[];
   entities: EntityHit[];
   truncated?: boolean;
@@ -67,15 +75,17 @@ export interface SearchParams {
   type?: string;
   hops?: number;
   limit?: number;
+  /** Narrow to one topic. With no query, lists the topic's newest notes. */
+  topic?: string;
 }
 
 export function useSearch(p: SearchParams) {
   const q = p.q.trim();
   return useQuery({
-    queryKey: ["search", q, p.mode ?? "auto", p.type ?? "", p.hops ?? 0, p.limit ?? 30],
+    queryKey: ["search", q, p.mode ?? "auto", p.type ?? "", p.hops ?? 0, p.limit ?? 30, p.topic ?? ""],
     queryFn: () =>
-      apiJson<SearchResponse>(`/api/search${query({ q, mode: p.mode, type: p.type, hops: p.hops || undefined, limit: p.limit })}`),
-    enabled: q.length > 0,
+      apiJson<SearchResponse>(`/api/search${query({ q, mode: p.mode, type: p.type, hops: p.hops || undefined, limit: p.limit, topic: p.topic })}`),
+    enabled: q.length > 0 || !!p.topic,
     staleTime: 60_000,
     retry: false,
   });

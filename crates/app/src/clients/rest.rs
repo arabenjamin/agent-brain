@@ -1767,7 +1767,9 @@ pub async fn handle_get_note(
                 toString(n.verified_at) AS verified_at, n.verification AS verification, \
                 n.verification_reason AS verification_reason, \
                 n.corroborating_count AS corroborating_count, n.contradicting_count AS contradicting_count, \
-                n.embedding IS NOT NULL AS embedded, \
+                size(coalesce(n.embedding, [])) > 0 AS embedded, \
+                [(n)-[r:IN_TOPIC]->(t:Topic) | {name: t.name, rank: r.rank}] AS topics, \
+                coalesce(n.topics_version, '') AS topics_version, \
                 parent.id AS parent_id, chunks, entities",
     )
     .param("id", note_id.clone());
@@ -1792,6 +1794,9 @@ pub async fn handle_get_note(
                 Json(json!({
                     "id":                  row.get::<String>("id").unwrap_or_default(),
                     "content":             row.get::<String>("content").unwrap_or_default(),
+                    "topics":              crate::clients::search::topic_names(row.get::<Vec<neo4rs::BoltMap>>("topics").unwrap_or_default()),
+                    // false: not classified yet for the current topic definitions.
+                    "topics_assessed":     row.get::<String>("topics_version").unwrap_or_default() == crate::services::topics::Topics::global().version,
                     "note_type":           s("note_type"),
                     "access_count":        row.get::<i64>("access_count").unwrap_or(0),
                     "created_at":          row.get::<String>("created_at").unwrap_or_default(),

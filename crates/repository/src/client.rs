@@ -41,6 +41,8 @@ impl Neo4jClient {
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
             // Entity resolution: an alias name means one entity (services/entity_resolution.rs).
             "CREATE CONSTRAINT entity_alias_name IF NOT EXISTS FOR (a:EntityAlias) REQUIRE a.name IS UNIQUE",
+            // Topics (services/topics.rs): one node per topics/*.yaml file.
+            "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",

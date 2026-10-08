@@ -1,0 +1,12 @@
+# Topic: Cybersecurity & privacy.
+# The description is the definition: the local model reads it to decide which
+# notes belong here. Edit freely; every note is classified again after a restart
+# when a name or description changes. Keep it short (it is part of a
+# local-model prompt shared by every topic).
+name: cybersecurity
+label: Cybersecurity & privacy
+description: >-
+  Security of systems and people: vulnerabilities, ransomware, spyware, zero
+  trust architecture, surveillance and digital privacy.
+schedules:   # ScheduledTasks that watch this topic (by name)
+  - "Zero Trust Architecture Research"
