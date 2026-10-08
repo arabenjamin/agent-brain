@@ -305,6 +305,74 @@ pub fn missing_cited_paths(answer: &str, root: &std::path::Path) -> Vec<String> 
     missing
 }
 
+/// The first compiler error line in sandbox stderr (`error[E0433]: …`), so a
+/// verification failure names what broke instead of "see stderr".
+pub fn first_compile_error(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("error[") || l.starts_with("error:"))
+        .map(|l| l.chars().take(200).collect())
+}
+
+/// An answer that failed verification, made safe to store and relay: the
+/// UNVERIFIED marker line, and every line OUTSIDE code blocks that reports a
+/// passing test run replaced by what the verifier found.
+///
+/// Prefixing alone left the worker's own "test result: ok. 1 passed" in the
+/// body. On 2026-10-07 chat read that line past the marker and told the user
+/// the test passed — the verifier had re-run the code and it did not compile.
+/// A note that contradicts itself gets relayed by its most specific line.
+pub fn mark_unverified_answer(answer: &str, failures: &[String]) -> String {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static PASS_CLAIM: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)test result:\s*`?ok\b|\b\d+\s+passed\b").expect("regex"));
+    let reason = failures.join("; ");
+    let reason = reason.trim_end_matches('.');
+    let mut in_code = false;
+    let body: Vec<String> = answer
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+                return line.to_string();
+            }
+            if !in_code && PASS_CLAIM.is_match(line) {
+                format!(
+                    "Test result: NOT CONFIRMED — the worker reported a passing run, \
+                     but verification failed: {reason}."
+                )
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    format!(
+        "{UNVERIFIED_MARKER} {reason}. Treat everything below as unchecked.\n\n{}",
+        body.join("\n")
+    )
+}
+
+/// The deep-dive `## IN AGENT-BRAIN` heading, renamed to say what it is: a
+/// placement proposal. No agent run edits the repository, and on 2026-10-07
+/// chat relayed that section as "What was actually built".
+pub fn label_proposed_placement(answer: &str) -> String {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    // The model writes the hyphen as U+2011 as often as '-'.
+    static HEADING: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?mi)^(#{1,6})\s*IN AGENT[-\u{2010}\u{2011}\u{2013}]BRAIN\s*$").expect("regex")
+    });
+    HEADING
+        .replace_all(answer, "$1 IN AGENT-BRAIN (proposed — nothing was changed)")
+        .into_owned()
+}
+
+/// Marker [`mark_unverified_answer`] puts on the first line; `store_note`
+/// detects it and stores the answer as failed verification.
+pub const UNVERIFIED_MARKER: &str = "UNVERIFIED —";
+
 /// Each requirement of `spec` the run did not meet, in plain words. Empty
 /// means verified. A `NO FINDINGS` answer claims nothing and is not checked.
 pub fn verification_failures(
@@ -1293,5 +1361,51 @@ mod tests {
         let roster = vec![("code-analyst".to_string(), "codebase".to_string())];
         assert_eq!(generalist_default(&roster).as_deref(), Some("code-analyst"));
         assert_eq!(generalist_default(&[]), None);
+    }
+
+    // The 2026-10-07 deep dive: code that did not compile, a claimed passing
+    // run, and a placement section chat relayed as work already done.
+    const CLAIMED_PASS: &str = "## ANSWER\n- VEC-DEST-HASH is 07d4…\n\n## RUST\n```rust\n// test result: ok inside code stays\n#[test]\nfn t() {}\n```\nTest result: `test result: ok. 1 passed`  \nChecks against the official vector.\n\n## IN AGENT\u{2011}BRAIN\n- crates/reticulum-sdk/src/destination.rs:42 – add a comment\n";
+
+    #[test]
+    fn unverified_answer_drops_the_claimed_pass() {
+        let failures = vec![
+            "the answer's own Rust code, re-run by the verifier, did not pass: Compilation failed (error[E0433]: cannot find crate `reticulum_sdk`)".to_string(),
+        ];
+        let out = mark_unverified_answer(CLAIMED_PASS, &failures);
+        assert!(out.starts_with("UNVERIFIED — the answer's own Rust code"));
+        assert!(out.contains(". Treat everything below as unchecked.\n\n## ANSWER"));
+        assert!(!out.contains("1 passed"), "claimed pass survived: {out}");
+        assert!(out.contains("Test result: NOT CONFIRMED"));
+        assert!(out.contains("error[E0433]"));
+        // Lines inside the code block are the code as shown — untouched.
+        assert!(out.contains("// test result: ok inside code stays"));
+        assert!(out.contains("Checks against the official vector."));
+    }
+
+    #[test]
+    fn placement_heading_says_it_is_a_proposal() {
+        let out = label_proposed_placement(CLAIMED_PASS);
+        assert!(out.contains("## IN AGENT-BRAIN (proposed — nothing was changed)\n- crates/"));
+        let plain = label_proposed_placement("## IN AGENT-BRAIN\n- no fit");
+        assert_eq!(
+            plain,
+            "## IN AGENT-BRAIN (proposed — nothing was changed)\n- no fit"
+        );
+        // Prose mentioning the phrase is not a heading.
+        assert_eq!(
+            label_proposed_placement("see IN AGENT-BRAIN below"),
+            "see IN AGENT-BRAIN below"
+        );
+    }
+
+    #[test]
+    fn first_compile_error_finds_the_rustc_line() {
+        let stderr = "   Compiling hex v0.4.3\nerror[E0433]: cannot find module or crate `reticulum_sdk` in this scope\n --> src/lib.rs:4:5\n";
+        assert_eq!(
+            first_compile_error(stderr).as_deref(),
+            Some("error[E0433]: cannot find module or crate `reticulum_sdk` in this scope")
+        );
+        assert_eq!(first_compile_error("   Compiling hex\n"), None);
     }
 }

@@ -23,6 +23,10 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         .await
     }
 
+    async fn mark_verification_failed(&self, note_id: &str, reason: &str) -> anyhow::Result<()> {
+        KnowledgeService::mark_verification_failed(self, note_id, reason).await
+    }
+
     async fn store_context_inference(
         &self,
         question: &str,

@@ -241,8 +241,12 @@ impl KnowledgeService {
                     .store_note_raw(chunk, note_type, source_context, None, None)
                     .await?;
                 let link_q = neo4rs::query(
+                    // A regenerated chunk keeps the parent's verification
+                    // status; a fresh chunk without it reads as unflagged.
                     "MATCH (child:Note {id: $child_id}), (parent:Note {id: $parent_id}) \
-                     MERGE (child)-[:PART_OF]->(parent)",
+                     MERGE (child)-[:PART_OF]->(parent) \
+                     SET child.verification = parent.verification, \
+                         child.verification_reason = parent.verification_reason",
                 )
                 .param("child_id", child_id.clone())
                 .param("parent_id", note_id);
@@ -441,6 +445,26 @@ impl KnowledgeService {
         } else {
             None
         }
+    }
+
+    /// Record that a stored note (and its chunks) failed verification, with the
+    /// verifier's reason. Retrieval labels such notes FAILED VERIFICATION, which
+    /// the type alone (`unsourced_synthesis`) does not say.
+    pub async fn mark_verification_failed(&self, note_id: &str, reason: &str) -> Result<()> {
+        self.neo4j
+            .run(
+                neo4rs::query(
+                    "MATCH (p:Note {id: $id}) \
+                     SET p.verification = 'failed', p.verification_reason = $reason \
+                     WITH p OPTIONAL MATCH (c:Note)-[:PART_OF]->(p) \
+                     FOREACH (_ IN CASE WHEN c IS NULL THEN [] ELSE [1] END | \
+                       SET c.verification = 'failed', c.verification_reason = $reason)",
+                )
+                .param("id", note_id.to_string())
+                .param("reason", reason.to_string()),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Store a note with optional metadata. Chunks long content automatically.

@@ -31,8 +31,8 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::services::agent_runner::{
-    AgentBudget, AgentRunner, VerifySpec, answer_crate, answer_rust_code, sandbox_dependencies,
-    verification_failures,
+    AgentBudget, AgentRunner, VerifySpec, answer_crate, answer_rust_code, first_compile_error,
+    label_proposed_placement, mark_unverified_answer, sandbox_dependencies, verification_failures,
 };
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
@@ -289,15 +289,12 @@ impl AgentRunnerSkill {
                     .await
             }
         };
+        let answer = label_proposed_placement(&findings.findings);
         let answer = if failures.is_empty() {
-            findings.findings
+            answer
         } else {
             warn!(agent, failures = ?failures, "run_agent: answer failed verification");
-            format!(
-                "UNVERIFIED — {}. Treat everything below as unchecked.\n\n{}",
-                failures.join("; "),
-                findings.findings
-            )
+            mark_unverified_answer(&answer, &failures)
         };
         ToolCallResult::success_json(json!({
             "answer": answer,
@@ -371,8 +368,13 @@ impl AgentRunnerSkill {
                 let failed = r["tests_failed"].as_u64().unwrap_or(0);
                 if !(r["success"] == true && passed > 0 && failed == 0) {
                     let summary = r["summary"].as_str().unwrap_or("no summary");
+                    let error = first_compile_error(r["stderr"].as_str().unwrap_or(""))
+                        .map(|e| format!(" ({e})"))
+                        .unwrap_or_default();
                     failures.push(format!(
-                        "the answer's own Rust code, re-run by the verifier, did not pass: {summary}"
+                        "the answer's own Rust code, re-run by the verifier, did not pass: \
+                         {}{error}",
+                        summary.trim_end_matches('.')
                     ));
                     info!(stderr = %r["stderr"].as_str().unwrap_or("").chars().take(1500).collect::<String>(), "run_agent verifier: answer code failed");
                 }

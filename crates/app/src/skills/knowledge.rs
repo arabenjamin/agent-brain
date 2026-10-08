@@ -342,6 +342,11 @@ impl KnowledgeSkill {
 
         let null_result = is_null_result(&input.content, input.note_type.as_deref());
         let unverified = !null_result && is_unverified(&input.content, input.note_type.as_deref());
+        // Recorded whatever type the caller asked for: a note that failed
+        // verification is labelled so on retrieval, not just retyped.
+        let failed_reason = (!null_result)
+            .then(|| unverified_reason(&input.content))
+            .flatten();
         let note_type = if null_result {
             info!(
                 source_context = ?input.source_context,
@@ -370,6 +375,11 @@ impl KnowledgeSkill {
             .await
         {
             Ok((id, links_created)) => {
+                if let Some(reason) = &failed_reason
+                    && let Err(e) = self.svc.mark_verification_failed(&id, reason).await
+                {
+                    warn!(error = %e, note_id = %id, "store_note: could not flag failed verification");
+                }
                 // "answer" echoes the stored content so downstream {{_prev}} steps
                 // (e.g. notify_user after store_note) receive the original text, not metadata JSON.
                 let mut response = json!({
@@ -1359,7 +1369,7 @@ fn is_null_result(content: &str, note_type: Option<&str>) -> bool {
 
 /// Marker `run_agent` puts on the first line of an answer that failed its
 /// caller's `verify` requirements.
-pub const UNVERIFIED_MARKER: &str = "UNVERIFIED —";
+pub use crate::services::agent_runner::UNVERIFIED_MARKER;
 
 /// Whether a note headed for `semantic` (or untyped) carries the UNVERIFIED
 /// marker on a line of its own. Such a note is stored as `unsourced_synthesis`.
@@ -1369,6 +1379,26 @@ fn is_unverified(content: &str, note_type: Option<&str>) -> bool {
             line.trim_start_matches(|c: char| c == '#' || c == '*' || c.is_whitespace())
                 .starts_with(UNVERIFIED_MARKER)
         })
+}
+
+/// The verifier's reason from an UNVERIFIED marker line: the text after the
+/// marker, up to the sentence `run_agent` appends. `None` without a marker.
+fn unverified_reason(content: &str) -> Option<String> {
+    let line = content.lines().find_map(|line| {
+        line.trim_start_matches(|c: char| c == '#' || c == '*' || c.is_whitespace())
+            .strip_prefix(UNVERIFIED_MARKER)
+    })?;
+    let reason = line
+        .split(". Treat everything below as unchecked")
+        .next()
+        .unwrap_or(line)
+        .trim()
+        .trim_end_matches('.');
+    Some(if reason.is_empty() {
+        "unspecified".to_string()
+    } else {
+        reason.to_string()
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1629,6 +1659,20 @@ mod tests {
         let r = result_json(skill.execute("store_note", Some(args)).await.unwrap());
         assert_eq!(r["note_type"], "unsourced_synthesis");
         assert!(!is_unverified("UNVERIFIED — x", Some("reflection")));
+    }
+
+    #[test]
+    fn unverified_reason_is_the_verifiers_words() {
+        let content = "## Deep dive: q\n\nUNVERIFIED — the code did not compile. Treat everything below as unchecked.\n\n## ANSWER";
+        assert_eq!(
+            unverified_reason(content).as_deref(),
+            Some("the code did not compile")
+        );
+        assert_eq!(unverified_reason("## ANSWER\n- fine"), None);
+        assert_eq!(
+            unverified_reason("UNVERIFIED —").as_deref(),
+            Some("unspecified")
+        );
     }
 
     // -- tool registry --------------------------------------------------------

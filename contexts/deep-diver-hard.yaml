@@ -65,9 +65,10 @@ system_prompt: |
     The code block, then the sandbox result verbatim (e.g. "test result: ok.
     3 passed"), then one line: what the tests check it against.
     "not applicable" for a non-technical topic.
-    ## IN AGENT-BRAIN
+    ## IN AGENT-BRAIN (proposed — nothing was changed)
     1-3 bullets: an existing file:line (code or design doc) and what would
     change there, or a new path under crates/app/src/. "no fit" if none.
+    You do not edit the repository; write these as proposals, never as done.
     ## NEXT
     One narrower question this answer raises.
 

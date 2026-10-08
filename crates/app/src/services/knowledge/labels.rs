@@ -47,8 +47,12 @@ impl KnowledgeService {
             .execute(
                 neo4rs::query(
                     "MATCH (n:Note) WHERE n.id IN $ids \
-                       AND COALESCE(n.note_type,'semantic') IN ['claim','source_record','news','unsourced_synthesis'] \
+                       AND (COALESCE(n.note_type,'semantic') IN ['claim','source_record','news','unsourced_synthesis'] \
+                            OR n.verification = 'failed') \
                      RETURN n.id AS id, COALESCE(n.note_type,'semantic') AS note_type, \
+                            COALESCE(n.verification, '') AS verification, \
+                            COALESCE(n.verification_reason, '') AS verification_reason, \
+                            n.content CONTAINS 'http' AS has_links, \
                             COALESCE(n.claim_status, 'unverified') AS status, \
                             COALESCE(n.asserted_by, '') AS asserted_by, \
                             COALESCE(toString(n.asserted_at), '') AS asserted_at, \
@@ -82,7 +86,20 @@ impl KnowledgeService {
             // Sept-2023 benchmark result was relayed as a current standing
             // because nothing in the context window said it was two years old.
             let age = crate::services::clock::age_from_iso(&created_at);
+            let failed = row.get::<String>("verification").unwrap_or_default() == "failed";
             let prefix = match note_type.as_str() {
+                // Checked before the type: an agent answer that failed its
+                // verifier is not "the brain's reasoning" but a report whose
+                // test results and file claims were found false or unchecked.
+                // On 2026-10-07 a deep dive whose code did not compile was
+                // relayed in chat as "Success… the test passed… what was
+                // actually built", under an UNSOURCED SYNTHESIS label that
+                // never mentioned the failure.
+                _ if failed => failed_verification_label(
+                    &row.get::<String>("verification_reason").unwrap_or_default(),
+                    &created_at,
+                    age.as_deref(),
+                ),
                 "claim" => crate::services::claims::label_claim(
                     "",
                     &row.get::<String>("status").unwrap_or_default(),
@@ -111,12 +128,18 @@ impl KnowledgeService {
                 // had concluded INSUFFICIENT EVIDENCE and spawned it. The label
                 // has to say the note cites nothing: that absence is the defect,
                 // and it is invisible in the content itself.
+                // A note that lists links is told apart: "cites no source" next
+                // to a SOURCES block reads as a wrong label and gets discounted.
                 "unsourced_synthesis" => {
                     let at: String = created_at.chars().take(10).collect();
-                    let mut parts = vec![
-                        "UNSOURCED SYNTHESIS — the brain's own reasoning, cites no source; not established knowledge"
-                            .to_string(),
-                    ];
+                    let what = if row.get::<bool>("has_links").unwrap_or(false) {
+                        "the brain's own reasoning; the links it lists were not checked against its claims"
+                    } else {
+                        "the brain's own reasoning, cites no source"
+                    };
+                    let mut parts = vec![format!(
+                        "UNSOURCED SYNTHESIS — {what}; not established knowledge"
+                    )];
                     if !at.is_empty() {
                         parts.push(at);
                     }
@@ -160,4 +183,53 @@ impl KnowledgeService {
     // =========================================================================
     // Cognitive layer — reason, audit_action, explain_reasoning
     // =========================================================================
+}
+
+/// The retrieval prefix for a note that failed its verifier.
+pub(super) fn failed_verification_label(
+    reason: &str,
+    created_at: &str,
+    age: Option<&str>,
+) -> String {
+    let reason = if reason.trim().is_empty() {
+        "see the note"
+    } else {
+        reason.trim()
+    };
+    let mut parts = vec![format!(
+        "FAILED VERIFICATION — {reason}. Its test results and code claims are false or \
+         unchecked; nothing in it was built, run successfully, or changed in the codebase"
+    )];
+    let at: String = created_at.chars().take(10).collect();
+    if !at.is_empty() {
+        parts.push(at);
+    }
+    if let Some(age) = age {
+        parts.push(age.to_string());
+    }
+    format!("[{}]\n", parts.join(" · "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failed_verification_label;
+
+    #[test]
+    fn failed_verification_label_names_the_reason_and_disclaims_the_work() {
+        let label = failed_verification_label(
+            "the answer's own Rust code, re-run by the verifier, did not pass: Compilation failed",
+            "2026-10-07T16:58:27Z",
+            Some("1h old"),
+        );
+        assert!(label.starts_with("[FAILED VERIFICATION — the answer's own Rust code"));
+        assert!(label.contains("nothing in it was built"));
+        assert!(label.contains("· 2026-10-07 · 1h old]"));
+        assert!(label.ends_with("]\n"));
+    }
+
+    #[test]
+    fn failed_verification_label_without_reason_still_says_failed() {
+        let label = failed_verification_label("  ", "", None);
+        assert!(label.starts_with("[FAILED VERIFICATION — see the note."));
+    }
 }

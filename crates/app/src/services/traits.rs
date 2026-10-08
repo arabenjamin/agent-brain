@@ -148,6 +148,12 @@ pub trait KnowledgeStore: Send + Sync {
         provenance: Option<ProvenanceFlag>,
     ) -> anyhow::Result<(String, usize)>;
 
+    /// Flag a stored note and its chunks as having failed verification.
+    /// Default no-op so test mocks and minimal stores compile unchanged.
+    async fn mark_verification_failed(&self, _note_id: &str, _reason: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Store an inference note for a context-grounded `reason()` call.
     /// Default no-op so test mocks and minimal stores compile unchanged.
     async fn store_context_inference(
