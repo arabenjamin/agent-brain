@@ -2,6 +2,7 @@
  * Ctrl-K commands: every workspace view and settings section, plus the
  * query itself as a note id (open it) or a phrase (search notes for it).
  */
+import { lookupId } from "../../api/search";
 import { asEntityId } from "../../lib/ids";
 import { goTo } from "../../nav";
 import { SETTINGS, WORKSPACES } from "../../workspaces";
@@ -52,14 +53,23 @@ export function queryCommands(query: string): Command[] {
   if (!q) return [];
   const id = asEntityId(q);
   if (id) {
-    return [{ id: `note:${id}`, label: `Open note ${id}`, group: "Note", keywords: "", run: () => openEntity("note", id) }];
+    // Ids are shared across kinds; ask the brain what this one is, then open it.
+    return [{
+      id: `open:${id}`,
+      label: `Open ${id}`,
+      group: "Id",
+      keywords: "",
+      run: () => {
+        lookupId(id).then((m) => openEntity(m.kind, m.id)).catch(() => goTo("knowledge", { view: "list", q: id }));
+      },
+    }];
   }
   return [{
     id: `search:${q}`,
     label: `Search notes for “${q}”`,
     group: "Search",
     keywords: "",
-    run: () => goTo("knowledge", { view: "notes", q }),
+    run: () => goTo("knowledge", { view: "list", q }),
   }];
 }
 

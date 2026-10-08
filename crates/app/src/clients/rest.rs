@@ -51,6 +51,10 @@ pub struct RestState {
     pub telemetry: Option<TelemetryClient>,
     pub log_buffer: Option<Arc<crate::logging::LogBuffer>>,
     pub tool_registry: Option<Arc<RwLock<crate::mcp::tools::ToolRegistry>>>,
+    /// Read-only access to the retrieval pipeline for the HBI's search
+    /// (`clients/search.rs`). Built from `neo4j` + `llm_config`; embeddings
+    /// go wherever that config sends them (host Ollama), as for every search.
+    pub knowledge: Option<Arc<crate::services::knowledge::KnowledgeService>>,
 }
 
 // ============================================================================
@@ -149,7 +153,17 @@ impl RestAdapter {
     ///     .layer(axum::Extension(rest_state));
     /// ```
     pub fn build_state(self) -> Arc<RestState> {
+        let knowledge = match (&self.neo4j, &self.llm_config) {
+            (Some(n), Some(cfg)) => {
+                Some(Arc::new(crate::services::knowledge::KnowledgeService::new(
+                    (**n).clone(),
+                    Some(crate::services::shared_llm::SharedLlm::new(Arc::clone(cfg))),
+                )))
+            }
+            _ => None,
+        };
         Arc::new(RestState {
+            knowledge,
             neo4j: self.neo4j,
             scheduler: self.scheduler,
             context_builder: self.context_builder,
@@ -737,7 +751,81 @@ pub async fn handle_put_scheduler_config(
 // Read-only API endpoints (formerly MCP tools)
 // ============================================================================
 
-/// GET /api/graph?max_nodes=N — knowledge graph nodes and edges for visualisation.
+/// Most seeds `/api/graph` takes; more are ignored.
+const GRAPH_MAX_SEEDS: usize = 60;
+/// RELATES_TO neighbours kept per seed (most similar first).
+const GRAPH_NEIGHBOURS_PER_SEED: i64 = 4;
+/// Entities shown around a seeded graph (most-mentioned by its notes first).
+const GRAPH_SEED_ENTITIES: i64 = 40;
+
+/// Nodes for a seeded graph: the seed notes (flagged `seed`), each one's
+/// nearest RELATES_TO neighbours, and the entities those notes mention most
+/// (URLs and dates left out: they are noise at this scale).
+async fn seeded_graph_nodes(neo4j: &Neo4jClient, seeds: &[String]) -> Vec<Value> {
+    let label = |content: &str| -> String { content.chars().take(60).collect() };
+    let mut nodes = Vec::new();
+    let rows = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (s:Note) WHERE s.id IN $seeds \
+                 OPTIONAL MATCH (s)-[r:RELATES_TO]-(m:Note) \
+                 WITH s, m, r ORDER BY r.similarity DESC \
+                 WITH s, collect(m)[0..$per] AS ms \
+                 UNWIND ([s] + ms) AS n \
+                 WITH DISTINCT n \
+                 RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
+                        toString(n.created_at) AS created_at",
+            )
+            .param("seeds", seeds.to_vec())
+            .param("per", GRAPH_NEIGHBOURS_PER_SEED),
+        )
+        .await
+        .unwrap_or_default();
+    let seed_set: std::collections::HashSet<&str> = seeds.iter().map(String::as_str).collect();
+    let mut note_ids = Vec::new();
+    for row in rows {
+        let id = row.get::<String>("id").unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let content = row.get::<String>("content").unwrap_or_default();
+        nodes.push(json!({
+            "id": id,
+            "label": label(&content),
+            "type": "note",
+            "note_type": row.get::<String>("note_type").unwrap_or_else(|_| "semantic".to_string()),
+            "created_at": row.get::<String>("created_at").unwrap_or_default(),
+            "seed": seed_set.contains(id.as_str()),
+        }));
+        note_ids.push(id);
+    }
+    let entity_rows = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (n:Note)-[:MENTIONS]->(e:Entity) \
+                 WHERE n.id IN $ids AND NOT e.entity_type IN ['url', 'date'] \
+                 WITH e, count(DISTINCT n) AS c ORDER BY c DESC LIMIT $limit \
+                 RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, \
+                        toString(e.created_at) AS created_at",
+            )
+            .param("ids", note_ids)
+            .param("limit", GRAPH_SEED_ENTITIES),
+        )
+        .await
+        .unwrap_or_default();
+    for row in entity_rows {
+        nodes.push(json!({
+            "id": row.get::<String>("id").unwrap_or_default(),
+            "label": row.get::<String>("name").unwrap_or_default(),
+            "type": "entity",
+            "entity_type": row.get::<String>("entity_type").unwrap_or_else(|_| "unknown".to_string()),
+            "created_at": row.get::<String>("created_at").unwrap_or_default(),
+        }));
+    }
+    nodes
+}
+
+/// GET /api/graph?max_nodes=N | ?seeds=id,id — graph nodes and edges for visualisation.
 pub async fn handle_get_graph(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -751,77 +839,94 @@ pub async fn handle_get_graph(
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
 
+    // `?seeds=a,b,c`: the neighbourhood of those notes (the HBI's search
+    // results) instead of the most recently used part of the graph.
+    let seeds: Vec<String> = params
+        .get("seeds")
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .take(GRAPH_MAX_SEEDS)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut nodes: Vec<Value> = Vec::new();
 
-    // Notes
-    let note_rows = neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (n:Note) \
-             RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
-                    toString(n.created_at) AS created_at \
-             ORDER BY n.last_accessed_at DESC LIMIT $limit",
+    if !seeds.is_empty() {
+        nodes = seeded_graph_nodes(neo4j, &seeds).await;
+    } else {
+        // Notes
+        let note_rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (n:Note) \
+                 RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
+                        toString(n.created_at) AS created_at \
+                 ORDER BY n.last_accessed_at DESC LIMIT $limit",
+                )
+                .param("limit", max_nodes),
             )
-            .param("limit", max_nodes),
-        )
-        .await
-        .unwrap_or_default();
-    for row in note_rows {
-        let id = row.get::<String>("id").unwrap_or_default();
-        let content = row.get::<String>("content").unwrap_or_default();
-        let note_type = row
-            .get::<String>("note_type")
-            .unwrap_or_else(|_| "semantic".to_string());
-        let created_at = row.get::<String>("created_at").unwrap_or_default();
-        let label: String = content.chars().take(60).collect();
-        nodes.push(json!({ "id": id, "label": label, "type": "note", "note_type": note_type, "created_at": created_at }));
-    }
+            .await
+            .unwrap_or_default();
+        for row in note_rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let content = row.get::<String>("content").unwrap_or_default();
+            let note_type = row
+                .get::<String>("note_type")
+                .unwrap_or_else(|_| "semantic".to_string());
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            let label: String = content.chars().take(60).collect();
+            nodes.push(json!({ "id": id, "label": label, "type": "note", "note_type": note_type, "created_at": created_at }));
+        }
 
-    // Entities (most-mentioned first)
-    let entity_limit = (max_nodes / 4).max(20);
-    let entity_rows = neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (e:Entity)<-[r:MENTIONS]-() \
-             RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, count(r) AS mentions, \
-                    toString(e.created_at) AS created_at \
-             ORDER BY mentions DESC LIMIT $limit",
+        // Entities (most-mentioned first)
+        let entity_limit = (max_nodes / 4).max(20);
+        let entity_rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (e:Entity)<-[r:MENTIONS]-() \
+                 RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, count(r) AS mentions, \
+                        toString(e.created_at) AS created_at \
+                 ORDER BY mentions DESC LIMIT $limit",
+                )
+                .param("limit", entity_limit),
             )
-            .param("limit", entity_limit),
-        )
-        .await
-        .unwrap_or_default();
-    for row in entity_rows {
-        let id = row.get::<String>("id").unwrap_or_default();
-        let name = row.get::<String>("name").unwrap_or_default();
-        let entity_type = row
-            .get::<String>("entity_type")
-            .unwrap_or_else(|_| "unknown".to_string());
-        let created_at = row.get::<String>("created_at").unwrap_or_default();
-        nodes.push(json!({ "id": id, "label": name, "type": "entity", "entity_type": entity_type, "created_at": created_at }));
-    }
+            .await
+            .unwrap_or_default();
+        for row in entity_rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let name = row.get::<String>("name").unwrap_or_default();
+            let entity_type = row
+                .get::<String>("entity_type")
+                .unwrap_or_else(|_| "unknown".to_string());
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            nodes.push(json!({ "id": id, "label": name, "type": "entity", "entity_type": entity_type, "created_at": created_at }));
+        }
 
-    // Tasks
-    let task_limit = (max_nodes / 8).max(10);
-    let task_rows = neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (t:Task) \
-             RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                    toString(t.created_at) AS created_at \
-             ORDER BY t.created_at DESC LIMIT $limit",
+        // Tasks
+        let task_limit = (max_nodes / 8).max(10);
+        let task_rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (t:Task) \
+                 RETURN t.id AS id, t.goal AS goal, t.status AS status, \
+                        toString(t.created_at) AS created_at \
+                 ORDER BY t.created_at DESC LIMIT $limit",
+                )
+                .param("limit", task_limit),
             )
-            .param("limit", task_limit),
-        )
-        .await
-        .unwrap_or_default();
-    for row in task_rows {
-        let id = row.get::<String>("id").unwrap_or_default();
-        let goal = row.get::<String>("goal").unwrap_or_default();
-        let status = row.get::<String>("status").unwrap_or_default();
-        let created_at = row.get::<String>("created_at").unwrap_or_default();
-        let label: String = goal.chars().take(60).collect();
-        nodes.push(json!({ "id": id, "label": label, "type": "task", "status": status, "created_at": created_at }));
+            .await
+            .unwrap_or_default();
+        for row in task_rows {
+            let id = row.get::<String>("id").unwrap_or_default();
+            let goal = row.get::<String>("goal").unwrap_or_default();
+            let status = row.get::<String>("status").unwrap_or_default();
+            let created_at = row.get::<String>("created_at").unwrap_or_default();
+            let label: String = goal.chars().take(60).collect();
+            nodes.push(json!({ "id": id, "label": label, "type": "task", "status": status, "created_at": created_at }));
+        }
     }
 
     let node_ids: std::collections::HashSet<String> = nodes
@@ -881,6 +986,7 @@ pub async fn handle_get_graph(
     Json(json!({
         "node_count": nodes.len(),
         "edge_count": edges.len(),
+        "seeded": !seeds.is_empty(),
         "nodes": nodes,
         "edges": edges,
     }))
@@ -1461,7 +1567,14 @@ pub async fn handle_list_notes(
     }
 }
 
-/// POST /api/notes — create a note (no LLM embedding; brain's maintenance handles embedding later)
+/// POST /api/notes — store a note written in the HBI.
+///
+/// Goes through `KnowledgeService::store_note`, like the `store_note` tool:
+/// embedded, chunked, linked to similar notes and scanned for entities. The
+/// old raw `CREATE` skipped all of that, so a note written in the UI was
+/// invisible to semantic search and had no relationships. The raw path is
+/// kept only for a brain started without a knowledge service, and the
+/// response says what it skipped.
 pub async fn handle_create_note(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
@@ -1470,23 +1583,44 @@ pub async fn handle_create_note(
         return unavailable("Neo4j not available");
     };
 
-    let Some(content) = body.get("content").and_then(|v| v.as_str()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "content is required"})),
-        )
-            .into_response();
+    let Some(content) = body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    else {
+        return bad_request("content is required");
     };
     let note_type = body
         .get("note_type")
         .and_then(|v| v.as_str())
         .unwrap_or("semantic");
+
+    if let Some(ks) = state.knowledge.as_ref() {
+        return match ks
+            .store_note(
+                content,
+                Some(note_type),
+                Some("hbi"),
+                None,
+                Some(crate::models::provenance::ProvenanceFlag::UserInput),
+            )
+            .await
+        {
+            Ok((note_id, links_created)) => (
+                StatusCode::CREATED,
+                Json(json!({"note_id": note_id, "id": note_id, "links_created": links_created})),
+            )
+                .into_response(),
+            Err(e) => internal(format!("Failed to store note: {e}")),
+        };
+    }
+
     let note_id = uuid::Uuid::new_v4().to_string();
     let ts = chrono::Utc::now().to_rfc3339();
-
     let q = neo4rs::query(
         "CREATE (n:Note {id: $id, content: $content, note_type: $nt, \
-         access_count: 0, review_interval_days: 1.0, \
+         access_count: 0, review_interval_days: 1.0, source_context: 'hbi', \
          created_at: datetime($ts), last_accessed_at: datetime($ts), \
          next_review_at: datetime($ts)}) \
          RETURN n.id AS id",
@@ -1499,14 +1633,23 @@ pub async fn handle_create_note(
     match neo4j.execute(q).await {
         Ok(_) => (
             StatusCode::CREATED,
-            Json(json!({"note_id": note_id, "id": note_id})),
+            Json(json!({
+                "note_id": note_id,
+                "id": note_id,
+                "warning": "Stored without embedding, links or entities: this brain has no knowledge service",
+            })),
         )
             .into_response(),
         Err(e) => internal(format!("Failed to create note: {e}")),
     }
 }
 
-/// PUT /api/notes/:id — update note content
+/// PUT /api/notes/:id — replace a note's content.
+///
+/// Uses `rewrite_note_in_place`: the id, creation time and inbound edges
+/// (consolidations, inferences built on it) survive, and everything derived
+/// from the old text — embedding, similarity links, chunks, entity mentions —
+/// is rebuilt. A bare `SET content` left all of those describing the old text.
 pub async fn handle_update_note(
     Extension(state): Extension<Arc<RestState>>,
     Path(note_id): Path<String>,
@@ -1516,28 +1659,52 @@ pub async fn handle_update_note(
         return unavailable("Neo4j not available");
     };
 
-    let Some(content) = body.get("content").and_then(|v| v.as_str()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "content is required"})),
-        )
-            .into_response();
+    let Some(content) = body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    else {
+        return bad_request("content is required");
     };
 
-    let q = neo4rs::query(
-        "MATCH (n:Note {id: $id}) \
-         SET n.content = $content \
-         RETURN n.id AS id, n.content AS content, n.note_type AS note_type",
-    )
-    .param("id", note_id.as_str())
-    .param("content", content);
+    let current = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (n:Note {id: $id}) RETURN n.note_type AS note_type, n.source_context AS source_context",
+            )
+            .param("id", note_id.as_str()),
+        )
+        .await;
+    let row = match current {
+        Ok(rows) => match rows.into_iter().next() {
+            Some(r) => r,
+            None => return not_found(),
+        },
+        Err(e) => return internal(format!("Failed to read note: {e}")),
+    };
+    let note_type = row.get::<String>("note_type").ok();
+    let source_context = row.get::<String>("source_context").ok();
 
-    match neo4j.execute(q).await {
-        Ok(rows) if rows.is_empty() => not_found(),
-        Ok(rows) => Json(json!({
-            "id":        rows[0].get::<String>("id").unwrap_or_default(),
-            "content":   rows[0].get::<String>("content").unwrap_or_default(),
-            "note_type": rows[0].get::<String>("note_type").ok(),
+    let Some(ks) = state.knowledge.as_ref() else {
+        return unavailable(
+            "Editing needs the knowledge service (to re-embed and re-chunk), which this brain was started without",
+        );
+    };
+    match ks
+        .rewrite_note_in_place(
+            &note_id,
+            content,
+            note_type.as_deref(),
+            source_context.as_deref(),
+        )
+        .await
+    {
+        Ok((removed, created)) => Json(json!({
+            "id": note_id,
+            "note_type": note_type,
+            "chunks_removed": removed,
+            "chunks_created": created,
         }))
         .into_response(),
         Err(e) => internal(format!("Failed to update note: {e}")),
@@ -1581,22 +1748,69 @@ pub async fn handle_get_note(
         return unavailable("Neo4j not available");
     };
 
+    // Everything the HBI's note drawer shows: provenance and epistemic status
+    // with the content, the note's place among chunks, and what it mentions.
     let q = neo4rs::query(
         "MATCH (n:Note {id: $id}) \
+         OPTIONAL MATCH (n)-[:PART_OF]->(parent:Note) \
+         OPTIONAL MATCH (chunk:Note)-[:PART_OF]->(n) \
+         WITH n, parent, count(chunk) AS chunks \
+         OPTIONAL MATCH (n)-[:MENTIONS]->(e:Entity) WHERE NOT e.entity_type IN ['url', 'date'] \
+         WITH n, parent, chunks, e ORDER BY e.name \
+         WITH n, parent, chunks, collect({id: e.id, name: e.name, entity_type: e.entity_type})[0..30] AS entities \
          RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
-                n.access_count AS access_count, toString(n.created_at) AS created_at",
+                n.access_count AS access_count, toString(n.created_at) AS created_at, \
+                toString(n.last_accessed_at) AS last_accessed_at, \
+                n.source_context AS source_context, n.provenance AS provenance, \
+                n.claim_status AS claim_status, n.claim_kind AS claim_kind, \
+                n.corroboration_tier AS corroboration_tier, n.asserted_by AS asserted_by, \
+                toString(n.verified_at) AS verified_at, n.verification AS verification, \
+                n.verification_reason AS verification_reason, \
+                n.corroborating_count AS corroborating_count, n.contradicting_count AS contradicting_count, \
+                n.embedding IS NOT NULL AS embedded, \
+                parent.id AS parent_id, chunks, entities",
     )
     .param("id", note_id.clone());
 
     match neo4j.execute(q).await {
         Ok(rows) => {
             if let Some(row) = rows.into_iter().next() {
+                let s = |k: &str| row.get::<String>(k).ok().filter(|v| !v.is_empty());
+                let entities: Vec<Value> = row
+                    .get::<Vec<neo4rs::BoltMap>>("entities")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|m| {
+                        let id = m.get::<String>("id").ok()?;
+                        Some(json!({
+                            "id": id,
+                            "name": m.get::<String>("name").ok(),
+                            "entity_type": m.get::<String>("entity_type").ok(),
+                        }))
+                    })
+                    .collect();
                 Json(json!({
-                    "id":           row.get::<String>("id").unwrap_or_default(),
-                    "content":      row.get::<String>("content").unwrap_or_default(),
-                    "note_type":    row.get::<String>("note_type").ok().filter(|s| !s.is_empty()),
-                    "access_count": row.get::<i64>("access_count").unwrap_or(0),
-                    "created_at":   row.get::<String>("created_at").unwrap_or_default(),
+                    "id":                  row.get::<String>("id").unwrap_or_default(),
+                    "content":             row.get::<String>("content").unwrap_or_default(),
+                    "note_type":           s("note_type"),
+                    "access_count":        row.get::<i64>("access_count").unwrap_or(0),
+                    "created_at":          row.get::<String>("created_at").unwrap_or_default(),
+                    "last_accessed_at":    s("last_accessed_at"),
+                    "source_context":      s("source_context"),
+                    "provenance":          s("provenance"),
+                    "claim_status":        s("claim_status"),
+                    "claim_kind":          s("claim_kind"),
+                    "corroboration_tier":  s("corroboration_tier"),
+                    "asserted_by":         s("asserted_by"),
+                    "verified_at":         s("verified_at"),
+                    "verification":        s("verification"),
+                    "verification_reason": s("verification_reason"),
+                    "corroborating_count": row.get::<i64>("corroborating_count").ok(),
+                    "contradicting_count": row.get::<i64>("contradicting_count").ok(),
+                    "embedded":            row.get::<bool>("embedded").unwrap_or(false),
+                    "parent_id":           s("parent_id"),
+                    "chunks":              row.get::<i64>("chunks").unwrap_or(0),
+                    "entities":            entities,
                 }))
                 .into_response()
             } else {

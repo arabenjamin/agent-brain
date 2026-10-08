@@ -22,6 +22,11 @@ export interface Workspace {
   /** Words Ctrl-K matches besides the label. */
   keywords: string;
   views?: View[];
+  /**
+   * Params shared by all of this workspace's views, kept when switching
+   * between them (Knowledge's search drives every view).
+   */
+  shared?: string[];
 }
 
 export const WORKSPACES: Workspace[] = [
@@ -44,10 +49,12 @@ export const WORKSPACES: Workspace[] = [
     id: "knowledge",
     icon: "🔍",
     label: "Knowledge",
-    keywords: "notes search graph memory",
+    keywords: "notes search graph memory entities semantic keyword timeline",
+    shared: ["q", "mode", "type", "hops", "since", "verified_since"],
     views: [
-      { id: "notes", label: "Notes" },
-      { id: "graph", label: "Graph" },
+      { id: "list", label: "Results" },
+      { id: "graph", label: "Neighbourhood" },
+      { id: "timeline", label: "Timeline" },
     ],
   },
   {
@@ -85,10 +92,11 @@ export const DEFAULT_WORKSPACE: WorkspaceId = "home";
 
 /**
  * Views that were replaced inside a workspace (Phase 2 turned Work's four
- * panels into lanes). A filtered `jobs` link lands in History, an unfiltered
+ * panels into lanes; Phase 3 renamed Knowledge's "notes" to "list"). A filtered `jobs` link lands in History, an unfiltered
  * one in Active, so Phase-1 links keep working.
  */
 function legacyView(path: string, params: Record<string, string>): string | null {
+  if (path === "knowledge") return params.view === "notes" ? "list" : null;
   if (path !== "work") return null;
   switch (params.view) {
     case "jobs":

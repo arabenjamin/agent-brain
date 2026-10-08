@@ -348,6 +348,16 @@ impl HttpTransport {
             .route("/api/graph", get(rest_handlers::handle_get_graph))
             .route("/api/health", get(rest_handlers::handle_api_health))
             .route("/api/activity", get(rest_handlers::handle_get_activity))
+            // --- Knowledge search (clients/search.rs) ---
+            .route("/api/search", get(crate::clients::search::handle_search))
+            .route(
+                "/api/lookup/{id}",
+                get(crate::clients::search::handle_lookup),
+            )
+            .route(
+                "/api/entities/{id}",
+                get(crate::clients::search::handle_entity),
+            )
             // --- Work lineage (clients/work.rs) ---
             .route(
                 "/api/work/tasks/{id}",

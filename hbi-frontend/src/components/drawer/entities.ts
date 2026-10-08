@@ -5,7 +5,7 @@
 import { navigate } from "../../router";
 
 /** Route params that open the drawer, in priority order. */
-export const DRAWER_KINDS = ["note", "task", "job", "schedule", "todo", "proposal"] as const;
+export const DRAWER_KINDS = ["note", "entity", "task", "job", "schedule", "todo", "proposal"] as const;
 export type DrawerKind = (typeof DRAWER_KINDS)[number];
 
 export function openEntity(kind: DrawerKind, id: string): void {

@@ -35,7 +35,7 @@ mod store;
 mod store_trait;
 
 pub(crate) use consolidation::CONSOLIDATION_SOURCE_PREDICATE;
-pub use retrieval::sanitize_lucene_query;
+pub use retrieval::{MatchTrace, TRACE_NO_VECTOR, sanitize_lucene_query};
 
 /// Notes a caller must not get back from retrieval, by `note_type` or
 /// `source_context`. Set per agent in its profile (`retrieval_exclude:`) and

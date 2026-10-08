@@ -81,6 +81,26 @@ export interface Note {
   note_type?: string | null;
   access_count?: number;
   created_at?: string;
+  last_accessed_at?: string | null;
+  /** Which process wrote it (`daily_news`, `chat_session`, …). */
+  source_context?: string | null;
+  provenance?: string | null;
+  claim_status?: string | null;
+  claim_kind?: string | null;
+  corroboration_tier?: string | null;
+  asserted_by?: string | null;
+  verified_at?: string | null;
+  verification?: string | null;
+  verification_reason?: string | null;
+  corroborating_count?: number | null;
+  contradicting_count?: number | null;
+  /** Has its own vector (long notes are embedded through their chunks). */
+  embedded?: boolean;
+  /** This note is a chunk of that one. */
+  parent_id?: string | null;
+  /** How many chunks this note was split into. */
+  chunks?: number;
+  entities?: { id: string; name: string | null; entity_type: string | null }[];
 }
 
 export interface RelatedNote {

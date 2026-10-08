@@ -246,14 +246,14 @@ function LastDayTile() {
   return (
     <Card title="Last 24 hours" actions={<span className="home-dim">since {formatLocal(since)}</span>}>
       <div className="ui-stats">
-        <Stat label="Notes" value={a.notes?.total ?? "?"} href={hrefTo("knowledge", { view: "notes", since })} />
+        <Stat label="Notes" value={a.notes?.total ?? "?"} href={hrefTo("knowledge", { view: "list", since })} />
         <Stat label="Tasks done" value={a.tasks?.by.completed ?? 0} tone="green"
           href={hrefTo("work", { view: "history", mode: "tasks", task_status: "completed", since })} />
         <Stat label="Tasks failed" value={a.tasks?.by.failed ?? 0} tone={(a.tasks?.by.failed ?? 0) > 0 ? "red" : undefined}
           href={hrefTo("work", { view: "history", mode: "tasks", task_status: "failed", since })} />
         <Stat label="Claims checked" value={a.claims_checked?.total ?? "?"}
           title={a.claims_checked ? `${claimsCorroborated} corroborated · ${a.claims_checked.by.refuted ?? 0} refuted · ${a.claims_checked.by.unverified ?? 0} still unverified` : undefined}
-          href={hrefTo("knowledge", { view: "notes", type: "claim", verified_since: since })} />
+          href={hrefTo("knowledge", { view: "list", type: "claim", verified_since: since })} />
         <Stat label="Schedule runs" value={a.schedule_runs ?? "?"} href={hrefTo("work", { view: "scheduled" })}
           title="Schedules whose last run falls in the window" />
       </div>
@@ -261,7 +261,7 @@ function LastDayTile() {
       {a.notes && a.notes.total > 0 && (
         <div className="home-chips">
           {topEntries(a.notes, 6).map(([type, n]) => (
-            <a key={type} href={hrefTo("knowledge", { view: "notes", since, type })}>
+            <a key={type} href={hrefTo("knowledge", { view: "list", since, type })}>
               <Pill tone="muted">{type} {n}</Pill>
             </a>
           ))}

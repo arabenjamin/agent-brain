@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import ForceGraph2D from "react-force-graph-2d";
 import type { ForceGraphMethods } from "react-force-graph-2d";
 import { apiRequest } from "../../api/client";
-import { openEntity } from "../drawer/entities";
+import { closeEntity, openEntity } from "../drawer/entities";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -14,6 +14,8 @@ interface RawGraphNode {
   entity_type?: string;
   status?: string;
   created_at?: string;
+  /** One of the notes the view was seeded from (a search result). */
+  seed?: boolean;
 }
 
 interface RawGraphEdge {
@@ -31,6 +33,7 @@ interface GraphNode {
   entityType?: string;
   taskStatus?: string;
   createdAt?: string;
+  seed?: boolean;
   color: string;
   val: number;
   x?: number;
@@ -164,6 +167,7 @@ function toGraphNode(raw: RawGraphNode): GraphNode {
     entityType: raw.entity_type,
     taskStatus: raw.status,
     createdAt:  raw.created_at,
+    seed:       raw.seed,
     color:      nodeColorFor(raw),
     val:        nodeValFor(raw),
   };
@@ -203,7 +207,22 @@ function computeNHop(edges: RawGraphEdge[], startId: string, depth: number): Set
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function GraphPanel() {
+/**
+ * The Knowledge workspace's Neighbourhood view. With `seedIds` it shows those
+ * notes, their nearest RELATES_TO neighbours and the entities they mention;
+ * without, the most recently used part of the graph. Clicking a node opens it
+ * in the drawer; `selectedId` (the drawer's entity) is ringed.
+ */
+export default function GraphPanel({
+  seedIds,
+  seedLabel,
+  selectedId,
+}: {
+  seedIds?: string[];
+  seedLabel?: string;
+  selectedId?: string;
+} = {}) {
+  const seedKey = (seedIds ?? []).join(",");
   // Raw data from API
   const [allNodes, setAllNodes] = useState<RawGraphNode[]>([]);
   const [allEdges, setAllEdges] = useState<RawGraphEdge[]>([]);
@@ -294,7 +313,9 @@ export default function GraphPanel() {
     setFocusNodeId(null);
     setSelectedNode(null);
     try {
-      const res = await apiRequest(`/api/graph?max_nodes=200`);
+      const res = await apiRequest(seedKey
+        ? `/api/graph?seeds=${encodeURIComponent(seedKey)}`
+        : `/api/graph?max_nodes=200`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAllNodes(data.nodes ?? []);
@@ -304,9 +325,9 @@ export default function GraphPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [seedKey]);
 
-  useEffect(() => { loadGraph(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadGraph(); }, [loadGraph]);
 
   // ── Layout controls ───────────────────────────────────────────────────────────
 
@@ -323,33 +344,18 @@ export default function GraphPanel() {
 
   // ── Node click ────────────────────────────────────────────────────────────────
 
-  const handleNodeClick = useCallback(async (node: GraphNode) => {
-    if (node.nodeType === "entity") {
-      setSelectedNode({ id: node.id, type: "entity", label: node.label, entity_type: node.entityType, created_at: node.createdAt });
-      return;
-    }
-    if (node.nodeType === "task") {
-      setSelectedNode({ id: node.id, type: "task", label: node.label, status: node.taskStatus, created_at: node.createdAt });
-      return;
-    }
-    try {
-      const res = await apiRequest(`/api/notes/${node.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setSelectedNode({
-          id:           data.id ?? node.id,
-          type:         "note",
-          label:        node.label,
-          content:      data.content,
-          note_type:    data.note_type,
-          access_count: data.access_count,
-          created_at:   data.created_at ?? node.createdAt,
-        });
-      }
-    } catch (e) {
-      console.error("Failed to fetch note:", e);
-    }
+  // One selection for the whole workspace: a click opens the node in the
+  // drawer (and so in the URL), and the drawer's entity is what is ringed.
+  const handleNodeClick = useCallback((node: GraphNode) => {
+    openEntity(node.nodeType === "entity" ? "entity" : node.nodeType === "task" ? "task" : "note", node.id);
   }, []);
+
+  // Mirror the drawer's selection into the overlay (focus controls).
+  useEffect(() => {
+    const raw = selectedId ? allNodes.find((n) => n.id === selectedId) : undefined;
+    setSelectedNode(raw ? { id: raw.id, type: raw.type, label: raw.label, note_type: raw.note_type,
+      entity_type: raw.entity_type, status: raw.status, created_at: raw.created_at } : null);
+  }, [selectedId, allNodes]);
 
   // ── Node hover ───────────────────────────────────────────────────────────────
 
@@ -363,7 +369,7 @@ export default function GraphPanel() {
     (node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const fontSize = Math.max(8, 12 / globalScale);
       const r = Math.sqrt(node.val ?? 3) * 4;
-      const isFocal = node.id === focusNodeId;
+      const isFocal = node.id === focusNodeId || node.id === selectedId;
 
       ctx.beginPath();
       if (node.nodeType === "entity") {
@@ -382,6 +388,9 @@ export default function GraphPanel() {
       if (isFocal) {
         ctx.strokeStyle = "rgba(255,255,255,0.9)";
         ctx.lineWidth = 2 / globalScale;
+      } else if (node.seed) {
+        ctx.strokeStyle = "rgba(79,142,247,0.9)";
+        ctx.lineWidth = 1.5 / globalScale;
       } else {
         ctx.strokeStyle = "rgba(255,255,255,0.15)";
         ctx.lineWidth = 0.5;
@@ -395,7 +404,7 @@ export default function GraphPanel() {
         ctx.fillText(node.label.slice(0, 30), node.x ?? 0, (node.y ?? 0) + r + fontSize + 1);
       }
     },
-    [focusNodeId]
+    [focusNodeId, selectedId]
   );
 
   // ── Toggle helpers ────────────────────────────────────────────────────────────
@@ -426,7 +435,7 @@ export default function GraphPanel() {
   return (
     <div className="panel">
       <div className="panel-header">
-        🕸 Knowledge Graph
+        🕸 {seedKey ? `Neighbourhood of ${seedLabel ?? `${seedIds?.length} notes`}` : "Recently used notes"}
         {graphData.nodes.length > 0 && (
           <span className="badge">
             {graphData.nodes.length} nodes · {graphData.links.length} edges
@@ -653,17 +662,7 @@ export default function GraphPanel() {
                     Unfocus
                   </button>
                 )}
-                {selectedNode.type === "note" && (
-                  <button
-                    className="btn"
-                    style={{ padding: "2px 8px", fontSize: 11 }}
-                    title="Open the full note (rendered, with related notes) in the side drawer"
-                    onClick={() => openEntity("note", selectedNode.id)}
-                  >
-                    Open
-                  </button>
-                )}
-                <button className="close-btn" onClick={() => setSelectedNode(null)}>×</button>
+                <button className="close-btn" onClick={closeEntity} title="Close the drawer">×</button>
               </div>
             </div>
             <div className="graph-detail-content scroll">

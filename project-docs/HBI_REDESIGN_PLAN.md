@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–2 done (2026-10-08); Phases 3–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–3 done (2026-10-08); Phases 4–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -214,7 +214,7 @@ There are also 86 single-word person names with a longer full-name node (`vance`
 | # | Endpoint / change | Notes |
 |---|---|---|
 | B0 | `GET /api/activity?hours=`; `since` on `/api/notes`, `/api/tasks`, `/api/jobs`; `verified_since` on notes; comma `status` lists; `version` in `/api/health` | **Done in Phase 1.** Home's counts and the rows behind them. |
-| B1 | `GET /api/search?q=&mode=auto\|semantic\|keyword\|id&kind=note\|entity\|topic&topic=&limit=` | Semantic goes through the **non-perturbing** `search_notes_inner(track_access=false)` path: a human browsing must not skew freshness/access-count retrieval signals. Keyword uses the BM25 fulltext index, not `CONTAINS`. Each hit returns `match_reason` + score. A truncated result says so. |
+| B1 | **Done in Phase 3** (with `/api/lookup/{id}`, `/api/entities/{id}`, `/api/graph?seeds=`, and the note detail fields). Planned as: `GET /api/search?q=&mode=auto\|semantic\|keyword\|id&kind=note\|entity\|topic&topic=&limit=` | Semantic goes through the **non-perturbing** `search_notes_inner(track_access=false)` path: a human browsing must not skew freshness/access-count retrieval signals. Keyword uses the BM25 fulltext index, not `CONTAINS`. Each hit returns `match_reason` + score. A truncated result says so. |
 | B2 | `:Topic` + `topics/*.yaml` + `TOPICS_DIR` compose env; `IN_TOPIC` assignment + backfill; `GET /api/topics`, `GET /api/topics/{id}/map` | §3. Schema in `init_schema`, documented in `schema.md` (`IN_TOPIC.assigned_at` is a native `DATETIME`). |
 | B2b | Entity resolution (§3.1): normalise + alias index at write time; `entities/` seed dir + `ENTITY_ALIASES_DIR`; extractor keeps surface form and uses `generate_json`; merge-candidate proposals; reversible merge/backfill; `POST /api/entities/merge` | Before the map, not after. Retrieval eval before and after. |
 | B3 | **Done in Phase 2** as `GET /api/work/{tasks,jobs,schedules,todos}/{id}`, `GET /api/work/schedules`, `POST /api/work/schedules/{id}/run`, `POST /api/work/todos/{id}/task`. Planned as: `GET /api/work/{kind}/{id}/lineage`; `next_run_at` + last outcome in the schedule list; a todo ↔ task link | Lineage = todo/schedule → tasks → jobs (steps, attempts) → notes (`source_context`/job id). |
@@ -300,6 +300,28 @@ Found, not fixed (needs a decision):
 - **Garbage research tasks.** `schedules/news-analysis.yaml` step 5 is `create_task goal: "{{_prev}}"`. When the preceding `reason` finds no research topic, its answer becomes the goal. 10 tasks so far have the goal "No section titled "Priority Research Topic" was found in the provided context."
 - **Summary JSON failures.** Most dead-lettered jobs this week are `ingest_article`/`ingest_media` summaries where the model "failed to produce valid JSON after 3 attempts".
 - **Daily schedules collide.** The timeline shows six daily schedules firing together around 20:22 local.
+
+### Phase 3 outcome (2026-10-08)
+
+Built:
+- **Search:** `/api/search` in auto, semantic, keyword and id modes, each hit carrying a match trace, plus id lookup, entity detail, a seeded graph, and richer note detail.
+- **Knowledge workspace:** Results, Neighbourhood and Timeline, sharing one query and one selection.
+- **Drawer:** the note view gains provenance, claims, chunk parent, mentions, edit/delete and create; a new entity view.
+- **Ctrl-K:** resolves a pasted id's kind before opening it.
+- **Tests:** 63 vitest tests and 6 new Rust tests (797 lib tests).
+- **Done criterion met, checked live:**
+  - A semantic query found a newly written note at #1.
+  - A `"strait of hormuz"` phrase search ran as keyword, and its entity chip opened the entity (51 mentions, co-mentioned with iran, trump, …).
+  - A pasted task id opened the task from both the search bar and Ctrl-K.
+- **Retrieval unchanged:** `eval-retrieval` identical before and after (0.920 / 0.757, all 25 cases).
+
+Fixed on the way:
+- **Notes written in the HBI were never embedded, linked or entity-scanned.** `POST /api/notes` was a raw `CREATE`, so semantic search could not find them. The old comment said maintenance would embed them later; no such backfill covers them.
+- **An edit left the old embedding, links and chunks in place.** `PUT /api/notes/{id}` was a bare `SET content`, so everything derived from the text still described the old version.
+- **Keyword search matched any word, not all of them.** Lucene's default OR meant "sodium batteries" matched every note saying "batteries". Bare words are now all required.
+- **The type filter only searched what was already loaded.** It offered 4 types and filtered a 50-note page in the browser; the type now goes to the server.
+
+Found, not fixed: the trace makes a retrieval quirk visible. Freshness plus BM25 lifts Todo Snapshot notes above the best semantic match for topic queries (see subsystem-rules). Whether snapshots should be down-weighted or excluded from topic retrieval is a retrieval-tuning decision, and it should be measured with `eval-retrieval`.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

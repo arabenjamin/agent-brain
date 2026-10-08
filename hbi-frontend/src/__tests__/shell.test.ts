@@ -39,6 +39,11 @@ describe("resolveRoute", () => {
       .toEqual({ kind: "redirect", path: "work", params: { view: "inbox", tab: null } });
   });
 
+  it("redirects Knowledge's Phase-1 notes view to the results list", () => {
+    expect(resolveRoute({ path: "knowledge", params: { view: "notes", since: "x" } }))
+      .toEqual({ kind: "redirect", path: "knowledge", params: { view: "list", tab: null } });
+  });
+
   it("sends an unknown path home", () => {
     expect(resolveRoute({ path: "bogus", params: {} })).toEqual({ kind: "redirect", path: "home", params: {} });
     expect(resolveRoute({ path: "", params: {} })).toEqual({ kind: "redirect", path: "home", params: {} });
@@ -116,13 +121,13 @@ describe("palette commands", () => {
   it("puts real matches before 'search notes', and a pasted id first", () => {
     expect(paletteResults(all, "sched")[0].id).toBe("go:work/scheduled");
     expect(paletteResults(all, "sched").at(-1)?.id).toBe("search:sched");
-    expect(paletteResults(all, "867f7a9d-3b11-4158-ba12-b6f167c0f49a")[0].id).toMatch(/^note:/);
+    expect(paletteResults(all, "867f7a9d-3b11-4158-ba12-b6f167c0f49a")[0].id).toMatch(/^open:/);
     // Nothing else matches: the search is the only (and first) result.
     expect(paletteResults(all, "zxqv").map((c) => c.id)).toEqual(["search:zxqv"]);
   });
 
   it("turns a pasted id into 'open note' and a phrase into a search", () => {
-    expect(queryCommands("867f7a9d-3b11-4158-ba12-b6f167c0f49a")[0].label).toContain("Open note");
+    expect(queryCommands("867f7a9d-3b11-4158-ba12-b6f167c0f49a")[0].label).toContain("Open 867f7a9d");
     expect(queryCommands("donald trump")[0].label).toBe("Search notes for “donald trump”");
     expect(queryCommands("   ")).toEqual([]);
   });

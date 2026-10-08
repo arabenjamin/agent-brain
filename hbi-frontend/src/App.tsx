@@ -5,7 +5,7 @@ import type { AgentNotification } from "./api/notifications";
 import { fetchUnreadNotifications, markNotificationRead } from "./api/notifications";
 import { getMcpClient, onNotification } from "./api/mcp";
 import { invalidateOnJobPush } from "./api/queries";
-import { navigate, useRoute } from "./router";
+import { currentRoute, navigate, useRoute } from "./router";
 import { goTo } from "./nav";
 import { SETTINGS, WORKSPACES, resolveRoute, type Workspace } from "./workspaces";
 import EntityDrawer from "./components/drawer/EntityDrawer";
@@ -18,8 +18,7 @@ const ScheduledLane      = lazy(() => import("./components/work/ScheduledLane"))
 const TodosLane          = lazy(() => import("./components/work/TodosLane"));
 const HistoryLane        = lazy(() => import("./components/work/HistoryLane"));
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
-const KnowledgePanel     = lazy(() => import("./components/knowledge/KnowledgePanel"));
-const GraphPanel         = lazy(() => import("./components/graph/GraphPanel"));
+const KnowledgeWorkspace = lazy(() => import("./components/knowledge/KnowledgeWorkspace"));
 const ToolPanel          = lazy(() => import("./components/tools/ToolPanel"));
 const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
 const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
@@ -39,7 +38,10 @@ function WorkspaceFrame({ workspace, view, children }: { workspace: Workspace; v
         <Tabs
           tabs={(workspace.views ?? []).map((v) => ({ id: v.id, label: v.label }))}
           active={view}
-          onChange={(id) => goTo(workspace.id, { view: id })}
+          onChange={(id) => {
+            const keep = Object.fromEntries((workspace.shared ?? []).map((k) => [k, currentRoute().params[k]]));
+            goTo(workspace.id, { ...keep, view: id });
+          }}
         />
       </div>
       <div className="workspace-body">{children}</div>
@@ -134,7 +136,10 @@ export default function App() {
   const historyDrill = { mode: p.mode, taskStatus: p.task_status, jobStatus: p.job_status, since: p.since };
   // The entity the drawer has open, so a lane can highlight its row.
   const openId = p.task ?? p.job ?? p.schedule ?? p.todo ?? p.proposal;
-  const knowledgeDrill = { since: p.since, type: p.type, verifiedSince: p.verified_since, q: p.q };
+  const knowledgeParams = {
+    q: p.q, mode: p.mode, type: p.type, hops: p.hops,
+    since: p.since, verified_since: p.verified_since, note: p.note, entity: p.entity,
+  };
 
   return (
     <div className="app">
@@ -191,8 +196,7 @@ export default function App() {
           )}
           {ws === "knowledge" && workspace && (
             <WorkspaceFrame workspace={workspace} view={view}>
-              {view === "notes" && <KnowledgePanel key={JSON.stringify(knowledgeDrill)} drill={knowledgeDrill} />}
-              {view === "graph" && <GraphPanel />}
+              <KnowledgeWorkspace view={view} params={knowledgeParams} />
             </WorkspaceFrame>
           )}
           {ws === "system" && workspace && (

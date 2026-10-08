@@ -18,7 +18,7 @@ The brain URL and API key live in the browser's localStorage (Settings → Conne
 
 ## Workspaces
 
-`#/home` (dashboard) · `#/chat` · `#/work?view=inbox|active|scheduled|todos|history` · `#/knowledge?view=notes|graph` · `#/system?view=logs|architecture|tools` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect.
+`#/home` (dashboard) · `#/chat` · `#/work?view=inbox|active|scheduled|todos|history` · `#/knowledge?view=list|graph|timeline&q=&mode=auto|semantic|keyword|id` · `#/system?view=logs|architecture|tools` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect.
 
 ## Layout
 
@@ -26,6 +26,7 @@ The brain URL and API key live in the browser's localStorage (Settings → Conne
 src/
   api/client.ts      the one HTTP client: apiRequest (raw Response), apiJson (throws ApiError)
   api/queries.ts     shared TanStack queries (queue/scheduler status, notes) + job-push invalidation
+  api/search.ts      /api/search, entities, id lookup
   api/mcp.ts         MCP SDK client (Streamable HTTP) + server-push fan-out
   api/chat.ts        /chat SSE stream
   router.ts          hash routing: #/<workspace>?<kind>=<id>
@@ -33,8 +34,9 @@ src/
   nav.ts             goTo / hrefTo: move between workspaces, keeping only the open drawer
   lib/               time (UTC in, local out), ids, scheduler state, useNow
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
-  components/drawer/ entity drawer: note, task (lineage), job, schedule, todo, proposal
+  components/drawer/ entity drawer: note, entity, task (lineage), job, schedule, todo, proposal
   components/home/   the dashboard
+  components/knowledge/ search bar + Results / Neighbourhood / Timeline
   components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History)
   components/schedules/ the schedule and routing-chain editors (split from the old panel)
   components/todos/  todo model (overdue rule) and form

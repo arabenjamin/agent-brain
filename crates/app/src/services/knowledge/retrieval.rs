@@ -23,6 +23,56 @@ pub fn sanitize_lucene_query(q: &str) -> String {
     out
 }
 
+/// Trace key present when the query could not be embedded, so the search
+/// was keyword-only. Not a note id.
+pub const TRACE_NO_VECTOR: &str = "__no_vector__";
+
+/// Why one note is in a search's results (`search_notes_explained`).
+/// Ranks are 1-based positions in each stage's own list.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct MatchTrace {
+    /// Final position in the returned list.
+    pub rank: usize,
+    pub vector_rank: Option<usize>,
+    /// Cosine similarity from the vector index.
+    pub vector_score: Option<f64>,
+    pub bm25_rank: Option<usize>,
+    /// Lucene relevance score from the fulltext index.
+    pub bm25_score: Option<f64>,
+    /// The match was in this chunk of the note (small-to-big resolution).
+    pub via_chunk: Option<String>,
+    /// Not matched itself but added: `graph`, `entity`, or `substring_fallback`.
+    pub added_by: Option<&'static str>,
+}
+
+impl MatchTrace {
+    /// A chunk matched; credit its parent, keeping the parent's own better ranks.
+    fn credit_parent(t: &mut HashMap<String, MatchTrace>, chunk: &str, parent: &str) {
+        let Some(c) = t.get(chunk).cloned() else {
+            return;
+        };
+        let p = t.entry(parent.to_string()).or_default();
+        fn best(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+            match (a, b) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, None) => x,
+                (None, y) => y,
+            }
+        }
+        if best(p.vector_rank, c.vector_rank) != p.vector_rank {
+            p.vector_rank = c.vector_rank;
+            p.vector_score = c.vector_score;
+        }
+        if best(p.bm25_rank, c.bm25_rank) != p.bm25_rank {
+            p.bm25_rank = c.bm25_rank;
+            p.bm25_score = c.bm25_score;
+        }
+        if p.via_chunk.is_none() {
+            p.via_chunk = Some(chunk.to_string());
+        }
+    }
+}
+
 impl KnowledgeService {
     /// Reciprocal rank fusion of vector and BM25 result lists.
     /// Returns `(id, content, rrf_score)` triples so callers can apply further re-ranking.
@@ -225,6 +275,7 @@ impl KnowledgeService {
             note_type,
             source_context,
             true,
+            None,
         )
         .await
     }
@@ -246,6 +297,7 @@ impl KnowledgeService {
             note_type,
             source_context,
             true,
+            None,
         )
         .await
     }
@@ -275,8 +327,38 @@ impl KnowledgeService {
             note_type,
             source_context,
             false,
+            None,
         )
         .await
+    }
+
+    /// Non-perturbing search that also says why each hit is there — the HBI's
+    /// semantic search. Same pipeline, same ranking as `search_notes_readonly`;
+    /// the trace is recorded alongside and changes nothing.
+    pub async fn search_notes_explained(
+        &self,
+        query_text: &str,
+        limit: usize,
+        graph_hops: usize,
+        note_type: Option<&str>,
+    ) -> Result<(Vec<serde_json::Value>, HashMap<String, MatchTrace>)> {
+        let mut trace = HashMap::new();
+        let hits = self
+            .search_notes_inner(
+                query_text,
+                limit,
+                graph_hops,
+                false,
+                note_type,
+                None,
+                false,
+                Some(&mut trace),
+            )
+            .await?;
+        let keep: std::collections::HashSet<&str> =
+            hits.iter().filter_map(|h| h["id"].as_str()).collect();
+        trace.retain(|id, _| keep.contains(id.as_str()));
+        Ok((hits, trace))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -289,6 +371,7 @@ impl KnowledgeService {
         note_type: Option<&str>,
         source_context: Option<&str>,
         track_access: bool,
+        mut trace: Option<&mut HashMap<String, MatchTrace>>,
     ) -> Result<Vec<serde_json::Value>> {
         let fetch_limit = (limit * 3).max(10);
         // Carry the full candidate pool (`fetch_limit`) through every re-ranking
@@ -336,7 +419,7 @@ impl KnowledgeService {
             let cypher = r#"
                 CALL db.index.vector.queryNodes('note_embeddings', $limit, $embedding)
                 YIELD node, score
-                RETURN node.id AS id, node.content AS content
+                RETURN node.id AS id, node.content AS content, score
                 "#;
 
             let q = neo4rs::query(cypher)
@@ -349,12 +432,19 @@ impl KnowledgeService {
                         if let (Ok(id), Ok(content)) =
                             (row.get::<String>("id"), row.get::<String>("content"))
                         {
+                            if let Some(t) = trace.as_deref_mut() {
+                                let e = t.entry(id.clone()).or_default();
+                                e.vector_rank = Some(vec_hits.len() + 1);
+                                e.vector_score = row.get::<f64>("score").ok();
+                            }
                             vec_hits.push((id, content));
                         }
                     }
                 }
                 Err(e) => warn!("Vector search failed (continuing with BM25): {}", e),
             }
+        } else if let Some(t) = trace.as_deref_mut() {
+            t.insert(TRACE_NO_VECTOR.to_string(), MatchTrace::default());
         }
 
         // 2. BM25 full-text search
@@ -363,7 +453,7 @@ impl KnowledgeService {
             let cypher = r#"
             CALL db.index.fulltext.queryNodes('note_content_fulltext', $query, {limit: $limit})
             YIELD node, score
-            RETURN node.id AS id, node.content AS content
+            RETURN node.id AS id, node.content AS content, score
             "#;
 
             // Sanitize: raw query text with Lucene special chars (URLs, colons, brackets)
@@ -378,6 +468,11 @@ impl KnowledgeService {
                         if let (Ok(id), Ok(content)) =
                             (row.get::<String>("id"), row.get::<String>("content"))
                         {
+                            if let Some(t) = trace.as_deref_mut() {
+                                let e = t.entry(id.clone()).or_default();
+                                e.bm25_rank = Some(bm25_hits.len() + 1);
+                                e.bm25_score = row.get::<f64>("score").ok();
+                            }
                             bm25_hits.push((id, content));
                         }
                     }
@@ -400,7 +495,8 @@ impl KnowledgeService {
                 .param("query", query_text)
                 .param("limit", pool_limit as i64);
 
-            self.neo4j
+            let found: Vec<(String, String)> = self
+                .neo4j
                 .execute(q)
                 .await?
                 .into_iter()
@@ -413,7 +509,13 @@ impl KnowledgeService {
                         None
                     }
                 })
-                .collect()
+                .collect();
+            if let Some(t) = trace.as_deref_mut() {
+                for (id, _) in &found {
+                    t.entry(id.clone()).or_default().added_by = Some("substring_fallback");
+                }
+            }
+            found
         } else {
             let rrf_ranked = Self::rrf_merge(vec_hits, bm25_hits, 60.0, pool_limit);
             self.apply_freshness_boost(rrf_ranked).await
@@ -463,7 +565,12 @@ impl KnowledgeService {
                 let mut seen_ids = std::collections::HashSet::new();
                 for (id, content) in std::mem::take(&mut merged) {
                     let (rid, rcontent) = match parent_of.get(&id) {
-                        Some((pid, pcontent)) => (pid.clone(), pcontent.clone()),
+                        Some((pid, pcontent)) => {
+                            if let Some(t) = trace.as_deref_mut() {
+                                MatchTrace::credit_parent(t, &id, pid);
+                            }
+                            (pid.clone(), pcontent.clone())
+                        }
                         None => (id, content),
                     };
                     if seen_ids.insert(rid.clone()) {
@@ -487,6 +594,9 @@ impl KnowledgeService {
                         primary_ids.iter().cloned().collect();
                     for (nb_id, nb_content, _score) in neighbours {
                         if !existing_ids.contains(&nb_id) {
+                            if let Some(t) = trace.as_deref_mut() {
+                                t.entry(nb_id.clone()).or_default().added_by = Some("graph");
+                            }
                             merged.push((nb_id, nb_content));
                         }
                     }
@@ -521,6 +631,9 @@ impl KnowledgeService {
                         (row.get::<String>("id"), row.get::<String>("content"))
                         && !existing.contains(&id)
                     {
+                        if let Some(t) = trace.as_deref_mut() {
+                            t.entry(id.clone()).or_default().added_by = Some("entity");
+                        }
                         merged.push((id, content));
                     }
                 }
@@ -616,6 +729,11 @@ impl KnowledgeService {
             }
         }
         merged.truncate(limit);
+        if let Some(t) = trace {
+            for (i, (id, _)) in merged.iter().enumerate() {
+                t.entry(id.clone()).or_default().rank = i + 1;
+            }
+        }
 
         // Label claims before they leave retrieval. This is the second of two
         // retrieval paths (the other is search_notes_with_ids, feeding reason's
@@ -770,6 +888,44 @@ impl KnowledgeService {
 #[cfg(test)]
 mod lucene_tests {
     use super::{KnowledgeService, sanitize_lucene_query};
+
+    #[test]
+    fn a_matched_chunk_credits_its_parent_without_hiding_the_parents_own_ranks() {
+        use super::MatchTrace;
+        use std::collections::HashMap;
+        let mut t: HashMap<String, MatchTrace> = HashMap::new();
+        t.insert(
+            "chunk".into(),
+            MatchTrace {
+                vector_rank: Some(2),
+                vector_score: Some(0.8),
+                bm25_rank: Some(9),
+                ..Default::default()
+            },
+        );
+        // The parent matched BM25 better on its own, vector not at all.
+        t.insert(
+            "parent".into(),
+            MatchTrace {
+                bm25_rank: Some(3),
+                bm25_score: Some(5.0),
+                ..Default::default()
+            },
+        );
+        MatchTrace::credit_parent(&mut t, "chunk", "parent");
+        let p = &t["parent"];
+        assert_eq!(
+            (p.vector_rank, p.vector_score),
+            (Some(2), Some(0.8)),
+            "takes the chunk's vector match"
+        );
+        assert_eq!(
+            (p.bm25_rank, p.bm25_score),
+            (Some(3), Some(5.0)),
+            "keeps its own better BM25"
+        );
+        assert_eq!(p.via_chunk.as_deref(), Some("chunk"));
+    }
 
     #[test]
     fn escapes_url_and_colon() {
