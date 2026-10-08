@@ -142,14 +142,32 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 
 #### `Entity`
 
-Named entities extracted from note content (7 types: `person`, `tool`, `technology`, `concept`, `organisation`, `url`, `date`).
+Named entities extracted from note content (8 types: `person`, `organisation`, `location`, `technology`, `tool`, `concept`, `url`, `date`). One real thing is one node: extraction resolves each name through `services/entity_resolution.rs` (alias → exact name → normalised `key`) before creating anything. See `subsystem-rules.md` § Entity resolution.
 
 | Property | Type | Description |
 |----------|------|-------------|
 | `id` | String | UUID |
 | `name` | String | Lowercased, unique |
-| `entity_type` | String | One of the 7 types above |
+| `key` | String | Normalised comparison key: lowercase, letters/digits only, a leading article dropped, a leading title dropped before a full name (`u.s. senate` → `ussenate`). Two entities with one key are one thing. `~<name>` on a `distinct` entity |
+| `entity_type` | String | The most common type across its mentions (`MENTIONS.type`), or the seed's type when `type_source: 'seed'` |
+| `type_source` | String? | `seed` for a curated canonical from `entities/*.yaml` (name and type fixed; never pruned) |
+| `distinct` | Boolean? | `true` once a person split it back out (unmerge): never folded automatically again |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+
+#### `EntityAlias`
+
+Another name for an entity: curated in `entities/*.yaml`, or left behind by a merge. Write-time extraction resolves through it, and an unmerge restores from it.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | String | Lowercased, unique |
+| `key` | String | As `Entity.key` |
+| `case_sensitive` | Boolean | Resolves only when the note's text has it in capitals (`US`, not the pronoun `us`) |
+| `method` | String | `seed` · `normalise` (same key) · `proposal` (a person merged it in the HBI) · `restored` |
+| `merged_from_id` | String? | The merged-away entity's id (what an unmerge recreates; the HBI resolves old links through it) |
+| `entity_type` | String? | The merged-away entity's type |
+| `entity_created_at` | DateTime? | The merged-away entity's `created_at` |
+| `merged_at` | DateTime? | Native `DATETIME`, UTC |
 
 #### `Procedure`
 
@@ -268,7 +286,10 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `SUMMARIZED_BY` | `(Note)→(Note)` | — | Source note pointing to its consolidated summary |
 | `REFLECTS_ON` | `(Note)→(Task)` | — | Reflection or outcome note linked to its task |
 | `PART_OF` | `(Note)→(Note)` | — | Semantic chunk pointing to its parent note |
-| `MENTIONS` | `(Note)→(Entity)` | `count: int` | Entity mention extracted from note content |
+| `MENTIONS` | `(Note)→(Entity)` | `count: int`, `surface: string` (as written), `type: string` (as extracted), `via: string?` (the name it resolved or was merged through), `merged_from: string?`, `absorbed: ["<entity id>:<count>"]?` (counts folded in from a merged entity the note also mentioned) | Entity mention extracted from note content. `via`/`absorbed` are what an unmerge reverses |
+| `ALIAS_OF` | `(EntityAlias)→(Entity)` | — | The alias's canonical entity |
+| `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
+| `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |
 | `SUBTASK_OF` | `(Task)→(Task)` | — | Sub-task created by `decompose_goal` |
 | `DEPENDS_ON` | `(Task)→(Task)` | — | Task ordering dependency |
@@ -285,6 +306,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `procedure_id` | `Procedure` | `id` | UNIQUE |
 | `working_memory_id` | `WorkingMemory` | `id` | UNIQUE |
 | `entity_name` | `Entity` | `name` | UNIQUE |
+| `entity_alias_name` | `EntityAlias` | `name` | UNIQUE |
 | `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
 | `todo_id` | `Todo` | `id` | UNIQUE |
@@ -303,6 +325,9 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `note_next_review` | `Note` | `next_review_at` | RANGE | Spaced repetition query |
 | `working_memory_session` | `WorkingMemory` | `session_id` | RANGE | Session context lookup |
 | `entity_type_idx` | `Entity` | `entity_type` | RANGE | Filter by entity type |
+| `entity_key_idx` | `Entity` | `key` | RANGE | Write-time resolution by normalised key |
+| `entity_id_idx` | `Entity` | `id` | RANGE | HBI drawer, merges and candidates look entities up by id |
+| `entity_alias_key_idx` | `EntityAlias` | `key` | RANGE | Write-time resolution by normalised key |
 | `dynamic_tool_idx` | `DynamicTool` | `created_at` | RANGE | Recency ordering |
 | `agent_job_status` | `AgentJob` | `status` | RANGE | Queue coordinator polling |
 | `agent_job_priority` | `AgentJob` | `priority` | RANGE | Priority-ordered dispatch |

@@ -27,6 +27,7 @@ src/
   api/client.ts      the one HTTP client: apiRequest (raw Response), apiJson (throws ApiError)
   api/queries.ts     shared TanStack queries (queue/scheduler status, notes) + job-push invalidation
   api/search.ts      /api/search, entities, id lookup
+  api/entities.ts    entity merge proposals, merge / different / related, undo
   api/mcp.ts         MCP SDK client (Streamable HTTP) + server-push fan-out
   api/chat.ts        /chat SSE stream
   router.ts          hash routing: #/<workspace>?<kind>=<id>
@@ -37,7 +38,7 @@ src/
   components/drawer/ entity drawer: note, entity, task (lineage), job, schedule, todo, proposal
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Neighbourhood / Timeline
-  components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History)
+  components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History); the Inbox holds entity merge proposals
   components/schedules/ the schedule and routing-chain editors (split from the old panel)
   components/todos/  todo model (overdue rule) and form
   components/settings/ the Settings page and its sections

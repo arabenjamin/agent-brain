@@ -39,6 +39,8 @@ impl Neo4jClient {
             "CREATE CONSTRAINT procedure_id IF NOT EXISTS FOR (p:Procedure) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT working_memory_id IF NOT EXISTS FOR (w:WorkingMemory) REQUIRE w.id IS UNIQUE",
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
+            // Entity resolution: an alias name means one entity (services/entity_resolution.rs).
+            "CREATE CONSTRAINT entity_alias_name IF NOT EXISTS FOR (a:EntityAlias) REQUIRE a.name IS UNIQUE",
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
@@ -67,6 +69,10 @@ impl Neo4jClient {
             "CREATE INDEX working_memory_session IF NOT EXISTS FOR (w:WorkingMemory) ON (w.session_id)",
             // Entity type index
             "CREATE INDEX entity_type_idx IF NOT EXISTS FOR (e:Entity) ON (e.entity_type)",
+            // Entity resolution looks names up by normalised key, and the HBI by id.
+            "CREATE INDEX entity_key_idx IF NOT EXISTS FOR (e:Entity) ON (e.key)",
+            "CREATE INDEX entity_id_idx IF NOT EXISTS FOR (e:Entity) ON (e.id)",
+            "CREATE INDEX entity_alias_key_idx IF NOT EXISTS FOR (a:EntityAlias) ON (a.key)",
             // Dynamic tool creation timestamp index
             "CREATE INDEX dynamic_tool_idx IF NOT EXISTS FOR (d:DynamicTool) ON (d.created_at)",
             // Agent job indexes

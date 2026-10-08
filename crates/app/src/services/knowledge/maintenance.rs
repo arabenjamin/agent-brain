@@ -212,10 +212,20 @@ impl KnowledgeService {
     /// extraction over-generates (most entities are mentioned exactly once);
     /// a single-mention entity can never act as a MENTIONS→Entity←MENTIONS
     /// bridge in graph-expanded search, so past the 30-day grace window it is
-    /// pure noise. Best-effort: failures are logged, never propagated.
+    /// pure noise. A curated canonical (`type_source: seed`) or an entity
+    /// something is an alias of is kept: it is where future mentions resolve.
+    /// Aliases left pointing at nothing are dropped too. Best-effort: failures
+    /// are logged, never propagated.
     pub(super) async fn prune_stale_entities(&self) {
+        let _ = self
+            .neo4j
+            .run(neo4rs::query(
+                "MATCH (a:EntityAlias) WHERE NOT (a)-[:ALIAS_OF]->(:Entity) DETACH DELETE a",
+            ))
+            .await;
         let cypher = r#"
         MATCH (e:Entity)
+        WHERE coalesce(e.type_source, '') <> 'seed' AND NOT ()-[:ALIAS_OF]->(e)
         OPTIONAL MATCH (n:Note)-[:MENTIONS]->(e)
         WITH e, count(n) AS mentions
         WHERE mentions = 0

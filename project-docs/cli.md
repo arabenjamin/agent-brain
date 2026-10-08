@@ -9,6 +9,7 @@ Commands:
   serve            Run as MCP server (default when no command is given: stdio)
   init-db          Initialize the Neo4j database schema
   repair-notes     One-off repair of notes that stored a query envelope instead of content
+  resolve-entities Fold entities that are one real thing (curated aliases + spelling), reversibly
   eval-retrieval   Score retrieval quality against a golden set (read-only)
   todo             Manage todo items over HTTP (requires a running server)
 ```
@@ -43,6 +44,16 @@ cargo run -- init-db
 # Idempotent; run with the scheduler paused.
 cargo run -- repair-notes --dry-run
 cargo run -- repair-notes
+```
+
+## Entity resolution
+
+```bash
+# What init-db would merge on the next start (read-only): curated aliases from
+# entities/*.yaml, plus names differing only by case, punctuation or spacing.
+cargo run -- resolve-entities --dry-run
+cargo run -- resolve-entities                 # apply now (pre_entity_merge snapshot first)
+cargo run -- resolve-entities --unmerge trump # undo one merge: the alias becomes its own entity again
 ```
 
 ## Retrieval evaluation

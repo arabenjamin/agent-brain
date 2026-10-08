@@ -141,11 +141,13 @@ async fn entity_matches(neo4j: &Neo4jClient, query: &str) -> Vec<Value> {
                 "MATCH (e:Entity) \
                  WHERE NOT e.entity_type IN ['url', 'date'] \
                    AND (e.name CONTAINS $q \
-                        OR (size(e.name) >= 4 AND (' ' + $q + ' ') CONTAINS (' ' + e.name + ' '))) \
+                        OR (size(e.name) >= 4 AND (' ' + $q + ' ') CONTAINS (' ' + e.name + ' ')) \
+                        OR EXISTS { MATCH (:EntityAlias {name: $q})-[:ALIAS_OF]->(e) }) \
                  OPTIONAL MATCH (e)<-[m:MENTIONS]-() \
                  WITH e, count(m) AS mentions WHERE mentions > 0 \
                  RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, mentions \
-                 ORDER BY (e.name = $q) DESC, size(e.name) DESC, mentions DESC LIMIT $limit",
+                 ORDER BY (e.name = $q OR EXISTS { MATCH (:EntityAlias {name: $q})-[:ALIAS_OF]->(e) }) DESC, \
+                          size(e.name) DESC, mentions DESC LIMIT $limit",
             )
             .param("q", q)
             .param("limit", ENTITY_LIMIT),
@@ -385,7 +387,8 @@ pub async fn handle_entity(
                 "MATCH (e:Entity {id: $id}) \
                  OPTIONAL MATCH (e)<-[m:MENTIONS]-() \
                  RETURN e.name AS name, e.entity_type AS entity_type, \
-                        toString(e.created_at) AS created_at, count(m) AS mentions",
+                        toString(e.created_at) AS created_at, count(m) AS mentions, \
+                        e.type_source AS type_source, coalesce(e.distinct, false) AS distinct",
             )
             .param("id", id.as_str()),
         )
@@ -395,8 +398,55 @@ pub async fn handle_entity(
         Err(e) => return internal(e),
     };
     let Some(row) = rows.first() else {
-        return not_found();
+        // An entity merged away keeps its id on the alias: say where it went.
+        let merged = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (a:EntityAlias {merged_from_id: $id})-[:ALIAS_OF]->(t:Entity) \
+                     RETURN a.name AS alias, t.id AS id, t.name AS name LIMIT 1",
+                )
+                .param("id", id.as_str()),
+            )
+            .await
+            .unwrap_or_default();
+        return match merged.first() {
+            Some(m) => Json(json!({
+                "merged_into": {
+                    "alias": m.get::<String>("alias").ok(),
+                    "id": m.get::<String>("id").ok(),
+                    "name": m.get::<String>("name").ok(),
+                }
+            }))
+            .into_response(),
+            None => not_found(),
+        };
     };
+
+    let aliases: Vec<Value> = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (a:EntityAlias)-[:ALIAS_OF]->(e:Entity {id: $id}) \
+                 RETURN a.name AS name, a.method AS method, toString(a.merged_at) AS merged_at, \
+                        coalesce(a.case_sensitive, false) AS case_sensitive, \
+                        COUNT { (:Note)-[r:MENTIONS]->(e) WHERE r.via = a.name \
+                                OR any(x IN coalesce(r.absorbed, []) WHERE x STARTS WITH a.merged_from_id + ':') } AS mentions \
+                 ORDER BY mentions DESC, name",
+            )
+            .param("id", id.as_str()),
+        )
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.get::<String>("name").ok(),
+                "method": r.get::<String>("method").ok(),
+                "merged_at": r.get::<String>("merged_at").ok(),
+                "case_sensitive": r.get::<bool>("case_sensitive").unwrap_or(false),
+                "mentions": r.get::<i64>("mentions").unwrap_or(0),
+            })
+        })
+        .collect();
 
     let note_ids: Vec<String> = neo4j
         .execute(
@@ -448,7 +498,10 @@ pub async fn handle_entity(
             "entity_type": row.get::<String>("entity_type").ok(),
             "created_at": row.get::<String>("created_at").ok(),
             "mentions": mentions,
+            "type_source": row.get::<String>("type_source").ok(),
+            "distinct": row.get::<bool>("distinct").unwrap_or(false),
         },
+        "aliases": aliases,
         "notes": notes,
         "notes_shown": notes.len(),
         "co_mentioned": co,

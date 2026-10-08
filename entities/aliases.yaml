@@ -1,0 +1,123 @@
+# Entity resolution seed — one real thing, one :Entity node.
+#
+# Read by `services/entity_resolution.rs` (ENTITY_ALIASES_DIR, every *.yaml in
+# the dir). Applied on every start by `agent-brain init-db`, after a snapshot:
+# an existing entity named like an alias here is merged into its canonical
+# entity, and new mentions resolve through the alias from then on. Every merge
+# leaves an (:EntityAlias)-[:ALIAS_OF]->(:Entity) behind and can be undone
+# from the entity drawer in the HBI (or POST /api/entities/aliases/{name}/unmerge).
+#
+# Only list things that are the same thing in THIS brain's world. Anything
+# ambiguous ("biden", "clinton", "johnson") belongs in the merge proposals the
+# HBI Work inbox offers, where a person decides.
+#
+# Keys are compared after normalisation, so spelling variants need no entry:
+# case, periods, apostrophes, hyphens, underscores and spaces are ignored
+# ("u.s. senate" = "us senate", "open ai" = "openai"), and so are the leading
+# `articles` and (before a full name) `titles` below.
+
+# Leading titles, dropped before comparing names only when a full name
+# follows ("president donald trump" = "donald trump"). Before a bare surname
+# they are kept: "senator johnson" and "speaker johnson" are different people,
+# so that pair becomes a proposal instead. Multi-word titles allowed.
+titles:
+  - president
+  - former president
+  - vice president
+  - prime minister
+  - senator
+  - sen
+  - rep
+  - representative
+  - congressman
+  - congresswoman
+  - speaker
+  - governor
+  - gov
+  - mayor
+  - secretary
+  - dr
+  - mr
+  - mrs
+  - ms
+
+articles:
+  - the
+
+# Names normalisation must never fold into another (each pair here was checked
+# to be two different things).
+keep_distinct:
+  - the hacker news   # thehackernews.com (security news), not Hacker News (ycombinator)
+
+# Entity-type spellings folded into the extractor's vocabulary.
+types:
+  organization: organisation
+  country: location
+  place: location
+  city: location
+
+entities:
+  - name: united states
+    type: location
+    aliases: [us, u.s., usa, u.s.a., america, united states of america]
+    # "us" is also a pronoun: it only resolves here when the note's text has
+    # it in capitals (US / U.S.). Lowercase mentions stay on their own node.
+    case_sensitive: [us]
+
+  - name: donald trump
+    type: person
+    # A title folds by itself only before a full name; before a bare
+    # surname it is listed (there is only one President Trump here).
+    aliases: [trump, president trump, donald j. trump]
+
+  - name: united kingdom
+    type: location
+    aliases: [uk, u.k., britain, great britain]
+
+  - name: european union
+    type: organisation
+    aliases: [eu, e.u.]
+
+  - name: united nations
+    type: organisation
+    aliases: [un, u.n.]
+    case_sensitive: [un]
+
+  - name: department of justice
+    type: organisation
+    aliases: [doj, justice department, us department of justice]
+
+  - name: department of defense
+    type: organisation
+    # Renamed the Department of War by executive order in September 2025;
+    # both names refer to one department.
+    aliases: [dod, department of war, us department of defense]
+
+  - name: department of homeland security
+    type: organisation
+    aliases: [dhs]
+
+  - name: immigration and customs enforcement
+    type: organisation
+    aliases: [ice]
+    case_sensitive: [ice]
+
+  - name: artificial intelligence
+    type: concept
+    aliases: [ai, a.i.]
+
+  - name: large language model
+    type: technology
+    aliases: [llm, llms, large language models]
+
+  - name: retrieval-augmented generation
+    type: technology
+    aliases: [rag]
+
+  - name: model context protocol
+    type: technology
+    aliases: [mcp]
+
+  - name: republican party
+    type: organisation
+    aliases: [gop]

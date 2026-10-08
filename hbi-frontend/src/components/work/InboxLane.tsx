@@ -1,5 +1,6 @@
 /** Inbox: what needs the user — proposals, overdue todos, and recent failures. */
 import type { ReactNode } from "react";
+import { useMergeCandidates } from "../../api/entities";
 import { useProposals, useTodos } from "../../api/queries";
 import { useJobList, useTaskList } from "../../api/work";
 import { relTime } from "../../lib/time";
@@ -8,12 +9,15 @@ import { hrefTo } from "../../nav";
 import { isTodoOverdue } from "../todos/model";
 import { EmptyState, Pill } from "../ui";
 import { StatusPill } from "../drawer/parts";
+import MergeCandidates from "./MergeCandidates";
 import Row from "./Row";
 
 const WEEK_MS = 7 * 86_400_000;
 const FAILED_JOB = "failed,dead,dead_letter";
 
 const CAP = 100;
+/** Merge proposals shown at once; the header says how many there are. */
+const MERGE_SHOWN = 15;
 
 function Group({ title, count, cap, more, children }: { title: string; count: number; cap?: number; more?: ReactNode; children: ReactNode }) {
   if (count === 0) return null;
@@ -38,11 +42,13 @@ export default function InboxLane({ openId }: { openId?: string }) {
   const todos = useTodos();
   const failedTasks = useTaskList("failed", since, CAP, 30_000);
   const deadJobs = useJobList(FAILED_JOB, since, CAP, 30_000);
+  const merges = useMergeCandidates(MERGE_SHOWN, undefined, 300_000);
 
   const overdue = (todos.data ?? []).filter((t) => isTodoOverdue(t, now));
   const loading = !proposals.data || !todos.data || !failedTasks.data || !deadJobs.data;
-  const errors = [proposals.error, todos.error, failedTasks.error, deadJobs.error].filter(Boolean) as Error[];
-  const total = (proposals.data?.length ?? 0) + overdue.length + (failedTasks.data?.length ?? 0) + (deadJobs.data?.length ?? 0);
+  const errors = [proposals.error, todos.error, failedTasks.error, deadJobs.error, merges.error].filter(Boolean) as Error[];
+  const mergeTotal = merges.data?.total ?? 0;
+  const total = (proposals.data?.length ?? 0) + overdue.length + (failedTasks.data?.length ?? 0) + (deadJobs.data?.length ?? 0) + mergeTotal;
 
   return (
     <div className="wk-lane scroll">
@@ -56,6 +62,15 @@ export default function InboxLane({ openId }: { openId?: string }) {
             {p.title}
           </Row>
         ))}
+      </Group>
+
+      <Group title="Same thing? Entity merges" count={mergeTotal}
+        more={mergeTotal > MERGE_SHOWN && <span className="wk-more wk-dim">the {MERGE_SHOWN} with the most shared notes</span>}>
+        <div className="wk-hint">
+          Names the brain stored separately that may mean one thing. A merge moves the mentions and keeps the old name as an
+          alias; undo it from the entity's drawer.
+        </div>
+        <MergeCandidates items={merges.data?.candidates ?? []} />
       </Group>
 
       <Group title="Overdue todos" count={overdue.length}>
@@ -88,7 +103,7 @@ export default function InboxLane({ openId }: { openId?: string }) {
       {!loading && total === 0 && errors.length === 0 && (
         <EmptyState
           title="Nothing needs you"
-          checked={`0 proposals awaiting review · 0 overdue of ${todos.data?.filter((t) => t.status !== "done").length ?? 0} open todos · 0 tasks failed and 0 jobs died since ${new Date(since).toLocaleDateString()}`}
+          checked={`0 proposals awaiting review · 0 entity merges to decide among ${merges.data?.checked ?? 0} entities · 0 overdue of ${todos.data?.filter((t) => t.status !== "done").length ?? 0} open todos · 0 tasks failed and 0 jobs died since ${new Date(since).toLocaleDateString()}`}
         />
       )}
       {loading && errors.length === 0 && <div className="loading">Loading inbox…</div>}

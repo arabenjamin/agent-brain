@@ -51,6 +51,31 @@ pub struct EntityRecord {
     pub name: String,
     pub entity_type: String,
     pub created_at: String,
+    /// Entity resolution (`services/entity_resolution.rs`). Absent in older snapshots.
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub type_source: Option<String>,
+    #[serde(default)]
+    pub distinct: bool,
+}
+
+/// An `(:EntityAlias)-[:ALIAS_OF]->(:Entity)`: a name merged into, or curated
+/// for, a canonical entity. Carries what an unmerge needs.
+#[derive(Serialize, Deserialize)]
+pub struct EntityAliasRecord {
+    pub name: String,
+    pub entity_id: String,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub merged_from_id: Option<String>,
+    #[serde(default)]
+    pub entity_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,6 +102,8 @@ pub struct KnowledgeSnapshot {
     pub notes: Vec<NoteRecord>,
     pub tasks: Vec<TaskRecord>,
     pub entities: Vec<EntityRecord>,
+    #[serde(default)]
+    pub entity_aliases: Vec<EntityAliasRecord>,
     pub procedures: Vec<ProcedureRecord>,
     pub relationships: Vec<RelationshipRecord>,
 }
@@ -183,10 +210,11 @@ impl SnapshotService {
         let file_path = self.snapshot_dir.join(&file_name);
 
         // Fetch all node types in parallel.
-        let (notes_res, tasks_res, entities_res, procedures_res, rels_res) = tokio::join!(
+        let (notes_res, tasks_res, entities_res, aliases_res, procedures_res, rels_res) = tokio::join!(
             self.fetch_notes(),
             self.fetch_tasks(),
             self.fetch_entities(),
+            self.fetch_entity_aliases(),
             self.fetch_procedures(),
             self.fetch_relationships(),
         );
@@ -194,6 +222,7 @@ impl SnapshotService {
         let notes = notes_res.context("Failed to fetch notes")?;
         let tasks = tasks_res.context("Failed to fetch tasks")?;
         let entities = entities_res.context("Failed to fetch entities")?;
+        let entity_aliases = aliases_res.context("Failed to fetch entity aliases")?;
         let procedures = procedures_res.context("Failed to fetch procedures")?;
         let relationships = rels_res.context("Failed to fetch relationships")?;
 
@@ -203,6 +232,7 @@ impl SnapshotService {
             notes,
             tasks,
             entities,
+            entity_aliases,
             procedures,
             relationships,
         };
@@ -351,6 +381,7 @@ impl SnapshotService {
         let notes_restored = self.restore_notes(&snapshot.notes).await?;
         let tasks_restored = self.restore_tasks(&snapshot.tasks).await?;
         let entities_restored = self.restore_entities(&snapshot.entities).await?;
+        self.restore_entity_aliases(&snapshot.entity_aliases).await;
         let procedures_restored = self.restore_procedures(&snapshot.procedures).await?;
         let relationships_restored = self.restore_relationships(&snapshot.relationships).await?;
 
@@ -440,7 +471,8 @@ impl SnapshotService {
         let q = neo4rs::query(
             "MATCH (e:Entity) RETURN \
              e.id AS id, e.name AS name, e.entity_type AS entity_type, \
-             toString(e.created_at) AS created_at",
+             toString(e.created_at) AS created_at, e.key AS key, \
+             e.type_source AS type_source, coalesce(e.distinct, false) AS distinct",
         );
         let rows = self.neo4j.execute(q).await?;
         let mut entities = Vec::new();
@@ -456,9 +488,34 @@ impl SnapshotService {
                     .get("entity_type")
                     .unwrap_or_else(|_| "unknown".to_string()),
                 created_at: row.get("created_at").unwrap_or_default(),
+                key: row.get("key").ok(),
+                type_source: row.get("type_source").ok(),
+                distinct: row.get("distinct").unwrap_or(false),
             });
         }
         Ok(entities)
+    }
+
+    async fn fetch_entity_aliases(&self) -> Result<Vec<EntityAliasRecord>> {
+        let q = neo4rs::query(
+            "MATCH (a:EntityAlias)-[:ALIAS_OF]->(e:Entity) RETURN \
+             a.name AS name, e.id AS entity_id, a.key AS key, \
+             coalesce(a.case_sensitive, false) AS case_sensitive, a.method AS method, \
+             a.merged_from_id AS merged_from_id, a.entity_type AS entity_type",
+        );
+        let rows = self.neo4j.execute(q).await?;
+        Ok(rows
+            .iter()
+            .map(|row| EntityAliasRecord {
+                name: row.get("name").unwrap_or_default(),
+                entity_id: row.get("entity_id").unwrap_or_default(),
+                key: row.get("key").ok(),
+                case_sensitive: row.get("case_sensitive").unwrap_or(false),
+                method: row.get("method").ok(),
+                merged_from_id: row.get("merged_from_id").ok(),
+                entity_type: row.get("entity_type").ok(),
+            })
+            .collect())
     }
 
     async fn fetch_procedures(&self) -> Result<Vec<ProcedureRecord>> {
@@ -566,17 +623,54 @@ impl SnapshotService {
         for entity in entities {
             let q = neo4rs::query(
                 "MERGE (e:Entity {name: $name}) \
-                 ON CREATE SET e.id = $id, e.entity_type = $entity_type",
+                 ON CREATE SET e.id = $id, e.entity_type = $entity_type, \
+                   e.key = CASE WHEN $key = '' THEN null ELSE $key END, \
+                   e.type_source = CASE WHEN $type_source = '' THEN null ELSE $type_source END, \
+                   e.distinct = CASE WHEN $distinct THEN true ELSE null END",
             )
             .param("name", entity.name.clone())
             .param("id", entity.id.clone())
-            .param("entity_type", entity.entity_type.clone());
+            .param("entity_type", entity.entity_type.clone())
+            .param("key", entity.key.clone().unwrap_or_default())
+            .param(
+                "type_source",
+                entity.type_source.clone().unwrap_or_default(),
+            )
+            .param("distinct", entity.distinct);
 
             if self.neo4j.run(q).await.is_ok() {
                 count += 1;
             }
         }
         Ok(count)
+    }
+
+    /// Aliases go back only where their canonical entity exists; an alias the
+    /// graph already has is left as it is (MERGE restore never overwrites).
+    async fn restore_entity_aliases(&self, aliases: &[EntityAliasRecord]) {
+        for a in aliases {
+            let q = neo4rs::query(
+                "MATCH (e:Entity {id: $entity_id}) \
+                 MERGE (x:EntityAlias {name: $name}) \
+                 ON CREATE SET x.key = $key, x.case_sensitive = $cs, x.method = $method, \
+                   x.merged_from_id = CASE WHEN $mf = '' THEN null ELSE $mf END, \
+                   x.entity_type = CASE WHEN $et = '' THEN null ELSE $et END \
+                 MERGE (x)-[:ALIAS_OF]->(e)",
+            )
+            .param("entity_id", a.entity_id.clone())
+            .param("name", a.name.clone())
+            .param("key", a.key.clone().unwrap_or_default())
+            .param("cs", a.case_sensitive)
+            .param(
+                "method",
+                a.method.clone().unwrap_or_else(|| "restored".into()),
+            )
+            .param("mf", a.merged_from_id.clone().unwrap_or_default())
+            .param("et", a.entity_type.clone().unwrap_or_default());
+            if let Err(e) = self.neo4j.run(q).await {
+                warn!(alias = %a.name, error = %e, "restore: entity alias skipped");
+            }
+        }
     }
 
     async fn restore_procedures(&self, procedures: &[ProcedureRecord]) -> Result<usize> {

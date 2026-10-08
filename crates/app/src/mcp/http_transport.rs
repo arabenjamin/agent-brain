@@ -354,6 +354,23 @@ impl HttpTransport {
                 "/api/lookup/{id}",
                 get(crate::clients::search::handle_lookup),
             )
+            // --- Entity resolution (clients/entities.rs) ---
+            .route(
+                "/api/entities/candidates",
+                get(crate::clients::entities::handle_candidates),
+            )
+            .route(
+                "/api/entities/merge",
+                post(crate::clients::entities::handle_merge),
+            )
+            .route(
+                "/api/entities/decide",
+                post(crate::clients::entities::handle_decide),
+            )
+            .route(
+                "/api/entities/aliases/{name}/unmerge",
+                post(crate::clients::entities::handle_unmerge),
+            )
             .route(
                 "/api/entities/{id}",
                 get(crate::clients::search::handle_entity),

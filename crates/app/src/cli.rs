@@ -71,6 +71,23 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Fold entities that are one real thing into one node.
+    ///
+    /// Applies the curated seed (`entities/*.yaml`, ENTITY_ALIASES_DIR) and
+    /// merges entities whose names differ only by case, punctuation, spacing
+    /// or a leading title. A snapshot is taken before any merge; every merge
+    /// leaves an EntityAlias and can be undone. `init-db` runs this on every
+    /// start; run it by hand with `--dry-run` to see what it would do.
+    ResolveEntities {
+        /// Report the planned merges without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Undo one merge instead: bring this alias back as its own entity.
+        #[arg(long, value_name = "ALIAS")]
+        unmerge: Option<String>,
+    },
+
     /// Score retrieval quality against a golden set (read-only).
     ///
     /// Runs each (query → expected note) case in the fixture through the real

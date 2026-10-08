@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–3 done (2026-10-08); Phases 4–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–3 done (2026-10-08); 4a built, awaiting seed review + live apply; 4b–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -322,6 +322,25 @@ Fixed on the way:
 - **The type filter only searched what was already loaded.** It offered 4 types and filtered a 50-note page in the browser; the type now goes to the server.
 
 Found, not fixed: the trace makes a retrieval quirk visible. Freshness plus BM25 lifts Todo Snapshot notes above the best semantic match for topic queries (see subsystem-rules). Whether snapshots should be down-weighted or excluded from topic retrieval is a retrieval-tuning decision, and it should be measured with `eval-retrieval`.
+
+### Phase 4a outcome (2026-10-08, built; not yet applied to the live graph)
+
+Built:
+- **Resolution at write time** (`services/entity_resolution.rs`). Each extracted name resolves through alias → exact name → normalised key before anything is created. The extractor now asks for names as written and goes through `generate_json`. Mentions keep `surface`, `via` and `type`. The entity type is the majority of its mentions. `location` joins the type list.
+- **The curated seed** is `entities/aliases.yaml` (`ENTITY_ALIASES_DIR`). It holds 14 canonicals (United States, Donald Trump, UK, EU, UN, DoJ, DoD with Department of War, DHS, ICE, AI, LLM, RAG, MCP, GOP), the title and article lists, type spellings, and `keep_distinct`. `us`, `un` and `ice` are case-sensitive.
+- **Sync on every start** (`init-db`): seed, keys, then the automatic merges after a `pre_entity_merge` snapshot. `agent-brain resolve-entities [--dry-run] [--unmerge NAME]` runs it by hand.
+- **Proposals** for everything else, ranked by shared notes: last name, acronym, title + surname, plural. They appear in the **Work Inbox** ("Same thing? Entity merges") and in the entity drawer ("Maybe the same as"), with Merge, ⇄, Different (`NOT_SAME`) and Related (`RELATED_ENTITY`). The drawer also offers "Merge into…" for any pair, and lists the aliases with **Undo**.
+- **Endpoints:** `GET /api/entities/candidates`, `POST /api/entities/merge`, `POST /api/entities/decide`, `POST /api/entities/aliases/{name}/unmerge`. The entity detail endpoint adds aliases, and an id that was merged away answers with where it went. Search and `search_by_entity` match aliases.
+- **Snapshots** carry `key`, `type_source`, `distinct` and the aliases. Prune keeps canonicals.
+- **Tests:** 16 Rust unit tests (813 lib tests) and 65 vitest tests. Merge, case-sensitive partial merge, nested undo, the write-path Cypher and every HTTP endpoint ran against a throwaway Neo4j, and the HBI was driven through merge → alias → undo in headless Chrome against it.
+
+**Live dry-run (read-only, 2026-10-08):** 91 merges, 24 from the seed and 67 same-spelling. The first dry-run planned 108, and reading them is what changed the title rule. `senator johnson` and `johnson` were heading into `speaker johnson` (different people), `bush` into `president bush`, `president bio` into `bio`, and `911` into `9/11`. Titles now fold only before a full name, all-digit keys never fold, and title + surname is a proposal. Retrieval baseline just before: recall@10 0.920, MRR 0.757.
+
+Left before 4a is done:
+- The user reviews `entities/aliases.yaml` and the planned merges.
+- The rebuild applies them (snapshot first).
+- `eval-retrieval` runs after, and the numbers go in `engineering-history.md`.
+- A pass through the Inbox proposals.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

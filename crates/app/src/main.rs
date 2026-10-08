@@ -66,6 +66,9 @@ async fn main() -> Result<()> {
         }) => run_serve(&config, transport, &bind, api_key, log_buffer).await,
         Some(Command::Todo { action, url }) => run_todo(&url, action).await,
         Some(Command::RepairNotes { dry_run }) => run_repair_notes(&config, dry_run).await,
+        Some(Command::ResolveEntities { dry_run, unmerge }) => {
+            run_resolve_entities(&config, dry_run, unmerge.as_deref()).await
+        }
         Some(Command::EvalRetrieval {
             fixture,
             k,
@@ -391,7 +394,50 @@ async fn run_init_db(config: &Config) -> Result<()> {
         info!(path = %schedules_dir.display(), "schedules/ directory not found — skipping schedule seeding");
     }
 
+    // Entity resolution: seed aliases, keys, and the automatic merges (after a
+    // snapshot). Non-fatal: the brain runs fine on unmerged entities.
+    if let Err(e) = resolve_entities(&client, false).await {
+        warn!(error = %e, "Entity resolution failed (non-fatal)");
+    }
+
     Ok(())
+}
+
+async fn run_resolve_entities(config: &Config, dry_run: bool, unmerge: Option<&str>) -> Result<()> {
+    let client = connect_neo4j(config).await?;
+    if let Some(alias) = unmerge {
+        let out = agent_brain::services::entity_resolution::unmerge(&client, alias).await?;
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    let report = resolve_entities(&client, dry_run).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+async fn resolve_entities(
+    client: &Neo4jClient,
+    dry_run: bool,
+) -> Result<agent_brain::services::entity_resolution::SyncReport> {
+    use agent_brain::services::entity_resolution::{Rules, sync};
+    let rules = Rules::global();
+    let snapshot_dir = std::env::var("KNOWLEDGE_SNAPSHOT_DIR")
+        .ok()
+        .map(PathBuf::from);
+    let report = sync(client, rules, dry_run, snapshot_dir.as_deref()).await?;
+    info!(
+        dry_run,
+        planned = report.planned.len(),
+        merged = report.merged.len(),
+        failed = report.failed.len(),
+        keys_written = report.keys_written,
+        snapshot = ?report.snapshot,
+        "Entity resolution"
+    );
+    for f in &report.failed {
+        warn!(merge = %f, "Entity merge failed");
+    }
+    Ok(report)
 }
 
 async fn run_todo(url: &str, action: TodoAction) -> Result<()> {

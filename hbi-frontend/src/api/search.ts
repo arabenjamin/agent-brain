@@ -81,17 +81,40 @@ export function useSearch(p: SearchParams) {
   });
 }
 
+export interface EntityAlias {
+  name: string | null;
+  /** `seed` (entities/*.yaml) · `normalise` (spelling) · `proposal` (a person merged it). */
+  method: string | null;
+  merged_at: string | null;
+  /** Resolves only when the note has it in capitals (US, not "us"). */
+  case_sensitive: boolean;
+  /** Mentions that came in through this name (what an undo moves back). */
+  mentions: number;
+}
+
 export interface EntityDetail {
-  entity: { id: string; name: string | null; entity_type: string | null; created_at: string | null; mentions: number };
+  entity: {
+    id: string; name: string | null; entity_type: string | null; created_at: string | null; mentions: number;
+    /** `seed` when the curated seed fixed the name and type. */
+    type_source?: string | null;
+    /** Split back out by an undo: never folded again automatically. */
+    distinct?: boolean;
+  };
+  aliases?: EntityAlias[];
   notes: Omit<SearchNote, "match">[];
   notes_shown: number;
   co_mentioned: { id: string; name: string | null; entity_type: string | null; shared: number }[];
 }
 
+export interface MergedAway {
+  merged_into: { alias: string | null; id: string | null; name: string | null };
+}
+
 export function useEntity(id: string) {
   return useQuery({
     queryKey: ["entity", id],
-    queryFn: () => apiJson<EntityDetail>(`/api/entities/${encodeURIComponent(id)}`),
+    // A merged-away id answers with where it went instead of the entity.
+    queryFn: () => apiJson<EntityDetail | MergedAway>(`/api/entities/${encodeURIComponent(id)}`),
     retry: false,
   });
 }

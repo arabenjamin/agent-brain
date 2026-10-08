@@ -7,6 +7,7 @@ pub mod clock;
 pub mod context_builder;
 pub mod cypher_guard;
 pub mod datasets;
+pub mod entity_resolution;
 pub mod gpu_lease;
 pub mod graph_schema;
 pub mod knowledge;

@@ -5,11 +5,14 @@
 //!
 //! Current adapters:
 //! - [`chat`] — conversational LLM loop for human-facing `/chat` SSE sessions
+//! - [`entities`] — entity merge proposals, answers to them, and undo
 //! - [`rest`] — REST API adapter for todos, scheduled tasks, and scheduler config
 //! - [`search`] — semantic / keyword / id search, entity and id lookup for the HBI's Knowledge workspace
 //! - [`work`] — lineage of tasks, jobs, schedules and todos for the HBI's Work workspace
 
 pub mod chat;
+#[cfg(feature = "http-transport")]
+pub mod entities;
 #[cfg(feature = "http-transport")]
 pub mod rest;
 #[cfg(feature = "http-transport")]

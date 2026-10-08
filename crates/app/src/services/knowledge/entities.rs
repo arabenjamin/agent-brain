@@ -26,46 +26,45 @@ impl KnowledgeService {
     }
 
     /// Extract named entities from note content and persist them to the graph.
+    ///
+    /// Each name is resolved to its canonical entity (`entity_resolution`):
+    /// alias, exact name, then normalised key; only a miss creates a node.
+    /// The mention keeps the name as written (`surface`), the name it resolved
+    /// through (`via`) and the type the extractor gave (`type`). An entity's
+    /// type is the most common type across its mentions, unless the seed fixed it.
     pub(super) async fn extract_entities(
         neo4j: Neo4jClient,
         note_id: &str,
         content: &str,
         llm: Arc<dyn LlmProvider>,
     ) -> Result<usize> {
+        use crate::services::entity_resolution::{self as er, Probe, Rules, Target};
+
         let prompt = format!(
-            "Extract named entities from the text. Classify each into one of: \
-             person, tool, technology, concept, organisation, url, date.\n\
+            "Extract the named entities from the text. Classify each as one of: \
+             person, organisation, location, technology, tool, concept, url, date.\n\
              Rules:\n\
-             - Only extract specific, meaningful entities (no generic words like \"system\", \"data\", \"task\")\n\
-             - Normalise names to lowercase (e.g. \"Rust\" → \"rust\", \"Neo4J\" → \"neo4j\")\n\
-             - Merge obvious aliases (e.g. \"the brain\" and \"agent-brain\" → \"agent-brain\")\n\
-             - Output ONLY a valid JSON array, no markdown, no explanation\n\
-             - If no entities, output: []\n\n\
-             Examples: [{{\"name\":\"neo4j\",\"type\":\"technology\"}},{{\"name\":\"tokio\",\"type\":\"tool\"}}]\n\n\
+             - Only specific, meaningful entities: no generic words (\"system\", \"data\", \"task\") and no pronouns\n\
+             - Write each name as it appears in the text, capitals included (\"U.S.\", \"OpenAI\", \"Neo4j\")\n\
+             - Use the fullest form the text gives (\"Donald Trump\" rather than \"Trump\" when both appear)\n\
+             - Output ONLY a JSON object: {{\"entities\":[{{\"name\":\"Neo4j\",\"type\":\"technology\"}}]}}\n\
+             - If there are none: {{\"entities\":[]}}\n\n\
              TEXT:\n{}",
             content
         );
 
-        let response = match llm.generate(&prompt, None).await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Entity extraction LLM call failed: {}", e);
-                return Ok(0);
-            }
-        };
-
-        let text = response.trim();
-        let json_start = text.find('[').unwrap_or(0);
-        let json_end = text.rfind(']').map(|i| i + 1).unwrap_or(text.len());
-        let json_str = &text[json_start..json_end];
-
-        let entities: Vec<Value> = match serde_json::from_str(json_str) {
+        let parsed = match llm.generate_json(&prompt, None, &["entities"], 1).await {
             Ok(v) => v,
             Err(e) => {
-                warn!("Failed to parse entity JSON: {}", e);
+                warn!(note_id = %note_id, "Entity extraction produced no usable JSON: {}", e);
                 return Ok(0);
             }
         };
+        let entities: Vec<Value> = parsed
+            .get("entities")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         // Stopwords that produce useless entity nodes
         const STOPWORDS: &[&str] = &[
@@ -73,56 +72,121 @@ impl KnowledgeService {
             "object", "type", "name", "list", "set", "get", "this", "that", "the", "a", "an",
         ];
 
-        let timestamp = Utc::now().to_rfc3339();
-
-        // Collect valid entities, then persist them in one UNWIND round-trip
-        // instead of one query per entity.
-        let mut batch: Vec<neo4rs::BoltType> = Vec::new();
+        let rules = Rules::global();
+        let mut probes: Vec<Probe> = Vec::new();
         for entity in &entities {
-            let name = match entity.get("name").and_then(|v| v.as_str()) {
-                Some(n) if !n.trim().is_empty() => n.trim().to_lowercase(),
+            let surface = match entity.get("name").and_then(|v| v.as_str()) {
+                Some(n) if !n.trim().is_empty() => n.trim().to_string(),
                 _ => continue,
             };
+            let name = er::display_name(&surface);
             // Skip stopwords and single-character names
             if name.len() < 2 || STOPWORDS.contains(&name.as_str()) {
                 continue;
             }
-            let entity_type = entity
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            let mut row = std::collections::HashMap::new();
-            row.insert("name".to_string(), neo4rs::BoltType::from(name));
-            row.insert("entity_id".to_string(), Uuid::new_v4().to_string().into());
-            row.insert("entity_type".to_string(), entity_type.into());
-            batch.push(neo4rs::BoltType::from(row));
+            if probes.iter().any(|p| p.name == name) {
+                continue;
+            }
+            let key = rules.key(&name);
+            let entity_type =
+                rules.entity_type(entity.get("type").and_then(|v| v.as_str()).unwrap_or(""));
+            probes.push(Probe {
+                upper_in_text: er::text_has_upper(content, &key),
+                name,
+                key,
+                surface,
+                entity_type,
+            });
         }
-
-        if batch.is_empty() {
+        if probes.is_empty() {
             return Ok(0);
         }
-        let count = batch.len();
+        let found = er::lookup(&neo4j, &probes).await?;
 
-        let cypher = r#"
-        MATCH (n:Note {id: $note_id})
-        UNWIND $entities AS ent
-        MERGE (e:Entity {name: ent.name})
-        ON CREATE SET e.id = ent.entity_id, e.entity_type = ent.entity_type, e.created_at = datetime($ts)
-        MERGE (n)-[r:MENTIONS]->(e)
-        ON CREATE SET r.count = 1
-        ON MATCH SET r.count = r.count + 1
-        "#;
+        let timestamp = Utc::now().to_rfc3339();
+        let mut existing: Vec<neo4rs::BoltType> = Vec::new();
+        let mut created: Vec<neo4rs::BoltType> = Vec::new();
+        for p in &probes {
+            let mut row = std::collections::HashMap::new();
+            row.insert(
+                "surface".to_string(),
+                neo4rs::BoltType::from(p.surface.clone()),
+            );
+            row.insert("entity_type".to_string(), p.entity_type.clone().into());
+            match er::resolve(p, found.get(&p.name).unwrap_or(&Default::default())) {
+                Target::Existing { id, .. } => {
+                    row.insert("id".to_string(), id.into());
+                    row.insert("name".to_string(), p.name.clone().into());
+                    existing.push(neo4rs::BoltType::from(row));
+                }
+                Target::Create => {
+                    row.insert("name".to_string(), p.name.clone().into());
+                    row.insert("key".to_string(), p.key.clone().into());
+                    row.insert("entity_id".to_string(), Uuid::new_v4().to_string().into());
+                    created.push(neo4rs::BoltType::from(row));
+                }
+            }
+        }
+        let count = existing.len() + created.len();
 
-        neo4j
-            .run(
-                neo4rs::query(cypher)
-                    .param("entities", batch)
+        // Resolved: mention the canonical entity. `via` records the name it
+        // came through when that isn't the canonical name (so an unmerge can
+        // take these mentions back).
+        if !existing.is_empty() {
+            neo4j
+                .run(
+                    neo4rs::query(
+                        "MATCH (n:Note {id: $note_id}) \
+                         UNWIND $rows AS ent \
+                         MATCH (e:Entity {id: ent.id}) \
+                         MERGE (n)-[r:MENTIONS]->(e) \
+                         ON CREATE SET r.count = 1, r.surface = ent.surface, r.type = ent.entity_type, \
+                                       r.via = CASE WHEN ent.name <> e.name THEN ent.name END \
+                         ON MATCH SET r.count = r.count + 1",
+                    )
+                    .param("rows", existing)
+                    .param("note_id", note_id),
+                )
+                .await?;
+        }
+        // New: MERGE on name, so two notes racing to create one entity still share it.
+        if !created.is_empty() {
+            neo4j
+                .run(
+                    neo4rs::query(
+                        "MATCH (n:Note {id: $note_id}) \
+                         UNWIND $rows AS ent \
+                         MERGE (e:Entity {name: ent.name}) \
+                         ON CREATE SET e.id = ent.entity_id, e.key = ent.key, \
+                                       e.entity_type = ent.entity_type, e.created_at = datetime($ts) \
+                         MERGE (n)-[r:MENTIONS]->(e) \
+                         ON CREATE SET r.count = 1, r.surface = ent.surface, r.type = ent.entity_type \
+                         ON MATCH SET r.count = r.count + 1",
+                    )
+                    .param("rows", created)
                     .param("ts", timestamp)
                     .param("note_id", note_id),
+                )
+                .await?;
+        }
+
+        // Type by majority of typed mentions (the first note used to fix it forever).
+        if let Err(e) = neo4j
+            .run(
+                neo4rs::query(
+                    "MATCH (n:Note {id: $note_id})-[:MENTIONS]->(e:Entity) \
+                     WHERE coalesce(e.type_source, '') <> 'seed' \
+                     MATCH (:Note)-[m:MENTIONS]->(e) WHERE m.type IS NOT NULL \
+                     WITH e, m.type AS t, count(*) AS c ORDER BY c DESC \
+                     WITH e, collect(t)[0] AS top \
+                     SET e.entity_type = top",
+                )
+                .param("note_id", note_id),
             )
-            .await?;
+            .await
+        {
+            warn!(note_id = %note_id, "Entity type refresh failed (non-fatal): {}", e);
+        }
 
         Ok(count)
     }
@@ -140,7 +204,8 @@ impl KnowledgeService {
     ) -> Result<Vec<Value>> {
         let cypher = r#"
         MATCH (e:Entity)
-        WHERE toLower(e.name) CONTAINS toLower($entity_name)
+        WHERE (toLower(e.name) CONTAINS toLower($entity_name)
+               OR EXISTS { MATCH (a:EntityAlias)-[:ALIAS_OF]->(e) WHERE a.name = toLower($entity_name) })
           AND ($entity_type IS NULL OR e.entity_type = $entity_type)
         MATCH (n:Note)-[r:MENTIONS]->(e)
         RETURN n.id AS note_id, n.content AS content,
@@ -162,7 +227,8 @@ impl KnowledgeService {
             // Use a variant without the entity_type filter
             let cypher_no_type = r#"
             MATCH (e:Entity)
-            WHERE toLower(e.name) CONTAINS toLower($entity_name)
+            WHERE (toLower(e.name) CONTAINS toLower($entity_name)
+               OR EXISTS { MATCH (a:EntityAlias)-[:ALIAS_OF]->(e) WHERE a.name = toLower($entity_name) })
             MATCH (n:Note)-[r:MENTIONS]->(e)
             RETURN n.id AS note_id, n.content AS content,
                    e.name AS entity, e.entity_type AS entity_type, r.count AS mention_count

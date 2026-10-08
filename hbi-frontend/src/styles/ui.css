@@ -503,6 +503,8 @@ details.dw-section > summary { cursor: pointer; }
 .wk-row-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 11px; }
 .wk-link { background: none; border: none; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; }
 .wk-todo { cursor: default; }
+.em-row .wk-row-main { white-space: normal; }
+.em-row .wk-row-meta .btn, .em-row .wk-row-meta .btn-ghost { padding: 2px 8px; font-size: 11px; }
 .wk-todo.done .wk-row-title { text-decoration: line-through; color: var(--text-dim); }
 .wk-chain {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
