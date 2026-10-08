@@ -18,7 +18,13 @@ describe("resolveRoute", () => {
 
   it("falls back to the first view for an unknown view without redirecting", () => {
     const r = resolveRoute({ path: "system", params: { view: "nope" } });
-    expect(r.kind === "show" && r.view?.id).toBe("logs");
+    expect(r.kind === "show" && r.view?.id).toBe("health");
+  });
+
+  it("sends the old System Tools view to the Registry", () => {
+    expect(resolveRoute({ path: "system", params: { view: "tools" } })).toEqual(
+      { kind: "redirect", path: "system", params: { view: "registry", tab: null } },
+    );
   });
 
   it("redirects every old tab URL to its new view", () => {

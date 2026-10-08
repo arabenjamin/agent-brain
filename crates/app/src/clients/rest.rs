@@ -2140,8 +2140,13 @@ pub async fn handle_get_activity(
     Json(Value::Object(out)).into_response()
 }
 
-/// GET /api/logs?limit=<n>&level=<info|warn|error|debug>
-/// Returns recent in-process log lines from the ring buffer.
+/// GET /api/logs?limit=&level=&target=&q=&after=
+/// Recent in-process log lines from the ring buffer, newest first.
+/// `target` is a comma list of target prefixes to keep, `-prefix` to drop;
+/// `quiet` a comma list of target prefixes shown only at WARN or above;
+/// `q` is text in the message or target; `after` a timestamp for live tailing.
+/// `matched`, `buffered` and `oldest` say how much there is and how far back
+/// the buffer reaches.
 pub async fn handle_get_logs(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -2149,15 +2154,47 @@ pub async fn handle_get_logs(
     let limit: usize = params
         .get("limit")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(200);
-    let level = params.get("level").map(|s| s.as_str());
+        .unwrap_or(200)
+        .min(2000);
 
     let Some(ref buf) = state.log_buffer else {
-        return Json(json!({ "count": 0, "entries": [] })).into_response();
+        return Json(json!({ "count": 0, "entries": [], "matched": 0, "buffered": 0 }))
+            .into_response();
     };
-
-    let entries = buf.recent(limit, level);
-    Json(json!({ "count": entries.len(), "entries": entries })).into_response()
+    let (include, exclude) = params
+        .get("target")
+        .map(|t| crate::logging::LogFilter::parse_targets(t))
+        .unwrap_or_default();
+    let filter = crate::logging::LogFilter {
+        min_level: params.get("level").cloned(),
+        include,
+        exclude,
+        quiet: params
+            .get("quiet")
+            .map(|q| {
+                q.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        text: params
+            .get("q")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        after: params.get("after").cloned().filter(|s| !s.is_empty()),
+    };
+    let page = buf.query(&filter, limit);
+    Json(json!({
+        "count": page.entries.len(),
+        "entries": page.entries,
+        "matched": page.matched,
+        "buffered": page.buffered,
+        "capacity": page.capacity,
+        "oldest": page.oldest,
+    }))
+    .into_response()
 }
 
 /// GET /api/skills — live skill registry: each skill name with its tool list.

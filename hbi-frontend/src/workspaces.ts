@@ -62,11 +62,12 @@ export const WORKSPACES: Workspace[] = [
     id: "system",
     icon: "🖥",
     label: "System",
-    keywords: "logs architecture tools skills registry health",
+    keywords: "health status services logs architecture tools skills registry agents chains mcp providers",
     views: [
+      { id: "health", label: "Health" },
       { id: "logs", label: "Logs" },
+      { id: "registry", label: "Registry" },
       { id: "architecture", label: "Architecture" },
-      { id: "tools", label: "Tools" },
     ],
   },
 ];
@@ -84,7 +85,7 @@ export const LEGACY_PATHS: Record<string, { path: WorkspaceId; view?: string }> 
   todos: { path: "work", view: "todos" },
   "scheduled-tasks": { path: "work", view: "scheduled" },
   graph: { path: "knowledge", view: "graph" },
-  tools: { path: "system", view: "tools" },
+  tools: { path: "system", view: "registry" },
   logs: { path: "system", view: "logs" },
   architecture: { path: "system", view: "architecture" },
 };
@@ -98,6 +99,8 @@ export const DEFAULT_WORKSPACE: WorkspaceId = "home";
  */
 function legacyView(path: string, params: Record<string, string>): string | null {
   if (path === "knowledge") return params.view === "notes" ? "list" : null;
+  // Phase 5: the Tools view became the Registry's first tab.
+  if (path === "system") return params.view === "tools" ? "registry" : null;
   if (path !== "work") return null;
   switch (params.view) {
     case "jobs":

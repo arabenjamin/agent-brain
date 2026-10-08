@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–3 and 4a done (2026-10-08); 4b built, awaiting topic review + live backfill; 5–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–3, 4a and 5 done (2026-10-08); 4b live, its backfill running; 6–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -367,6 +367,21 @@ Left before 4b is done:
 - Check the live map loads in under 2 s, and that coverage sums with nothing stuck waiting.
 
 Not built (planned as optional): suggested topics from clusters of no-topic notes (for now the tile and endpoint list what those notes mention most), and the 3D toggle.
+
+### Phase 5 outcome (2026-10-08)
+
+Built:
+- **B4:**
+  - `GET /api/system/health` is one call. It probes all 8 services in `architecture/components.yaml` (Neo4j, DuckDB, host Ollama, llama.cpp, both sandboxes, Whisper, SearXNG) in parallel, adds the scheduler, queue, GPU lease, provider budgets and version, and returns `issues` worst first. Measured at 0.17 s for everything.
+  - `GET /api/system/registry` lists skills and tools, dynamic tools, agents, chains, MCP servers (whether each secret is set), providers and components.
+  - `/api/logs` gains `target` (prefixes, `-prefix` drops), `quiet`, `q` and `after`, plus `matched`/`buffered`/`oldest`. The buffer grew from 500 to 2,000 lines.
+- **System workspace:**
+  - *Health (new default):* a verdict banner, issues, services with status, latency and purpose, then the scheduler, the queue with per-provider slots and the GPU, providers, and the running version.
+  - *Logs (rewritten):* level, module and text filters, "hide routine activity" on by default (warnings and errors always show), live or paused, a click on a module filters to it, and ids in a line open in the drawer. The old panel's job-queue and recent-tasks sections are gone: that is Work.
+  - *Registry:* replaces Tools. Counts first, then tabs for Tools (the existing explorer), Agents, Chains, MCP servers, Providers and Services. `view=tools` redirects.
+- **Tests:** 8 Rust unit tests (825 lib tests) and 1 vitest test (70). Checked on a scratch server against the real sidecars, and driven in headless Chrome.
+
+**Done criterion met:** one call drives Health, and Logs show no task or queue activity by default (only their warnings and errors).
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

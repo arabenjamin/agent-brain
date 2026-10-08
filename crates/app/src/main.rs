@@ -43,7 +43,9 @@ async fn main() -> Result<()> {
     // Create log ring buffer and initialize logging.
     // The buffer is passed through to the HTTP transport for GET /api/logs.
     // For stdio transport it's unused but we create it anyway to avoid cfg complexity.
-    let log_buffer = agent_brain::logging::LogBuffer::new(500);
+    // 2,000 lines: at a few lines per scheduler tick plus job lines, 500 held
+    // only about an hour, too short to see what happened overnight.
+    let log_buffer = agent_brain::logging::LogBuffer::new(2000);
     logging::init_with_buffer(&config, Some(log_buffer.clone()));
 
     info!(

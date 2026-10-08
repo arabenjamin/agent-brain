@@ -1,0 +1,74 @@
+# The services the brain depends on. GET /api/system/health probes each one
+# (clients/system.rs, ARCHITECTURE_DIR). Phase 6's architecture view draws
+# from this file too, so a new service gets one entry here, not a code change.
+#
+# probe:
+#   neo4j | duckdb      built-in (a trivial query)
+#   http                GET <url from url_env, minus strip_suffix><path>; 2xx is up
+# required: true        down means the brain is broken, not just degraded
+# An http component whose url_env is unset is "not configured" (the brain
+# runs without it: e.g. no SANDBOX_URL means no execute_code tool).
+
+components:
+  - name: neo4j
+    label: Neo4j knowledge graph
+    kind: store
+    probe: neo4j
+    required: true
+    purpose: Notes, entities, tasks, jobs, schedules — the brain's memory.
+
+  - name: duckdb
+    label: DuckDB telemetry
+    kind: store
+    probe: duckdb
+    purpose: Model usage, budgets, search usage, the model registry.
+
+  - name: ollama
+    label: Host Ollama
+    kind: model
+    probe: http
+    url_env: OLLAMA_LOCAL_URL
+    path: /api/version
+    required: true
+    purpose: Embeddings (bge-m3) for every stored note and every semantic search.
+
+  - name: llamacpp
+    label: llama.cpp sidecar
+    kind: model
+    probe: http
+    url_env: LLAMACPP_URL
+    path: /health
+    purpose: Local generation (Gemma-4-E4B) for background jobs, entity extraction and topics.
+
+  - name: sandbox
+    label: Python sandbox
+    kind: sidecar
+    probe: http
+    url_env: SANDBOX_URL
+    path: /health
+    purpose: execute_code (no network egress).
+
+  - name: rust-sandbox
+    label: Rust sandbox
+    kind: sidecar
+    probe: http
+    url_env: RUST_SANDBOX_URL
+    path: /health
+    purpose: execute_code with language rust (offline compile and test).
+
+  - name: whisper
+    label: Whisper transcription
+    kind: sidecar
+    probe: http
+    url_env: WHISPER_BASE_URL
+    strip_suffix: /v1
+    path: /health
+    purpose: Transcripts for media without captions.
+
+  - name: searxng
+    label: SearXNG
+    kind: search
+    probe: http
+    url_env: SEARXNG_URL
+    path: /healthz
+    purpose: Self-hosted metasearch, the last rung of the search ladder.

@@ -19,8 +19,9 @@ const TodosLane          = lazy(() => import("./components/work/TodosLane"));
 const HistoryLane        = lazy(() => import("./components/work/HistoryLane"));
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
 const KnowledgeWorkspace = lazy(() => import("./components/knowledge/KnowledgeWorkspace"));
-const ToolPanel          = lazy(() => import("./components/tools/ToolPanel"));
-const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
+const HealthView         = lazy(() => import("./components/system/HealthView"));
+const LogsView           = lazy(() => import("./components/system/LogsView"));
+const RegistryView       = lazy(() => import("./components/system/RegistryView"));
 const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
 const SettingsPage       = lazy(() => import("./components/settings/SettingsPage"));
 const CommandPalette     = lazy(() => import("./components/palette/CommandPalette"));
@@ -202,9 +203,10 @@ export default function App() {
           )}
           {ws === "system" && workspace && (
             <WorkspaceFrame workspace={workspace} view={view}>
-              {view === "logs"         && <LogsPanel />}
+              {view === "health"       && <HealthView />}
+              {view === "logs"         && <LogsView />}
+              {view === "registry"     && <RegistryView />}
               {view === "architecture" && <ArchitecturePanel />}
-              {view === "tools"        && <ToolPanel />}
             </WorkspaceFrame>
           )}
           {ws === "settings" && <SettingsPage section={p.section} />}
