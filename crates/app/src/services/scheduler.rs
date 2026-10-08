@@ -26,6 +26,32 @@ use crate::services::chain_seeder;
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::queue::{ChainStep, QueueService};
 
+/// The `context` of the Task that records one run of a ScheduledTask. The
+/// HBI's lineage view finds a schedule's runs by [`run_record_marker`], so
+/// the two must stay in step.
+pub fn run_record_context(name: &str, scheduled_task_id: &str) -> String {
+    format!(
+        "Run of ScheduledTask '{name}' {}",
+        run_record_marker(scheduled_task_id)
+    )
+}
+
+/// The part of a run record's `context` that names its ScheduledTask.
+pub fn run_record_marker(scheduled_task_id: &str) -> String {
+    format!("(id: {scheduled_task_id})")
+}
+
+/// The ScheduledTask id a run record's `context` names, if it is one.
+pub fn parse_run_record(context: &str) -> Option<&str> {
+    if !context.starts_with("Run of ScheduledTask ") {
+        return None;
+    }
+    let start = context.rfind("(id: ")? + "(id: ".len();
+    let end = start + context[start..].find(')')?;
+    let id = &context[start..end];
+    (!id.is_empty()).then_some(id)
+}
+
 /// Runtime configuration for the scheduler.
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
@@ -478,6 +504,21 @@ impl SchedulerService {
         dispatched
     }
 
+    /// Run one `ScheduledTask` now, whatever its `next_run_at` — and even when
+    /// it is disabled, since a manual run is a one-off. Advances `next_run_at`
+    /// exactly like a timed run. Returns the run-record Task id.
+    pub async fn run_scheduled_task_now(&self, id: &str) -> Result<String, String> {
+        let st = self
+            .neo4j
+            .get_scheduled_task(id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("No ScheduledTask with id {id}"))?;
+        let session_id = self.config.read().await.session_id.clone();
+        self.dispatch_one_scheduled_task(&st, session_id.as_deref())
+            .await
+    }
+
     /// Dispatch a single `ScheduledTask`: create Task node, enqueue chain, record run.
     /// Returns `Ok(task_id)` on success, `Err(reason)` on failure.
     async fn dispatch_one_scheduled_task(
@@ -488,14 +529,7 @@ impl SchedulerService {
         // 1. Create a Task node as a run record.
         let task_id = self
             .neo4j
-            .create_task(
-                &st.name,
-                Some(&format!(
-                    "Run of ScheduledTask '{}' (id: {})",
-                    st.name, st.id
-                )),
-                None,
-            )
+            .create_task(&st.name, Some(&run_record_context(&st.name, &st.id)), None)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -1626,6 +1660,35 @@ fn count_tool_failures(contents: impl IntoIterator<Item = String>) -> HashMap<St
         }
     }
     failures
+}
+
+#[cfg(test)]
+mod run_record_tests {
+    use super::*;
+
+    #[test]
+    fn a_run_record_round_trips_to_its_schedule() {
+        let ctx = run_record_context("Daily news (brief)", "3963b8c9-4abf-4002-900a-53e7cdeeb351");
+        assert_eq!(
+            ctx,
+            "Run of ScheduledTask 'Daily news (brief)' (id: 3963b8c9-4abf-4002-900a-53e7cdeeb351)"
+        );
+        assert_eq!(
+            parse_run_record(&ctx),
+            Some("3963b8c9-4abf-4002-900a-53e7cdeeb351")
+        );
+        assert!(ctx.contains(&run_record_marker("3963b8c9-4abf-4002-900a-53e7cdeeb351")));
+    }
+
+    #[test]
+    fn other_contexts_are_not_run_records() {
+        assert_eq!(
+            parse_run_record("Auto-generated from a video-learning FOLLOW UP concept."),
+            None
+        );
+        assert_eq!(parse_run_record("Run of ScheduledTask 'x' (id: )"), None);
+        assert_eq!(parse_run_record(""), None);
+    }
 }
 
 #[cfg(test)]

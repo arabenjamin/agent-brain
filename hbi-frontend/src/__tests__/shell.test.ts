@@ -8,7 +8,7 @@ import type { SchedulerStatus } from "../api/queries";
 describe("resolveRoute", () => {
   it("shows a workspace's first view when none is given", () => {
     const r = resolveRoute({ path: "work", params: {} });
-    expect(r.kind === "show" && [r.workspace.id, r.view?.id]).toEqual(["work", "jobs"]);
+    expect(r.kind === "show" && [r.workspace.id, r.view?.id]).toEqual(["work", "inbox"]);
   });
 
   it("shows the named view", () => {
@@ -26,6 +26,17 @@ describe("resolveRoute", () => {
       const r = resolveRoute({ path: old, params: { note: "n1" } });
       expect(r).toEqual({ kind: "redirect", path: target.path, params: target.view ? { view: target.view } : {} });
     }
+  });
+
+  it("redirects Phase-1 Work views into the lanes that replaced them", () => {
+    expect(resolveRoute({ path: "work", params: { view: "jobs" } }))
+      .toEqual({ kind: "redirect", path: "work", params: { view: "active", tab: null } });
+    expect(resolveRoute({ path: "work", params: { view: "jobs", job_status: "dead" } }))
+      .toEqual({ kind: "redirect", path: "work", params: { view: "history", tab: null, mode: "jobs" } });
+    expect(resolveRoute({ path: "work", params: { view: "jobs", tab: "tasks", task_status: "failed" } }))
+      .toEqual({ kind: "redirect", path: "work", params: { view: "history", tab: null, mode: "tasks" } });
+    expect(resolveRoute({ path: "work", params: { view: "proposals" } }))
+      .toEqual({ kind: "redirect", path: "work", params: { view: "inbox", tab: null } });
   });
 
   it("sends an unknown path home", () => {
@@ -81,7 +92,7 @@ describe("palette commands", () => {
 
   it("covers every workspace view and settings section", () => {
     const ids = all.map((c) => c.id);
-    for (const id of ["go:work/scheduled", "go:knowledge/graph", "go:system/logs", "settings:scheduler", "settings:agents"]) {
+    for (const id of ["go:work/scheduled", "go:work/inbox", "go:knowledge/graph", "go:system/logs", "settings:scheduler", "settings:agents", "new:todo", "new:schedule"]) {
       expect(ids).toContain(id);
     }
   });

@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../../api/client";
 import { getApiKey, getBrainUrl } from "../../api/config";
-import { callTool, resetMcpClient } from "../../api/mcp";
+import { callToolStrict, resetMcpClient } from "../../api/mcp";
 import {
   keys,
   queryClient,
@@ -262,7 +262,7 @@ function SchedulerSection() {
     setBusy(label);
     setResult(null);
     try {
-      await callTool(tool, args);
+      await callToolStrict(tool, args);
       setResult({ ok: true, text: `${label}: done` });
       await queryClient.invalidateQueries({ queryKey: keys.schedulerStatus });
     } catch (e) {

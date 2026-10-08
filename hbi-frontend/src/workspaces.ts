@@ -31,12 +31,13 @@ export const WORKSPACES: Workspace[] = [
     id: "work",
     icon: "📋",
     label: "Work",
-    keywords: "tasks jobs queue todos scheduled schedules proposals",
+    keywords: "tasks jobs queue todos scheduled schedules proposals inbox history running",
     views: [
-      { id: "jobs", label: "Tasks & jobs" },
-      { id: "todos", label: "Todos" },
+      { id: "inbox", label: "Inbox" },
+      { id: "active", label: "Active" },
       { id: "scheduled", label: "Scheduled" },
-      { id: "proposals", label: "Proposals" },
+      { id: "todos", label: "Todos" },
+      { id: "history", label: "History" },
     ],
   },
   {
@@ -71,7 +72,7 @@ export const SETTINGS: Workspace = {
 
 /** Old tab ids → the workspace and view that replaced them. */
 export const LEGACY_PATHS: Record<string, { path: WorkspaceId; view?: string }> = {
-  tasks: { path: "work", view: "jobs" },
+  tasks: { path: "work", view: "active" },
   todos: { path: "work", view: "todos" },
   "scheduled-tasks": { path: "work", view: "scheduled" },
   graph: { path: "knowledge", view: "graph" },
@@ -81,6 +82,25 @@ export const LEGACY_PATHS: Record<string, { path: WorkspaceId; view?: string }> 
 };
 
 export const DEFAULT_WORKSPACE: WorkspaceId = "home";
+
+/**
+ * Views that were replaced inside a workspace (Phase 2 turned Work's four
+ * panels into lanes). A filtered `jobs` link lands in History, an unfiltered
+ * one in Active, so Phase-1 links keep working.
+ */
+function legacyView(path: string, params: Record<string, string>): string | null {
+  if (path !== "work") return null;
+  switch (params.view) {
+    case "jobs":
+      if (params.job_status) return "history";
+      if (params.task_status || params.tab === "tasks") return "history";
+      return "active";
+    case "proposals":
+      return "inbox";
+    default:
+      return null;
+  }
+}
 
 export function workspaceById(id: string): Workspace | undefined {
   return id === SETTINGS.id ? SETTINGS : WORKSPACES.find((w) => w.id === id);
@@ -101,6 +121,11 @@ export function resolveRoute(route: Route): Resolved {
   }
   const workspace = workspaceById(route.path);
   if (!workspace) return { kind: "redirect", path: DEFAULT_WORKSPACE, params: {} };
+  const renamed = legacyView(route.path, route.params);
+  if (renamed) {
+    const mode = route.params.job_status ? "jobs" : route.params.task_status || route.params.tab === "tasks" ? "tasks" : null;
+    return { kind: "redirect", path: route.path, params: { view: renamed, tab: null, ...(mode ? { mode } : {}) } };
+  }
   const views = workspace.views ?? [];
   const view = views.find((v) => v.id === route.params.view) ?? views[0] ?? null;
   return { kind: "show", workspace, view };

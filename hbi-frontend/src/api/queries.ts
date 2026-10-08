@@ -135,11 +135,12 @@ export interface Todo {
 }
 
 export interface Proposal {
-  id?: string;
-  filename?: string;
-  title?: string;
-  applied?: boolean;
-  [k: string]: unknown;
+  filename: string;
+  title: string;
+  severity: "low" | "medium" | "high" | string;
+  task_id: string;
+  created: string;
+  applied: boolean;
 }
 
 export interface ModelUsage {

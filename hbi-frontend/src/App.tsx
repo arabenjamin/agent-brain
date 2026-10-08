@@ -12,16 +12,17 @@ import EntityDrawer from "./components/drawer/EntityDrawer";
 import { Tabs } from "./components/ui";
 
 const HomePanel          = lazy(() => import("./components/home/HomePanel"));
+const InboxLane          = lazy(() => import("./components/work/InboxLane"));
+const ActiveLane         = lazy(() => import("./components/work/ActiveLane"));
+const ScheduledLane      = lazy(() => import("./components/work/ScheduledLane"));
+const TodosLane          = lazy(() => import("./components/work/TodosLane"));
+const HistoryLane        = lazy(() => import("./components/work/HistoryLane"));
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
-const TaskPanel          = lazy(() => import("./components/tasks/TaskPanel"));
 const KnowledgePanel     = lazy(() => import("./components/knowledge/KnowledgePanel"));
 const GraphPanel         = lazy(() => import("./components/graph/GraphPanel"));
 const ToolPanel          = lazy(() => import("./components/tools/ToolPanel"));
 const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
 const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
-const TodoPanel          = lazy(() => import("./components/todo/TodoPanel"));
-const ScheduledTasksPanel = lazy(() => import("./components/scheduled-tasks/ScheduledTasksPanel"));
-const ProposalsPanel     = lazy(() => import("./components/proposals/ProposalsPanel"));
 const SettingsPage       = lazy(() => import("./components/settings/SettingsPage"));
 const CommandPalette     = lazy(() => import("./components/palette/CommandPalette"));
 
@@ -130,7 +131,9 @@ export default function App() {
 
   const ws = workspace?.id;
   // Drill-down filters key their panel, so a new drill remounts it cleanly.
-  const taskDrill = { tab: p.tab, taskStatus: p.task_status, jobStatus: p.job_status, since: p.since };
+  const historyDrill = { mode: p.mode, taskStatus: p.task_status, jobStatus: p.job_status, since: p.since };
+  // The entity the drawer has open, so a lane can highlight its row.
+  const openId = p.task ?? p.job ?? p.schedule ?? p.todo ?? p.proposal;
   const knowledgeDrill = { since: p.since, type: p.type, verifiedSince: p.verified_since, q: p.q };
 
   return (
@@ -179,10 +182,11 @@ export default function App() {
           {ws === "home" && <HomePanel notifications={notifications} />}
           {ws === "work" && workspace && (
             <WorkspaceFrame workspace={workspace} view={view}>
-              {view === "jobs"      && <TaskPanel key={JSON.stringify(taskDrill)} drill={taskDrill} />}
-              {view === "todos"     && <TodoPanel />}
-              {view === "scheduled" && <ScheduledTasksPanel />}
-              {view === "proposals" && <ProposalsPanel />}
+              {view === "inbox"     && <InboxLane openId={openId} />}
+              {view === "active"    && <ActiveLane openId={openId} />}
+              {view === "scheduled" && <ScheduledLane mode={p.mode} openId={openId} />}
+              {view === "todos"     && <TodosLane openId={openId} />}
+              {view === "history"   && <HistoryLane key={JSON.stringify(historyDrill)} drill={historyDrill} openId={openId} />}
             </WorkspaceFrame>
           )}
           {ws === "knowledge" && workspace && (

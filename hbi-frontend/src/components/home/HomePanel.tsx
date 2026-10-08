@@ -23,6 +23,7 @@ import { summariseScheduler } from "../../lib/scheduler";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
 import { hrefTo } from "../../nav";
+import { isTodoOverdue } from "../todos/model";
 import { Card, EmptyState, Pill, Stat, type Tone } from "../ui";
 
 const DEAD_JOB_STATUSES = "failed,dead,dead_letter";
@@ -84,11 +85,11 @@ function BrainTile() {
         <div className="home-dim home-detail">{s.detail}</div>
         <div className="ui-stats">
           <Stat label="Running" value={q.running_now} tone={q.running_now > 0 ? "green" : undefined}
-            href={hrefTo("work", { view: "jobs" })} title="Active jobs" />
+            href={hrefTo("work", { view: "active" })} title="Active jobs" />
           <Stat label="Pending" value={q.in_memory_pending} tone={q.in_memory_pending > 20 ? "yellow" : undefined}
-            href={hrefTo("work", { view: "jobs" })} title="Active jobs" />
+            href={hrefTo("work", { view: "active" })} title="Active jobs" />
           <Stat label="Failed / dead" value={dead} tone={dead > 0 ? "red" : undefined}
-            href={hrefTo("work", { view: "jobs", job_status: DEAD_JOB_STATUSES })}
+            href={hrefTo("work", { view: "history", mode: "jobs", job_status: DEAD_JOB_STATUSES })}
             title="Every job that will not run again (all time, as the queue counts them)" />
         </div>
         {coordinator && !coordinator.alive && (
@@ -106,11 +107,6 @@ function BrainTile() {
 
 // ── Needs you ────────────────────────────────────────────────────────────────
 
-function isOverdue(due: string | null | undefined, now: number): boolean {
-  const d = parseTime(due);
-  return !!d && d.getTime() < now;
-}
-
 function NeedsYouTile({ notifications }: { notifications: AgentNotification[] }) {
   const todos = useTodos();
   const proposals = useProposals();
@@ -118,7 +114,7 @@ function NeedsYouTile({ notifications }: { notifications: AgentNotification[] })
 
   const open = (todos.data ?? []).filter((t) => t.status !== "done");
   const overdue = open
-    .filter((t) => isOverdue(t.due_at, now))
+    .filter((t) => isTodoOverdue(t, now))
     .sort((a, b) => (parseTime(a.due_at)?.getTime() ?? 0) - (parseTime(b.due_at)?.getTime() ?? 0));
   const pendingProposals = proposals.data ?? [];
 
@@ -130,10 +126,10 @@ function NeedsYouTile({ notifications }: { notifications: AgentNotification[] })
         <Stat label="Agent messages" value={notifications.length} tone={notifications.length ? "accent" : undefined}
           href={hrefTo("chat")} />
         <Stat label="Overdue todos" value={todos.data ? overdue.length : "…"} tone={overdue.length ? "yellow" : undefined}
-          href={hrefTo("work", { view: "todos" })} />
+          href={hrefTo("work", { view: "inbox" })} />
         <Stat label="Proposals" value={proposals.data ? pendingProposals.length : proposals.error ? "?" : "…"}
           tone={pendingProposals.length ? "purple" : undefined}
-          href={hrefTo("work", { view: "proposals" })}
+          href={hrefTo("work", { view: "inbox" })}
           title={proposals.error ? `Couldn't list proposals: ${proposals.error.message}` : "Code proposals awaiting review"} />
       </div>
 
@@ -153,7 +149,7 @@ function NeedsYouTile({ notifications }: { notifications: AgentNotification[] })
         <ul className="home-list">
           {overdue.slice(0, 4).map((t) => (
             <li key={t.id}>
-              <a href={hrefTo("work", { view: "todos" })}>{t.title}</a>
+              <a href={hrefTo("work", { view: "inbox", todo: t.id })}>{t.title}</a>
               <span className="tone-text-yellow">due {relTime(t.due_at)}</span>
             </li>
           ))}
@@ -214,7 +210,7 @@ function NextUpTile() {
             return (
               <li key={s.id} title={`${s.name}\nNext: ${formatLocal(s.next_run_at)}\nLast: ${formatLocal(s.last_run_at)}`}>
                 <span className={isDue ? "tone-text-yellow" : "home-dim"}>{isDue ? "due" : whenLabel(s.next_run_at)}</span>
-                <a href={hrefTo("work", { view: "scheduled" })}>{s.name}</a>
+                <a href={hrefTo("work", { view: "scheduled", schedule: s.id })}>{s.name}</a>
               </li>
             );
           })}
@@ -252,9 +248,9 @@ function LastDayTile() {
       <div className="ui-stats">
         <Stat label="Notes" value={a.notes?.total ?? "?"} href={hrefTo("knowledge", { view: "notes", since })} />
         <Stat label="Tasks done" value={a.tasks?.by.completed ?? 0} tone="green"
-          href={hrefTo("work", { view: "jobs", tab: "tasks", task_status: "completed", since })} />
+          href={hrefTo("work", { view: "history", mode: "tasks", task_status: "completed", since })} />
         <Stat label="Tasks failed" value={a.tasks?.by.failed ?? 0} tone={(a.tasks?.by.failed ?? 0) > 0 ? "red" : undefined}
-          href={hrefTo("work", { view: "jobs", tab: "tasks", task_status: "failed", since })} />
+          href={hrefTo("work", { view: "history", mode: "tasks", task_status: "failed", since })} />
         <Stat label="Claims checked" value={a.claims_checked?.total ?? "?"}
           title={a.claims_checked ? `${claimsCorroborated} corroborated · ${a.claims_checked.by.refuted ?? 0} refuted · ${a.claims_checked.by.unverified ?? 0} still unverified` : undefined}
           href={hrefTo("knowledge", { view: "notes", type: "claim", verified_since: since })} />
@@ -276,7 +272,7 @@ function LastDayTile() {
       {a.tasks && Object.keys(a.tasks.by).some((k) => k !== "completed" && k !== "failed") && (
         <div className="home-chips">
           {topEntries(a.tasks, 6).filter(([k]) => k !== "completed" && k !== "failed").map(([status, n]) => (
-            <a key={status} href={hrefTo("work", { view: "jobs", tab: "tasks", task_status: status, since })}>
+            <a key={status} href={hrefTo("work", { view: "history", mode: "tasks", task_status: status, since })}>
               <Pill tone={TASK_TONE[status] ?? "muted"}>tasks {status} {n}</Pill>
             </a>
           ))}
@@ -285,7 +281,7 @@ function LastDayTile() {
 
       {failedJobs > 0 && (
         <div className="home-chips">
-          <a href={hrefTo("work", { view: "jobs", job_status: DEAD_JOB_STATUSES, since })}>
+          <a href={hrefTo("work", { view: "history", mode: "jobs", job_status: DEAD_JOB_STATUSES, since })}>
             <Pill tone="red">{failedJobs} jobs failed or died</Pill>
           </a>
         </div>

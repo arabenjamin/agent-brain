@@ -3,8 +3,8 @@
  * the URL (`openEntity("note", id)` → `#/<workspace>?note=<id>`), so the
  * drawer survives reloads and every open entity is a shareable link.
  *
- * Phase 0 knows notes. Tasks, jobs, todos, schedules and entities register
- * here as their workspaces land (HBI_REDESIGN_PLAN.md §6).
+ * Kinds: note (Phase 0); task, job, schedule, todo, proposal (Phase 2).
+ * Entities and topics register here when Knowledge's phases land.
  */
 import { useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -13,6 +13,11 @@ import { ApiError } from "../../api/client";
 import { useNote, useRelatedNotes } from "../../api/queries";
 import { currentRoute, routeHref, useRoute } from "../../router";
 import { closeEntity, drawerTarget, openEntity } from "./entities";
+import JobView from "./JobView";
+import ProposalView from "./ProposalView";
+import ScheduleView from "./ScheduleView";
+import TaskView from "./TaskView";
+import TodoView from "./TodoView";
 import { formatLocal, relTime } from "../../lib/time";
 import { Drawer, EmptyState, Pill, Stat, Tabs, type Tone } from "../ui";
 
@@ -20,9 +25,21 @@ export default function EntityDrawer() {
   const route = useRoute();
   const target = drawerTarget(route.params);
   if (!target) return null;
+  // Keyed by id, so moving from one entity to another resets view state
+  // (an open editor, an action's result).
   switch (target.kind) {
     case "note":
-      return <NoteDrawer id={target.id} />;
+      return <NoteDrawer key={target.id} id={target.id} />;
+    case "task":
+      return <TaskView key={target.id} id={target.id} />;
+    case "job":
+      return <JobView key={target.id} id={target.id} />;
+    case "schedule":
+      return <ScheduleView key={target.id} id={target.id} />;
+    case "todo":
+      return <TodoView key={target.id} id={target.id} />;
+    case "proposal":
+      return <ProposalView key={target.id} filename={target.id} />;
   }
 }
 

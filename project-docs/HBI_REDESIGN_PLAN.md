@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–1 done (2026-10-08); Phases 2–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–2 done (2026-10-08); Phases 3–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -217,7 +217,7 @@ There are also 86 single-word person names with a longer full-name node (`vance`
 | B1 | `GET /api/search?q=&mode=auto\|semantic\|keyword\|id&kind=note\|entity\|topic&topic=&limit=` | Semantic goes through the **non-perturbing** `search_notes_inner(track_access=false)` path: a human browsing must not skew freshness/access-count retrieval signals. Keyword uses the BM25 fulltext index, not `CONTAINS`. Each hit returns `match_reason` + score. A truncated result says so. |
 | B2 | `:Topic` + `topics/*.yaml` + `TOPICS_DIR` compose env; `IN_TOPIC` assignment + backfill; `GET /api/topics`, `GET /api/topics/{id}/map` | §3. Schema in `init_schema`, documented in `schema.md` (`IN_TOPIC.assigned_at` is a native `DATETIME`). |
 | B2b | Entity resolution (§3.1): normalise + alias index at write time; `entities/` seed dir + `ENTITY_ALIASES_DIR`; extractor keeps surface form and uses `generate_json`; merge-candidate proposals; reversible merge/backfill; `POST /api/entities/merge` | Before the map, not after. Retrieval eval before and after. |
-| B3 | `GET /api/work/{kind}/{id}/lineage`; `next_run_at` + last outcome in the schedule list; a todo ↔ task link | Lineage = todo/schedule → tasks → jobs (steps, attempts) → notes (`source_context`/job id). |
+| B3 | **Done in Phase 2** as `GET /api/work/{tasks,jobs,schedules,todos}/{id}`, `GET /api/work/schedules`, `POST /api/work/schedules/{id}/run`, `POST /api/work/todos/{id}/task`. Planned as: `GET /api/work/{kind}/{id}/lineage`; `next_run_at` + last outcome in the schedule list; a todo ↔ task link | Lineage = todo/schedule → tasks → jobs (steps, attempts) → notes (`source_context`/job id). |
 | B4 | `GET /api/system/health` (one aggregate); `/api/logs` gains `target` and `q` filters, optionally SSE | Replaces three panels polling the same status endpoints. |
 | B5 | `GET /api/architecture`; `architecture/layout.yaml`; `snapshot_architecture` tool + step on `brain-api-sync` | §4. The tool is deterministic. The optional summary step is `provider_hint: ollama` at the step's top level. |
 
@@ -273,6 +273,33 @@ Fixed on the way:
 - **Knowledge type filter:** it offered 4 of 13 note types.
 
 Deliberately not built: an **Appearance** section (there is only one theme; nothing to configure yet). The **domains** tile waits for Phase 4.
+
+### Phase 2 outcome (2026-10-08)
+
+Built:
+- **Work lanes:** Inbox · Active · Scheduled (list, a 24 h / 7 d timeline with a load strip, routing chains) · Todos · History (tasks or the job log).
+- **Drawer views** for tasks, jobs, schedules, todos and proposals:
+  - Task lineage: where it came from → each chain step (status, attempts, time, output) → the notes and tasks it produced.
+  - Job: full arguments and output, its owning task and chain, cancel/retry.
+  - Schedule: cadence, runs, steps; run now, turn on/off, edit, delete.
+  - Todo: mark done, edit, hand to the brain, delete.
+  - Proposal: read, dismiss with a reason.
+- **Lineage backend:** B3 above, with the chain reconstructed from what is already recorded (`clients/work.rs`), plus `run_scheduled_task_now`.
+- **Editors:** the schedule and todo editors are split into modules and render embedded in the drawer.
+- **Tests:** 62 vitest tests and 9 new Rust tests (791 lib tests).
+- **Checked live:** a news-analysis run shows its 6 steps, the `semantic` note its `store_note` produced, and the task its `create_task` made. Run now on the SELF-TEST schedule dispatched a run that failed as designed: the first job dead-lettered and the rest were cancelled.
+
+Fixed on the way:
+- **Tool errors read as success.** Action buttons ignored a tool's `isError`, so a refusal looked like success. `callToolStrict` now throws. This also covers Settings → Scheduler.
+- **Dead-letter retry was impossible.** Retrying a `dead_letter` job through `manage_job` always failed; it now goes through `dead_letter`.
+- **The step editor's Model field did nothing.** It wrote a per-step `model` that the runner drops, and its provider list lacked `ollama-cloud`.
+- **Overdue disagreed by timezone.** It is now one date-based rule.
+- **Old-format steps were hidden.** The list showed tool names for steps the runner reads as empty; they are now flagged as broken.
+
+Found, not fixed (needs a decision):
+- **Garbage research tasks.** `schedules/news-analysis.yaml` step 5 is `create_task goal: "{{_prev}}"`. When the preceding `reason` finds no research topic, its answer becomes the goal. 10 tasks so far have the goal "No section titled "Priority Research Topic" was found in the provided context."
+- **Summary JSON failures.** Most dead-lettered jobs this week are `ingest_article`/`ingest_media` summaries where the model "failed to produce valid JSON after 3 attempts".
+- **Daily schedules collide.** The timeline shows six daily schedules firing together around 20:22 local.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

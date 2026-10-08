@@ -89,6 +89,25 @@ export async function callTool(
 }
 
 /**
+ * Call a tool for an action, and throw when the tool reports failure.
+ *
+ * `callTool` returns a tool's text whether or not the result is an error
+ * (`isError: true` arrives as ordinary content), so an action the brain
+ * refused — "not retryable", "unknown action" — would read as done. Every
+ * button that changes something uses this instead.
+ */
+export async function callToolStrict(name: string, args: Record<string, unknown> = {}): Promise<string> {
+  const client = await getMcpClient();
+  const result = await client.callTool({ name, arguments: args });
+  const text = (result.content as Array<{ type: string; text?: string }>)
+    .filter((c) => c.type === "text")
+    .map((c) => c.text ?? "")
+    .join("\n");
+  if (result.isError) throw new Error(text || `${name} failed`);
+  return text;
+}
+
+/**
  * Reset the singleton (called on disconnect or after settings change).
  *
  * Deliberately keeps `_notifHandlers`: subscribers hold an unsubscribe closure

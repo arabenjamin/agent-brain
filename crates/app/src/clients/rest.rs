@@ -215,7 +215,7 @@ impl RestAdapter {
 // ============================================================================
 
 /// Return a 503 JSON response.
-fn unavailable(msg: &str) -> Response {
+pub(crate) fn unavailable(msg: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({"error": msg})),
@@ -224,7 +224,7 @@ fn unavailable(msg: &str) -> Response {
 }
 
 /// Return a 500 JSON response.
-fn internal(msg: impl std::fmt::Display) -> Response {
+pub(crate) fn internal(msg: impl std::fmt::Display) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({"error": msg.to_string()})),
@@ -233,7 +233,7 @@ fn internal(msg: impl std::fmt::Display) -> Response {
 }
 
 /// Return a 404 JSON response.
-fn not_found() -> Response {
+pub(crate) fn not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({"error": "Not found"})),
@@ -241,7 +241,7 @@ fn not_found() -> Response {
         .into_response()
 }
 
-fn bad_request(msg: impl std::fmt::Display) -> Response {
+pub(crate) fn bad_request(msg: impl std::fmt::Display) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({"error": msg.to_string()})),
@@ -250,14 +250,17 @@ fn bad_request(msg: impl std::fmt::Display) -> Response {
 }
 
 /// `?since=` as an RFC 3339 instant, normalised to UTC.
-fn parse_since(params: &HashMap<String, String>) -> Result<Option<String>, String> {
+pub(crate) fn parse_since(params: &HashMap<String, String>) -> Result<Option<String>, String> {
     parse_instant(params, "since")
 }
 
 /// An RFC 3339 instant query param, normalised to UTC. Callers must compare
 /// it through `datetime($param)`: Cypher compares a datetime to a string as
 /// null and silently drops every row.
-fn parse_instant(params: &HashMap<String, String>, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn parse_instant(
+    params: &HashMap<String, String>,
+    key: &str,
+) -> Result<Option<String>, String> {
     match params.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
         None => Ok(None),
         Some(s) => chrono::DateTime::parse_from_rfc3339(s)
@@ -272,7 +275,7 @@ fn parse_instant(params: &HashMap<String, String>, key: &str) -> Result<Option<S
 
 /// `?status=a,b` as a list (one status is a list of one). Bound as
 /// `$statuses` with `IN`, so a value is never spliced into Cypher.
-fn parse_statuses(params: &HashMap<String, String>) -> Option<Vec<String>> {
+pub(crate) fn parse_statuses(params: &HashMap<String, String>) -> Option<Vec<String>> {
     let list: Vec<String> = params
         .get("status")?
         .split(',')
@@ -293,7 +296,7 @@ fn window_hours(params: &HashMap<String, String>) -> i64 {
 
 /// `WHERE a AND b ` for the given conditions, or nothing. Conditions are
 /// fixed strings with `$param` placeholders — never request values.
-fn where_clause(conds: &[&str]) -> String {
+pub(crate) fn where_clause(conds: &[&str]) -> String {
     if conds.is_empty() {
         String::new()
     } else {

@@ -18,7 +18,7 @@ The brain URL and API key live in the browser's localStorage (Settings → Conne
 
 ## Workspaces
 
-`#/home` (dashboard) · `#/chat` · `#/work?view=jobs|todos|scheduled|proposals` · `#/knowledge?view=notes|graph` · `#/system?view=logs|architecture|tools` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect.
+`#/home` (dashboard) · `#/chat` · `#/work?view=inbox|active|scheduled|todos|history` · `#/knowledge?view=notes|graph` · `#/system?view=logs|architecture|tools` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect.
 
 ## Layout
 
@@ -33,8 +33,11 @@ src/
   nav.ts             goTo / hrefTo: move between workspaces, keeping only the open drawer
   lib/               time (UTC in, local out), ids, scheduler state, useNow
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
-  components/drawer/ entity drawer (openEntity / closeEntity)
+  components/drawer/ entity drawer: note, task (lineage), job, schedule, todo, proposal
   components/home/   the dashboard
+  components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History)
+  components/schedules/ the schedule and routing-chain editors (split from the old panel)
+  components/todos/  todo model (overdue rule) and form
   components/settings/ the Settings page and its sections
   components/palette/ Ctrl-K
   components/<panel>/ the workspaces
@@ -43,7 +46,7 @@ src/
 
 ## Conventions
 
-- Fetch through `api/client.ts`; never build an auth header in a component.
+- Fetch through `api/client.ts`; never build an auth header in a component. Action buttons call tools with `callToolStrict`, which throws on a tool error.
 - Anything shown in more than one view is a shared query in `api/queries.ts`.
 - Open an entity with `openEntity("note", id)`. It is URL state, so every open note is a link.
 - Colours come from the `:root` tokens. Empty and error states say what was checked.

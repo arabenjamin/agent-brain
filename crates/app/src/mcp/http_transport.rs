@@ -348,6 +348,35 @@ impl HttpTransport {
             .route("/api/graph", get(rest_handlers::handle_get_graph))
             .route("/api/health", get(rest_handlers::handle_api_health))
             .route("/api/activity", get(rest_handlers::handle_get_activity))
+            // --- Work lineage (clients/work.rs) ---
+            .route(
+                "/api/work/tasks/{id}",
+                get(crate::clients::work::handle_task_lineage),
+            )
+            .route(
+                "/api/work/jobs/{id}",
+                get(crate::clients::work::handle_job_detail),
+            )
+            .route(
+                "/api/work/schedules",
+                get(crate::clients::work::handle_list_schedules),
+            )
+            .route(
+                "/api/work/schedules/{id}",
+                get(crate::clients::work::handle_schedule_detail),
+            )
+            .route(
+                "/api/work/schedules/{id}/run",
+                post(crate::clients::work::handle_run_schedule_now),
+            )
+            .route(
+                "/api/work/todos/{id}",
+                get(crate::clients::work::handle_todo_detail),
+            )
+            .route(
+                "/api/work/todos/{id}/task",
+                post(crate::clients::work::handle_todo_to_task),
+            )
             .route(
                 "/api/scheduler/status",
                 get(rest_handlers::handle_get_scheduler_status),

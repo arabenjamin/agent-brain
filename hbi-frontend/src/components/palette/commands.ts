@@ -30,6 +30,10 @@ export function staticCommands(): Command[] {
       });
     }
   }
+  out.push(
+    { id: "new:todo", label: "+ New todo", group: "Create", keywords: "add task reminder", run: () => goTo("work", { view: "todos", todo: "new" }) },
+    { id: "new:schedule", label: "+ New schedule", group: "Create", keywords: "add recurring cron scheduled", run: () => goTo("work", { view: "scheduled", schedule: "new" }) },
+  );
   for (const s of SETTINGS_SECTIONS) {
     out.push({
       id: `settings:${s.id}`,
