@@ -716,6 +716,16 @@ YAML profiles in `contexts/` (default `./contexts`) define tool allowlists and s
 
 ---
 
+### Entity resolution (`services/entity_resolution.rs`, 2026-10-08)
+
+Entity extraction merged on the exact lowercased string, so one real thing was several nodes: `us` (137 mentions), `united states` (60), `u.s.` (52), `usa` (13) and `america` (8) for the country, and four nodes for Trump. The prompt asked the model to "merge obvious aliases", but a per-note call cannot know which spelling earlier notes used. The extractor also lowercased before storing, which threw away the difference between the country `US` and the pronoun `us`. Now names resolve before anything is created (alias → name → normalised key), mentions keep the surface form, and a curated seed plus spelling-only folds run in `init-db`. Everything else is a proposal a person answers.
+
+**The first live dry-run was what fixed the title rule.** It planned 108 merges. Read one by one, they showed title-stripping folding `senator johnson` and `johnson` into `speaker johnson` (Ron and Mike Johnson), `bush` into `president bush`, `president bio` into `bio`, and digit-only keys folding `911` into `9/11`. Titles now fold only before a full name, all-digit keys never fold, and title + surname became a proposal. That left 91 merges (24 seed, 67 spelling).
+
+**Applied 2026-10-08** (commit 762f246, `pre_entity_merge` snapshot first): 91 merged, 0 failed. 8,575 → 8,487 entities, 100 aliases. `donald trump` now has 368 mentions and `united states` 267. 135 of the 137 `us` mentions moved through the capitals-only alias, because every note behind them had `US`/`U.S.` in its text. The remaining 2 notes already mentioned United States, so their count was absorbed into that edge. **Retrieval unchanged:** `eval-retrieval` gave recall@10 0.920 / MRR 0.757 both before and after, with all 25 cases identical. The entity-bridge expansion did not visibly shift on this golden set, though it is small (25 cases), so a later topic-heavy fixture could still show a change. 188 merge proposals were open afterwards, mostly surnames and acronyms with 1–2 shared notes.
+
+Testing note: the host's `.env` points `NEO4J_URI` at a port nothing listens on, and the live graph is host port 7689. A host-built binary run without explicit env therefore hangs rather than touching data. Scratch testing used a throwaway Neo4j container, with `SCHEDULER_ENABLED=false` and empty seed dirs for `serve`.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

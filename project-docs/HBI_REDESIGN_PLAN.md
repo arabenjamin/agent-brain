@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–3 done (2026-10-08); 4a built, awaiting seed review + live apply; 4b–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–3 and 4a done (2026-10-08); 4b–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -323,7 +323,7 @@ Fixed on the way:
 
 Found, not fixed: the trace makes a retrieval quirk visible. Freshness plus BM25 lifts Todo Snapshot notes above the best semantic match for topic queries (see subsystem-rules). Whether snapshots should be down-weighted or excluded from topic retrieval is a retrieval-tuning decision, and it should be measured with `eval-retrieval`.
 
-### Phase 4a outcome (2026-10-08, built; not yet applied to the live graph)
+### Phase 4a outcome (2026-10-08)
 
 Built:
 - **Resolution at write time** (`services/entity_resolution.rs`). Each extracted name resolves through alias → exact name → normalised key before anything is created. The extractor now asks for names as written and goes through `generate_json`. Mentions keep `surface`, `via` and `type`. The entity type is the majority of its mentions. `location` joins the type list.
@@ -336,11 +336,7 @@ Built:
 
 **Live dry-run (read-only, 2026-10-08):** 91 merges, 24 from the seed and 67 same-spelling. The first dry-run planned 108, and reading them is what changed the title rule. `senator johnson` and `johnson` were heading into `speaker johnson` (different people), `bush` into `president bush`, `president bio` into `bio`, and `911` into `9/11`. Titles now fold only before a full name, all-digit keys never fold, and title + surname is a proposal. Retrieval baseline just before: recall@10 0.920, MRR 0.757.
 
-Left before 4a is done:
-- The user reviews `entities/aliases.yaml` and the planned merges.
-- The rebuild applies them (snapshot first).
-- `eval-retrieval` runs after, and the numbers go in `engineering-history.md`.
-- A pass through the Inbox proposals.
+**Applied (commit 762f246):** the `pre_entity_merge` snapshot was taken, then all 91 merges went in with 0 failures. Entities went from 8,575 to 8,487, with 100 aliases. `donald trump` has 368 mentions and `united states` 267. **Done criterion met:** each is one node, `eval-retrieval` is unchanged (0.920 / 0.757, all 25 cases identical), and every merge can be undone from its alias. 188 merge proposals are open in the Inbox.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 
