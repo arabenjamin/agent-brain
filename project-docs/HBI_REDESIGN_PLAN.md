@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phase 0 done (2026-10-08); Phases 1–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–1 done (2026-10-08); Phases 2–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -213,6 +213,7 @@ There are also 86 single-word person names with a longer full-name node (`vance`
 
 | # | Endpoint / change | Notes |
 |---|---|---|
+| B0 | `GET /api/activity?hours=`; `since` on `/api/notes`, `/api/tasks`, `/api/jobs`; `verified_since` on notes; comma `status` lists; `version` in `/api/health` | **Done in Phase 1.** Home's counts and the rows behind them. |
 | B1 | `GET /api/search?q=&mode=auto\|semantic\|keyword\|id&kind=note\|entity\|topic&topic=&limit=` | Semantic goes through the **non-perturbing** `search_notes_inner(track_access=false)` path: a human browsing must not skew freshness/access-count retrieval signals. Keyword uses the BM25 fulltext index, not `CONTAINS`. Each hit returns `match_reason` + score. A truncated result says so. |
 | B2 | `:Topic` + `topics/*.yaml` + `TOPICS_DIR` compose env; `IN_TOPIC` assignment + backfill; `GET /api/topics`, `GET /api/topics/{id}/map` | §3. Schema in `init_schema`, documented in `schema.md` (`IN_TOPIC.assigned_at` is a native `DATETIME`). |
 | B2b | Entity resolution (§3.1): normalise + alias index at write time; `entities/` seed dir + `ENTITY_ALIASES_DIR`; extractor keeps surface form and uses `generate_json`; merge-candidate proposals; reversible merge/backfill; `POST /api/entities/merge` | Before the map, not after. Retrieval eval before and after. |
@@ -247,6 +248,31 @@ Found on the way:
 - `/api/notes/{id}/related` silently caps at 10 outgoing edges; the drawer now says so.
 - The schedule editor posts raw JSON-RPC to `/mcp`, bypassing the SDK client. Its behaviour is kept for now and revisited when the editor is split (Phase 2).
 - Not changed: ArchitecturePanel's palette (replaced in Phase 6), and `ProposalsPanel` (unrouted but working; it becomes the Work Inbox in Phase 2). Architecture's scheduler card shows `paused` whenever `is_running` is false, including while sleeping (a Phase 5 check).
+
+### Phase 1 outcome (2026-10-08)
+
+Built:
+- **Shell:** five workspaces plus Settings (`src/workspaces.ts`). Each workspace shows its views as tabs, and the old panels are mounted inside them. Old tab URLs redirect to their new home, keeping their params.
+- **Home:** five tiles (Brain, Needs you, Next up, Last 24 hours, LLM). Every number links to its rows through URL drill-downs, and a drilled view shows a banner with Show all.
+- **Settings:** a full page (`#/settings?section=`) with five sections:
+  - Connection, with a live check.
+  - Agents: the Chat editor rendered inline, sharing one profile query with Chat.
+  - Models & routing: read-only, from `/api/llm/budget`, including per-model cooldowns and spend against caps.
+  - Scheduler: start/pause, run a tick, and the five config fields, saving only the ones changed.
+  - About: the running commit and the bundle's build time.
+- **Ctrl-K palette.**
+- **Backend:** B0 above. Checked live against the rebuilt brain; every drill returned exactly its count.
+- **Tests:** 51 vitest tests and 7 new Rust tests (783 lib tests pass).
+
+Fixed on the way:
+- **Cypher injection:** `/api/tasks` and `/api/jobs` formatted `?status=` into Cypher. Now bound.
+- **Dead jobs hidden:** the "Failed / Dead" job filter never matched `dead`/`dead_letter` (showed 0 of 39), and `/api/health`'s dead-job alert ignored `dead_letter`.
+- **Active filter:** "Active" filtered a latest-50 page in the browser, hiding older parked jobs.
+- **Scheduler card:** the Architecture card read `is_running` as on/off, so it showed a sleeping scheduler as paused with a Start button.
+- **Silent model overwrite:** the schedule editor's settings block sent `local_model` (the stale `OLLAMA_LOCAL_MODEL` default) on every save, which writes the live background model. The block is gone, and Settings doesn't offer the field.
+- **Knowledge type filter:** it offered 4 of 13 note types.
+
+Deliberately not built: an **Appearance** section (there is only one theme; nothing to configure yet). The **domains** tile waits for Phase 4.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

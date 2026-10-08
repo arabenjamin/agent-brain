@@ -241,6 +241,66 @@ fn not_found() -> Response {
         .into_response()
 }
 
+fn bad_request(msg: impl std::fmt::Display) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": msg.to_string()})),
+    )
+        .into_response()
+}
+
+/// `?since=` as an RFC 3339 instant, normalised to UTC.
+fn parse_since(params: &HashMap<String, String>) -> Result<Option<String>, String> {
+    parse_instant(params, "since")
+}
+
+/// An RFC 3339 instant query param, normalised to UTC. Callers must compare
+/// it through `datetime($param)`: Cypher compares a datetime to a string as
+/// null and silently drops every row.
+fn parse_instant(params: &HashMap<String, String>, key: &str) -> Result<Option<String>, String> {
+    match params.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(s) => chrono::DateTime::parse_from_rfc3339(s)
+            .map(|d| Some(d.with_timezone(&chrono::Utc).to_rfc3339()))
+            .map_err(|_| {
+                format!(
+                    "`{key}` must be an RFC 3339 timestamp (e.g. 2026-10-08T00:00:00Z), got {s:?}"
+                )
+            }),
+    }
+}
+
+/// `?status=a,b` as a list (one status is a list of one). Bound as
+/// `$statuses` with `IN`, so a value is never spliced into Cypher.
+fn parse_statuses(params: &HashMap<String, String>) -> Option<Vec<String>> {
+    let list: Vec<String> = params
+        .get("status")?
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// `?hours=` for a look-back window: default 24, clamped to 1..=720 (30 days).
+fn window_hours(params: &HashMap<String, String>) -> i64 {
+    params
+        .get("hours")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(24)
+        .clamp(1, 720)
+}
+
+/// `WHERE a AND b ` for the given conditions, or nothing. Conditions are
+/// fixed strings with `$param` placeholders — never request values.
+fn where_clause(conds: &[&str]) -> String {
+    if conds.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {} ", conds.join(" AND "))
+    }
+}
+
 // ============================================================================
 // Todo handlers
 // ============================================================================
@@ -880,7 +940,7 @@ pub async fn handle_api_health(Extension(state): Extension<Arc<RestState>>) -> i
     let dead_24h: i64 = neo4j
         .execute(neo4rs::query(
             "MATCH (j:AgentJob) \
-             WHERE j.status = 'dead' \
+             WHERE j.status IN ['dead', 'dead_letter'] \
                AND j.updated_at >= datetime() - duration({hours: 24}) \
              RETURN count(j) AS n",
         ))
@@ -889,12 +949,35 @@ pub async fn handle_api_health(Extension(state): Extension<Arc<RestState>>) -> i
         .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("n").ok()))
         .unwrap_or(0);
 
+    // The commit the running binary was built from (written at startup).
+    let version = neo4j
+        .execute(neo4rs::query(
+            "MATCH (b:BrainVersion {id: 'current'}) \
+             RETURN b.sha AS sha, b.branch AS branch, b.dirty AS dirty, \
+                    b.subject AS subject, toString(b.deployed_at) AS deployed_at",
+        ))
+        .await
+        .ok()
+        .and_then(|rows| {
+            rows.first().map(|r| {
+                json!({
+                    "sha": r.get::<String>("sha").ok(),
+                    "branch": r.get::<String>("branch").ok(),
+                    "dirty": r.get::<bool>("dirty").ok(),
+                    "subject": r.get::<String>("subject").ok(),
+                    "deployed_at": r.get::<String>("deployed_at").ok(),
+                })
+            })
+        });
+
     Json(json!({
         "scheduler": scheduler_status,
         "queue": queue_stats,
         "knowledge": { "notes_by_type": serde_json::Value::Object(notes_by_type) },
         "tasks": { "by_status": serde_json::Value::Object(tasks_by_status) },
+        // `dead` and `dead_letter` both mean a job that will not run again.
         "alerts": { "dead_jobs_last_24h": dead_24h },
+        "version": version,
     }))
     .into_response()
 }
@@ -1190,28 +1273,39 @@ pub async fn handle_list_jobs(
         return unavailable("Neo4j not available");
     };
 
-    let status = params.get("status").map(String::as_str);
-    let limit: usize = params
+    let statuses = parse_statuses(&params);
+    let limit: i64 = params
         .get("limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(100)
         .min(500);
-
-    let cypher = if let Some(s) = status {
-        format!(
-            "MATCH (j:AgentJob {{status: '{}'}}) \
-             RETURN j ORDER BY j.created_at DESC LIMIT {}",
-            s, limit
-        )
-    } else {
-        format!(
-            "MATCH (j:AgentJob) \
-             RETURN j ORDER BY j.created_at DESC LIMIT {}",
-            limit
-        )
+    // `since` filters on updated_at: a job "in the window" is one whose state
+    // changed in it, which is what /api/activity counts.
+    let since = match parse_since(&params) {
+        Ok(s) => s,
+        Err(e) => return bad_request(e),
     };
 
-    match neo4j.execute(neo4rs::query(&cypher)).await {
+    let mut conds = Vec::new();
+    if statuses.is_some() {
+        conds.push("j.status IN $statuses");
+    }
+    if since.is_some() {
+        conds.push("j.updated_at >= datetime($since)");
+    }
+    let cypher = format!(
+        "MATCH (j:AgentJob) {}RETURN j ORDER BY j.created_at DESC LIMIT $limit",
+        where_clause(&conds)
+    );
+    let mut q = neo4rs::query(&cypher).param("limit", limit);
+    if let Some(ref s) = statuses {
+        q = q.param("statuses", s.clone());
+    }
+    if let Some(ref s) = since {
+        q = q.param("since", s.as_str());
+    }
+
+    match neo4j.execute(q).await {
         Ok(rows) => {
             let jobs: Vec<Value> = rows
                 .iter()
@@ -1297,23 +1391,38 @@ pub async fn handle_list_notes(
         .unwrap_or(50)
         .min(500);
 
-    let note_type_filter = params.get("note_type").cloned();
+    let note_type_filter = params.get("note_type").cloned().filter(|s| !s.is_empty());
     let search_q = params.get("q").cloned().filter(|s| !s.trim().is_empty());
-
-    let ret = "RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
-               n.access_count AS access_count, toString(n.created_at) AS created_at \
-               ORDER BY n.created_at DESC LIMIT $limit";
-
-    let cypher = match (&note_type_filter, &search_q) {
-        (Some(_), Some(_)) => format!(
-            "MATCH (n:Note) WHERE n.note_type = $nt AND toLower(n.content) CONTAINS toLower($q) {ret}"
-        ),
-        (Some(_), None) => format!("MATCH (n:Note) WHERE n.note_type = $nt {ret}"),
-        (None, Some(_)) => {
-            format!("MATCH (n:Note) WHERE toLower(n.content) CONTAINS toLower($q) {ret}")
-        }
-        (None, None) => format!("MATCH (n:Note) {ret}"),
+    let since = match parse_since(&params) {
+        Ok(s) => s,
+        Err(e) => return bad_request(e),
     };
+    // Claims checked in a window (what /api/activity's `claims_checked` counts).
+    let verified_since = match parse_instant(&params, "verified_since") {
+        Ok(s) => s,
+        Err(e) => return bad_request(e),
+    };
+
+    let mut conds = Vec::new();
+    if note_type_filter.is_some() {
+        conds.push("n.note_type = $nt");
+    }
+    if search_q.is_some() {
+        conds.push("toLower(n.content) CONTAINS toLower($q)");
+    }
+    if since.is_some() {
+        conds.push("n.created_at >= datetime($since)");
+    }
+    if verified_since.is_some() {
+        conds.push("n.verified_at >= datetime($verified_since)");
+    }
+    let cypher = format!(
+        "MATCH (n:Note) {}\
+         RETURN n.id AS id, n.content AS content, n.note_type AS note_type, \
+                n.access_count AS access_count, toString(n.created_at) AS created_at \
+         ORDER BY n.created_at DESC LIMIT $limit",
+        where_clause(&conds)
+    );
 
     let mut q = neo4rs::query(&cypher).param("limit", limit);
     if let Some(ref nt) = note_type_filter {
@@ -1321,6 +1430,12 @@ pub async fn handle_list_notes(
     }
     if let Some(ref sq) = search_q {
         q = q.param("q", sq.as_str());
+    }
+    if let Some(ref s) = since {
+        q = q.param("since", s.as_str());
+    }
+    if let Some(ref s) = verified_since {
+        q = q.param("verified_since", s.as_str());
     }
 
     match neo4j.execute(q).await {
@@ -1541,29 +1656,36 @@ pub async fn handle_list_tasks(
         .and_then(|v| v.parse().ok())
         .unwrap_or(100)
         .min(500);
-    let status_filter = params.get("status").cloned();
-
-    let cypher = if let Some(ref s) = status_filter {
-        format!(
-            "MATCH (t:Task {{status: '{}'}}) \
-             RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                    t.context AS context, toString(t.created_at) AS created_at, \
-                    [(t)-[:SUBTASK_OF]->(p) | p.id][0] AS parent_id \
-             ORDER BY t.created_at DESC LIMIT {}",
-            s, limit
-        )
-    } else {
-        format!(
-            "MATCH (t:Task) \
-             RETURN t.id AS id, t.goal AS goal, t.status AS status, \
-                    t.context AS context, toString(t.created_at) AS created_at, \
-                    [(t)-[:SUBTASK_OF]->(p) | p.id][0] AS parent_id \
-             ORDER BY t.created_at DESC LIMIT {}",
-            limit
-        )
+    let statuses = parse_statuses(&params);
+    let since = match parse_since(&params) {
+        Ok(s) => s,
+        Err(e) => return bad_request(e),
     };
 
-    match neo4j.execute(neo4rs::query(&cypher)).await {
+    let mut conds = Vec::new();
+    if statuses.is_some() {
+        conds.push("t.status IN $statuses");
+    }
+    if since.is_some() {
+        conds.push("t.created_at >= datetime($since)");
+    }
+    let cypher = format!(
+        "MATCH (t:Task) {}\
+         RETURN t.id AS id, t.goal AS goal, t.status AS status, \
+                t.context AS context, toString(t.created_at) AS created_at, \
+                [(t)-[:SUBTASK_OF]->(p) | p.id][0] AS parent_id \
+         ORDER BY t.created_at DESC LIMIT $limit",
+        where_clause(&conds)
+    );
+    let mut q = neo4rs::query(&cypher).param("limit", limit);
+    if let Some(ref s) = statuses {
+        q = q.param("statuses", s.clone());
+    }
+    if let Some(ref s) = since {
+        q = q.param("since", s.as_str());
+    }
+
+    match neo4j.execute(q).await {
         Ok(rows) => {
             let tasks: Vec<Value> = rows
                 .iter()
@@ -1691,6 +1813,109 @@ pub async fn handle_model_usage(
         }
         Err(e) => internal(format!("Failed to get model usage: {e}")),
     }
+}
+
+/// One `RETURN <key> AS k, count(*) AS c` breakdown over a window: the total
+/// and the per-key counts.
+async fn count_by(neo4j: &Neo4jClient, cypher: &str, since: &str) -> Result<(i64, Value), String> {
+    let rows = neo4j
+        .execute(neo4rs::query(cypher).param("since", since))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut total = 0;
+    let mut by = serde_json::Map::new();
+    for row in rows {
+        let k = row
+            .get::<String>("k")
+            .unwrap_or_else(|_| "unknown".to_string());
+        let c = row.get::<i64>("c").unwrap_or(0);
+        total += c;
+        by.insert(k, json!(c));
+    }
+    Ok((total, Value::Object(by)))
+}
+
+/// GET /api/activity?hours=24 — what the brain did in a look-back window.
+///
+/// Every count has rows behind it: `notes` → `/api/notes?since=…&note_type=…`,
+/// `tasks` → `/api/tasks?since=…&status=…`, `jobs` (state changed in the
+/// window) → `/api/jobs?since=…&status=…`, `claims_checked` →
+/// `/api/notes?note_type=claim&verified_since=…`. A section whose query fails is
+/// `null` and named in `errors` — never reported as zero.
+pub async fn handle_get_activity(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(ref neo4j) = state.neo4j else {
+        return unavailable("Neo4j not available");
+    };
+    let hours = window_hours(&params);
+    let since = (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+
+    let sections: [(&str, &str); 4] = [
+        (
+            "notes",
+            "MATCH (n:Note) WHERE n.created_at >= datetime($since) \
+             RETURN coalesce(n.note_type, 'untyped') AS k, count(*) AS c",
+        ),
+        (
+            "tasks",
+            "MATCH (t:Task) WHERE t.created_at >= datetime($since) \
+             RETURN coalesce(t.status, 'unknown') AS k, count(*) AS c",
+        ),
+        (
+            "jobs",
+            "MATCH (j:AgentJob) WHERE j.updated_at >= datetime($since) \
+             RETURN coalesce(j.status, 'unknown') AS k, count(*) AS c",
+        ),
+        (
+            "claims_checked",
+            "MATCH (n:Note {note_type: 'claim'}) WHERE n.verified_at >= datetime($since) \
+             RETURN coalesce(n.claim_status, 'unknown') AS k, count(*) AS c",
+        ),
+    ];
+
+    let mut out = serde_json::Map::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (name, cypher) in sections {
+        match count_by(neo4j, cypher, &since).await {
+            Ok((total, by)) => {
+                out.insert(name.to_string(), json!({ "total": total, "by": by }));
+            }
+            Err(e) => {
+                out.insert(name.to_string(), Value::Null);
+                errors.push(format!("{name}: {e}"));
+            }
+        }
+    }
+
+    let singles: [(&str, &str); 2] = [
+        (
+            "media_ingested",
+            "MATCH (m:Media) WHERE m.ingested_at >= datetime($since) RETURN 'all' AS k, count(*) AS c",
+        ),
+        (
+            "schedule_runs",
+            "MATCH (s:ScheduledTask) WHERE s.last_run_at >= datetime($since) \
+             RETURN 'all' AS k, count(*) AS c",
+        ),
+    ];
+    for (name, cypher) in singles {
+        match count_by(neo4j, cypher, &since).await {
+            Ok((total, _)) => {
+                out.insert(name.to_string(), json!(total));
+            }
+            Err(e) => {
+                out.insert(name.to_string(), Value::Null);
+                errors.push(format!("{name}: {e}"));
+            }
+        }
+    }
+
+    out.insert("window_hours".to_string(), json!(hours));
+    out.insert("since".to_string(), json!(since));
+    out.insert("errors".to_string(), json!(errors));
+    Json(Value::Object(out)).into_response()
 }
 
 /// GET /api/logs?limit=<n>&level=<info|warn|error|debug>
@@ -1824,5 +2049,81 @@ pub async fn handle_mark_all_notifications_read(
             Json(json!({"error": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_since_normalises_to_utc() {
+        let p = params(&[("since", "2026-10-08T10:00:00-04:00")]);
+        let s = parse_since(&p).unwrap().unwrap();
+        assert!(s.starts_with("2026-10-08T14:00:00"), "{s}");
+        assert!(s.ends_with("+00:00"), "{s}");
+    }
+
+    #[test]
+    fn parse_since_absent_or_blank_is_none() {
+        assert_eq!(parse_since(&params(&[])).unwrap(), None);
+        assert_eq!(parse_since(&params(&[("since", "  ")])).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_since_rejects_non_timestamps() {
+        // Includes an injection attempt: a bad `since` is a 400, never Cypher.
+        for bad in ["yesterday", "2026-10-08", "x') DETACH DELETE n //"] {
+            let err = parse_since(&params(&[("since", bad)])).unwrap_err();
+            assert!(err.contains("RFC 3339"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_instant_names_its_param_in_the_error() {
+        let err =
+            parse_instant(&params(&[("verified_since", "soon")]), "verified_since").unwrap_err();
+        assert!(err.starts_with("`verified_since`"), "{err}");
+    }
+
+    #[test]
+    fn parse_statuses_splits_and_trims() {
+        assert_eq!(parse_statuses(&params(&[])), None);
+        assert_eq!(parse_statuses(&params(&[("status", " , ")])), None);
+        assert_eq!(
+            parse_statuses(&params(&[("status", "failed, dead,dead_letter")])),
+            Some(vec!["failed".into(), "dead".into(), "dead_letter".into()])
+        );
+        // A quote stays inside the bound value; it is never Cypher.
+        assert_eq!(
+            parse_statuses(&params(&[("status", "x'})")])),
+            Some(vec!["x'})".into()])
+        );
+    }
+
+    #[test]
+    fn window_hours_defaults_and_clamps() {
+        assert_eq!(window_hours(&params(&[])), 24);
+        assert_eq!(window_hours(&params(&[("hours", "6")])), 6);
+        assert_eq!(window_hours(&params(&[("hours", "0")])), 1);
+        assert_eq!(window_hours(&params(&[("hours", "99999")])), 720);
+        assert_eq!(window_hours(&params(&[("hours", "lots")])), 24);
+    }
+
+    #[test]
+    fn where_clause_joins_or_is_empty() {
+        assert_eq!(where_clause(&[]), "");
+        assert_eq!(where_clause(&["a = $a"]), "WHERE a = $a ");
+        assert_eq!(
+            where_clause(&["a = $a", "b = $b"]),
+            "WHERE a = $a AND b = $b "
+        );
     }
 }

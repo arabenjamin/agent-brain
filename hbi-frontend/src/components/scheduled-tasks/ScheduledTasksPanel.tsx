@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest } from "../../api/client";
+import { hrefTo } from "../../nav";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,16 +55,6 @@ function fmtDatetime(iso?: string): string {
   } catch {
     return iso;
   }
-}
-
-// ─── Scheduler config types ───────────────────────────────────────────────────
-
-interface SchedulerConfig {
-  interval_secs: number;
-  enabled: boolean;
-  local_model: string;
-  idle_sleep_after_ticks: number;
-  sleep_interval_secs: number;
 }
 
 // ─── Step builder types ───────────────────────────────────────────────────────
@@ -340,8 +331,6 @@ function ScheduledTasksView() {
   const [editTask, setEditTask] = useState<ScheduledTask | null>(null);
   const [enabledOnly, setEnabledOnly] = useState(false);
 
-  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfig | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -359,17 +348,7 @@ function ScheduledTasksView() {
     }
   }, [enabledOnly]);
 
-  const fetchSchedulerConfig = useCallback(async () => {
-    try {
-      const res = await apiRequest(`/scheduler-config`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setSchedulerConfig(data.config ?? null);
-    } catch { /* best-effort */ }
-  }, []);
-
   useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => { fetchSchedulerConfig(); }, [fetchSchedulerConfig]);
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Delete scheduled task "${name}"?`)) return;
@@ -430,25 +409,16 @@ function ScheduledTasksView() {
           <button className="sidebar-btn" onClick={refresh} disabled={loading} title="Refresh">
             {loading ? "..." : "Refresh"}
           </button>
-          <button
-            className="sidebar-btn"
-            onClick={() => setShowSettings((v) => !v)}
-            title="Scheduler settings"
-          >
-            ⚙ Settings
-          </button>
+          {/* Scheduler on/off and timing live in Settings → Scheduler. */}
+          <a className="sidebar-btn" href={hrefTo("settings", { section: "scheduler" })} title="Scheduler settings">
+            ⚙ Scheduler
+          </a>
           <button className="sidebar-btn active" onClick={() => { setEditTask(null); setShowForm(true); }}>
             + New Task
           </button>
         </div>
       </div>
 
-      {showSettings && (
-        <SchedulerSettingsPanel
-          config={schedulerConfig}
-          onSaved={(updated) => { setSchedulerConfig(updated); }}
-        />
-      )}
 
       {error && (
         <div style={{ color: "var(--error, #f87171)", fontSize: "0.85rem" }}>{error}</div>
@@ -1112,138 +1082,6 @@ function ScheduledTaskRow({
 }
 
 // ─── SchedulerSettingsPanel ───────────────────────────────────────────────────
-
-function SchedulerSettingsPanel({
-  config,
-  onSaved,
-}: {
-  config: SchedulerConfig | null;
-  onSaved: (updated: SchedulerConfig) => void;
-}) {
-  const [localModel, setLocalModel] = useState(config?.local_model ?? DEFAULT_MODEL);
-  const [enabled, setEnabled] = useState(config?.enabled ?? true);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    if (config) {
-      setLocalModel(config.local_model);
-      setEnabled(config.enabled);
-    }
-  }, [config]);
-
-  const handleSave = async () => {
-    setSaving(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      const res = await apiRequest(`/scheduler-config`, {
-        method: "PUT",
-        body: JSON.stringify({ local_model: localModel, enabled }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error ?? `${res.status}`);
-      }
-      const data = await res.json();
-      onSaved(data.config as SchedulerConfig);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (e) {
-      setSaveError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const panelStyle: React.CSSProperties = {
-    background: "var(--surface2, #313244)",
-    border: "1px solid var(--border, #45475a)",
-    borderRadius: "8px",
-    padding: "12px 16px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
-    fontSize: "0.85rem",
-  };
-
-  const rowStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    flexWrap: "wrap",
-  };
-
-  const inputStyle: React.CSSProperties = {
-    background: "var(--surface, #1e1e2e)",
-    border: "1px solid var(--border, #45475a)",
-    borderRadius: "6px",
-    padding: "4px 8px",
-    color: "inherit",
-    fontSize: "0.85rem",
-    flex: 1,
-    minWidth: "180px",
-  };
-
-  return (
-    <div style={panelStyle}>
-      <div style={{ fontWeight: 600, opacity: 0.8 }}>Scheduler Settings</div>
-
-      {config === null && (
-        <p style={{ opacity: 0.5, margin: 0 }}>Scheduler not yet available.</p>
-      )}
-
-      {config !== null && (
-        <>
-          <div style={rowStyle}>
-            <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                style={{ accentColor: "var(--accent, #89b4fa)" }}
-              />
-              Enabled
-            </label>
-          </div>
-
-          <div style={rowStyle}>
-            <span style={{ whiteSpace: "nowrap", opacity: 0.8 }}>Local model</span>
-            <input
-              style={inputStyle}
-              value={localModel}
-              onChange={(e) => setLocalModel(e.target.value)}
-              placeholder={`e.g. ${DEFAULT_MODEL}`}
-              spellCheck={false}
-            />
-            <span style={{ opacity: 0.45, fontSize: "0.78rem", whiteSpace: "nowrap" }}>
-              used by background tasks
-            </span>
-          </div>
-
-          {saveError && (
-            <p style={{ color: "#f87171", margin: 0, fontSize: "0.8rem" }}>{saveError}</p>
-          )}
-
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <button
-              className="sidebar-btn active"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            {saved && <span style={{ color: "#a6e3a1", fontSize: "0.8rem" }}>Saved!</span>}
-            <span style={{ marginLeft: "auto", opacity: 0.4, fontSize: "0.75rem" }}>
-              interval: {config.interval_secs}s · sleep after {config.idle_sleep_after_ticks} idle ticks
-            </span>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
 
 // ─── Badges ──────────────────────────────────────────────────────────────────
 

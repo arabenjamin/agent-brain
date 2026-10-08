@@ -14,7 +14,11 @@ npm run build    # tsc -b + vite build
 docker compose up -d --build hbi-frontend   # rebuild the served UI
 ```
 
-Settings (brain URL, API key) live in the browser's localStorage via the ⚙ Settings modal; `VITE_BRAIN_URL` / `VITE_API_KEY` are the defaults.
+The brain URL and API key live in the browser's localStorage (Settings → Connection); `VITE_BRAIN_URL` / `VITE_API_KEY` are the defaults.
+
+## Workspaces
+
+`#/home` (dashboard) · `#/chat` · `#/work?view=jobs|todos|scheduled|proposals` · `#/knowledge?view=notes|graph` · `#/system?view=logs|architecture|tools` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect.
 
 ## Layout
 
@@ -25,9 +29,14 @@ src/
   api/mcp.ts         MCP SDK client (Streamable HTTP) + server-push fan-out
   api/chat.ts        /chat SSE stream
   router.ts          hash routing: #/<workspace>?<kind>=<id>
-  lib/               time (UTC in, local out), ids
-  components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer
+  workspaces.ts      the workspaces, their views, and legacy-URL redirects
+  nav.ts             goTo / hrefTo: move between workspaces, keeping only the open drawer
+  lib/               time (UTC in, local out), ids, scheduler state, useNow
+  components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
   components/drawer/ entity drawer (openEntity / closeEntity)
+  components/home/   the dashboard
+  components/settings/ the Settings page and its sections
+  components/palette/ Ctrl-K
   components/<panel>/ the workspaces
   styles/main.css    tokens (:root) + panel styles; styles/ui.css for the kit
 ```
@@ -38,3 +47,4 @@ src/
 - Anything shown in more than one view is a shared query in `api/queries.ts`.
 - Open an entity with `openEntity("note", id)`. It is URL state, so every open note is a link.
 - Colours come from the `:root` tokens. Empty and error states say what was checked.
+- A dashboard number links to its rows (`Stat href=…`); the target view takes the filter as a prop and shows a `DrillBanner`.

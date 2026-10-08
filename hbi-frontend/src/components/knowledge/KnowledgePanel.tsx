@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { apiJson } from "../../api/client";
+import { apiJson, query as apiQuery } from "../../api/client";
+import { formatLocal } from "../../lib/time";
+import { goTo } from "../../nav";
+import { DrillBanner } from "../ui";
 import { asEntityId } from "../../lib/ids";
 import { openEntity } from "../drawer/entities";
 
@@ -24,9 +27,26 @@ function fmtDate(s?: string): string {
 
 const NOTE_TYPES = ["semantic", "episodic", "reflection", "consolidated"];
 
-export default function KnowledgePanel() {
-  const [query, setQuery]               = useState("");
-  const [filterType, setFilterType]     = useState("");
+/** A drill-down from Home or Ctrl-K: a server-side filtered list, or a search. */
+export interface KnowledgeDrill {
+  /** UTC RFC 3339: notes created since. */
+  since?: string;
+  type?: string;
+  /** UTC RFC 3339: claims whose evidence was gathered since. */
+  verifiedSince?: string;
+  q?: string;
+}
+
+const DRILL_LIMIT = 500;
+
+export default function KnowledgePanel({ drill }: { drill?: KnowledgeDrill }) {
+  const drillSince = drill?.since;
+  const drillType = drill?.type;
+  const drillVerified = drill?.verifiedSince;
+  const drillQ = drill?.q;
+  const filtered = !!(drillSince || drillType || drillVerified);
+  const [query, setQuery]               = useState(drillQ ?? "");
+  const [filterType, setFilterType]     = useState(drillType ?? "");
   const [notes, setNotes]               = useState<Note[]>([]);
   const [selected, setSelected]         = useState<Note | null>(null);
   const [related, setRelated]           = useState<Note[]>([]);
@@ -49,20 +69,34 @@ export default function KnowledgePanel() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting]         = useState(false);
 
+  // Every type the list could show: the common ones, whatever is loaded, and
+  // a drilled type (the old fixed list hid claim, source_record and 7 more).
+  const typeOptions = Array.from(new Set([
+    ...NOTE_TYPES,
+    ...notes.map(n => n.note_type).filter((t): t is string => !!t),
+    ...(drillType ? [drillType] : []),
+  ])).sort();
+
   const loadInitial = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiJson<{ notes?: Note[] }>("/api/notes?limit=50");
+      const data = await apiJson<{ notes?: Note[] }>(filtered
+        ? `/api/notes${apiQuery({ since: drillSince, note_type: drillType, verified_since: drillVerified, limit: DRILL_LIMIT })}`
+        : "/api/notes?limit=50");
       setNotes(data.notes ?? []);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filtered, drillSince, drillType, drillVerified]);
 
-  useEffect(() => { loadInitial(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A drill with `q` runs that search; otherwise load the (filtered) list.
+  useEffect(() => {
+    if (drillQ) search(drillQ);
+    else loadInitial();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const search = useCallback(async (q: string) => {
     if (!q.trim()) { loadInitial(); return; }
@@ -370,12 +404,20 @@ export default function KnowledgePanel() {
           style={{ flex: "0 0 auto" }}
         >
           <option value="">All types</option>
-          {NOTE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         <button className="btn" onClick={() => search(query)} disabled={loading}>
           Search
         </button>
       </div>
+
+      {filtered && (
+        <DrillBanner rows={notes.length} cap={DRILL_LIMIT} onClear={() => goTo("knowledge", { view: "notes" })}>
+          {drillType ? <strong>{drillType}</strong> : "all"} notes
+          {drillSince && <> created since {formatLocal(drillSince)}</>}
+          {drillVerified && <> checked since {formatLocal(drillVerified)}</>}
+        </DrillBanner>
+      )}
 
       {error && <div className="error-msg">{error}</div>}
 
@@ -389,7 +431,11 @@ export default function KnowledgePanel() {
             {notes.filter(n => !filterType || n.note_type === filterType).length === 0 && !loading && (
               <div className="empty-state" style={{ flex: 1, paddingTop: 40 }}>
                 <span className="icon">📝</span>
-                <span>No notes found</span>
+                <span>
+                  {filterType
+                    ? `No ${filterType} notes among the ${notes.length} loaded`
+                    : "No notes found"}
+                </span>
               </div>
             )}
             {notes.filter(n => !filterType || n.note_type === filterType).map(n => (

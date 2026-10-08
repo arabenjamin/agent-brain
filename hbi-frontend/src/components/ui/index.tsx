@@ -39,19 +39,21 @@ export function Card({
 // ── Stat ─────────────────────────────────────────────────────────────────────
 
 /**
- * A labelled number. Pass `onClick` whenever the number has rows behind it:
- * a count the user can't drill into is a count they can't check.
+ * A labelled number. Give it `href` (or `onClick`) whenever the number has
+ * rows behind it: a count the user can't drill into is one they can't check.
  */
 export function Stat({
   label,
   value,
   tone,
+  href,
   onClick,
   title,
 }: {
   label: string;
   value: ReactNode;
   tone?: Tone;
+  href?: string;
   onClick?: () => void;
   title?: string;
 }) {
@@ -61,6 +63,7 @@ export function Stat({
       <span className={`ui-stat-value${tone ? ` tone-text-${tone}` : ""}`}>{value}</span>
     </>
   );
+  if (href) return <a className="ui-stat ui-stat-link" href={href} title={title}>{body}</a>;
   return onClick ? (
     <button type="button" className="ui-stat ui-stat-link" onClick={onClick} title={title}>{body}</button>
   ) : (
@@ -158,5 +161,36 @@ export function Drawer({
       </header>
       <div className="ui-drawer-body">{children}</div>
     </aside>
+  );
+}
+
+// ── DrillBanner ──────────────────────────────────────────────────────────────
+
+/**
+ * Marks a view that is showing a filtered subset (a drill-down from a count),
+ * with a way back to the whole list. `capped` says when the rows hit the
+ * endpoint's limit, so a short list is never mistaken for the full answer.
+ */
+export function DrillBanner({
+  children,
+  rows,
+  cap,
+  onClear,
+}: {
+  children: ReactNode;
+  rows?: number;
+  cap?: number;
+  onClear: () => void;
+}) {
+  return (
+    <div className="drill-banner" role="status">
+      <span>Filtered: {children}</span>
+      {rows !== undefined && (
+        <span className={cap !== undefined && rows >= cap ? "tone-text-yellow" : "tone-text-muted"}>
+          {cap !== undefined && rows >= cap ? `first ${cap} rows (the endpoint's limit)` : `${rows} rows`}
+        </span>
+      )}
+      <button type="button" className="ui-icon-btn" onClick={onClear}>Show all ✕</button>
+    </div>
   );
 }

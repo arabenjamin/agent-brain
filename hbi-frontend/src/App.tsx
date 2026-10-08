@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import "./styles/main.css";
 import "./styles/ui.css";
 import type { AgentNotification } from "./api/notifications";
@@ -6,8 +6,12 @@ import { fetchUnreadNotifications, markNotificationRead } from "./api/notificati
 import { getMcpClient, onNotification } from "./api/mcp";
 import { invalidateOnJobPush } from "./api/queries";
 import { navigate, useRoute } from "./router";
+import { goTo } from "./nav";
+import { SETTINGS, WORKSPACES, resolveRoute, type Workspace } from "./workspaces";
 import EntityDrawer from "./components/drawer/EntityDrawer";
+import { Tabs } from "./components/ui";
 
+const HomePanel          = lazy(() => import("./components/home/HomePanel"));
 const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
 const TaskPanel          = lazy(() => import("./components/tasks/TaskPanel"));
 const KnowledgePanel     = lazy(() => import("./components/knowledge/KnowledgePanel"));
@@ -15,41 +19,57 @@ const GraphPanel         = lazy(() => import("./components/graph/GraphPanel"));
 const ToolPanel          = lazy(() => import("./components/tools/ToolPanel"));
 const LogsPanel          = lazy(() => import("./components/logs/LogsPanel"));
 const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
-const TodoPanel               = lazy(() => import("./components/todo/TodoPanel"));
-const ScheduledTasksPanel     = lazy(() => import("./components/scheduled-tasks/ScheduledTasksPanel"));
-const SettingsModal           = lazy(() => import("./components/settings/SettingsModal"));
-
-type Tab = "chat" | "tasks" | "todos" | "scheduled-tasks" | "knowledge" | "graph" | "tools" | "logs" | "architecture";
-
-const TABS: { id: Tab; icon: string; label: string }[] = [
-  { id: "chat",            icon: "🧠", label: "Chat" },
-  { id: "tasks",           icon: "📋", label: "Tasks" },
-  { id: "todos",           icon: "✅", label: "Todos" },
-  { id: "scheduled-tasks", icon: "📅", label: "Scheduled" },
-  { id: "knowledge",       icon: "🔍", label: "Knowledge" },
-  { id: "graph",           icon: "🕸", label: "Graph" },
-  { id: "tools",           icon: "🔧", label: "Tools" },
-  { id: "logs",            icon: "📊", label: "Logs" },
-  { id: "architecture",    icon: "🏗", label: "Architecture" },
-];
-
-function isTab(path: string): path is Tab {
-  return TABS.some((t) => t.id === path);
-}
+const TodoPanel          = lazy(() => import("./components/todo/TodoPanel"));
+const ScheduledTasksPanel = lazy(() => import("./components/scheduled-tasks/ScheduledTasksPanel"));
+const ProposalsPanel     = lazy(() => import("./components/proposals/ProposalsPanel"));
+const SettingsPage       = lazy(() => import("./components/settings/SettingsPage"));
+const CommandPalette     = lazy(() => import("./components/palette/CommandPalette"));
 
 function Fallback() {
   return <div className="loading" style={{ padding: 24 }}>Loading…</div>;
 }
 
+/** A workspace with views: its name, the view tabs, then the view itself. */
+function WorkspaceFrame({ workspace, view, children }: { workspace: Workspace; view: string; children: ReactNode }) {
+  return (
+    <div className="workspace">
+      <div className="workspace-bar">
+        <span className="workspace-title">{workspace.icon} {workspace.label}</span>
+        <Tabs
+          tabs={(workspace.views ?? []).map((v) => ({ id: v.id, label: v.label }))}
+          active={view}
+          onChange={(id) => goTo(workspace.id, { view: id })}
+        />
+      </div>
+      <div className="workspace-body">{children}</div>
+    </div>
+  );
+}
+
 export default function App() {
-  // The URL owns the workspace: `#/knowledge?note=<id>` opens Knowledge with
-  // that note in the drawer, and Back/Forward move between workspaces.
+  // The URL owns navigation: `#/<workspace>?view=<view>&<filters>&note=<id>`.
+  // Old one-tab URLs (#/tasks, #/graph, …) redirect to their new home.
   const route = useRoute();
-  const tab: Tab = isTab(route.path) ? route.path : "chat";
+  const resolved = resolveRoute(route);
   useEffect(() => {
-    if (!isTab(route.path)) navigate({ path: "chat" }, { replace: true });
-  }, [route.path]);
-  const [showSettings, setShowSettings] = useState(false);
+    if (resolved.kind === "redirect") navigate({ path: resolved.path, params: resolved.params }, { replace: true });
+  }, [resolved]);
+  const workspace = resolved.kind === "show" ? resolved.workspace : null;
+  const view = resolved.kind === "show" ? resolved.view?.id ?? "" : "";
+  const p = route.params;
+
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Single source of truth for agent notifications: the nav badge counts this
   // list and ChatPanel renders it, so the badge can never advertise a message
   // the chat panel does not display.
@@ -108,69 +128,85 @@ export default function App() {
   // One subscription keeps every shared status query fresh on job pushes.
   useEffect(() => invalidateOnJobPush(), []);
 
-  const handleTabClick = useCallback((id: Tab) => {
-    navigate({ path: id });
-  }, []);
+  const ws = workspace?.id;
+  // Drill-down filters key their panel, so a new drill remounts it cleanly.
+  const taskDrill = { tab: p.tab, taskStatus: p.task_status, jobStatus: p.job_status, since: p.since };
+  const knowledgeDrill = { since: p.since, type: p.type, verifiedSince: p.verified_since, q: p.q };
 
   return (
     <div className="app">
       <nav className="sidebar">
         <div className="sidebar-title">Agent Brain</div>
-        {TABS.map((t) => (
+        {WORKSPACES.map((w) => (
           <button
-            key={t.id}
-            className={`sidebar-btn${tab === t.id ? " active" : ""}`}
-            onClick={() => handleTabClick(t.id)}
+            key={w.id}
+            className={`sidebar-btn${ws === w.id ? " active" : ""}`}
+            onClick={() => goTo(w.id)}
           >
-            <span className="icon">{t.icon}</span>
-            {t.label}
-            {t.id === "chat" && notifications.length > 0 && (
+            <span className="icon">{w.icon}</span>
+            {w.label}
+            {w.id === "chat" && notifications.length > 0 && (
               <span className="notif-badge">{notifications.length}</span>
             )}
           </button>
         ))}
         <div style={{ marginTop: "auto" }}>
+          <div className="sidebar-hint">Ctrl-K to jump anywhere</div>
           <button
-            className="sidebar-btn"
-            onClick={() => setShowSettings(true)}
-            title="Settings"
+            className={`sidebar-btn${ws === SETTINGS.id ? " active" : ""}`}
+            onClick={() => goTo(SETTINGS.id)}
           >
-            <span className="icon">⚙</span>
-            Settings
+            <span className="icon">{SETTINGS.icon}</span>
+            {SETTINGS.label}
           </button>
         </div>
       </nav>
 
       <main className="main-content">
-        {/* ChatPanel stays mounted so conversation history survives tab switches. */}
-        <div style={tab === "chat"
+        {/* ChatPanel stays mounted so conversation history survives navigation. */}
+        <div style={ws === "chat"
           ? { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }
           : { display: "none" }}>
           <Suspense fallback={<Fallback />}>
             <ChatPanel
               notifications={notifications}
               onDismissNotification={dismissNotification}
-              visible={tab === "chat"}
+              visible={ws === "chat"}
             />
           </Suspense>
         </div>
         <Suspense fallback={<Fallback />}>
-          {tab === "tasks"           && <TaskPanel />}
-          {tab === "todos"           && <TodoPanel />}
-          {tab === "scheduled-tasks" && <ScheduledTasksPanel />}
-          {tab === "knowledge"       && <KnowledgePanel />}
-          {tab === "graph"           && <GraphPanel />}
-          {tab === "tools"           && <ToolPanel />}
-          {tab === "logs"            && <LogsPanel />}
-          {tab === "architecture"    && <ArchitecturePanel />}
+          {ws === "home" && <HomePanel notifications={notifications} />}
+          {ws === "work" && workspace && (
+            <WorkspaceFrame workspace={workspace} view={view}>
+              {view === "jobs"      && <TaskPanel key={JSON.stringify(taskDrill)} drill={taskDrill} />}
+              {view === "todos"     && <TodoPanel />}
+              {view === "scheduled" && <ScheduledTasksPanel />}
+              {view === "proposals" && <ProposalsPanel />}
+            </WorkspaceFrame>
+          )}
+          {ws === "knowledge" && workspace && (
+            <WorkspaceFrame workspace={workspace} view={view}>
+              {view === "notes" && <KnowledgePanel key={JSON.stringify(knowledgeDrill)} drill={knowledgeDrill} />}
+              {view === "graph" && <GraphPanel />}
+            </WorkspaceFrame>
+          )}
+          {ws === "system" && workspace && (
+            <WorkspaceFrame workspace={workspace} view={view}>
+              {view === "logs"         && <LogsPanel />}
+              {view === "architecture" && <ArchitecturePanel />}
+              {view === "tools"        && <ToolPanel />}
+            </WorkspaceFrame>
+          )}
+          {ws === "settings" && <SettingsPage section={p.section} />}
         </Suspense>
       </main>
 
       <EntityDrawer />
 
-      {showSettings && (
+      {paletteOpen && (
         <Suspense fallback={null}>
-          <SettingsModal onClose={() => setShowSettings(false)} />
+          <CommandPalette onClose={() => setPaletteOpen(false)} />
         </Suspense>
       )}
     </div>

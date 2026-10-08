@@ -47,6 +47,11 @@ interface Props {
   onProfileChange: (name: string) => void;
   onProfilesChanged: () => void;
   disabled?: boolean;
+  /**
+   * Render in place (Settings → Agents) instead of as a modal: no overlay, no
+   * close button, and clicking an agent edits it rather than picking it.
+   */
+  inline?: boolean;
 }
 
 type Mode = "list" | "edit" | "create";
@@ -105,6 +110,7 @@ export default function ContextProfileModal({
   onProfileChange,
   onProfilesChanged,
   disabled,
+  inline = false,
 }: Props) {
   const [mode, setMode] = useState<Mode>("list");
   const [form, setForm] = useState<AgentDetail>(EMPTY_FORM);
@@ -146,12 +152,12 @@ export default function ContextProfileModal({
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (mode !== "list") setMode("list");
-        else onClose();
+        else if (!inline) onClose();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isOpen, mode, onClose]);
+  }, [isOpen, mode, onClose, inline]);
 
   const startCreate = useCallback(() => {
     setForm(EMPTY_FORM);
@@ -253,6 +259,46 @@ export default function ContextProfileModal({
 
   if (!isOpen) return null;
 
+  const panes = (
+    <>
+        {mode === "list" && (
+          <ListPane
+            profiles={profiles}
+            activeProfile={activeProfile}
+            disabled={!!disabled}
+            deleting={deleting}
+            fetchingEdit={fetchingEdit}
+            error={error}
+            onSelect={inline ? startEdit : (name) => { onProfileChange(name); onClose(); }}
+            onEdit={startEdit}
+            onDelete={handleDelete}
+            onCreate={startCreate}
+            onClose={inline ? undefined : onClose}
+          />
+        )}
+
+        {(mode === "edit" || mode === "create") && (
+          <EditPane
+            mode={mode}
+            form={form}
+            skillGroups={skillGroups}
+            availableProviders={availableProviders}
+            catalogModels={catalogModels}
+            allSelected={allSelected}
+            saving={saving}
+            error={error}
+            onFormChange={setForm}
+            onToggleTool={toggleTool}
+            onToggleAll={toggleAllTools}
+            onSave={handleSave}
+            onBack={() => setMode("list")}
+          />
+        )}
+    </>
+  );
+
+  if (inline) return <div className="settings-embed">{panes}</div>;
+
   // ── Shared overlay ───────────────────────────────────────────────────────
 
   const isEditOrCreate = mode === "edit" || mode === "create";
@@ -287,39 +333,7 @@ export default function ContextProfileModal({
           transition: "width 0.15s",
         }}
       >
-        {mode === "list" && (
-          <ListPane
-            profiles={profiles}
-            activeProfile={activeProfile}
-            disabled={!!disabled}
-            deleting={deleting}
-            fetchingEdit={fetchingEdit}
-            error={error}
-            onSelect={(name) => { onProfileChange(name); onClose(); }}
-            onEdit={startEdit}
-            onDelete={handleDelete}
-            onCreate={startCreate}
-            onClose={onClose}
-          />
-        )}
-
-        {(mode === "edit" || mode === "create") && (
-          <EditPane
-            mode={mode}
-            form={form}
-            skillGroups={skillGroups}
-            availableProviders={availableProviders}
-            catalogModels={catalogModels}
-            allSelected={allSelected}
-            saving={saving}
-            error={error}
-            onFormChange={setForm}
-            onToggleTool={toggleTool}
-            onToggleAll={toggleAllTools}
-            onSave={handleSave}
-            onBack={() => setMode("list")}
-          />
-        )}
+        {panes}
       </div>
     </div>
   );
@@ -350,7 +364,8 @@ function ListPane({
   onEdit: (name: string) => void;
   onDelete: (name: string) => void;
   onCreate: () => void;
-  onClose: () => void;
+  /** Absent when rendered inline (nothing to close). */
+  onClose?: () => void;
 }) {
   return (
     <>
@@ -375,13 +390,15 @@ function ListPane({
           >
             + New Agent
           </button>
-          <CloseBtn onClick={onClose} />
+          {onClose && <CloseBtn onClick={onClose} />}
         </div>
       </div>
 
       <div style={{ overflow: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
         <p style={{ margin: "0 0 6px", fontSize: 11, color: "var(--text-muted, #7a8099)" }}>
-          Select the active agent — defines which tools the LLM can call and its persona.
+          {onClose
+            ? "Select the active agent — defines which tools the LLM can call and its persona."
+            : "Click an agent to edit it, or add a new one."}
         </p>
 
         {error && (

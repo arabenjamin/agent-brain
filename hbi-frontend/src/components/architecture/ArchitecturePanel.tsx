@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { callTool } from "../../api/mcp";
 import { apiRequest } from "../../api/client";
 import { useQueueStatus, useSchedulerStatus } from "../../api/queries";
+import { summariseScheduler } from "../../lib/scheduler";
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 const C = {
@@ -160,12 +161,17 @@ function SchedulerCard() {
   const s = data?.state;
   const cfg = data?.config;
 
-  const isRunning  = s?.is_running ?? false;
-  const isSleeping = s?.is_sleeping ?? false;
+  // On/off is config.enabled; is_running only means a tick is executing now
+  // (see lib/scheduler.ts). Reading is_running as "on" showed a healthy,
+  // sleeping scheduler as paused and offered to "start" it.
+  const summary    = data ? summariseScheduler(data) : null;
+  const isRunning  = summary?.enabled ?? false;
+  const isSleeping = summary?.phase === "sleeping";
   const hasError   = (s?.consecutive_errors ?? 0) > 0;
 
-  const statusLabel = !isRunning ? "paused" : isSleeping ? "sleeping" : hasError ? "errors" : "running";
-  const statusColor = !isRunning ? C.yellow : isSleeping ? C.cyan : hasError ? C.red : C.green;
+  const statusLabel = summary?.label ?? "…";
+  const toneColor: Record<string, string> = { green: C.green, cyan: C.cyan, yellow: C.yellow, red: C.red, accent: C.accent };
+  const statusColor = (summary && toneColor[summary.tone]) || C.dim;
 
   const idlePct = cfg ? Math.min(100, ((s?.idle_ticks ?? 0) / cfg.idle_sleep_after_ticks) * 100) : 0;
   const errPct  = cfg ? Math.min(100, ((s?.consecutive_errors ?? 0) / cfg.error_budget) * 100) : 0;

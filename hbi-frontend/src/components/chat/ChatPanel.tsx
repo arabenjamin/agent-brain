@@ -7,6 +7,7 @@ import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
 import { apiRequest } from "../../api/client";
+import { keys, queryClient, useProfiles } from "../../api/queries";
 import type { AgentNotification } from "../../api/notifications";
 import ContextProfileModal from "./ContextProfileModal";
 
@@ -562,7 +563,9 @@ export default function ChatPanel({
   const [activeModelKey, setActiveModelKey] = useState("");
   const [modelUsage, setModelUsage] = useState<ModelUsageStat[]>([]);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
-  const [profileInfos, setProfileInfos] = useState<Array<{ name: string; description?: string; tools?: string[] }>>([]);
+  // Shared with Settings → Agents, so an edit there shows up in this picker.
+  const profilesQuery = useProfiles();
+  const profileInfos = profilesQuery.data ?? [];
   const [thread, setThread] = useState<ThreadState | null>(null);
   // Why the transcript is empty after clicking a session, when it is not simply
   // a new chat. Without this, "loaded and it had nothing" and "the load failed"
@@ -724,20 +727,8 @@ export default function ChatPanel({
   }, [thread, contextProfile, loadSessions]);
 
   const loadProfiles = useCallback(() => {
-    apiRequest(`/api/contexts`)
-      .then((r) => r.json())
-      .then((data: { profiles?: Array<{ name: string; description?: string; tools?: string[] }> }) => {
-        const list = data.profiles ?? [];
-        if (list.length > 0) {
-          setProfileInfos([...list].sort((a, b) => a.name.localeCompare(b.name)));
-        }
-      })
-      .catch(() => {});
+    queryClient.invalidateQueries({ queryKey: keys.profiles });
   }, []);
-
-  useEffect(() => {
-    loadProfiles();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadModels = useCallback(async () => {
     try {

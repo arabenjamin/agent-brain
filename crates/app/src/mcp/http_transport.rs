@@ -347,6 +347,7 @@ impl HttpTransport {
             // --- read-only API endpoints (formerly MCP tools) ---
             .route("/api/graph", get(rest_handlers::handle_get_graph))
             .route("/api/health", get(rest_handlers::handle_api_health))
+            .route("/api/activity", get(rest_handlers::handle_get_activity))
             .route(
                 "/api/scheduler/status",
                 get(rest_handlers::handle_get_scheduler_status),

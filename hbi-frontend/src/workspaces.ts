@@ -1,0 +1,107 @@
+/**
+ * The five workspaces and the views inside them (HBI_REDESIGN_PLAN.md §2).
+ *
+ * Until each workspace is rebuilt, its views are the old panels, so nothing
+ * becomes unreachable mid-migration. The old one-tab-per-panel URLs
+ * (`#/tasks`, `#/graph`, …) redirect to their new home, keeping their params,
+ * so links in notifications and notes still land.
+ */
+import type { Route } from "./router";
+
+export type WorkspaceId = "home" | "chat" | "work" | "knowledge" | "system" | "settings";
+
+export interface View {
+  id: string;
+  label: string;
+}
+
+export interface Workspace {
+  id: WorkspaceId;
+  icon: string;
+  label: string;
+  /** Words Ctrl-K matches besides the label. */
+  keywords: string;
+  views?: View[];
+}
+
+export const WORKSPACES: Workspace[] = [
+  { id: "home", icon: "⌂", label: "Home", keywords: "dashboard overview status" },
+  { id: "chat", icon: "🧠", label: "Chat", keywords: "conversation talk sessions" },
+  {
+    id: "work",
+    icon: "📋",
+    label: "Work",
+    keywords: "tasks jobs queue todos scheduled schedules proposals",
+    views: [
+      { id: "jobs", label: "Tasks & jobs" },
+      { id: "todos", label: "Todos" },
+      { id: "scheduled", label: "Scheduled" },
+      { id: "proposals", label: "Proposals" },
+    ],
+  },
+  {
+    id: "knowledge",
+    icon: "🔍",
+    label: "Knowledge",
+    keywords: "notes search graph memory",
+    views: [
+      { id: "notes", label: "Notes" },
+      { id: "graph", label: "Graph" },
+    ],
+  },
+  {
+    id: "system",
+    icon: "🖥",
+    label: "System",
+    keywords: "logs architecture tools skills registry health",
+    views: [
+      { id: "logs", label: "Logs" },
+      { id: "architecture", label: "Architecture" },
+      { id: "tools", label: "Tools" },
+    ],
+  },
+];
+
+export const SETTINGS: Workspace = {
+  id: "settings",
+  icon: "⚙",
+  label: "Settings",
+  keywords: "preferences configuration",
+};
+
+/** Old tab ids → the workspace and view that replaced them. */
+export const LEGACY_PATHS: Record<string, { path: WorkspaceId; view?: string }> = {
+  tasks: { path: "work", view: "jobs" },
+  todos: { path: "work", view: "todos" },
+  "scheduled-tasks": { path: "work", view: "scheduled" },
+  graph: { path: "knowledge", view: "graph" },
+  tools: { path: "system", view: "tools" },
+  logs: { path: "system", view: "logs" },
+  architecture: { path: "system", view: "architecture" },
+};
+
+export const DEFAULT_WORKSPACE: WorkspaceId = "home";
+
+export function workspaceById(id: string): Workspace | undefined {
+  return id === SETTINGS.id ? SETTINGS : WORKSPACES.find((w) => w.id === id);
+}
+
+export type Resolved =
+  | { kind: "show"; workspace: Workspace; view: View | null }
+  | { kind: "redirect"; path: string; params: Record<string, string | null> };
+
+/**
+ * What a route shows, or where it should go instead. A missing or unknown
+ * view inside a workspace shows its first view without a redirect.
+ */
+export function resolveRoute(route: Route): Resolved {
+  const legacy = LEGACY_PATHS[route.path];
+  if (legacy) {
+    return { kind: "redirect", path: legacy.path, params: legacy.view ? { view: legacy.view } : {} };
+  }
+  const workspace = workspaceById(route.path);
+  if (!workspace) return { kind: "redirect", path: DEFAULT_WORKSPACE, params: {} };
+  const views = workspace.views ?? [];
+  const view = views.find((v) => v.id === route.params.view) ?? views[0] ?? null;
+  return { kind: "show", workspace, view };
+}

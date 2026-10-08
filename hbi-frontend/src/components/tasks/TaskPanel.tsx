@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { callTool } from "../../api/mcp";
 import { apiRequest, query } from "../../api/client";
 import { useQueueStatus, type QueueStatus } from "../../api/queries";
+import { formatLocal } from "../../lib/time";
+import { goTo } from "../../nav";
+import { DrillBanner } from "../ui";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -77,8 +80,34 @@ function argSummary(args?: Record<string, unknown>): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function TaskPanel() {
-  const [tab, setTab] = useState<Tab>("queue");
+/** A drill-down from Home: a server-side filtered subset, shown with a banner. */
+export interface TaskDrill {
+  tab?: string;
+  /** Comma-separated task statuses. */
+  taskStatus?: string;
+  /** Comma-separated job statuses. */
+  jobStatus?: string;
+  /** UTC RFC 3339; tasks created / jobs updated since. */
+  since?: string;
+}
+
+/** Server-side status lists for the job filter buttons. */
+const JOB_FILTER_STATUSES: Record<JobFilter, string | undefined> = {
+  active: "running,queued,parked",
+  all: undefined,
+  completed: "completed",
+  // A job that will not run again is stored as failed, dead or dead_letter.
+  failed: "failed,dead,dead_letter",
+};
+
+const DRILL_LIMIT = 500;
+
+export default function TaskPanel({ drill }: { drill?: TaskDrill }) {
+  const [tab, setTab] = useState<Tab>(drill?.tab === "tasks" || drill?.taskStatus ? "tasks" : "queue");
+  // Primitives, so the poll callbacks stay stable across renders.
+  const jobStatus = drill?.jobStatus;
+  const taskStatus = drill?.taskStatus;
+  const since = drill?.since;
 
   // Queue tab state
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -100,43 +129,33 @@ export default function TaskPanel() {
 
   const refreshQueue = useCallback(async () => {
     try {
-      const statusFilter = jobFilter === "active"
-        ? undefined
-        : jobFilter === "completed" ? "completed"
-        : jobFilter === "failed" ? "failed"
-        : undefined;
-
-      const limit = jobFilter === "all" ? 100 : 50;
-
-      const jobsRes = await apiRequest(`/api/jobs${query({ status: statusFilter, limit })}`)
-        .then((r) => r.json());
-
-      let allJobs: Job[] = jobsRes.jobs ?? [];
-
-      // For "active" filter: show running + queued + parked client-side
-      if (jobFilter === "active") {
-        allJobs = allJobs.filter(j =>
-          j.status === "running" || j.status === "queued" || j.status === "parked"
-        );
-      }
+      // Server-side status lists: filtering a "latest N" page in the browser
+      // hid older parked jobs, and "failed" alone never matched dead jobs.
+      const path = jobStatus
+        ? `/api/jobs${query({ status: jobStatus, since, limit: DRILL_LIMIT })}`
+        : `/api/jobs${query({ status: JOB_FILTER_STATUSES[jobFilter], limit: jobFilter === "all" ? 100 : 50 })}`;
+      const jobsRes = await apiRequest(path).then((r) => r.json());
+      const allJobs: Job[] = jobsRes.jobs ?? [];
 
       setJobs(allJobs);
       setLastRefresh(new Date());
     } catch (e) {
       setError(String(e));
     }
-  }, [jobFilter]);
+  }, [jobFilter, jobStatus, since]);
 
   const refreshTasks = useCallback(async () => {
     try {
-      const res = await apiRequest("/api/tasks?limit=100");
+      const res = await apiRequest(taskStatus
+        ? `/api/tasks${query({ status: taskStatus, since, limit: DRILL_LIMIT })}`
+        : "/api/tasks?limit=100");
       const data = await res.json();
       setTasks(data.tasks ?? []);
       setLastRefresh(new Date());
     } catch (e) {
       setError(String(e));
     }
-  }, []);
+  }, [taskStatus, since]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -296,8 +315,8 @@ export default function TaskPanel() {
         </div>
       )}
 
-      {/* Filter */}
-      <div className="filter-row">
+      {/* Filter (a drill-down replaces it until cleared) */}
+      {!jobStatus && <div className="filter-row">
         {jobFilterBtns.map(({ key, label }) => (
           <button
             key={key}
@@ -310,7 +329,7 @@ export default function TaskPanel() {
             )}
           </button>
         ))}
-      </div>
+      </div>}
 
       {/* Job list */}
       <div className="jobs-list">
@@ -409,6 +428,18 @@ export default function TaskPanel() {
         )}
         <button className="refresh-btn" onClick={refresh} title="Refresh">↻</button>
       </div>
+
+      {(tab === "queue" ? jobStatus : taskStatus) && (
+        <DrillBanner
+          rows={tab === "queue" ? jobs.length : tasks.length}
+          cap={DRILL_LIMIT}
+          onClear={() => goTo("work", { view: "jobs" })}
+        >
+          {tab === "queue"
+            ? <>jobs <strong>{jobStatus?.replaceAll(",", " / ")}</strong>{since && <> updated since {formatLocal(since)}</>}</>
+            : <>tasks <strong>{taskStatus?.replaceAll(",", " / ")}</strong>{since && <> created since {formatLocal(since)}</>}</>}
+        </DrillBanner>
+      )}
 
       {/* Tab switcher */}
       <div className="tab-row">
