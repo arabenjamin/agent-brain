@@ -66,17 +66,38 @@ export interface ArgPair {
 export interface StepDraft {
   tool_name: string;
   args: ArgPair[];
+  /** "" when the step has none: it then runs on cloud. */
   provider_hint: string;
   priority: number;
+  /**
+   * Every other field the step carries (`data_class`, `max_attempts`,
+   * `description`, `is_evaluator`, `context_profile`, …), kept as it was so a
+   * save writes it back. The editor once dropped them: saving a schedule
+   * turned `data_class: public` work private and reset every `max_attempts`.
+   */
+  extra: Record<string, unknown>;
 }
 
-/**
- * `provider_hint` values offered in the step editor. "ollama" routes to the
- * local backend, anything else to that cloud provider. A step that already
- * carries another value keeps it (see StepCard).
- */
-export const PROVIDERS = ["ollama", "ollama-cloud", "anthropic", "gemini"] as const;
+/** The fields the step editor edits itself; everything else rides in `extra`. */
+const EDITED_FIELDS = new Set(["tool_name", "tool", "arguments", "args", "provider_hint", "priority"]);
+
 export const DEFAULT_PROVIDER = "ollama";
+
+/**
+ * What a step's `provider_hint` actually does (`services/queue.rs`): only
+ * "ollama" changes routing, to the local model. Every other value, or none,
+ * runs on the brain's active cloud model; the value only chooses which
+ * concurrency slot the job waits for. Per-step model choice is Phase 10.
+ */
+export function providerLabel(hint: string, activeModel?: string): string {
+  const cloud = activeModel ? `the brain's active model (${activeModel})` : "the brain's active model";
+  if (hint === "ollama") return "Local model";
+  if (hint === "") return `Cloud: ${cloud}`;
+  return `${hint}: also cloud, on ${cloud}`;
+}
+
+/** The hints offered for a new choice: local, or cloud. A step's own other value is kept. */
+export const PROVIDER_CHOICES = ["ollama", ""] as const;
 
 // Grouped tool options for the dropdown — keep in sync with live tools/list
 export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
@@ -160,6 +181,7 @@ export function makeDefaultStep(): StepDraft {
     args: [{ key: "query", value: "{{goal}}" }],
     provider_hint: DEFAULT_PROVIDER,
     priority: 1,
+    extra: {},
   };
 }
 
@@ -188,7 +210,7 @@ export function stepDraftsToJson(drafts: StepDraft[]): string {
       if (key.trim()) argsObj[key.trim()] = parseArgValue(value);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const step: Record<string, any> = { tool_name: d.tool_name };
+    const step: Record<string, any> = { ...d.extra, tool_name: d.tool_name };
     if (Object.keys(argsObj).length > 0) step.arguments = argsObj;
     if (d.provider_hint) step.provider_hint = d.provider_hint;
     if (d.priority !== 1) step.priority = d.priority;
@@ -215,11 +237,13 @@ export function jsonToStepDrafts(json: string): StepDraft[] | null {
             value: typeof v === "string" ? v : JSON.stringify(v),
           }))
         : [];
+      const extra = Object.fromEntries(Object.entries(s ?? {}).filter(([k]) => !EDITED_FIELDS.has(k)));
       return {
         tool_name: toolName,
         args,
-        provider_hint: s.provider_hint ?? DEFAULT_PROVIDER,
+        provider_hint: typeof s.provider_hint === "string" ? s.provider_hint : "",
         priority: s.priority ?? 1,
+        extra,
       };
     });
   } catch {

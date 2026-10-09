@@ -206,6 +206,7 @@ function ExistingNote({ id }: { id: string }) {
               <div className="entity-content markdown-body">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{n.content}</ReactMarkdown>
               </div>
+              {n.note_type === "claim" && <AssertedIn n={n} />}
               <Provenance n={n} />
               {(n.entities?.length ?? 0) > 0 && (
                 <Section title="Mentions" aside={`${n.entities!.length}${n.entities!.length >= 30 ? "+" : ""}`}>
@@ -226,6 +227,44 @@ function ExistingNote({ id }: { id: string }) {
       )}
     </Drawer>
   );
+}
+
+/** Where a claim was asserted: the article or video its source note records. */
+function AssertedIn({ n }: { n: Note }) {
+  const sources = n.asserted_in ?? [];
+  return (
+    <Section title="Asserted in">
+      {sources.length === 0 ? (
+        <div className="tone-text-yellow">No source recorded: this claim has no ASSERTED_IN edge to the note it came from.</div>
+      ) : (
+        <ul className="dw-sources">
+          {sources.map((src) => (
+            <li key={src.id}>
+              <EntityLink kind="note" id={src.id} title="Open the source note">
+                {src.title || src.source_context || "source note"}
+              </EntityLink>
+              {src.url && (
+                <a className="dw-ext" href={src.url} target="_blank" rel="noreferrer" title={src.url}>
+                  {hostOf(src.url)} ↗
+                </a>
+              )}
+              <div className="dw-dim">
+                {[src.outlet, src.source_context, src.created_at && formatLocal(src.created_at)].filter(Boolean).join(" · ")}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
 
 function Provenance({ n }: { n: Note }) {

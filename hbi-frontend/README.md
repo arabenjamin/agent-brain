@@ -18,7 +18,7 @@ The brain URL and API key live in the browser's localStorage (Settings → Conne
 
 ## Workspaces
 
-`#/home` (dashboard) · `#/chat` · `#/work?view=inbox|active|scheduled|todos|history` · `#/knowledge?view=list|map|graph|timeline&q=&mode=auto|semantic|keyword|id&within=<topic>` · `#/system?view=health|logs|registry|architecture` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect.
+`#/home` (dashboard) · `#/chat` · `#/work?view=inbox|active|scheduled|todos|history` · `#/knowledge?view=list|map|graph|timeline&q=&mode=auto|semantic|keyword|id&within=<topic>` · `#/system?view=health|logs|registry|architecture` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect. The nav collapses to an icon rail («), remembered per browser.
 
 ## Layout
 
@@ -37,13 +37,13 @@ src/
   nav.ts             goTo / hrefTo: move between workspaces, keeping only the open drawer
   lib/               time (UTC in, local out), ids, scheduler state, useNow, chatDock (what a chat turn did, from its events)
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
-  components/drawer/ entity drawer: note, entity, topic, task (lineage), job, schedule, todo, proposal
+  components/drawer/ entity drawer: note (a claim shows the article or video it was asserted in), entity, topic, task (lineage), job, schedule, todo, proposal
   components/chat/   Chat: the panel and the context dock under each answer
   components/system/ System: Health, Logs, Registry, Architecture (drawn from /api/architecture + architecture/layout.yaml)
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Map (topic hubs) / Neighbourhood / Timeline
   components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History); the Inbox holds entity merge proposals
-  components/schedules/ the schedule and routing-chain editors (split from the old panel)
+  components/schedules/ the schedule and routing-chain editors; a save keeps every step field they don't edit
   components/todos/  todo model (overdue rule) and form
   components/settings/ the Settings page and its sections (Agents = AgentsEditor)
   components/palette/ Ctrl-K

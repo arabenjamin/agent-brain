@@ -1,4 +1,5 @@
-import { PROVIDERS, type StepDraft, type ToolGroup } from "./model";
+import { useActiveModels } from "../../api/queries";
+import { PROVIDER_CHOICES, providerLabel, type StepDraft, type ToolGroup } from "./model";
 
 // ─── StepCard ─────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ export default function StepCard({
 }) {
   const knownTools = toolGroups.flatMap((g) => g.tools);
   const update = (patch: Partial<StepDraft>) => onChange({ ...step, ...patch });
+  const activeModel = useActiveModels().data?.active_model;
 
   const setArgKey = (i: number, key: string) => {
     const args = step.args.map((a, idx) => idx === i ? { ...a, key } : a);
@@ -188,22 +190,37 @@ export default function StepCard({
         </button>
       </div>
 
+      {/* Fields this editor doesn't edit, kept as they are on save. */}
+      {Object.keys(step.extra).length > 0 && (
+        <div style={{ fontSize: "0.75rem", opacity: 0.65 }} title="Kept as they are when you save; edit them in Raw JSON">
+          Also kept:{" "}
+          {Object.entries(step.extra).map(([k, v], i) => (
+            <span key={k}>
+              {i > 0 && " · "}
+              <code style={{ fontSize: "0.73rem" }}>{k}</code>={extraValue(v)}
+              {k === "model" && <span className="tone-text-yellow"> (not read: steps can't pick a model yet)</span>}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Provider + Priority row */}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <span style={{ fontSize: "0.78rem", opacity: 0.65 }}>Provider</span>
+          <span style={{ fontSize: "0.78rem", opacity: 0.65 }}>Runs on</span>
           <select
             style={smallSelectStyle}
             value={step.provider_hint}
             onChange={(e) => update({ provider_hint: e.target.value })}
+            title="Only local vs cloud changes where a step runs; choosing a model per step comes later (HBI plan Phase 10)."
           >
-            {/* Keep a value the list doesn't know, so it is shown as it is
-                rather than displayed as the first option. */}
-            {(PROVIDERS.includes(step.provider_hint as (typeof PROVIDERS)[number])
-              ? [...PROVIDERS]
-              : [...PROVIDERS, step.provider_hint]
+            {/* Keep a value the list doesn't offer (ollama-cloud, anthropic,
+                gemini), labelled with what it really does. */}
+            {((PROVIDER_CHOICES as readonly string[]).includes(step.provider_hint)
+              ? [...PROVIDER_CHOICES]
+              : [...PROVIDER_CHOICES, step.provider_hint]
             ).map((p) => (
-              <option key={p} value={p}>{p}</option>
+              <option key={p || "cloud"} value={p}>{providerLabel(p, activeModel)}</option>
             ))}
           </select>
         </div>
@@ -226,3 +243,7 @@ export default function StepCard({
   );
 }
 
+function extraValue(v: unknown): string {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > 60 ? `${s.slice(0, 59)}…` : s;
+}

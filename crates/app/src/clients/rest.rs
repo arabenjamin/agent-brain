@@ -1783,6 +1783,9 @@ pub async fn handle_get_note(
                 size(coalesce(n.embedding, [])) > 0 AS embedded, \
                 [(n)-[r:IN_TOPIC]->(t:Topic) | {name: t.name, rank: r.rank}] AS topics, \
                 coalesce(n.topics_version, '') AS topics_version, \
+                [(n)-[:ASSERTED_IN]->(s:Note) | {id: s.id, note_type: s.note_type, \
+                  source_context: s.source_context, created_at: toString(s.created_at), \
+                  content: s.content}][0..5] AS sources, \
                 parent.id AS parent_id, chunks, entities",
     )
     .param("id", note_id.clone());
@@ -1804,9 +1807,31 @@ pub async fn handle_get_note(
                         }))
                     })
                     .collect();
+                // A claim's source notes, read for the article or video they record.
+                let asserted_in: Vec<Value> = row
+                    .get::<Vec<neo4rs::BoltMap>>("sources")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|m| {
+                        let id = m.get::<String>("id").ok()?;
+                        let r = crate::services::claims::source_reference(
+                            &m.get::<String>("content").unwrap_or_default(),
+                        );
+                        Some(json!({
+                            "id": id,
+                            "note_type": m.get::<String>("note_type").ok(),
+                            "source_context": m.get::<String>("source_context").ok(),
+                            "created_at": m.get::<String>("created_at").ok(),
+                            "title": r.title,
+                            "url": r.url,
+                            "outlet": r.outlet,
+                        }))
+                    })
+                    .collect();
                 Json(json!({
                     "id":                  row.get::<String>("id").unwrap_or_default(),
                     "content":             row.get::<String>("content").unwrap_or_default(),
+                    "asserted_in":         asserted_in,
                     "topics":              crate::clients::search::topic_names(row.get::<Vec<neo4rs::BoltMap>>("topics").unwrap_or_default()),
                     // false: not classified yet for the current topic definitions.
                     "topics_assessed":     row.get::<String>("topics_version").unwrap_or_default() == crate::services::topics::Topics::global().version,

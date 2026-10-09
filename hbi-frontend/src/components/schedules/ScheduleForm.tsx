@@ -372,7 +372,7 @@ export default function ScheduledTaskForm({
                 <span style={{ color: "#f87171", fontSize: "0.78rem" }}>{rawJsonError}</span>
               )}
               <span style={{ fontSize: "0.75rem", opacity: 0.5 }}>
-                Fields: <code style={{ fontSize: "0.73rem" }}>tool_name</code>, <code style={{ fontSize: "0.73rem" }}>arguments</code>, <code style={{ fontSize: "0.73rem" }}>provider_hint</code>, <code style={{ fontSize: "0.73rem" }}>model</code>, <code style={{ fontSize: "0.73rem" }}>priority</code>, <code style={{ fontSize: "0.73rem" }}>max_attempts</code>
+                Fields: <code style={{ fontSize: "0.73rem" }}>tool_name</code>, <code style={{ fontSize: "0.73rem" }}>arguments</code>, <code style={{ fontSize: "0.73rem" }}>provider_hint</code> (<code style={{ fontSize: "0.73rem" }}>"ollama"</code> = local; anything else or none = cloud), <code style={{ fontSize: "0.73rem" }}>priority</code>, <code style={{ fontSize: "0.73rem" }}>max_attempts</code>, <code style={{ fontSize: "0.73rem" }}>data_class</code>, <code style={{ fontSize: "0.73rem" }}>description</code>. A per-step <code style={{ fontSize: "0.73rem" }}>model</code> is not read yet.
               </span>
             </div>
           )}

@@ -32,6 +32,7 @@ export const keys = {
   todos: ["todos"] as const,
   proposals: ["proposals"] as const,
   modelUsage: (hours: number) => ["models", "usage", hours] as const,
+  activeModels: ["models", "active"] as const,
   llmBudget: ["llm", "budget"] as const,
   profiles: ["profiles"] as const,
   note: (id: string) => ["note", id] as const,
@@ -105,6 +106,27 @@ export interface Note {
   topics?: string[];
   /** False while the note waits to be classified for the current topics. */
   topics_assessed?: boolean;
+  /** A claim's source notes, with the article or video each records. */
+  asserted_in?: SourceRef[];
+}
+
+export interface SourceRef {
+  id: string;
+  note_type?: string | null;
+  source_context?: string | null;
+  created_at?: string | null;
+  title?: string | null;
+  url?: string | null;
+  /** The site or channel. */
+  outlet?: string | null;
+}
+
+/** The models the brain is using now: `active_*` serves background cloud work, `chat_*` the chat panel. */
+export interface ActiveModels {
+  active_provider?: string;
+  active_model?: string;
+  chat_provider?: string;
+  chat_model?: string;
 }
 
 export interface RelatedNote {
@@ -353,5 +375,13 @@ export function invalidateOnJobPush(): () => void {
       queryClient.invalidateQueries({ queryKey: keys.queueStatus });
       queryClient.invalidateQueries({ queryKey: keys.schedulerStatus });
     }
+  });
+}
+
+export function useActiveModels() {
+  return useQuery({
+    queryKey: keys.activeModels,
+    queryFn: () => apiJson<ActiveModels>("/api/models"),
+    staleTime: 60_000,
   });
 }

@@ -408,6 +408,20 @@ a.ui-stat { text-decoration: none; color: inherit; }
 .palette-hint { padding: 6px 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 10px; }
 .sidebar-hint { padding: 4px 16px 8px; color: var(--text-muted); font-size: 10px; }
 
+/* The nav collapses to an icon rail; labels move into tooltips. */
+.sidebar-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.sidebar-toggle {
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 6px;
+}
+.sidebar-toggle:hover { color: var(--text); border-color: var(--border); }
+.sidebar { transition: width 0.15s, min-width 0.15s; }
+.sidebar.collapsed { width: 52px; min-width: 52px; }
+.sidebar.collapsed .sidebar-label { display: none; }
+.sidebar.collapsed .sidebar-title { justify-content: center; padding-left: 0; padding-right: 0; }
+.sidebar.collapsed .sidebar-btn { justify-content: center; padding-left: 0; padding-right: 0; position: relative; }
+.sidebar.collapsed .notif-badge { position: absolute; top: 3px; right: 6px; margin-left: 0; }
+
 /* ── Inputs ── */
 .ui-input {
   background: var(--bg-input);
@@ -427,6 +441,10 @@ a.ui-stat { text-decoration: none; color: inherit; }
 /* ── Drawer views (task, job, schedule, todo, proposal) ── */
 .dw-title { font-size: 14px; font-weight: 700; line-height: 1.4; }
 .dw-dim { color: var(--text-dim); font-size: 11px; }
+.dw-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dw-sources li { line-height: 1.5; }
+.dw-ext { margin-left: 8px; font-size: 11px; white-space: nowrap; color: var(--accent); text-decoration: none; }
+.dw-ext:hover { text-decoration: underline; }
 .dw-note { color: var(--text-dim); font-size: 11px; line-height: 1.6; }
 .dw-section { display: flex; flex-direction: column; gap: 8px; }
 .dw-section-head {

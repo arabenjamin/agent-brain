@@ -737,6 +737,20 @@ Three things found on the way:
 - **Activity records.** 3,742 `scheduler_dispatch` episodic notes are a goal plus a task id. Classified, they landed in the goal's topic and buried the notes that held what was learned, so a `topics/_scope.yaml` skip rule leaves them out, with the count shown.
 - **A Cypher null trap.** The first skip filter compared `n.source_context` directly, so notes without one evaluated to null and vanished from every coverage bucket except "waiting". The coverage line, which must sum to the note total, is what exposed it.
 
+### HBI step editor and claim sources (2026-10-08)
+
+**The step editor dropped fields on save.** It was found while relabelling a dropdown. The user's todo asked for a model choice on scheduled tasks, and checking what the Provider dropdown did turned up two things:
+- **The dropdown didn't choose providers.** Only `ollama` changes routing; `anthropic` and `gemini` only picked the queue semaphore, then ran on the active cloud model.
+- **The editor lost fields.** The converter behind it rebuilt each step from four fields, so a save in the HBI silently removed everything else on the step:
+  - `data_class` (a public schedule became private, which narrows where the routing policy lets it go), `max_attempts`, `description`;
+  - on routing chains, `is_evaluator` / `min_score` / `context_profile`.
+  
+  It also wrote `ollama` into a step that had no hint, moving cloud work onto the local model. 25 of the YAML schedules carry such fields. Any of them edited once in the HBI became runtime-owned and lost them for good, because a runtime-owned schedule shadows its YAML.
+
+The fix keeps every field the editor doesn't edit and lists them under the step. **Lesson:** a form over a richer object must carry what it doesn't show, or every save is a lossy migration nobody asked for.
+
+**Claims had their source all along.** The user read a claim ("…disable the software") and could not tell which article or software it meant. 4,485 of 4,510 claims already had an `ASSERTED_IN` edge to the source note, and nearly every source names its URL. The drawer simply didn't follow the edge. Every claim was also labelled `provenance: user_input` by `store_claim`, which recall shows the model as "a person stored this". Showing the source fixed reading for every existing claim at once. Making each claim name its subject is a separate change (HBI plan Phase 9).
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

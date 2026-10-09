@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (Phases 8–13, §9) planned 2026-10-08, nothing built.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phases 9–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -601,10 +601,27 @@ The sidebar collapses to an icon rail (~52 px):
 - **10 comes before 13** because assigning work needs the model picker and `<AgentAssist>`.
 - **12 comes before 13** because dispatch writes its results into items.
 
-### 9.9 Open decisions
+### 9.9 Decisions (taken 2026-10-08: every recommendation accepted)
 
 1. **Does every agent result wait for review** (`awaiting_review`), including read-only agents'? *Recommend yes for v1.* Approving is one click, and the first runs are what show whether auto-close can be trusted.
 2. **Proposals as items?** *Recommend yes.* Reviewing a code change is work for the user.
 3. **Replace the daily Todo Review chat** with a reminder block in the Daily Brief? *Recommend yes.*
 4. **Video claims the summary can't resolve:** mark `ambiguous` rather than rewrite? *Recommend yes.* Re-fetching 3,949 claims' transcripts is a separate cost decision.
 5. **Who may assign items to agents?** *Recommend the user only, for v1.* The brain already creates Tasks for itself.
+
+### Phase 8 outcome (2026-10-08)
+
+Built:
+- **Nav rail collapses** to 52 px icons, with labels in tooltips and the badge kept, remembered per browser (`hbi.nav.collapsed`).
+- **Claims show where they were asserted.** `GET /api/notes/{id}` returns `asserted_in`: each source note's title, URL and outlet, read by `claims::source_reference` from the summary JSON article and video records carry. Reports and briefs fall back to their first line. The note drawer shows it as **Asserted in** with a link to the source note and the article ↗. The Paragon claim now reads "The Secrets of a US Spyware King - The Citizen Lab · citizenlab.ca ↗ · The Citizen Lab".
+- **Claim provenance:** `store_claim` writes `synthesis_inference`. All 4,510 existing claims relabelled by `scripts/fix_claim_provenance.cypher`, run after the deploy, which leaves none labelled `user_input`.
+- **"Runs on" instead of "Provider":** the step editor offers *Local model* or *Cloud: the brain's active model (gpt-oss:120b-cloud)* and labels any other hint it finds with what it does ("ollama-cloud: also cloud, on …"). The raw-JSON help no longer lists `model`; it says a per-step model isn't read yet.
+- **Tests:** 2 Rust unit tests (837 lib), 4 vitest tests (82). Checked on the live stack in headless Chrome: the Paragon drawer, the collapse surviving a reload, and the Zero Trust step editor.
+
+Fixed on the way (found by this phase, worse than the todo):
+- **The schedule and routing-chain editors dropped step fields on save.** The draft converter kept only `tool_name` / `arguments` / `provider_hint` / `priority`. Saving a schedule in the HBI therefore silently removed `data_class` (public work became private, so the routing policy narrowed), `max_attempts`, `description`, and on routing chains `is_evaluator` / `min_score` / `context_profile`. 25 of the YAML schedules carry such fields. A step with no `provider_hint`, which runs on cloud, was saved back as `ollama`. Every other field now rides in `StepDraft.extra` and is listed under the step as "Also kept", and a missing hint stays missing. The Zero Trust schedule's ignored `model: gemma4:latest` now shows there as "not read: steps can't pick a model yet".
+
+Not built here: a claim's source on the claim node itself (Phase 9 stores `source_url` / `source_title`). `store_note` still defaults every brain-written note, `source_record` summaries included, to `provenance: user_input`; only claims were in scope.
+
+**Done criterion met:** the Paragon claim's drawer links the Citizen Lab article, and no control in the step editor claims to choose something it doesn't.
+

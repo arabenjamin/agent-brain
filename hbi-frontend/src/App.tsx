@@ -26,6 +26,20 @@ const ArchitectureView   = lazy(() => import("./components/system/ArchitectureVi
 const SettingsPage       = lazy(() => import("./components/settings/SettingsPage"));
 const CommandPalette     = lazy(() => import("./components/palette/CommandPalette"));
 
+const NAV_KEY = "hbi.nav.collapsed";
+
+/** The nav rail's collapsed state, remembered per browser (storage may be blocked). */
+function useNavCollapsed(): [boolean, () => void] {
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(NAV_KEY) === "1"; } catch { return false; }
+  });
+  const toggle = () => setCollapsed((c) => {
+    try { localStorage.setItem(NAV_KEY, c ? "0" : "1"); } catch { /* not remembered */ }
+    return !c;
+  });
+  return [collapsed, toggle];
+}
+
 function Fallback() {
   return <div className="loading" style={{ padding: 24 }}>Loading…</div>;
 }
@@ -63,6 +77,7 @@ export default function App() {
   const p = route.params;
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [navCollapsed, toggleNav] = useNavCollapsed();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
@@ -145,29 +160,37 @@ export default function App() {
 
   return (
     <div className="app">
-      <nav className="sidebar">
-        <div className="sidebar-title">Agent Brain</div>
+      <nav className={`sidebar${navCollapsed ? " collapsed" : ""}`}>
+        <div className="sidebar-title">
+          <span className="sidebar-label">Agent Brain</span>
+          <button type="button" className="sidebar-toggle" onClick={toggleNav}
+            title={navCollapsed ? "Expand the sidebar" : "Collapse the sidebar"} aria-expanded={!navCollapsed}>
+            {navCollapsed ? "»" : "«"}
+          </button>
+        </div>
         {WORKSPACES.map((w) => (
           <button
             key={w.id}
             className={`sidebar-btn${ws === w.id ? " active" : ""}`}
             onClick={() => goTo(w.id)}
+            title={navCollapsed ? w.label : undefined}
           >
             <span className="icon">{w.icon}</span>
-            {w.label}
+            <span className="sidebar-label">{w.label}</span>
             {w.id === "chat" && notifications.length > 0 && (
               <span className="notif-badge">{notifications.length}</span>
             )}
           </button>
         ))}
         <div style={{ marginTop: "auto" }}>
-          <div className="sidebar-hint">Ctrl-K to jump anywhere</div>
+          <div className="sidebar-hint sidebar-label">Ctrl-K to jump anywhere</div>
           <button
             className={`sidebar-btn${ws === SETTINGS.id ? " active" : ""}`}
             onClick={() => goTo(SETTINGS.id)}
+            title={navCollapsed ? SETTINGS.label : undefined}
           >
             <span className="icon">{SETTINGS.icon}</span>
-            {SETTINGS.label}
+            <span className="sidebar-label">{SETTINGS.label}</span>
           </button>
         </div>
       </nav>
