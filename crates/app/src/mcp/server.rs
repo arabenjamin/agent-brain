@@ -589,10 +589,13 @@ impl McpServerCore {
             ));
         }
 
-        // Execute through brain.
-        let result = self
-            .brain
-            .try_execute_tool(&params.name, params.arguments)
+        // Execute through brain, marked as a client's call: a note it stores
+        // defaults to `user_input` (`knowledge::effective_provenance`).
+        let result = crate::services::knowledge::CLIENT_CALL
+            .scope(
+                (),
+                self.brain.try_execute_tool(&params.name, params.arguments),
+            )
             .await
             .map_err(|e| {
                 JsonRpcErrorResponse::new(Some(request.id.clone()), error_codes::INTERNAL_ERROR, &e)

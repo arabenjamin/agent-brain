@@ -148,7 +148,7 @@ impl KnowledgeService {
             let _ = self.neo4j.run(q).await;
         }
 
-        let prov = provenance.unwrap_or(ProvenanceFlag::UserInput);
+        let prov = super::effective_provenance(provenance);
         let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.provenance = $prov")
             .param("id", note_id.clone())
             .param("prov", prov.as_str());
@@ -591,7 +591,7 @@ impl KnowledgeService {
             let review_interval = row.get::<i64>("review_interval_days").unwrap_or(1);
             let provenance = row
                 .get::<String>("provenance")
-                .unwrap_or_else(|_| "user_input".to_string());
+                .unwrap_or_else(|_| "unrecorded".to_string());
             Ok(Some(json!({
                 "id": id,
                 "content": content,

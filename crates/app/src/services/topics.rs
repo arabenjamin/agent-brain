@@ -372,7 +372,9 @@ pub const SKIPPED_CYPHER: &str = "any(r IN $skip WHERE (r.note_type = '' OR coal
      AND (r.source_context = '' OR coalesce(n.source_context, '') = r.source_context))";
 
 /// Notes still waiting for this topic version (top-level notes only: a chunk
-/// is its parent's text; skipped notes excluded), newest first.
+/// is its parent's text; skipped notes excluded), newest first. A claim is
+/// classified with its source's title: alone, a one-sentence claim about
+/// Paragon's spyware was filed under agent-brain.
 async fn pending_batch(
     neo4j: &Neo4jClient,
     topics: &Topics,
@@ -386,7 +388,9 @@ async fn pending_batch(
                    AND coalesce(n.topics_failed, 0) < $max_failures \
                    AND NOT (n)-[:PART_OF]->() \
                    AND NOT {SKIPPED_CYPHER} \
-                 RETURN n.id AS id, substring(coalesce(n.content, ''), 0, $chars) AS content \
+                 RETURN n.id AS id, substring(coalesce(n.content, '') + \
+                   CASE WHEN n.note_type = 'claim' AND n.source_title IS NOT NULL \
+                     THEN '\\n(Source: ' + n.source_title + ')' ELSE '' END, 0, $chars) AS content \
                  ORDER BY n.created_at DESC LIMIT $n"
             ))
             .param("version", topics.version.as_str())

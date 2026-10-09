@@ -1633,7 +1633,7 @@ pub async fn handle_create_note(
     let ts = chrono::Utc::now().to_rfc3339();
     let q = neo4rs::query(
         "CREATE (n:Note {id: $id, content: $content, note_type: $nt, \
-         access_count: 0, review_interval_days: 1.0, source_context: 'hbi', \
+         access_count: 0, review_interval_days: 1.0, source_context: 'hbi', provenance: 'user_input', \
          created_at: datetime($ts), last_accessed_at: datetime($ts), \
          next_review_at: datetime($ts)}) \
          RETURN n.id AS id",
@@ -1780,6 +1780,9 @@ pub async fn handle_get_note(
                 toString(n.verified_at) AS verified_at, n.verification AS verification, \
                 n.verification_reason AS verification_reason, \
                 n.corroborating_count AS corroborating_count, n.contradicting_count AS contradicting_count, \
+                n.ambiguous AS ambiguous, n.ambiguous_reason AS ambiguous_reason, \
+                n.content_v1 AS content_v1, toString(n.rewritten_at) AS rewritten_at, \
+                coalesce(n.about, []) AS about, \
                 size(coalesce(n.embedding, [])) > 0 AS embedded, \
                 [(n)-[r:IN_TOPIC]->(t:Topic) | {name: t.name, rank: r.rank}] AS topics, \
                 coalesce(n.topics_version, '') AS topics_version, \
@@ -1850,6 +1853,13 @@ pub async fn handle_get_note(
                     "verification_reason": s("verification_reason"),
                     "corroborating_count": row.get::<i64>("corroborating_count").ok(),
                     "contradicting_count": row.get::<i64>("contradicting_count").ok(),
+                    // A claim that could not be made to stand alone, and why;
+                    // and, for a rewritten one, the text it replaced.
+                    "ambiguous":           row.get::<bool>("ambiguous").unwrap_or(false),
+                    "ambiguous_reason":    s("ambiguous_reason"),
+                    "content_v1":          s("content_v1"),
+                    "rewritten_at":        s("rewritten_at"),
+                    "about":               row.get::<Vec<String>>("about").unwrap_or_default(),
                     "embedded":            row.get::<bool>("embedded").unwrap_or(false),
                     "parent_id":           s("parent_id"),
                     "chunks":              row.get::<i64>("chunks").unwrap_or(0),

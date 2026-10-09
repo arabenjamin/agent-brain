@@ -24,7 +24,9 @@
 //!   so a claim's standing can't drift away from its evidence.
 //! - **Verification never edits the claim.** `verify_claim` attaches evidence and
 //!   recomputes status; the claim text is immutable. Correcting the record is not
-//!   the same as rewriting it.
+//!   the same as rewriting it. The one exception is `claim_rewrite` (2026-10),
+//!   which restated claims that leaned on their source so they stand alone,
+//!   meaning held by mechanical checks, the old text kept in `content_v1`.
 //! - **A disputed claim stays disputed.** Corroboration *and* contradiction does
 //!   not collapse to a verdict. Premature resolution is how a knowledge base
 //!   launders a contested question into a settled one.
@@ -83,7 +85,334 @@ pub struct ExtractedClaim {
     /// `event` | `attribution` | `mechanism` — see `kind_qualifier`.
     #[serde(default)]
     pub kind: Option<String>,
+    /// The named things the claim is about, written as the claim names them,
+    /// each with the word the claim uses for it. This is what makes "stands
+    /// alone" checkable: see `standalone_problems`.
+    #[serde(default, deserialize_with = "about_list")]
+    pub about: Vec<About>,
 }
+
+/// One named thing a claim is about: `{name: "Paragon Solutions", what: "company"}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct About {
+    pub name: String,
+    #[serde(default)]
+    pub what: Option<String>,
+}
+
+/// `about` as models write it: objects, bare names, or nothing.
+fn about_list<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<About>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    let Some(serde_json::Value::Array(items)) = v else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|i| match i {
+            serde_json::Value::String(name) => Some(About { name, what: None }),
+            serde_json::Value::Object(m) => Some(About {
+                name: m.get("name")?.as_str()?.to_string(),
+                what: m.get("what").and_then(|w| w.as_str()).map(String::from),
+            }),
+            _ => None,
+        })
+        .filter(|a| !a.name.trim().is_empty())
+        .collect())
+}
+
+/// Common nouns that, bare after "the" / "this" / …, leave a reader asking
+/// "which one?". "The software" in a claim read months later names nothing;
+/// "the Italian government" or "Paragon's software" does, which is why only a
+/// determiner directly before the noun counts. Linguistic, like a stopword
+/// list, not domain data.
+const VAGUE_NOUNS: &[&str] = &[
+    "software",
+    "company",
+    "firm",
+    "tool",
+    "app",
+    "application",
+    "platform",
+    "product",
+    "program",
+    "programme",
+    "system",
+    "device",
+    "model",
+    "bill",
+    "law",
+    "act",
+    "rule",
+    "policy",
+    "report",
+    "study",
+    "paper",
+    "survey",
+    "agency",
+    "department",
+    "group",
+    "organization",
+    "organisation",
+    "government",
+    "administration",
+    "official",
+    "country",
+    "city",
+    "attack",
+    "operation",
+    "deal",
+    "agreement",
+    "project",
+    "plan",
+    "campaign",
+    "technique",
+    "technology",
+    "network",
+    "service",
+    "vulnerability",
+    "malware",
+    "spyware",
+    "drug",
+    "vaccine",
+    "incident",
+    "contract",
+    "measure",
+    "legislation",
+    "order",
+    "lawsuit",
+    "investigation",
+    "team",
+    "party",
+    "researchers",
+    "video",
+    "article",
+    "channel",
+    "speaker",
+    "host",
+    "author",
+    "chip",
+    "weapon",
+    "missile",
+    "satellite",
+    "facility",
+    "site",
+    "region",
+    "institution",
+];
+/// Not "that": in "states that chip scarcity forces …" it is a conjunction.
+const DETERMINERS: &[&str] = &["the", "this", "these", "those"];
+/// A claim that opens with one of these has lost its subject.
+const PRONOUN_OPENERS: &[&str] = &[
+    "he", "she", "they", "it", "its", "his", "her", "their", "this", "these", "those",
+];
+
+/// One spelling for the typography models vary: curly quotes, the Unicode
+/// hyphens and dashes (gpt-oss writes "AP\u{2011}NORC" with a non-breaking
+/// hyphen), and non-breaking spaces.
+pub(crate) fn canon(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' => '\'',
+            '\u{201C}' | '\u{201D}' => '"',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{00A0}' | '\u{202F}' | '\u{2009}' => ' ',
+            c => c,
+        })
+        .collect()
+}
+
+fn normalize(s: &str) -> String {
+    canon(s).to_lowercase()
+}
+
+/// For matching a name inside a claim: lowercase words only, possessives
+/// dropped, so quotes, hyphens and commas between them don't hide it. A
+/// trailing parenthetical ("Gap synthesis note (2026-08-08)") is the model's
+/// gloss, not part of the name.
+fn loose(s: &str) -> String {
+    let s = normalize(s.trim());
+    let s = match (s.ends_with(')'), s.rfind(" (")) {
+        (true, Some(i)) if i > 0 => s[..i].to_string(),
+        _ => s,
+    };
+    s.split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        // A possessive is the same name: "Paragon's" → "paragon".
+        .map(|w| w.strip_suffix("'s").unwrap_or(w).trim_matches('\''))
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn names(text_loose: &str, name: &str) -> bool {
+    let n = loose(name);
+    !n.is_empty() && format!(" {text_loose} ").contains(&format!(" {n} "))
+}
+
+fn singular(w: &str) -> &str {
+    w.strip_suffix('s').filter(|r| r.len() > 2).unwrap_or(w)
+}
+
+/// "the software", "these officials": determiner + vague noun pairs, in order.
+fn vague_references(text: &str) -> Vec<(String, String)> {
+    let words: Vec<&str> = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words
+        .windows(2)
+        .filter(|p| {
+            DETERMINERS.contains(&p[0])
+                && VAGUE_NOUNS
+                    .iter()
+                    .any(|n| *n == p[1] || *n == singular(p[1]))
+        })
+        .map(|p| (p[0].to_string(), p[1].to_string()))
+        .collect()
+}
+
+/// An `about` "name" that is only a vague noun ("video", "the system") names
+/// nothing; the local model listed exactly those to satisfy the check.
+fn is_generic(name: &str) -> bool {
+    let n = normalize(name.trim());
+    let n = DETERMINERS
+        .iter()
+        .find_map(|d| n.strip_prefix(&format!("{d} ")))
+        .unwrap_or(&n);
+    VAGUE_NOUNS.iter().any(|v| *v == n || *v == singular(n))
+}
+
+/// Why a claim cannot be understood without its source; empty when it can.
+///
+/// Mechanical, so it holds whatever model extracted the claim. The extraction
+/// prompt asked for "self-contained" claims from the start and the local model
+/// still wrote "admitted the company lacks the mechanism … to disable the
+/// software". The check makes the model *declare* what each vague reference
+/// stands for, then holds it to naming that in the claim itself:
+/// - every `about` name must appear in the claim, and be a name, not a vague
+///   noun ("video", "the system");
+/// - every bare "the <vague noun>" needs an `about` entry whose `what` is
+///   that noun and whose name is in the claim;
+/// - the claim may not open with a pronoun.
+pub fn standalone_problems(c: &ExtractedClaim) -> Vec<String> {
+    let text = normalize(&c.claim);
+    let text_loose = loose(&c.claim);
+    let mut out = Vec::new();
+    if let Some(first) = text.split_whitespace().next() {
+        let w = first.trim_matches(|ch: char| !ch.is_alphanumeric());
+        if PRONOUN_OPENERS.contains(&w) {
+            out.push(format!(
+                "it opens with \"{first}\" without saying who or what that is"
+            ));
+        }
+    }
+    if c.about.is_empty() {
+        out.push("it lists nothing it is about".to_string());
+    }
+    for a in c.about.iter().filter(|a| is_generic(&a.name)) {
+        out.push(format!("\"{}\" is not a name", a.name.trim()));
+    }
+    let named: Vec<&About> = c
+        .about
+        .iter()
+        .filter(|a| !is_generic(&a.name) && names(&text_loose, &a.name))
+        .collect();
+    for a in c
+        .about
+        .iter()
+        .filter(|a| !is_generic(&a.name) && !named.contains(a))
+    {
+        out.push(format!(
+            "\"{}\" is listed as what it is about, but the claim never names it",
+            a.name.trim()
+        ));
+    }
+    for (det, noun) in vague_references(&text) {
+        let declared = named.iter().any(|a| {
+            a.what
+                .as_deref()
+                .map(|w| singular(normalize(w).trim()) == singular(&noun))
+                .unwrap_or(false)
+        });
+        if !declared {
+            out.push(format!(
+                "\"{det} {noun}\" does not say which {}",
+                singular(&noun)
+            ));
+        }
+    }
+    out
+}
+
+/// What a rewrite lost: each number and capitalised name in `old` that `new`
+/// no longer contains. A rewrite may add names (that is the point) but never
+/// drop a fact, so any loss keeps the old text. Deliberately strict: "US" →
+/// "United States" counts as a loss, and the claim stays as it was.
+pub fn rewrite_losses(old: &str, new: &str) -> Vec<String> {
+    let (old, new) = (canon(old), canon(new));
+    // Numbers compare as runs of digits, thousands separators removed, so
+    // "1,200" = "1200", and "18–34" or "2026-09-28/29" keep each part.
+    let runs = |s: &str| -> Vec<String> {
+        let chars: Vec<char> = s.chars().collect();
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        for (i, c) in chars.iter().enumerate() {
+            if c.is_ascii_digit() {
+                cur.push(*c);
+            } else if *c == ','
+                && !cur.is_empty()
+                && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+            {
+                continue;
+            } else if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    };
+    let new_runs = runs(&new);
+    let mut lost: Vec<String> = Vec::new();
+    for r in runs(&old) {
+        if !new_runs.contains(&r) && !lost.contains(&r) {
+            lost.push(r);
+        }
+    }
+    // Names: each capitalised part of each word, hyphenated words split
+    // ("GRU-linked" needs "GRU"). The opening word is capitalised by grammar,
+    // not because it is a name. A possessive is the same name.
+    let new_n = new.to_lowercase();
+    let words = old
+        .split(|c: char| c.is_whitespace() || "()[]{}\";:/\u{2192}".contains(c))
+        .filter(|w| !w.is_empty());
+    for (i, word) in words.enumerate() {
+        for part in word.split('-') {
+            let t = part.trim_matches(|c: char| !c.is_alphanumeric());
+            if i == 0 || t.is_empty() || t.chars().any(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if t.chars().next().is_some_and(|c| c.is_uppercase()) {
+                let name = t.to_lowercase();
+                let name = name.strip_suffix("'s").unwrap_or(&name);
+                if !new_n.contains(name) && !lost.iter().any(|l| l == t) {
+                    lost.push(t.to_string());
+                }
+            }
+        }
+    }
+    lost
+}
+
+/// The rules every extraction and rewrite prompt carries for standing alone.
+pub(crate) const STANDALONE_RULES: &str = "Each claim must stand alone: someone who never sees the SOURCE must \
+     know exactly who and what it is about. Never write \"the company\", \"the software\", \
+     \"the spyware\", \"he\" or \"the bill\": use the name the SOURCE gives, or, if it gives \
+     none, say whose it is (\"Paragon Solutions' spyware\", \"Ohio's new law\"). Never invent \
+     a name.\n\
+     In \"about\" list every person, organisation, product, place, law or programme the claim \
+     names, written exactly as in the claim, with \"what\" = the word for it \
+     (\"company\", \"software\", \"senator\").\n";
 
 /// Render a claim for inclusion in an LLM context window.
 ///
@@ -155,7 +484,11 @@ pub async fn extract_claims(
     llm: &dyn LlmProvider,
     text: &str,
     max_claims: usize,
-) -> Result<Vec<ExtractedClaim>> {
+    source_title: Option<&str>,
+) -> Result<Extraction> {
+    let title = source_title
+        .map(|t| format!("SOURCE TITLE: {t}\n"))
+        .unwrap_or_default();
     let prompt = format!(
         "Extract factual assertions from the SOURCE that a researcher could \
          independently verify or refute.\n\n\
@@ -163,8 +496,8 @@ pub async fn extract_claims(
          dates, attributions, causal claims about the world.\n\
          EXCLUDE: opinions, predictions, value judgements, analysis, and \
          anything already presented as uncertain by the source itself.\n\n\
-         State each claim plainly and self-contained, so it can be understood \
-         without the source. Do NOT editorialise, debunk, endorse, or soften \
+         {STANDALONE_RULES}\n\
+         Do NOT editorialise, debunk, endorse, or soften \
          them — record what was asserted, exactly as asserted. An extraordinary \
          claim is recorded the same way as a mundane one.\n\n\
          Set asserted_by to whoever the SOURCE attributes the claim to (a person, \
@@ -187,8 +520,9 @@ pub async fn extract_claims(
          Return at most {max_claims} claims, most significant first. If the source \
          contains no checkable factual assertions, return an empty array.\n\n\
          Respond with JSON only:\n\
-         {{\"claims\": [{{\"claim\": \"...\", \"asserted_by\": \"...\", \"kind\": \"event|attribution|mechanism\"}}]}}\n\n\
-         SOURCE:\n{text}"
+         {{\"claims\": [{{\"claim\": \"...\", \"asserted_by\": \"...\", \"kind\": \"event|attribution|mechanism\", \
+         \"about\": [{{\"name\": \"...\", \"what\": \"...\"}}]}}]}}\n\n\
+         {title}SOURCE:\n{text}"
     );
 
     let value = llm
@@ -205,12 +539,95 @@ pub async fn extract_claims(
         .and_then(|c| serde_json::from_value(c.clone()).ok())
         .unwrap_or_default();
 
-    Ok(claims
+    let mut out = Extraction::default();
+    for c in claims
         .into_iter()
         .filter(|c| !c.claim.trim().is_empty())
         .take(max_claims)
-        .collect())
+    {
+        let problems = standalone_problems(&c);
+        if problems.is_empty() {
+            out.claims.push(c);
+            continue;
+        }
+        // One repair, given the source and exactly what is wrong.
+        match repair_claim(llm, text, &c, &problems).await {
+            Some(fixed) => {
+                out.repaired += 1;
+                out.claims.push(fixed);
+            }
+            None => out.dropped.push(DroppedClaim {
+                claim: c.claim,
+                problems,
+            }),
+        }
+    }
+    Ok(out)
 }
+
+/// What one extraction produced: the claims that stand alone (some after a
+/// repair) and those dropped because they still didn't, with the reasons.
+#[derive(Debug, Default)]
+pub struct Extraction {
+    pub claims: Vec<ExtractedClaim>,
+    pub repaired: usize,
+    pub dropped: Vec<DroppedClaim>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DroppedClaim {
+    pub claim: String,
+    pub problems: Vec<String>,
+}
+
+/// Ask once for a version of `c` that stands alone. `None` when the answer
+/// still doesn't, or lost a number or name the original had.
+pub(crate) async fn repair_claim(
+    llm: &dyn LlmProvider,
+    source: &str,
+    c: &ExtractedClaim,
+    problems: &[String],
+) -> Option<ExtractedClaim> {
+    let source: String = source.chars().take(REWRITE_SOURCE_CHARS).collect();
+    let prompt = format!(
+        "This claim was extracted from the SOURCE, but it cannot be understood without it: {}.\n\n\
+         Rewrite it. {STANDALONE_RULES}\
+         Keep every fact, number and name it already has, and its meaning exactly; add only the names \
+         that resolve what it refers to. {KEEP_AS_WRITTEN}\n\n\
+         Respond with JSON only: {{\"claim\": \"...\", \"about\": [{{\"name\": \"...\", \"what\": \"...\"}}]}}\n\n\
+         CLAIM: {}\n\nSOURCE:\n{source}",
+        problems.join("; "),
+        c.claim
+    );
+    let v = llm
+        .generate_json(&prompt, Some(REWRITE_SYSTEM), &["claim"], 1)
+        .await
+        .ok()?;
+    let fixed: ExtractedClaim = serde_json::from_value(v).ok()?;
+    let fixed = ExtractedClaim {
+        asserted_by: c.asserted_by.clone(),
+        kind: c.kind.clone(),
+        ..fixed
+    };
+    let still = standalone_problems(&fixed);
+    let lost = rewrite_losses(&c.claim, &fixed.claim);
+    if still.is_empty() && lost.is_empty() {
+        return Some(fixed);
+    }
+    info!(claim = %c.claim, answer = %fixed.claim, still = ?still, lost = ?lost, "Claim repair did not pass");
+    None
+}
+
+/// Every name, acronym, number and date the rewrite keeps must be found
+/// again by `rewrite_losses`; spelled out or reformatted, it can't be.
+pub(crate) const KEEP_AS_WRITTEN: &str = "Write every name, acronym, number and date exactly as the claim \
+     already does: keep \"FBI\", \"US\", \"MoE\", \"2026-09-28\" and \"2\" as they are; never spell \
+     them out, translate or reformat them.";
+
+/// Source text given to a repair or rewrite: enough for nearly every source
+/// note (p95 5.2k chars), within a small model's budget.
+pub const REWRITE_SOURCE_CHARS: usize = 12_000;
+pub const REWRITE_SYSTEM: &str = "You make extracted claims understandable on their own, using only what the source says. You never judge them.";
 
 /// Persist an extracted claim and link it to the note it was asserted in.
 pub async fn store_claim(
@@ -220,6 +637,7 @@ pub async fn store_claim(
     source_context: Option<&str>,
     asserted_at: Option<&str>,
     embedding: Option<Vec<f32>>,
+    source: &SourceRef,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -228,7 +646,9 @@ pub async fn store_claim(
     let mut q = neo4rs::query(
         "CREATE (n:Note {id: $id, content: $content, note_type: 'claim', \
          claim_status: 'unverified', asserted_by: $asserted_by, asserted_at: datetime($asserted_at), \
-         claim_kind: $claim_kind, \
+         claim_kind: $claim_kind, about: $about, \
+         source_url: $source_url, source_title: $source_title, source_outlet: $source_outlet, \
+         standalone_checked_at: datetime($ts), \
          source_context: $source_context, provenance: 'synthesis_inference', \
          created_at: datetime($ts), last_accessed_at: datetime($ts), access_count: 0, \
          next_review_at: datetime($ts) + duration({days: 1}), review_interval_days: 1, \
@@ -242,6 +662,13 @@ pub async fn store_claim(
         claim.kind.clone().unwrap_or_else(|| "event".to_string()),
     )
     .param("asserted_at", asserted_at)
+    .param(
+        "about",
+        claim.about.iter().map(|a| a.name.trim().to_string()).collect::<Vec<_>>(),
+    )
+    .param("source_url", source.url.clone())
+    .param("source_title", source.title.clone())
+    .param("source_outlet", source.outlet.clone())
     .param(
         "source_context",
         source_context.unwrap_or("claim_extraction"),
@@ -1152,6 +1579,221 @@ pub async fn source_claim_profile(neo4j: &Neo4jClient) -> Result<serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claim(text: &str, about: &[(&str, &str)]) -> ExtractedClaim {
+        ExtractedClaim {
+            claim: text.to_string(),
+            asserted_by: None,
+            kind: None,
+            about: about
+                .iter()
+                .map(|(n, w)| About {
+                    name: n.to_string(),
+                    what: Some(w.to_string()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_paragon_claim_does_not_stand_alone_until_it_names_the_software() {
+        let old = "Paragon’s CEO, Andrew Boyd, admitted the company lacks the mechanism to verify \
+                   customer misuse or deploy a 'kill switch' to disable the software.";
+        // Naming Paragon is not enough: "the software" is still unnamed.
+        let p = standalone_problems(&claim(
+            old,
+            &[("Paragon", "company"), ("Andrew Boyd", "CEO")],
+        ));
+        assert_eq!(
+            p,
+            vec!["\"the software\" does not say which software".to_string()],
+            "{p:?}"
+        );
+        // With nothing declared, every gap is named.
+        assert_eq!(standalone_problems(&claim(old, &[])).len(), 3);
+
+        let new = "Paragon Solutions CEO Andrew Boyd admitted the company lacks a mechanism to verify \
+                   customer misuse of its Graphite spyware or deploy a 'kill switch' to disable the software.";
+        let fixed = claim(
+            new,
+            &[
+                ("Paragon Solutions", "company"),
+                ("Andrew Boyd", "CEO"),
+                ("Graphite", "software"),
+            ],
+        );
+        assert!(
+            standalone_problems(&fixed).is_empty(),
+            "{:?}",
+            standalone_problems(&fixed)
+        );
+        assert!(
+            rewrite_losses(old, new).is_empty(),
+            "{:?}",
+            rewrite_losses(old, new)
+        );
+    }
+
+    #[test]
+    fn standalone_checks_names_pronouns_and_qualified_nouns() {
+        // An about name the claim never uses.
+        let p = standalone_problems(&claim(
+            "Italy expelled two diplomats.",
+            &[("Italy", "country"), ("Russia", "country")],
+        ));
+        assert_eq!(p.len(), 1, "{p:?}");
+        // A pronoun opening.
+        assert!(!standalone_problems(&claim("He resigned on 3 May.", &[])).is_empty());
+        // A determiner directly before the noun is what makes it vague.
+        assert!(
+            standalone_problems(&claim(
+                "The Italian government fined Meta €20m.",
+                &[("Meta", "company")]
+            ))
+            .is_empty()
+        );
+        assert!(
+            !standalone_problems(&claim(
+                "The government fined Meta €20m.",
+                &[("Meta", "company")]
+            ))
+            .is_empty()
+        );
+        // "that" as a conjunction, a quote inside a name, a glossed name.
+        assert!(
+            standalone_problems(&claim(
+                "Databricks states that chip scarcity forces compression.",
+                &[("Databricks", "company")]
+            ))
+            .is_empty()
+        );
+        assert!(
+            standalone_problems(&claim(
+                "Utah Governor Spencer Cox signed a \u{201C}pro-human AI\u{201D} executive order.",
+                &[
+                    ("Spencer Cox", "governor"),
+                    ("pro-human AI executive order", "order")
+                ]
+            ))
+            .is_empty()
+        );
+        assert!(
+            standalone_problems(&claim(
+                "A Gap synthesis note mentions HBM.",
+                &[
+                    ("Gap synthesis note (2026-08-08)", "note"),
+                    ("HBM", "memory")
+                ]
+            ))
+            .is_empty()
+        );
+        // A name must match whole words: "Meta" is not in "metadata".
+        assert!(
+            !standalone_problems(&claim("The metadata leaked.", &[("Meta", "company")])).is_empty()
+        );
+        // A vague noun listed as a name names nothing.
+        let p = standalone_problems(&claim(
+            "The video discusses the wall.",
+            &[("video", "video"), ("the system", "system")],
+        ));
+        assert!(
+            p.iter().any(|x| x.contains("\"video\" is not a name")),
+            "{p:?}"
+        );
+        assert!(
+            p.iter().any(|x| x.contains("\"the video\" does not say")),
+            "{p:?}"
+        );
+        // Plurals and curly apostrophes.
+        assert!(
+            !standalone_problems(&claim(
+                "Meta said these officials lied.",
+                &[("Meta", "company")]
+            ))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn rewrite_losses_catch_dropped_numbers_and_names_only() {
+        assert!(
+            rewrite_losses(
+                "Spending rose to 1,200 in 2025.",
+                "Spending by Ohio rose to 1200 in 2025."
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            rewrite_losses("Spending rose to 1,200 in 2025.", "Spending rose in 2025."),
+            vec!["1200"]
+        );
+        assert_eq!(
+            rewrite_losses("The US fined Meta.", "The United States fined Meta."),
+            vec!["US"]
+        );
+        // Typography and ranges from the 2026-10-08 dry run were not losses.
+        assert!(
+            rewrite_losses(
+                "A new AP-NORC poll shows 64% agree.",
+                "A new AP\u{2011}NORC poll shows 64\u{202F}% agree."
+            )
+            .is_empty()
+        );
+        assert!(rewrite_losses("It costs ~$18–34.", "It costs US $18 to US $34.").is_empty());
+        assert!(
+            rewrite_losses(
+                "Dated 2026-09-28/29.",
+                "Dated 2026\u{2011}09\u{2011}28 and 2026\u{2011}09\u{2011}29."
+            )
+            .is_empty()
+        );
+        assert!(
+            rewrite_losses(
+                "Attacks were GRU-linked.",
+                "Attacks were linked to the GRU."
+            )
+            .is_empty()
+        );
+        // An acronym spelled out is still a loss: kept, conservatively.
+        assert_eq!(
+            rewrite_losses(
+                "The FBI/DOJ seized tools.",
+                "The FBI and the Department of Justice seized tools."
+            ),
+            vec!["DOJ"]
+        );
+        // The capitalised first word is grammar, not a name.
+        assert!(
+            rewrite_losses(
+                "Officials said Meta lied.",
+                "Meta lied, Irish officials said."
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn about_reads_objects_names_or_nothing() {
+        let c: ExtractedClaim = serde_json::from_str(
+            r#"{"claim":"x","about":[{"name":"Graphite","what":"spyware"},"Paragon",{"what":"no name"},""]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.about,
+            vec![
+                About {
+                    name: "Graphite".into(),
+                    what: Some("spyware".into())
+                },
+                About {
+                    name: "Paragon".into(),
+                    what: None
+                },
+            ]
+        );
+        let none: ExtractedClaim = serde_json::from_str(r#"{"claim":"x","about":null}"#).unwrap();
+        assert!(none.about.is_empty());
+    }
 
     #[test]
     fn source_reference_reads_article_and_video_summaries() {

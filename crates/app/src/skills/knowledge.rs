@@ -58,7 +58,7 @@ impl KnowledgeSkill {
                     "provenance": {
                         "type": "string",
                         "enum": ["user_input", "synthesis_inference", "core_training"],
-                        "description": "Source authority flag: who/what produced this note (default: user_input)"
+                        "description": "Source authority flag: who/what produced this note. Default: user_input for an outside MCP client, synthesis_inference for the brain's own jobs, chats and agents (which cannot claim user_input)."
                     }
                 },
                 "required": ["content"]
@@ -334,11 +334,11 @@ impl KnowledgeSkill {
 
         info!(content_len = input.content.len(), "Storing note");
 
+        // Who is writing decides the default; see `effective_provenance`.
         let provenance = input
             .provenance
             .as_deref()
-            .and_then(|s| s.parse::<ProvenanceFlag>().ok())
-            .unwrap_or(ProvenanceFlag::UserInput);
+            .and_then(|s| s.parse::<ProvenanceFlag>().ok());
 
         let null_result = is_null_result(&input.content, input.note_type.as_deref());
         let unverified = !null_result && is_unverified(&input.content, input.note_type.as_deref());
@@ -370,7 +370,7 @@ impl KnowledgeSkill {
                 note_type,
                 input.source_context.as_deref(),
                 input.event_at.as_deref(),
-                Some(provenance),
+                provenance,
             )
             .await
         {

@@ -14,6 +14,9 @@ pub enum ProvenanceFlag {
     SynthesisInference,
     /// Asserted to originate from the model's pre-training corpus (use sparingly).
     CoreTraining,
+    /// Written by the brain's own code, with no person or model choosing the
+    /// words: scheduler run records, claim-evidence records, code-version notes.
+    SystemRecord,
 }
 
 impl ProvenanceFlag {
@@ -23,6 +26,7 @@ impl ProvenanceFlag {
             ProvenanceFlag::UserInput => "user_input",
             ProvenanceFlag::SynthesisInference => "synthesis_inference",
             ProvenanceFlag::CoreTraining => "core_training",
+            ProvenanceFlag::SystemRecord => "system_record",
         }
     }
 }
@@ -40,6 +44,7 @@ impl std::str::FromStr for ProvenanceFlag {
             "user_input" => Ok(ProvenanceFlag::UserInput),
             "synthesis_inference" => Ok(ProvenanceFlag::SynthesisInference),
             "core_training" => Ok(ProvenanceFlag::CoreTraining),
+            "system_record" => Ok(ProvenanceFlag::SystemRecord),
             _ => Err(()),
         }
     }

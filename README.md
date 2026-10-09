@@ -159,6 +159,7 @@ MCP_API_KEY=secret docker compose up -d --build
 serve            Run as MCP server (default)
 init-db          Initialize Neo4j schema
 repair-notes     One-off note repair migration
+rewrite-claims   Restate stored claims so each stands alone (--dry-run first)
 eval-retrieval   Score retrieval against a golden set
 todo             Manage todos over HTTP
 ```

@@ -118,22 +118,45 @@ impl ClaimSkill {
         let source_context = args["source_context"].as_str();
         let fallback_by = args["asserted_by"].as_str();
 
-        let extracted = match claims::extract_claims(self.llm.as_ref(), text, max).await {
-            Ok(c) => c,
-            Err(e) => return ToolCallResult::error(format!("Claim extraction failed: {e}")),
-        };
+        // What the source is (title, URL, outlet), stored on every claim so a
+        // reader sees where it came from without following ASSERTED_IN. The text
+        // usually carries it; otherwise the source note does.
+        let mut source = claims::source_reference(text);
+        if source.title.is_none()
+            && let Some(id) = source_note_id
+            && let Some(content) = self.note_content(id).await
+        {
+            source = claims::source_reference(&content);
+        }
 
-        if extracted.is_empty() {
+        let extraction =
+            match claims::extract_claims(self.llm.as_ref(), text, max, source.title.as_deref())
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => return ToolCallResult::error(format!("Claim extraction failed: {e}")),
+            };
+        let (repaired, dropped) = (extraction.repaired, extraction.dropped);
+        for d in &dropped {
+            warn!(claim = %d.claim, problems = ?d.problems, "Claim dropped: it does not stand alone");
+        }
+
+        if extraction.claims.is_empty() {
             return ToolCallResult::success_json(json!({
                 "stored": 0,
                 "claims": [],
+                "dropped": dropped,
                 "answer": text,
-                "note": "No independently checkable factual assertions found in this source."
+                "note": if dropped.is_empty() {
+                    "No independently checkable factual assertions found in this source."
+                } else {
+                    "Every claim found was dropped: none could be stated so it stands alone (see dropped)."
+                }
             }));
         }
 
         let mut stored = Vec::new();
-        for mut c in extracted {
+        for mut c in extraction.claims {
             // Fall back to the channel/outlet when the text itself names no source.
             if c.asserted_by.as_deref().unwrap_or("").is_empty() {
                 c.asserted_by = fallback_by.map(String::from);
@@ -148,6 +171,7 @@ impl ClaimSkill {
                 source_context,
                 None,
                 embedding,
+                &source,
             )
             .await
             {
@@ -171,9 +195,23 @@ impl ClaimSkill {
         ToolCallResult::success_json(json!({
             "stored": stored.len(),
             "claims": stored,
+            "repaired": repaired,
+            "dropped": dropped,
             "answer": text,
             "note": "Stored as unverified. Run claim(action=verify) to gather evidence."
         }))
+    }
+
+    /// A note's text, for reading what source it records.
+    async fn note_content(&self, id: &str) -> Option<String> {
+        self.neo4j
+            .execute(
+                neo4rs::query("MATCH (n:Note {id: $id}) RETURN n.content AS c").param("id", id),
+            )
+            .await
+            .ok()?
+            .first()
+            .and_then(|r| r.get::<String>("c").ok())
     }
 
     /// Who a claim is attributed to, for the self-reference check.

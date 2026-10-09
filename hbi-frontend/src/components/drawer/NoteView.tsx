@@ -233,29 +233,48 @@ function ExistingNote({ id }: { id: string }) {
 function AssertedIn({ n }: { n: Note }) {
   const sources = n.asserted_in ?? [];
   return (
-    <Section title="Asserted in">
-      {sources.length === 0 ? (
-        <div className="tone-text-yellow">No source recorded: this claim has no ASSERTED_IN edge to the note it came from.</div>
-      ) : (
-        <ul className="dw-sources">
-          {sources.map((src) => (
-            <li key={src.id}>
-              <EntityLink kind="note" id={src.id} title="Open the source note">
-                {src.title || src.source_context || "source note"}
-              </EntityLink>
-              {src.url && (
-                <a className="dw-ext" href={src.url} target="_blank" rel="noreferrer" title={src.url}>
-                  {hostOf(src.url)} ↗
-                </a>
-              )}
-              <div className="dw-dim">
-                {[src.outlet, src.source_context, src.created_at && formatLocal(src.created_at)].filter(Boolean).join(" · ")}
-              </div>
-            </li>
-          ))}
-        </ul>
+    <>
+      {(n.about?.length ?? 0) > 0 && (
+        <Section title="About">
+          <div className="dw-chips">{n.about!.map((a) => <Pill key={a} tone="muted">{a}</Pill>)}</div>
+        </Section>
       )}
-    </Section>
+      {n.ambiguous && (
+        <div className="tone-text-yellow dw-note">
+          Ambiguous: this claim could not be restated so it stands alone without its source
+          {n.ambiguous_reason ? ` (${n.ambiguous_reason})` : ""}. Read it with the source below.
+        </div>
+      )}
+      {n.content_v1 && (
+        <details className="dw-note">
+          <summary>Rewritten {n.rewritten_at ? formatLocal(n.rewritten_at) : ""} so it stands alone: the original</summary>
+          <div>{n.content_v1}</div>
+        </details>
+      )}
+      <Section title="Asserted in">
+        {sources.length === 0 ? (
+          <div className="tone-text-yellow">No source recorded: this claim has no ASSERTED_IN edge to the note it came from.</div>
+        ) : (
+          <ul className="dw-sources">
+            {sources.map((src) => (
+              <li key={src.id}>
+                <EntityLink kind="note" id={src.id} title="Open the source note">
+                  {src.title || src.source_context || "source note"}
+                </EntityLink>
+                {src.url && (
+                  <a className="dw-ext" href={src.url} target="_blank" rel="noreferrer" title={src.url}>
+                    {hostOf(src.url)} ↗
+                  </a>
+                )}
+                <div className="dw-dim">
+                  {[src.outlet, src.source_context, src.created_at && formatLocal(src.created_at)].filter(Boolean).join(" · ")}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+    </>
   );
 }
 

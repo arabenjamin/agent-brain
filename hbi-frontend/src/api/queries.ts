@@ -108,6 +108,14 @@ export interface Note {
   topics_assessed?: boolean;
   /** A claim's source notes, with the article or video each records. */
   asserted_in?: SourceRef[];
+  /** A claim that could not be made to stand alone, and why. */
+  ambiguous?: boolean;
+  ambiguous_reason?: string | null;
+  /** A rewritten claim's original text, and when it was rewritten. */
+  content_v1?: string | null;
+  rewritten_at?: string | null;
+  /** The named things a claim is about. */
+  about?: string[];
 }
 
 export interface SourceRef {

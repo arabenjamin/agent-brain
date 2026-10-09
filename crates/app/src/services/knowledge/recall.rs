@@ -148,7 +148,7 @@ impl KnowledgeService {
             let source_context = row.get::<String>("source_context").unwrap_or_default();
             let provenance = row
                 .get::<String>("provenance")
-                .unwrap_or_else(|_| "user_input".to_string());
+                .unwrap_or_else(|_| "unrecorded".to_string());
             results.push(serde_json::json!({
                 "id": id,
                 "content": content,

@@ -182,6 +182,9 @@ impl Neo4jClient {
     /// Persist a lightweight episodic note (no embedding) directly in Neo4j.
     /// Use this from services that don't have access to `KnowledgeService` — it
     /// skips vector embedding but still participates in spaced-rep review.
+    /// Stored as `provenance: system_record`: every caller writes a record its
+    /// own code built (a scheduler dispatch, claim evidence, the code version),
+    /// never words a person or a model chose.
     pub async fn store_episodic_note(
         &self,
         content: &str,
@@ -193,7 +196,7 @@ impl Neo4jClient {
 
         let q = query(
             "CREATE (n:Note {id: $id, content: $content, note_type: 'episodic', \
-             source_context: $src, provenance: 'user_input', \
+             source_context: $src, provenance: 'system_record', \
              created_at: datetime($ts), last_accessed_at: datetime($ts), \
              access_count: 0, \
              next_review_at: datetime($ts) + duration({days: 1}), \

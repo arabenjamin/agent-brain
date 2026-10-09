@@ -751,6 +751,24 @@ The fix keeps every field the editor doesn't edit and lists them under the step.
 
 **Claims had their source all along.** The user read a claim ("…disable the software") and could not tell which article or software it meant. 4,485 of 4,510 claims already had an `ASSERTED_IN` edge to the source note, and nearly every source names its URL. The drawer simply didn't follow the edge. Every claim was also labelled `provenance: user_input` by `store_claim`, which recall shows the model as "a person stored this". Showing the source fixed reading for every existing claim at once. Making each claim name its subject is a separate change (HBI plan Phase 9).
 
+**Provenance said "a person wrote this" for 11,513 machine-written notes (2026-10-08).**
+- **Cause:** `store_note` defaulted to `user_input` when its caller passed none, and almost none did. `store_episodic_note` hardcoded the value outright.
+- **What was mislabelled:** video summaries, scheduler run records, claim evidence, news briefs.
+- **Effect:** recall shows the label to the model, so most of what the brain had written came back to it as human input.
+- **The fix decides by caller, not by trust in the argument.** Inside a route context a model chose the words, so it can't claim `user_input`. Only an outside MCP client's own call keeps it. Code-built records get a new value, `system_record`; calling them LLM synthesis would have been the same mistake in the other direction.
+- **The relabel:** the script changed 12,269 notes and left only the 13 résumé notes as `user_input`.
+
+**Making claims stand alone needed the model to declare what each vague reference meant.** The extraction prompt had asked for "self-contained" claims from the start, and the local model still wrote "disable the software".
+- **A check for "names something" would not have helped.** The Paragon claim names Paragon; it's "the software" that is unnamed.
+- **The check that works:** the model lists what the claim is about, with the word the claim uses for each item. Every bare "the <vague noun>" must then match a listed item that the claim names.
+- **Each loophole came from a live run:**
+  - the model listed "video" and "system" as names;
+  - "that" read as a determiner in "states that chip scarcity";
+  - names with a quote mark inside, or a glossed date, failed to match.
+- **The meaning guard's first dry run kept 12 of 53 claims for typography**, mostly non-breaking hyphens and number ranges. Fixing the comparison and telling the model to keep acronyms and dates as written brought the dry run to 50 of 53 passing.
+- **The Paragon claim needed one more rule.** Its source never names the product, so the honest form is "Paragon Solutions' spyware", and the model wrote that only once the prompt said so in those words.
+- **What no check catches:** "admitted" became "said". That's why a person reads the dry run before the full rewrite.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

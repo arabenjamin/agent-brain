@@ -66,6 +66,36 @@ tokio::task_local! {
     pub static RETRIEVAL_EXCLUDE: RetrievalExclude;
 }
 
+tokio::task_local! {
+    /// Set while a tool runs for an MCP client's `tools/call` (`mcp/server.rs`):
+    /// someone outside the brain asked for this write.
+    pub static CLIENT_CALL: ();
+}
+
+/// The provenance a note is stored with, decided by who is writing it rather
+/// than assumed. The brain's own work (a queue job, a chat turn, a sub-agent:
+/// anything under a `ROUTE_CONTEXT`) is `synthesis_inference`, and may not
+/// claim `user_input` even when a model passes it, because a model chose the
+/// words. Only an outside MCP client's call, with no route context of its own,
+/// is `user_input`; it may pass any value. Anything else unscoped is brain code
+/// and defaults to `synthesis_inference`. Until 2026-10-08 `store_note`
+/// assumed `user_input`, and 11,513 machine-written notes said a person wrote
+/// them.
+pub fn effective_provenance(requested: Option<ProvenanceFlag>) -> ProvenanceFlag {
+    let brain_work = crate::services::routing::ROUTE_CONTEXT
+        .try_with(|_| ())
+        .is_ok();
+    let client = CLIENT_CALL.try_with(|_| ()).is_ok();
+    match requested {
+        Some(ProvenanceFlag::UserInput) if brain_work || !client => {
+            ProvenanceFlag::SynthesisInference
+        }
+        Some(p) => p,
+        None if client && !brain_work => ProvenanceFlag::UserInput,
+        None => ProvenanceFlag::SynthesisInference,
+    }
+}
+
 /// The exclusion in scope for this task, if any.
 pub(crate) fn current_retrieval_exclude() -> Option<RetrievalExclude> {
     RETRIEVAL_EXCLUDE
@@ -143,4 +173,58 @@ impl KnowledgeService {
     // =========================================================================
     // Private helpers
     // =========================================================================
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use crate::services::routing::{DataClass, Purpose, ROUTE_CONTEXT, RouteContext};
+    use ProvenanceFlag::*;
+
+    fn brain() -> RouteContext {
+        RouteContext::new(Purpose::Background, DataClass::Private)
+    }
+
+    #[tokio::test]
+    async fn a_client_call_is_user_input_and_may_choose() {
+        let got = CLIENT_CALL
+            .scope((), async {
+                (
+                    effective_provenance(None),
+                    effective_provenance(Some(UserInput)),
+                    effective_provenance(Some(SynthesisInference)),
+                )
+            })
+            .await;
+        assert_eq!(got, (UserInput, UserInput, SynthesisInference));
+    }
+
+    #[tokio::test]
+    async fn the_brains_own_work_never_claims_user_input() {
+        let got = ROUTE_CONTEXT
+            .scope(brain(), async {
+                (
+                    effective_provenance(None),
+                    effective_provenance(Some(UserInput)),
+                )
+            })
+            .await;
+        assert_eq!(got, (SynthesisInference, SynthesisInference));
+        // A client's call that runs an agent: the agent's writes are the brain's.
+        let nested = CLIENT_CALL
+            .scope(
+                (),
+                ROUTE_CONTEXT.scope(brain(), async { effective_provenance(None) }),
+            )
+            .await;
+        assert_eq!(nested, SynthesisInference);
+    }
+
+    #[test]
+    fn unscoped_brain_code_defaults_to_synthesis_and_keeps_explicit_values() {
+        assert_eq!(effective_provenance(None), SynthesisInference);
+        assert_eq!(effective_provenance(Some(UserInput)), SynthesisInference);
+        assert_eq!(effective_provenance(Some(SystemRecord)), SystemRecord);
+        assert_eq!(effective_provenance(Some(CoreTraining)), CoreTraining);
+    }
 }

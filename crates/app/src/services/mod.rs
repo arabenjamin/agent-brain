@@ -3,6 +3,7 @@ pub mod agent_runner;
 pub mod architecture;
 pub mod budget;
 pub mod chain_seeder;
+pub mod claim_rewrite;
 pub mod claims;
 pub mod clock;
 pub mod context_builder;

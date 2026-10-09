@@ -142,6 +142,19 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `topics_version` | String? | The topic-definitions hash it was classified against (`services/topics.rs`). Equal to the current version and no `IN_TOPIC` ⇒ assessed, fits no topic; anything else ⇒ waiting |
 | `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
 | `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
+| `provenance` | String | Who chose the words: `user_input` (a person: the HBI, an outside MCP client's call), `synthesis_inference` (a model: every queue job, chat turn and sub-agent), `system_record` (the brain's own code: scheduler dispatches, claim evidence, code-version notes), `core_training`. Decided by the caller (`knowledge::effective_provenance`): the brain's own work cannot claim `user_input`. Shown to the model by recall |
+| `provenance_was` / `provenance_relabelled_at` | String? / DateTime? | Set by `scripts/fix_note_provenance.cypher` (2026-10-08) on the 12,269 notes it relabelled: the old value (`none` when there was none) |
+
+Claim notes (`note_type: 'claim'`, `services/claims.rs`) also carry:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `claim_status` / `claim_kind` / `asserted_by` / `asserted_at` | | Epistemic status, see `subsystem-rules.md` § Epistemics |
+| `about` | String[] | The named things the claim is about, as the claim names them. Extraction and the rewrite check that each is named in the claim (`standalone_problems`) |
+| `source_url` / `source_title` / `source_outlet` | String? | The article or video its `ASSERTED_IN` source records (`source_reference`), on the claim so a reader needn't follow the edge. The topic classifier reads the title with the claim |
+| `standalone_checked_at` | DateTime? | When the stand-alone check last ran on it (new claims: at extraction). Unset ⇒ `rewrite-claims` will check it |
+| `rewritten_at` / `content_v1` | DateTime? / String? | Set when `rewrite-claims` replaced its text: the original stays in `content_v1` |
+| `ambiguous` / `ambiguous_reason` | Boolean? / String? | It could not be restated so it stands alone; the reason names what is missing. Its text is unchanged |
 
 #### `Topic`
 

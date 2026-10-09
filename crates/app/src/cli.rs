@@ -88,6 +88,37 @@ pub enum Command {
         unmerge: Option<String>,
     },
 
+    /// Rewrite stored claims so each stands alone (HBI plan Phase 9).
+    ///
+    /// Each source note's claims are rewritten in one call that sees the
+    /// source; a rewrite replaces a claim only if it names what it is about
+    /// and lost no number or name, else the claim is kept and marked
+    /// `ambiguous` with the reason. `--dry-run` samples `--sample` claims
+    /// across writers and writes nothing: read its report first. A real run
+    /// takes a snapshot, keeps old text in `content_v1`, and resumes where a
+    /// stopped run left off.
+    RewriteClaims {
+        /// Ask the model and report, writing nothing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Dry run: how many claims to sample.
+        #[arg(long, default_value = "50")]
+        sample: usize,
+
+        /// Stop after this many source notes.
+        #[arg(long)]
+        limit_sources: Option<usize>,
+
+        /// Only this source note (repeatable): a dry run on a chosen source.
+        #[arg(long = "source-id")]
+        source_ids: Vec<String>,
+
+        /// Write the before/after report (markdown) here instead of stdout.
+        #[arg(long)]
+        report: Option<String>,
+    },
+
     /// Score retrieval quality against a golden set (read-only).
     ///
     /// Runs each (query → expected note) case in the fixture through the real

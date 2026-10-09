@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phases 9–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 built and deployed 2026-10-08, its full claim rewrite waiting on the user's review of the dry run; Phases 10–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -577,6 +577,29 @@ Around it:
 - **When the source can't resolve it:** a video claim's source is the video's summary, not its transcript. If the summary can't resolve a referent, the claim keeps its text and is marked `ambiguous: true`, a visible count, rather than the model inventing a referent.
 - **Order:** a dry run on 50 claims for the user to review, then the full run. `eval-retrieval` must be no worse.
 
+**Provenance for every note, not only claims (added to Phase 9 by the user, 2026-10-08).**
+
+The problem:
+- **`store_note` defaults to `user_input`** whenever the caller passes no `provenance` (`skills/knowledge.rs`), and almost no brain writer passes one.
+- **Live counts on 2026-10-08:**
+  - 11,513 notes are `user_input` and 11,015 `synthesis_inference`; 769 have none.
+  - The `user_input` ones are nearly all machine-written: 3,979 video summaries, 3,753 `scheduler_dispatch` run records, 2,096 `claim_evidence`, 329 `chat_session`, 223 `sleep` outcomes, 161 `learn_chain`, 121 news briefs, …
+- **Recall shows the label to the model**, so it reads most of the brain's own output as something a person stored.
+
+The fix:
+- **The default comes from who is calling.** `store_note` reads the route context instead of assuming a person:
+  - **queue job, sub-agent or chat turn** (the model chose the words) → `synthesis_inference`;
+  - **no route context at all**, meaning a direct MCP call from an outside client → `user_input`, as today;
+  - **an explicit `provenance` argument** still wins.
+  
+  `POST /api/notes` (the HBI) already writes `user_input` explicitly. Other raw-Cypher writers that hardcode `user_input` are found by grep and fixed the same way: `repository/task.rs`'s run record, and any others the audit turns up.
+- **Backfill, after the deploy:**
+  - Brain-written `user_input` notes and the 769 with none become `synthesis_inference`, chosen by `source_context`.
+  - Only the human sources keep `user_input`: `hbi`, `resume`, and any other the audit shows came from a person.
+  - A script in `scripts/`, with a dry-run count by `source_context` first.
+- **Decision (taken with §9.9's picks):** notes the chat model stores during a conversation are `synthesis_inference` even when they repeat the user's words, because the model chose what to keep. No new provenance value is added: `note_type: source_record` already says a note records an external source.
+- **Done when:** every `user_input` note traces to a human path, and nothing has no provenance.
+
 ### 9.7 Nav sidebar
 
 The sidebar collapses to an icon rail (~52 px):
@@ -589,7 +612,7 @@ The sidebar collapses to an icon rail (~52 px):
 | Phase | Scope | Done when |
 |---|---|---|
 | **8. Honest fixes** | §9.7 nav collapse; claim **Asserted in** in the drawer; claim provenance (new and existing); the Provider dropdown relabelled to what it does ("local" / "cloud: the current chat model"), and the step help text stops listing `model` until it exists. | The Paragon claim's drawer links the Citizen Lab article; no control in the HBI claims to choose something it doesn't. |
-| **9. Claims stand alone** | §9.6 extraction (`about` check, source fields, topic from claim + source); dry run on 50 → user review → rewrite all. | Every claim is self-contained, marked `ambiguous`, or was dropped with a count; `eval-retrieval` no worse; the Paragon claim names the software and links its article. |
+| **9. Claims stand alone + honest provenance** | §9.6 extraction (`about` check, source fields, topic from claim + source); dry run on 50 → user review → rewrite all. `store_note` provenance from the caller, raw-Cypher writers audited, backfill of ~12.3k notes. | Every claim is self-contained, marked `ambiguous`, or was dropped with a count; `eval-retrieval` no worse; the Paragon claim names the software and links its article; every `user_input` note traces to a human path and none has no provenance. |
 | **10. Models everywhere** | §9.4: step `model`, `run_agent` `model`, validation, `<ModelPicker>`, `<AgentAssist>` in the schedule form, todo form and agents editor. | A step pinned to model X shows X in the `model_usage` ledger; a refusal is visible on the job; the Zero Trust schedule's model either runs or is rejected at upsert. |
 | **11. Schedules by topic** | §9.5: `topic` / `kind` fields and seeds (user reviews), the computed mix, grouping in the list and timeline. | Every schedule is in a group or in "no topic"; a declared-vs-computed mismatch is shown. |
 | **12. Items + Feed** | §9.2 fields + `manage_todo` (delayed-prompt Phase 1); `notify_user needs: action`; proposal items; `/api/feed`; Feed replaces Inbox; banner gone; Todos lane filters. | Everything that wants the user is in one list, and the badge, the Home tile and the Feed count the same thing. |
@@ -621,7 +644,49 @@ Built:
 Fixed on the way (found by this phase, worse than the todo):
 - **The schedule and routing-chain editors dropped step fields on save.** The draft converter kept only `tool_name` / `arguments` / `provider_hint` / `priority`. Saving a schedule in the HBI therefore silently removed `data_class` (public work became private, so the routing policy narrowed), `max_attempts`, `description`, and on routing chains `is_evaluator` / `min_score` / `context_profile`. 25 of the YAML schedules carry such fields. A step with no `provider_hint`, which runs on cloud, was saved back as `ollama`. Every other field now rides in `StepDraft.extra` and is listed under the step as "Also kept", and a missing hint stays missing. The Zero Trust schedule's ignored `model: gemma4:latest` now shows there as "not read: steps can't pick a model yet".
 
-Not built here: a claim's source on the claim node itself (Phase 9 stores `source_url` / `source_title`). `store_note` still defaults every brain-written note, `source_record` summaries included, to `provenance: user_input`; only claims were in scope.
+Not built here: a claim's source on the claim node itself (Phase 9 stores `source_url` / `source_title`). `store_note` still defaults every brain-written note, `source_record` summaries included, to `provenance: user_input`; only claims were in scope. Moved into Phase 9 (§9.6).
 
 **Done criterion met:** the Paragon claim's drawer links the Citizen Lab article, and no control in the step editor claims to choose something it doesn't.
+
+### Phase 9 outcome (2026-10-08, rewrite pending review)
+
+Built and deployed:
+- **Every note's provenance is decided by who writes it** (`knowledge::effective_provenance`):
+  - the brain's own work (anything under a route context: queue jobs, chat turns, sub-agents) is `synthesis_inference`, and can't claim `user_input` even when a model passes it;
+  - an outside MCP client's own call (`CLIENT_CALL`, `mcp/server.rs`) is `user_input`.
+  - **New value `system_record`** for records the brain's code builds (scheduler dispatches, claim evidence, code-version notes). Calling them LLM synthesis would have been the opposite mislabel.
+  - Recall reads a missing value as `unrecorded`, not `user_input`. The HBI's fallback note path now writes `user_input` explicitly.
+- **Data fix applied** (`scripts/fix_note_provenance.cypher`, run after the deploy): 5,942 notes became `system_record` and 6,327 `synthesis_inference`. Only the 13 résumé notes are still `user_input`, and none has no provenance. Each relabelled note keeps `provenance_was`.
+- **Claims must stand alone at extraction** (`claims::standalone_problems`, mechanical):
+  - the model declares `about: [{name, what}]`;
+  - every name must be in the claim, and be a name, not a vague noun;
+  - every bare "the + vague noun" must be declared and named;
+  - the claim may not open with a pronoun.
+  
+  A failing claim gets one repair (`repair_claim`) and is otherwise dropped, listed in the tool's `dropped`. Stored claims carry `about`, `source_url`, `source_title` and `source_outlet`. The topic classifier reads the source title with the claim.
+  - **Measured on the local model** (Gemma E4B, which does all live extraction), 8 real sources: 21 claims stored, 2 repaired, 2 dropped. One dropped claim was a meta-claim ("The video discusses …"); the other said "seven financial institutions" without saying where.
+- **`rewrite-claims`** (`services/claim_rewrite.rs`, CLI):
+  - one cloud call per source note;
+  - a rewrite replaces a claim only if it stands alone **and** loses no number or name (`rewrite_losses`, which folds Unicode hyphens and spaces first);
+  - one targeted repair, otherwise the text is kept and the claim marked `ambiguous` with the reason;
+  - the old text goes to `content_v1`, and the claim is re-embedded and re-queued for topics;
+  - a snapshot is taken first, and a stopped run resumes.
+  - The claim drawer shows **About**, the ambiguity reason, and the original text of a rewritten claim.
+- **Tests:** 846 Rust lib tests (14 new), 82 vitest.
+
+**Dry run on 50 claims across writers** (cloud, nothing written): 53 claims from 10 sources.
+- **Outcome:** 30 rewritten, 20 already stood alone, 2 ambiguous, 1 kept by the meaning guard.
+- **Iterations to get there:**
+  - the first run kept 12 for typography (non-breaking hyphens, number ranges);
+  - the next lost acronyms (US → United States) and dates (→ "September 28");
+  - both were fixed in the comparison and the prompt.
+- **The Paragon claim (889d47f8)** now reads: "Paragon Solutions' CEO Andrew Boyd said that Paragon Solutions lacks a mechanism to verify customer misuse of its spyware or to deploy a 'kill switch' to disable the Paragon Solutions spyware." That needed the rule "if the source gives no name, say whose it is". The source never names the product.
+- **Not caught by any check:** "admitted" became "said". Verbs that soften are invisible to a mechanical guard, which is why the user reads the dry-run report before the full run.
+
+**Waiting on the user:**
+- read the dry-run report;
+- then the full run: ~1,050 sources, about an hour on gpt-oss:120b-cloud, snapshot first;
+- then `eval-retrieval` before and after.
+
+Not built: a check that catches a missing location or target ("AI agents were deployed", with no target named).
 
