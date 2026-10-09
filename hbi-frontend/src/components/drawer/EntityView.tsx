@@ -14,6 +14,7 @@ import MergeCandidates from "../work/MergeCandidates";
 import { Drawer, EmptyState, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section } from "./parts";
+import RelatedEntities from "./RelatedEntities";
 
 const METHOD_LABEL: Record<string, string> = {
   seed: "curated seed",
@@ -73,19 +74,7 @@ function Body({ d }: { d: EntityDetail }) {
         </Section>
       )}
 
-      <Section title="Mentioned with" aside={d.co_mentioned.length ? "by shared notes" : undefined}>
-        {d.co_mentioned.length === 0 ? (
-          <div className="dw-note">No other entity shares a note with this one (URLs and dates are not counted).</div>
-        ) : (
-          <div className="dw-chips">
-            {d.co_mentioned.map((c) => (
-              <EntityLink key={c.id} kind="entity" id={c.id} title={`${c.entity_type ?? ""} · ${c.shared} shared notes`}>
-                <Pill tone="muted">{c.name} {c.shared}</Pill>
-              </EntityLink>
-            ))}
-          </div>
-        )}
-      </Section>
+      <RelatedEntities id={id} topics={(d.topics ?? []).filter((t) => !t.hidden)} />
 
       <Section title="Notes" aside={d.entity.mentions > d.notes_shown ? `newest ${d.notes_shown} of ${d.entity.mentions}` : `${d.notes_shown}`}>
         {d.notes.length === 0 ? (

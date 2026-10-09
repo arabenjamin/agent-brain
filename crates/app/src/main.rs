@@ -662,6 +662,12 @@ async fn run_serve(
         )));
         agent_brain::services::topics::spawn_assigner(
             client.clone(),
+            agent_brain::services::shared_llm::SharedLlm::new(local.clone()),
+        );
+        // Claims are stored without entity extraction; give them entities on
+        // idle time (services/knowledge/entities.rs).
+        agent_brain::services::knowledge::KnowledgeService::spawn_claim_entity_backfill(
+            client.clone(),
             agent_brain::services::shared_llm::SharedLlm::new(local),
         );
     }

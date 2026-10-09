@@ -6,7 +6,8 @@
  *   query alongside. With no query: the newest notes, or a drill-down from
  *   Home (`since`, `type`, `verified_since`).
  * - Neighbourhood: the graph around the results (or the open note).
- * - Map: the domains — topic hubs and the entities their notes mention (TopicMap).
+ * - Map: the domains — topic hubs and the entities their notes mention (TopicMap);
+ *   with `focus=<entity id>`, that entity's neighbourhood (EntityNeighbourhood).
  * - Timeline: when the results were written.
  *
  * `within=<topic>` narrows everything to one topic.
@@ -27,6 +28,7 @@ import { EntityLink } from "../drawer/parts";
 import GraphPanel from "../graph/GraphPanel";
 import { DrillBanner, EmptyState, Pill } from "../ui";
 import TopicMap from "./TopicMap";
+import EntityNeighbourhood from "./EntityNeighbourhood";
 
 export interface KnowledgeParams {
   q?: string;
@@ -39,6 +41,10 @@ export interface KnowledgeParams {
   note?: string;
   entity?: string;
   topic?: string;
+  /** Map: the entity whose neighbourhood is shown instead of the topic hubs. */
+  focus?: string;
+  /** Map neighbourhood: count only this topic's notes. */
+  scope?: string;
 }
 
 const MODES: { id: SearchMode; label: string; hint: string }[] = [
@@ -106,7 +112,9 @@ export default function KnowledgeWorkspace({ view, params }: { view: string; par
         <button type="submit" className="btn">Search</button>
         <button type="button" className="btn-ghost" onClick={() => openEntity("note", "new")}>+ New note</button>
       </form>
-      {view === "map" ? (
+      {view === "map" && params.focus ? (
+        <EntityNeighbourhood id={params.focus} scope={params.scope} />
+      ) : view === "map" ? (
         <TopicMap />
       ) : q || params.within ? (
         <SearchBody view={view} q={q} mode={mode} type={params.type} hops={hops} within={params.within}

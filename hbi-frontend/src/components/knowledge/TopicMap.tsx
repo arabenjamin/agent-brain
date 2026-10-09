@@ -5,7 +5,7 @@
  * entity several topics share sits between them and is drawn with a ring —
  * those bridges are the point of the map. Drag anything (a dragged node stays
  * where you drop it); click a topic or entity to open it; double-click an
- * entity for its neighbourhood of notes.
+ * entity for its neighbourhood of related entities (EntityNeighbourhood).
  *
  * Size means one thing at a time, chosen and stated in the legend:
  * connections (notes mentioning it), certainty (the claims that mention it,
@@ -126,7 +126,7 @@ export default function TopicMap() {
               const dbl = lastClick.current?.id === m.id && now - lastClick.current.at < 350;
               lastClick.current = { id: m.id, at: now };
               if (m.kind === "topic") openEntity("topic", m.id.slice("topic:".length));
-              else if (dbl) goTo("knowledge", { view: "graph", q: `"${m.label}"`, mode: "keyword" });
+              else if (dbl) goTo("knowledge", { view: "map", focus: m.id });
               else openEntity("entity", m.id);
             }}
             nodeCanvasObject={(n, ctx, scale) => {
@@ -173,7 +173,7 @@ export default function TopicMap() {
             <div className="wk-dim">Names: the {LABEL_BUDGET} biggest entities; zoom in for the rest.</div>
             <div><strong>Colour:</strong> the topic whose notes mention it most · <span className="tm-ring" /> ring: shared by 2+ topics ({bridges} bridges)</div>
             <div className="wk-dim">
-              {graph.nodes.filter((n) => n.kind === "topic").length} topics · {graph.nodes.length - graph.nodes.filter((n) => n.kind === "topic").length} entities (the top {map.data?.per_topic} per topic; urls and dates hidden) · drag to pin · double-click an entity for its notes
+              {graph.nodes.filter((n) => n.kind === "topic").length} topics · {graph.nodes.length - graph.nodes.filter((n) => n.kind === "topic").length} entities (the top {map.data?.per_topic} per topic; urls and dates hidden) · drag to pin · double-click an entity for its neighbourhood
             </div>
           </div>
         )}

@@ -831,6 +831,14 @@ Two more findings:
 - **A full re-classify takes about 4 hours, not the documented hour.** The model call is about 0.3 s, but end to end (reads, two writes, idle checks) the assigner ran at about 56 notes a minute.
 - **The version can repeat.** It is a hash of the definitions, so deleting a topic and then resetting it restores the previous version exactly. A note classified before the delete, and not since, would look finished at that version while its edge to the topic was gone. A delete now clears `topics_version` on that topic's notes.
 
+### Related entities, and claims that named no one (HBI Phase 16, 2026-10-09)
+
+The entity drawer's "Mentioned with" ranked by raw shared-note count, so a hub came first everywhere. Over the 300 entities that share notes with C-SPAN (184 notes), raw counts put C-SPAN first for 30 of them. Ranking by shared ÷ √((mentions A + 3)(mentions B + 3)) puts it first for 1. The +3 matters: without it, two entities that share their only note score a perfect 1.0 on one sentence of evidence.
+
+The done-condition was Amanda Thursk's view showing Prince Andrew, with the claim "Amanda Thursk is Prince Andrew's chief of staff" as evidence. The ranking worked, but the claim wasn't among the shared notes, because it mentioned no entity at all. Neither did any of the other 4,545 claims. `store_claim` writes claims in raw Cypher, past `store_note`, which is where entity extraction runs. The one-sentence, self-contained notes the Phase 9 rewrite produced were invisible to every entity view, and to the relation extraction Phase 17 planned to run over them.
+
+An idle-time loop now backfills them. Its first 250 claims came back with no entities for 161, though most of those name someone. Called directly, the local model gave the same empty answer to the general extraction prompt for 22 of 30 claims ("Senator Mitch McConnell was noted as voting 'aye'" → `[]`). Its examples are long-note examples, and its last rule ("if there are none: []") is an easy exit for a single sentence. A claim prompt saying that a proper name counts even if it appears once left 5 of the same 30 empty, each naming nothing. The loop uses that prompt, and the general one is left alone until it is measured on long notes. The 682 claims already stamped were reset and run again.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

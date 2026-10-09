@@ -10,7 +10,7 @@ export type SizeBy = "connections" | "certainty" | "activity";
 export const LABEL_BUDGET = 30;
 
 /** One hue per topic, in the order the map returns them. */
-const HUES = [212, 28, 140, 280, 355, 48, 180, 320, 95, 250, 10, 160];
+export const HUES = [212, 28, 140, 280, 355, 48, 180, 320, 95, 250, 10, 160];
 
 export interface MapNode {
   id: string;

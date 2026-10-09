@@ -521,6 +521,18 @@ impl HttpTransport {
                 delete(crate::clients::topics::handle_unlock_note_topics),
             )
             .route(
+                "/api/entities/pair",
+                get(crate::clients::related::handle_pair),
+            )
+            .route(
+                "/api/entities/{id}/related",
+                get(crate::clients::related::handle_related),
+            )
+            .route(
+                "/api/entities/{id}/neighbourhood",
+                get(crate::clients::related::handle_neighbourhood),
+            )
+            .route(
                 "/api/entities/{id}/topics/{topic}/hidden",
                 put(crate::clients::topics::handle_hide_entity)
                     .delete(crate::clients::topics::handle_unhide_entity),

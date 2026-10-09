@@ -141,6 +141,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `topics_version` | String? | The topic-definitions hash it was classified against (`services/topics.rs`). Equal to the current version and no `IN_TOPIC` ⇒ assessed, fits no topic; anything else ⇒ waiting |
 | `topics_locked` | Boolean? | The user set its topics (`PUT /api/notes/{id}/topics`). The classifier skips it, and each new version is stamped on it |
+| `entities_at` / `entities_found` | DateTime? / Int? | A claim's entity extraction by the idle-time claim loop (`spawn_claim_entity_backfill`), and how many entities it found (0 is stamped too, so a claim naming nothing is not retried) |
 | `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
 | `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
 | `provenance` | String | Who chose the words: `user_input` (a person: the HBI, an outside MCP client's call), `synthesis_inference` (a model: every queue job, chat turn and sub-agent), `system_record` (the brain's own code: scheduler dispatches, claim evidence, code-version notes), `core_training`. Decided by the caller (`knowledge::effective_provenance`): the brain's own work cannot claim `user_input`. Shown to the model by recall |

@@ -642,29 +642,6 @@ pub async fn handle_entity(
         .filter_map(|i| meta.get(i).cloned())
         .collect();
 
-    let co: Vec<Value> = neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (:Entity {id: $id})<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(o:Entity) \
-                 WHERE o.id <> $id AND NOT o.entity_type IN ['url', 'date'] \
-                 RETURN o.id AS id, o.name AS name, o.entity_type AS entity_type, count(DISTINCT n) AS shared \
-                 ORDER BY shared DESC LIMIT 15",
-            )
-            .param("id", id.as_str()),
-        )
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(|r| {
-            json!({
-                "id": r.get::<String>("id").ok(),
-                "name": r.get::<String>("name").ok(),
-                "entity_type": r.get::<String>("entity_type").ok(),
-                "shared": r.get::<i64>("shared").unwrap_or(0),
-            })
-        })
-        .collect();
-
     // The topics its notes put it in (how many of each topic's notes mention
     // it), and the ones the user keeps it out of (HBI plan Phase 15).
     let topics: Vec<Value> = neo4j
@@ -706,7 +683,6 @@ pub async fn handle_entity(
         "aliases": aliases,
         "notes": notes,
         "notes_shown": notes.len(),
-        "co_mentioned": co,
     }))
     .into_response()
 }

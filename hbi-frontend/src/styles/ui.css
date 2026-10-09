@@ -753,3 +753,13 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .topic-rules { display: flex; flex-direction: column; gap: 4px; }
 .topic-rule { display: grid; grid-template-columns: 1fr 1fr 1.3fr auto; gap: 4px; }
 @media (max-width: 600px) { .topic-rule { grid-template-columns: 1fr; } }
+
+/* Related entities (RelatedEntities.tsx). */
+.rel-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(40px, 1fr) auto; gap: 8px; align-items: center; }
+.rel-row .rel-pair { grid-column: 1 / -1; }
+.rel-bar { height: 6px; background: var(--bg-hover, rgba(127,127,127,0.15)); border-radius: 3px; overflow: hidden; }
+.rel-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.rel-pair { padding: 6px 8px; border-left: 2px solid var(--accent-dim); margin: 2px 0 6px; }
+/* The neighbourhood's pair evidence (EntityNeighbourhood.tsx). */
+.nb-pair { position: absolute; right: 12px; top: 10px; width: min(420px, calc(100% - 24px)); max-height: calc(100% - 20px); overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; z-index: 2; }
+.nb-pair-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }

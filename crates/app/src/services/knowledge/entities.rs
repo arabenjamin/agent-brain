@@ -25,6 +25,93 @@ impl KnowledgeService {
         });
     }
 
+    /// Give claims their entities, while the brain is idle (HBI plan Phase 16).
+    ///
+    /// Claims are written by `claims::store_claim` in raw Cypher, never
+    /// through `store_note`, so none of the 4,546 had a single `MENTIONS`
+    /// edge, and no entity view could see the most entity-dense notes the
+    /// brain holds ("Amanda Thursk is Prince Andrew's chief of staff" linked
+    /// neither). This loop takes claims with no mentions and no
+    /// `entities_at`, newest first, a few at a time, and stamps each with
+    /// `entities_at` (also when nothing was found), so it covers the backlog
+    /// and every new claim. `CLAIM_ENTITY_BACKFILL=false` stops it.
+    pub fn spawn_claim_entity_backfill(neo4j: Neo4jClient, llm: Arc<dyn LlmProvider>) {
+        if std::env::var("CLAIM_ENTITY_BACKFILL")
+            .map(|v| v.eq_ignore_ascii_case("false") || v == "0")
+            .unwrap_or(false)
+        {
+            info!("Claim entity backfill disabled (CLAIM_ENTITY_BACKFILL=false)");
+            return;
+        }
+        tokio::spawn(async move {
+            const IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(45);
+            const BATCH: i64 = 10;
+            let mut keep_going = false;
+            loop {
+                if !keep_going {
+                    tokio::time::sleep(IDLE_POLL).await;
+                }
+                keep_going = false;
+                if crate::services::topics::busy(&neo4j).await {
+                    continue;
+                }
+                let rows = match neo4j
+                    .execute(
+                        neo4rs::query(
+                            "MATCH (n:Note {note_type: 'claim'}) \
+                             WHERE n.entities_at IS NULL AND NOT (n)-[:MENTIONS]->() \
+                             RETURN n.id AS id, n.content AS content \
+                             ORDER BY n.created_at DESC LIMIT $n",
+                        )
+                        .param("n", BATCH),
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!(error = %e, "claim entity backfill: could not read claims");
+                        continue;
+                    }
+                };
+                let mut done = 0usize;
+                for r in &rows {
+                    if crate::services::gpu_lease::held().is_some() {
+                        break;
+                    }
+                    let (Ok(id), Ok(content)) = (r.get::<String>("id"), r.get::<String>("content"))
+                    else {
+                        continue;
+                    };
+                    let found = Self::extract_entities_with(
+                        neo4j.clone(),
+                        &id,
+                        &content,
+                        llm.clone(),
+                        &Self::claim_prompt(&content),
+                    )
+                    .await
+                        .unwrap_or_else(|e| {
+                            warn!(note_id = %id, error = %e, "claim entity backfill: extraction failed");
+                            0
+                        });
+                    // Stamped either way: a claim naming no entity is not retried forever.
+                    let _ = neo4j
+                        .run(
+                            neo4rs::query(
+                                "MATCH (n:Note {id: $id}) SET n.entities_at = datetime(), n.entities_found = $found",
+                            )
+                            .param("id", id.as_str())
+                            .param("found", found as i64),
+                        )
+                        .await;
+                    done += 1;
+                }
+                debug!(done, "claim entity backfill batch");
+                keep_going = done as i64 == BATCH && !crate::services::topics::busy(&neo4j).await;
+            }
+        });
+    }
+
     /// Extract named entities from note content and persist them to the graph.
     ///
     /// Each name is resolved to its canonical entity (`entity_resolution`):
@@ -38,8 +125,6 @@ impl KnowledgeService {
         content: &str,
         llm: Arc<dyn LlmProvider>,
     ) -> Result<usize> {
-        use crate::services::entity_resolution::{self as er, Probe, Rules, Target};
-
         let prompt = format!(
             "Extract the named entities from the text. Classify each as one of: \
              person, organisation, location, technology, tool, concept, url, date.\n\
@@ -52,8 +137,38 @@ impl KnowledgeService {
              TEXT:\n{}",
             content
         );
+        Self::extract_entities_with(neo4j, note_id, content, llm, &prompt).await
+    }
 
-        let parsed = match llm.generate_json(&prompt, None, &["entities"], 1).await {
+    /// The prompt for one claim: a single sentence. With the general prompt
+    /// the local model answered `[]` for 22 of 30 claims, most of them naming
+    /// someone ("Senator Mitch McConnell was noted as voting 'aye'"); this one
+    /// left 5 of the same 30 empty, each naming nothing (Phase 16).
+    fn claim_prompt(content: &str) -> String {
+        format!(
+            "List every named person, organisation, place, product and technology in the text, \
+             and any named law, event or programme. Classify each as one of: \
+             person, organisation, location, technology, tool, concept, url, date.\n\
+             Rules:\n\
+             - A proper name counts even if it appears once (\"Hasan Minhaj\", \"Tillis\", \"Mossad\", \"Detroit\")\n\
+             - No generic words (\"system\", \"data\", \"the government\") and no pronouns\n\
+             - Write each name as it appears in the text, capitals included; use the fullest form the text gives\n\
+             - Output ONLY a JSON object: {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\"}}]}}\n\
+             - Only when the text names nothing at all: {{\"entities\":[]}}\n\n\
+             TEXT:\n{content}"
+        )
+    }
+
+    async fn extract_entities_with(
+        neo4j: Neo4jClient,
+        note_id: &str,
+        content: &str,
+        llm: Arc<dyn LlmProvider>,
+        prompt: &str,
+    ) -> Result<usize> {
+        use crate::services::entity_resolution::{self as er, Probe, Rules, Target};
+
+        let parsed = match llm.generate_json(prompt, None, &["entities"], 1).await {
             Ok(v) => v,
             Err(e) => {
                 warn!(note_id = %note_id, "Entity extraction produced no usable JSON: {}", e);

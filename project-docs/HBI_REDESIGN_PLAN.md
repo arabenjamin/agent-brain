@@ -1028,3 +1028,36 @@ Built and deployed:
 **Pending:** the live re-classify started by the new definitions (about 4 h of idle time). It decides what the classifier topics now hold.
 
 **Tests:** 874 Rust lib tests (4 new) and 95 vitest.
+
+### Phase 16 outcome (2026-10-09)
+
+Built and deployed:
+- **Related entities ranked by strength** (`clients/related.rs`, `GET /api/entities/{id}/related?topic=`):
+  - strength is shared notes ÷ √((mentions A + 3) × (mentions B + 3)), replacing the raw shared-note count;
+  - with a topic, only that topic's notes count, and entities kept out of it are left out.
+  - Measured over the 300 entities that share notes with C-SPAN: raw counts put C-SPAN first for 30 of them, strength for 1.
+- **The evidence for a pair** (`GET /api/entities/pair?a=&b=`): the notes that mention both, newest first.
+- **An ego graph** (`GET /api/entities/{id}/neighbourhood`): the entity, its 12 strongest neighbours, and every pair among them that shares a note. It answers in 0.01–0.12 s, Donald Trump and C-SPAN included.
+- **HBI:**
+  - the entity drawer's "Mentioned with" is now ranked rows with a strength bar, a topic scope, and the shared notes behind each row;
+  - "Neighbourhood on the map" opens `#/knowledge?view=map&focus=<id>&scope=<topic>`, as does double-clicking an entity on the topic map;
+  - in the neighbourhood, clicking a node expands its neighbours and opens it, clicking a line shows the notes behind the pair, colour is the entity's main topic, and line width is strength.
+- **Claims have entities** (`spawn_claim_entity_backfill`): an idle-time loop extracts entities from claims that have none, with a claim-specific prompt, stamping `entities_at` / `entities_found`.
+
+**Found while building:**
+- **No claim had an entity.** 0 of 4,546. `store_claim` writes claims in raw Cypher, past `store_note`'s extraction, so the most entity-dense notes in the graph were invisible to every entity view. "Amanda Thursk is Prince Andrew's chief of staff" linked neither person.
+  - Phase 17's plan to extract relations from claims depended on those links, so this mattered beyond Phase 16.
+- **The general extraction prompt fails on one-sentence claims.** On the local model it answered `[]` for 22 of 30 claims, mostly ones naming someone ("Senator Mitch McConnell was noted as voting 'aye'"). A claim prompt ("a proper name counts even if it appears once") left 5 of the same 30 empty, each naming nothing.
+  - A few of its picks are loose ("Iranian Missile Deal", "Flight 7").
+  - The general prompt is unchanged: it hasn't been measured on long notes.
+  - The first 682 claims stamped under the general prompt were reset and re-run.
+
+**Verified live:**
+- **Amanda Thursk:** her related list ranks Prince Andrew first (2 shared, strength 0.338), and NewsNation, a hub in 185 notes, last (0.033).
+- **The pair view** opens their two shared notes: a gap synthesis on Thursk's work for him, and the NewsNation video record.
+
+**Pending:**
+- The claim backlog: about 4,400 claims at ~25 a minute on idle time, shared with the topic re-classify.
+- The chief-of-staff claim itself (2026-08-12) joins the pair's evidence when the backlog reaches it.
+
+**Tests:** 876 Rust lib tests (2 new) and 97 vitest (2 new).

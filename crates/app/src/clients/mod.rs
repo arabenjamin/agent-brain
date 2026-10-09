@@ -7,6 +7,7 @@
 //! - [`architecture`] — the live architecture: layout groups filled from the registry, routes and graph, plus snapshot diffs
 //! - [`chat`] — conversational LLM loop for human-facing `/chat` SSE sessions
 //! - [`entities`] — entity merge proposals, answers to them, and undo
+//! - [`related`] — how entities relate through the notes that mention both: ranked neighbours, pair evidence, ego graphs
 //! - [`rest`] — REST API adapter for todos, scheduled tasks, and scheduler config
 //! - [`search`] — semantic / keyword / id search, entity and id lookup for the HBI's Knowledge workspace
 //! - [`system`] — one-call system health (every dependency probed) and the registry
@@ -20,6 +21,8 @@ pub mod chat;
 pub mod entities;
 pub mod feed;
 pub mod items;
+#[cfg(feature = "http-transport")]
+pub mod related;
 #[cfg(feature = "http-transport")]
 pub mod rest;
 #[cfg(feature = "http-transport")]

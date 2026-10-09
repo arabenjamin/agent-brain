@@ -120,6 +120,7 @@ export default function App() {
     q: p.q, mode: p.mode, type: p.type, hops: p.hops,
     since: p.since, verified_since: p.verified_since, within: p.within,
     note: p.note, entity: p.entity, topic: p.topic,
+    focus: p.focus, scope: p.scope,
   };
 
   return (

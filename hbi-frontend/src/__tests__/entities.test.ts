@@ -7,7 +7,7 @@ describe("entity resolution client", () => {
     const merged = { merged_into: { alias: "trump", id: "e1", name: "donald trump" } };
     const entity = {
       entity: { id: "e1", name: "donald trump", entity_type: "person", created_at: null, mentions: 3 },
-      notes: [], notes_shown: 0, co_mentioned: [],
+      notes: [], notes_shown: 0,
     } satisfies EntityDetail;
     expect(isMergedAway(merged)).toBe(true);
     expect(isMergedAway(entity)).toBe(false);

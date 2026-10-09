@@ -983,7 +983,7 @@ async fn pending_batch(neo4j: &Neo4jClient, topics: &Topics, n: i64) -> Result<V
 }
 
 /// Is the brain busy? Any job queued or running, or the GPU leased.
-async fn busy(neo4j: &Neo4jClient) -> bool {
+pub(crate) async fn busy(neo4j: &Neo4jClient) -> bool {
     if crate::services::gpu_lease::held().is_some() {
         return true;
     }

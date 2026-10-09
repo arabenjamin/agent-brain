@@ -375,6 +375,11 @@ The domains the brain tracks. Schema: `schema.md` § Topic, plan: `HBI_REDESIGN_
 - **The user's word is final** (Phase 15):
   - **Note topics:** topics set in the note drawer are `method: 'manual'` and the note is `topics_locked`. The classifier never picks it, and `topics::reload` stamps it with each new version, so it never counts as waiting. "Let the classifier decide" unlocks it. Deleting a topic unlocks that topic's notes.
   - **Entity hides:** `(:Entity)-[:NOT_IN_TOPIC]->(:Topic)` keeps an entity off that topic's map and entity lists, whatever its notes say. The map, the topic drawer and the entity drawer each show the hides with undo. A merge carries the hides to the surviving entity.
+- **How entities relate is computed from shared notes** (`clients/related.rs`, Phase 16; no entity→entity edges exist until Phase 17).
+  - **Rank by strength, never by raw count.** Strength is shared notes ÷ √((mentions A + 3) × (mentions B + 3)). Raw counts put C-SPAN (184 notes) first for 30 of the 300 entities it shares notes with; strength puts it first for 1. The +3 keeps two entities that share their only note from scoring a perfect 1.0. `strength` in Rust and `STRENGTH_CYPHER` must stay the same formula (a test checks them together).
+  - **Every pair drills to its notes** (`/api/entities/pair`). A topic scope counts only that topic's notes and leaves out entities the user keeps out of it.
+- **Claims get their entities from an idle-time loop, not at write time.** `store_claim` writes in raw Cypher, so before Phase 16 none of the 4,546 claims had a `MENTIONS` edge, and no entity view could see the most entity-dense notes. `spawn_claim_entity_backfill` takes claims with no mentions and no `entities_at`, newest first, and stamps every one, so it covers the backlog and each new claim (`CLAIM_ENTITY_BACKFILL=false` stops it).
+  - **Claims use their own prompt.** With the general extraction prompt the local model answered `[]` for 22 of 30 claims, most of which name someone; the claim prompt left 5 of the same 30 empty, and those name nothing. The general prompt is unchanged, because it hasn't been measured on long notes.
 
 ### System health, logs, registry (`clients/system.rs`, 2026-10-08)
 
