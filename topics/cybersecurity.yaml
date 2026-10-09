@@ -8,5 +8,3 @@ label: Cybersecurity & privacy
 description: >-
   Security of systems and people: vulnerabilities, ransomware, spyware, zero
   trust architecture, surveillance and digital privacy.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "Zero Trust Architecture Research"

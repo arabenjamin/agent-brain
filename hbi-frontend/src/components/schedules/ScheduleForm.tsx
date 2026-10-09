@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../../api/client";
 import { extractJson } from "../../lib/assist";
 import AgentAssist from "../ui/AgentAssist";
+import { useTopics } from "../../api/topics";
+import { KIND_LABELS, SCHEDULE_KINDS } from "../../lib/scheduleGroups";
 import { jsonToStepDrafts, makeDefaultStep, stepDraftsToJson, stUrl, type ScheduledTask, type StepDraft } from "./model";
 import StepCard from "./StepCard";
 import { useMergedToolGroups } from "./useToolGroups";
@@ -24,6 +26,9 @@ export default function ScheduledTaskForm({
   const [name, setName] = useState(existing?.name ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
   const [enabled, setEnabled] = useState(existing?.enabled ?? true);
+  const [topic, setTopic] = useState(existing?.topic ?? "");
+  const [kind, setKind] = useState(existing?.kind ?? "");
+  const topics = useTopics().data?.topics ?? [];
   const [intervalUnit, setIntervalUnit] = useState<"seconds" | "minutes" | "hours" | "days">("days");
   const [intervalValue, setIntervalValue] = useState<number>(1);
   const toolGroups = useMergedToolGroups();
@@ -163,6 +168,8 @@ export default function ScheduledTaskForm({
       enabled,
       interval_seconds: computedIntervalSeconds(),
       steps: stepsJson,
+      topic: topic || null,
+      kind: kind || null,
     };
 
     try {
@@ -263,6 +270,25 @@ export default function ScheduledTaskForm({
           </div>
 
           {/* Enabled */}
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+            <label style={{ ...labelStyle, flex: 1, minWidth: 180 }}>
+              Topic
+              <select style={inputStyle} value={topic} onChange={(e) => setTopic(e.target.value)}
+                title="The topics/*.yaml topic this schedule works on. Leave as none for one that spans topics (a daily brief, upkeep).">
+                <option value="">none: spans topics</option>
+                {topic && !topics.some((t) => t.name === topic) && <option value={topic}>{topic} (not declared)</option>}
+                {topics.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
+              </select>
+            </label>
+            <label style={{ ...labelStyle, flex: 1, minWidth: 180 }}>
+              Kind
+              <select style={inputStyle} value={kind} onChange={(e) => setKind(e.target.value)}>
+                <option value="">none</option>
+                {SCHEDULE_KINDS.map((k) => <option key={k} value={k}>{KIND_LABELS[k]} ({k})</option>)}
+              </select>
+            </label>
+          </div>
+
           <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.85rem", cursor: "pointer" }}>
             <input
               type="checkbox"

@@ -29,6 +29,8 @@ description: "Polls the active :MediaSource watchlist for new uploads and enqueu
 # recent uploads — which is exactly when the burst hurt. Polling more often
 # with a lower per-source cap also improves freshness: a channel posting twice
 # in a day yields 1+1 across two polls rather than being clipped at the cap.
+# topic: none — spans topics on purpose
+kind: learning
 interval_seconds: 21600   # 6 hours
 steps:
   - tool_name: poll_media_sources

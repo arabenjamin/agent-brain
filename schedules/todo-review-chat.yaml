@@ -1,5 +1,7 @@
 name: "Daily todo review: check outstanding todos and open a chat session to discuss progress, blockers, and next steps with the user"
 description: "Reviews pending todos daily, asks the user clarifying questions, and opens a dedicated chat session for follow-up."
+# topic: none — spans topics on purpose
+kind: brief
 interval_seconds: 86400
 steps:
   # Step flow and {{_prev}} chain:

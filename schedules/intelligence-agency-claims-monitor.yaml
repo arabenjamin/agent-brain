@@ -24,6 +24,8 @@
 # This is public news, so the report runs as data_class: public.
 name: "intelligence-agency-claims-monitor"
 description: "Daily sweep of news about intelligence agencies (CIA, NSA, FBI, Mossad, GRU/FSB/SVR, MI6, MSS) making or facing claims, via ApiTube + SearXNG news. Dated delta against the prior report, stored as a source_record with claims extracted."
+topic: national-security
+kind: monitor
 interval_seconds: 86400
 data_class: public
 steps:

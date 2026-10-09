@@ -43,13 +43,13 @@ export default function TopicView({ name }: { name: string }) {
 
       <Section title="Watched by" aside={d.schedules.length ? `${d.schedules.length}` : undefined}>
         {d.schedules.length === 0 ? (
-          <div className="dw-note">No schedule is linked to this topic in its YAML (<code>schedules:</code>).</div>
+          <div className="dw-note">No schedule declares this topic (a schedule's <code>topic:</code>, set in its YAML or the schedule form).</div>
         ) : (
           <ul className="dw-list">
             {d.schedules.map((s) => (
               <li key={s.name}>
                 {s.id ? <EntityLink kind="schedule" id={s.id}>{s.name}</EntityLink> : <span>{s.name}</span>}
-                {s.missing && <span className="tone-text-yellow">no ScheduledTask has this name</span>}
+                {s.kind && <span className="dw-dim">{s.kind}</span>}
                 {s.enabled === false && <Pill tone="muted">disabled</Pill>}
               </li>
             ))}

@@ -16,6 +16,8 @@
 # (:ScheduledTask) node.
 name: "Discover media sources: propose new channels and podcasts to watch"
 description: "Weekly: reasons about the brain's own topics, searches for channels/podcasts on them, and stages the best as INACTIVE :MediaSource nodes for human review. Gated by MEDIA_DISCOVERY_ENABLED; capped by MEDIA_DISCOVERY_MAX."
+# topic: none — spans topics on purpose
+kind: learning
 interval_seconds: 604800   # weekly
 steps:
   - tool_name: reason

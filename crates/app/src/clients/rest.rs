@@ -535,6 +535,59 @@ pub async fn handle_list_scheduled_tasks(
     }
 }
 
+/// The HBI saves schedules here, not through `manage_scheduled_task`, so the
+/// checks that need no tool registry run here too: each step's pinned model
+/// against the catalog, and the declared topic and kind. `Err` is the 400 text.
+fn check_schedule_body(
+    state: &RestState,
+    body: &Value,
+    steps_json: Option<&str>,
+) -> Result<(), String> {
+    if let (Some(steps), Some(tel)) = (steps_json, state.telemetry.as_ref()) {
+        let steps: Vec<Value> = serde_json::from_str(steps).map_err(|e| format!("steps: {e}"))?;
+        let catalog = crate::services::model_router::catalog_models(tel);
+        let hard = crate::services::validation::validate_step_models(&steps, &catalog);
+        if crate::services::validation::has_hard(&hard) {
+            return Err(crate::services::validation::render_hard(&hard));
+        }
+    }
+    crate::services::schedule_seeder::check_labels(
+        body.get("topic").and_then(Value::as_str),
+        body.get("kind").and_then(Value::as_str),
+        &crate::services::schedule_seeder::declared_topics(),
+    )
+    .map(|_| ())
+}
+
+/// Write `topic` / `kind` from a create or update body. A key that is absent
+/// keeps the stored value; null or "" clears it. Already checked.
+async fn apply_schedule_labels(
+    neo4j: &crate::repository::Neo4jClient,
+    task: &mut crate::repository::ScheduledTask,
+    body: &Value,
+) -> Result<(), String> {
+    if body.get("topic").is_none() && body.get("kind").is_none() {
+        return Ok(());
+    }
+    let pick = |k: &str, current: &Option<String>| match body.get(k) {
+        None => current.clone(),
+        Some(v) => v
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+    };
+    let topic = pick("topic", &task.topic);
+    let kind = pick("kind", &task.kind);
+    neo4j
+        .set_scheduled_task_labels((&task.id, true), topic.as_deref(), kind.as_deref(), false)
+        .await
+        .map_err(|e| e.to_string())?;
+    task.topic = topic;
+    task.kind = kind;
+    Ok(())
+}
+
 /// POST /scheduled-tasks
 pub async fn handle_create_scheduled_task(
     Extension(state): Extension<Arc<RestState>>,
@@ -583,6 +636,10 @@ pub async fn handle_create_scheduled_task(
             .into_response();
     };
 
+    if let Err(e) = check_schedule_body(&state, &body, Some(&steps)) {
+        return bad_request(format!("Schedule rejected — nothing was saved: {e}"));
+    }
+
     let description = body["description"].as_str();
     let enabled = body["enabled"].as_bool().unwrap_or(true);
     let next_run_at = body["next_run_at"]
@@ -603,7 +660,10 @@ pub async fn handle_create_scheduled_task(
         )
         .await
     {
-        Ok(task) => (StatusCode::CREATED, Json(serde_json::json!(task))).into_response(),
+        Ok(mut task) => match apply_schedule_labels(neo4j, &mut task, &body).await {
+            Ok(()) => (StatusCode::CREATED, Json(serde_json::json!(task))).into_response(),
+            Err(e) => internal(format!("saved, but topic/kind were not: {e}")),
+        },
         Err(e) => internal(e),
     }
 }
@@ -650,6 +710,9 @@ pub async fn handle_update_scheduled_task(
     } else {
         body["steps"].as_str().map(|s| s.to_string())
     };
+    if let Err(e) = check_schedule_body(&state, &body, steps_string.as_deref()) {
+        return bad_request(format!("Schedule rejected — nothing was saved: {e}"));
+    }
 
     match neo4j
         .update_scheduled_task(
@@ -664,7 +727,10 @@ pub async fn handle_update_scheduled_task(
         )
         .await
     {
-        Ok(Some(task)) => Json(serde_json::json!(task)).into_response(),
+        Ok(Some(mut task)) => match apply_schedule_labels(neo4j, &mut task, &body).await {
+            Ok(()) => Json(serde_json::json!(task)).into_response(),
+            Err(e) => internal(format!("saved, but topic/kind were not: {e}")),
+        },
         Ok(None) => not_found(),
         Err(e) => internal(e),
     }

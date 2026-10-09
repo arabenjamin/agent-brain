@@ -8,8 +8,5 @@ label: Semiconductors & AI hardware
 description: >-
   Chips and the hardware AI runs on: GPUs and accelerators, foundries, memory,
   export controls and the semiconductor supply chain.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "Weekly hardware tripwire: scan the AI accelerator supply chain for disruption signals"
-  - "Monthly tech dependency synthesis: correlate hardware scarcity against small-model adoption"
 source_lists:   # SourceLists its searches use
   - semiconductors

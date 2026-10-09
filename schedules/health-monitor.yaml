@@ -1,5 +1,7 @@
 name: "Brain health monitor: review scheduler state, queue metrics, and failure patterns"
 description: "Periodic brain health check — reviews scheduler state, queue depth, and failure trends."
+topic: agent-brain
+kind: maintenance
 interval_seconds: 43200
 steps:
   # One windowed query, then reason. Replaced 2026-10-02: the old chain ran

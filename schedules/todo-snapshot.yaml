@@ -1,5 +1,7 @@
 name: "Todo snapshot: summarise active todos into a reviewable knowledge note"
 description: "Daily snapshot of active todos summarised into a semantic note so the brain can reference current work priorities during reasoning."
+# topic: none — spans topics on purpose
+kind: maintenance
 interval_seconds: 86400
 steps:
   # Step flow and {{_prev}} chain:

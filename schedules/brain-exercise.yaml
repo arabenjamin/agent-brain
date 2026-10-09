@@ -7,6 +7,8 @@
 enabled: false
 name: "Brain exercise: pick a topic from the knowledge graph and create a self-directed research task"
 description: "Weekly self-directed exercise — analyses entity mentions to find a topic the brain encounters often but knows little about, then creates a research Task with success criteria so the evaluator loop grades the outcome."
+# topic: none — spans topics on purpose
+kind: learning
 interval_seconds: 604800
 steps:
   # Step flow and {{_prev}} chain:

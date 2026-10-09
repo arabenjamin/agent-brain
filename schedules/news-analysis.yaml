@@ -1,5 +1,7 @@
 name: "Daily news analysis: reason over recent news briefs, extract lasting insights, and queue research threads"
 description: "Reads the most recent news notes, extracts durable knowledge from them, stores a synthesis, and creates a follow-up research task for the scheduler to dispatch."
+# topic: none — spans topics on purpose
+kind: learning
 interval_seconds: 86400
 
 steps:

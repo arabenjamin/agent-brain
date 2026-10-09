@@ -1,5 +1,7 @@
 name: "Weekly news briefing and analysis: synthesize major world, tech, business, and international stories from the past week"
 description: "Weekly synthesis of major news themes across world, technology, and business."
+# topic: none — spans topics on purpose
+kind: brief
 interval_seconds: 604800
 steps:
   - tool_name: search_web

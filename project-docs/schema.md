@@ -143,6 +143,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
 | `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
 | `provenance` | String | Who chose the words: `user_input` (a person: the HBI, an outside MCP client's call), `synthesis_inference` (a model: every queue job, chat turn and sub-agent), `system_record` (the brain's own code: scheduler dispatches, claim evidence, code-version notes), `core_training`. Decided by the caller (`knowledge::effective_provenance`): the brain's own work cannot claim `user_input`. Shown to the model by recall |
+| `produced_by_task` | String? | The Task that owned the job that wrote it (`__owner_task_id`; for a schedule, its run-record task). Set on every note written inside a job from 2026-10-09, including claims and notes written inside a `run_agent` loop |
 | `provenance_was` / `provenance_relabelled_at` | String? / DateTime? | Set by `scripts/fix_note_provenance.cypher` (2026-10-08) on the 12,269 notes it relabelled: the old value (`none` when there was none) |
 
 Claim notes (`note_type: 'claim'`, `services/claims.rs`) also carry:
@@ -158,14 +159,13 @@ Claim notes (`note_type: 'claim'`, `services/claims.rs`) also carry:
 
 #### `Topic`
 
-A domain the brain tracks, one per `topics/*.yaml` (`TOPICS_DIR`), synced by `init-db`; a topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions.
+A domain the brain tracks, one per `topics/*.yaml` (`TOPICS_DIR`), synced by `init-db`; a topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The schedules that watch a topic are the ones whose `ScheduledTask.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
 
 | Property | Type | Description |
 |----------|------|-------------|
 | `name` | String | Slug, unique (`us-politics`) |
 | `label` | String | Display name |
 | `description` | String | What belongs here — also the classifier's definition |
-| `schedules` | String[] | ScheduledTask names that watch it |
 | `source_lists` | String[] | SourceLists its searches use |
 | `version` | String | Hash of every topic's name + description and the skip scope |
 | `created_at` / `synced_at` | DateTime | Native `DATETIME`, UTC |
@@ -291,6 +291,9 @@ Recurring job definitions managed by `SchedulerSkill`. The scheduler dispatches 
 | `next_run_at` | DateTime | Native Neo4j `DATETIME`, UTC — next due time |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `managed_by` | String | `yaml` (force-synced from `schedules/*.yaml`) or `runtime` (graph-owned) |
+| `topic` | String? | The `topics/*.yaml` topic it works on; absent = spans topics. Checked against the declared topics on every write path |
+| `kind` | String? | `monitor` · `brief` · `learning` · `maintenance` · `dataset` (`SCHEDULE_KINDS`) |
 
 #### `ApiContext`
 

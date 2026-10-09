@@ -1,5 +1,7 @@
 name: "Overdue TODO review: check for overdue todos and offer agent assistance"
 description: "Twice-daily review of overdue todos — reasons over the live todo list and stores a structured note on where an agent could help."
+# topic: none — spans topics on purpose
+kind: maintenance
 interval_seconds: 43200
 steps:
   # Step flow and {{_prev}} chain:

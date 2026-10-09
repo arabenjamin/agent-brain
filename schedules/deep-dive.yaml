@@ -17,6 +17,8 @@
 # theme is followed down over several runs instead of restated at the top.
 name: "Deep dive: narrow a broad theme into one specific question and answer it"
 description: "Every two days: reasons over open todos, recent technologies and research topics, and prior deep dives; picks one theme and narrows it to a specific question (preferring a concrete Rust/agent-brain angle for technical themes); creates a 'deep dive:' Task that the deep-diver agent answers."
+# topic: none — spans topics on purpose
+kind: learning
 interval_seconds: 172800
 data_class: private
 steps:

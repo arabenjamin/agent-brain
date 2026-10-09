@@ -467,6 +467,15 @@ impl SchedulerSkill {
                         "description": "Task name — upsert key and goal text (required for upsert)."
                     },
                     "description": { "type": "string" },
+                    "topic": {
+                        "type": ["string", "null"],
+                        "description": "upsert: the topics/*.yaml topic this schedule works on (e.g. ai-ml, michigan), or \"\" / null for one that spans topics. Omit to keep the current value."
+                    },
+                    "kind": {
+                        "type": ["string", "null"],
+                        "enum": ["monitor", "brief", "learning", "maintenance", "dataset", "", null],
+                        "description": "upsert: what sort of work it is — monitor (watches a subject), brief (a report for the user), learning (gathers or digests knowledge), maintenance (the brain's own upkeep), dataset (loads or reviews a dataset). Omit to keep the current value."
+                    },
                     "enabled": {
                         "type": "boolean",
                         "description": "Whether to dispatch when due (default true)."
@@ -812,6 +821,26 @@ impl SchedulerSkill {
                     lint_chain_steps(&parsed_steps, &self.live_tools.read().await.clone());
                 step_warnings.extend(self.pinned_model_warnings(&parsed_steps));
 
+                // Declared topic and kind: checked now, written after the save.
+                // An absent key keeps what the schedule has.
+                let label_arg = |k: &str| -> Option<Option<String>> {
+                    match args.get(k) {
+                        None => None,
+                        Some(Value::String(s)) => Some(Some(s.clone())),
+                        Some(_) => Some(None),
+                    }
+                };
+                let (topic_arg, kind_arg) = (label_arg("topic"), label_arg("kind"));
+                if let Err(e) = crate::services::schedule_seeder::check_labels(
+                    topic_arg.clone().flatten().as_deref(),
+                    kind_arg.clone().flatten().as_deref(),
+                    &crate::services::schedule_seeder::declared_topics(),
+                ) {
+                    return ToolCallResult::error(format!(
+                        "Schedule rejected — {e}; nothing was saved."
+                    ));
+                }
+
                 let description = args["description"].as_str();
                 let enabled = args["enabled"].as_bool().unwrap_or(true);
                 let managed_by = match args["managed_by"].as_str() {
@@ -888,6 +917,37 @@ impl SchedulerSkill {
                         .await
                         .map(|t| Some((t, true)))
                         .map_err(|e| e.to_string())
+                };
+
+                let result = match result {
+                    Ok(Some((mut task, created))) if topic_arg.is_some() || kind_arg.is_some() => {
+                        let blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+                        let topic = match topic_arg {
+                            Some(v) => blank(v),
+                            None => task.topic.clone(),
+                        };
+                        let kind = match kind_arg {
+                            Some(v) => blank(v),
+                            None => task.kind.clone(),
+                        };
+                        match neo4j
+                            .set_scheduled_task_labels(
+                                (&task.id, true),
+                                topic.as_deref(),
+                                kind.as_deref(),
+                                false,
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                task.topic = topic;
+                                task.kind = kind;
+                                Ok(Some((task, created)))
+                            }
+                            Err(e) => Err(format!("saved, but topic/kind were not: {e}")),
+                        }
+                    }
+                    other => other,
                 };
 
                 match result {

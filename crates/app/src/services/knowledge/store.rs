@@ -134,6 +134,12 @@ impl KnowledgeService {
         }
 
         // Optional fields written in separate SET queries to keep the CREATE clean.
+        if let Some(task) = crate::services::queue::current_owner_task() {
+            let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.produced_by_task = $task")
+                .param("id", note_id.clone())
+                .param("task", task);
+            let _ = self.neo4j.run(q).await;
+        }
         if let Some(sc) = source_context {
             let q = neo4rs::query("MATCH (n:Note {id: $id}) SET n.source_context = $sc")
                 .param("id", note_id.clone())

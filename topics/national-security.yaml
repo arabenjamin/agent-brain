@@ -10,8 +10,6 @@ description: >-
   capabilities, influence operations and disinformation campaigns. Not every
   war, foreign-policy or government story: those are geopolitics or us-
   politics unless intelligence or the military is the subject.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "intelligence-agency-claims-monitor"
 source_lists:   # SourceLists its searches use
   - national-security
   - osint

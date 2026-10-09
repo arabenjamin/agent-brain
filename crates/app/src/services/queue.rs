@@ -48,6 +48,18 @@ tokio::task_local! {
     /// exhausting a quota, which is exactly when you need it. The tool name is
     /// known right here at dispatch; it just was not being carried down.
     pub static CURRENT_TOOL: Option<String>;
+
+    /// The Task that owns the running job (`__owner_task_id`): for a
+    /// schedule's run, its run-record task. Every note written under it is
+    /// stamped `produced_by_task`, so what a run produced stays traceable
+    /// after its completed jobs are pruned (about two days), including notes
+    /// an agent writes inside a `run_agent` step.
+    pub static CURRENT_OWNER_TASK: Option<String>;
+}
+
+/// The owning task of the job this code runs under, if any.
+pub fn current_owner_task() -> Option<String> {
+    CURRENT_OWNER_TASK.try_with(|v| v.clone()).unwrap_or(None)
 }
 
 use serde::Deserialize;
@@ -1466,7 +1478,12 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
                         use_local,
                         CURRENT_TOOL.scope(
                             Some(job.tool_name.clone()),
-                            handler.execute(&job.tool_name, resolved_args),
+                            CURRENT_OWNER_TASK.scope(
+                                job_arg(&job, "__owner_task_id")
+                                    .and_then(Value::as_str)
+                                    .map(String::from),
+                                handler.execute(&job.tool_name, resolved_args),
+                            ),
                         ),
                     ),
                 ),

@@ -758,6 +758,373 @@ pub async fn handle_todo_to_task(
     Json(json!({ "task_id": task_id })).into_response()
 }
 
+// ── Topic mix: what a schedule's runs actually produced ─────────────────────
+
+/// Fewer classified notes than this and the mix says nothing about a schedule.
+const MIX_MIN_NOTES: usize = 3;
+/// The declared topic must hold at least this share of the assessed notes, or
+/// the mix is shown as a mismatch.
+const MIX_DECLARED_MIN_SHARE: f64 = 1.0 / 3.0;
+/// With no topic declared, a topic holding this share is suggested.
+const MIX_SUGGEST_SHARE: f64 = 0.5;
+
+/// How a schedule's declared topic compares with what its notes are about.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MixVerdict {
+    /// Too few classified notes to judge.
+    TooFew,
+    /// The declared topic holds its share.
+    Matches,
+    /// The declared topic holds less than its share; `top` holds the most.
+    Mismatch { top: String },
+    /// No topic declared, and one topic holds most of the notes.
+    Suggest { topic: String },
+    /// No topic declared, and the notes spread across topics: consistent.
+    Spans,
+}
+
+/// Judge a mix. `counts` is notes per topic (each note's main topic);
+/// `fits_none` the notes assessed as belonging to no topic.
+pub(crate) fn mix_verdict(
+    declared: Option<&str>,
+    counts: &[(String, usize)],
+    fits_none: usize,
+) -> MixVerdict {
+    let in_topics: usize = counts.iter().map(|(_, n)| n).sum();
+    let assessed = in_topics + fits_none;
+    if in_topics < MIX_MIN_NOTES {
+        return MixVerdict::TooFew;
+    }
+    let (top, top_n) = counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(t, n)| (t.clone(), *n))
+        .unwrap_or_default();
+    let share = |n: usize| n as f64 / assessed.max(1) as f64;
+    match declared {
+        Some(d) => {
+            let mine = counts.iter().find(|(t, _)| t == d).map_or(0, |(_, n)| *n);
+            if share(mine) >= MIX_DECLARED_MIN_SHARE || mine == top_n {
+                MixVerdict::Matches
+            } else {
+                MixVerdict::Mismatch { top }
+            }
+        }
+        None if share(top_n) >= MIX_SUGGEST_SHARE => MixVerdict::Suggest { topic: top },
+        None => MixVerdict::Spans,
+    }
+}
+
+/// The literal `source_context` values a schedule's own steps write (any
+/// nesting depth; a templated value such as `x_{{date}}` is skipped).
+pub(crate) fn step_source_contexts(steps_json: &str) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    if k == "source_context"
+                        && let Some(sc) = x.as_str()
+                        && !sc.trim().is_empty()
+                        && !sc.contains("{{")
+                        && !out.iter().any(|o| o == sc)
+                    {
+                        out.push(sc.to_string());
+                    }
+                    walk(x, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(v) = serde_json::from_str::<Value>(steps_json) {
+        walk(&v, &mut out);
+    }
+    out
+}
+
+/// How a note was traced to a schedule, most direct first. Each note is
+/// counted once, by the first route that reaches it.
+const ROUTES: [&str; 4] = ["run_stamp", "job_result", "source_context", "claim_of"];
+
+/// GET /api/work/schedules/topic-mix?days=N — per schedule, the main topics
+/// of the notes it produced in the last N days (default 30). A note is traced
+/// to a schedule by, in order:
+/// - `run_stamp`: its `produced_by_task` is one of the schedule's run records
+///   (every note written inside a job is stamped, from 2026-10-09);
+/// - `job_result`: a job of one of its runs reported the note's id (completed
+///   jobs are pruned after about two days);
+/// - `source_context`: it carries a `source_context` the schedule's own steps
+///   write (how notes from before the stamp are traced);
+/// - `claim_of`: a claim asserted in a note traced by the three above.
+///
+/// A chunk of a longer note is not counted: its parent is, and only the
+/// parent is classified.
+///
+/// `routes` gives the count per route, so every number drills to how it was found.
+pub async fn handle_schedule_topic_mix(
+    Extension(state): Extension<Arc<RestState>>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let days: i64 = params
+        .get("days")
+        .and_then(|d| d.parse().ok())
+        .filter(|d| (1..=90).contains(d))
+        .unwrap_or(30);
+    let since = format!("P{days}D");
+    let schedules = match neo4j.list_scheduled_tasks(false).await {
+        Ok(s) => s,
+        Err(e) => return internal(e),
+    };
+
+    // 1. Runs in the window, by schedule.
+    let run_rows = match neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (t:Task) WHERE t.context STARTS WITH 'Run of ScheduledTask ' \
+                   AND t.created_at >= datetime() - duration($since) \
+                 RETURN t.id AS id, t.context AS context",
+            )
+            .param("since", since.as_str()),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    let mut schedule_of: HashMap<String, String> = HashMap::new();
+    let mut runs: HashMap<String, usize> = HashMap::new();
+    for r in &run_rows {
+        let ctx = r.get::<String>("context").unwrap_or_default();
+        if let (Ok(id), Some(sid)) = (r.get::<String>("id"), parse_run_record(&ctx)) {
+            *runs.entry(sid.to_string()).or_default() += 1;
+            schedule_of.insert(id, sid.to_string());
+        }
+    }
+
+    // note id → (schedule, route)
+    let mut traced: HashMap<String, (String, &'static str)> = HashMap::new();
+
+    // 2a. Notes stamped with one of those runs.
+    let run_ids: Vec<String> = schedule_of.keys().cloned().collect();
+    if !run_ids.is_empty() {
+        let rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (n:Note) WHERE n.produced_by_task IN $runs \
+                     RETURN n.id AS id, n.produced_by_task AS run",
+                )
+                .param("runs", run_ids),
+            )
+            .await
+            .unwrap_or_default();
+        for r in &rows {
+            if let (Ok(id), Some(sid)) = (
+                r.get::<String>("id"),
+                r.get::<String>("run")
+                    .ok()
+                    .and_then(|t| schedule_of.get(&t).cloned()),
+            ) {
+                traced.entry(id).or_insert((sid, ROUTES[0]));
+            }
+        }
+    }
+
+    // 2b. Ids reported by the runs' jobs that are still kept.
+    let mut jobs: HashMap<String, usize> = HashMap::new();
+    let job_rows = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration($since) \
+                   AND j.args_json CONTAINS '__owner_task_id' AND j.result_json IS NOT NULL \
+                 RETURN j.args_json AS args, j.result_json AS result",
+            )
+            .param("since", since.as_str()),
+        )
+        .await
+        .unwrap_or_default();
+    let mut reported: Vec<(String, String)> = Vec::new();
+    for r in &job_rows {
+        let owner = r
+            .get::<String>("args")
+            .ok()
+            .and_then(|a| serde_json::from_str::<Value>(&a).ok())
+            .and_then(|a| {
+                a.get("__owner_task_id")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            });
+        let Some(sid) = owner.and_then(|o| schedule_of.get(&o).cloned()) else {
+            continue;
+        };
+        *jobs.entry(sid.clone()).or_default() += 1;
+        let text = r.get::<String>("result").ok().and_then(|t| result_text(&t));
+        for id in text.as_deref().map(reported_ids).unwrap_or_default() {
+            reported.push((id, sid.clone()));
+        }
+    }
+    for (id, sid) in reported {
+        traced.entry(id).or_insert((sid, ROUTES[1]));
+    }
+
+    // 2c. Notes carrying a source_context the schedule's steps write.
+    let mut context_of: HashMap<String, String> = HashMap::new();
+    for st in &schedules {
+        for sc in step_source_contexts(&st.steps) {
+            context_of.entry(sc).or_insert_with(|| st.id.clone());
+        }
+    }
+    if !context_of.is_empty() {
+        let rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (n:Note) WHERE n.source_context IN $ctxs \
+                       AND n.created_at >= datetime() - duration($since) \
+                     RETURN n.id AS id, n.source_context AS sc",
+                )
+                .param("ctxs", context_of.keys().cloned().collect::<Vec<_>>())
+                .param("since", since.as_str()),
+            )
+            .await
+            .unwrap_or_default();
+        for r in &rows {
+            if let (Ok(id), Some(sid)) = (
+                r.get::<String>("id"),
+                r.get::<String>("sc")
+                    .ok()
+                    .and_then(|c| context_of.get(&c).cloned()),
+            ) {
+                traced.entry(id).or_insert((sid, ROUTES[2]));
+            }
+        }
+    }
+
+    // 2d. Claims asserted in any note traced so far.
+    let sources: Vec<String> = traced.keys().cloned().collect();
+    if !sources.is_empty() {
+        let rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (c:Note {note_type: 'claim'})-[:ASSERTED_IN]->(s:Note) WHERE s.id IN $ids \
+                     RETURN c.id AS id, s.id AS source",
+                )
+                .param("ids", sources),
+            )
+            .await
+            .unwrap_or_default();
+        let claims: Vec<(String, String)> = rows
+            .iter()
+            .filter_map(|r| {
+                let sid = traced.get(&r.get::<String>("source").ok()?)?.0.clone();
+                Some((r.get::<String>("id").ok()?, sid))
+            })
+            .collect();
+        for (id, sid) in claims {
+            traced.entry(id).or_insert((sid, ROUTES[3]));
+        }
+    }
+
+    // 3. Each traced note's main topic, or why it has none.
+    let topics = crate::services::topics::Topics::global();
+    let ids: Vec<String> = traced.keys().cloned().collect();
+    let note_rows = if ids.is_empty() {
+        Vec::new()
+    } else {
+        match neo4j
+            .execute(
+                neo4rs::query(&format!(
+                    "MATCH (n:Note) WHERE n.id IN $ids AND NOT (n)-[:PART_OF]->() \
+                     OPTIONAL MATCH (n)-[r:IN_TOPIC]->(tp:Topic) \
+                     WITH n, tp ORDER BY r.rank ASC \
+                     WITH n, collect(tp.name) AS topics \
+                     RETURN n.id AS id, topics[0] AS main, \
+                            coalesce(n.topics_version, '') = $v AS assessed, \
+                            {} AS skipped",
+                    crate::services::topics::SKIPPED_CYPHER
+                ))
+                .param("ids", ids)
+                .param("v", topics.version.as_str())
+                .param("skip", topics.skip_param()),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return internal(e),
+        }
+    };
+    #[derive(Default)]
+    struct Mix {
+        notes: usize,
+        by_topic: HashMap<String, usize>,
+        fits_none: usize,
+        waiting: usize,
+        skipped: usize,
+        routes: HashMap<&'static str, usize>,
+    }
+    let mut mixes: HashMap<String, Mix> = HashMap::new();
+    for r in &note_rows {
+        let Some((sid, route)) = r
+            .get::<String>("id")
+            .ok()
+            .and_then(|id| traced.get(&id).cloned())
+        else {
+            continue;
+        };
+        let m = mixes.entry(sid).or_default();
+        m.notes += 1;
+        *m.routes.entry(route).or_default() += 1;
+        match r.get::<String>("main").ok() {
+            Some(t) => *m.by_topic.entry(t).or_default() += 1,
+            None if r.get::<bool>("skipped").unwrap_or(false) => m.skipped += 1,
+            None if r.get::<bool>("assessed").unwrap_or(false) => m.fits_none += 1,
+            None => m.waiting += 1,
+        }
+    }
+
+    // 4. One row per schedule, every schedule included.
+    let out: Vec<Value> = schedules
+        .iter()
+        .map(|st| {
+            let m = mixes.remove(&st.id).unwrap_or_default();
+            let mut counts: Vec<(String, usize)> = m.by_topic.into_iter().collect();
+            counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let verdict = mix_verdict(st.topic.as_deref(), &counts, m.fits_none);
+            let (verdict_name, other) = match &verdict {
+                MixVerdict::TooFew => ("too_few", None),
+                MixVerdict::Matches => ("matches", None),
+                MixVerdict::Mismatch { top } => ("mismatch", Some(top.clone())),
+                MixVerdict::Suggest { topic } => ("suggest", Some(topic.clone())),
+                MixVerdict::Spans => ("spans", None),
+            };
+            let routes: serde_json::Map<String, Value> = ROUTES
+                .iter()
+                .map(|r| (r.to_string(), json!(m.routes.get(r).copied().unwrap_or(0))))
+                .collect();
+            json!({
+                "id": st.id,
+                "topic": st.topic,
+                "kind": st.kind,
+                "runs": runs.get(&st.id).copied().unwrap_or(0),
+                "jobs": jobs.get(&st.id).copied().unwrap_or(0),
+                "source_contexts": step_source_contexts(&st.steps),
+                "notes": m.notes,
+                "routes": routes,
+                "topics": counts.iter().map(|(t, n)| json!({ "topic": t, "notes": n })).collect::<Vec<_>>(),
+                "fits_none": m.fits_none,
+                "waiting": m.waiting,
+                "skipped": m.skipped,
+                "verdict": verdict_name,
+                "other_topic": other,
+            })
+        })
+        .collect();
+    Json(json!({ "days": days, "schedules": out })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,5 +1186,68 @@ mod tests {
             (vec!["search_web".into(), String::new(), String::new()], 1)
         );
         assert_eq!(step_tools("garbage"), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn a_mix_is_judged_against_the_declared_topic() {
+        let c = |v: &[(&str, usize)]| {
+            v.iter()
+                .map(|(t, n)| (t.to_string(), *n))
+                .collect::<Vec<_>>()
+        };
+        // Too few classified notes says nothing.
+        assert_eq!(
+            mix_verdict(Some("ai-ml"), &c(&[("ai-ml", 2)]), 9),
+            MixVerdict::TooFew
+        );
+        // The declared topic holds a third or more, or the most: it matches.
+        assert_eq!(
+            mix_verdict(Some("ai-ml"), &c(&[("ai-ml", 4), ("semiconductors", 6)]), 0),
+            MixVerdict::Matches
+        );
+        assert_eq!(
+            mix_verdict(Some("ai-ml"), &c(&[("ai-ml", 3), ("x", 3), ("y", 3)]), 3),
+            MixVerdict::Matches
+        );
+        // It holds little: a mismatch, naming what the notes are about.
+        assert_eq!(
+            mix_verdict(
+                Some("cybersecurity"),
+                &c(&[("ai-ml", 8), ("cybersecurity", 1)]),
+                1
+            ),
+            MixVerdict::Mismatch {
+                top: "ai-ml".into()
+            }
+        );
+        // Nothing declared: one topic holding half is suggested; a spread is fine.
+        assert_eq!(
+            mix_verdict(None, &c(&[("geopolitics", 6), ("us-politics", 2)]), 2),
+            MixVerdict::Suggest {
+                topic: "geopolitics".into()
+            }
+        );
+        assert_eq!(
+            mix_verdict(None, &c(&[("a", 3), ("b", 3), ("c", 3)]), 1),
+            MixVerdict::Spans
+        );
+    }
+
+    #[test]
+    fn a_schedule_names_the_literal_source_contexts_its_steps_write() {
+        let steps = r#"[
+            {"tool_name": "store_note", "arguments": {"content": "{{_prev}}", "source_context": "off_grid_networking_watch"}},
+            {"tool_name": "run_agent", "arguments": {"task": "x", "inner": {"source_context": "nested_ctx"}}},
+            {"tool_name": "store_note", "arguments": {"source_context": "brief_{{date}}"}},
+            {"tool_name": "store_note", "arguments": {"source_context": "off_grid_networking_watch"}}
+        ]"#;
+        assert_eq!(
+            step_source_contexts(steps),
+            vec![
+                "off_grid_networking_watch".to_string(),
+                "nested_ctx".to_string()
+            ]
+        );
+        assert!(step_source_contexts("not json").is_empty());
     }
 }

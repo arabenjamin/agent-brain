@@ -413,6 +413,10 @@ impl HttpTransport {
                 get(crate::clients::work::handle_list_schedules),
             )
             .route(
+                "/api/work/schedules/topic-mix",
+                get(crate::clients::work::handle_schedule_topic_mix),
+            )
+            .route(
                 "/api/work/schedules/{id}",
                 get(crate::clients::work::handle_schedule_detail),
             )

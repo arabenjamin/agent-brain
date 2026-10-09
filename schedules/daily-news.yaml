@@ -40,6 +40,8 @@
 # old (:ScheduledTask) node, or the old chain keeps running alongside this one.
 name: "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing"
 description: "Aggregates metro Detroit, Michigan, national, world, tech, and business headlines plus a stock-market recap and Detroit weather, then writes and stores a structured daily briefing."
+# topic: none — spans topics on purpose
+kind: brief
 interval_seconds: 86400
 steps:
   # ── Clear any leftover raw session FIRST (self-healing) ──────────────────

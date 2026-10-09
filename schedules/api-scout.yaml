@@ -20,6 +20,8 @@
 # (:ScheduledTask) node, or the old one keeps running alongside this one.
 name: "Weekly API scout: discover free public REST APIs for our interests, ingest the keyless ones, flag key-gated ones to the human"
 description: "Weekly: runs the api-scout sub-agent to find free REST APIs in the brain's interest areas; ingests keyless specs via ingest_api and notifies the human about APIs that require a key. Seeded disabled for review."
+# topic: none — spans topics on purpose
+kind: learning
 interval_seconds: 604800
 enabled: false
 steps:

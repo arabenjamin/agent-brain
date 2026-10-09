@@ -16,6 +16,8 @@ export interface ScheduledTask {
   next_run_at: string;
   created_at: string;
   updated_at: string;
+  topic?: string | null;
+  kind?: string | null;
 }
 
 export interface SchedulerChain {

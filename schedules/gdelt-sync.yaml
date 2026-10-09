@@ -9,6 +9,8 @@
 # (:ScheduledTask) node.
 name: "GDELT sync: load new 15-minute event files"
 description: "ETL pass for GDELT 2.0 events into the datasets DuckDB: downloads each export file published since the last load, loads it, prunes past retention, and logs the run to etl_runs."
+topic: geopolitics
+kind: dataset
 interval_seconds: 900
 # Retired as a source 2026-10-06 (user decision). A week of loaded data was
 # ~98% outlets on none of our lists, much of it tabloid or regional, and the

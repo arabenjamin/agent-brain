@@ -48,4 +48,17 @@ pub struct ScheduledTask {
     /// `list` payload for the same reason.
     #[serde(default)]
     pub paused_reason: Option<String>,
+    /// The `topics/*.yaml` topic this schedule works on, or `None` when it
+    /// spans topics on purpose (a daily brief, a maintenance pass). Declared,
+    /// and shown beside the topic mix its runs actually produced.
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// What sort of work it is: one of [`SCHEDULE_KINDS`].
+    #[serde(default)]
+    pub kind: Option<String>,
 }
+
+/// The kinds a schedule may declare (HBI plan §9.5). A closed set, like a
+/// status: the HBI groups by it and the seeder and `manage_scheduled_task`
+/// refuse anything else.
+pub const SCHEDULE_KINDS: &[&str] = &["monitor", "brief", "learning", "maintenance", "dataset"];

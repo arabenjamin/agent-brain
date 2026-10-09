@@ -14,6 +14,8 @@
     "description": { "type": "string" },
     "data_class": { "type": "string", "enum": ["private", "public"], "description": "private (default when absent) = only no_log providers; public also admits free tiers that may train on prompts. A file-level value is stamped onto steps that set none." },
     "enabled": { "type": "boolean" },
+    "topic": { "type": ["string", "null"], "description": "The topics/*.yaml topic this schedule works on; blank or null = spans topics. Checked against the declared topics." },
+    "kind": { "type": ["string", "null"], "enum": ["monitor", "brief", "learning", "maintenance", "dataset", "", null], "description": "What sort of work it is." },
     "interval_seconds": {
       "type": "integer",
       "minimum": 60,

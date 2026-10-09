@@ -11,6 +11,7 @@ export interface TopicSummary {
   name: string;
   label: string;
   description: string;
+  /** Names of the schedules that declare this topic. */
   schedules: string[];
   source_lists: string[];
   /** Notes in the topic (as main or second topic). */
@@ -68,7 +69,8 @@ export interface TopicMap {
 
 export interface TopicDetail {
   topic: Omit<TopicSummary, "schedules"> & { source_lists: string[] };
-  schedules: { name: string; id: string | null; enabled?: boolean; missing?: boolean }[];
+  /** The schedules that declare this topic. */
+  schedules: { name: string; id: string; enabled?: boolean; kind?: string | null }[];
   entities: { id: string; name: string; entity_type: string | null; notes: number }[];
   notes: { id: string; note_type: string | null; preview: string; created_at: string | null; main: boolean }[];
   notes_shown: number;

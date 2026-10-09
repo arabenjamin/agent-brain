@@ -9,6 +9,3 @@ description: >-
   This Agent Brain system's own operation: its scheduler, jobs and failures,
   tools, todos, chat sessions, knowledge graph and code. General AI or
   machine-learning knowledge is ai-ml, not this.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "Brain health monitor: review scheduler state, queue metrics, and failure patterns"
-  - "Doc update: review recent git changes and sync project-docs"

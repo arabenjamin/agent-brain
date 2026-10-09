@@ -1,5 +1,7 @@
 name: "Brain API self-sync: regenerate the brain's own endpoint graph from its Axum routes"
 description: "Snapshots the brain's architecture and records what changed since last week, then keeps the brain's own API documentation current in the knowledge graph as the code changes. The brain publishes no OpenAPI spec, so this build-from-routes ingest IS its self-documentation: ingest_api(codebase_path) over the HTTP-transport source with prune=true, so newly added routes appear and removed routes disappear. Stored as ApiContext 'agent-brain' (source: codebase_generated). LLM extraction runs once per run on unmetered ollama-cloud (weekly, not a fan-out). Step 2 banks a dated record of the endpoint/prune counts so API growth is trackable over time."
+topic: agent-brain
+kind: maintenance
 interval_seconds: 604800
 steps:
   # 1. Snapshot the brain's architecture (skills and tools, routes, agents,

@@ -22,6 +22,8 @@
 # every startup.
 name: "Capability mining: identify agent/tool candidates from todos and repeated patterns"
 description: "Weekly self-improvement scan. Aggregates repeatedly-failing/blocked Tasks by capability (goal prefix) plus a sample of their failure context, then reasons over that REAL signal to propose ScheduledTask, dynamic-tool, or skill-gap candidates. Result is stored as a capability_mining reflection note."
+topic: agent-brain
+kind: maintenance
 interval_seconds: 604800
 steps:
   # Step flow and {{_prev}} chain:

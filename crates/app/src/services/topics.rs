@@ -45,9 +45,6 @@ pub struct TopicDef {
     pub label: String,
     /// What belongs here — this text *is* the classifier's definition.
     pub description: String,
-    /// ScheduledTasks that watch this topic (by name).
-    #[serde(default)]
-    pub schedules: Vec<String>,
     /// SourceLists its searches use.
     #[serde(default)]
     pub source_lists: Vec<String>,
@@ -260,7 +257,6 @@ pub async fn sync(neo4j: &Neo4jClient, topics: &Topics) -> Result<usize> {
                 "description".to_string(),
                 d.description.trim().to_string().into(),
             );
-            m.insert("schedules".to_string(), d.schedules.clone().into());
             m.insert("source_lists".to_string(), d.source_lists.clone().into());
             m.into()
         })
@@ -271,8 +267,9 @@ pub async fn sync(neo4j: &Neo4jClient, topics: &Topics) -> Result<usize> {
                 "UNWIND $rows AS r \
                  MERGE (t:Topic {name: r.name}) \
                  ON CREATE SET t.created_at = datetime() \
+                 REMOVE t.schedules \
                  SET t.label = r.label, t.description = r.description, \
-                     t.schedules = r.schedules, t.source_lists = r.source_lists, \
+                     t.source_lists = r.source_lists, \
                      t.version = $version, t.synced_at = datetime()",
             )
             .param("rows", rows)
@@ -499,21 +496,18 @@ mod tests {
                 name: "us-politics".into(),
                 label: "US politics".into(),
                 description: "The US federal government.".into(),
-                schedules: vec![],
                 source_lists: vec![],
             },
             TopicDef {
                 name: "ai-ml".into(),
                 label: "AI".into(),
                 description: "AI as a field.".into(),
-                schedules: vec![],
                 source_lists: vec![],
             },
             TopicDef {
                 name: "geopolitics".into(),
                 label: "Geopolitics".into(),
                 description: "Countries.".into(),
-                schedules: vec![],
                 source_lists: vec![],
             },
         ])
@@ -541,7 +535,7 @@ mod tests {
         let a = defs();
         let mut d = defs().defs;
         d[0].label = "Renamed label".into();
-        d[0].schedules = vec!["x".into()];
+        d[0].source_lists = vec!["x".into()];
         assert_eq!(
             Topics::from_defs(d.clone()).version,
             a.version,

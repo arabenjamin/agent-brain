@@ -3,6 +3,7 @@
  * and the actions (`clients/work.rs`, `/todos`, `/scheduled-tasks`,
  * `manage_job`). Every mutation invalidates the keys it changes.
  */
+import type { TopicMix } from "../lib/scheduleGroups";
 import { useQuery } from "@tanstack/react-query";
 import { apiJson, apiSend, query } from "./client";
 import { callToolStrict } from "./mcp";
@@ -144,6 +145,10 @@ export interface WorkSchedule {
   created_at: string;
   updated_at: string;
   managed_by?: string | null;
+  /** The declared `topics/*.yaml` topic; null = spans topics. */
+  topic?: string | null;
+  /** monitor · brief · learning · maintenance · dataset. */
+  kind?: string | null;
   /** Tool name per step as the runner reads it ("" for a step it cannot run). */
   step_tools: string[];
   /** Steps stored in the old `tool`/`args` shape, which run as an empty tool and fail. */
@@ -199,6 +204,19 @@ export function useWorkSchedules(pollMs = 30_000) {
     queryKey: workKeys.schedules,
     queryFn: () => apiJson<{ schedules: WorkSchedule[]; runs_error: string | null }>("/api/work/schedules"),
     refetchInterval: pollMs,
+  });
+}
+
+/**
+ * What each schedule's runs produced in the last `days`, by topic. Several MB
+ * of job results are read to compute it, so it refreshes rarely.
+ */
+export function useScheduleTopicMix(days = 30) {
+  return useQuery({
+    queryKey: ["work", "topic-mix", days] as const,
+    queryFn: () => apiJson<{ days: number; schedules: TopicMix[] }>(`/api/work/schedules/topic-mix${query({ days })}`),
+    staleTime: 5 * 60_000,
+    refetchInterval: 10 * 60_000,
   });
 }
 

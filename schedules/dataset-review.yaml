@@ -10,6 +10,8 @@
 # The `name` is the Neo4j MERGE key.
 name: "Dataset review: freshness, failures and source mix of GDELT and ReliefWeb"
 description: "Weekly review of the ETL-loaded datasets: whether they are current, which runs failed, and which outlets and publishers the last week of data came from. Reported to the user."
+# topic: none — spans topics on purpose
+kind: dataset
 interval_seconds: 604800   # weekly
 steps:
   - tool_name: dataset_status

@@ -35,6 +35,8 @@
 # last. Each sweep is banked into "offgrid-{{task_id}}" and reassembled.
 name: "Off-Grid Networking Monitor"
 description: "Weekly sweep of off-grid and decentralized mesh networking developments (Meshtastic, Reticulum, LoRa, and alternatives), compared against the previous run, ending in an actionable delta and a hardware/setup note."
+topic: off-grid-networking
+kind: monitor
 interval_seconds: 604800
 # Public web research on public topics: its reasoning step may use free tiers
 # that train on prompts (gemini-2.5-flash). See PROVIDER_ROUTING_PLAN.md §3.

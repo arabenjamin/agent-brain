@@ -8,5 +8,3 @@ label: Off-grid & mesh networking
 description: >-
   Communications that work without the grid or carriers: mesh networks, LoRa
   and Meshtastic, ham radio and resilient community networks.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "Off-Grid Networking Monitor"

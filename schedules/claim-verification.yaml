@@ -18,6 +18,8 @@
 # (:ScheduledTask) node.
 name: "Claim verification: gather evidence for unverified claims and record what it says"
 description: "Works through the unverified claim backlog in batches: searches for independent evidence, records it, and recomputes each claim's status from the evidence found. Never edits the claim itself."
+# topic: none — spans topics on purpose
+kind: maintenance
 interval_seconds: 21600   # every 6h
 
 steps:

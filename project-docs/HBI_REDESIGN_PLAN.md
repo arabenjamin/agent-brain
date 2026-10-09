@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phases 11–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phase 11 done 2026-10-09 (declared topic/kind, a traced 30-day topic mix, grouped lists; starting values await the user's review); Phases 12–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -738,3 +738,42 @@ Built and deployed:
 **Not built:**
 - the delegate tool in chat can't choose a model; a delegated agent uses its profile's own;
 - the YAML schedule seeder does not run the model check; `audit` does.
+
+### Phase 11 outcome (2026-10-09)
+
+Built and deployed:
+- **Declared `topic` and `kind`** on every ScheduledTask: in `schedules/*.yaml`, on the node, and in the HBI form.
+  - **Checked on every write path:** the seeder, `manage_scheduled_task` upsert, and REST `POST`/`PUT /scheduled-tasks` (`schedule_seeder::check_labels`). A test fails the build on a bad schedule file.
+  - **The schedule is now the one home of the topic link.** The 8 entries in topics/*.yaml `schedules:` became starting values and the lists were removed. A topic's "Watched by" is computed from `ScheduledTask.topic`.
+  - **Starting values for all 28 were drafted:** 25 in the YAML files, plus 3 runtime-owned ones (Trump Benefit Daily Monitor `us-politics`, Zero Trust `cybersecurity`, SELF-TEST `agent-brain`), set through REST. The user reviews them in the HBI, with the computed mix beside each.
+- **The computed mix** (`GET /api/work/schedules/topic-mix`, 30 days, ~0.2 s):
+  - each note is traced by run stamp, job result, `source_context`, or a claim of one of those, and counted once with its route;
+  - each note's main topic is counted, chunks left out;
+  - a verdict per schedule: matches, mismatch, suggest, spans, or too few.
+- **Every note a job writes is now stamped `produced_by_task`** (a `CURRENT_OWNER_TASK` task-local in the queue; the note store and `store_claim`).
+- **HBI:**
+  - List and timeline grouped by topic, kind or none (remembered), with collapsible groups (remembered), on/off counts, "No topic" last, and the mismatch or suggestion on each row.
+  - The schedule drawer's **Topic** section: declared topic and kind, the mix with shares, and how many notes each route traced.
+- **REST schedule saves now run the step-model check.** Phase 10 had put it only on `manage_scheduled_task`, while the HBI saves through `/scheduled-tasks`.
+
+**Found while building:**
+- **Completed AgentJobs are pruned after about two days.** Lineage through jobs alone would have called two days "30 days". Hence the stamp, and the `source_context` route for history. 13 of the 28 schedules write a fixed `source_context`, and no two share one.
+- **Chunk notes are never classified, only their parents are.** Counting them showed dozens of notes "waiting" while coverage said 0.
+- **A single-node pattern comprehension (`[(s:ScheduledTask {topic: t.name}) | …]`) is a syntax error in Neo4j 5.** It took `/api/topics` down until it was replaced with a `COLLECT { }` subquery, tested in cypher-shell first.
+
+**Verified live:**
+- **Groupings:** every schedule sits in exactly one group (28 by topic: 9 topics plus "No topic" 13; 28 by kind).
+- **The mismatch is shown (the done-condition):** Trump Benefit Daily Monitor is declared `us-politics`, but its notes are mostly `geopolitics` (13 of 28; us-politics 6; 9 fit no topic).
+- **Suggestions for schedules with none:**
+  - Overdue TODO review and Todo snapshot → `agent-brain`;
+  - Weekly news briefing → `geopolitics`;
+  - Daily news analysis → `ai-ml` (15 of 29).
+- **Matches:** intelligence-agency, off-grid, SLM watch, hardware tripwire, capability mining, API sync.
+- **Run stamp:** a throwaway schedule's note carried its run's task id and was counted under `run_stamp`. The schedule and the note were deleted.
+- Bad topics, kinds and step models are rejected by REST with the reason.
+
+**Tests:** 856 Rust lib tests (4 new) and 95 vitest (3 new).
+
+**Waiting on the user:** review the 28 starting values, above all the Trump monitor (us-politics or geopolitics?) and whether to take the four suggestions.
+
+**Not built:** schedules whose steps write no fixed `source_context` (media watch, claim verification, deep dive, …) show "too few" until runs stamped from now on accumulate.

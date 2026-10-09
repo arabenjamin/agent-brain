@@ -778,6 +778,17 @@ The fix keeps every field the editor doesn't edit and lists them under the step.
 
 The done-check was the ledger itself: a step pinned to `gpt-oss:20b-cloud`, which would otherwise have run on `gpt-oss:120b-cloud`, logged exactly one `gpt-oss:20b-cloud` call.
 
+### What a schedule produced: lineage that lasts (2026-10-09)
+
+**Two days of lineage, labelled thirty.** The first schedule topic mix traced notes the way the Work drawer's lineage does: run-record task → its jobs → the note ids each job's result reports. On live data it traced 0–2 notes per schedule over "30 days", for schedules that store notes every day. Completed AgentJobs are pruned after about two days, so the window was really two days, and every verdict came out "too few". Three fixes:
+- every note written inside a job is now stamped with its owning task (`produced_by_task`, from a `CURRENT_OWNER_TASK` task-local), which also reaches notes written inside a `run_agent` loop;
+- history is traced through the literal `source_context` a schedule's own steps write (13 of 28 have one, and none is shared);
+- claims asserted in those notes count too.
+
+**Chunks look like unclassified notes.** The first counts showed dozens of notes "waiting" for a topic while the topic coverage said none were. Every one was a chunk (`PART_OF`): chunks are never classified, their parents are.
+
+**`[(s:ScheduledTask {topic: t.name}) | s.name]` is a syntax error in Neo4j 5**, and so is the `WHERE` form: pattern comprehension needs a relationship. Shipped untested, it took `/api/topics` (Home's Domains tile, the map) down until it was replaced with `COLLECT { MATCH … RETURN … }`, tried in cypher-shell first.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

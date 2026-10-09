@@ -9,7 +9,5 @@ description: >-
   Artificial intelligence and machine learning as a field: models, research,
   training, inference, benchmarks, AI products and AI policy. The brain's own
   operation is agent-brain, not this.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "Bi-weekly SLM benchmark watch: track frontier-equivalent small models in the 1B-7B range"
 source_lists:   # SourceLists its searches use
   - ml-research

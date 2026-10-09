@@ -16,6 +16,8 @@
 # all six of its steps and put four searches and a store_note on cloud for nothing.
 name: "Weekly hardware tripwire: scan the AI accelerator supply chain for disruption signals"
 description: "Weekly scan of HBM3e/memory, CoWoS/advanced packaging, raw-material + geopolitical signals, and substitution/alternative architectures. Compares fresh findings against the previous run's baseline and stores a delta report."
+topic: semiconductors
+kind: monitor
 interval_seconds: 604800
 # Public web research on public topics: its reasoning step may use free tiers
 # that train on prompts (gemini-2.5-flash). See PROVIDER_ROUTING_PLAN.md §3.

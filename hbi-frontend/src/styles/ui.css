@@ -506,6 +506,8 @@ details.dw-section > summary { cursor: pointer; }
   display: flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 700;
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); padding: 2px 0 4px;
 }
+button.wk-group-head { background: none; border: none; cursor: pointer; font-family: var(--font); width: 100%; text-align: left; margin-top: 10px; }
+button.wk-group-head:hover { color: var(--text-dim); }
 .wk-count { background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; color: var(--text-dim); letter-spacing: 0; }
 .wk-more { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--accent); text-decoration: none; }
 .wk-row {

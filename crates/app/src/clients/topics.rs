@@ -60,7 +60,7 @@ pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> impl In
         .execute(neo4rs::query(
             "MATCH (t:Topic) \
              RETURN t.name AS name, t.label AS label, t.description AS description, \
-                    t.schedules AS schedules, t.source_lists AS source_lists, \
+                    COLLECT { MATCH (s:ScheduledTask) WHERE s.topic = t.name RETURN s.name } AS schedules, t.source_lists AS source_lists, \
                     COUNT { (:Note)-[:IN_TOPIC]->(t) } AS notes, \
                     COUNT { (:Note)-[r:IN_TOPIC]->(t) WHERE r.rank = 1 } AS main, \
                     COUNT { (n:Note)-[:IN_TOPIC]->(t) WHERE n.created_at >= datetime() - duration('P7D') } AS week \
@@ -295,7 +295,7 @@ pub async fn handle_topic(
             neo4rs::query(
                 "MATCH (t:Topic {name: $name}) \
                  RETURN t.name AS name, t.label AS label, t.description AS description, \
-                        t.schedules AS schedules, t.source_lists AS source_lists, \
+                        t.source_lists AS source_lists, \
                         COUNT { (:Note)-[:IN_TOPIC]->(t) } AS notes, \
                         COUNT { (:Note)-[r:IN_TOPIC]->(t) WHERE r.rank = 1 } AS main, \
                         COUNT { (n:Note)-[:IN_TOPIC]->(t) WHERE n.created_at >= datetime() - duration('P7D') } AS week",
@@ -310,7 +310,6 @@ pub async fn handle_topic(
     let Some(t) = rows.first() else {
         return not_found();
     };
-    let schedules = t.get::<Vec<String>>("schedules").unwrap_or_default();
 
     let entities: Vec<Value> = neo4j
         .execute(
@@ -360,34 +359,26 @@ pub async fn handle_topic(
         })
         .collect();
 
-    // Schedules named in the YAML, resolved to ids the drawer can open. A name
-    // that matches nothing is reported, not dropped.
-    let found: HashMap<String, (String, bool)> = neo4j
+    // The schedules that declare this topic (`topic:` on the schedule).
+    let schedules: Vec<Value> = neo4j
         .execute(
             neo4rs::query(
-                "MATCH (s:ScheduledTask) WHERE s.name IN $names \
-                 RETURN s.name AS name, s.id AS id, coalesce(s.enabled, true) AS enabled",
+                "MATCH (s:ScheduledTask {topic: $name}) \
+                 RETURN s.name AS name, s.id AS id, coalesce(s.enabled, true) AS enabled, s.kind AS kind \
+                 ORDER BY s.name",
             )
-            .param("names", schedules.clone()),
+            .param("name", name.as_str()),
         )
         .await
         .unwrap_or_default()
         .iter()
-        .filter_map(|r| {
-            Some((
-                r.get::<String>("name").ok()?,
-                (
-                    r.get::<String>("id").ok()?,
-                    r.get::<bool>("enabled").unwrap_or(true),
-                ),
-            ))
-        })
-        .collect();
-    let schedules: Vec<Value> = schedules
-        .iter()
-        .map(|n| match found.get(n) {
-            Some((id, enabled)) => json!({ "name": n, "id": id, "enabled": enabled }),
-            None => json!({ "name": n, "id": null, "missing": true }),
+        .map(|r| {
+            json!({
+                "name": r.get::<String>("name").ok(),
+                "id": r.get::<String>("id").ok(),
+                "enabled": r.get::<bool>("enabled").unwrap_or(true),
+                "kind": r.get::<String>("kind").ok(),
+            })
         })
         .collect();
 

@@ -650,11 +650,19 @@ pub async fn store_claim(
          source_url: $source_url, source_title: $source_title, source_outlet: $source_outlet, \
          standalone_checked_at: datetime($ts), \
          source_context: $source_context, provenance: 'synthesis_inference', \
+         produced_by_task: $produced_by_task, \
          created_at: datetime($ts), last_accessed_at: datetime($ts), access_count: 0, \
          next_review_at: datetime($ts) + duration({days: 1}), review_interval_days: 1, \
          embedding: $embedding})",
     )
     .param("id", id.clone())
+    .param(
+        "produced_by_task",
+        match crate::services::queue::current_owner_task() {
+            Some(t) => neo4rs::BoltType::from(t),
+            None => neo4rs::BoltType::Null(neo4rs::BoltNull),
+        },
+    )
     .param("content", claim.claim.as_str())
     .param("asserted_by", claim.asserted_by.clone().unwrap_or_default())
     .param(

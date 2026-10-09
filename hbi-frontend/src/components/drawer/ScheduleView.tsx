@@ -9,8 +9,11 @@ import {
   runScheduleNow,
   setScheduleEnabled,
   useScheduleDetail,
+  useScheduleTopicMix,
   type WorkSchedule,
 } from "../../api/work";
+import { useTopics } from "../../api/topics";
+import { KIND_LABELS, mixFlag, type TopicMix } from "../../lib/scheduleGroups";
 import { fmtEvery } from "../../lib/status";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
@@ -33,6 +36,8 @@ function forEditor(s: WorkSchedule): ScheduledTask {
     next_run_at: s.next_run_at,
     created_at: s.created_at,
     updated_at: s.updated_at,
+    topic: s.topic ?? null,
+    kind: s.kind ?? null,
   };
 }
 
@@ -134,6 +139,8 @@ export default function ScheduleView({ id }: { id: string }) {
             </div>
           </Section>
 
+          <TopicSection s={s} />
+
           <Section title="Runs" aside={d.runs_total > d.runs_shown ? `latest ${d.runs_shown} of ${d.runs_total}` : `${d.runs_total}`}>
             {d.runs.length === 0 ? (
               <EmptyState title="No runs recorded" checked="No run-record task names this schedule." />
@@ -186,6 +193,73 @@ export default function ScheduleView({ id }: { id: string }) {
         </>
       )}
     </Drawer>
+  );
+}
+
+/** Declared topic and kind beside what the last 30 days of runs wrote. */
+function TopicSection({ s }: { s: WorkSchedule }) {
+  const mix = useScheduleTopicMix();
+  const topics = useTopics().data?.topics ?? [];
+  const labels = Object.fromEntries(topics.map((t) => [t.name, t.label]));
+  const m: TopicMix | undefined = mix.data?.schedules.find((x) => x.id === s.id);
+  const flag = mixFlag(m, labels);
+  const assessed = m ? m.topics.reduce((a, t) => a + t.notes, 0) + m.fits_none : 0;
+  return (
+    <Section title="Topic" aside={mix.data ? `last ${mix.data.days} days` : undefined}>
+      <div className="dw-grid">
+        <span>Declared</span>
+        <span>
+          {s.topic ? <EntityLink kind="topic" id={s.topic}>{labels[s.topic] ?? s.topic}</EntityLink> : <span className="dw-dim">none: spans topics</span>}
+          {" · "}
+          {s.kind ? KIND_LABELS[s.kind] ?? s.kind : <span className="dw-dim">no kind</span>}
+        </span>
+        <span>Its notes</span>
+        <span>
+          {mix.error ? <span className="tone-text-red">could not be read: {mix.error.message}</span>
+            : !m ? <span className="dw-dim">loading…</span>
+            : m.notes === 0
+              ? <span className="dw-dim">
+                  no notes traced from {m.runs} run{m.runs === 1 ? "" : "s"}.{" "}
+                  {m.source_contexts.length === 0 && "Its steps write no fixed source_context, so notes from before 2026-10-09 can't be traced to it; notes its runs write from now on are."}
+                </span>
+              : <>
+                  {m.notes} traced from {m.runs} run{m.runs === 1 ? "" : "s"}
+                  {flag && <span className={`tone-text-${flag.tone}`}> · {flag.text}</span>}
+                  {m.verdict === "matches" && <span className="tone-text-green"> · matches</span>}
+                  {m.verdict === "too_few" && <span className="dw-dim"> · too few classified to judge</span>}
+                </>}
+        </span>
+      </div>
+      {m && assessed > 0 && (
+        <ul className="dw-list">
+          {m.topics.map((t) => (
+            <li key={t.topic}>
+              <EntityLink kind="topic" id={t.topic}>{labels[t.topic] ?? t.topic}</EntityLink>
+              <span className="dw-dim">{t.notes} · {Math.round((t.notes / assessed) * 100)}%</span>
+              {t.topic === s.topic && <span className="dw-dim">declared</span>}
+            </li>
+          ))}
+          {m.fits_none > 0 && <li><span className="dw-dim">fits no topic</span><span className="dw-dim">{m.fits_none}</span></li>}
+        </ul>
+      )}
+      {m && m.notes > 0 && (
+        <div className="dw-dim" title="Each note is counted once, by the first of these that reached it">
+          traced by: {[
+            m.routes.run_stamp && `${m.routes.run_stamp} run stamp`,
+            m.routes.job_result && `${m.routes.job_result} job result`,
+            m.routes.source_context && `${m.routes.source_context} source_context (${m.source_contexts.join(", ")})`,
+            m.routes.claim_of && `${m.routes.claim_of} claims extracted from those`,
+          ].filter(Boolean).join(" · ")}
+        </div>
+      )}
+      {m && (m.waiting > 0 || m.skipped > 0) && (
+        <div className="dw-dim">
+          {m.waiting > 0 && `${m.waiting} not classified yet`}
+          {m.waiting > 0 && m.skipped > 0 && " · "}
+          {m.skipped > 0 && `${m.skipped} activity records, not classified by design`}
+        </div>
+      )}
+    </Section>
   );
 }
 

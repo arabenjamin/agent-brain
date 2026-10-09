@@ -45,6 +45,8 @@ fn row_to_scheduled_task(row: &neo4rs::Row) -> Result<ScheduledTask, RepositoryE
         updated_at: node_ts(&node, "updated_at").unwrap_or_default(),
         managed_by: node.get("managed_by").ok(),
         paused_reason: node.get("paused_reason").ok(),
+        topic: node.get("topic").ok(),
+        kind: node.get("kind").ok(),
     })
 }
 
@@ -368,6 +370,45 @@ impl Neo4jClient {
         } else {
             YamlSyncOutcome::NotFound
         })
+    }
+
+    /// Set (or clear, with `None`) a schedule's declared `topic` and `kind`.
+    /// With `yaml_owned_only`, a runtime-owned node is left alone: the seeder
+    /// uses it, so a file never overwrites what the graph owns. Matched by
+    /// `id` when given, else by exact `name`. Returns whether a node changed.
+    pub async fn set_scheduled_task_labels(
+        &self,
+        id_or_name: (&str, bool),
+        topic: Option<&str>,
+        kind: Option<&str>,
+        yaml_owned_only: bool,
+    ) -> Result<bool, RepositoryError> {
+        let (key, by_id) = id_or_name;
+        let matcher = if by_id {
+            "MATCH (s:ScheduledTask {id: $key})"
+        } else {
+            "MATCH (s:ScheduledTask {name: $key})"
+        };
+        let owner = if yaml_owned_only {
+            " WHERE s.managed_by = 'yaml'"
+        } else {
+            ""
+        };
+        let cypher =
+            format!("{matcher}{owner} SET s.topic = $topic, s.kind = $kind RETURN s.id AS id");
+        let opt = |v: Option<&str>| match v {
+            Some(v) => BoltType::from(v),
+            None => BoltType::Null(BoltNull),
+        };
+        let rows = self
+            .execute(
+                query(&cypher)
+                    .param("key", key)
+                    .param("topic", opt(topic))
+                    .param("kind", opt(kind)),
+            )
+            .await?;
+        Ok(!rows.is_empty())
     }
 
     /// Mark every `ScheduledTask` that still lacks a `managed_by` property as

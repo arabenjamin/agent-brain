@@ -9,7 +9,5 @@ description: >-
   The US federal government and politics: Congress, the White House, federal
   agencies, courts, executive orders, elections, parties, candidates and
   political commentary.
-schedules:   # ScheduledTasks that watch this topic (by name)
-  - "Trump Benefit Daily Monitor"
 source_lists:   # SourceLists its searches use
   - news
