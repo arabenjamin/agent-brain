@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **All phases (0–7) done, 2026-10-08.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (Phases 8–13, §9) planned 2026-10-08, nothing built.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -442,3 +442,169 @@ Order rationale: 0–1 make everything after them cheap. Work (2) is pure fronte
 ## 8. Testing
 
 There are no frontend tests today. Phase 0 adds `vitest` for the `api/` layer and pure helpers (search-mode detection, lineage assembly). Each phase is checked in the running HBI (port 3002, rebuilt via compose) against the live brain, not just by `npm run build`. Backend endpoints get unit tests and are documented in `README` / `subsystem-rules.md` when they land.
+
+## 9. Second round: Phases 8–13 (planned 2026-10-08)
+
+Source: the user's HBI todos of 2026-10-08 (group schedules by topic, collapse the sidebar, ambiguous claim notes, merge Inbox/Todos/chats, model selection for tasks and assist widgets) plus the older "Update Todo List Feature" todo. The review found that most of them are bugs or half-built features, not only missing UI.
+
+Decisions taken in the discussion (2026-10-08):
+1. **Items:** go straight to one item record with an assignee. No view-only merge first.
+2. **A todo is one-shot work, probably multi-step.** It is not a routine. "Make it a schedule" is an explicit switch on the item that produces a ScheduledTask draft. The todo itself never recurs.
+3. **"Widget"** means anywhere the user asks an agent to assist with something. The schedule AI-assist is the model case.
+4. **Rewrite every existing claim**, not only new ones. Garbage in, garbage out.
+5. These phases are appended here, not in a new plan doc.
+
+### 9.1 What the review found
+
+| Todo | Finding | Evidence |
+|---|---|---|
+| Model selection | **The step Provider dropdown does not do what it says.** Only `ollama` changes routing (`USE_LOCAL_LLM`). `anthropic` and `gemini` only pick which concurrency semaphore the job waits on, then run on the active chat config. Steps have **no `model` field**, but the editor's help text lists one. The live "Zero Trust Architecture Research" schedule sets `model: gemma4:latest`, a local model, on an `ollama-cloud` step, and it is silently ignored. | `services/queue.rs` (semaphore match, `use_local`), `ChainStep` has no `model`, `ScheduleForm.tsx` help text, `shared_llm.rs` routing precedence |
+| Model selection | The one assist widget (schedule AI-assist) always runs `schedule-author` on its pinned model. It re-states the agent's own lint rules in a frontend prompt string. | `ScheduleForm.tsx` `handleAiGenerate` |
+| Ambiguous claims | **The source exists and nothing shows it.** 4,485 of 4,510 claims have `ASSERTED_IN` to a source note, and almost every one of those sources carries its URL. The note drawer doesn't render the edge. The extraction prompt already asks for "plainly and self-contained" claims, and the model ignores it ("the software"). Every claim is stored as `provenance: 'user_input'`, hardcoded in `store_claim`, and recall shows that label to the model. The Paragon claim (889d47f8) is filed under the `agent-brain` topic. | `services/claims.rs` `extract_claims` / `store_claim`, `NoteView.tsx` |
+| Group schedules | 28 schedules, with no topic or kind field. Where their notes actually land (30 days, by `source_context`): monitors map cleanly (`off_grid_networking_watch` → 31/31 off-grid-networking). Pipelines span every topic (`video_learning`, news, claim evidence). Those are services, not topics. | live graph, 2026-10-08 |
+| Collapse sidebar | The chat session list collapses since Phase 7. The 200 px nav sidebar does not. | `main.css .sidebar` |
+| Inbox / Todos / chats | "Something wants you" lives in four places: Work → Inbox (proposals, 188 entity merges, overdue todos, failures), Todos, the Chat notification banner, and Home's Needs-you tile. All 100 recent notifications open a chat session: 45 Todo Review, 30 Daily Brief, 13 Daily News Brief. `TODO_DELAYED_PROMPT_PLAN.md` (2026-09-11) designed assignees and dispatch, and **none of it is built**. There is still no `manage_todo` tool. | `/api/notifications`, `InboxLane.tsx`, `skills/` |
+
+### 9.2 Items: one record for work, with an assignee
+
+Builds on `TODO_DELAYED_PROMPT_PLAN.md`. That plan's design and every one of its guardrails are kept: the capped `dispatch_count`, bounded fan-out, roster validation at assign time, idempotent dispatch, no recurrence on a todo, and `side_effects` derived from the allowlist and failing safe. This section supersedes only its sequencing.
+
+**The record is `:Todo`**, extended rather than replaced. REST, the `SPAWNED` lineage, three schedules and the front door's `pre_load_query` already read it.
+
+| Field | Values |
+|---|---|
+| `assignee` | `user` · `agent:<profile>` · `agent:auto`. Validated against the live spawnable roster when written. |
+| `origin` | `{kind: user \| schedule \| proposal \| agent, ref}`: who asked, so the item links back to it |
+| `prompt` | What the agent is told. Falls back to title + description. |
+| `session_id` | The item's thread: a chat session `todo-<id>` |
+| `status` | `pending` · `in_progress` · `awaiting_approval` (a writing agent, not yet started) · `awaiting_review` (the agent finished) · `done`, plus `snoozed_until` |
+| bookkeeping | `dispatched_at`, `dispatch_count`, `result_note_id` |
+
+**What becomes an item**
+- **Your own todos.**
+- **The brain's asks.** `notify_user` gains `needs: action`, which also creates an item assigned to `user` with the notification's session as its thread ("this API needs a key", "apply to this job?"). A plain `notify_user` stays a read.
+- **Code proposals.** The proposal writer creates the item, and the existing files are backfilled once.
+
+**What stays out**
+- **System signals** (entity merges, failed tasks, dead jobs, broken schedules) are computed digests, not rows. 188 merge items would bury everything else.
+
+**An agent-assigned item is a Task with a delay**, as in the delayed-prompt plan:
+- `create_task` routes through `chains/run-agent.yaml`, and the agent's own loop does the multi-step work.
+- The last step writes the result as a note (`result_note_id`), posts it into the item's thread and sets `awaiting_review`.
+- **Review actions:** approve (→ `done`) or **send back** with a comment, which runs again with the comment and the previous result in the prompt and counts toward `dispatch_count`.
+
+**"Make it a schedule"** is a switch on the item:
+- `schedule-author` drafts a ScheduledTask from the item's prompt. It is created disabled and linked `(:Todo)-[:BECAME]->(:ScheduledTask)`, and opens in the schedule drawer for review.
+- Enabling it closes the item as "became a schedule".
+
+### 9.3 The feed
+
+Work → Inbox becomes **Feed**, one list of what wants the user, from one endpoint (`GET /api/feed`). It has three row kinds:
+
+1. **Items for you:**
+   - which items: `assignee: user` and open, plus every `awaiting_approval` and `awaiting_review` item;
+   - inline actions: done, snooze, reply (opens the thread), hand to an agent (the §9.4 pickers), approve and send back;
+   - order: overdue first, then awaiting you, then newest.
+2. **Reads:** unread notifications without `needs: action`, such as the Daily Brief and the News Brief. Opening one opens its session and marks it read.
+3. **Digests:** one card each for "188 entity merges to decide", "3 tasks failed this week" and "1 schedule with broken steps". Each drills to its lane, and each count is drillable to its rows.
+
+Around it:
+- **The Chat notification banner goes.** The nav badge, Home's Needs-you tile and the Feed header all count the same `/api/feed` total, so they can't disagree.
+- **Todos lane** becomes the full item list, filtered by assignee (mine · agents · all) and status.
+- **Todo Review stops opening a new chat every day** (45 of the last 100 notifications). Open items assigned to you go into the Daily Brief as a reminder block (the delayed-prompt plan's Phase 4), and the Feed is where they live.
+
+### 9.4 Models wherever an agent works
+
+**Backend**
+- **A step's `model`.** `ChainStep` gains `model`:
+  - It is resolved the way a profile's `model_preference` already is (`resolve_agent_model`), into `SELECTED_LLM`, and the routing policy still admits it.
+  - A refused or unknown model shows on the job, never silently falls back.
+  - `provider_hint` is derived from the model (local → `ollama`), so the two can't contradict. The semaphore match uses provider names that exist.
+  - Schedule upsert validation rejects an unknown model and a contradicting hint (the Zero Trust case).
+- **`run_agent` gains an explicit `model` override**, also admitted by policy.
+
+**Frontend**
+- **`<ModelPicker>`:**
+  - built from `/api/models` and the provider registry;
+  - grouped by provider, with billing, data-policy and cooling-down badges;
+  - warns when private work would be refused there;
+  - has an "agent default (X)" choice.
+  - It is used in the step editor, the agent editor, the chat header and every assist.
+- **`<AgentAssist>`:** one widget for asking an agent to help.
+  - It holds a prompt, an agent (each widget's natural default), a model (the agent's own by default) and a run button.
+  - The run shows the tool trace the way the chat dock does, then puts the result into the form.
+  - **Uses:** the schedule AI-assist (replacing the inline one), the todo form ("draft the prompt", "break this down"), and the agents editor ("draft a profile").
+  - The lint rules in today's assist prompt are deleted from the frontend; `schedule-author` is their one home.
+
+### 9.5 Schedules by topic and kind
+
+- **Declared:**
+  - `topic:` (a `topics/*.yaml` name, or none) and `kind:` (`monitor` · `brief` · `learning` · `maintenance` · `dataset`), set in `schedules/*.yaml`, on the ScheduledTask node, and in the HBI form;
+  - the seeder validates `topic` against the declared topics;
+  - starting values for all 28 are drafted for the user to review, as with topics in 4b.
+- **Computed:**
+  - the 30-day topic mix of the notes a schedule's runs produced, from the lineage `clients/work.rs` already reconstructs (schedule → task → jobs → notes);
+  - shown next to the declared topic, with a mismatch flagged and a suggestion where none is declared (the same declared-vs-computed pattern as the architecture view).
+- **List and timeline:**
+  - group by topic, kind or none (remembered);
+  - collapsible groups with on/off counts;
+  - "no topic" is a group of its own, never hidden.
+
+### 9.6 Claims that stand alone
+
+**Display, for every existing claim (Phase 8):**
+- the claim drawer shows **Asserted in**: the source note's title, URL ↗ and date;
+- the 25 without an edge say "no source recorded".
+
+**Provenance:** claims are LLM-extracted, so they are `synthesis_inference`, not `user_input`. Fix `store_claim`, and correct the existing 4,510.
+
+**Extraction:**
+- The model returns `about: [names]` with each claim.
+- **Checked mechanically:** at least one `about` name must appear in the claim text.
+  - A miss gets one repair call with the source.
+  - A second miss drops the claim, counted in the tool result.
+- `source_url` and `source_title` are stored on the claim itself, so a reader that gets it through search sees where it came from without a traversal.
+- The claim's topic is classified from the claim plus its source title.
+
+**Rewrite all 4,510 (decided):**
+- **Calls:** one cloud call per source note (1,054 sources, ~3.8k characters on average), rewriting all its claims with the source text.
+- **Guards:**
+  - id, status, `asserted_by` and evidence edges (635 corroborated, 29 contradicted) are kept;
+  - the old text is kept in `content_v1`;
+  - every number and proper noun in the old text must survive into the new, checked mechanically, or that claim keeps its old text;
+  - each rewritten claim is re-embedded and its topic re-classified;
+  - a snapshot is taken first.
+- **When the source can't resolve it:** a video claim's source is the video's summary, not its transcript. If the summary can't resolve a referent, the claim keeps its text and is marked `ambiguous: true`, a visible count, rather than the model inventing a referent.
+- **Order:** a dry run on 50 claims for the user to review, then the full run. `eval-retrieval` must be no worse.
+
+### 9.7 Nav sidebar
+
+The sidebar collapses to an icon rail (~52 px):
+- labels move into tooltips;
+- the badge stays;
+- the choice is remembered per browser.
+
+### 9.8 Phases
+
+| Phase | Scope | Done when |
+|---|---|---|
+| **8. Honest fixes** | §9.7 nav collapse; claim **Asserted in** in the drawer; claim provenance (new and existing); the Provider dropdown relabelled to what it does ("local" / "cloud: the current chat model"), and the step help text stops listing `model` until it exists. | The Paragon claim's drawer links the Citizen Lab article; no control in the HBI claims to choose something it doesn't. |
+| **9. Claims stand alone** | §9.6 extraction (`about` check, source fields, topic from claim + source); dry run on 50 → user review → rewrite all. | Every claim is self-contained, marked `ambiguous`, or was dropped with a count; `eval-retrieval` no worse; the Paragon claim names the software and links its article. |
+| **10. Models everywhere** | §9.4: step `model`, `run_agent` `model`, validation, `<ModelPicker>`, `<AgentAssist>` in the schedule form, todo form and agents editor. | A step pinned to model X shows X in the `model_usage` ledger; a refusal is visible on the job; the Zero Trust schedule's model either runs or is rejected at upsert. |
+| **11. Schedules by topic** | §9.5: `topic` / `kind` fields and seeds (user reviews), the computed mix, grouping in the list and timeline. | Every schedule is in a group or in "no topic"; a declared-vs-computed mismatch is shown. |
+| **12. Items + Feed** | §9.2 fields + `manage_todo` (delayed-prompt Phase 1); `notify_user needs: action`; proposal items; `/api/feed`; Feed replaces Inbox; banner gone; Todos lane filters. | Everything that wants the user is in one list, and the badge, the Home tile and the Feed count the same thing. |
+| **13. Agent work** | Assign (roster-validated), `side_effects` (delayed-prompt Phase 2), `dispatch_due_todos` (Phase 3: auto for read-only agents, `awaiting_approval` otherwise), thread + review / send back, "make it a schedule", Brief reminders (Phase 4). | "Research Sodium batteries" assigned to `researcher` runs, its result lands in the item's thread awaiting review, and "make it a schedule" produces a disabled draft. |
+
+**Order rationale:**
+- **8** is cheap and removes things that mislead today.
+- **9 comes early** because extraction runs every day, so each day of delay adds claims to rewrite.
+- **10 comes before 13** because assigning work needs the model picker and `<AgentAssist>`.
+- **12 comes before 13** because dispatch writes its results into items.
+
+### 9.9 Open decisions
+
+1. **Does every agent result wait for review** (`awaiting_review`), including read-only agents'? *Recommend yes for v1.* Approving is one click, and the first runs are what show whether auto-close can be trusted.
+2. **Proposals as items?** *Recommend yes.* Reviewing a code change is work for the user.
+3. **Replace the daily Todo Review chat** with a reminder block in the Daily Brief? *Recommend yes.*
+4. **Video claims the summary can't resolve:** mark `ambiguous` rather than rewrite? *Recommend yes.* Re-fetching 3,949 claims' transcripts is a separate cost decision.
+5. **Who may assign items to agents?** *Recommend the user only, for v1.* The brain already creates Tasks for itself.

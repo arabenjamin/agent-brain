@@ -1,6 +1,6 @@
 # Todos as Delayed Prompts
 
-**Status: design only, nothing implemented.** Written 2026-09-11.
+**Status: design only, nothing implemented.** Written 2026-09-11. Sequenced 2026-10-08 as Phases 12–13 of `HBI_REDESIGN_PLAN.md` §9, which adds the item record's `origin`, thread and review states and the Feed; the design and guardrails here still hold.
 
 Turn `:Todo` from a passive list into a *delayed prompt*: a goal that carries who
 should do it and when, dispatches itself to an agent when it comes due, and
