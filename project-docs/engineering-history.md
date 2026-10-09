@@ -789,6 +789,19 @@ The done-check was the ledger itself: a step pinned to `gpt-oss:20b-cloud`, whic
 
 **`[(s:ScheduledTask {topic: t.name}) | s.name]` is a syntax error in Neo4j 5**, and so is the `WHERE` form: pattern comprehension needs a relationship. Shipped untested, it took `/api/topics` (Home's Domains tile, the map) down until it was replaced with `COLLECT { MATCH … RETURN … }`, tried in cypher-shell first.
 
+### One list of what wants the user (2026-10-09)
+
+**Three counts of the same thing.** Before the Feed, "what needs me" was counted three ways that could disagree:
+- the nav badge counted unread notifications (on Chat);
+- Home's Needs-you tile counted notifications, overdue todos and proposals;
+- the Inbox counted proposals, merges, overdue todos, failed tasks and dead jobs.
+
+The daily Todo Review chat alone was 45 of the last 100 notifications, and the user's own todos weren't in the badge at all. Now there is one endpoint, and its `total` (the row count) is the only number shown. The rule: if two views count "what wants the user", they read the same endpoint.
+
+**Overdue is a date, not an instant.** The first Feed compared `due_at < now`. A due date is stored as 00:00 UTC on that day, so anywhere west of UTC a todo due today read as overdue from the evening before. That's the bug the HBI's `isTodoOverdue` was fixed for long ago, reintroduced on the server. Both sides now compare the date with today's local date (`clock::today`).
+
+**An empty type check passes everything.** `tsc --noEmit -p .` in `hbi-frontend` checks no files, because `tsconfig.json` is `files: []` plus project references. A component given a prop it doesn't take passed it, and failed `-p tsconfig.app.json`. `npm run build` runs `tsc -b`, so shipped builds were checked; the quick check was not.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

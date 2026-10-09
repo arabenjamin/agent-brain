@@ -24,6 +24,7 @@ pub mod sleep;
 pub mod task;
 #[cfg(test)]
 pub mod test_helpers;
+pub mod todo;
 pub mod working_memory;
 #[cfg(feature = "websocket")]
 pub mod ws;

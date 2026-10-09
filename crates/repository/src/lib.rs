@@ -18,7 +18,7 @@ pub use error::{RepositoryError, Result};
 pub use media::{MediaRecord, MediaSourceRecord};
 pub use scheduled_task::YamlSyncOutcome;
 pub use temporal::node_ts;
-pub use todo::Todo;
+pub use todo::{TODO_ORIGINS, TODO_STATUSES, Todo, TodoItemPatch};
 
 #[cfg(feature = "telemetry")]
 pub use datasets::{DatasetStore, ReliefwebRow};

@@ -1,8 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import "./styles/main.css";
 import "./styles/ui.css";
-import type { AgentNotification } from "./api/notifications";
-import { fetchUnreadNotifications, markNotificationRead } from "./api/notifications";
+import { refreshFeed, useFeed } from "./api/feed";
 import { getMcpClient, onNotification } from "./api/mcp";
 import { invalidateOnJobPush } from "./api/queries";
 import { currentRoute, navigate, useRoute } from "./router";
@@ -12,7 +11,7 @@ import EntityDrawer from "./components/drawer/EntityDrawer";
 import { Tabs } from "./components/ui";
 
 const HomePanel          = lazy(() => import("./components/home/HomePanel"));
-const InboxLane          = lazy(() => import("./components/work/InboxLane"));
+const FeedLane           = lazy(() => import("./components/work/FeedLane"));
 const ActiveLane         = lazy(() => import("./components/work/ActiveLane"));
 const ScheduledLane      = lazy(() => import("./components/work/ScheduledLane"));
 const TodosLane          = lazy(() => import("./components/work/TodosLane"));
@@ -89,59 +88,24 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Single source of truth for agent notifications: the nav badge counts this
-  // list and ChatPanel renders it, so the badge can never advertise a message
-  // the chat panel does not display.
-  const [notifications, setNotifications] = useState<AgentNotification[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Ids dismissed locally but whose POST /read may not have landed yet — the
-  // poll must not resurrect them.
-  const dismissedRef = useRef<Set<string>>(new Set());
+  // What wants the user is one list, the Feed (`/api/feed`). The nav badge,
+  // Home's Needs-you tile and the Feed header all show its `total`, so they
+  // cannot disagree. The chat banner that used to show notifications is gone:
+  // a notification is a Feed row, and opening it opens its conversation.
+  const feed = useFeed();
+  const feedTotal = feed.data?.total ?? 0;
 
-  const refreshNotifications = useCallback(async () => {
-    try {
-      const items = await fetchUnreadNotifications();
-      setNotifications(items.filter((n) => !dismissedRef.current.has(n.id)));
-    } catch {
-      // brain not reachable — keep whatever we last saw
-    }
-  }, []);
-
-  // Push: the brain broadcasts `notifications/agent_chat` to every MCP session
-  // when a chain calls `notify_user`. Subscribing makes delivery instant.
-  // `getMcpClient()` is what actually opens the stream — `onNotification` only
-  // registers a handler, and nothing else here would connect the client.
+  // Push: the brain broadcasts `notifications/agent_chat` when a chain calls
+  // `notify_user`, so the Feed refreshes at once rather than on its next poll.
+  // `getMcpClient()` is what actually opens the stream.
   useEffect(() => {
     const unsub = onNotification((n) => {
-      if (n.method === "notifications/agent_chat") refreshNotifications();
+      if (n.method === "notifications/agent_chat") refreshFeed();
     });
     getMcpClient().catch(() => {
-      // brain unreachable — the poll below still covers us
+      // brain unreachable — the Feed's poll still covers us
     });
     return unsub;
-  }, [refreshNotifications]);
-
-  // Poll every 30 s as the fallback. The push stream does not reconnect on its
-  // own, so this is what keeps notifications arriving after it drops — and it
-  // is the only path when the client failed to connect at all.
-  useEffect(() => {
-    refreshNotifications();
-    pollRef.current = setInterval(refreshNotifications, 30_000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [refreshNotifications]);
-
-  const dismissNotification = useCallback(async (id: string) => {
-    dismissedRef.current.add(id);
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
-    try {
-      await markNotificationRead(id);
-    } catch {
-      // ignore — it stays unread server-side and returns on a later poll
-    } finally {
-      dismissedRef.current.delete(id);
-    }
   }, []);
 
   // One subscription keeps every shared status query fresh on job pushes.
@@ -177,8 +141,8 @@ export default function App() {
           >
             <span className="icon">{w.icon}</span>
             <span className="sidebar-label">{w.label}</span>
-            {w.id === "chat" && notifications.length > 0 && (
-              <span className="notif-badge">{notifications.length}</span>
+            {w.id === "work" && feedTotal > 0 && (
+              <span className="notif-badge" title={`${feedTotal} in the Feed`}>{feedTotal}</span>
             )}
           </button>
         ))}
@@ -201,18 +165,14 @@ export default function App() {
           ? { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }
           : { display: "none" }}>
           <Suspense fallback={<Fallback />}>
-            <ChatPanel
-              notifications={notifications}
-              onDismissNotification={dismissNotification}
-              visible={ws === "chat"}
-            />
+            <ChatPanel visible={ws === "chat"} session={ws === "chat" ? p.session : undefined} />
           </Suspense>
         </div>
         <Suspense fallback={<Fallback />}>
-          {ws === "home" && <HomePanel notifications={notifications} />}
+          {ws === "home" && <HomePanel />}
           {ws === "work" && workspace && (
             <WorkspaceFrame workspace={workspace} view={view}>
-              {view === "inbox"     && <InboxLane openId={openId} />}
+              {view === "feed"      && <FeedLane openId={openId} mode={p.mode} />}
               {view === "active"    && <ActiveLane openId={openId} />}
               {view === "scheduled" && <ScheduledLane mode={p.mode} openId={openId} />}
               {view === "todos"     && <TodosLane openId={openId} />}

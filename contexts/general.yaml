@@ -4,6 +4,7 @@ tools:
 - create_task
 - list_tasks
 - update_task
+- manage_todo
 - decompose_goal
 - record_outcome
 - reflect_on_work

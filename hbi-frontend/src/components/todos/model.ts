@@ -7,13 +7,40 @@ export interface Todo {
   id: string;
   title: string;
   description?: string | null;
-  status: "pending" | "in_progress" | "done";
+  status: "pending" | "in_progress" | "awaiting_approval" | "awaiting_review" | "done";
   priority: 0 | 1 | 2 | 3;
   tags: string[];
   due_at?: string | null;
   created_at: string;
   updated_at: string;
+  /** `user`, `agent:<profile>`, `agent:auto`; absent = the user's own. */
+  assignee?: string | null;
+  /** Who asked: the user, a schedule, a code proposal, or the brain (`notify_user` needing action). */
+  origin?: { kind: "user" | "schedule" | "proposal" | "agent" | string; ref?: string | null } | null;
+  prompt?: string | null;
+  /** The item's chat thread. */
+  session_id?: string | null;
+  snoozed_until?: string | null;
+  dispatch_count?: number;
+  result_note_id?: string | null;
+  /** Open and the user's to act on now. */
+  for_user?: boolean;
 }
+
+/** Who an item is for, in words. */
+export function assigneeLabel(a?: string | null): string {
+  if (!a || a === "user") return "you";
+  if (a === "agent:auto") return "an agent (auto)";
+  return a.startsWith("agent:") ? a.slice(6) : a;
+}
+
+/** Where an item came from, in words. */
+export const ORIGIN_LABELS: Record<string, string> = {
+  user: "you",
+  agent: "the brain asked",
+  proposal: "code proposal",
+  schedule: "a schedule",
+};
 
 export type SortBy = "priority" | "due" | "created" | "updated";
 
@@ -26,7 +53,13 @@ export const SORT_LABELS: Record<SortBy, string> = {
 
 export const PRIORITY_LABELS: Record<number, string> = { 0: "Urgent", 1: "High", 2: "Normal", 3: "Low" };
 
-export const STATUS_LABELS: Record<string, string> = { pending: "Pending", in_progress: "In progress", done: "Done" };
+export const STATUS_LABELS: Record<string, string> = {
+  pending: "Pending",
+  in_progress: "In progress",
+  awaiting_approval: "Awaiting approval",
+  awaiting_review: "Awaiting review",
+  done: "Done",
+};
 
 export function todosUrl(path = ""): string {
   return `/todos${path}`;

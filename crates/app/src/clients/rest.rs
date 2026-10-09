@@ -322,6 +322,32 @@ pub(crate) fn where_clause(conds: &[&str]) -> String {
 // Todo handlers
 // ============================================================================
 
+/// The spawnable roster, for checking an item's assignee.
+async fn item_roster(state: &RestState) -> Vec<String> {
+    let cb = match state.context_builder.as_ref() {
+        Some(slot) => slot.read().await.clone(),
+        None => None,
+    };
+    crate::services::items::roster(cb.as_deref()).await
+}
+
+/// Check a todo body's status and item fields. REST is the user's path, so
+/// it may assign an agent.
+async fn check_todo_body(
+    state: &RestState,
+    body: &Value,
+) -> Result<crate::repository::TodoItemPatch, String> {
+    let patch = crate::services::items::patch_from_json(body);
+    let roster = item_roster(state).await;
+    crate::services::items::validate(
+        body.get("status").and_then(Value::as_str),
+        &patch,
+        &roster,
+        false,
+    )?;
+    Ok(patch)
+}
+
 /// GET /todos[?status=pending|in_progress|done]
 pub async fn handle_list_todos(
     Extension(state): Extension<Arc<RestState>>,
@@ -333,7 +359,13 @@ pub async fn handle_list_todos(
 
     let status_filter = params.get("status").map(String::as_str);
     match neo4j.list_todos(status_filter).await {
-        Ok(todos) => Json(serde_json::json!({"todos": todos})).into_response(),
+        Ok(todos) => {
+            let items: Vec<Value> = todos
+                .iter()
+                .map(crate::services::items::item_json)
+                .collect();
+            Json(serde_json::json!({"todos": items})).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -355,6 +387,14 @@ pub async fn handle_create_todo(
             .into_response();
     };
     let title = title.to_string();
+    let mut patch = match check_todo_body(&state, &body).await {
+        Ok(p) => p,
+        Err(e) => return bad_request(format!("Item rejected — nothing was saved: {e}")),
+    };
+    // An item the HBI creates is the user's unless it says otherwise.
+    if patch.origin_kind.is_none() {
+        patch.origin_kind = Some(Some("user".to_string()));
+    }
 
     let description = body
         .get("description")
@@ -385,11 +425,15 @@ pub async fn handle_create_todo(
         )
         .await
     {
-        Ok(todo) => (
-            StatusCode::CREATED,
-            Json(serde_json::to_value(todo).unwrap_or_default()),
-        )
-            .into_response(),
+        Ok(todo) => match neo4j.patch_todo_item(&todo.id, &patch).await {
+            Ok(Some(todo)) => (
+                StatusCode::CREATED,
+                Json(crate::services::items::item_json(&todo)),
+            )
+                .into_response(),
+            Ok(None) => not_found(),
+            Err(e) => internal(format!("created, but its item fields were not saved: {e}")),
+        },
         Err(e) => internal(e),
     }
 }
@@ -404,7 +448,7 @@ pub async fn handle_get_todo(
     };
 
     match neo4j.get_todo(&id).await {
-        Ok(Some(todo)) => Json(serde_json::to_value(todo).unwrap_or_default()).into_response(),
+        Ok(Some(todo)) => Json(crate::services::items::item_json(&todo)).into_response(),
         Ok(None) => not_found(),
         Err(e) => internal(e),
     }
@@ -420,6 +464,10 @@ pub async fn handle_update_todo(
         return unavailable("Todo storage not available");
     };
 
+    let patch = match check_todo_body(&state, &body).await {
+        Ok(p) => p,
+        Err(e) => return bad_request(format!("Item rejected — nothing was saved: {e}")),
+    };
     let title = body
         .get("title")
         .and_then(|v| v.as_str())
@@ -489,7 +537,11 @@ pub async fn handle_update_todo(
         )
         .await
     {
-        Ok(Some(todo)) => Json(serde_json::to_value(todo).unwrap_or_default()).into_response(),
+        Ok(Some(_)) => match neo4j.patch_todo_item(&id, &patch).await {
+            Ok(Some(todo)) => Json(crate::services::items::item_json(&todo)).into_response(),
+            Ok(None) => not_found(),
+            Err(e) => internal(format!("saved, but its item fields were not: {e}")),
+        },
         Ok(None) => not_found(),
         Err(e) => internal(e),
     }

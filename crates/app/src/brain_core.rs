@@ -769,6 +769,13 @@ impl BrainCore {
         if let Some(cb) = &context_builder_arc {
             skills.push(Arc::new(ContextSkill::new(Arc::clone(cb))));
         }
+        // The user's items (todos), readable and writable by the brain.
+        if let Some(neo4j) = &self.storage.neo4j {
+            skills.push(Arc::new(crate::skills::todo::TodoSkill::new(
+                neo4j.clone(),
+                context_builder_arc.clone(),
+            )));
+        }
         // Agent Constructor (needs the self-model in Neo4j + queue for dispatch).
         if let Some(neo4j) = &self.storage.neo4j {
             skills.push(Arc::new(ConstructorSkill::new(
@@ -1188,6 +1195,18 @@ impl BrainCore {
                     "Failed to read schedules directory. Refusing to start."
                 );
                 std::process::exit(1);
+            }
+        }
+
+        // Every pending code proposal is an item for the user (once).
+        if let Some(dir) = std::env::var("PROPOSALS_DIR")
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+            .map(PathBuf::from)
+        {
+            let n = crate::skills::codebase::backfill_proposal_items(neo4j, &dir).await;
+            if n > 0 {
+                info!(created = n, "Created review items for pending proposals");
             }
         }
     }

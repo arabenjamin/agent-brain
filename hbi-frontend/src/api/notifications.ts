@@ -1,13 +1,9 @@
 /**
- * Agent notifications (`notify_user`).
- *
- * The brain writes an `:AgentNotification` node whenever a chain — usually a
- * scheduled task — ends in `notify_user`. The nav badge and the in-chat banner
- * are two views of that same list, so both read it through here: when they
- * fetched independently they could (and did) disagree, leaving a badge that
- * announced messages the chat panel never showed.
+ * Agent notifications (`notify_user`). The brain writes an
+ * `:AgentNotification` whenever a chain ends in `notify_user`. They are shown
+ * as Feed rows (`api/feed.ts`): a read, or, with `needs: "action"`, the item
+ * it created. Marking one read is in `api/feed.ts` (`markRead`).
  */
-import { apiJson, apiRequest } from "./client";
 
 export interface AgentNotification {
   id: string;
@@ -18,13 +14,7 @@ export interface AgentNotification {
   related_session_id: string;
   created_at: string;
   read: boolean;
-}
-
-export async function fetchUnreadNotifications(): Promise<AgentNotification[]> {
-  const data = await apiJson<{ notifications?: AgentNotification[] }>("/api/notifications?unread=true");
-  return data.notifications ?? [];
-}
-
-export async function markNotificationRead(id: string): Promise<void> {
-  await apiRequest(`/api/notifications/${id}/read`, { method: "POST" });
+  /** It asked for something; its item is the Feed row. */
+  needs_action?: boolean;
+  item_id?: string | null;
 }

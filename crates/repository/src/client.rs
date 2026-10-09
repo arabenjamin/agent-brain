@@ -192,6 +192,18 @@ impl Neo4jClient {
                     "read".into(),
                     serde_json::Value::Bool(node.get::<bool>("read").unwrap_or(false)),
                 );
+                obj.insert(
+                    "needs_action".into(),
+                    serde_json::Value::Bool(node.get::<bool>("needs_action").unwrap_or(false)),
+                );
+                obj.insert(
+                    "item_id".into(),
+                    node.get::<String>("item_id")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null),
+                );
                 out.push(serde_json::Value::Object(obj));
             }
         }

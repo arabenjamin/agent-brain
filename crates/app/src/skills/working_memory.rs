@@ -106,6 +106,11 @@ impl WorkingMemorySkill {
                     "related_session_id": {
                         "type": "string",
                         "description": "Optional session ID to resume an existing conversation"
+                    },
+                    "needs": {
+                        "type": "string",
+                        "enum": ["action"],
+                        "description": "Set \"action\" when the user must do or decide something (an API needs a key, apply to this job?). It also creates an item for the user in their Feed, with this conversation as its thread. Leave it out for something to read (a brief, a report)."
                     }
                 },
                 "required": ["message"]
@@ -152,6 +157,17 @@ impl WorkingMemorySkill {
             return ToolCallResult::error("notify_user is not available: no database configured");
         };
 
+        if let Some(other) = input
+            .needs
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && *n != "action")
+        {
+            return ToolCallResult::error(format!(
+                "needs must be \"action\" or left out, not '{other}'; nothing was sent"
+            ));
+        }
+
         let notification_id = Uuid::new_v4().to_string();
         let created_at = Utc::now().to_rfc3339();
 
@@ -174,6 +190,49 @@ impl WorkingMemorySkill {
             return ToolCallResult::error(format!("Failed to create notification: {e}"));
         }
 
+        // An ask, not a read: it becomes an item the user acts on, linked back
+        // to this notification and threaded in its conversation.
+        let needs_action = input.needs.as_deref().map(str::trim) == Some("action");
+        let mut item_id: Option<String> = None;
+        if needs_action {
+            let title = input
+                .context
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| crate::services::items::title_from(&input.message));
+            let item = crate::services::items::NewItem {
+                title,
+                description: Some(input.message.clone()),
+                patch: crate::repository::TodoItemPatch {
+                    assignee: Some(Some("user".into())),
+                    origin_kind: Some(Some("agent".into())),
+                    origin_ref: Some(Some(notification_id.clone())),
+                    session_id: Some(input.related_session_id.clone()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            match crate::services::items::create_item(neo4j, item).await {
+                Ok((t, _)) => item_id = Some(t.id),
+                Err(e) => {
+                    return ToolCallResult::error(format!(
+                        "The notification was sent, but its item was not created: {e}"
+                    ));
+                }
+            }
+            let _ = neo4j
+                .run(
+                    neo4rs::query(
+                        "MATCH (n:AgentNotification {id: $id}) SET n.needs_action = true, n.item_id = $item",
+                    )
+                    .param("id", notification_id.as_str())
+                    .param("item", item_id.clone().unwrap_or_default()),
+                )
+                .await;
+        }
+
         if let Some(ref tx) = self.event_tx {
             let _ = tx.send(BrainEvent::AgentChatInitiated {
                 notification_id: notification_id.clone(),
@@ -187,7 +246,8 @@ impl WorkingMemorySkill {
         ToolCallResult::success_json(json!({
             "notification_id": notification_id,
             "answer": input.message,
-            "status": "delivered"
+            "status": "delivered",
+            "item_id": item_id,
         }))
     }
 
@@ -342,6 +402,8 @@ struct NotifyUserInput {
     context: Option<String>,
     #[serde(default)]
     related_session_id: Option<String>,
+    #[serde(default)]
+    needs: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -10,7 +10,8 @@ import { deleteTodo, invalidateWork, setTodoStatus, todoToTask, useTodoDetail } 
 import { formatLocal } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
 import TodoForm from "../todos/TodoForm";
-import { PRIORITY_LABELS, isTodoOverdue, type Todo } from "../todos/model";
+import { ORIGIN_LABELS, PRIORITY_LABELS, STATUS_LABELS, assigneeLabel, isTodoOverdue, type Todo } from "../todos/model";
+import { ensureThread, openSession } from "../../api/feed";
 import { Drawer, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section, StatusPill } from "./parts";
@@ -87,6 +88,30 @@ export default function TodoView({ id }: { id: string }) {
             {t.tags.map((tag) => <Pill key={tag}>{tag}</Pill>)}
           </div>
           {result && <div className={result.ok ? "tone-text-green" : "tone-text-red"}>{result.text}</div>}
+
+          <Section title="Item">
+            <div className="dw-grid">
+              <span>For</span><span>{assigneeLabel(t.assignee)}</span>
+              <span>Status</span><span>{STATUS_LABELS[t.status] ?? t.status}</span>
+              <span>From</span>
+              <span>
+                {!t.origin || t.origin.kind === "user" ? "you"
+                  : t.origin.kind === "proposal" && t.origin.ref
+                    ? <EntityLink kind="proposal" id={t.origin.ref}>{ORIGIN_LABELS.proposal}: {t.origin.ref}</EntityLink>
+                    : <>{ORIGIN_LABELS[t.origin.kind] ?? t.origin.kind}{t.origin.ref && <span className="dw-dim"> · {t.origin.ref.slice(0, 8)}</span>}</>}
+              </span>
+              <span>Thread</span>
+              <span>
+                <button type="button" className="wk-link" disabled={!!busy}
+                  onClick={() => act("Open the thread", async () => openSession(await ensureThread(t)))}>
+                  {t.session_id ? "open the conversation" : "start a conversation about it"}
+                </button>
+              </span>
+              {t.snoozed_until && Date.parse(t.snoozed_until) > now && (
+                <><span>Snoozed</span><span>until {formatLocal(t.snoozed_until)}</span></>
+              )}
+            </div>
+          </Section>
 
           <Section title="Description">
             {t.description

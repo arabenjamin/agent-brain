@@ -732,3 +732,10 @@ button.wk-group-head:hover { color: var(--text-dim); }
   .chat-header-end { margin-left: 0; }
   .chat-agent select { max-width: 180px; }
 }
+
+/* Feed (HBI Phase 12): an item row carries its actions; a read can open in place. */
+.wk-feed-item, .wk-feed-read { cursor: default; flex-wrap: wrap; }
+.wk-feed-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.wk-feed-actions .btn, .wk-feed-actions .btn-ghost { font-size: 11px; padding: 2px 8px; }
+.wk-feed-message { white-space: pre-wrap; color: var(--text-dim); margin-top: 6px; font-size: 12px; }
+.wk-feed-digest { text-decoration: none; }

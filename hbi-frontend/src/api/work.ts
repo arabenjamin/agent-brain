@@ -3,6 +3,7 @@
  * and the actions (`clients/work.rs`, `/todos`, `/scheduled-tasks`,
  * `manage_job`). Every mutation invalidates the keys it changes.
  */
+import type { Todo } from "../components/todos/model";
 import type { TopicMix } from "../lib/scheduleGroups";
 import { useQuery } from "@tanstack/react-query";
 import { apiJson, apiSend, query } from "./client";
@@ -165,17 +166,7 @@ export interface ScheduleDetail {
 }
 
 export interface TodoDetail {
-  todo: {
-    id: string;
-    title: string;
-    description?: string | null;
-    status: "pending" | "in_progress" | "done";
-    priority: 0 | 1 | 2 | 3;
-    tags: string[];
-    due_at?: string | null;
-    created_at: string;
-    updated_at: string;
-  };
+  todo: Todo;
   tasks: TaskRef[];
 }
 

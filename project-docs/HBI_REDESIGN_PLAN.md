@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phase 11 done 2026-10-09 (declared topic/kind, a traced 30-day topic mix, grouped lists; starting values await the user's review); Phases 12–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phase 11 done 2026-10-09 (declared topic/kind, a traced 30-day topic mix, grouped lists; starting values await the user's review); Phase 12 done 2026-10-09 (one item record, manage_todo, the Feed with one total behind the badge, Home and its header); Phase 13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -777,3 +777,35 @@ Built and deployed:
 **Waiting on the user:** review the 28 starting values, above all the Trump monitor (us-politics or geopolitics?) and whether to take the four suggestions.
 
 **Not built:** schedules whose steps write no fixed `source_context` (media watch, claim verification, deep dive, …) show "too few" until runs stamped from now on accumulate.
+
+### Phase 12 outcome (2026-10-09)
+
+Built and deployed:
+- **`:Todo` is the one item record:**
+  - the §9.2 fields: `assignee`, `origin_kind`/`origin_ref`, `prompt`, `session_id`, the two `awaiting_*` statuses, `snoozed_until`, and dispatch bookkeeping;
+  - the rules every writer shares, in `services/items.rs`: checked statuses and origins, an assignee checked against the live spawnable roster, only the user assigns an agent, and one item per origin.
+- **`manage_todo`** (delayed-prompt Phase 1): list, get, upsert and complete, on the front door and `general`.
+- **`notify_user` with `needs: "action"`** creates an item for the user, threaded in the notification's session.
+- **Code proposals are items:** the writer creates one, dismissing closes it, and a startup backfill covers existing files (none exist today).
+- **`GET /api/feed`** (~0.14 s): items for the user, reads, and four digest cards. `total` is the row count.
+- **HBI:**
+  - Work → **Feed** replaces the Inbox (old links redirect), with done, snooze (tomorrow 09:00, a week), reply (opens or starts the item's thread) and "Open proposal" on each item;
+  - reads open their conversation and are marked read; digest cards drill to their rows (the merges card opens the merge list, now under the Feed);
+  - **the nav badge moved to Work and shows the Feed total, as do Home's Needs-you tile and the Feed header**;
+  - the chat notification banner, and the side thread drawer only it opened, are gone; `#/chat?session=<id>` opens any conversation, and a new item thread starts with the item's title;
+  - the Todos lane filters by Mine · Agents' · All and by status (with "Awaiting you"); the item drawer shows who it is for, where it came from and its thread.
+
+**Found while building:**
+- **Overdue as an instant vs a date:** the first feed compared `due_at < now`. A due date is a calendar date stored at 00:00 UTC, so a todo due today was overdue all day west of UTC. That's the bug the HBI's `isTodoOverdue` had already been fixed for; it now compares dates on both sides.
+- **`tsc --noEmit -p .` checks nothing in this frontend:** `tsconfig.json` is `files: []` plus references. The type check is `-p tsconfig.app.json`, and `npm run build` runs `tsc -b`, so builds were always checked. A wrong `Card` prop passed the empty check and failed the real one.
+
+**Verified live:**
+- **The done-condition:** the Feed showed 12 rows (8 of the user's open todos; 148 entity merges, 7 failed tasks, 8 dead jobs, 1 broken schedule). The badge, the Home tile and the Feed header all read 13 after a `needs: "action"` notification and 12 again after Done on it.
+- `manage_todo` listed the 8 items, refused `agent:researchr` naming the real roster, and refused an unknown status.
+- `notify_user needs: "maybe"` was refused before anything was sent.
+- Reply opened `#/chat?session=todo-<id>`; the old `#/work?view=inbox` landed on the Feed.
+- The throwaway item and its notification were removed.
+
+**Tests:** 864 Rust lib tests (8 new) and 95 vitest (the shell test updated for the Feed).
+
+**Not built (Phase 13):** hand to an agent, approve and send back, dispatch, "make it a schedule", and the Daily Brief reminder block that replaces the daily Todo Review chat.

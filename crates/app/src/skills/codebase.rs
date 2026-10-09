@@ -1156,17 +1156,7 @@ impl CodebaseSkill {
                 let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
 
                 // Parse metadata from the markdown header.
-                let title = content
-                    .lines()
-                    .find(|l| l.starts_with("# Proposal:"))
-                    .map(|l| l.trim_start_matches("# Proposal:").trim().to_string())
-                    .unwrap_or_else(|| name.clone());
-                let severity = content
-                    .lines()
-                    .find(|l| l.contains("**Severity:**"))
-                    .and_then(|l| l.split("**Severity:**").nth(1))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
+                let (title, severity) = proposal_meta(&content, &name);
                 let task_id = content
                     .lines()
                     .find(|l| l.contains("**Task ID:**"))
@@ -1268,6 +1258,14 @@ impl CodebaseSkill {
         }
 
         info!(filename = %args.filename, reason = %args.reason, "proposal dismissed");
+        if let Some(neo4j) = &self.neo4j
+            && let Ok(Some(t)) = neo4j.find_todo_by_origin("proposal", &args.filename).await
+            && t.status != "done"
+        {
+            let _ = neo4j
+                .update_todo(&t.id, None, None, Some("done"), None, None, None)
+                .await;
+        }
         ToolCallResult::success_text(format!(
             "Proposal '{}' marked as {} and moved to applied/.",
             args.filename, args.reason
@@ -1357,8 +1355,17 @@ impl CodebaseSkill {
         }
 
         info!(file = %filename, severity = %args.severity, "write_proposal: proposal staged");
+        // Reviewing a proposal is work for the user: it is an item in their Feed.
+        let item = match &self.neo4j {
+            Some(neo4j) => match proposal_item(neo4j, &filename, &args.title, &args.severity).await
+            {
+                Ok(id) => format!("\nItem for the user's review: {id}"),
+                Err(e) => format!("\nWARNING: the review item was not created: {e}"),
+            },
+            None => String::new(),
+        };
         ToolCallResult::success_text(format!(
-            "Proposal written: {filename}\nPath: {}\nReview and apply manually when ready.",
+            "Proposal written: {filename}\nPath: {}\nReview and apply manually when ready.{item}",
             path.display()
         ))
     }
@@ -2014,6 +2021,80 @@ pub fn detect_repo_root() -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+/// A proposal's title and severity, from its markdown header.
+fn proposal_meta(content: &str, filename: &str) -> (String, String) {
+    let title = content
+        .lines()
+        .find(|l| l.starts_with("# Proposal:"))
+        .map(|l| l.trim_start_matches("# Proposal:").trim().to_string())
+        .unwrap_or_else(|| filename.to_string());
+    let severity = content
+        .lines()
+        .find(|l| l.contains("**Severity:**"))
+        .and_then(|l| l.split("**Severity:**").nth(1))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    (title, severity)
+}
+
+/// The item that asks the user to review a proposal (once per file).
+async fn proposal_item(
+    neo4j: &Neo4jClient,
+    filename: &str,
+    title: &str,
+    severity: &str,
+) -> anyhow::Result<String> {
+    let priority = match severity.to_lowercase().as_str() {
+        "critical" | "high" => 1,
+        "low" => 3,
+        _ => 2,
+    };
+    let item = crate::services::items::NewItem {
+        title: format!("Review proposal: {title}"),
+        description: Some(format!(
+            "A code proposal ({severity}) waits for review: {filename}. Apply it by hand, or dismiss it."
+        )),
+        priority: Some(priority),
+        patch: crate::repository::TodoItemPatch {
+            assignee: Some(Some("user".into())),
+            origin_kind: Some(Some("proposal".into())),
+            origin_ref: Some(Some(filename.to_string())),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    Ok(crate::services::items::create_item(neo4j, item).await?.0.id)
+}
+
+/// Give every pending proposal file an item, once (idempotent: an item is
+/// found again by its origin). Run at startup. Returns the items created.
+pub async fn backfill_proposal_items(neo4j: &Neo4jClient, dir: &std::path::Path) -> usize {
+    let Ok(mut read_dir) = tokio::fs::read_dir(dir).await else {
+        return 0;
+    };
+    let mut created = 0;
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".md") {
+            continue;
+        }
+        if matches!(
+            neo4j.find_todo_by_origin("proposal", &name).await,
+            Ok(Some(_))
+        ) {
+            continue;
+        }
+        let content = tokio::fs::read_to_string(entry.path())
+            .await
+            .unwrap_or_default();
+        let (title, severity) = proposal_meta(&content, &name);
+        if proposal_item(neo4j, &name, &title, &severity).await.is_ok() {
+            created += 1;
+        }
+    }
+    created
 }
 
 #[cfg(test)]

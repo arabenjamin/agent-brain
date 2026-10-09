@@ -143,6 +143,7 @@ export default function TodoForm({
                 <option value="pending">Pending</option>
                 <option value="in_progress">In Progress</option>
                 <option value="done">Done</option>
+                {status.startsWith("awaiting") && <option value={status}>{status === "awaiting_review" ? "Awaiting review" : "Awaiting approval"}</option>}
               </select>
             </label>
 

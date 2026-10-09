@@ -8,7 +8,7 @@ import type { SchedulerStatus } from "../api/queries";
 describe("resolveRoute", () => {
   it("shows a workspace's first view when none is given", () => {
     const r = resolveRoute({ path: "work", params: {} });
-    expect(r.kind === "show" && [r.workspace.id, r.view?.id]).toEqual(["work", "inbox"]);
+    expect(r.kind === "show" && [r.workspace.id, r.view?.id]).toEqual(["work", "feed"]);
   });
 
   it("shows the named view", () => {
@@ -42,7 +42,10 @@ describe("resolveRoute", () => {
     expect(resolveRoute({ path: "work", params: { view: "jobs", tab: "tasks", task_status: "failed" } }))
       .toEqual({ kind: "redirect", path: "work", params: { view: "history", tab: null, mode: "tasks" } });
     expect(resolveRoute({ path: "work", params: { view: "proposals" } }))
-      .toEqual({ kind: "redirect", path: "work", params: { view: "inbox", tab: null } });
+      .toEqual({ kind: "redirect", path: "work", params: { view: "feed", tab: null } });
+    // Phase 12: the Inbox became the Feed; old links land there.
+    expect(resolveRoute({ path: "work", params: { view: "inbox" } }))
+      .toEqual({ kind: "redirect", path: "work", params: { view: "feed", tab: null } });
   });
 
   it("redirects Knowledge's Phase-1 notes view to the results list", () => {
@@ -103,7 +106,7 @@ describe("palette commands", () => {
 
   it("covers every workspace view and settings section", () => {
     const ids = all.map((c) => c.id);
-    for (const id of ["go:work/scheduled", "go:work/inbox", "go:knowledge/graph", "go:system/logs", "settings:scheduler", "settings:agents", "new:todo", "new:schedule"]) {
+    for (const id of ["go:work/scheduled", "go:work/feed", "go:knowledge/graph", "go:system/logs", "settings:scheduler", "settings:agents", "new:todo", "new:schedule"]) {
       expect(ids).toContain(id);
     }
   });

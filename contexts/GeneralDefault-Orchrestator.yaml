@@ -6,6 +6,7 @@ tools:
 - list_tasks
 - update_task
 - notify_user
+- manage_todo
 - manage_scheduled_task
 - run_agent
 - select_agent

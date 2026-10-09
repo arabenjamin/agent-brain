@@ -6,16 +6,14 @@
  * classified into (HBI_REDESIGN_PLAN.md §3, `services/topics.rs`).
  */
 import type { ReactNode } from "react";
-import type { AgentNotification } from "../../api/notifications";
+import { openSession, useFeed } from "../../api/feed";
 import {
   useActivity,
   useLlmBudget,
   useModelUsage,
-  useProposals,
   useQueueStatus,
   useSchedulerStatus,
   useSchedules,
-  useTodos,
   type Breakdown,
   type ScheduledTask,
 } from "../../api/queries";
@@ -25,12 +23,11 @@ import { summariseScheduler } from "../../lib/scheduler";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
 import { hrefTo } from "../../nav";
-import { isTodoOverdue } from "../todos/model";
 import { Card, EmptyState, Pill, Stat, type Tone } from "../ui";
 
 const DEAD_JOB_STATUSES = "failed,dead,dead_letter";
 
-export default function HomePanel({ notifications }: { notifications: AgentNotification[] }) {
+export default function HomePanel() {
   return (
     <div className="panel home">
       <div className="panel-header">
@@ -39,7 +36,7 @@ export default function HomePanel({ notifications }: { notifications: AgentNotif
       </div>
       <div className="home-grid scroll">
         <BrainTile />
-        <NeedsYouTile notifications={notifications} />
+        <NeedsYouTile />
         <NextUpTile />
         <DomainsTile />
         <LastDayTile />
@@ -128,62 +125,54 @@ function BuildLine() {
 
 // ── Needs you ────────────────────────────────────────────────────────────────
 
-function NeedsYouTile({ notifications }: { notifications: AgentNotification[] }) {
-  const todos = useTodos();
-  const proposals = useProposals();
-  const now = useNow();
-
-  const open = (todos.data ?? []).filter((t) => t.status !== "done");
-  const overdue = open
-    .filter((t) => isTodoOverdue(t, now))
-    .sort((a, b) => (parseTime(a.due_at)?.getTime() ?? 0) - (parseTime(b.due_at)?.getTime() ?? 0));
-  const pendingProposals = proposals.data ?? [];
-
-  const nothing = notifications.length === 0 && overdue.length === 0 && pendingProposals.length === 0;
+/** The Feed in short: the same `total` as the nav badge and the Feed header. */
+function NeedsYouTile() {
+  const q = useFeed();
+  const f = q.data;
+  const overdue = f?.items.filter((t) => t.overdue).length ?? 0;
+  const feedHref = hrefTo("work", { view: "feed" });
 
   return (
-    <Card title="Needs you">
+    <Card title="Needs you" actions={f ? <a href={feedHref}>{f.total} in the Feed →</a> : undefined}>
       <div className="ui-stats">
-        <Stat label="Agent messages" value={notifications.length} tone={notifications.length ? "accent" : undefined}
-          href={hrefTo("chat")} />
-        <Stat label="Overdue todos" value={todos.data ? overdue.length : "…"} tone={overdue.length ? "yellow" : undefined}
-          href={hrefTo("work", { view: "inbox" })} />
-        <Stat label="Proposals" value={proposals.data ? pendingProposals.length : proposals.error ? "?" : "…"}
-          tone={pendingProposals.length ? "purple" : undefined}
-          href={hrefTo("work", { view: "inbox" })}
-          title={proposals.error ? `Couldn't list proposals: ${proposals.error.message}` : "Code proposals awaiting review"} />
+        <Stat label="Items for you" value={f ? f.items.length : "…"} tone={overdue ? "yellow" : f?.items.length ? "accent" : undefined}
+          href={feedHref} title={overdue ? `${overdue} overdue` : undefined} />
+        <Stat label="To read" value={f ? f.reads.length : "…"} tone={f?.reads.length ? "accent" : undefined} href={feedHref} />
+        <Stat label="Signals" value={f ? f.digests.length : "…"} tone={f?.digests.length ? "purple" : undefined} href={feedHref}
+          title={f?.digests.map((d) => `${d.count} ${d.title}`).join("\n")} />
       </div>
 
-      {notifications.length > 0 && (
+      {f && f.items.length > 0 && (
         <ul className="home-list">
-          {notifications.slice(0, 3).map((n) => (
+          {f.items.slice(0, 4).map((t) => (
+            <li key={t.id}>
+              <a href={hrefTo("work", { view: "feed", todo: t.id })}>{t.title}</a>
+              {t.overdue ? <span className="tone-text-yellow">overdue</span> : t.due_at ? <span className="home-dim">due {t.due_at.slice(0, 10)}</span> : null}
+            </li>
+          ))}
+          {f.items.length > 4 && <li className="home-dim">+{f.items.length - 4} more in the Feed</li>}
+        </ul>
+      )}
+
+      {f && f.reads.length > 0 && (
+        <ul className="home-list">
+          {f.reads.slice(0, 3).map((n) => (
             <li key={n.id}>
-              <a href={hrefTo("chat")}>{n.context || "Agent message"}</a>
+              {n.related_session_id
+                ? <button type="button" className="wk-link" onClick={() => openSession(n.related_session_id)}>{n.context || "Message"}</button>
+                : <a href={feedHref}>{n.context || "Message"}</a>}
               <span className="home-dim">{relTime(n.created_at)}</span>
             </li>
           ))}
-          {notifications.length > 3 && <li className="home-dim">+{notifications.length - 3} more in Chat</li>}
         </ul>
       )}
 
-      {overdue.length > 0 && (
-        <ul className="home-list">
-          {overdue.slice(0, 4).map((t) => (
-            <li key={t.id}>
-              <a href={hrefTo("work", { view: "inbox", todo: t.id })}>{t.title}</a>
-              <span className="tone-text-yellow">due {relTime(t.due_at)}</span>
-            </li>
-          ))}
-          {overdue.length > 4 && <li className="home-dim">+{overdue.length - 4} more overdue</li>}
-        </ul>
-      )}
+      {q.error && <Pending what="the feed" error={q.error} onRetry={() => q.refetch()} />}
 
-      {todos.error && <Pending what="todos" error={todos.error} onRetry={() => todos.refetch()} />}
-
-      {nothing && todos.data && proposals.data && (
+      {f && f.total === 0 && (
         <EmptyState
           title="Nothing is waiting on you"
-          checked={`0 unread agent messages · ${open.length} open todos, none overdue · 0 proposals awaiting review`}
+          checked={`0 items for you${f.snoozed ? ` (${f.snoozed} snoozed)` : ""} · 0 unread messages · no signals`}
         />
       )}
     </Card>

@@ -148,7 +148,7 @@ pulling open `assignee: "user"` todos past due and fold them into the
 
 ## Phases
 
-- [ ] **Phase 1 — `manage_todo` + schema fields.** Tool, REST passthrough, repo.
+- [x] **Phase 1 — `manage_todo` + schema fields.** *Done 2026-10-09 as HBI plan Phase 12: `manage_todo` (list/get/upsert/complete), the §9.2 fields, REST, roster-checked assignees; only the user assigns an agent. `assign`/`approve` arrive with dispatch in Phase 13.* Tool, REST passthrough, repo.
       Nothing dispatches yet, but the brain can finally see and edit its own
       todos. **Ships alone and unblocks everything else.**
 - [ ] **Phase 2 — `side_effects` on context profiles.** Derived default,

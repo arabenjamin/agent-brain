@@ -295,6 +295,37 @@ Recurring job definitions managed by `SchedulerSkill`. The scheduler dispatches 
 | `topic` | String? | The `topics/*.yaml` topic it works on; absent = spans topics. Checked against the declared topics on every write path |
 | `kind` | String? | `monitor` · `brief` · `learning` · `maintenance` · `dataset` (`SCHEDULE_KINDS`) |
 
+#### `Todo` (an item)
+
+The one record for work that wants doing, the user's or an agent's (HBI plan §9.2). REST `/todos`, the `manage_todo` tool, `notify_user` with `needs: "action"` and the proposal writer all write it through `services/items.rs`.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | String | UUID, unique |
+| `title` / `description` | String | What it asks |
+| `status` | String | `pending` · `in_progress` · `awaiting_approval` (an agent that writes, not yet started) · `awaiting_review` (an agent finished) · `done` (`TODO_STATUSES`) |
+| `priority` | Integer | 0 urgent … 3 low |
+| `tags` | String | JSON array |
+| `due_at` | DateTime? | A calendar date stored at 00:00 UTC; overdue once it is before today's *local* date |
+| `assignee` | String? | `user`, `agent:<spawnable profile>` or `agent:auto`, checked against the live roster when written; only the user assigns an agent. Absent = the user's own (every todo before 2026-10-09) |
+| `origin_kind` / `origin_ref` | String? | Who asked: `user`, `schedule`, `proposal` (ref = filename), `agent` (ref = the notification id). An item is found again by its origin, so it is never made twice |
+| `prompt` | String? | What an agent is told; falls back to title + description |
+| `session_id` | String? | Its thread, a chat session (`todo-<id>` when the HBI starts one) |
+| `snoozed_until` | DateTime? | Hidden from the Feed until then |
+| `dispatched_at` / `dispatch_count` / `result_note_id` | DateTime? / Integer / String? | Dispatch bookkeeping (Phase 13) |
+| `created_at` / `updated_at` | DateTime | Native `DATETIME`, UTC |
+
+#### `AgentNotification`
+
+What `notify_user` writes. A Feed row: a read, or, with `needs_action`, represented by its item.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id`, `message`, `context`, `related_session_id` | String | The message, a short label, the conversation to continue |
+| `read` / `read_at` | Boolean / DateTime | Opening it in the Feed marks it read |
+| `needs_action` / `item_id` | Boolean? / String? | Set by `needs: "action"`: it asked for something, and `item_id` is the item it created |
+| `created_at` | DateTime | Native `DATETIME`, UTC |
+
 #### `ApiContext`
 
 HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; auth stored as an env var name only (never the value).

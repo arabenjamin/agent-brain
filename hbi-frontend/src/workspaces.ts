@@ -36,9 +36,9 @@ export const WORKSPACES: Workspace[] = [
     id: "work",
     icon: "📋",
     label: "Work",
-    keywords: "tasks jobs queue todos scheduled schedules proposals inbox history running",
+    keywords: "feed inbox items tasks jobs queue todos scheduled schedules proposals history running",
     views: [
-      { id: "inbox", label: "Inbox" },
+      { id: "feed", label: "Feed" },
       { id: "active", label: "Active" },
       { id: "scheduled", label: "Scheduled" },
       { id: "todos", label: "Todos" },
@@ -108,7 +108,10 @@ function legacyView(path: string, params: Record<string, string>): string | null
       if (params.task_status || params.tab === "tasks") return "history";
       return "active";
     case "proposals":
-      return "inbox";
+      return "feed";
+    // Phase 12: the Inbox became the Feed.
+    case "inbox":
+      return "feed";
     default:
       return null;
   }

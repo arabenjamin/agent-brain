@@ -12,6 +12,7 @@ pub mod datasets;
 pub mod entity_resolution;
 pub mod gpu_lease;
 pub mod graph_schema;
+pub mod items;
 pub mod knowledge;
 pub mod llm;
 pub mod llm_providers;
