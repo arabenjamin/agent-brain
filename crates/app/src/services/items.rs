@@ -52,6 +52,7 @@ pub fn patch_from_json(body: &Value) -> TodoItemPatch {
         session_id: field(body, "session_id"),
         snoozed_until: field(body, "snoozed_until"),
         result_note_id: field(body, "result_note_id"),
+        model: field(body, "model"),
     }
 }
 
@@ -202,6 +203,111 @@ pub fn for_user(t: &Todo) -> bool {
     }
 }
 
+/// Link a schedule drafted from an item: `(:Todo)-[:BECAME]->(:ScheduledTask)`.
+pub async fn link_became(
+    neo4j: &Neo4jClient,
+    item_id: &str,
+    schedule_id: &str,
+) -> anyhow::Result<()> {
+    neo4j
+        .run(
+            neo4rs::query(
+                "MATCH (t:Todo {id: $item}), (s:ScheduledTask {id: $sched}) \
+                 MERGE (t)-[r:BECAME]->(s) SET r.created_at = datetime()",
+            )
+            .param("item", item_id)
+            .param("sched", schedule_id),
+        )
+        .await?;
+    Ok(())
+}
+
+/// A schedule was turned on: every open item it was drafted from is done,
+/// as "became a schedule". Returns the items closed.
+pub async fn close_items_that_became(neo4j: &Neo4jClient, schedule_id: &str) -> Vec<String> {
+    neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (t:Todo)-[:BECAME]->(s:ScheduledTask {id: $sched}) WHERE t.status <> 'done' \
+                 SET t.status = 'done', t.closed_reason = 'became a schedule', t.updated_at = datetime() \
+                 RETURN t.id AS id",
+            )
+            .param("sched", schedule_id),
+        )
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| r.get::<String>("id").ok())
+        .collect()
+}
+
+/// Tools that act outside the knowledge graph: an HTTP call that can POST, a
+/// call into another MCP server (aidevboard's `apply_to_job` submits a real
+/// application), a websocket send, a file written to disk, a new or run
+/// dynamic tool. An agent holding any of them asks before an item runs.
+pub const EXTERNAL_EFFECT_TOOLS: &[&str] = &[
+    "http_request",
+    "mcp_call",
+    "ws_connect",
+    "ws_send",
+    "write_workspace_file",
+    "write_proposal",
+    "manage_dynamic_tool",
+    "execute_procedure",
+];
+
+/// Whether an agent's item runs on its own or waits for the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SideEffects {
+    /// Writes nothing outside the graph: runs when due.
+    ReadOnly,
+    /// May act outside the graph: waits for the user's approval. The reason
+    /// names what it holds.
+    AsksFirst(String),
+}
+
+/// An agent's side effects: its profile's explicit `side_effects`, else
+/// derived from its tools. Fails safe: an unknown value, an unknown agent or
+/// `agent:auto` (who runs is not known until it runs) asks first.
+pub fn side_effects(
+    profile: Option<&crate::services::context_builder::ContextProfile>,
+) -> SideEffects {
+    let Some(p) = profile else {
+        return SideEffects::AsksFirst("which agent runs is chosen when it runs".to_string());
+    };
+    match p.side_effects.as_deref().map(str::trim) {
+        Some("read_only") => return SideEffects::ReadOnly,
+        Some("writes") => {
+            return SideEffects::AsksFirst(format!(
+                "`{}` is declared side_effects: writes",
+                p.name
+            ));
+        }
+        Some(other) => {
+            return SideEffects::AsksFirst(format!(
+                "`{}` declares side_effects: {other}, which is neither read_only nor writes",
+                p.name
+            ));
+        }
+        None => {}
+    }
+    let held: Vec<&str> = p
+        .tools
+        .iter()
+        .map(String::as_str)
+        .filter(|t| EXTERNAL_EFFECT_TOOLS.contains(t))
+        .collect();
+    if held.is_empty() {
+        SideEffects::ReadOnly
+    } else {
+        SideEffects::AsksFirst(format!(
+            "`{}` can act outside the brain ({})",
+            p.name,
+            held.join(", ")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +387,49 @@ mod tests {
         assert_eq!(p.assignee, None);
         assert_eq!(p.origin_kind, Some(Some("agent".into())));
         assert!(TodoItemPatch::default().is_empty());
+    }
+
+    fn profile(
+        name: &str,
+        tools: &[&str],
+        side: Option<&str>,
+    ) -> crate::services::context_builder::ContextProfile {
+        serde_json::from_value(json!({
+            "name": name, "description": "", "tools": tools, "side_effects": side,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn side_effects_are_derived_from_tools_and_fail_safe() {
+        assert_eq!(
+            side_effects(Some(&profile(
+                "knowledge-worker",
+                &["search_notes", "store_note"],
+                None
+            ))),
+            SideEffects::ReadOnly
+        );
+        // researcher holds http_request and mcp_call (2026-10-09): it asks.
+        let r = side_effects(Some(&profile(
+            "researcher",
+            &["search_web", "http_request", "mcp_call"],
+            None,
+        )));
+        assert!(
+            matches!(&r, SideEffects::AsksFirst(why) if why.contains("http_request, mcp_call")),
+            "{r:?}"
+        );
+        // An explicit declaration wins; an unknown one asks.
+        assert_eq!(
+            side_effects(Some(&profile("x", &["http_request"], Some("read_only")))),
+            SideEffects::ReadOnly
+        );
+        assert!(matches!(
+            side_effects(Some(&profile("x", &[], Some("maybe")))),
+            SideEffects::AsksFirst(_)
+        ));
+        assert!(matches!(side_effects(None), SideEffects::AsksFirst(_)));
     }
 
     #[test]

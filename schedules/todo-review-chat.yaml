@@ -2,6 +2,12 @@ name: "Daily todo review: check outstanding todos and open a chat session to dis
 description: "Reviews pending todos daily, asks the user clarifying questions, and opens a dedicated chat session for follow-up."
 # topic: none — spans topics on purpose
 kind: brief
+# RETIRED 2026-10-09 (HBI plan §9.9 decision 3): open items now go into the
+# Daily Brief as a "Your items" block, and the Feed is where they live. This
+# opened a new chat every day (45 of the last 100 notifications). `enabled` is
+# honoured only on create; the live node was turned off with a targeted SET
+# (paused_reason says why). Kept so it can be turned back on.
+enabled: false
 interval_seconds: 86400
 steps:
   # Step flow and {{_prev}} chain:

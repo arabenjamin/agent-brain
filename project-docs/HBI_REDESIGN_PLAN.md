@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phase 11 done 2026-10-09 (declared topic/kind, a traced 30-day topic mix, grouped lists; starting values await the user's review); Phase 12 done 2026-10-09 (one item record, manage_todo, the Feed with one total behind the badge, Home and its header); Phase 13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phase 11 done 2026-10-09 (declared topic/kind, a traced 30-day topic mix, grouped lists; starting values await the user's review); Phase 12 done 2026-10-09 (one item record, manage_todo, the Feed with one total behind the badge, Home and its header); Phase 13 done 2026-10-09 (items run as agent work: asks first, single-use approvals, review and send back, make it a schedule, Brief reminders); the second round is complete, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -809,3 +809,46 @@ Built and deployed:
 **Tests:** 864 Rust lib tests (8 new) and 95 vitest (the shell test updated for the Feed).
 
 **Not built (Phase 13):** hand to an agent, approve and send back, dispatch, "make it a schedule", and the Daily Brief reminder block that replaces the daily Todo Review chat.
+
+### Phase 13 outcome (2026-10-09) — the second round is complete
+
+Built and deployed:
+- **Items run as agent work** (`services/item_dispatch.rs`):
+  - when due, an item assigned to an agent gets a Task (`SPAWNED`) owning `run_agent` → `manage_todo deliver` → `update_task`;
+  - the result is stored as a note, posted into the item's thread, and waits in `awaiting_review`.
+- **Asks first** (`items::side_effects`; delayed-prompt Phase 2): an agent holding a tool that acts outside the graph waits in `awaiting_approval`. `knowledge-worker`, `code-analyst` and `schedule-author` run on their own; the other eight ask, each with its reason.
+- **Guardrails:** approvals are single-use, at most 3 runs an item and 3 per poll, runs are claimed atomically, and a failed run is retried or handed back with the reason.
+- **The user's controls** (REST; the brain may not assign or approve): hand to an agent (agent, model, prompt), approve run, take back, approve result, send back with a comment.
+- **`dispatch_due_todos` + hourly `item-dispatch.yaml`** (delayed-prompt Phase 3).
+- **"Make it a schedule":** `schedule-author` drafts; the draft is created disabled, linked `BECAME`, and repaired once if rejected; turning it on closes the item.
+- **The Daily Brief's "Your items" block** (delayed-prompt Phase 4). The daily Todo Review chat is retired.
+- **HBI:**
+  - Feed rows have "Hand to an agent", and approve / take back / result / send back on items waiting for the user;
+  - the item drawer has an Agent section (runs, last result, last comment, hand-over, make it a schedule with a model picker);
+  - the agent picker says whether each agent runs on its own or asks first.
+
+**Found while building:**
+- **`researcher` must not be overridden to `read_only`.** The delayed-prompt plan proposed it when `researcher` held only `http_request`; it now holds `mcp_call` too, which can reach aidevboard's `apply_to_job`. It asks first, and the Sodium run showed why asking costs little: one click.
+- **The HBI saved schedules without the argument-schema check.** "Make it a schedule" first produced a draft whose `reason` step had `prompt` instead of the required `question`, a step that would fail every run. REST saves now run the same hard check as `manage_scheduled_task`.
+- **`schedule-author` on the local model failed this item twice** (its draft, then its repair), now rejected rather than saved. `gpt-oss:120b-cloud` drafted a clean one first time, hence the model picker on the button.
+- **Deleting a linked schedule failed:** a plain `DELETE` refuses a node with edges, so it is now `DETACH DELETE`.
+- **Assign ignored the due date** while its button said "runs when due". It now waits for the date; approve and send-back run at once.
+
+**Verified live (the done-condition):**
+- **"Research Sodium batteries"** (due Oct 31) handed to `researcher`:
+  - `awaiting_approval`, with "can act outside the brain (http_request, mcp_call)" posted in its thread;
+  - the user pressed Approve run;
+  - run 1 took about a minute: `search_notes`, `search_web` ×2, `reason` ×2, `store_note`, with no `http_request` or `mcp_call`;
+  - a cited brief (how they work, how they're made, CATL / Mana / Alsym and others, cost, availability) went into the thread and note 37c8e0db, `awaiting_review`, and the user approved it to done.
+- **"Make it a schedule"** on it produced `weekly-sodium-battery-research`: disabled, weekly, `search_web` → `reason` (`context: {{_prev}}`) → `store_note` (`source_record`), linked `BECAME`, and passing the audit.
+- **Also checked** with throwaway items, deleted afterwards:
+  - a `knowledge-worker` item started without approval and delivered;
+  - send back reran it with the previous answer and the comment (run 2);
+  - approve made it done;
+  - turning a linked draft on closed its item;
+  - a simulated failed third run went to review with its reason, and no fourth run started;
+  - the dispatch schedule's run reported "0 started … 0 reconciled".
+
+**Tests:** 868 Rust lib tests (4 new) and 95 vitest.
+
+**Not built:** an "agent:auto" choice in the hand-over picker. It always asks first, as the plan's open question 3 advised.

@@ -774,6 +774,8 @@ impl BrainCore {
             skills.push(Arc::new(crate::skills::todo::TodoSkill::new(
                 neo4j.clone(),
                 context_builder_arc.clone(),
+                queue_arc.clone(),
+                knowledge.clone(),
             )));
         }
         // Agent Constructor (needs the self-model in Neo4j + queue for dispatch).

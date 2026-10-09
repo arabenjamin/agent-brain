@@ -19,6 +19,7 @@ pub mod chat;
 #[cfg(feature = "http-transport")]
 pub mod entities;
 pub mod feed;
+pub mod items;
 #[cfg(feature = "http-transport")]
 pub mod rest;
 #[cfg(feature = "http-transport")]

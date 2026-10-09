@@ -150,6 +150,11 @@ impl SchedulerService {
     ///
     /// Reads `SCHEDULER_INTERVAL_SECS` and `SCHEDULER_ENABLED` from the environment,
     /// then spawns the background loop immediately.
+    /// The job queue this scheduler dispatches into (the item dispatcher uses it too).
+    pub fn queue(&self) -> Arc<QueueService> {
+        Arc::clone(&self.queue)
+    }
+
     pub fn new(neo4j: Neo4jClient, queue: Arc<QueueService>) -> Arc<Self> {
         Self::new_with_context(neo4j, queue, None, None)
     }

@@ -265,7 +265,7 @@ impl Neo4jClient {
                 query(
                     "MATCH (s:ScheduledTask {id: $id}) \
                      WITH s, s.id AS deleted_id \
-                     DELETE s \
+                     DETACH DELETE s \
                      RETURN deleted_id",
                 )
                 .param("id", id),

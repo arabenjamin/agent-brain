@@ -255,6 +255,8 @@ export interface ProfileInfo {
   spawnable?: boolean;
   /** `public` lets its work reach providers that may train on prompts; absent = private. */
   data_class?: string | null;
+  /** Why an item assigned to it waits for approval; null = it runs on its own. */
+  asks_first?: string | null;
 }
 
 // ── Hooks ────────────────────────────────────────────────────────────────────

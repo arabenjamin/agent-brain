@@ -85,3 +85,52 @@ export async function markRead(id: string): Promise<void> {
   await apiRequest(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" });
   await refreshFeed();
 }
+
+/** What happened when an item was offered a run. */
+export interface RunOutcome {
+  outcome: "started" | "awaiting_approval" | "not_due" | "not_ready" | "assigned_to_user" | "done";
+  reason?: string;
+  task_id?: string;
+  agent?: string;
+  run?: number;
+}
+
+async function postItem(id: string, action: string, body: Record<string, unknown> = {}): Promise<RunOutcome> {
+  const res = await apiRequest(`/api/items/${encodeURIComponent(id)}/${action}`, { method: "POST", body: JSON.stringify(body) });
+  const data = (await res.json().catch(() => ({}))) as { error?: string; run?: RunOutcome };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  await refreshFeed();
+  await queryClient.invalidateQueries({ queryKey: ["work"] });
+  return data.run ?? { outcome: "not_ready" };
+}
+
+/** Hand an item to an agent (`agent:<name>`) or take it back (`user`). */
+export function assignItem(id: string, assignee: string, prompt?: string, model?: string): Promise<RunOutcome> {
+  const body: Record<string, unknown> = { assignee };
+  if (prompt !== undefined) body.prompt = prompt;
+  if (model !== undefined) body.model = model;
+  return postItem(id, "assign", body);
+}
+
+/** Start a run waiting for approval, or accept a result waiting for review. */
+export function approveItem(id: string): Promise<RunOutcome> {
+  return postItem(id, "approve");
+}
+
+/** Send a result back to its agent with a comment; runs it again. */
+export function sendBackItem(id: string, comment: string): Promise<RunOutcome> {
+  return postItem(id, "send-back", { comment });
+}
+
+/** A run outcome, in words. */
+export function outcomeText(o: RunOutcome): string {
+  switch (o.outcome) {
+    case "started": return `${o.agent} started run ${o.run}`;
+    case "awaiting_approval": return `Waiting for your approval: ${o.reason}`;
+    case "not_due": return "Assigned; it runs on its due date";
+    case "not_ready": return `Not started: ${o.reason}`;
+    case "assigned_to_user": return "It's yours again";
+    case "done": return "Done";
+  }
+}
+

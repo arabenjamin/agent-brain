@@ -15,6 +15,7 @@ import { openEntity } from "../drawer/entities";
 import { assigneeLabel, ORIGIN_LABELS, PRIORITY_LABELS, STATUS_LABELS } from "../todos/model";
 import { EmptyState, Pill } from "../ui";
 import MergeCandidates from "./MergeCandidates";
+import { HandToAgent, ReviewActions } from "../items/ItemActions";
 
 const MERGE_SHOWN = 30;
 
@@ -58,7 +59,11 @@ function ItemRow({ t, openId }: { t: FeedItem; openId?: string }) {
     }
   };
   const origin = t.origin?.kind;
+  const [handing, setHanding] = useState(false);
+  const awaiting = t.status === "awaiting_approval" || t.status === "awaiting_review";
+  const agent = t.assignee?.startsWith("agent:") ? t.assignee.slice(6) : null;
   return (
+    <>
     <div className={`wk-row wk-feed-item${openId === t.id ? " active" : ""}`}>
       <span className="wk-row-lead">
         {t.overdue ? <Pill tone="yellow">overdue</Pill>
@@ -78,13 +83,29 @@ function ItemRow({ t, openId }: { t: FeedItem; openId?: string }) {
         )}
         <button type="button" className="btn-ghost" disabled={busy} title="Open this item's conversation"
           onClick={() => act(async () => openSession(await ensureThread(t)))}>Reply</button>
-        {snoozeTimes().map((s) => (
-          <button key={s.label} type="button" className="btn-ghost" disabled={busy} title={`Hide it until ${s.at.toLocaleString()}`}
-            onClick={() => act(() => snoozeItem(t.id, s.at))}>Snooze {s.label}</button>
-        ))}
-        <button type="button" className="btn" disabled={busy} onClick={() => act(() => completeItem(t.id))}>Done</button>
+        {awaiting ? (
+          <ReviewActions item={t} compact />
+        ) : (
+          <>
+            {snoozeTimes().map((s) => (
+              <button key={s.label} type="button" className="btn-ghost" disabled={busy} title={`Hide it until ${s.at.toLocaleString()}`}
+                onClick={() => act(() => snoozeItem(t.id, s.at))}>Snooze {s.label}</button>
+            ))}
+            <button type="button" className="btn-ghost" disabled={busy} onClick={() => setHanding((h) => !h)}
+              title="Let an agent do it; you review the result">Hand to an agent</button>
+            <button type="button" className="btn" disabled={busy} onClick={() => act(() => completeItem(t.id))}>Done</button>
+          </>
+        )}
       </span>
     </div>
+    {t.status === "awaiting_approval" && agent && (
+      <div className="wk-hint">{agent} is assigned this and waits for your approval; its reason is in the thread (Reply).</div>
+    )}
+    {t.status === "awaiting_review" && agent && (
+      <div className="wk-hint">{agent} finished run {t.dispatch_count ?? 1}; the result is in the thread and in its note.</div>
+    )}
+    {handing && <HandToAgent item={t} onDone={() => setHanding(false)} />}
+    </>
   );
 }
 

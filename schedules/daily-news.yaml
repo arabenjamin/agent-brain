@@ -352,6 +352,39 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
+  # ── Your items: what waits on the user (HBI plan Phase 13) ──────────────
+  # Replaces the daily Todo Review chat: overdue and soon-due items, and agent
+  # results or runs waiting for the user, as one block in the brief. Dates are
+  # compared as dates (a DATETIME against a string is null in Cypher).
+  - tool_name: neo4j_query
+    arguments:
+      cypher: >-
+        MATCH (t:Todo) WHERE t.status <> 'done'
+          AND (t.assignee IS NULL OR t.assignee = 'user' OR t.status IN ['awaiting_approval', 'awaiting_review'])
+          AND (t.snoozed_until IS NULL OR t.snoozed_until <= datetime())
+        WITH t, CASE
+          WHEN t.status = 'awaiting_review' THEN 'result to review'
+          WHEN t.status = 'awaiting_approval' THEN 'agent run to approve'
+          WHEN t.due_at IS NOT NULL AND date(t.due_at) < date('{{date}}') THEN 'overdue'
+          WHEN t.due_at IS NOT NULL AND date(t.due_at) <= date('{{date}}') + duration('P3D') THEN 'due soon'
+          ELSE null END AS why
+        WHERE why IS NOT NULL
+        RETURN why + ': ' + t.title + coalesce(' (due ' + toString(date(t.due_at)) + ')', '') AS line
+        ORDER BY CASE why WHEN 'overdue' THEN 0 WHEN 'result to review' THEN 1 WHEN 'agent run to approve' THEN 2 ELSE 3 END
+        LIMIT 15
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: push_context
+    arguments:
+      session_id: "news-raw-{{date}}"
+      content: "## YOUR ITEMS — the user's open items that want them now: overdue, due within 3 days, an agent result to review, or an agent run to approve (at most 15). An empty list means nothing is waiting.\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
   # ── Assemble: pull every banked section out of working memory ───────────
   - tool_name: neo4j_query
     arguments:
@@ -371,6 +404,7 @@ steps:
         ## EXECUTIVE SUMMARY for {{date}}
         ## WHAT I DID & LEARNED (last 24h)
         ## SYSTEM STATUS
+        ## YOUR ITEMS
         ## METRO DETROIT
         ## MICHIGAN
         ## NATIONAL
@@ -410,6 +444,9 @@ steps:
         - SYSTEM STATUS: read the "## SYSTEM STATUS" block. Report open vs
           completed/failed tasks, AgentJob health over the last 24h, and how many
           schedules are enabled. Flag any failed/dead jobs explicitly.
+        - YOUR ITEMS: read the "## YOUR ITEMS" block. One bullet per line, overdue
+          first, in its words; end with "They are in the Feed (Work → Feed)." If the
+          block lists nothing, write "Nothing is waiting on you." Do not invent items.
 
         NEWS SECTIONS: each has a "## <SECTION> — raw search results" block and/or
         a "## <SECTION> — ApiTube articles" block; prefer the ApiTube articles for

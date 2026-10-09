@@ -61,6 +61,17 @@ pub struct Todo {
     pub dispatch_count: i64,
     #[serde(default)]
     pub result_note_id: Option<String>,
+    /// A catalog model the agent runs on; absent = the agent's own.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The user's comment when they sent a result back; folded into the next run.
+    #[serde(default)]
+    pub review_comment: Option<String>,
+    /// The run number the user approved (`dispatch_count + 1` at approval).
+    /// Single-use: an agent that asks first runs only when this equals the
+    /// run about to start, so one approval can never start a second run.
+    #[serde(default)]
+    pub approved_dispatch: Option<i64>,
 }
 
 /// Item fields a write may set. `None` leaves a field as it is; `Some(None)`
@@ -74,6 +85,7 @@ pub struct TodoItemPatch {
     pub session_id: Option<Option<String>>,
     pub snoozed_until: Option<Option<String>>,
     pub result_note_id: Option<Option<String>>,
+    pub model: Option<Option<String>>,
 }
 
 impl TodoItemPatch {
@@ -85,6 +97,7 @@ impl TodoItemPatch {
             && self.session_id.is_none()
             && self.snoozed_until.is_none()
             && self.result_note_id.is_none()
+            && self.model.is_none()
     }
 }
 
@@ -152,6 +165,9 @@ impl Neo4jClient {
             dispatched_at: None,
             dispatch_count: 0,
             result_note_id: None,
+            model: None,
+            review_comment: None,
+            approved_dispatch: None,
         })
     }
 
@@ -165,7 +181,7 @@ impl Neo4jClient {
         if patch.is_empty() {
             return self.get_todo(id).await;
         }
-        let fields: [(&str, &Option<Option<String>>, bool); 7] = [
+        let fields: [(&str, &Option<Option<String>>, bool); 8] = [
             ("assignee", &patch.assignee, false),
             ("origin_kind", &patch.origin_kind, false),
             ("origin_ref", &patch.origin_ref, false),
@@ -173,6 +189,7 @@ impl Neo4jClient {
             ("session_id", &patch.session_id, false),
             ("snoozed_until", &patch.snoozed_until, true),
             ("result_note_id", &patch.result_note_id, false),
+            ("model", &patch.model, false),
         ];
         let mut sets = vec!["t.updated_at = datetime()".to_string()];
         let mut q_params: Vec<(String, neo4rs::BoltType)> = Vec::new();
@@ -354,5 +371,8 @@ fn todo_from_row(row: &neo4rs::Row) -> Option<Todo> {
         dispatched_at: crate::temporal::node_ts(&node, "dispatched_at"),
         dispatch_count: node.get("dispatch_count").unwrap_or(0),
         result_note_id: text("result_note_id"),
+        model: text("model"),
+        review_comment: text("review_comment"),
+        approved_dispatch: node.get("approved_dispatch").ok(),
     })
 }

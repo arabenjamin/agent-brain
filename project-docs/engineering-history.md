@@ -802,6 +802,14 @@ The daily Todo Review chat alone was 45 of the last 100 notifications, and the u
 
 **An empty type check passes everything.** `tsc --noEmit -p .` in `hbi-frontend` checks no files, because `tsconfig.json` is `files: []` plus project references. A component given a prop it doesn't take passed it, and failed `-p tsconfig.app.json`. `npm run build` runs `tsc -b`, so shipped builds were checked; the quick check was not.
 
+### Items as agent work: what the plan got wrong, and the save path (2026-10-09)
+
+**A safety override that had gone stale.** The delayed-prompt plan (2026-09-11) proposed `side_effects: read_only` for `researcher`, because it held `http_request` only for GETs and "research X" is the most natural delayed prompt. By the time it was built, `researcher` also held `mcp_call`, which reaches the aidevboard MCP server's `apply_to_job`, a real job application. The override would have let an unattended item run an agent that can apply to jobs. No profile is overridden. The rule is derived from the tools at run time, so a tool added later changes the verdict without anyone remembering the override. The cost of asking first was measured on the real item: one click, then a one-minute run.
+
+**The HBI saved what `manage_scheduled_task` would have refused.** "Make it a schedule" created a disabled draft whose `reason` step passed `prompt` instead of the required `question`, a step that would fail every run, and nothing stopped it. Since Phase 11 the REST path ran only the model and label checks; the argument-schema check lived only on the MCP tool. REST now runs the same hard check. That turned the next failure visible: local `schedule-author` (`gemma4-e4b`) failed the same item twice, once in its draft and once in its repair, putting arguments at step level, so the button gained a model picker. `gpt-oss:120b-cloud` drafted a clean schedule first time.
+
+**`DELETE` vs `DETACH DELETE`.** Removing a schedule drafted from an item failed once the `BECAME` edge existed; schedule deletion now detaches.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

@@ -12,6 +12,8 @@ import { useNow } from "../../lib/useNow";
 import TodoForm from "../todos/TodoForm";
 import { ORIGIN_LABELS, PRIORITY_LABELS, STATUS_LABELS, assigneeLabel, isTodoOverdue, type Todo } from "../todos/model";
 import { ensureThread, openSession } from "../../api/feed";
+import { HandToAgent, ReviewActions } from "../items/ItemActions";
+import MakeSchedule from "../items/MakeSchedule";
 import { Drawer, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section, StatusPill } from "./parts";
@@ -111,6 +113,19 @@ export default function TodoView({ id }: { id: string }) {
                 <><span>Snoozed</span><span>until {formatLocal(t.snoozed_until)}</span></>
               )}
             </div>
+          </Section>
+
+          <Section title="Agent" aside={t.dispatch_count ? `${t.dispatch_count} of 3 runs` : undefined}>
+            {t.status === "in_progress" && t.assignee?.startsWith("agent:") && (
+              <div className="dw-note">{t.assignee.slice(6)} is working on it; the result will land in the thread for your review.</div>
+            )}
+            {(t.status === "awaiting_approval" || t.status === "awaiting_review") && <ReviewActions item={t} />}
+            {t.result_note_id && t.status !== "awaiting_review" && (
+              <div className="dw-dim">Last result: <EntityLink kind="note" id={t.result_note_id}>{t.result_note_id.slice(0, 8)}</EntityLink></div>
+            )}
+            {t.review_comment && <div className="dw-dim">Your last comment: {t.review_comment}</div>}
+            {!["in_progress", "done", "awaiting_approval"].includes(t.status) && <HandToAgent item={t} />}
+            <MakeSchedule item={t} />
           </Section>
 
           <Section title="Description">

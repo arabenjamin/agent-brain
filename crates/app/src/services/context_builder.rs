@@ -66,6 +66,12 @@ pub struct ContextProfile {
     /// spending stays a decision a human made by writing the task.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub explicit_only: bool,
+    /// Whether an item assigned to this agent may run on its own
+    /// (`read_only`) or must wait for the user's approval (`writes`). Absent,
+    /// it is derived from `tools` and fails safe (`items::side_effects`): an
+    /// override is a deliberate, reviewable act.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_effects: Option<String>,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].

@@ -151,8 +151,8 @@ pulling open `assignee: "user"` todos past due and fold them into the
 - [x] **Phase 1 — `manage_todo` + schema fields.** *Done 2026-10-09 as HBI plan Phase 12: `manage_todo` (list/get/upsert/complete), the §9.2 fields, REST, roster-checked assignees; only the user assigns an agent. `assign`/`approve` arrive with dispatch in Phase 13.* Tool, REST passthrough, repo.
       Nothing dispatches yet, but the brain can finally see and edit its own
       todos. **Ships alone and unblocks everything else.**
-- [ ] **Phase 2 — `side_effects` on context profiles.** Derived default,
+- [x] **Phase 2 — `side_effects` on context profiles.** *Done 2026-10-09 (HBI Phase 13): explicit `side_effects`, else derived from the tools, failing safe. No `researcher` override: it now holds `mcp_call` as well as `http_request`.* Derived default,
       explicit override, roster validation.
-- [ ] **Phase 3 — `dispatch_due_todos` + schedule + writeback.** Auto for
+- [x] **Phase 3 — `dispatch_due_todos` + schedule + writeback.** *Done 2026-10-09 (HBI Phase 13): `services/item_dispatch.rs`, hourly `item-dispatch.yaml`, `manage_todo deliver`, approve/send-back over REST (the user's decisions, not the front door's).* Auto for
       read-only agents, `awaiting_approval` for the rest.
-- [ ] **Phase 4 — Daily Brief reminders** for `assignee: "user"`.
+- [x] **Phase 4 — Daily Brief reminders** *Done 2026-10-09 (HBI Phase 13): a "Your items" block in `daily-news.yaml`; the daily Todo Review chat retired.*

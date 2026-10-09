@@ -24,13 +24,37 @@ const LIST_CAP: usize = 50;
 pub struct TodoSkill {
     neo4j: Neo4jClient,
     context_builder: Option<Arc<ContextBuilderService>>,
+    /// Starts agent runs (`dispatch_due_todos`); `None` leaves that tool off.
+    queue: Option<Arc<crate::services::queue::QueueService>>,
+    /// Stores a delivered result as a note.
+    knowledge: Option<Arc<dyn crate::services::KnowledgeStore>>,
 }
 
 impl TodoSkill {
-    pub fn new(neo4j: Neo4jClient, context_builder: Option<Arc<ContextBuilderService>>) -> Self {
+    pub fn new(
+        neo4j: Neo4jClient,
+        context_builder: Option<Arc<ContextBuilderService>>,
+        queue: Option<Arc<crate::services::queue::QueueService>>,
+        knowledge: Option<Arc<dyn crate::services::KnowledgeStore>>,
+    ) -> Self {
         Self {
             neo4j,
             context_builder,
+            queue,
+            knowledge,
+        }
+    }
+
+    fn dispatch_def() -> ToolDefinition {
+        ToolDefinition {
+            name: "dispatch_due_todos".to_string(),
+            description: "Run the user's items that are assigned to an agent and due. An agent that \
+                writes nothing outside the brain starts at once; one that can (http_request, \
+                mcp_call, files, …) waits for the user's approval in the Feed. At most 3 runs \
+                start per call and 3 per item; a run that failed is retried or handed to the user. \
+                Called by the item-dispatch schedule; returns what it started, asked about and held."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
 
@@ -50,7 +74,8 @@ impl TodoSkill {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "get", "upsert", "complete"] },
+                    "action": { "type": "string", "enum": ["list", "get", "upsert", "complete", "deliver"] },
+                    "result": { "type": "string", "description": "deliver: an agent run's answer for the item (its chain's last step)." },
                     "id": { "type": "string", "description": "get / upsert (update) / complete: the item id." },
                     "status": {
                         "type": "string",
@@ -96,8 +121,23 @@ impl TodoSkill {
                 },
                 Err(e) => e,
             },
+            "deliver" => {
+                let (Some(id), Some(result)) = (args["id"].as_str(), args["result"].as_str())
+                else {
+                    return ToolCallResult::error("deliver needs `id` and `result`");
+                };
+                let Some(knowledge) = self.knowledge.as_deref() else {
+                    return ToolCallResult::error("deliver is unavailable: no knowledge store");
+                };
+                match crate::services::item_dispatch::deliver(&self.neo4j, knowledge, id, result)
+                    .await
+                {
+                    Ok(v) => ToolCallResult::success_json(v),
+                    Err(e) => ToolCallResult::error(format!("Not delivered: {e}")),
+                }
+            }
             other => ToolCallResult::error(format!(
-                "Unknown action '{other}'; use list, get, upsert or complete"
+                "Unknown action '{other}'; use list, get, upsert, complete or deliver"
             )),
         }
     }
@@ -257,12 +297,29 @@ impl Skill for TodoSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::def()]
+        let mut t = vec![Self::def()];
+        if self.queue.is_some() {
+            t.push(Self::dispatch_def());
+        }
+        t
     }
 
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
             "manage_todo" => Some(self.handle(arguments.unwrap_or(json!({}))).await),
+            "dispatch_due_todos" => {
+                let Some(queue) = self.queue.clone() else {
+                    return Some(ToolCallResult::error(
+                        "dispatch_due_todos is unavailable: no job queue",
+                    ));
+                };
+                let d = crate::services::item_dispatch::Dispatcher::new(
+                    self.neo4j.clone(),
+                    queue,
+                    self.context_builder.clone(),
+                );
+                Some(ToolCallResult::success_json(d.poll().await))
+            }
             _ => None,
         }
     }

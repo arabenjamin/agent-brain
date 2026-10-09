@@ -588,17 +588,30 @@ pub async fn handle_list_scheduled_tasks(
 }
 
 /// The HBI saves schedules here, not through `manage_scheduled_task`, so the
-/// checks that need no tool registry run here too: each step's pinned model
-/// against the catalog, and the declared topic and kind. `Err` is the 400 text.
-fn check_schedule_body(
+/// same hard checks run here: each step's tool exists and its arguments fit
+/// the tool's own `input_schema`, each pinned model is in the catalog, and the
+/// declared topic and kind are valid. `Err` is the 400 text.
+async fn check_schedule_body(
     state: &RestState,
     body: &Value,
     steps_json: Option<&str>,
 ) -> Result<(), String> {
-    if let (Some(steps), Some(tel)) = (steps_json, state.telemetry.as_ref()) {
+    if let Some(steps) = steps_json {
         let steps: Vec<Value> = serde_json::from_str(steps).map_err(|e| format!("steps: {e}"))?;
-        let catalog = crate::services::model_router::catalog_models(tel);
-        let hard = crate::services::validation::validate_step_models(&steps, &catalog);
+        let mut hard = Vec::new();
+        if let Some(reg) = state.tool_registry.as_ref() {
+            let defs = reg.read().await.list();
+            let live: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+            let schemas: HashMap<String, Value> =
+                defs.into_iter().map(|d| (d.name, d.input_schema)).collect();
+            hard.extend(crate::services::validation::validate_step_array(
+                &steps, &live, &schemas,
+            ));
+        }
+        if let Some(tel) = state.telemetry.as_ref() {
+            let catalog = crate::services::model_router::catalog_models(tel);
+            hard.extend(crate::services::validation::validate_step_models(&steps, &catalog));
+        }
         if crate::services::validation::has_hard(&hard) {
             return Err(crate::services::validation::render_hard(&hard));
         }
@@ -688,7 +701,7 @@ pub async fn handle_create_scheduled_task(
             .into_response();
     };
 
-    if let Err(e) = check_schedule_body(&state, &body, Some(&steps)) {
+    if let Err(e) = check_schedule_body(&state, &body, Some(&steps)).await {
         return bad_request(format!("Schedule rejected — nothing was saved: {e}"));
     }
 
@@ -713,7 +726,20 @@ pub async fn handle_create_scheduled_task(
         .await
     {
         Ok(mut task) => match apply_schedule_labels(neo4j, &mut task, &body).await {
-            Ok(()) => (StatusCode::CREATED, Json(serde_json::json!(task))).into_response(),
+            Ok(()) => {
+                // Drafted from an item ("make it a schedule"): link it back.
+                if let Some(item) = body
+                    .get("from_item")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    && let Err(e) = crate::services::items::link_became(neo4j, item, &task.id).await
+                {
+                    return internal(format!(
+                        "created, but not linked to the item it came from: {e}"
+                    ));
+                }
+                (StatusCode::CREATED, Json(serde_json::json!(task))).into_response()
+            }
             Err(e) => internal(format!("saved, but topic/kind were not: {e}")),
         },
         Err(e) => internal(e),
@@ -762,7 +788,7 @@ pub async fn handle_update_scheduled_task(
     } else {
         body["steps"].as_str().map(|s| s.to_string())
     };
-    if let Err(e) = check_schedule_body(&state, &body, steps_string.as_deref()) {
+    if let Err(e) = check_schedule_body(&state, &body, steps_string.as_deref()).await {
         return bad_request(format!("Schedule rejected — nothing was saved: {e}"));
     }
 
@@ -780,7 +806,19 @@ pub async fn handle_update_scheduled_task(
         .await
     {
         Ok(Some(mut task)) => match apply_schedule_labels(neo4j, &mut task, &body).await {
-            Ok(()) => Json(serde_json::json!(task)).into_response(),
+            Ok(()) => {
+                // Turned on: an item it was drafted from is done ("became a schedule").
+                let closed = if enabled == Some(true) {
+                    crate::services::items::close_items_that_became(neo4j, &task.id).await
+                } else {
+                    Vec::new()
+                };
+                let mut v = serde_json::json!(task);
+                if !closed.is_empty() {
+                    v["closed_items"] = serde_json::json!(closed);
+                }
+                Json(v).into_response()
+            }
             Err(e) => internal(format!("saved, but topic/kind were not: {e}")),
         },
         Ok(None) => not_found(),
@@ -1299,6 +1337,12 @@ pub async fn handle_list_context_profiles(
                 "spawnable":        p.spawnable,
                 "specialty":        p.specialty,
                 "data_class":       p.data_class,
+                // An item assigned to it runs on its own (null) or waits for
+                // the user's approval, with the reason (`items::side_effects`).
+                "asks_first": match crate::services::items::side_effects(Some(p)) {
+                    crate::services::items::SideEffects::ReadOnly => Value::Null,
+                    crate::services::items::SideEffects::AsksFirst(why) => Value::String(why),
+                },
             })
         })
         .collect();

@@ -414,6 +414,18 @@ impl HttpTransport {
             )
             .route("/api/feed", get(crate::clients::feed::handle_feed))
             .route(
+                "/api/items/{id}/assign",
+                axum::routing::post(crate::clients::items::handle_assign),
+            )
+            .route(
+                "/api/items/{id}/approve",
+                axum::routing::post(crate::clients::items::handle_approve),
+            )
+            .route(
+                "/api/items/{id}/send-back",
+                axum::routing::post(crate::clients::items::handle_send_back),
+            )
+            .route(
                 "/api/work/schedules/topic-mix",
                 get(crate::clients::work::handle_schedule_topic_mix),
             )

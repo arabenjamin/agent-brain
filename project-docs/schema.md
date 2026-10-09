@@ -312,7 +312,13 @@ The one record for work that wants doing, the user's or an agent's (HBI plan §9
 | `prompt` | String? | What an agent is told; falls back to title + description |
 | `session_id` | String? | Its thread, a chat session (`todo-<id>` when the HBI starts one) |
 | `snoozed_until` | DateTime? | Hidden from the Feed until then |
-| `dispatched_at` / `dispatch_count` / `result_note_id` | DateTime? / Integer / String? | Dispatch bookkeeping (Phase 13) |
+| `dispatched_at` / `dispatch_count` / `result_note_id` | DateTime? / Integer / String? | Agent runs: when the last started, how many (at most 3, sending back counts), the note holding the last result |
+| `model` | String? | A catalog model its agent runs on; absent = the agent's own |
+| `review_comment` | String? | The user's comment when they sent a result back; folded into the next run's prompt |
+| `approved_dispatch` | Integer? | The run number the user approved. Single-use: an agent that asks first runs only when it equals `dispatch_count + 1` |
+| `closed_reason` | String? | `became a schedule` when a schedule drafted from it was turned on |
+
+Edges: `(:Todo)-[:SPAWNED {run}]->(:Task)` for each agent run (and "Hand to the brain"); `(:Todo)-[:BECAME]->(:ScheduledTask)` for a schedule drafted from it.
 | `created_at` / `updated_at` | DateTime | Native `DATETIME`, UTC |
 
 #### `AgentNotification`

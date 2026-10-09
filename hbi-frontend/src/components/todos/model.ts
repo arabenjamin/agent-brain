@@ -23,6 +23,10 @@ export interface Todo {
   snoozed_until?: string | null;
   dispatch_count?: number;
   result_note_id?: string | null;
+  /** The model its agent runs on; absent = the agent's own. */
+  model?: string | null;
+  /** The user's comment when they sent a result back. */
+  review_comment?: string | null;
   /** Open and the user's to act on now. */
   for_user?: boolean;
 }
