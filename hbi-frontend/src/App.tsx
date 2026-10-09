@@ -22,7 +22,7 @@ const KnowledgeWorkspace = lazy(() => import("./components/knowledge/KnowledgeWo
 const HealthView         = lazy(() => import("./components/system/HealthView"));
 const LogsView           = lazy(() => import("./components/system/LogsView"));
 const RegistryView       = lazy(() => import("./components/system/RegistryView"));
-const ArchitecturePanel  = lazy(() => import("./components/architecture/ArchitecturePanel"));
+const ArchitectureView   = lazy(() => import("./components/system/ArchitectureView"));
 const SettingsPage       = lazy(() => import("./components/settings/SettingsPage"));
 const CommandPalette     = lazy(() => import("./components/palette/CommandPalette"));
 
@@ -206,7 +206,7 @@ export default function App() {
               {view === "health"       && <HealthView />}
               {view === "logs"         && <LogsView />}
               {view === "registry"     && <RegistryView />}
-              {view === "architecture" && <ArchitecturePanel />}
+              {view === "architecture" && <ArchitectureView />}
             </WorkspaceFrame>
           )}
           {ws === "settings" && <SettingsPage section={p.section} />}

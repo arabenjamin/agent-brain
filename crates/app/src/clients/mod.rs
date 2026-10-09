@@ -4,6 +4,7 @@
 //! interaction model into calls against [`crate::brain_core::BrainCore`].
 //!
 //! Current adapters:
+//! - [`architecture`] — the live architecture: layout groups filled from the registry, routes and graph, plus snapshot diffs
 //! - [`chat`] — conversational LLM loop for human-facing `/chat` SSE sessions
 //! - [`entities`] — entity merge proposals, answers to them, and undo
 //! - [`rest`] — REST API adapter for todos, scheduled tasks, and scheduler config
@@ -12,6 +13,8 @@
 //! - [`topics`] — the domains notes are classified into, the topic map, coverage
 //! - [`work`] — lineage of tasks, jobs, schedules and todos for the HBI's Work workspace
 
+#[cfg(feature = "http-transport")]
+pub mod architecture;
 pub mod chat;
 #[cfg(feature = "http-transport")]
 pub mod entities;

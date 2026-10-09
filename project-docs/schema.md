@@ -157,6 +157,22 @@ A domain the brain tracks, one per `topics/*.yaml` (`TOPICS_DIR`), synced by `in
 | `version` | String | Hash of every topic's name + description and the skip scope |
 | `created_at` / `synced_at` | DateTime | Native `DATETIME`, UTC |
 
+#### `ArchSnapshot`
+
+What the brain was made of at one moment (`services/architecture.rs`), taken by `snapshot_architecture`: weekly on `brain-api-sync`, once at the first start, or by hand. The newest 104 are kept. The JSON blobs are strings because Neo4j has no map-of-lists property.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | String | UUID, unique |
+| `taken_at` | DateTime | Native `DATETIME`, UTC |
+| `trigger` | String | `schedule` \| `manual` \| `first` |
+| `version` | String | The commit the brain was running (`BrainVersion.sha`), or empty |
+| `inventory` | String (JSON) | Sorted name sets: `skills` (skill → tools), `routes`, `agents`, `chains`, `schedules`, `mcp_servers`, `dynamic_tools`, `providers`, `components` |
+| `counts` | String (JSON) | Category → count |
+| `diff` | String (JSON) | Category → `{added, removed}` against `previous_id`; only categories that changed |
+| `summary` | String | The diff in one line, written by code, not a model |
+| `previous_id` | String | The snapshot it was compared with; empty for the first |
+
 #### `Entity`
 
 Named entities extracted from note content (8 types: `person`, `organisation`, `location`, `technology`, `tool`, `concept`, `url`, `date`). One real thing is one node: extraction resolves each name through `services/entity_resolution.rs` (alias → exact name → normalised `key`) before creating anything. See `subsystem-rules.md` § Entity resolution.
@@ -326,6 +342,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `entity_name` | `Entity` | `name` | UNIQUE |
 | `entity_alias_name` | `EntityAlias` | `name` | UNIQUE |
 | `topic_name` | `Topic` | `name` | UNIQUE |
+| `arch_snapshot_id` | `ArchSnapshot` | `id` | UNIQUE |
 | `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
 | `todo_id` | `Todo` | `id` | UNIQUE |
@@ -347,6 +364,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `entity_key_idx` | `Entity` | `key` | RANGE | Write-time resolution by normalised key |
 | `entity_id_idx` | `Entity` | `id` | RANGE | HBI drawer, merges and candidates look entities up by id |
 | `entity_alias_key_idx` | `EntityAlias` | `key` | RANGE | Write-time resolution by normalised key |
+| `arch_snapshot_taken_idx` | `ArchSnapshot` | `taken_at` | RANGE | Newest snapshot, history |
 | `dynamic_tool_idx` | `DynamicTool` | `created_at` | RANGE | Recency ordering |
 | `agent_job_status` | `AgentJob` | `status` | RANGE | Queue coordinator polling |
 | `agent_job_priority` | `AgentJob` | `priority` | RANGE | Priority-ordered dispatch |

@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–3, 4a and 5 done (2026-10-08); 4b live, its backfill running; 6–7 planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–6 done (2026-10-08); 7 (Chat) planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -338,7 +338,7 @@ Built:
 
 **Applied (commit 762f246):** the `pre_entity_merge` snapshot was taken, then all 91 merges went in with 0 failures. Entities went from 8,575 to 8,487, with 100 aliases. `donald trump` has 368 mentions and `united states` 267. **Done criterion met:** each is one node, `eval-retrieval` is unchanged (0.920 / 0.757, all 25 cases identical), and every merge can be undone from its alias. 188 merge proposals are open in the Inbox.
 
-### Phase 4b outcome (2026-10-08, built; live backfill runs after the rebuild)
+### Phase 4b outcome (2026-10-08)
 
 Built:
 - **Topics:** `topics/*.yaml` (`TOPICS_DIR`), 11 starting topics for the user to review: national security, geopolitics, US politics, AI/ML, semiconductors, batteries & materials, off-grid networking, Michigan, cybersecurity, the brain itself, career. `topics/_scope.yaml` skips activity records. `init-db` syncs `(:Topic)`.
@@ -361,10 +361,9 @@ Fixed on the way:
 - **Broken embeddings shown as embedded.** The note drawer called 223 notes with an *empty* embedding "embedded" because it tested `IS NOT NULL`.
 - **A Cypher null trap in the first skip filter.** Notes without a `source_context` fell out of every coverage bucket. The sum check exposed it.
 
-Left before 4b is done:
-- The user reviews `topics/*.yaml`.
-- The rebuild runs the live backfill.
-- Check the live map loads in under 2 s, and that coverage sums with nothing stuck waiting.
+Applied live (the backfill finished 2026-10-08 19:38, no failures): 9,892 notes in a topic, 3,703 fitting none, 3,750 skipped by scope, 0 waiting, summing to all 17,345. New notes are classified as they arrive. The live map loads in 0.07 s.
+
+**Done criterion met:** every note is in a topic or in a visible count, and the map loads well under 2 s and stays draggable.
 
 Not built (planned as optional): suggested topics from clusters of no-topic notes (for now the tile and endpoint list what those notes mention most), and the 3D toggle.
 
@@ -382,6 +381,28 @@ Built:
 - **Tests:** 8 Rust unit tests (825 lib tests) and 1 vitest test (70). Checked on a scratch server against the real sidecars, and driven in headless Chrome.
 
 **Done criterion met:** one call drives Health, and Logs show no task or queue activity by default (only their warnings and errors).
+
+### Phase 6 outcome (2026-10-08)
+
+Built:
+- **B5, computed rather than written** (`services/architecture.rs`):
+  - *Inventory:* skills and their tools from `(:ToolDef)` (re-synced from the registry at every start), agents, chains, schedules, MCP servers, dynamic tools, providers and the `components.yaml` services. HTTP routes are **parsed from the router source** (`mcp/http_transport.rs`, compiled in with `include_str!`), each with its handler module, so a new route can't be missed. The weekly `ingest_api` endpoint graph is LLM-extracted and had only part of them.
+  - *`architecture/layout.yaml`:* the only hand-written part. Groups (selectors such as `skill:Query`, `routes:api/*`, `provider:*`; an exact selector beats a wildcard), the edges between groups, and the container and network topology. A live item no group claims is returned as **unplaced**, and a selector matching nothing as **stale**. A unit test fails when the topology disagrees with `docker-compose.yml` (containers, networks, published ports), and another when a route area is unplaced.
+  - *`GET /api/architecture`:* the groups filled with live nodes, unplaced, stale, edges, topology, counts, **what changed since the newest snapshot** (the live inventory against the stored one, so it is never stale) and the last 12 snapshots.
+  - *`snapshot_architecture` tool* (Query skill): stores an `(:ArchSnapshot)` with its diff against the previous one; `dry_run` reports without storing. Set arithmetic, no model. It is the first step of the weekly `brain-api-sync`, followed by a note of the diff (`source_context: architecture_snapshot`), so "what changed this week" is answerable from memory too. The brain takes a baseline snapshot at its first start, so the view has something to compare with from day one.
+- **System → Architecture** (`ArchitectureView`) replaces the 1,131-line `ArchitecturePanel` and its hardcoded map ("47 tools · 15 skills" against a real 98 and 23):
+  - *Diagram:* columns of groups, edges measured from the rendered cards, live status dots on services and providers. Click any box for the rows behind it: a skill's tools, an area's routes (the Routes count opens all 75), a collection's names, a service's live status. Long groups fold to 10 with "+N more".
+  - *Containers:* a container × network grid with published ports and live status, showing at a glance that the sandboxes sit only on the internal network.
+  - *Snapshots:* each with its diff, plus the live change since the newest one.
+  - A banner says what changed since the last snapshot, and lists unplaced items and stale selectors.
+- **Home:** the Brain tile says what changed since the last snapshot. **Health:** the Queue card gains **Drain queue**, the one control the old panel had that nothing else did.
+- **Tests:** 9 Rust unit tests (834 lib tests) and 2 vitest tests (72). On a throwaway Neo4j with the real seed dirs: the baseline at first start; a new skill, a new tool and a deleted schedule all showed in the live diff and the tool's diff, and the new skill as unplaced; then every view driven in headless Chrome.
+
+Dropped rather than moved: the old panel's **integrity card** called `verify_knowledge_integrity`, which no longer exists, so it could only ever fail.
+
+Not built: the optional model-written summary of the weekly diff. The deterministic one-line summary reads well enough, and a model adds a way to be wrong. The brain proposing `layout.yaml` placements for unplaced items is also left for later.
+
+**Done criterion met:** a new tool or schedule shows up in the diagram, the counts and the diff with no frontend change, and a new skill shows up as unplaced until `layout.yaml` places it.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

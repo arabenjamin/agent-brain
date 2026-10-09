@@ -43,6 +43,8 @@ impl Neo4jClient {
             "CREATE CONSTRAINT entity_alias_name IF NOT EXISTS FOR (a:EntityAlias) REQUIRE a.name IS UNIQUE",
             // Topics (services/topics.rs): one node per topics/*.yaml file.
             "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
+            // Architecture snapshots (services/architecture.rs): weekly, with their diff.
+            "CREATE CONSTRAINT arch_snapshot_id IF NOT EXISTS FOR (a:ArchSnapshot) REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
@@ -75,6 +77,7 @@ impl Neo4jClient {
             "CREATE INDEX entity_key_idx IF NOT EXISTS FOR (e:Entity) ON (e.key)",
             "CREATE INDEX entity_id_idx IF NOT EXISTS FOR (e:Entity) ON (e.id)",
             "CREATE INDEX entity_alias_key_idx IF NOT EXISTS FOR (a:EntityAlias) ON (a.key)",
+            "CREATE INDEX arch_snapshot_taken_idx IF NOT EXISTS FOR (a:ArchSnapshot) ON (a.taken_at)",
             // Dynamic tool creation timestamp index
             "CREATE INDEX dynamic_tool_idx IF NOT EXISTS FOR (d:DynamicTool) ON (d.created_at)",
             // Agent job indexes

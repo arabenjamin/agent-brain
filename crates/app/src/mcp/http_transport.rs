@@ -363,6 +363,10 @@ impl HttpTransport {
                 "/api/system/registry",
                 get(crate::clients::system::handle_registry),
             )
+            .route(
+                "/api/architecture",
+                get(crate::clients::architecture::handle_architecture),
+            )
             // --- Topics (clients/topics.rs) ---
             .route("/api/topics", get(crate::clients::topics::handle_list))
             .route("/api/topics/map", get(crate::clients::topics::handle_map))

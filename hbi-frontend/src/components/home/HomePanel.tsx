@@ -19,6 +19,7 @@ import {
   type Breakdown,
   type ScheduledTask,
 } from "../../api/queries";
+import { diffCounts, useArchitecture } from "../../api/system";
 import { assessedShare, useTopics } from "../../api/topics";
 import { summariseScheduler } from "../../lib/scheduler";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
@@ -104,7 +105,25 @@ function BrainTile() {
       </>
     );
   }
-  return <Card title="Brain">{body}</Card>;
+  return <Card title="Brain">{body}<BuildLine /></Card>;
+}
+
+/** What changed in the brain's make-up since the newest architecture snapshot. */
+function BuildLine() {
+  const a = useArchitecture();
+  const s = a.data?.since_snapshot;
+  if (!a.data) return null;
+  const href = hrefTo("system", { view: "architecture" });
+  if (!s) return <div className="home-dim home-detail"><a href={href}>Architecture</a>: no snapshot yet.</div>;
+  const changed = diffCounts(s.diff);
+  const last = a.data.history[0];
+  return (
+    <div className="home-dim home-detail" title={s.summary}>
+      <a href={href}>Architecture</a>
+      {changed ? `: ${changed} since the snapshot ${relTime(s.taken_at)}` : `: unchanged since the snapshot ${relTime(s.taken_at)}`}
+      {last?.previous_id && Object.keys(last.diff).length > 0 && ` (that week: ${diffCounts(last.diff)})`}
+    </div>
+  );
 }
 
 // ── Needs you ────────────────────────────────────────────────────────────────

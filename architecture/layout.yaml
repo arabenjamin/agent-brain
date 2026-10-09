@@ -1,0 +1,179 @@
+# How the architecture view (GET /api/architecture, services/architecture.rs)
+# arranges what the brain is made of. Only what can't be derived lives here:
+# the groups, the edges between them, and the container topology. The rest
+# (skills and their tools, routes, agents, chains, schedules, providers, MCP
+# servers, the services in components.yaml) is read live.
+#
+# members: selectors over the live nodes, `kind:name`.
+#   skill:<skill name>        one per skill (its tools inside)
+#   routes:<area>             HTTP routes by first path segment (api/<x> under /api)
+#   component:<name>          components.yaml
+#   provider:<name>           providers in models.yaml
+#   mcp:<name>                external MCP servers
+#   collection:agents | chains | schedules | dynamic_tools
+# A trailing * is a prefix match; an exact selector wins over a wildcard.
+# A live node no group claims is drawn as "unplaced", and a selector that
+# matches nothing is reported as stale: place a new skill here when it lands.
+#
+# topology mirrors docker-compose.yml; a unit test fails if they disagree.
+
+groups:
+  - id: clients
+    label: Clients
+    column: 0
+    blurb: Who talks to the brain.
+    nodes:
+      - name: hbi
+        label: HBI (this app)
+        detail: React + nginx on port 3002. Talks to /api and /chat.
+      - name: mcp-hosts
+        label: MCP hosts
+        detail: Claude Code and other MCP clients, over /mcp.
+      - name: openai-clients
+        label: OpenAI-wire clients
+        detail: Conduit and anything that speaks /v1/chat/completions.
+
+  - id: doors
+    label: Front doors
+    column: 1
+    blurb: Every way in, each behind the API key.
+    members: ["routes:mcp", "routes:chat", "routes:v1", "routes:health"]
+
+  - id: rest
+    label: REST API
+    column: 1
+    blurb: What the HBI reads and writes.
+    members: ["routes:api/*", "routes:todos", "routes:scheduled-tasks", "routes:scheduler-config"]
+
+  - id: work
+    label: Work and autonomy
+    column: 2
+    blurb: Tasks, the scheduler and its chains, agents.
+    members:
+      - "skill:Task Manager"
+      - "skill:scheduler"
+      - "skill:agent"
+      - "skill:Agent Runner"
+      - "skill:Agent Constructor"
+      - "collection:schedules"
+      - "collection:chains"
+      - "collection:agents"
+
+  - id: memory
+    label: Memory and knowledge
+    column: 2
+    blurb: Notes, claims, datasets and what is in working memory.
+    members:
+      - "skill:Knowledge Manager"
+      - "skill:Claims"
+      - "skill:Datasets"
+      - "skill:Query"
+      - "skill:Working Memory"
+      - "skill:Context Manager"
+      - "skill:Sleep / Training Data Manager"
+      - "skill:resource"
+
+  - id: reach
+    label: Reaching out
+    column: 2
+    blurb: The web, APIs, other MCP servers, media.
+    members:
+      - "skill:Web Search"
+      - "skill:HTTP"
+      - "skill:MCP Client"
+      - "skill:WebSocket"
+      - "skill:Media Learning"
+
+  - id: self
+    label: Self and code
+    column: 2
+    blurb: Reading its own code, running code, its models and tools.
+    members:
+      - "skill:Codebase Inspector"
+      - "skill:git"
+      - "skill:Code Execution"
+      - "skill:Model Management"
+      - "skill:Dynamic Tools"
+      - "collection:dynamic_tools"
+
+  - id: providers
+    label: LLM providers
+    column: 3
+    blurb: Every call is routed by policy; private work only reaches no-log providers.
+    members: ["provider:*"]
+
+  - id: mcp-servers
+    label: External MCP servers
+    column: 3
+    blurb: Called through mcp_call.
+    members: ["mcp:*"]
+
+  - id: stores
+    label: Stores
+    column: 4
+    members: ["component:neo4j", "component:duckdb"]
+
+  - id: local-models
+    label: Local models
+    column: 4
+    blurb: On the 8 GB GPU.
+    members: ["component:llamacpp", "component:ollama"]
+
+  - id: sidecars
+    label: Sidecars
+    column: 4
+    members: ["component:sandbox", "component:rust-sandbox", "component:whisper", "component:searxng"]
+
+edges:
+  - { from: clients, to: doors, label: "MCP, chat, OpenAI wire" }
+  - { from: clients, to: rest, label: "REST" }
+  - { from: doors, to: work, label: "tool calls, agent runs" }
+  - { from: rest, to: memory, label: "search, notes, graph" }
+  - { from: work, to: providers, label: "every LLM call" }
+  - { from: memory, to: stores, label: "notes, entities, telemetry" }
+  - { from: memory, to: local-models, label: "embeddings" }
+  - { from: reach, to: mcp-servers, label: "mcp_call" }
+  - { from: self, to: sidecars, label: "execute_code" }
+  - { from: providers, to: local-models, label: "local generation" }
+
+topology:
+  networks:
+    - name: brain-internal
+      note: The brain and its stores and sidecars.
+    - name: sandbox-net
+      internal: true
+      note: Only the brain and the sandboxes. No gateway, so the sandboxes have no egress.
+    - name: ai-network
+      external: true
+      note: Shared with the HBI.
+  containers:
+    - name: agent-brain
+      networks: [brain-internal, sandbox-net, ai-network]
+      ports: ["3001:3000"]
+      note: This process.
+    - name: neo4j
+      component: neo4j
+      networks: [brain-internal]
+      ports: ["7689:7687", "7476:7474"]
+    - name: llamacpp
+      component: llamacpp
+      networks: [brain-internal]
+    - name: whisper
+      component: whisper
+      networks: [brain-internal]
+    - name: searxng
+      component: searxng
+      networks: [brain-internal]
+    - name: sandbox
+      component: sandbox
+      networks: [sandbox-net]
+    - name: rust-sandbox
+      component: rust-sandbox
+      networks: [sandbox-net]
+    - name: hbi-frontend
+      networks: [ai-network]
+      ports: ["3002:80"]
+  host:
+    - name: ollama
+      component: ollama
+      note: Host Ollama, reached at host.docker.internal.

@@ -2,8 +2,11 @@
  * System → Health: is the machine all right? One call (`/api/system/health`)
  * drives the whole view. Issues come first, worst first; then each service the
  * brain depends on (from `architecture/components.yaml`), then the scheduler,
- * the queue, the GPU lease and the providers.
+ * the queue (with Drain), the GPU lease and the providers.
  */
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiSend } from "../../api/client";
 import { useSystemHealth, type ComponentStatus, type HealthIssue, type SystemHealth } from "../../api/system";
 import { formatLocal, relTime } from "../../lib/time";
 import { hrefTo } from "../../nav";
@@ -126,6 +129,7 @@ function QueueCard({ q, lease }: { q: any; lease: any }) {
           </div>
         ))}
       </div>
+      <DrainButton pending={q?.in_memory_pending ?? 0} />
       <div className="wk-dim sys-detail">
         GPU: {lease?.held ? <span className="tone-text-yellow">leased to {lease.holder} until {formatLocal(lease.expires_at)}</span> : "free (local models available)"}
       </div>
@@ -160,6 +164,29 @@ function ProvidersCard({ budget }: { budget: any }) {
         </ul>
       )}
     </Card>
+  );
+}
+
+/** Drop every job still waiting to start; running jobs finish. */
+function DrainButton({ pending }: { pending: number }) {
+  const qc = useQueryClient();
+  const [msg, setMsg] = useState<string | null>(null);
+  const drain = async () => {
+    if (!confirm(`Drain the queue? The ${pending} waiting jobs are dropped; running jobs finish.`)) return;
+    try {
+      const r = await apiSend<{ drained: number }>("POST", "/api/queue/drain");
+      setMsg(`${r.drained} jobs drained`);
+      qc.invalidateQueries({ queryKey: ["system", "health"] });
+    } catch (e) {
+      setMsg(`Drain failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  return (
+    <div className="sys-actions">
+      <button type="button" className="btn-ghost tone-text-red" disabled={pending === 0} onClick={drain}
+        title={pending === 0 ? "Nothing is waiting" : "Drop every waiting job"}>Drain queue</button>
+      {msg && <span className="wk-dim">{msg}</span>}
+    </div>
   );
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

@@ -9,68 +9,17 @@
 //!   tools, dynamic tools, agents (context profiles), chains, MCP servers,
 //!   providers, schedules.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{Extension, Json, response::IntoResponse};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
-use tracing::warn;
 
 use super::rest::{RestState, unavailable};
+pub use crate::services::architecture::{Component, architecture_dir, components};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Component {
-    pub name: String,
-    pub label: String,
-    #[serde(default)]
-    pub kind: String,
-    /// `neo4j` | `duckdb` | `http`.
-    pub probe: String,
-    #[serde(default)]
-    pub url_env: Option<String>,
-    #[serde(default)]
-    pub strip_suffix: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub required: bool,
-    #[serde(default)]
-    pub purpose: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ComponentsFile {
-    #[serde(default)]
-    components: Vec<Component>,
-}
-
-pub fn architecture_dir() -> std::path::PathBuf {
-    std::env::var("ARCHITECTURE_DIR")
-        .unwrap_or_else(|_| "architecture".into())
-        .into()
-}
-
-/// `architecture/components.yaml`, read once. Missing → no probes, and the
-/// health response says the list is empty rather than claiming all is well.
-pub fn components() -> &'static [Component] {
-    static C: OnceLock<Vec<Component>> = OnceLock::new();
-    C.get_or_init(|| {
-        let p = architecture_dir().join("components.yaml");
-        match std::fs::read_to_string(&p)
-            .map_err(anyhow::Error::from)
-            .and_then(|t| serde_yaml::from_str::<ComponentsFile>(&t).map_err(Into::into))
-        {
-            Ok(f) => f.components,
-            Err(e) => {
-                warn!(path = %p.display(), error = %e, "system health: no component list");
-                Vec::new()
-            }
-        }
-    })
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -727,7 +676,8 @@ mod tests {
     fn the_shipped_component_list_parses() {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../architecture/components.yaml");
-        let f: ComponentsFile = serde_yaml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let f: crate::services::architecture::ComponentsFile =
+            serde_yaml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
         assert!(f.components.iter().any(|c| c.name == "neo4j" && c.required));
         assert!(
             f.components

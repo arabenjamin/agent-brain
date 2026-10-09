@@ -226,7 +226,7 @@ services:
       - MCP_SERVERS_DIR=/home/agent/agent-brain/mcp-servers      # external MCP servers the brain may call (aidevboard, worklittle, exa, tavily)
       - ENTITY_ALIASES_DIR=/home/agent/agent-brain/entities       # entity resolution seed: curated aliases, titles, type spellings (services/entity_resolution.rs)
       - TOPICS_DIR=/home/agent/agent-brain/topics                 # the domains notes are classified into by the local model (services/topics.rs)
-      - ARCHITECTURE_DIR=/home/agent/agent-brain/architecture     # components the System health view probes (clients/system.rs)
+      - ARCHITECTURE_DIR=/home/agent/agent-brain/architecture     # components.yaml (health probes) + layout.yaml (architecture view)
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
       # 1, paired with the 6h interval in schedules/media-watch.yaml — see the

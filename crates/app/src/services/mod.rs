@@ -1,5 +1,6 @@
 pub mod acled;
 pub mod agent_runner;
+pub mod architecture;
 pub mod budget;
 pub mod chain_seeder;
 pub mod claims;

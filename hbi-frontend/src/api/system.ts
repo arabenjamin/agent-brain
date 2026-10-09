@@ -126,3 +126,86 @@ export function useLogs(q: LogQuery, live: boolean) {
     placeholderData: (prev) => prev,
   });
 }
+
+// ── Architecture (`clients/architecture.rs`, `services/architecture.rs`) ────
+
+export interface ArchNode {
+  /** `kind:name`, what a layout.yaml selector matches. */
+  id: string;
+  kind: "skill" | "routes" | "component" | "provider" | "mcp" | "collection" | "static";
+  name: string;
+  label: string;
+  count: number;
+  /** The rows behind `count`: tools, routes, schedule names, … */
+  items: string[];
+  detail: string;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any -- per-kind extras */
+  meta: Record<string, any>;
+}
+
+export interface ArchGroup {
+  id: string;
+  label: string;
+  column: number;
+  blurb: string;
+  nodes: ArchNode[];
+}
+
+export interface ArchChange { added: string[]; removed: string[] }
+export type ArchDiff = Record<string, ArchChange>;
+
+export interface ArchSnapshot {
+  id: string;
+  taken_at: string;
+  trigger: string;
+  version: string | null;
+  counts: Record<string, number>;
+  diff: ArchDiff;
+  summary: string;
+  previous_id: string | null;
+}
+
+export interface Architecture {
+  generated_at: string;
+  counts: Record<string, number>;
+  groups: ArchGroup[];
+  unplaced: ArchNode[];
+  stale: string[];
+  edges: { from: string; to: string; label: string }[];
+  topology: {
+    networks: { name: string; internal: boolean; external: boolean; note: string }[];
+    containers: { name: string; networks: string[]; ports: string[]; component: string | null; note: string }[];
+    host: { name: string; component: string | null; note: string }[];
+  };
+  layout_loaded: boolean;
+  /** Live against the newest snapshot: never out of date. */
+  since_snapshot: { snapshot_id: string; taken_at: string; version: string | null; summary: string; diff: ArchDiff } | null;
+  history: ArchSnapshot[];
+}
+
+export function useArchitecture() {
+  return useQuery({
+    queryKey: ["system", "architecture"],
+    queryFn: () => apiJson<Architecture>("/api/architecture"),
+    staleTime: 60_000,
+  });
+}
+
+/** Display names for the diff and count categories. */
+export const ARCH_CATEGORY: Record<string, string> = {
+  skills: "skills", tools: "tools", routes: "routes", agents: "agents", chains: "chains",
+  schedules: "schedules", mcp_servers: "MCP servers", dynamic_tools: "dynamic tools",
+  providers: "providers", components: "services",
+};
+
+/** `+3 tools, −1 schedule` — counts only, for a one-line summary. */
+export function diffCounts(d: ArchDiff): string {
+  const parts: string[] = [];
+  for (const [cat, label] of Object.entries(ARCH_CATEGORY)) {
+    const c = d[cat];
+    if (!c) continue;
+    if (c.added.length) parts.push(`+${c.added.length} ${label}`);
+    if (c.removed.length) parts.push(`−${c.removed.length} ${label}`);
+  }
+  return parts.join(", ");
+}

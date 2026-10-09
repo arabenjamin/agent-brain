@@ -29,7 +29,7 @@ src/
   api/search.ts      /api/search, entities, id lookup
   api/entities.ts    entity merge proposals, merge / different / related, undo
   api/topics.ts      topics, coverage, the topic map, one topic
-  api/system.ts      one-call system health, the registry, filtered logs
+  api/system.ts      one-call system health, the registry, filtered logs, the live architecture
   api/mcp.ts         MCP SDK client (Streamable HTTP) + server-push fan-out
   api/chat.ts        /chat SSE stream
   router.ts          hash routing: #/<workspace>?<kind>=<id>
@@ -38,7 +38,7 @@ src/
   lib/               time (UTC in, local out), ids, scheduler state, useNow
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
   components/drawer/ entity drawer: note, entity, topic, task (lineage), job, schedule, todo, proposal
-  components/system/ System: Health, Logs, Registry
+  components/system/ System: Health, Logs, Registry, Architecture (drawn from /api/architecture + architecture/layout.yaml)
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Map (topic hubs) / Neighbourhood / Timeline
   components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History); the Inbox holds entity merge proposals

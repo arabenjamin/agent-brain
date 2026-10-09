@@ -873,6 +873,14 @@ impl BrainCore {
             {
                 warn!(error = %e, "Code-version sync failed (continuing without it)");
             }
+
+            // The architecture view's "what changed" needs a baseline; take the
+            // first snapshot now rather than after the first weekly run.
+            match crate::services::architecture::ensure_baseline(neo4j).await {
+                Ok(Some(s)) => info!(summary = %s.summary, "Architecture baseline snapshot taken"),
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "Architecture baseline snapshot failed (continuing)"),
+            }
         }
     }
 
