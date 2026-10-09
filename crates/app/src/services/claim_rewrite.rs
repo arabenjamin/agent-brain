@@ -30,7 +30,7 @@ use tracing::{info, warn};
 use crate::repository::Neo4jClient;
 use crate::services::claims::{
     About, ExtractedClaim, KEEP_AS_WRITTEN, REWRITE_SOURCE_CHARS, REWRITE_SYSTEM, STANDALONE_RULES,
-    SourceRef, canon, repair_claim, rewrite_losses, source_reference, standalone_problems,
+    SourceRef, repair_claim, rewrite_losses, source_reference, standalone_problems,
 };
 use crate::services::traits::LlmProvider;
 
@@ -283,9 +283,16 @@ pub fn judge(
     if !problems.is_empty() {
         return (Outcome::Ambiguous, Some(a), Some(problems.join("; ")));
     }
-    // A rewrite that only changed typography or spacing is no rewrite: keep
-    // the stored text rather than re-embed it for a non-breaking hyphen.
-    let same = |s: &str| canon(s).split_whitespace().collect::<Vec<_>>().join(" ");
+    // A rewrite that only changed punctuation, spacing or case is no rewrite:
+    // keep the stored text rather than re-embed it for a full stop. The dry
+    // run counted 6 of 30 "rewrites" that were only that ("64 %", a trailing
+    // full stop).
+    let same = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
     if same(&a.claim) == same(before) {
         (Outcome::AlreadyStandsAlone, Some(a), None)
     } else {
@@ -559,7 +566,17 @@ mod tests {
             answer("Ofgem fined 3 banks in 2024.", &[("Ofgem", "regulator")]),
         );
         assert_eq!(o, Outcome::Rewritten);
-        // Typography alone is not a rewrite.
+        // Punctuation, spacing and case alone are not a rewrite.
+        let (o, _, _) = judge(
+            "Ofgem fined 3 banks in 2024",
+            answer("Ofgem fined 3 banks in 2024.", &[("Ofgem", "regulator")]),
+        );
+        assert_eq!(o, Outcome::AlreadyStandsAlone);
+        let (o, _, _) = judge(
+            "Ofgem fines 64% of banks",
+            answer("Ofgem fines 64 % of banks", &[("Ofgem", "regulator")]),
+        );
+        assert_eq!(o, Outcome::AlreadyStandsAlone);
         let tidy = "Ofgem fined 3 banks in 2024-25.";
         let (o, _, _) = judge(
             tidy,

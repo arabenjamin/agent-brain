@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 built and deployed 2026-10-08, its full claim rewrite waiting on the user's review of the dry run; Phases 10–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phases 10–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -648,7 +648,7 @@ Not built here: a claim's source on the claim node itself (Phase 9 stores `sourc
 
 **Done criterion met:** the Paragon claim's drawer links the Citizen Lab article, and no control in the step editor claims to choose something it doesn't.
 
-### Phase 9 outcome (2026-10-08, rewrite pending review)
+### Phase 9 outcome (2026-10-08; full rewrite applied 2026-10-09)
 
 Built and deployed:
 - **Every note's provenance is decided by who writes it** (`knowledge::effective_provenance`):
@@ -683,10 +683,21 @@ Built and deployed:
 - **The Paragon claim (889d47f8)** now reads: "Paragon Solutions' CEO Andrew Boyd said that Paragon Solutions lacks a mechanism to verify customer misuse of its spyware or to deploy a 'kill switch' to disable the Paragon Solutions spyware." That needed the rule "if the source gives no name, say whose it is". The source never names the product.
 - **Not caught by any check:** "admitted" became "said". Verbs that soften are invisible to a mechanical guard, which is why the user reads the dry-run report before the full run.
 
-**Waiting on the user:**
-- read the dry-run report;
-- then the full run: ~1,050 sources, about an hour on gpt-oss:120b-cloud, snapshot first;
-- then `eval-retrieval` before and after.
+**Full run, 2026-10-09** (after the user approved the dry run): 4,510 claims from 1,054 sources in 87 minutes, 0 calls failed. Snapshot first: `snapshot_pre_claim_rewrite_20261009_040444.json.gz`.
+- **Outcome:**
+  - 2,712 rewritten;
+  - 1,578 already stood alone;
+  - 152 ambiguous;
+  - 43 kept by the meaning guard;
+  - 25 with no source note left.
+  
+  That makes 220 claims marked `ambiguous`, each with its reason. The rewritten claims dropped `topics_version`, so the idle topic pass classifies them again.
+- **Before the run, `judge` counted a typography-only change as a rewrite.** It now compares lowercase letters and digits only, so "2024" vs "2024." and "64%" vs "64 %" count as unchanged.
+- **`eval-retrieval`:** recall@10 went from 0.920 to 0.880, and MRR from 0.757 to 0.780.
+  - One case improved, from rank 3 to rank 1 (Leavitt).
+  - One was lost: "Can Reticulum firmware run directly on Meshtastic LoRa radios?" It was a hit at rank 10, at the very edge, and is now outside the top 30.
+  - Its target claim (77b8c4ed) was not changed; it already stood alone. It is outranked by rewritten neighbours that now name Reticulum and Meshtastic outright ("A bridge (such as a Raspberry Pi) can now link the Meshtastic application/firmware with the Reticulum networking protocol"). Those neighbours answer the same question.
+  - On 25 cases a single case is 0.04, so this is read as a re-rank among relevant claims, not damage. The snapshot restores the old text if it proves otherwise.
 
 Not built: a check that catches a missing location or target ("AI agents were deployed", with no target named).
 

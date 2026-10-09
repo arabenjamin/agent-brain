@@ -209,7 +209,7 @@ const PRONOUN_OPENERS: &[&str] = &[
 /// One spelling for the typography models vary: curly quotes, the Unicode
 /// hyphens and dashes (gpt-oss writes "AP\u{2011}NORC" with a non-breaking
 /// hyphen), and non-breaking spaces.
-pub(crate) fn canon(s: &str) -> String {
+fn canon(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             '\u{2018}' | '\u{2019}' => '\'',
