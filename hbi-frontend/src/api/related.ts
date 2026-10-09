@@ -6,6 +6,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { apiJson, query } from "./client";
+import type { Relation } from "./relations";
 
 export interface RelatedEntity {
   id: string;
@@ -29,6 +30,8 @@ export interface RelatedResponse {
 }
 
 export interface PairResponse {
+  /** Typed relationships between the two, either direction, rejected included. */
+  relations: Relation[];
   a: { id: string; name: string | null };
   b: { id: string; name: string | null };
   topic: string | null;
@@ -48,6 +51,8 @@ export interface NeighbourhoodNode {
 }
 
 export interface NeighbourhoodResponse {
+  /** Typed relationships among the nodes (active and proposed). */
+  relations: { source: string; target: string; type: string; label: string; status: "active" | "proposed"; method: string | null }[];
   center: string;
   topic: string | null;
   total_related: number;

@@ -668,6 +668,14 @@ impl BrainCore {
         }
         skills.push(Arc::new(search));
 
+        // Relations — typed relationships proposed from claims (Phase 17).
+        if let Some(neo4j) = &self.storage.neo4j {
+            skills.push(Arc::new(crate::skills::relations::RelationSkill::new(
+                neo4j.clone(),
+                Arc::clone(&llm),
+            )));
+        }
+
         // Claims — epistemic status for ingested assertions.
         if let Some(neo4j) = &self.storage.neo4j {
             skills.push(Arc::new(ClaimSkill::new(

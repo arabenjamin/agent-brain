@@ -1,0 +1,75 @@
+# The relationship types entities can have (HBI_REDESIGN_PLAN.md §10.5,
+# Phase 17). A closed list: the extractor may use only these, and the user
+# picks from them. An open vocabulary from a small model grows synonyms
+# ("employed_by", "works_at", "staff_of") faster than they can be merged.
+#
+# Each type:
+#   name        the stored `RELATES.type`
+#   label       how the HBI reads it: "<from> <label> <to>"
+#   inverse     how it reads from the other end ("<to> <inverse> <from>")
+#   definition  what the extractor is told (keep it short: a local-model prompt)
+#   from / to   the entity types allowed at each end (empty: any)
+#   symmetric   true: A–B is the same as B–A (stored once, lower id first)
+#   extract     false: only the user sets it
+#
+# Entity types the extractor writes: person, organisation, location, technology,
+# tool, concept, and a few rarer ones (product, programme, law, event). Many real
+# things are typed `concept`, so the "thing" ends allow it (Phase 17 measurement).
+types:
+  - name: works_for
+    label: works for
+    inverse: employs
+    definition: a person is employed by, serves or represents an organisation or another person
+    from: [person]
+    to: [organisation, person]
+  - name: leads
+    label: leads
+    inverse: is led by
+    definition: a person heads, chairs, founded or runs an organisation, or governs a place
+    from: [person]
+    to: [organisation, location]
+  - name: member_of
+    label: is a member of
+    inverse: has member
+    definition: a person or organisation belongs to a party, group, alliance or body
+    from: [person, organisation, location]
+    to: [organisation]
+  - name: part_of
+    label: is part of
+    inverse: includes
+    definition: a unit, subsidiary, region or component of something larger of the same kind
+    from: [organisation, location, technology, tool, product, programme, law, event, concept]
+    to: [organisation, location, technology, tool, product, programme, law, event, concept]
+  - name: located_in
+    label: is in
+    inverse: contains
+    definition: an organisation, place or facility is based or situated in a place
+    from: [organisation, location, event]
+    to: [location]
+  - name: owns
+    label: owns
+    inverse: is owned by
+    definition: a person or organisation owns, acquired or controls an organisation or product
+    from: [person, organisation]
+    to: [organisation, technology, tool, product, programme]
+  - name: made_by
+    label: is made by
+    inverse: makes
+    definition: a technology or product is developed, built or released by an organisation or person
+    from: [technology, tool, product, programme, law, concept]
+    to: [organisation, person]
+  - name: allied_with
+    label: is allied with
+    inverse: is allied with
+    definition: two parties support, partner or cooperate with each other
+    symmetric: true
+  - name: opposes
+    label: opposes
+    inverse: is opposed by
+    definition: one party criticises, sues, sanctions, fights or attacks another
+  - name: related_to
+    label: is related to
+    inverse: is related to
+    definition: related in a way the other types don't name (set by the user)
+    symmetric: true
+    extract: false

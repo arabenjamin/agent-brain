@@ -14,6 +14,17 @@
 //!
 //! With `topic`, only that topic's notes count, and entities the user keeps
 //! out of it (`NOT_IN_TOPIC`) are left out.
+//!
+//! Typed relationships (Phase 17, `services/relations.rs`):
+//! - `GET /api/relations/types` — the vocabulary.
+//! - `GET /api/entities/{id}/relations` — its relationships, both directions,
+//!   read from its side, with each one's evidence; rejected ones are counted.
+//! - `POST /api/relations` `{from, to, type, note_id?}` — the user sets one.
+//! - `POST /api/relations/decide` `{from, to, type, accept}` — a proposal.
+//! - `POST /api/relations/relabel` `{from, to, type, new_type}`.
+//! - `DELETE /api/relations?from=&to=&type=` — the user's own is deleted, an
+//!   extracted one kept as rejected.
+//! - `GET /api/relations/proposed?limit=` — proposals to review, newest first.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -196,7 +207,9 @@ pub async fn handle_pair(
         })
         .collect();
     let shared = r.get::<i64>("shared").unwrap_or(0);
+    let relations = between(neo4j, a, b).await.unwrap_or_default();
     Json(json!({
+        "relations": relations,
         "a": { "id": a, "name": r.get::<String>("a_name").ok() },
         "b": { "id": b, "name": r.get::<String>("b_name").ok() },
         "topic": if topic.is_empty() { Value::Null } else { json!(topic) },
@@ -309,7 +322,33 @@ pub async fn handle_neighbourhood(
             }))
         })
         .collect();
+    let typed: Vec<Value> = match neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (a:Entity)-[r:RELATES]->(b:Entity) \
+                 WHERE a.id IN $ids AND b.id IN $ids AND r.status IN ['active', 'proposed'] \
+                 RETURN a.id AS a, b.id AS b, r.type AS type, r.status AS status, r.method AS method",
+            )
+            .param("ids", nodes.iter().filter_map(|n| n["id"].as_str().map(String::from)).collect::<Vec<_>>()),
+        )
+        .await
+    {
+        Ok(rows) => rows
+            .iter()
+            .map(|r| {
+                let t = r.get::<String>("type").unwrap_or_default();
+                json!({
+                    "source": r.get::<String>("a").ok(), "target": r.get::<String>("b").ok(),
+                    "type": t,
+                    "label": Vocabulary::global().get(&t).map(|v| v.label.clone()).unwrap_or(t.clone()),
+                    "status": r.get::<String>("status").ok(), "method": r.get::<String>("method").ok(),
+                })
+            })
+            .collect(),
+        Err(e) => return internal(e),
+    };
     Json(json!({
+        "relations": typed,
         "center": id,
         "topic": if topic.is_empty() { Value::Null } else { json!(topic) },
         "total_related": total,
@@ -317,6 +356,255 @@ pub async fn handle_neighbourhood(
         "links": links,
     }))
     .into_response()
+}
+
+// ── Typed relationships (Phase 17) ───────────────────────────────────────
+
+use crate::services::relations::{self as rel, Vocabulary};
+
+pub async fn handle_relation_types() -> Response {
+    Json(json!({ "types": Vocabulary::global().types })).into_response()
+}
+
+/// A relationship row read from `side`'s point of view.
+fn relation_json(m: &neo4rs::BoltMap, side: &str) -> Value {
+    let s = |k: &str| m.get::<String>(k).ok();
+    let (from, to) = (s("from").unwrap_or_default(), s("to").unwrap_or_default());
+    let t = s("type").unwrap_or_default();
+    let vt = Vocabulary::global().get(&t);
+    let outgoing = from == side;
+    let reads = vt
+        .map(|v| {
+            if outgoing {
+                v.label.clone()
+            } else {
+                v.inverse.clone()
+            }
+        })
+        .unwrap_or_else(|| t.clone());
+    let other = if outgoing { "to" } else { "from" };
+    json!({
+        "from": from, "to": to, "type": t, "reads": reads,
+        "other": {
+            "id": s(other),
+            "name": s(&format!("{other}_name")),
+            "entity_type": s(&format!("{other}_type")),
+        },
+        "method": s("method"), "status": s("status"),
+        "evidence": m.get::<Vec<String>>("evidence").unwrap_or_default(),
+        "model": s("model"),
+        "created_at": s("created_at"), "decided_at": s("decided_at"),
+    })
+}
+
+const REL_ROW: &str = "{from: a.id, to: b.id, from_name: a.name, to_name: b.name, \
+     from_type: a.entity_type, to_type: b.entity_type, type: r.type, method: r.method, \
+     status: r.status, evidence: coalesce(r.evidence, []), model: r.model, \
+     created_at: toString(r.created_at), decided_at: toString(r.decided_at)}";
+
+pub async fn handle_entity_relations(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let rows = match neo4j
+        .execute(
+            neo4rs::query(&format!(
+                "MATCH (x:Entity {{id: $id}}) \
+                 OPTIONAL MATCH (a:Entity)-[r:RELATES]->(b:Entity) WHERE a = x OR b = x \
+                 WITH x, collect(CASE WHEN r IS NULL THEN NULL ELSE {REL_ROW} END) AS rels \
+                 RETURN [v IN rels WHERE v.status <> 'rejected'] AS rels, \
+                        size([v IN rels WHERE v.status = 'rejected']) AS rejected"
+            ))
+            .param("id", id.as_str()),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    let Some(r) = rows.first() else {
+        return not_found();
+    };
+    let mut rels: Vec<Value> = r
+        .get::<Vec<neo4rs::BoltMap>>("rels")
+        .unwrap_or_default()
+        .iter()
+        .map(|m| relation_json(m, &id))
+        .collect();
+    // Yours and accepted first, then proposals; by type within each.
+    rels.sort_by_key(|v| {
+        (
+            v["status"] != "active",
+            v["type"].as_str().unwrap_or("").to_string(),
+        )
+    });
+    Json(json!({
+        "entity": id,
+        "relations": rels,
+        "rejected": r.get::<i64>("rejected").unwrap_or(0),
+    }))
+    .into_response()
+}
+
+fn text(body: &Value, k: &str) -> String {
+    body[k].as_str().map(str::trim).unwrap_or("").to_string()
+}
+
+fn outcome(r: anyhow::Result<Result<Value, String>>, what: &str) -> Response {
+    match r {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => bad_request(format!("{what}: {e}")),
+        Err(e) => internal(e),
+    }
+}
+
+pub async fn handle_set_relation(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let note = text(&body, "note_id");
+    outcome(
+        rel::set_manual(
+            neo4j,
+            &text(&body, "from"),
+            &text(&body, "to"),
+            &text(&body, "type"),
+            (!note.is_empty()).then_some(note.as_str()),
+        )
+        .await,
+        "Relationship not set",
+    )
+}
+
+pub async fn handle_decide_relation(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let Some(accept) = body["accept"].as_bool() else {
+        return bad_request("`accept` (true or false) is required");
+    };
+    outcome(
+        rel::decide(
+            neo4j,
+            &text(&body, "from"),
+            &text(&body, "to"),
+            &text(&body, "type"),
+            accept,
+        )
+        .await,
+        "Not decided",
+    )
+}
+
+pub async fn handle_relabel_relation(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    outcome(
+        rel::relabel(
+            neo4j,
+            &text(&body, "from"),
+            &text(&body, "to"),
+            &text(&body, "type"),
+            &text(&body, "new_type"),
+        )
+        .await,
+        "Not relabelled",
+    )
+}
+
+pub async fn handle_remove_relation(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let p = |k: &str| params.get(k).cloned().unwrap_or_default();
+    outcome(
+        rel::remove(neo4j, &p("from"), &p("to"), &p("type")).await,
+        "Not removed",
+    )
+}
+
+/// Proposals to review, newest first, each with its first evidence note.
+pub async fn handle_proposed_relations(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let rows = match neo4j
+        .execute(
+            neo4rs::query(&format!(
+                "MATCH (a:Entity)-[r:RELATES {{status: 'proposed'}}]->(b:Entity) \
+                 WITH a, r, b ORDER BY r.created_at DESC \
+                 WITH collect({REL_ROW}) AS proposals \
+                 UNWIND proposals[0..$limit] AS v \
+                 OPTIONAL MATCH (n:Note {{id: head(v.evidence)}}) \
+                 RETURN size(proposals) AS total, v, n.content AS evidence_text"
+            ))
+            .param("limit", limit(&params, 30)),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    let total = rows
+        .first()
+        .and_then(|r| r.get::<i64>("total").ok())
+        .unwrap_or(0);
+    let list: Vec<Value> = rows
+        .iter()
+        .filter_map(|r| {
+            let m = r.get::<neo4rs::BoltMap>("v").ok()?;
+            let from = m.get::<String>("from").unwrap_or_default();
+            let mut v = relation_json(&m, &from);
+            v["from_name"] = json!(m.get::<String>("from_name").ok());
+            v["evidence_text"] = json!(r.get::<String>("evidence_text").ok());
+            Some(v)
+        })
+        .collect();
+    Json(json!({ "total": total, "returned": list.len(), "proposed": list })).into_response()
+}
+
+/// Relationships between two entities (either direction, rejected included,
+/// so the pair view can say what was turned down).
+pub(crate) async fn between(
+    neo4j: &crate::repository::Neo4jClient,
+    a: &str,
+    b: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let rows = neo4j
+        .execute(
+            neo4rs::query(&format!(
+                "MATCH (a:Entity)-[r:RELATES]->(b:Entity) \
+                 WHERE (a.id = $x AND b.id = $y) OR (a.id = $y AND b.id = $x) \
+                 RETURN {REL_ROW} AS v"
+            ))
+            .param("x", a)
+            .param("y", b),
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.get::<neo4rs::BoltMap>("v").ok())
+        .map(|m| relation_json(&m, a))
+        .collect())
 }
 
 #[cfg(test)]

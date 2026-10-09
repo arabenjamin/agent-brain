@@ -27,6 +27,7 @@ pub mod procedure_executor;
 pub mod provider_gate;
 pub mod provider_registry;
 pub mod queue;
+pub mod relations;
 pub mod repair;
 pub mod resource_registry;
 pub mod retrieval_eval;

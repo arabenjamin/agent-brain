@@ -3,7 +3,7 @@
  * Items to act on (done, snooze, reply), notifications to read (opening one
  * opens its conversation and marks it read), and one card per system signal
  * that drills to its rows. `?mode=merges` is the entity-merge list the
- * merges card opens.
+ * merges card opens; `?mode=relations` the relationships to review.
  */
 import { useState, type ReactNode } from "react";
 import { useMergeCandidates } from "../../api/entities";
@@ -15,6 +15,7 @@ import { openEntity } from "../drawer/entities";
 import { assigneeLabel, ORIGIN_LABELS, PRIORITY_LABELS, STATUS_LABELS } from "../todos/model";
 import { EmptyState, Pill } from "../ui";
 import MergeCandidates from "./MergeCandidates";
+import RelationReview from "./RelationReview";
 import { HandToAgent, ReviewActions } from "../items/ItemActions";
 
 const MERGE_SHOWN = 30;
@@ -165,6 +166,7 @@ function Merges() {
 export default function FeedLane({ openId, mode }: { openId?: string; mode?: string }) {
   const q = useFeed();
   if (mode === "merges") return <Merges />;
+  if (mode === "relations") return <RelationReview />;
   const f = q.data;
   return (
     <div className="wk-lane scroll">
@@ -189,7 +191,7 @@ export default function FeedLane({ openId, mode }: { openId?: string; mode?: str
           <Section title="Signals" count={f.digests.length}>
             {f.digests.map((d) => (
               <a key={d.kind} className="wk-row wk-feed-digest" href={hrefTo("work", d.drill)}>
-                <span className="wk-row-lead"><Pill tone={d.kind === "entity_merges" ? "purple" : "red"}>{d.count}</Pill></span>
+                <span className="wk-row-lead"><Pill tone={d.kind === "entity_merges" || d.kind === "relations" ? "purple" : "red"}>{d.count}</Pill></span>
                 <span className="wk-row-main">{d.title}</span>
                 <span className="wk-row-meta wk-dim">open →</span>
               </a>

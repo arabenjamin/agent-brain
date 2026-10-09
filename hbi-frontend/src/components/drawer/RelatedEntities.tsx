@@ -6,6 +6,8 @@
  */
 import { useState } from "react";
 import { usePair, useRelated } from "../../api/related";
+import { useRelationTypes } from "../../api/relations";
+import { AddRelation, RelationRow } from "./EntityRelations";
 import { noteTone } from "../../lib/noteTypes";
 import { relTime } from "../../lib/time";
 import { hrefTo } from "../../nav";
@@ -16,8 +18,22 @@ export function PairNotes({ a, b, topic }: { a: string; b: string; topic?: strin
   const q = usePair(a, b, topic);
   if (!q.data) return <LoadState what="shared notes" id={`${a} + ${b}`} error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
+  return <PairBody d={d} />;
+}
+
+function PairBody({ d }: { d: NonNullable<ReturnType<typeof usePair>["data"]> }) {
+  const types = useRelationTypes();
+  const [adding, setAdding] = useState(false);
+  const live = d.relations.filter((r) => r.status !== "rejected");
+  const rejected = d.relations.length - live.length;
   return (
     <div className="rel-pair">
+      {live.length > 0 && <ul className="dw-list">{live.map((r) => <RelationRow key={`${r.from}|${r.type}|${r.to}`} r={r} types={types.data?.types ?? []} />)}</ul>}
+      <div className="item-actions">
+        {live.length === 0 && <span className="dw-dim">No typed relationship between them{rejected ? ` (${rejected} rejected)` : ""}.</span>}
+        <button type="button" className="btn-ghost" onClick={() => setAdding((a) => !a)}>{adding ? "Cancel" : `+ How ${d.a.name} relates to ${d.b.name}`}</button>
+      </div>
+      {adding && <AddRelation self={d.a.id} selfName={d.a.name ?? d.a.id} other={{ id: d.b.id, name: d.b.name ?? d.b.id }} noteId={d.notes[0]?.id} />}
       <div className="dw-dim">
         {d.shared} {d.shared === 1 ? "note mentions" : "notes mention"} both {d.a.name} and {d.b.name}
         {d.topic ? ` in ${d.topic}` : ""}{d.returned < d.shared ? `; the newest ${d.returned} shown` : ""}

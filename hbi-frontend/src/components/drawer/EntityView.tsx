@@ -15,6 +15,7 @@ import { Drawer, EmptyState, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section } from "./parts";
 import RelatedEntities from "./RelatedEntities";
+import EntityRelations from "./EntityRelations";
 
 const METHOD_LABEL: Record<string, string> = {
   seed: "curated seed",
@@ -73,6 +74,8 @@ function Body({ d }: { d: EntityDetail }) {
           <MergeCandidates items={cands.data!.candidates} />
         </Section>
       )}
+
+      <EntityRelations id={id} name={d.entity.name ?? id} />
 
       <RelatedEntities id={id} topics={(d.topics ?? []).filter((t) => !t.hidden)} />
 

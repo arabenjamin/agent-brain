@@ -416,6 +416,16 @@ async fn run_init_db(config: &Config) -> Result<()> {
         Err(e) => warn!(error = %e, "Topic sync failed (non-fatal)"),
     }
 
+    // Relationships: the merge list's "related" answers become `related_to`
+    // relationships the user set (services/relations.rs).
+    match agent_brain::services::relations::fold_related_entity(&client).await {
+        Ok(n) => info!(
+            count = n,
+            "Folded RELATED_ENTITY answers into related_to relationships"
+        ),
+        Err(e) => warn!(error = %e, "Relationship fold failed (non-fatal)"),
+    }
+
     if schedules_dir.exists() {
         match schedule_seeder::seed_schedules_from_dir(&client, &schedules_dir).await {
             Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),

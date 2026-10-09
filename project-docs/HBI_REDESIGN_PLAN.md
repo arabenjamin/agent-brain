@@ -1061,3 +1061,56 @@ Built and deployed:
 - The chief-of-staff claim itself (2026-08-12) joins the pair's evidence when the backlog reaches it.
 
 **Tests:** 876 Rust lib tests (2 new) and 97 vitest (2 new).
+
+### Phase 17 outcome (2026-10-09) — the third round is complete
+
+Built and deployed:
+- **The vocabulary** (`relations/types.yaml`, `RELATIONS_DIR`): works_for, leads, member_of, part_of, located_in, owns, made_by, allied_with, opposes, and the user-only related_to. Each has a label, its inverse, a definition and the entity types allowed at each end.
+- **Storage** (`services/relations.rs`): `(:Entity)-[:RELATES {type, method, status, evidence}]->(:Entity)`.
+  - The user's relationships are active. Extracted ones are proposals until accepted or rejected, and a rejected one is kept, so it is never proposed again.
+  - A symmetric type is stored once.
+  - The merge list's "related" answers (`RELATED_ENTITY`) fold into `related_to`, at `init-db` and at each new answer.
+- **Extraction:**
+  - `extract_relations` reads claims that name two or more entities and proposes the relationships they state, validating each against the claim's own entities and the vocabulary and reporting every drop with its reason. `note_id` re-reads one claim.
+  - `schedules/relation-extraction.yaml` runs it every 30 minutes over 30 claims, with the step pinned to `gpt-oss:120b-cloud`.
+- **REST:** the vocabulary; an entity's relationships read from its side; set, decide, relabel and remove; and the proposals to review.
+- **HBI:**
+  - **Entity drawer:** a Relationships section ("works for Prince Andrew", "employs Amanda Thursk"), with set-by-you / proposed / accepted, evidence links, accept / reject, change type, remove, and "+ Relationship" (type, direction, the other entity).
+  - **Pair view:** the relationships between the two, and "+ How A relates to B" with the shared note as evidence.
+  - **Feed:** a "relationships to review" card and its review list, each proposal with the sentence that states it.
+  - **Neighbourhood:** blue arrows for relationships, labelled when zoomed in, dashed while proposed.
+
+**Measured before anything was written.** Relations were hand-labelled from claims with two or more entities. Strict counts a relation only when the sentence says it and both ends are the right entities. Lenient also accepts defensible readings ("co-founder" → leads, a network layer "part of" a mesh network).
+
+| Model, prompt | Set | Relations kept | Right (lenient) | Right (strict) |
+|---|---|---|---|---|
+| Gemma-4-E4B (local), v1 | tuning, 30 claims | 8 | 2 | 2 |
+| Gemma-4-E4B, v2 (stricter) / v3 (examples) | tuning | 0 / 1 | — / 0 | — / 0 |
+| gpt-oss:120b-cloud, v3 | tuning | 14 | 13 | 11 |
+| gpt-oss:120b-cloud, v3 | held out, 30 claims | 8 | 5 | 3 |
+| **gpt-oss:120b-cloud, v4** (examples from the held-out failures) | **fresh held out, 30 claims** | **9** | **8** | **5** |
+
+- **The local model can't do this.** With examples it answered `[]` even for the sentence its own example spelled out ("Mossad Director Roman Gofman").
+- **The cloud model is useful but not trustworthy alone.**
+  - Its misses: something belonging to an entity taken for the entity ("Ford is in Mexico" from "a Ford plant in Mexico"); a forum's place taken for its host's; and a refused relationship read as stated (Will Geer and the Communist Party).
+  - v4's examples target those three. It also reaches for outside knowledge ("CIA is in the US").
+  - **So every extracted relationship is a proposal.** It is recall-light: 9 relations from 30 claims.
+- **Entity types needed loosening.** 3,076 entities are typed `concept`, many of them real things, so the "thing" ends allow concept, product, programme, law and event. Strict typing dropped "Starship is made by SpaceX".
+
+**Verified live (the done-condition):**
+- **Precision** is measured on a fresh held-out set and recorded above.
+- **Rejected stays rejected:**
+  - the first scheduled run read 30 claims and proposed 13, on gpt-oss:120b-cloud per the usage stamp;
+  - "Hallelujah Chorus is part of Pentecost Sunday" was rejected, and its claim re-read five times;
+  - the model proposed it again once, and it stayed rejected (`seen_again: 1`).
+- **A relationship by hand:**
+  - "Amanda Thursk works for Prince Andrew" was set with the chief-of-staff claim as evidence, and read "employs Amanda Thursk" from Prince Andrew's side;
+  - it was relabelled to related_to with the evidence carried over, then removed;
+  - an unknown type and an entity related to itself were refused.
+- **The fold:** it turned the one "related" merge answer (MSS ↔ Ministry of State Security) into `related_to`.
+
+**Tests:** 880 Rust lib tests (4 new) and 97 vitest.
+
+**Left as it is:**
+- **The backlog:** about 650 claims with entities are waiting, and more arrive as the claim entity backfill continues, so proposals will accumulate in the Feed's review card.
+- **The other extraction prompt:** the general one used by `store_note` is unchanged.

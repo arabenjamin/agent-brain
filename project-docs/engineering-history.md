@@ -839,6 +839,24 @@ The done-condition was Amanda Thursk's view showing Prince Andrew, with the clai
 
 An idle-time loop now backfills them. Its first 250 claims came back with no entities for 161, though most of those name someone. Called directly, the local model gave the same empty answer to the general extraction prompt for 22 of 30 claims ("Senator Mitch McConnell was noted as voting 'aye'" → `[]`). Its examples are long-note examples, and its last rule ("if there are none: []") is an easy exit for a single sentence. A claim prompt saying that a proper name counts even if it appears once left 5 of the same 30 empty, each naming nothing. The loop uses that prompt, and the general one is left alone until it is measured on long notes. The 682 claims already stamped were reset and run again.
 
+### Typed relationships: the local model can't, the cloud one needs a reviewer (HBI Phase 17, 2026-10-09)
+
+The plan was to extract typed relationships (works for, leads, located in…) from claims on the local model during idle time, measured first. A script sent claims that name two or more entities, with that list of entities and the vocabulary, to each model and wrote nothing. A set of 30 claims was used to tune and another 30 were held out.
+
+Gemma-4-E4B got 2 of its 8 relations right. It produced "Trump opposes Russia" from a sentence about Trump's advisors in Bosnia, and "Netanyahu works for Israel Hayom" from "Israel Hayom reports…". Two stricter prompts made it answer `[]` for everything, including the very sentence one prompt used as its example ("Mossad Director Roman Gofman" → Gofman leads Mossad). It was not a matter of wording: the model wouldn't do the task.
+
+gpt-oss:120b-cloud was right 13 times of 14 on the tuning set. On the held-out set it was right only 3 to 5 times of 8. Its errors fell into a few kinds:
+- something belonging to an entity taken for the entity: "Ford is in Mexico" from "a Ford plant in Mexico";
+- a forum's location taken for its host's;
+- a refused relationship read as a stated one: Will Geer invoked the Fifth "regarding his Communist Party membership";
+- outside knowledge: "CIA is in the US".
+
+The v4 prompt makes those failures its examples. On 30 fresh claims it scored 8 of 9 leniently and 5 of 9 strictly. That is useful, but not good enough to write unseen, so extracted relationships are proposals. The user accepts or rejects each, and a rejected one is never proposed again: the second re-read of a rejected claim proposed it once more, and it stayed rejected.
+
+Two smaller lessons:
+- **Freeze a measurement sample.** The claim entity backfill was still running, so a sample drawn by query moved between runs, and the first v1/v3 comparison was on different claims.
+- **Loosen the entity-type limits.** 3,076 entities are typed `concept`, many of them real things, so strict type limits threw away correct relations such as "Starship is made by SpaceX".
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

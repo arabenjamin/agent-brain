@@ -525,6 +525,31 @@ impl HttpTransport {
                 get(crate::clients::related::handle_pair),
             )
             .route(
+                "/api/entities/{id}/relations",
+                get(crate::clients::related::handle_entity_relations),
+            )
+            .route(
+                "/api/relations",
+                post(crate::clients::related::handle_set_relation)
+                    .delete(crate::clients::related::handle_remove_relation),
+            )
+            .route(
+                "/api/relations/types",
+                get(crate::clients::related::handle_relation_types),
+            )
+            .route(
+                "/api/relations/decide",
+                post(crate::clients::related::handle_decide_relation),
+            )
+            .route(
+                "/api/relations/relabel",
+                post(crate::clients::related::handle_relabel_relation),
+            )
+            .route(
+                "/api/relations/proposed",
+                get(crate::clients::related::handle_proposed_relations),
+            )
+            .route(
                 "/api/entities/{id}/related",
                 get(crate::clients::related::handle_related),
             )

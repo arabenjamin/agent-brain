@@ -15,6 +15,7 @@ pub mod mcp_client;
 pub mod media;
 pub mod model;
 pub mod query;
+pub mod relations;
 pub mod resource;
 pub mod scheduler;
 pub mod search;

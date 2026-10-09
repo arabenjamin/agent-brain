@@ -60,7 +60,7 @@ export default function EntityNeighbourhood({ id, scope }: { id: string; scope?:
   const fg = useRef<ForceGraphMethods<NbNode, NbLink>>(undefined);
   useEffect(() => {
     const link = fg.current?.d3Force("link") as unknown as { distance?: (d: (l: NbLink) => number) => void } | undefined;
-    link?.distance?.((l: NbLink) => 40 + 120 * (1 - Math.min(1, l.strength * 2)));
+    link?.distance?.((l: NbLink) => (l.kind === "typed" ? 90 : 40 + 120 * (1 - Math.min(1, l.strength * 2))));
     fg.current?.d3ReheatSimulation();
   }, [graph]);
 
@@ -79,7 +79,7 @@ export default function EntityNeighbourhood({ id, scope }: { id: string; scope?:
         </select>
         <button type="button" className="btn-ghost" disabled={busy} onClick={() => expand(id, true)}>Reset</button>
         <span className="wk-dim">
-          {graph.nodes.length} entities · {graph.links.length} pairs
+          {graph.nodes.length} entities · {graph.links.filter((l) => l.kind === "co").length} pairs · {graph.links.filter((l) => l.kind === "typed").length} relationships
           {total !== null && ` · ${total} share a note with ${center?.label ?? "it"}`}
           {busy && " · loading…"}
         </span>
@@ -98,12 +98,29 @@ export default function EntityNeighbourhood({ id, scope }: { id: string; scope?:
             backgroundColor="transparent"
             nodeVal={(n) => nodeVal(n as NbNode)}
             nodeLabel={() => ""}
+            linkCurvature={(l) => ((l as NbLink).kind === "typed" ? 0.25 : 0)}
+            linkDirectionalArrowLength={(l) => ((l as NbLink).kind === "typed" ? 5 : 0)}
+            linkDirectionalArrowRelPos={0.9}
+            linkLineDash={(l) => ((l as NbLink).kind === "typed" && (l as NbLink).status === "proposed" ? [3, 2] : null)}
+            linkCanvasObjectMode={(l) => ((l as NbLink).kind === "typed" ? "after" : undefined)}
+            linkCanvasObject={(l, ctx, scale) => {
+              type End = string | { x: number; y: number };
+              const k = l as unknown as { kind: string; label?: string; source: End; target: End };
+              if (k.kind !== "typed" || scale < 1.2 || typeof k.source !== "object" || typeof k.target !== "object") return;
+              const x = (k.source.x + k.target.x) / 2;
+              const y = (k.source.y + k.target.y) / 2;
+              ctx.font = `${9 / scale}px system-ui, sans-serif`;
+              ctx.textAlign = "center";
+              ctx.fillStyle = "rgba(120,200,255,0.95)";
+              ctx.fillText(k.label ?? "", x, y);
+            }}
             linkColor={(l) => {
               const k = l as NbLink;
+              if (k.kind === "typed") return k.status === "proposed" ? "rgba(120,200,255,0.5)" : "rgba(120,200,255,0.9)";
               const sel = pair && ((endId(k.source) === pair.a && endId(k.target) === pair.b) || (endId(k.source) === pair.b && endId(k.target) === pair.a));
               return sel ? "rgba(255,210,90,0.9)" : `rgba(140,150,170,${0.15 + Math.min(0.6, k.strength * 1.5)})`;
             }}
-            linkWidth={(l) => 0.6 + Math.min(6, (l as NbLink).strength * 14)}
+            linkWidth={(l) => ((l as NbLink).kind === "typed" ? 1.6 : 0.6 + Math.min(6, (l as NbLink).strength * 14))}
             linkHoverPrecision={6}
             cooldownTicks={150}
             onEngineStop={() => fg.current?.zoomToFit(400, 60)}
@@ -170,7 +187,8 @@ export default function EntityNeighbourhood({ id, scope }: { id: string; scope?:
           </div>
         )}
         <div className="tm-legend">
-          <div><strong>Lines:</strong> two entities named in the same notes; thicker = stronger (shared notes over how often each is mentioned)</div>
+          <div><strong>Grey lines:</strong> named in the same notes; thicker = stronger (shared notes over how often each is mentioned)</div>
+          <div><strong>Blue arrows:</strong> a typed relationship (zoom in for its name); dashed: proposed, waiting for your review</div>
           <div><strong>Colour:</strong> the topic most of its notes are in · solid ring: where you started · dashed: click to expand</div>
           <div className="wk-dim">Click a line for the notes behind it · drag to pin</div>
         </div>

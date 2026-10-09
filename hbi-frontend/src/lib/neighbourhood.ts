@@ -25,8 +25,14 @@ export interface NbNode {
 export interface NbLink {
   source: string;
   target: string;
+  /** `co`: named in the same notes; `typed`: a relationship (Phase 17). */
+  kind: "co" | "typed";
   shared: number;
   strength: number;
+  /** typed: how it reads ("works for"), its type and status. */
+  label?: string;
+  type?: string;
+  status?: "active" | "proposed";
 }
 
 export interface NbGraph {
@@ -55,10 +61,18 @@ export function mergeNeighbourhood(g: NbGraph, r: NeighbourhoodResponse, center:
       expanded: (old?.expanded ?? false) || n.id === r.center,
     });
   }
-  const links = new Map(g.links.map((l) => [key(end(l.source), end(l.target)), l]));
+  const lkey = (l: { source: unknown; target: unknown; kind: string; type?: string }) =>
+    `${l.kind}|${key(end(l.source), end(l.target))}|${l.type ?? ""}`;
+  const links = new Map(g.links.map((l) => [lkey(l), l]));
   for (const l of r.links) {
-    const k = key(l.source, l.target);
-    if (!links.has(k)) links.set(k, { ...l });
+    const nl: NbLink = { ...l, kind: "co" };
+    if (!links.has(lkey(nl))) links.set(lkey(nl), nl);
+  }
+  for (const t of r.relations ?? []) {
+    // Directed: source and target keep the relationship's direction.
+    const nl: NbLink = { source: t.source, target: t.target, kind: "typed", shared: 0, strength: 0, label: t.label, type: t.type, status: t.status };
+    const k = `typed|${t.source}>${t.target}|${t.type}`;
+    if (![...links.values()].some((x) => x.kind === "typed" && end(x.source) === t.source && end(x.target) === t.target && x.type === t.type)) links.set(k, nl);
   }
   return { nodes: [...nodes.values()], links: [...links.values()] };
 }
