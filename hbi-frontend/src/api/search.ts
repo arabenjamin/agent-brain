@@ -4,7 +4,7 @@
  * path is the non-perturbing one.
  */
 import { useQuery } from "@tanstack/react-query";
-import { apiJson, query } from "./client";
+import { apiJson, apiSend, query } from "./client";
 
 export type SearchMode = "auto" | "semantic" | "keyword" | "id";
 /** What the server ran: a search mode, or `topic` (a topic's newest notes, no query). */
@@ -132,4 +132,23 @@ export function useEntity(id: string) {
 /** What kind of thing an id names (note, task, job, …). */
 export function lookupId(id: string) {
   return apiJson<IdMatch>(`/api/lookup/${encodeURIComponent(id)}`);
+}
+
+export interface LookupMany {
+  /** `prefix` is set when a short id (an 8+ character prefix) matched. */
+  found: (IdMatch & { prefix?: string })[];
+  missing: string[];
+  truncated: boolean;
+  max: number;
+}
+
+/** What many ids (or 8+ character prefixes) name, in one call. */
+export function useLookupMany(ids: string[]) {
+  const sorted = [...new Set(ids)].sort();
+  return useQuery({
+    queryKey: ["lookup", sorted],
+    queryFn: () => apiSend<LookupMany>("POST", "/api/lookup", { ids: sorted }),
+    enabled: sorted.length > 0,
+    staleTime: 5 * 60_000,
+  });
 }

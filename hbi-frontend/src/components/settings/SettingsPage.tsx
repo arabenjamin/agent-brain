@@ -20,7 +20,7 @@ import {
 import { summariseScheduler } from "../../lib/scheduler";
 import { formatLocal, relTime } from "../../lib/time";
 import { goTo } from "../../nav";
-import ContextProfileModal from "../chat/ContextProfileModal";
+import AgentsEditor from "./AgentsEditor";
 import { EmptyState, Pill } from "../ui";
 import { SETTINGS_SECTIONS } from "./sections";
 
@@ -136,7 +136,7 @@ function AgentsSection() {
       {profiles.isError ? (
         <EmptyState tone="red" title="Couldn't load agents" checked={profiles.error.message} />
       ) : (
-        <ContextProfileModal
+        <AgentsEditor
           inline
           isOpen
           onClose={() => {}}

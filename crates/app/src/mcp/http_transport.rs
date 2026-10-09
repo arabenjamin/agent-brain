@@ -351,6 +351,10 @@ impl HttpTransport {
             // --- Knowledge search (clients/search.rs) ---
             .route("/api/search", get(crate::clients::search::handle_search))
             .route(
+                "/api/lookup",
+                post(crate::clients::search::handle_lookup_many),
+            )
+            .route(
                 "/api/lookup/{id}",
                 get(crate::clients::search::handle_lookup),
             )

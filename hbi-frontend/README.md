@@ -26,7 +26,7 @@ The brain URL and API key live in the browser's localStorage (Settings → Conne
 src/
   api/client.ts      the one HTTP client: apiRequest (raw Response), apiJson (throws ApiError)
   api/queries.ts     shared TanStack queries (queue/scheduler status, notes) + job-push invalidation
-  api/search.ts      /api/search, entities, id lookup
+  api/search.ts      /api/search, entities, id lookup (one or many)
   api/entities.ts    entity merge proposals, merge / different / related, undo
   api/topics.ts      topics, coverage, the topic map, one topic
   api/system.ts      one-call system health, the registry, filtered logs, the live architecture
@@ -35,16 +35,17 @@ src/
   router.ts          hash routing: #/<workspace>?<kind>=<id>
   workspaces.ts      the workspaces, their views, and legacy-URL redirects
   nav.ts             goTo / hrefTo: move between workspaces, keeping only the open drawer
-  lib/               time (UTC in, local out), ids, scheduler state, useNow
+  lib/               time (UTC in, local out), ids, scheduler state, useNow, chatDock (what a chat turn did, from its events)
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
   components/drawer/ entity drawer: note, entity, topic, task (lineage), job, schedule, todo, proposal
+  components/chat/   Chat: the panel and the context dock under each answer
   components/system/ System: Health, Logs, Registry, Architecture (drawn from /api/architecture + architecture/layout.yaml)
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Map (topic hubs) / Neighbourhood / Timeline
   components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History); the Inbox holds entity merge proposals
   components/schedules/ the schedule and routing-chain editors (split from the old panel)
   components/todos/  todo model (overdue rule) and form
-  components/settings/ the Settings page and its sections
+  components/settings/ the Settings page and its sections (Agents = AgentsEditor)
   components/palette/ Ctrl-K
   components/<panel>/ the workspaces
   styles/main.css    tokens (:root) + panel styles; styles/ui.css for the kit

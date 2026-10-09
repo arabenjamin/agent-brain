@@ -464,6 +464,89 @@ pub async fn handle_lookup(
     }
 }
 
+/// Most ids one `POST /api/lookup` resolves.
+const LOOKUP_MANY_MAX: usize = 60;
+
+/// Shortest id prefix `POST /api/lookup` will resolve (answers cite notes as
+/// `note:7d75fff5`).
+const LOOKUP_PREFIX_MIN: usize = 8;
+
+/// A lowercase hex-and-dash id, or a prefix of one long enough to resolve.
+pub fn lookup_key(raw: &str) -> Option<String> {
+    let id = raw.trim().to_lowercase();
+    let ok = id.len() >= LOOKUP_PREFIX_MIN
+        && id.len() <= 36
+        && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    ok.then_some(id)
+}
+
+/// The one node whose id starts with `prefix`, if exactly one does.
+async fn lookup_prefix(neo4j: &Neo4jClient, prefix: &str) -> Option<Value> {
+    let rows = neo4j
+        .execute(
+            neo4rs::query(
+                "CALL { \
+                   MATCH (n:Note) WHERE n.id STARTS WITH $p RETURN 'note' AS kind, n.id AS id, left(n.content, 120) AS label LIMIT 2 \
+                   UNION MATCH (n:Entity) WHERE n.id STARTS WITH $p RETURN 'entity' AS kind, n.id AS id, n.name AS label LIMIT 2 \
+                   UNION MATCH (n:Task) WHERE n.id STARTS WITH $p RETURN 'task' AS kind, n.id AS id, n.goal AS label LIMIT 2 \
+                   UNION MATCH (n:ScheduledTask) WHERE n.id STARTS WITH $p RETURN 'schedule' AS kind, n.id AS id, n.name AS label LIMIT 2 \
+                   UNION MATCH (n:Todo) WHERE n.id STARTS WITH $p RETURN 'todo' AS kind, n.id AS id, n.title AS label LIMIT 2 \
+                 } RETURN kind, id, label LIMIT 2",
+            )
+            .param("p", prefix),
+        )
+        .await
+        .ok()?;
+    if rows.len() != 1 {
+        return None;
+    }
+    let r = &rows[0];
+    Some(json!({
+        "kind": r.get::<String>("kind").ok(),
+        "id": r.get::<String>("id").ok(),
+        "label": r.get::<String>("label").ok(),
+        "prefix": prefix,
+    }))
+}
+
+/// POST /api/lookup `{ids: [...]}` — what many ids name, in one call, for
+/// the chat context dock. A full id matches exactly; a hex prefix of 8 or more
+/// characters matches when exactly one node has it. Returns `found` (kind, id,
+/// label, and `prefix` when matched by one) and `missing`, so a citation that
+/// resolves to nothing is shown as such.
+pub async fn handle_lookup_many(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<String> = body["ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().and_then(lookup_key))
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    let truncated = ids.len() > LOOKUP_MANY_MAX;
+    let mut found = Vec::new();
+    let mut missing = Vec::new();
+    for id in ids.into_iter().take(LOOKUP_MANY_MAX) {
+        let hit = if id.len() == 36 {
+            lookup_id(neo4j, &id).await
+        } else {
+            lookup_prefix(neo4j, &id).await
+        };
+        match hit {
+            Some(v) => found.push(v),
+            None => missing.push(id),
+        }
+    }
+    Json(json!({ "found": found, "missing": missing, "truncated": truncated, "max": LOOKUP_MANY_MAX }))
+        .into_response()
+}
+
 /// GET /api/entities/{id} — an entity, the notes that mention it, and the
 /// entities mentioned alongside it.
 pub async fn handle_entity(
@@ -604,6 +687,19 @@ pub async fn handle_entity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_keys_are_ids_or_long_enough_prefixes() {
+        assert_eq!(lookup_key(" 7D75FFF5 ").as_deref(), Some("7d75fff5"));
+        assert!(
+            lookup_key("7d75fff").is_none(),
+            "7 characters is too short to resolve"
+        );
+        assert!(lookup_key("not-an-id").is_none());
+        let full = "7d75fff5-1111-2222-3333-444455556666";
+        assert_eq!(lookup_key(full).as_deref(), Some(full));
+        assert!(lookup_key(&format!("{full}0")).is_none());
+    }
 
     #[test]
     fn auto_mode_reads_the_query_shape() {

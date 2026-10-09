@@ -1185,7 +1185,20 @@ pub async fn handle_list_context_profiles(
         })
         .collect();
 
-    Json(json!({ "count": items.len(), "profiles": items })).into_response()
+    // What a chat that names no profile runs under: the deployment's front
+    // door (CHAT_DEFAULT_PROFILE), or — when none is set — a profile picked
+    // per message by `auto_assign` (`default_profile: null`). The HBI's picker
+    // defaults to this rather than to a hardcoded name.
+    let front_door = std::env::var("CHAT_DEFAULT_PROFILE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    Json(json!({
+        "count": items.len(),
+        "profiles": items,
+        "default_profile": front_door,
+    }))
+    .into_response()
 }
 
 /// GET /api/contexts/:name — full detail of a single context profile.

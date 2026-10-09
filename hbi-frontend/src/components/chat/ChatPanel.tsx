@@ -7,9 +7,10 @@ import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
 import { streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
 import { apiRequest } from "../../api/client";
-import { keys, queryClient, useProfiles } from "../../api/queries";
+import { useDefaultProfile, useProfiles, type ProfileInfo } from "../../api/queries";
 import type { AgentNotification } from "../../api/notifications";
-import ContextProfileModal from "./ContextProfileModal";
+import { hrefTo } from "../../nav";
+import ContextDock from "./ContextDock";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -445,98 +446,101 @@ function ThreadDrawer({
   );
 }
 
-// ── Chat Settings Bar ─────────────────────────────────────────────────────────
+// ── Header: agent · model · tokens ───────────────────────────────────────────
 
-function ChatSettingsBar({
+const PROFILE_KEY = "hbi.chat.profile";
+const SIDEBAR_KEY = "hbi.chat.sidebar";
+
+function storedProfile(): string | null {
+  try {
+    return localStorage.getItem(PROFILE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function storeProfile(name: string | null) {
+  try {
+    if (name) localStorage.setItem(PROFILE_KEY, name);
+    else localStorage.removeItem(PROFILE_KEY);
+  } catch {
+    // private window: the choice lasts this page only
+  }
+}
+
+function ChatHeader({
   activeModelKey,
   modelUsage,
   streaming,
-  contextProfile,
-  onOpenAgentModal,
+  profile,
+  defaultProfile,
+  profiles,
+  onProfile,
+  onExport,
+  canExport,
+  sidebarOpen,
+  onToggleSidebar,
 }: {
   activeModelKey: string;
   modelUsage: ModelUsageStat[];
   streaming: boolean;
-  contextProfile: string;
-  onOpenAgentModal: () => void;
+  /** null: the deployment's front door (no profile sent). */
+  profile: string | null;
+  defaultProfile: string | null;
+  profiles: ProfileInfo[];
+  onProfile: (name: string | null) => void;
+  onExport: () => void;
+  canExport: boolean;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
 }) {
   const sep = activeModelKey.indexOf("::");
-  const currentModel = sep >= 0 ? activeModelKey.slice(sep + 2) : activeModelKey;
+  const chatModel = sep >= 0 ? activeModelKey.slice(sep + 2) : activeModelKey;
+  const effective = profile ?? defaultProfile;
+  const pinned = profiles.find((p) => p.name === effective)?.model_preference;
+  const model = pinned || chatModel;
+
+  // TOKEN SPEND, last 24h: the total, with where it went in the tooltip. A
+  // model reporting no tokens is a broken ledger, not a free model, so it is
+  // named rather than read as zero spend.
+  const tin = modelUsage.reduce((a, s) => a + (s.total_tokens_in ?? 0), 0);
+  const tout = modelUsage.reduce((a, s) => a + (s.total_tokens_out ?? 0), 0);
+  const cost = modelUsage.reduce((a, s) => a + (s.total_cost ?? 0), 0);
+  const blind = modelUsage.filter((s) => s.total_calls > 0 && !s.total_tokens_in && !s.total_tokens_out);
+  const breakdown = modelUsage
+    .slice()
+    .sort((a, b) => (b.total_tokens_in ?? 0) + (b.total_tokens_out ?? 0) - ((a.total_tokens_in ?? 0) + (a.total_tokens_out ?? 0)))
+    .map((s) => `${s.model}: ${fmtTokens((s.total_tokens_in ?? 0) + (s.total_tokens_out ?? 0))} · ${s.total_calls} calls${s.total_cost ? ` · $${s.total_cost.toFixed(4)}` : ""}`)
+    .join("\n");
 
   return (
-    <div className="chat-settings-bar">
-      <div className="model-usage-strip">
-        {/* Agent configuration button */}
-        <button
-          className="agent-config-btn"
-          onClick={onOpenAgentModal}
-          disabled={streaming}
-          title={`Agent: ${contextProfile}`}
-        >
-          🤖 {contextProfile}
-        </button>
-
-        {/* TOKEN SPEND, last 24h.
-            This strip used to show call counts and success rates — how OFTEN a
-            model ran, which says nothing about what it consumed. Tokens are the
-            unit that matters, they were already in this payload, and they were
-            simply never rendered. Total first (the number you actually want),
-            per-model after (where it went). */}
-        {(() => {
-          const tin = modelUsage.reduce((a, s) => a + (s.total_tokens_in ?? 0), 0);
-          const tout = modelUsage.reduce((a, s) => a + (s.total_tokens_out ?? 0), 0);
-          const cost = modelUsage.reduce((a, s) => a + (s.total_cost ?? 0), 0);
-          // A model reporting no tokens is a broken ledger, not a free model —
-          // Gemini rows read NULL for weeks because of a serde field-name
-          // mismatch. Name it rather than letting it read as zero spend.
-          const blind = modelUsage.filter(
-            (s) => s.total_calls > 0 && !s.total_tokens_in && !s.total_tokens_out,
-          );
-          if (!modelUsage.length) return null;
-          return (
-            <>
-              <span
-                className="token-spend-total"
-                title={`Last 24h across all models: ${tin.toLocaleString()} in, ${tout.toLocaleString()} out`}
-              >
-                <span className="token-spend-label">24h</span>
-                <span className="token-spend-in">↑{fmtTokens(tin)}</span>
-                <span className="token-spend-out">↓{fmtTokens(tout)}</span>
-                {cost > 0 && <span className="token-spend-cost">${cost.toFixed(3)}</span>}
-              </span>
-              {modelUsage
-                .slice()
-                .sort(
-                  (a, b) =>
-                    (b.total_tokens_in ?? 0) + (b.total_tokens_out ?? 0) -
-                    ((a.total_tokens_in ?? 0) + (a.total_tokens_out ?? 0)),
-                )
-                .slice(0, 4)
-                .map((s) => {
-                  const t = (s.total_tokens_in ?? 0) + (s.total_tokens_out ?? 0);
-                  return (
-                    <span
-                      key={s.model}
-                      className={`model-usage-chip${s.model === currentModel ? " active" : ""}`}
-                      title={`${s.model}\n${(s.total_tokens_in ?? 0).toLocaleString()} in · ${(s.total_tokens_out ?? 0).toLocaleString()} out\n${s.total_calls} calls · ${Math.round(s.success_rate * 100)}% ok${s.total_cost ? ` · $${s.total_cost.toFixed(4)}` : ""}`}
-                    >
-                      <span className="model-usage-name">{s.model.split(":")[0]}</span>
-                      <span className="model-usage-count">{t ? fmtTokens(t) : "—"}</span>
-                    </span>
-                  );
-                })}
-              {blind.length > 0 && (
-                <span
-                  className="token-spend-blind"
-                  title={`No token counts recorded for: ${blind.map((b) => b.model).join(", ")}. Spend on these is NOT included in the totals.`}
-                >
-                  ⚠ {blind.length} unmetered
-                </span>
-              )}
-            </>
-          );
-        })()}
-      </div>
+    <div className="chat-header">
+      <button type="button" className="btn-ghost chat-sidebar-toggle" onClick={onToggleSidebar}
+        title={sidebarOpen ? "Hide history" : "Show history"} aria-pressed={sidebarOpen}>☰</button>
+      <span className="chat-title">Chat</span>
+      <label className="chat-agent" title="Which agent answers this conversation">
+        <span className="wk-dim">agent</span>
+        <select className="ui-input auto" value={profile ?? ""} disabled={streaming}
+          onChange={(e) => onProfile(e.target.value || null)}>
+          <option value="">{defaultProfile ? `front door (${defaultProfile})` : "auto (chosen per message)"}</option>
+          {profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+        </select>
+      </label>
+      <span className="chat-model" title={pinned ? `${effective} pins ${pinned}` : "The chat model; an agent may delegate to others"}>
+        <span className="wk-dim">model</span> {model || "—"}
+      </span>
+      {modelUsage.length > 0 && (
+        <span className="chat-tokens" title={`Last 24 h, all models:\n${breakdown}`}>
+          <span className="wk-dim">24h</span> ↑{fmtTokens(tin)} ↓{fmtTokens(tout)}{cost > 0 && ` · $${cost.toFixed(3)}`}
+          {blind.length > 0 && (
+            <span className="tone-text-yellow" title={`No token counts recorded for: ${blind.map((b) => b.model).join(", ")}. Not in the totals.`}> · ⚠ {blind.length} unmetered</span>
+          )}
+        </span>
+      )}
+      <span className="chat-header-end">
+        <a className="wk-dim" href={hrefTo("settings", { section: "agents" })} title="Create and edit agents">edit agents →</a>
+        <button type="button" className="btn-ghost" onClick={onExport} disabled={!canExport} title="Export conversation as Markdown">Export</button>
+      </span>
     </div>
   );
 }
@@ -558,11 +562,35 @@ export default function ChatPanel({
   const [sessionId, setSessionId] = useState<string>(() => uid());
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
-  const [contextProfile, setContextProfile] = useState("general");
+  // null = the deployment's front door: no profile is sent and the server
+  // applies CHAT_DEFAULT_PROFILE. (A hardcoded "general" here bypassed it.)
+  const [contextProfile, setContextProfileState] = useState<string | null>(storedProfile);
+  const setContextProfile = (name: string | null) => {
+    setContextProfileState(name);
+    storeProfile(name);
+  };
+  const defaultProfile = useDefaultProfile().data ?? null;
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_KEY) !== "closed";
+    } catch {
+      return true;
+    }
+  });
+  const toggleSidebar = () => {
+    setSidebarOpen((o) => {
+      try {
+        localStorage.setItem(SIDEBAR_KEY, o ? "closed" : "open");
+      } catch {
+        // private window
+      }
+      return !o;
+    });
+  };
+  const [sessionFilter, setSessionFilter] = useState("");
   const [researchProvider] = useState<string | null>(null);
   const [activeModelKey, setActiveModelKey] = useState("");
   const [modelUsage, setModelUsage] = useState<ModelUsageStat[]>([]);
-  const [profileModalOpen, setProfileModalOpen] = useState(false);
   // Shared with Settings → Agents, so an edit there shows up in this picker.
   const profilesQuery = useProfiles();
   const profileInfos = profilesQuery.data ?? [];
@@ -699,7 +727,7 @@ export default function ChatPanel({
       // local fallback (2026-09-09). Other threads keep the selected profile.
       contextProfile: thread.sessionId.startsWith("jobsearch-")
         ? "job-applicant"
-        : contextProfile,
+        : contextProfile ?? undefined,
       signal: abort.signal,
       onEvent: (evt) => {
         setThread((prev) => {
@@ -725,10 +753,6 @@ export default function ChatPanel({
     threadAbortRef.current = null;
     loadSessions();
   }, [thread, contextProfile, loadSessions]);
-
-  const loadProfiles = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: keys.profiles });
-  }, []);
 
   const loadModels = useCallback(async () => {
     try {
@@ -881,7 +905,7 @@ export default function ChatPanel({
       message: text,
       history,
       sessionId,
-      contextProfile,
+      contextProfile: contextProfile ?? undefined,
       synthesisProvider: researchProvider ?? undefined,
       signal: abort.signal,
       onEvent: (evt) => {
@@ -982,6 +1006,11 @@ export default function ChatPanel({
 
   // ── Render ──
 
+  const q = sessionFilter.trim().toLowerCase();
+  const shownSessions = sessions
+    .map((s) => ({ s, ...sessionLabel(s) }))
+    .filter(({ s, label }) => !q || label.toLowerCase().includes(q) || s.session_id.toLowerCase().includes(q) || (s.task_goal ?? "").toLowerCase().includes(q));
+
   const renderMsg = (m: Msg) => {
     if (m.kind === "user") {
       return (
@@ -1053,6 +1082,7 @@ export default function ChatPanel({
             ) : null}
           </div>
         )}
+        {m.done && displayText && <ContextDock events={m.events} answer={displayText} />}
         {m.reflection && (
           <div className="chat-event thinking" style={{ marginTop: 4, fontSize: 11 }}>
             <span className="chat-event-label">↺</span>
@@ -1065,40 +1095,23 @@ export default function ChatPanel({
 
   return (
     <div className="panel">
-      <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span>🧠 Chat</span>
-        <button
-          className="btn"
-          style={{ padding: "3px 10px", fontSize: 11, background: "transparent", border: "1px solid var(--border)" }}
-          onClick={exportChat}
-          disabled={msgs.length === 0}
-          title="Export conversation as Markdown"
-        >
-          Export
-        </button>
-      </div>
-
-      <ContextProfileModal
-        isOpen={profileModalOpen}
-        onClose={() => setProfileModalOpen(false)}
-        activeProfile={contextProfile}
-        profiles={profileInfos}
-        onProfileChange={setContextProfile}
-        onProfilesChanged={loadProfiles}
-        disabled={streaming}
-      />
-
-      <ChatSettingsBar
+      <ChatHeader
         activeModelKey={activeModelKey}
         modelUsage={modelUsage}
         streaming={streaming}
-        contextProfile={contextProfile}
-        onOpenAgentModal={() => setProfileModalOpen(true)}
+        profile={contextProfile}
+        defaultProfile={defaultProfile}
+        profiles={profileInfos}
+        onProfile={setContextProfile}
+        onExport={exportChat}
+        canExport={msgs.length > 0}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={toggleSidebar}
       />
 
       <div className="chat-body">
         {/* ── Session sidebar ── */}
-        <div className="session-sidebar">
+        {sidebarOpen && <div className="session-sidebar">
           <div className="session-sidebar-header">
             History
             <button
@@ -1113,13 +1126,17 @@ export default function ChatPanel({
           <button className="session-new-btn" onClick={newChat}>
             + New chat
           </button>
+          <input className="ui-input session-search" value={sessionFilter} onChange={(e) => setSessionFilter(e.target.value)}
+            placeholder={`search ${sessions.length} titles…`} aria-label="Search session titles" />
 
           <div className="session-list scroll">
             {sessions.length === 0 && !loadingSessions && (
               <div className="session-empty">No history yet</div>
             )}
-            {sessions.map((s) => {
-              const { label, datedInLabel } = sessionLabel(s);
+            {sessionFilter.trim() && shownSessions.length === 0 && (
+              <div className="session-empty">None of the {sessions.length} loaded titles matches “{sessionFilter.trim()}”</div>
+            )}
+            {shownSessions.map(({ s, label, datedInLabel }) => {
               return (
               <div
                 key={s.session_id}
@@ -1145,7 +1162,7 @@ export default function ChatPanel({
               );
             })}
           </div>
-        </div>
+        </div>}
 
         {/* ── Chat area ── */}
         <div className="chat-area" style={{ minWidth: 0 }}>

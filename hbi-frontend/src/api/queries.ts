@@ -214,6 +214,8 @@ export interface ProfileInfo {
   name: string;
   description?: string;
   tools?: string[];
+  /** A model the profile pins, if any (`/api/contexts`). */
+  model_preference?: string;
 }
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
@@ -289,14 +291,33 @@ export function useLlmBudget(pollMs = 60_000) {
 }
 
 /** Context profiles (agents). Chat's picker and Settings → Agents share it. */
-export function useProfiles() {
+interface ProfileList {
+  profiles: ProfileInfo[];
+  /** The front door a chat gets when it names none (CHAT_DEFAULT_PROFILE); null = picked per message. */
+  defaultProfile: string | null;
+}
+
+function useProfileList<T>(select: (d: ProfileList) => T) {
   return useQuery({
     queryKey: keys.profiles,
-    queryFn: async () => {
-      const list = (await apiJson<{ profiles?: ProfileInfo[] }>("/api/contexts")).profiles ?? [];
-      return [...list].sort((a, b) => a.name.localeCompare(b.name));
+    queryFn: async (): Promise<ProfileList> => {
+      const r = await apiJson<{ profiles?: ProfileInfo[]; default_profile?: string }>("/api/contexts");
+      return {
+        profiles: [...(r.profiles ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+        defaultProfile: r.default_profile ?? null,
+      };
     },
+    select,
   });
+}
+
+export function useProfiles() {
+  return useProfileList((d) => d.profiles);
+}
+
+/** The deployment's front door: what a chat that names no profile runs under. */
+export function useDefaultProfile() {
+  return useProfileList((d) => d.defaultProfile);
 }
 
 export function useNote(id: string | undefined) {

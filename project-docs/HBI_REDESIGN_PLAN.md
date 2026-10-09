@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–6 done (2026-10-08); 7 (Chat) planned.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **All phases (0–7) done, 2026-10-08.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -403,6 +403,30 @@ Dropped rather than moved: the old panel's **integrity card** called `verify_kno
 Not built: the optional model-written summary of the weekly diff. The deterministic one-line summary reads well enough, and a model adds a way to be wrong. The brain proposing `layout.yaml` placements for unplaced items is also left for later.
 
 **Done criterion met:** a new tool or schedule shows up in the diagram, the counts and the diff with no frontend change, and a new skill shows up as unplaced until `layout.yaml` places it.
+
+### Phase 7 outcome (2026-10-08)
+
+Built:
+- **Context dock under every answer** (`components/chat/ContextDock.tsx`, derived in `lib/chatDock.ts` from the turn's own SSE events, no model involved). A one-line summary ("3 tools ran · wrote 1 note · cites 1 item · 1 link · 1 not from a tool") opens to:
+  - *Ran, in order:* each tool with ✓/✗ and its arguments, including a sub-agent's tools (`knowledge-worker:list_capabilities`). Flagged where the model was given less of a result than exists ("model read 2,253 of 8,400 chars"). This is the chat loop's tool-trace receipt, made visible: anything the answer claims that is not listed did not happen.
+  - *Wrote:* the ids in the results of tools that write (`store_*`, `create_*`, `manage_*` with a writing action, …).
+  - *Cited in the answer:* full ids and the short `note:7d75fff5` form. An id the answer names that resolves to nothing is shown as such.
+  - *Read:* ids from every other tool, resolved when opened, with the cited ones marked.
+  - *Links:* every URL in the answer, marked by which tool returned it this turn, or **"not in any tool result"**: a link from the model's memory is visible as one.
+  - Every item opens in the drawer in one click. A turn restored from history keeps only its text, so its dock shows what the answer names, marked unchecked.
+- **`POST /api/lookup`** resolves up to 60 ids or 8+ character prefixes in one call (a prefix only when exactly one node has it), returning `found` and `missing`.
+- **Header slimmed to agent · model · tokens:** an agent picker, the model (the profile's pinned model when it has one), 24 h tokens with the per-model breakdown in the tooltip and unmetered models named, then "edit agents →" and Export. The agent editor modal is gone from Chat; it lives in Settings → Agents (`components/settings/AgentsEditor.tsx`). The last choice is remembered per browser.
+- **Session sidebar:** collapsible (remembered), with search over titles, session ids and task goals. A search that matches nothing says so.
+- Notifications already had their Home inbox (the Needs you tile, since Phase 1), reading the one list in `api/notifications.ts`.
+- **Tests:** 1 Rust unit test (835 lib tests), 6 vitest tests (78). End to end on a throwaway Neo4j with a real cloud model: a `list_capabilities` → `store_note` turn produced the dock above, the note opened in the drawer, and a turn naming no agent ran under the front door.
+
+Fixed on the way:
+- **HBI chats bypassed the front door.** The picker defaulted to a hardcoded `"general"` and always sent it, so `CHAT_DEFAULT_PROFILE` (`GeneralDefault-Orchrestator`, which routes through `delegate`) never applied to an HBI chat unless picked by hand. The picker now defaults to sending no profile. `/api/contexts` returns `default_profile`: the front door, or `null` when none is set and the server picks per message, labelled "auto (chosen per message)".
+- 160 lines of CSS for the old settings bar, now unused, deleted.
+
+Not built: keeping a turn's tool events with the session, so a restored turn's dock could be checked too. Working memory stores text only; that would be a schema change, not a UI one.
+
+**Done criterion met:** every citation and created item in a turn opens in one click.
 
 Order rationale: 0–1 make everything after them cheap. Work (2) is pure frontend plus a small endpoint. Search (3) unblocks the mind map's drill-down. Entity resolution (4a) comes before topics (4b) because the map's clusters and bridges are made of entities: with duplicates, one person shows up as four weak nodes instead of one strong one. Chat (7) depends on the drawer, Work and Knowledge being in place.
 

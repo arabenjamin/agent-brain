@@ -681,3 +681,34 @@ details.dw-section > summary { cursor: pointer; }
   .lg-line { grid-template-columns: 60px 1fr; }
   .lg-line .lg-target-btn, .lg-line .lg-msg { grid-column: 1 / 3; }
 }
+
+/* ── Chat: header, context dock, session search ── */
+.chat-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg-panel); font-size: 12px; flex-shrink: 0; }
+.chat-title { font-weight: 700; color: var(--accent); }
+.chat-sidebar-toggle { padding: 2px 8px; }
+.chat-agent { display: inline-flex; align-items: center; gap: 6px; }
+.chat-agent select { max-width: 260px; }
+.chat-model, .chat-tokens { white-space: nowrap; }
+.chat-header-end { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; }
+.session-search { margin: 0 8px 6px; width: auto; font-size: 11px; }
+.dock { margin-top: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); font-size: 11px; max-width: 100%; }
+.dock-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; width: 100%; padding: 4px 10px; background: none; border: none; color: var(--text-dim); font: inherit; text-align: left; cursor: pointer; }
+.dock-summary:hover { color: var(--text); }
+.dock-chevron { margin-left: auto; font-size: 9px; }
+.dock-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 10px 10px; border-top: 1px solid var(--border); }
+.dock-body h4 { margin: 0 0 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.dock-runs { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.dock-runs li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.dock-args { overflow-wrap: anywhere; }
+.dock-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.dock-item { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 1px 0; background: none; border: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.dock-item:hover .dock-label { color: var(--accent); }
+.dock-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.dock-cited { font-size: 10px; color: var(--green); }
+.dock-link { display: flex; gap: 6px; align-items: baseline; }
+.dock-link a { overflow-wrap: anywhere; }
+.dock-note { font-size: 10px; }
+@media (max-width: 640px) {
+  .chat-header-end { margin-left: 0; }
+  .chat-agent select { max-width: 180px; }
+}
