@@ -75,6 +75,12 @@ export default function TopicMap() {
         <select className="ui-input auto" value={perTopic} onChange={(e) => setPerTopic(Number(e.target.value))}>
           {PER_TOPIC.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
+        {(map.data?.hidden_by_user.length ?? 0) > 0 && (
+          <span className="wk-dim" title={map.data!.hidden_by_user.map((h) => `${h.topic}: ${h.names.join(", ")}${h.count > h.names.length ? " …" : ""}`).join("\n")}>
+            {map.data!.hidden_by_user.reduce((a, h) => a + h.count, 0)} kept out by you (undo in the topic's drawer)
+          </span>
+        )}
+        <button type="button" className="btn-ghost" onClick={() => openEntity("topic", "new")} title="Declare a new topic for notes to be classified into">+ Topic</button>
         {cov && (
           <span className="tm-cov" title="Every note is in a topic, classified as fitting none, waiting, or failed">
             {cov.with_topic.toLocaleString()} notes in a topic · {cov.no_topic.toLocaleString()} fit none

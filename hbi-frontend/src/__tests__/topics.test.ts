@@ -19,6 +19,7 @@ const data: TopicMap = {
   ],
   per_topic: 25,
   hidden_entity_types: ["url", "date"],
+  hidden_by_user: [],
 };
 
 describe("topic map", () => {

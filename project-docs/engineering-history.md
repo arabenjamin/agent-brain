@@ -810,6 +810,27 @@ The daily Todo Review chat alone was 45 of the last 100 notifications, and the u
 
 **`DELETE` vs `DETACH DELETE`.** Removing a schedule drafted from an item failed once the `BECAME` edge existed; schedule deletion now detaches.
 
+### Editable topics, and topics the classifier can't fill (HBI Phases 14–15, 2026-10-09)
+
+The user saw people and cities under Career on the topic map: Dolly Parton, Texas, New York City. Only about 17 of Career's 74 notes were theirs (the résumé, job-search chats, AI Dev Board results). The rest were video claims and gap syntheses about anyone's career or hiring. An entity sits in a topic whenever one of the topic's notes mentions it, so the strangers came with those notes.
+
+The definition already said "the user's own career". Before redeploying, a dry run sent all 74 Career notes, 35 notes from the NIA schedules and 60 random notes to the llama.cpp sidecar under candidate definitions, writing nothing:
+- **"Not other people's careers, hiring news, biographies or job-market statistics":** the user's 18 notes stayed, and 22 of the 56 others stayed too.
+- **"Only the user's own career (Ara Sheperdigian) … any other person's career … is not career":** still 22.
+- **The same definition under the name `my-job-search`:** 12. The model reads `- name: description`, and the word "career" in the name outweighed any clause in the description.
+
+The NIA topic showed the same effect. Named `intelligence-agency`, it drew a CIA director's statement, a Kushner dark-money note and an FBI espionage case away from national-security and us-politics. Renamed `nia` and defined as the program itself, it took only the notes that name the NIA.
+
+In every version, the Trump monitor's daily assessments stayed in us-politics and geopolitics. Content classification files a report by what it is about, not by the program that wrote it. So the schedule declares `topic: nia`, and its notes keep their subjects.
+
+**The sample was wrong, and the live run showed it.** A few minutes into the live re-classify, all 13 notes in `my-job-search` were strays: a murder trial, an Uber driver case, a daily news brief, Melania Trump's Imperia, a "what did we learn today" chat. `nia` had the same problem: next to genuine NIA conversations it held the brain's daily "logged N notes" reports and GDELT summaries about Mossad. The dry run had sampled notes that already had a topic, and never the notes that fit none. The model files some of those in whichever small, personal-sounding topic its prompt offers. Rewording could not fix this, because the model has no way to know whose career, or which agency, a note is about.
+
+So a topic can now be `assign: rules`. It is left out of the classifier's prompt, and a note joins it only by a member rule, matched on `source_context` / `note_type` exactly or on text, or by the user's hand. Matching on text alone was too noisy for the job search: "aidevboard" also appears in the brain's failed-job health reports. The rules are therefore provenance-based: the résumé import, the AI Dev Board API spec, and `jobsearch-` chat sessions. For `nia` the program's name works, catching 34 notes, all about the program. Six of the user's job notes match no rule and were set by hand, which is what the manual lock is for.
+
+Two more findings:
+- **A full re-classify takes about 4 hours, not the documented hour.** The model call is about 0.3 s, but end to end (reads, two writes, idle checks) the assigner ran at about 56 notes a minute.
+- **The version can repeat.** It is a hash of the definitions, so deleting a topic and then resetting it restores the previous version exactly. A note classified before the delete, and not since, would look finished at that version while its edge to the topic was gone. A delete now clears `topics_version` on that topic's notes.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

@@ -107,6 +107,8 @@ export interface Note {
   topics?: string[];
   /** False while the note waits to be classified for the current topics. */
   topics_assessed?: boolean;
+  /** The user set its topics; the classifier leaves it alone. */
+  topics_locked?: boolean;
   /** A claim's source notes, with the article or video each records. */
   asserted_in?: SourceRef[];
   /** A claim that could not be made to stand alone, and why. */

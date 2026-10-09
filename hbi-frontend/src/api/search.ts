@@ -114,6 +114,8 @@ export interface EntityDetail {
   notes: Omit<SearchNote, "match">[];
   notes_shown: number;
   co_mentioned: { id: string; name: string | null; entity_type: string | null; shared: number }[];
+  /** Topics whose notes mention it (`notes` of them), and those the user keeps it out of (`hidden`). */
+  topics?: { name: string; label: string | null; notes: number; hidden: boolean }[];
 }
 
 export interface MergedAway {

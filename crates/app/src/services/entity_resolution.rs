@@ -641,6 +641,10 @@ async fn finish_merge(
                  OPTIONAL MATCH (o:EntityAlias)-[ol:ALIAS_OF]->(f) \
                  FOREACH (_ IN CASE WHEN o IS NULL THEN [] ELSE [1] END | \
                    DELETE ol MERGE (o)-[:ALIAS_OF]->(t)) \
+                 WITH DISTINCT f, t \
+                 OPTIONAL MATCH (f)-[h:NOT_IN_TOPIC]->(tp:Topic) \
+                 FOREACH (_ IN CASE WHEN tp IS NULL THEN [] ELSE [1] END | \
+                   MERGE (t)-[nh:NOT_IN_TOPIC]->(tp) ON CREATE SET nh.at = h.at) \
                  WITH DISTINCT f \
                  DETACH DELETE f",
             )

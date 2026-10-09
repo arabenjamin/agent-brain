@@ -140,6 +140,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `event_at` | DateTime | Native Neo4j `DATETIME`, UTC — when the described event occurred (episodic notes) |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `topics_version` | String? | The topic-definitions hash it was classified against (`services/topics.rs`). Equal to the current version and no `IN_TOPIC` ⇒ assessed, fits no topic; anything else ⇒ waiting |
+| `topics_locked` | Boolean? | The user set its topics (`PUT /api/notes/{id}/topics`). The classifier skips it, and each new version is stamped on it |
 | `topics_at` | DateTime? | Native `DATETIME`, UTC — when it was last classified |
 | `topics_failed` | Integer? | Classification failures; at 3 the assigner leaves the note alone (counted as `failed`) |
 | `provenance` | String | Who chose the words: `user_input` (a person: the HBI, an outside MCP client's call), `synthesis_inference` (a model: every queue job, chat turn and sub-agent), `system_record` (the brain's own code: scheduler dispatches, claim evidence, code-version notes), `core_training`. Decided by the caller (`knowledge::effective_provenance`): the brain's own work cannot claim `user_input`. Shown to the model by recall |
@@ -159,7 +160,7 @@ Claim notes (`note_type: 'claim'`, `services/claims.rs`) also carry:
 
 #### `Topic`
 
-A domain the brain tracks, one per `topics/*.yaml` (`TOPICS_DIR`), synced by `init-db`; a topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The schedules that watch a topic are the ones whose `ScheduledTask.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
+A domain the brain tracks. `topics/*.yaml` (`TOPICS_DIR`) seeds them, synced by `init-db`, and the HBI can create, edit and delete them (`POST /api/topics`, `PUT|DELETE /api/topics/{name}`, `POST /api/topics/{name}/reset`). An edited topic is `managed_by: 'runtime'`, and the sync leaves it alone. A YAML-owned topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The schedules that watch a topic are the ones whose `ScheduledTask.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -168,7 +169,14 @@ A domain the brain tracks, one per `topics/*.yaml` (`TOPICS_DIR`), synced by `in
 | `description` | String | What belongs here — also the classifier's definition |
 | `source_lists` | String[] | SourceLists its searches use |
 | `version` | String | Hash of every topic's name + description and the skip scope |
-| `created_at` / `synced_at` | DateTime | Native `DATETIME`, UTC |
+| `managed_by` | String | `yaml` (its file applies) or `runtime` (edited in the HBI; its file, if any, no longer applies) |
+| `assign` | String | `classifier` (the local model decides) or `rules` (only `members` rules and the user; left out of the classifier prompt) |
+| `members` | String | JSON list of member rules `{note_type?, source_context?, content_contains?}` (`assign: rules`) |
+| `created_at` / `synced_at` / `updated_at` | DateTime | Native `DATETIME`, UTC (`updated_at`: last HBI edit) |
+
+#### `RetiredTopic`
+
+`{name, retired_at}`: a topic that `topics/*.yaml` declares and the user deleted in the HBI. While it exists, `init-db` does not recreate the topic. Reset (`POST /api/topics/{name}/reset`) and re-creating the topic both remove it.
 
 #### `ArchSnapshot`
 
@@ -374,7 +382,8 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `PART_OF` | `(Note)→(Note)` | — | Semantic chunk pointing to its parent note |
 | `MENTIONS` | `(Note)→(Entity)` | `count: int`, `surface: string` (as written), `type: string` (as extracted), `via: string?` (the name it resolved or was merged through), `merged_from: string?`, `absorbed: ["<entity id>:<count>"]?` (counts folded in from a merged entity the note also mentioned) | Entity mention extracted from note content. `via`/`absorbed` are what an unmerge reverses |
 | `ALIAS_OF` | `(EntityAlias)→(Entity)` | — | The alias's canonical entity |
-| `IN_TOPIC` | `(Note)→(Topic)` | `rank: int` (1 = main topic, 2 = as central), `method: 'llm'`, `assigned_at: datetime` | Written by the topic assigner; replaced whenever the note is classified again |
+| `IN_TOPIC` | `(Note)→(Topic)` | `rank: int` (1 = main topic, 2 = as central), `method: 'llm' \| 'rule' \| 'manual'`, `assigned_at: datetime` | Written by the topic assigner (`llm`, or `rule` for an `assign: rules` topic's member rule), or by the user (`manual`, with the note `topics_locked`); an unlocked note's edges are replaced whenever it is classified again |
+| `NOT_IN_TOPIC` | `(Entity)→(Topic)` | `at: datetime` | The user keeps the entity off that topic's map and lists; carried to the survivor by an entity merge |
 | `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
 | `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |

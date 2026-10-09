@@ -745,3 +745,11 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .item-hand label { display: flex; flex-direction: column; gap: 3px; }
 .item-actions { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .item-actions .btn, .item-actions .btn-ghost { font-size: 11px; padding: 2px 8px; }
+
+/* A note's editable topics (NoteTopics.tsx). */
+.note-topics { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.note-topic { display: inline-flex; align-items: center; gap: 1px; }
+.note-topic-x { font-size: 11px; padding: 0 4px; line-height: 1.4; }
+.topic-rules { display: flex; flex-direction: column; gap: 4px; }
+.topic-rule { display: grid; grid-template-columns: 1fr 1fr 1.3fr auto; gap: 4px; }
+@media (max-width: 600px) { .topic-rule { grid-template-columns: 1fr; } }

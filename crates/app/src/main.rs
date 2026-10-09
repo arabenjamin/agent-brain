@@ -402,6 +402,20 @@ async fn run_init_db(config: &Config) -> Result<()> {
 
     let schedules_dir =
         PathBuf::from(std::env::var("SCHEDULES_DIR").unwrap_or_else(|_| "schedules".into()));
+    // Topics first: a schedule's `topic` is checked against them, and the
+    // graph's set includes topics created in the HBI. From topics/*.yaml
+    // (TOPICS_DIR); notes are classified later, by the idle-time assigner in
+    // `serve`.
+    let topics = agent_brain::services::topics::Topics::global();
+    match agent_brain::services::topics::sync(&client, &topics).await {
+        Ok(n) => info!(
+            count = n,
+            version = %agent_brain::services::topics::Topics::global().version,
+            "Synced Topics from topics/ (HBI-edited topics kept)"
+        ),
+        Err(e) => warn!(error = %e, "Topic sync failed (non-fatal)"),
+    }
+
     if schedules_dir.exists() {
         match schedule_seeder::seed_schedules_from_dir(&client, &schedules_dir).await {
             Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
@@ -415,14 +429,6 @@ async fn run_init_db(config: &Config) -> Result<()> {
     // snapshot). Non-fatal: the brain runs fine on unmerged entities.
     if let Err(e) = resolve_entities(&client, false).await {
         warn!(error = %e, "Entity resolution failed (non-fatal)");
-    }
-
-    // Topics from topics/*.yaml (TOPICS_DIR); notes are classified later, by
-    // the idle-time assigner in `serve`.
-    let topics = agent_brain::services::topics::Topics::global();
-    match agent_brain::services::topics::sync(&client, topics).await {
-        Ok(n) => info!(count = n, version = %topics.version, "Synced Topics from topics/"),
-        Err(e) => warn!(error = %e, "Topic sync failed (non-fatal)"),
     }
 
     Ok(())

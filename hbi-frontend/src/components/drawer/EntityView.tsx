@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { findEntities, isMergedAway, mergeEntities, unmergeAlias, useMergeCandidates } from "../../api/entities";
 import { useEntity, type EntityAlias, type EntityDetail, type EntityHit } from "../../api/search";
+import { setEntityHidden } from "../../api/topics";
 import { formatLocal, relTime } from "../../lib/time";
 import { hrefTo } from "../../nav";
 import MergeCandidates from "../work/MergeCandidates";
@@ -63,6 +64,8 @@ function Body({ d }: { d: EntityDetail }) {
       </div>
 
       <Aliases aliases={d.aliases ?? []} />
+
+      <InTopics id={id} name={d.entity.name ?? id} topics={d.topics ?? []} />
 
       {(cands.data?.candidates.length ?? 0) > 0 && (
         <Section title="Maybe the same as" aside={`${cands.data!.total}`}>
@@ -197,6 +200,54 @@ function MergeInto({ self }: { self: EntityDetail }) {
           ))}
         </ul>
       )}
+    </Section>
+  );
+}
+
+/**
+ * The topics this entity appears in through their notes, and the ones the user
+ * keeps it out of (HBI plan Phase 15). Hiding changes no note: the entity just
+ * stops showing under that topic on the map and in its drawer.
+ */
+function InTopics({ id, name, topics }: { id: string; name: string; topics: NonNullable<EntityDetail["topics"]> }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = async (topic: string, hidden: boolean) => {
+    setBusy(topic);
+    setError(null);
+    try {
+      await setEntityHidden(id, topic, hidden);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <Section title="In topics" aside="through the notes that mention it">
+      {topics.length === 0 ? (
+        <div className="dw-note">None of the notes that mention it are in a topic yet.</div>
+      ) : (
+        <ul className="dw-list">
+          {topics.map((t) => (
+            <li key={t.name}>
+              <EntityLink kind="topic" id={t.name}>{t.label ?? t.name}</EntityLink>
+              <span className="dw-dim">{t.notes} {t.notes === 1 ? "note" : "notes"}</span>
+              {t.hidden ? (
+                <>
+                  <Pill tone="yellow">kept out by you</Pill>
+                  <button type="button" className="btn-ghost" disabled={busy === t.name} onClick={() => toggle(t.name, false)}>Let back in</button>
+                </>
+              ) : (
+                <button type="button" className="btn-ghost" disabled={busy === t.name}
+                  title={`Stop showing ${name} under ${t.label ?? t.name}; its notes are unchanged`}
+                  onClick={() => toggle(t.name, true)}>Keep out</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && <div className="tone-text-red" style={{ fontSize: 12 }}>{error}</div>}
     </Section>
   );
 }

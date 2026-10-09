@@ -1,0 +1,18 @@
+# Topic: the user's Niche Intelligence Agency (NIA).
+# A program rather than a subject, so it is assigned by rules, not by the
+# classifier (HBI_REDESIGN_PLAN.md Phases 14–15). Offered to the local model it
+# drew CIA/FBI stories as "intelligence-agency", and as `nia` it drew the
+# brain's own daily reports and GDELT summaries. A note joins it when it names
+# the NIA, or by hand from the note drawer. Its monitors declare `topic: nia`;
+# their reports stay classified by subject (a Trump-deal assessment is
+# us-politics or geopolitics). An HBI edit shadows this file.
+name: nia
+label: Niche Intelligence Agency
+description: >-
+  The user's Niche Intelligence Agency (NIA) program itself: its plans,
+  verticals, tripwires and status reports, and conversations about it.
+assign: rules
+members:
+  - content_contains: niche intelligence agency
+  - content_contains: opensource intelligence agency
+  - content_contains: (nia)

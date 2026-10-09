@@ -349,13 +349,32 @@ One real thing is one `:Entity`. Schema: `schema.md` § Entity / EntityAlias. Pl
 
 The domains the brain tracks. Schema: `schema.md` § Topic, plan: `HBI_REDESIGN_PLAN.md` §3. History: `engineering-history.md` § Topics.
 
-- **Declared in YAML, assigned by the local model.** `topics/*.yaml` has one topic per file, and its `description` *is* the classifier's definition. Embedding centroids were measured and rejected (F1 0.61 against hand labels, against 0.83 held-out for the classifier). Sharpen a description with what does *not* belong ("general AI knowledge is ai-ml, not agent-brain"); that is what fixed the confusions. All descriptions share one local-model prompt, so keep each short (the test caps the prompt at 3.2k chars).
+- **Declared in YAML, assigned by the local model.** `topics/*.yaml` has one topic per file, and its `description` *is* the classifier's definition. Embedding centroids were measured and rejected (F1 0.61 against hand labels, against 0.83 held-out for the classifier). Sharpen a description with what does *not* belong ("general AI knowledge is ai-ml, not agent-brain"); that is what fixed the confusions. All descriptions share one local-model prompt, so keep each short (the test caps the shipped prompt at 3.2k chars; an HBI edit may take it to 3.6k).
 - **Main topic first, a second only if it is as central**, at most 2 (`IN_TOPIC.rank`). Asking for "0–3 topics" over-tagged national security onto every war and government story.
 - **Every note is accounted for.** Each top-level note is in a topic, assessed as fitting none, waiting, failed (3 tries), or skipped by `topics/_scope.yaml`. `GET /api/topics` returns those counts and they sum to the total. Don't add a filter that drops notes from all five buckets.
 - **Skip rules compare coalesced values.** `n.source_context = 'x'` is null for a note without one, `NOT any(…)` is then null too, and the note silently leaves every bucket. That happened (5 notes stuck "waiting"). `SKIPPED_CYPHER` coalesces both sides.
-- **The assigner runs only while the brain is idle** (no job `queued`/`running`, no GPU lease). It re-checks every 5 notes, runs batches back to back while idle, and is started only by the HTTP `serve`. `TOPIC_ASSIGNER_ENABLED=false` stops it. It costs about 0.3 s per note on the llama.cpp sidecar (~1 h for the whole graph).
+- **The assigner runs only while the brain is idle** (no job `queued`/`running`, no GPU lease). It re-checks every 5 notes, runs batches back to back while idle, and is started only by the HTTP `serve`. `TOPIC_ASSIGNER_ENABLED=false` stops it. The model call is about 0.3 s, but end to end (reads, writes, idle checks) it measured about 56 notes a minute on 2026-10-09, so the whole graph (~13.7k notes) takes about 4 hours of idle time.
 - **The version is a hash of every name, description and skip rule.** Changing any of them re-classifies everything. Labels and `source_lists:` don't count. A note the scope newly skips loses its old topics at the next `init-db`.
 - **Activity records are skipped, not classified.** `scheduler_dispatch` episodic notes are a goal plus a task id. Classified, they landed in the goal's topic and buried what was learned.
+- **The YAML seeds; the graph owns** (HBI plan Phase 14). `Topics::global()` is the graph's set, reloaded after every edit (`topics::reload`), so an HBI edit applies from the assigner's next batch, with no restart.
+  - An HBI edit makes the topic `managed_by: runtime`, and the sync then skips it. This is the schedule rule: check `managed_by` before assuming the file is what runs. Reset puts the file's definition back.
+  - Deleting a seeded topic leaves a `(:RetiredTopic)`, so `init-db` does not recreate it. A delete also clears `topics_version` on that topic's notes: a reset brings back the same version, and a note still stamped with it would look classified without its topic.
+  - `init-db` syncs topics **before** seeding schedules, because a schedule's `topic` is checked against them.
+- **An edit is checked before it is written** (`topics::check_def`):
+  - the name is a 2–40 character slug, set once, and `map` and `new` are reserved;
+  - a description is at most 500 characters;
+  - the whole classifier prompt stays at most 3,600 characters;
+  - a delete is refused while a schedule declares the topic, and the refusal names the schedules.
+- **A topic about the user, or one of their programs, is assigned by rules, not by the classifier** (`assign: rules` + `members:` in its YAML or the HBI form). The model can't tell whose career or which agency a note is about, and a topic in its prompt that is small and personal draws notes that fit nothing else. Measured in Phases 14–15:
+  - `career` took anyone's career: 22 of 56 other people's notes kept it, even with "any other person's career … is not career".
+  - Renamed `my-job-search`, it halved that on the sample of Career's own notes. Live, all of the first 13 notes it took were strays: a murder trial, an Uber case, a news brief.
+  - "intelligence agency" took CIA and FBI stories, and `nia` took the brain's daily stats reports and GDELT summaries.
+  - **How a rules topic works:** it is left out of the prompt, so the model can't pick it even by name. A note joins by a `members` rule (`note_type` / `source_context` exactly, `content_contains` case-insensitively in the first 1,500 characters), ranked first, or by hand. The rules are part of the version hash. `topics::reload` applies them at once in Cypher (mirroring `MemberRule::matches`) and drops classifier edges on rules topics, so a rules topic doesn't wait for the hours-long re-classify.
+  - **The name still matters** for a classifier topic. Test a new or renamed one on a sample against the sidecar before saving it, and include notes that fit **no** topic in the sample. Phase 14's sample left them out, and missed exactly the failure that showed up live.
+- **A program is not a subject.** The NIA's monitors declare `topic: nia`, but their reports are classified by what they are about: a Trump-deal assessment is us-politics or geopolitics. The `nia` topic holds the notes that name the program. The schedule topic mix shows this as a mismatch, and the mismatch is true.
+- **The user's word is final** (Phase 15):
+  - **Note topics:** topics set in the note drawer are `method: 'manual'` and the note is `topics_locked`. The classifier never picks it, and `topics::reload` stamps it with each new version, so it never counts as waiting. "Let the classifier decide" unlocks it. Deleting a topic unlocks that topic's notes.
+  - **Entity hides:** `(:Entity)-[:NOT_IN_TOPIC]->(:Topic)` keeps an entity off that topic's map and entity lists, whatever its notes say. The map, the topic drawer and the entity drawer each show the hides with undo. A merge carries the hides to the surviving entity.
 
 ### System health, logs, registry (`clients/system.rs`, 2026-10-08)
 

@@ -665,8 +665,35 @@ pub async fn handle_entity(
         })
         .collect();
 
+    // The topics its notes put it in (how many of each topic's notes mention
+    // it), and the ones the user keeps it out of (HBI plan Phase 15).
+    let topics: Vec<Value> = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (e:Entity {id: $id}), (t:Topic) \
+                 WITH e, t, COUNT { (t)<-[:IN_TOPIC]-(:Note)-[:MENTIONS]->(e) } AS notes, \
+                      EXISTS { (e)-[:NOT_IN_TOPIC]->(t) } AS hidden \
+                 WHERE notes > 0 OR hidden \
+                 RETURN t.name AS name, t.label AS label, notes, hidden ORDER BY notes DESC",
+            )
+            .param("id", id.as_str()),
+        )
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.get::<String>("name").ok(),
+                "label": r.get::<String>("label").ok(),
+                "notes": r.get::<i64>("notes").unwrap_or(0),
+                "hidden": r.get::<bool>("hidden").unwrap_or(false),
+            })
+        })
+        .collect();
+
     let mentions = row.get::<i64>("mentions").unwrap_or(0);
     Json(json!({
+        "topics": topics,
         "entity": {
             "id": id,
             "name": row.get::<String>("name").ok(),

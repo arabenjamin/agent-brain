@@ -852,3 +852,179 @@ Built and deployed:
 **Tests:** 868 Rust lib tests (4 new) and 95 vitest.
 
 **Not built:** an "agent:auto" choice in the hand-over picker. It always asks first, as the plan's open question 3 advised.
+
+## 10. Third round: Phases 14–17 (planned 2026-10-09)
+
+Source: the user, after Phase 13. Career on the map is full of people and cities that aren't theirs. They want to see how the nodes relate, to edit the relationships and the topics things belong to, and to put the Trump monitor under the Niche Intelligence Agency.
+
+Decisions taken in the discussion (2026-10-09):
+1. **The Trump Benefit Daily Monitor belongs to the Niche Intelligence Agency (NIA).** NIA is a broad topic, and the user accepts that.
+2. **Relationships: both kinds, co-mentions first.** Ship a view built from shared notes now, then typed relations as a later phase.
+3. **Editable:**
+   - a note's topics;
+   - keeping an entity out of a topic;
+   - relationships between entities;
+   - the topics themselves.
+
+### 10.1 What the review found
+
+| Finding | Evidence |
+|---|---|
+| **Career holds other people's careers.** Of 74 notes, about 17 are the user's: the résumé, job-search chats and AI Dev Board results. The rest are video claims and gap syntheses about anyone's career or hiring: Dolly Parton as a "showbiz entrepreneur", a Marine turned contractor, Rossmann Repair hiring, Melania Trump's Imperia. Almost all of them have Career as their only topic. The description says "the user's own career", and the local model reads past it. | live graph 2026-10-09; `topics/career.yaml` |
+| **An entity's topics are derived, never stored.** An entity is "in" a topic when a note in that topic mentions it (`/api/topics/map`). Dolly Parton, Texas and New York City sit in Career because those video notes mention them. Fixing the notes fixes the entities, but there is no way to say "Texas is never Career". | `clients/topics.rs` map query |
+| **Entities are not related to each other.** There are 24,145 `MENTIONS` edges and one `RELATED_ENTITY` edge. The entity drawer's "Mentioned with" ranks by raw shared-note count, so hubs (C-SPAN 184 notes, Neo4j 112, Rust 91) top every list and the shared notes can't be opened. | live graph; `clients/search.rs` `co_mentioned` |
+| **Topics can only be edited in YAML, and a change needs a restart.** `Topics::global()` is a `OnceLock` loaded from `TOPICS_DIR`. Any change to a name or description changes `topics_version`, and every note is classified again. That costs hours of idle time for the whole graph: 13,718 notes, measured at about 56 a minute end to end (Phase 14). | `services/topics.rs` |
+| **The NIA has no home.** Its notes name it ("Niche Intelligence Agency (NIA) Project: Critical Tech Dependency Mapping", 2026-08-08). Its schedules are filed under semiconductors (hardware tripwire, tech-dependency synthesis), national-security (intelligence-agency claims monitor) and us-politics (the Trump monitor). | live graph |
+
+### 10.2 Topics owned in the graph
+
+- **Ownership:** `topics/*.yaml` stays the seed. A topic edited in the HBI becomes `managed_by: runtime`, and the YAML sync then skips it. This is the rule schedules already follow, so a runtime-owned topic shadows its file, and the drawer says so.
+- **Reloading:** `Topics::global()` becomes a reloadable current set, read from the graph. Its version is computed from the graph's definitions, so an edit takes effect without a restart.
+- **Reclassifying:** a changed definition reclassifies on idle time, and the coverage line shows how many notes are waiting.
+- **REST:** create, update and delete. A delete is refused while a schedule declares the topic, and the refusal names those schedules.
+- **Career:**
+  - Its description says what does not belong: other people's careers, hiring news, biographies and job-market statistics.
+  - The fixed notes are checked by hand afterwards: Career should hold the user's own notes, and Dolly Parton, Texas and New York City should leave it on the map.
+- **NIA:**
+  - A new `intelligence-agency` topic ("Niche Intelligence Agency"). *Built as `nia`, with a narrower definition: see the Phase 14 outcome.* It holds the agency's own products: assessments of who gains or loses from policy, trade, sanctions and supply-chain events, tripwire scans, dependency maps and NIA reports. Plain news on those subjects stays in geopolitics, us-politics or semiconductors.
+  - The user reviews the definition, as they did the Phase 11 starting values.
+  - The Trump monitor is runtime-owned, so it moves with a targeted `SET`.
+
+### 10.3 Manual topic edits
+
+- **A note's topics:** the note drawer shows its topics as chips that can be added or removed.
+  - Edges the user sets are `method: 'manual'`. The note is marked `topics_locked`, and the classifier skips it, through version changes too.
+  - "Let the classifier decide" unlocks it.
+- **An entity kept out of a topic:** `(:Entity)-[:NOT_IN_TOPIC {at}]->(:Topic)`.
+  - The map and the topic drawer leave the entity out. Each says how many entities the user has hidden, and lists them with undo, so a hide is never silent.
+  - The entity drawer gains "In topics" (each topic with its note count, and a remove button). The topic drawer's entity list gets a remove button as well.
+
+### 10.4 Co-mentions: how entities relate today
+
+- **`GET /api/entities/{id}/related?topic=`:**
+  - Ranks by association strength: shared notes divided by √(mentions of A × mentions of B). A hub then no longer tops every list, and each row still carries its raw shared count.
+  - Each pair drills to its notes through `GET /api/entities/pair?a=&b=`.
+- **Entity drawer:** "Mentioned with" uses the new ranking, and a pair opens the notes they share.
+- **Map:** clicking an entity opens a neighbourhood mode. It's an ego graph that expands on click, edge width shows strength and colour shows topic.
+
+### 10.5 Typed relationships
+
+- **Vocabulary:** `relations/*.yaml` holds a closed list, such as `works_for`, `member_of`, `leads`, `located_in`, `owns`, `part_of`, `allied_with` and `opposes`. Each has a definition and the entity types it allows. Data stays in a seed directory, not in Rust.
+- **Edges:** `(:Entity)-[:RELATES {type, method: 'manual'|'llm', status: 'active'|'rejected', evidence: [note ids], confidence, at}]->(:Entity)`.
+  - **Editing:** the user adds, relabels and removes relations in the entity drawer and the pair view. A manual edge wins over an extracted one.
+  - **Removing:** a removed extracted edge is kept as `rejected`, so extraction never adds it again.
+- **Extraction:**
+  - **Runs:** on idle time, using the local model, over claim notes (which stand alone since Phase 9), and only between entities the note mentions.
+  - **Measured first:** on a hand-labelled sample, as topics were, before any backfill. The existing `RELATED_ENTITY` edge is folded in.
+- **Map:** the neighbourhood view draws and labels typed edges beside the co-mention edges.
+
+### 10.6 Phases
+
+| Phase | Scope | Done when |
+|---|---|---|
+| **14. Topics in the graph** | §10.2: runtime-owned, reloadable topics; REST and the topic-drawer editor; the Career fix; the NIA topic; the Trump monitor moved. | Career's reclassified notes are the user's own, and Dolly Parton, Texas and New York City are gone from it; the NIA topic exists and holds the Trump monitor; an HBI edit reclassifies without a restart. |
+| **15. Manual topic edits** | §10.3: note topic chips with a lock, entity hides with undo. | Hiding Texas from Career removes it from the map and the drawer, and the hide is shown and undoable; a manually set note keeps its topic through a reclassify. |
+| **16. Co-mention view** | §10.4: related-entity ranking, pair evidence, the map's neighbourhood mode. | Amanda Thursk's view shows Prince Andrew, with the claim that she is his chief of staff as the evidence; C-SPAN no longer tops unrelated entities' lists. |
+| **17. Typed relationships** | §10.5: vocabulary, user-owned edges, measured extraction, drawn on the map. | Extraction precision is measured on a held-out sample and recorded here; a rejected relation stays rejected through a re-extract; the user can add one by hand. |
+
+**Order rationale:**
+- **14 comes first** because it removes the wrong data at the source, and every later view shows topics.
+- **15 comes before 16** because the hides decide what a topic-scoped neighbourhood shows.
+- **17 comes last** because the user's manual edges need 16's views to edit in, and extraction must be measured before it writes.
+
+### 10.7 Decisions (taken 2026-10-09: every recommendation accepted)
+
+1. **The NIA definition:** the agency's products (above), or everything on its subjects? *Recommend its products.* "Everything on its subjects" would swallow geopolitics, national-security and semiconductors.
+2. **Move the other NIA schedules too?** These are the hardware tripwire and the tech-dependency synthesis (both now semiconductors) and the intelligence-agency claims monitor (now national-security). *Recommend the user decides each one in the schedule form;* nothing moves except the Trump monitor.
+3. **Can a topic be deleted while schedules declare it?** *Recommend refusing, and naming the schedules.*
+4. **Relation vocabulary:** closed or open? *Recommend closed, from YAML.* An open vocabulary from a small model grows synonyms faster than they can be merged.
+
+### Phase 14 outcome (2026-10-09)
+
+Built and deployed:
+- **Topics owned in the graph** (`services/topics.rs`):
+  - `Topics::global()` is now the graph's set, reloaded after every edit, so the assigner uses an edit from its next batch, with no restart;
+  - an HBI edit makes the topic `managed_by: runtime`, and `init-db` then leaves it alone;
+  - deleting a seeded topic leaves a `(:RetiredTopic)`, so the sync doesn't bring it back;
+  - Reset restores the file's definition;
+  - `init-db` now syncs topics before seeding schedules, since a schedule's `topic` is checked against them.
+- **Checked before writing** (`check_def`): a slug name set once (`map` and `new` reserved), a description of at most 500 characters, the whole classifier prompt within 3,600 characters, and no delete while a schedule declares the topic (the refusal names the schedules).
+- **REST:** `POST /api/topics`, `PUT|DELETE /api/topics/{name}` and `POST /api/topics/{name}/reset`. The topic detail now carries `managed_by`, the YAML `seed` and the reclassify progress.
+- **HBI:**
+  - the topic drawer has Edit definition, Reset to YAML and Delete, and shows who owns the definition and how many notes are waiting;
+  - the map has "+ Topic";
+  - the form warns when a changed definition will re-classify every note.
+- **Career → `my-job-search`** ("Career & job search"), with a definition limited to the user's own career. The AI Dev Board schedule follows it. *Superseded in Phase 15: the live run showed the classifier filing strays here, and the topic is now `assign: rules`.*
+- **The `nia` topic** ("Niche Intelligence Agency") holds the program itself: its plans, verticals, tripwires and the reports that name it. The Trump Benefit Daily Monitor now declares `topic: nia`; it is runtime-owned, so it was moved with a targeted `SET`.
+
+**Measured before deploying** (dry run on the sidecar, no writes): all 74 Career notes, 35 notes from the NIA schedules and 60 random classified notes.
+
+| Definitions tried | The user's notes kept in Career | Other people's career notes still in Career | NIA |
+|---|---|---|---|
+| `career` + "not other people's careers" | 18 / 18 | 22 / 56 | `intelligence-agency` took a CIA director's claim, a Kushner dark-money note and an FBI espionage case from national-security and us-politics |
+| `career`, "only the user's own (Ara Sheperdigian)" | 18 / 18 | 22 / 56 | `nia`, narrow: only notes that name the NIA |
+| **`my-job-search`**, same definition | **18 / 18** | **12 / 56** | `nia`: the NIA notes and hardware tripwire reports as a second topic; no CIA or FBI stories |
+
+- **The name outweighs the definition.** The "not this" clause moved nothing, and renaming halved the leak. The other 12 are for Phase 15's manual edits. *The sample was the flaw: it held only notes already in a topic. Live, `my-job-search` drew notes that fit no topic (see Phase 15).*
+- **The Trump assessments are classified by subject in every version,** as us-politics or geopolitics. The schedule belongs to the NIA program; its notes belong to their subjects. The Phase 11 topic mix will show that as a mismatch, and the mismatch is accurate.
+
+**Verified live:**
+- **Topic edits:**
+  - create, a duplicate, a bad name, a rename attempt and an over-long description were each accepted or refused with the stated reason;
+  - a label-only edit doesn't re-classify;
+  - deleting `nia` was refused, naming the Trump monitor.
+- **Michigan, a seeded topic:**
+  - deleting it removed 430 edges and left a tombstone;
+  - a fresh `init-db` didn't recreate it;
+  - Reset restored it as `yaml` and removed the tombstone.
+- **Data:** no schedule declares a missing topic, and all 12 topics carry one version.
+
+**Found while building:**
+- **A full re-classify takes about 4 hours, not 1.** The model call is about 0.3 s, but end to end it ran at about 56 notes a minute. The UI and docs now say so.
+- **A delete followed by a reset brings back the old version.** A note still stamped with it would have looked classified without its topic, so a delete now marks that topic's notes as waiting.
+
+**Not yet verified:** the live re-classify that the new definitions started (13,700 notes, newest first, idle time only). The résumé notes are among the oldest, so Career's live result comes last.
+
+**Tests:** 870 Rust lib tests (2 new) and 95 vitest.
+
+### Phase 15 outcome (2026-10-09)
+
+Built and deployed:
+- **A note's topics, edited by hand** (`PUT /api/notes/{id}/topics`, `DELETE /api/notes/{id}/topics/lock`):
+  - the note drawer shows its topics as chips: remove, make main, add (at most two), "Lock", and "Let the classifier decide";
+  - a set note is `topics_locked` with `method: 'manual'` edges. The classifier skips it, every new version is stamped on it, and deleting a topic unlocks that topic's notes.
+- **An entity kept out of a topic** (`PUT|DELETE /api/entities/{id}/topics/{topic}/hidden`, `(:Entity)-[:NOT_IN_TOPIC]->(:Topic)`):
+  - the map and the topic drawer leave the entity out;
+  - the entity drawer's new "In topics" section lists each topic with its note count, and Keep out / Let back in;
+  - the topic drawer has × on its entity chips and a "Kept out by you" list with undo;
+  - the map bar counts the hides;
+  - an entity merge carries the hides to the surviving entity.
+- **Rule-assigned topics** (`assign: rules` + `members:`, in YAML or in the topic form's rule editor):
+  - a rules topic is left out of the classifier's prompt and can't be picked even by name;
+  - a note joins when it matches a member rule (`note_type` / `source_context` exactly, `content_contains` case-insensitively), ranked first, with `method: 'rule'`, or when the user adds it by hand;
+  - the rules count toward the version;
+  - `topics::reload` applies the rules at once (they need no model) and drops any classifier edges a rules topic had, so a rules topic is complete straight away, not after the hours-long re-classify.
+- **`my-job-search` and `nia` are now rules topics.**
+  - `my-job-search` takes the résumé import, the AI Dev Board API spec, and `jobsearch-` chat sessions.
+  - `nia` takes notes that name the Niche Intelligence Agency: 34 of them, all about the program.
+
+**Why rules (found live, after Phase 14):**
+- **`my-job-search` took only strays.** The first 13 notes the live classifier put in it were all wrong: a murder trial, an Uber case, a news brief, Melania Trump's Imperia, a "what did we learn today" chat.
+- **`nia` was mixed:** real NIA chats, but also the brain's daily "logged N notes" reports and GDELT summaries about Mossad.
+- **The Phase 14 sample missed this.** It only held notes that were already in some topic, so it never tested the notes that fit no topic. The model files some of those in whichever small, personal-sounding topic its prompt offers.
+- **The model can't tell whose career or which agency a note is about,** so for those two topics the classifier is the wrong tool, not a matter of wording.
+
+**Verified live:**
+- **Your notes:** six of your job-search notes that match no rule (two AI Dev Board summaries and four chats about applying and your professional history) were set to `my-job-search` by hand. They were in Career before.
+- **The lock** held through two version changes, a Michigan edit and its reset. Unlock made the note wait for the classifier, and it relocked.
+- **Note refusals:** an unknown topic is refused with the list of topics, and so are three topics on one note.
+- **Texas, hidden from Michigan:** it left the map and the topic drawer's entities, appeared under "Kept out by you", and was marked in its own drawer. Undo restored it, and the live state is unchanged.
+- **Merges:** a hide on a throwaway entity moved to the entity it was merged into. The test entities were deleted.
+
+- **The done-condition, on the map:**
+  - Career & job search holds the 11 résumé notes, the AI Dev Board spec (2), the `jobsearch-` chat, and the six set by hand. Its entities are the user's skills and employers (Rust, Neo4j, Kubernetes, Golang, Python, ElTec Systems, Waterford, aidevboard, Drata), and Dolly Parton, Texas and New York City are gone.
+  - `nia` holds the 34 notes that name the program, and its entities are the program and its supply-chain vertical (hardware tripwire, HBM, ABF substrates, SK hynix, ASML, CoWoS).
+
+**Pending:** the live re-classify started by the new definitions (about 4 h of idle time). It decides what the classifier topics now hold.
+
+**Tests:** 874 Rust lib tests (4 new) and 95 vitest.

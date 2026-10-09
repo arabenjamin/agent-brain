@@ -18,7 +18,7 @@
 # reply routes to the job-applicant profile (session-pinned in clients/chat/turn.rs).
 name: AI Dev Board Job Search
 description: "Daily remote AI/ML engineering roles from aidevboard + worklittle, ranked by how well each JD matches Ara's resume, into a fresh resumable chat."
-topic: career
+topic: my-job-search
 kind: monitor
 interval_seconds: 86400
 managed_by: yaml

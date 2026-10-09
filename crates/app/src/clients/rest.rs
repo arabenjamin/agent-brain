@@ -610,7 +610,9 @@ async fn check_schedule_body(
         }
         if let Some(tel) = state.telemetry.as_ref() {
             let catalog = crate::services::model_router::catalog_models(tel);
-            hard.extend(crate::services::validation::validate_step_models(&steps, &catalog));
+            hard.extend(crate::services::validation::validate_step_models(
+                &steps, &catalog,
+            ));
         }
         if crate::services::validation::has_hard(&hard) {
             return Err(crate::services::validation::render_hard(&hard));
@@ -1983,6 +1985,7 @@ pub async fn handle_get_note(
                 size(coalesce(n.embedding, [])) > 0 AS embedded, \
                 [(n)-[r:IN_TOPIC]->(t:Topic) | {name: t.name, rank: r.rank}] AS topics, \
                 coalesce(n.topics_version, '') AS topics_version, \
+                coalesce(n.topics_locked, false) AS topics_locked, \
                 [(n)-[:ASSERTED_IN]->(s:Note) | {id: s.id, note_type: s.note_type, \
                   source_context: s.source_context, created_at: toString(s.created_at), \
                   content: s.content}][0..5] AS sources, \
@@ -2035,6 +2038,8 @@ pub async fn handle_get_note(
                     "topics":              crate::clients::search::topic_names(row.get::<Vec<neo4rs::BoltMap>>("topics").unwrap_or_default()),
                     // false: not classified yet for the current topic definitions.
                     "topics_assessed":     row.get::<String>("topics_version").unwrap_or_default() == crate::services::topics::Topics::global().version,
+                    // true: the user set its topics, and the classifier leaves it alone.
+                    "topics_locked":       row.get::<bool>("topics_locked").unwrap_or(false),
                     "note_type":           s("note_type"),
                     "access_count":        row.get::<i64>("access_count").unwrap_or(0),
                     "created_at":          row.get::<String>("created_at").unwrap_or_default(),

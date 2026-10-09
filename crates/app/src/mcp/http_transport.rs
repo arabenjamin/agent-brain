@@ -19,7 +19,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, Sse},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures_util::stream::{Stream, StreamExt};
 use serde_json::Value;
@@ -372,11 +372,21 @@ impl HttpTransport {
                 get(crate::clients::architecture::handle_architecture),
             )
             // --- Topics (clients/topics.rs) ---
-            .route("/api/topics", get(crate::clients::topics::handle_list))
+            .route(
+                "/api/topics",
+                get(crate::clients::topics::handle_list)
+                    .post(crate::clients::topics::handle_create),
+            )
             .route("/api/topics/map", get(crate::clients::topics::handle_map))
             .route(
                 "/api/topics/{name}",
-                get(crate::clients::topics::handle_topic),
+                get(crate::clients::topics::handle_topic)
+                    .put(crate::clients::topics::handle_update)
+                    .delete(crate::clients::topics::handle_delete),
+            )
+            .route(
+                "/api/topics/{name}/reset",
+                post(crate::clients::topics::handle_reset),
             )
             // --- Entity resolution (clients/entities.rs) ---
             .route(
@@ -501,6 +511,19 @@ impl HttpTransport {
             .route(
                 "/api/notes/{id}/related",
                 get(rest_handlers::handle_get_related_notes),
+            )
+            .route(
+                "/api/notes/{id}/topics",
+                put(crate::clients::topics::handle_set_note_topics),
+            )
+            .route(
+                "/api/notes/{id}/topics/lock",
+                delete(crate::clients::topics::handle_unlock_note_topics),
+            )
+            .route(
+                "/api/entities/{id}/topics/{topic}/hidden",
+                put(crate::clients::topics::handle_hide_entity)
+                    .delete(crate::clients::topics::handle_unhide_entity),
             )
             .route(
                 "/api/tools/dynamic",
