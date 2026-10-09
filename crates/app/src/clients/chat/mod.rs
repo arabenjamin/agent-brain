@@ -183,6 +183,12 @@ pub struct ChatRequest {
     /// Optional model override for synthesis (e.g. "gemini-2.5-flash").
     /// Falls back to the provider's default when absent.
     pub synthesis_model: Option<String>,
+    /// A catalog model this turn must run on, over the profile's and the chat
+    /// default (the HBI chat header's picker). Judged by the routing policy
+    /// for this turn; an unknown or refused model ends the turn with the
+    /// reason instead of answering on another model.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Server-side agentic chat service.

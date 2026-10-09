@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../../api/client";
+import { extractJson } from "../../lib/assist";
+import AgentAssist from "../ui/AgentAssist";
 import { jsonToStepDrafts, makeDefaultStep, stepDraftsToJson, stUrl, type ScheduledTask, type StepDraft } from "./model";
 import StepCard from "./StepCard";
 import { useMergedToolGroups } from "./useToolGroups";
@@ -31,12 +33,6 @@ export default function ScheduledTaskForm({
   const [rawJson, setRawJson] = useState("");
   const [rawJsonError, setRawJsonError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // AI assist state
-  const [showAiAssist, setShowAiAssist] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
 
   // Step builder state
   const [steps, setSteps] = useState<StepDraft[]>(() => {
@@ -112,71 +108,41 @@ export default function ScheduledTaskForm({
     setSteps(next);
   };
 
-  const handleAiGenerate = async () => {
-    if (!aiPrompt.trim()) return;
-    setAiLoading(true);
-    setAiError(null);
+  // The `schedule-author` agent holds the step rules (provider_hint at the
+  // step top level, {{_prev}} handoffs, note types, source_context); this
+  // form only says what is wanted and which tools exist. The agent sees
+  // nothing else, so the task is self-contained.
+  const buildAssistTask = (prompt: string) =>
+    `Draft a scheduled-task step chain for this request:\n"${prompt}"\n\n` +
+    `Tools available to a scheduled step: ${toolGroups.flatMap((g) => g.tools).join(", ")}`;
 
-    const allTools = toolGroups.flatMap((g) => g.tools).join(", ");
-    // Delegate to the `schedule-author` spawnable agent — the brain's own
-    // scheduler specialist. It already knows the lint rules (provider_hint at the
-    // step top level, {{_prev}} handoffs, valid note_types, source_context) and
-    // the spawnable-agent roster, so it drafts a correct chain rather than us
-    // re-encoding those rules here. The agent sees NO other context, so `task`
-    // must be fully self-contained.
-    const task =
-      `Draft a scheduled-task step chain for this request:\n"${aiPrompt.trim()}"\n\n` +
-      `Tools available to a scheduled step: ${allTools}\n\n` +
-      `Rules:\n` +
-      `- Each step is an object: tool_name (string), arguments (object), provider_hint ("ollama" for local), priority (0-3).\n` +
-      `- provider_hint is a TOP-LEVEL field of the step, never inside arguments (omitting it routes to cloud).\n` +
-      `- A step that consumes the previous step's output must reference {{_prev}} in its arguments; a reason step needs context:"{{_prev}}".\n` +
-      `- A store_note step needs a source_context and a valid note_type.\n` +
-      `- For an open-ended sub-task (research/build/review), use a run_agent step (agent + task).\n` +
-      `- Template vars: {{goal}}, {{task_id}}, {{date}}, {{_prev}}.\n\n` +
-      `Output ONLY the final JSON array of steps inside a \`\`\`json code block.`;
-
-    try {
-      const res = await apiRequest(`/mcp`, {
-        method: "POST",
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1, method: "tools/call",
-          params: { name: "run_agent", arguments: { agent: "schedule-author", task } },
-        }),
-      });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const data = await res.json();
-      const rawText: string = data?.result?.content?.[0]?.text ?? "";
-      if (data?.result?.isError) {
-        throw new Error(rawText || "The scheduler agent returned an error");
-      }
-
-      // run_agent wraps the agent's findings as {"answer": "...", "ok": ...,
-      // "tool_trace": [...]}. Pull `answer` out first, otherwise the greedy
-      // array match below could span both the steps array and tool_trace.
-      let findings = rawText;
+  // schedule-author answers with {name, interval_seconds, steps}; an older or
+  // other agent may answer with the bare steps array.
+  const applyAssist = (body: string): string | null => {
+    let stepsText: string | null = null;
+    const obj = extractJson(body, "object");
+    if (obj) {
       try {
-        const outer = JSON.parse(rawText);
-        if (outer && typeof outer.answer === "string") findings = outer.answer;
-      } catch { /* not wrapped JSON — treat the whole text as findings */ }
-
-      // Prefer a fenced ```json block; fall back to the first bare [...] array.
-      const fenced = findings.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-      const bare = findings.match(/\[[\s\S]*\]/);
-      const arrayText = fenced ? fenced[1] : bare ? bare[0] : null;
-      if (!arrayText) throw new Error(`No step array in the agent's reply:\n${findings.slice(0, 400)}`);
-
-      const parsed = jsonToStepDrafts(arrayText);
-      if (!parsed || parsed.length === 0) throw new Error("Could not parse the step array the agent returned");
-
-      setSteps(parsed);
-      setShowAiAssist(false);
-      setAiPrompt("");
-    } catch (e) {
-      setAiError(String(e));
-    } finally {
-      setAiLoading(false);
+        const o = JSON.parse(obj);
+        if (Array.isArray(o?.steps)) {
+          stepsText = JSON.stringify(o.steps);
+          if (!name.trim() && typeof o.name === "string") setName(o.name);
+          if (!existing && typeof o.interval_seconds === "number" && o.interval_seconds > 0) {
+            const secs = o.interval_seconds;
+            if (secs % 86400 === 0) { setIntervalUnit("days"); setIntervalValue(secs / 86400); }
+            else if (secs % 3600 === 0) { setIntervalUnit("hours"); setIntervalValue(secs / 3600); }
+            else if (secs % 60 === 0) { setIntervalUnit("minutes"); setIntervalValue(secs / 60); }
+            else { setIntervalUnit("seconds"); setIntervalValue(secs); }
+          }
+        }
+      } catch { /* not the object form; try the array below */ }
     }
+    stepsText ??= extractJson(body, "array");
+    if (!stepsText) return `No step array in the agent's reply:\n${body.slice(0, 400)}`;
+    const parsed = jsonToStepDrafts(stepsText);
+    if (!parsed || parsed.length === 0) return "Could not parse the step array the agent returned";
+    setSteps(parsed);
+    return null;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -307,43 +273,15 @@ export default function ScheduledTaskForm({
             Enabled
           </label>
 
-          {/* AI Assist */}
-          <div style={{ border: "1px solid var(--border, #45475a)", borderRadius: "8px", overflow: "hidden" }}>
-            <button
-              type="button"
-              onClick={() => setShowAiAssist((v) => !v)}
-              style={{ width: "100%", background: showAiAssist ? "var(--surface2, #313244)" : "none", border: "none", padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", color: "var(--accent, #89b4fa)", fontSize: "0.82rem", textAlign: "left" }}
-            >
-              <span>{showAiAssist ? "▲" : "▼"}</span>
-              <span>Ask the scheduler agent to design steps</span>
-            </button>
-
-            {showAiAssist && (
-              <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: "8px", background: "var(--surface2, #313244)" }}>
-                <textarea
-                  style={{ background: "var(--surface, #1e1e2e)", border: "1px solid var(--border, #45475a)", borderRadius: "6px", padding: "6px 10px", color: "inherit", fontSize: "0.85rem", resize: "vertical", minHeight: "64px" }}
-                  value={aiPrompt}
-                  onChange={(e) => setAiPrompt(e.target.value)}
-                  placeholder="Describe what you want this task to do, e.g. 'Every day, search for AI news and store a summary note'. The scheduler agent (schedule-author) drafts lint-clean steps — this may take a few seconds."
-                  spellCheck={false}
-                />
-                {aiError && <span style={{ color: "#f87171", fontSize: "0.78rem" }}>{aiError}</span>}
-                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                  <button
-                    type="button"
-                    className="sidebar-btn active"
-                    onClick={handleAiGenerate}
-                    disabled={aiLoading || !aiPrompt.trim()}
-                  >
-                    {aiLoading ? "Generating…" : "Generate Steps"}
-                  </button>
-                  <span style={{ fontSize: "0.75rem", opacity: 0.45 }}>
-                    Replaces current steps
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
+          <AgentAssist
+            title="Ask an agent to design the steps"
+            defaultAgent="schedule-author"
+            placeholder="Describe what this task should do, e.g. 'Every day, search for AI news and store a summary note'."
+            buildTask={buildAssistTask}
+            onResult={applyAssist}
+            runLabel="Draft steps"
+            note="Replaces current steps"
+          />
 
           {/* Steps header */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

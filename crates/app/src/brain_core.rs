@@ -762,7 +762,8 @@ impl BrainCore {
                 SchedulerSkill::new(Arc::clone(sched), self.storage.neo4j.clone())
                     .with_live_tools(Arc::clone(&live_tools_arc))
                     .with_tool_schemas(Arc::clone(&tool_schemas_arc))
-                    .with_envelope_schemas(Arc::clone(&envelope_schemas_arc)),
+                    .with_envelope_schemas(Arc::clone(&envelope_schemas_arc))
+                    .with_telemetry(self.storage.telemetry.clone()),
             ));
         }
         if let Some(cb) = &context_builder_arc {

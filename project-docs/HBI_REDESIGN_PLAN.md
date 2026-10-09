@@ -1,6 +1,6 @@
 # HBI Redesign — from tabs to a dashboard
 
-Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phases 10–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
+Status: **Phases 0–7 done, 2026-10-08. Second round (§9): Phase 8 done 2026-10-08; Phase 9 done 2026-10-09 (4,510 claims rewritten or checked; eval 0.880 / 0.780); Phase 10 done 2026-10-09 (a model per step, per `run_agent`, per chat turn; one picker, one assist widget); Phases 11–13 planned, all §9.9 decisions taken.** All §7 decisions taken 2026-10-08 (the recommendations, plus proposals-only entity merges). Supersedes the layout in `HBI_PLAN.md` (Feb 2026), whose transport and SSE notes still hold.
 
 ## 1. Why
 
@@ -701,3 +701,40 @@ Built and deployed:
 
 Not built: a check that catches a missing location or target ("AI agents were deployed", with no target named).
 
+
+### Phase 10 outcome (2026-10-09)
+
+Built and deployed:
+- **A step's `model`** (`ChainStep.model`, `services/queue.rs`):
+  - a catalog model id or name, matched exactly (`model_router::find_model`; "gemma4" never becomes `gemma4:31b-cloud`);
+  - stamped as `__model`, it takes precedence over `required_capabilities`;
+  - judged by the routing policy at execution (`model_router::pinned_config`). An unknown or refused model kills the job at once with "Step model cannot run: …". The owning task fails with that reason, and meta-learning is skipped, because the fix is the step.
+  - `provider_hint` is derived from the model at enqueue (`provider_hint_for`: a local provider gives `ollama`, otherwise the provider's own name). A cloud pin that later hits its quota still walks the usual fallback chain, recorded in the ledger.
+- **Upsert validation** (`validation::validate_step_models`, also run by `audit`): an unknown model, or a hint that contradicts the model, is a hard reject. A pin the policy would refuse right now is a soft `step_warning`. A pinned step is no longer asked for a hint.
+- **`run_agent`** gains `model`, and takes a step's `__model` when its own isn't set. An unknown or refused model rejects the run with the reason. It also gains `read_only`, which strips write tools, so a draft is never stored. The result names the `model` it ran on.
+- **Chat turns** take `model`. An unknown or refused one ends the turn with the reason and calls nothing.
+- **`/api/models`** gives every catalog row an `admission` field: the policy's verdict per purpose (background, subagent, chat) × data class, `null` or the refusal. Spend caps and cooldowns surface through it.
+- **Frontend:**
+  - `<ModelPicker>` (`components/ui/ModelPicker.tsx`, `lib/models.ts`): grouped by provider, local first, with billing and data-policy badges, "refused here" on each model the policy would refuse, a warning under the chosen one, and a stored model outside the catalog kept and flagged.
+  - Used in: the step editor (where "Runs on" is derived once a model is pinned), the agents editor's model preference, the chat header (a per-conversation choice, not remembered), and every assist.
+  - `<AgentAssist>` (`components/ui/AgentAssist.tsx`, `lib/assist.ts`): a prompt, an agent, a model and a run, read-only, followed by the tools it actually ran. Used in:
+    - the schedule form (schedule-author; the lint rules were deleted from the frontend prompt, and the agent's `{name, interval_seconds, steps}` object is read);
+    - the todo form (knowledge-worker: "Draft a description", "Break it down");
+    - the agents editor (knowledge-worker: "Draft profile").
+  - `schedule-author` gained one rule, on `model`.
+
+**Data fix:** Zero Trust Architecture Research (93cb3808, runtime-owned) carried `model: gemma4:latest` on both steps, never read until now. Step 1 also had `provider_hint: ollama-cloud`. Honouring it would have moved both steps onto host Ollama, which shares the 8 GB GPU with llama.cpp. `scripts/fix_step_models.cypher` removed the field before the deploy, so the schedule runs as it always has; the old steps are kept in `steps_before_model_fix`. No other schedule, chain or pending job named a model.
+
+**Verified live:**
+- **The done-condition:** a disabled throwaway schedule whose `reason` step pinned `gpt-oss:20b-cloud` (unpinned, it would run on `gpt-oss:120b-cloud`) logged "Step runs on its pinned model", and `/api/models/usage` showed exactly one `gpt-oss:20b-cloud` call.
+- **Refusal:** pinned to `gemini-2.5-flash`, the step died with the policy's reason, the task failed with it, and no meta-learning ran.
+- **Upsert rejection:** the Zero Trust shape and an unknown `gemma4` were both rejected.
+- **Assist:** `run_agent` with knowledge-worker, `gpt-oss:20b-cloud` and `read_only` answered on that model.
+- **Browser:** the step picker warned on Gemini for private background work, and the saved step carried `model` plus the derived `provider_hint: ollama-cloud`.
+- The throwaway schedule was deleted.
+
+**Tests:** 852 Rust lib tests (6 new) and 92 vitest (10 new); clippy is clean.
+
+**Not built:**
+- the delegate tool in chat can't choose a model; a delegated agent uses its profile's own;
+- the YAML schedule seeder does not run the model check; `audit` does.

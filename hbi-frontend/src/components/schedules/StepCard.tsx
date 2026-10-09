@@ -1,4 +1,6 @@
 import { useActiveModels } from "../../api/queries";
+import { findModel, hintForModel } from "../../lib/models";
+import ModelPicker from "../ui/ModelPicker";
 import { PROVIDER_CHOICES, providerLabel, type StepDraft, type ToolGroup } from "./model";
 
 // ─── StepCard ─────────────────────────────────────────────────────────────────
@@ -26,7 +28,17 @@ export default function StepCard({
 }) {
   const knownTools = toolGroups.flatMap((g) => g.tools);
   const update = (patch: Partial<StepDraft>) => onChange({ ...step, ...patch });
-  const activeModel = useActiveModels().data?.active_model;
+  const models = useActiveModels().data;
+  const activeModel = models?.active_model;
+  const pinned = step.model ? findModel(models?.catalog_models ?? [], step.model) : undefined;
+  const dataClass = step.extra.data_class === "public" ? "public" : "private";
+
+  // A pinned model decides where the step runs; write the hint the brain
+  // derives from it, so the saved step can't contradict its model.
+  const setModel = (model: string) => {
+    const row = model ? findModel(models?.catalog_models ?? [], model) : undefined;
+    update(row ? { model, provider_hint: hintForModel(row, models?.providers ?? []) } : { model });
+  };
 
   const setArgKey = (i: number, key: string) => {
     const args = step.args.map((a, idx) => idx === i ? { ...a, key } : a);
@@ -198,7 +210,6 @@ export default function StepCard({
             <span key={k}>
               {i > 0 && " · "}
               <code style={{ fontSize: "0.73rem" }}>{k}</code>={extraValue(v)}
-              {k === "model" && <span className="tone-text-yellow"> (not read: steps can't pick a model yet)</span>}
             </span>
           ))}
         </div>
@@ -206,13 +217,31 @@ export default function StepCard({
 
       {/* Provider + Priority row */}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: "6px" }}>
+          <span style={{ fontSize: "0.78rem", opacity: 0.65, paddingTop: 3 }}>Model</span>
+          <ModelPicker
+            value={step.model}
+            onChange={setModel}
+            purpose="background"
+            dataClass={dataClass}
+            defaultLabel="none: “Runs on” decides"
+            style={smallSelectStyle}
+            title="Pin this step to one model. The routing policy still judges it; a model it refuses fails the step with the reason."
+          />
+        </div>
+
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <span style={{ fontSize: "0.78rem", opacity: 0.65 }}>Runs on</span>
+          {pinned ? (
+            <span style={{ fontSize: "0.8rem" }} title="Derived from the pinned model">
+              {pinned.provider} <span style={{ opacity: 0.55 }}>(from the model)</span>
+            </span>
+          ) : (
           <select
             style={smallSelectStyle}
             value={step.provider_hint}
             onChange={(e) => update({ provider_hint: e.target.value })}
-            title="Only local vs cloud changes where a step runs; choosing a model per step comes later (HBI plan Phase 10)."
+            title="Without a pinned model, only local vs cloud changes where a step runs."
           >
             {/* Keep a value the list doesn't offer (ollama-cloud, anthropic,
                 gemini), labelled with what it really does. */}
@@ -223,6 +252,7 @@ export default function StepCard({
               <option key={p || "cloud"} value={p}>{providerLabel(p, activeModel)}</option>
             ))}
           </select>
+          )}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>

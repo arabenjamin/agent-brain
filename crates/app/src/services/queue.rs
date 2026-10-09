@@ -159,6 +159,15 @@ pub struct ChainStep {
     /// When nothing qualifies the step falls back to normal routing.
     #[serde(default)]
     pub required_capabilities: Option<Vec<String>>,
+    /// A model this step must run on, by catalog `model` id or `name`
+    /// (`models.yaml`). Takes precedence over `required_capabilities`, still
+    /// judged by the routing policy, and never a preference: an unknown or
+    /// refused model fails the job with the reason instead of running on
+    /// something else. The step's `provider_hint` is derived from the model's
+    /// provider at enqueue, so the two cannot disagree. Stored as `__model` in
+    /// the job args; tools ignore it via serde.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Who may see this step's prompts (`services/routing.rs`): `private`
     /// (the default when absent) only reaches `no_log` providers; `public` also
     /// admits free tiers that may train on prompts. A chain or schedule file's
@@ -444,9 +453,23 @@ impl QueueService {
         let mut prev_id: Option<String> = None;
         let mut first_job: Option<AgentJob> = None;
 
+        // The catalog, read once, only when some step pins a model.
+        let catalog: Vec<crate::services::model_router::CatalogModel> =
+            if steps.iter().any(|s| pinned_model(s).is_some()) {
+                let handler = self.tool_handler.read().await;
+                handler
+                    .as_ref()
+                    .and_then(|h| h.telemetry())
+                    .map(crate::services::model_router::catalog_models)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
         for (i, step) in steps.iter().enumerate() {
             let priority = step.priority.unwrap_or(1);
             let max_attempts = step.max_attempts.unwrap_or(3);
+            let provider_hint = step_provider_hint(step, &catalog);
 
             // For evaluator steps, inject metadata fields into the args JSON so
             // execute_job can parse them without needing extra AgentJob columns.
@@ -497,6 +520,18 @@ impl QueueService {
                     Some(a)
                 }
                 _ => effective_args,
+            };
+
+            // Inject a pinned model (read by execute_job; tools ignore it).
+            let effective_args: Option<serde_json::Value> = match pinned_model(step) {
+                Some(model) => {
+                    let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                    if let serde_json::Value::Object(ref mut m) = a {
+                        m.insert("__model".to_string(), serde_json::json!(model));
+                    }
+                    Some(a)
+                }
+                None => effective_args,
             };
 
             // Inject the data class for the routing policy (read by execute_job).
@@ -568,7 +603,7 @@ impl QueueService {
                         max_attempts,
                         session_id,
                         None,
-                        step.provider_hint.as_deref(),
+                        provider_hint.as_deref(),
                         step.context_profile.as_deref(),
                         step.description.as_deref(),
                         step.ttl_secs,
@@ -587,7 +622,7 @@ impl QueueService {
                         max_attempts,
                         session_id,
                         prev_id.as_deref().unwrap(),
-                        step.provider_hint.as_deref(),
+                        provider_hint.as_deref(),
                         step.context_profile.as_deref(),
                         step.description.as_deref(),
                         step.ttl_secs,
@@ -1377,7 +1412,45 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
 
         let resolved_args = self.resolve_step_args(&job).await;
         let route_ctx = route_context_for(&job);
-        let selected_llm = select_step_model(&job, handler, route_ctx);
+        let selected_llm = match job_arg(&job, "__model").and_then(Value::as_str) {
+            // A pinned model runs as written or not at all: the job dies with
+            // the reason (retrying cannot change the catalog or the policy).
+            Some(model) => {
+                let rows = handler
+                    .telemetry()
+                    .map(crate::services::model_router::catalog_models)
+                    .unwrap_or_default();
+                match crate::services::model_router::pinned_config(
+                    &rows,
+                    model,
+                    &crate::services::LlmConfig::default(),
+                    route_ctx,
+                ) {
+                    Ok(cfg) => {
+                        info!(job_id = %job.id, tool = %job.tool_name, model = %cfg.model,
+                              provider = %cfg.provider_label(), "Step runs on its pinned model");
+                        Some(cfg)
+                    }
+                    Err(reason) => {
+                        drop(handler_guard);
+                        let error = format!("{STEP_MODEL_ERROR}: {reason}");
+                        warn!(job_id = %job.id, tool = %job.tool_name, %error, "Step model cannot run");
+                        let attempt = self
+                            .neo4j
+                            .get_agent_job(&job.id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|j| j.attempt_count)
+                            .unwrap_or(job.attempt_count + 1);
+                        self.on_job_dead(&job, attempt, job.max_attempts, &error)
+                            .await;
+                        return;
+                    }
+                }
+            }
+            None => select_step_model(&job, handler, route_ctx),
+        };
 
         // Run the tool call inside task-local scopes so `SharedLlm` can route:
         // SELECTED_LLM (capability-resolved) takes precedence over USE_LOCAL_LLM
@@ -1739,7 +1812,7 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
     /// (quota, rate limits, timeouts) the brain cannot fix, and when the tool
     /// was already meta-learned in the last 24h.
     async fn maybe_meta_learn(&self, job: &AgentJob, attempt: u32, error_text: &str) {
-        if !should_meta_learn(&job.tool_name) {
+        if !should_meta_learn(&job.tool_name) || error_text.starts_with(STEP_MODEL_ERROR) {
             return;
         }
         if is_transient_infra_error(error_text) {
@@ -1961,6 +2034,33 @@ fn route_context_for(job: &AgentJob) -> crate::services::routing::RouteContext {
             .map(crate::services::routing::DataClass::parse_or_private)
             .unwrap_or_default(),
     )
+}
+
+/// Prefix of the error a job dies with when its pinned model cannot run.
+/// Meta-learning skips it: the fix is the step, not anything the brain learns.
+pub const STEP_MODEL_ERROR: &str = "Step model cannot run";
+
+/// A step's pinned model, trimmed; `None` when absent or blank.
+fn pinned_model(step: &ChainStep) -> Option<&str> {
+    step.model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+}
+
+/// The `provider_hint` a step is enqueued with: derived from its pinned model
+/// when the catalog knows the model, else as written. An unknown pin keeps the
+/// written hint; the job then dies at execution saying the model is unknown.
+fn step_provider_hint(
+    step: &ChainStep,
+    catalog: &[crate::services::model_router::CatalogModel],
+) -> Option<String> {
+    match pinned_model(step).and_then(|m| crate::services::model_router::find_model(catalog, m)) {
+        Some(row) => Some(crate::services::model_router::provider_hint_for(
+            &row.provider,
+        )),
+        None => step.provider_hint.clone(),
+    }
 }
 
 /// Per-step model routing: when the step declared `required_capabilities`,
@@ -2467,6 +2567,53 @@ fn substitute_prev_paths_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_model_decides_the_provider_hint() {
+        use crate::services::model_router::CatalogModel;
+        let catalog = vec![
+            CatalogModel {
+                name: "gemma4:latest".into(),
+                provider: "ollama".into(),
+                model: "gemma4:latest".into(),
+            },
+            CatalogModel {
+                name: "claude-haiku-4-5".into(),
+                provider: "anthropic".into(),
+                model: "claude-haiku-4-5-20251001".into(),
+            },
+        ];
+        let step = |hint: Option<&str>, model: Option<&str>| ChainStep {
+            provider_hint: hint.map(String::from),
+            model: model.map(String::from),
+            ..ChainStep::new("reason")
+        };
+        // The Zero Trust step: written cloud, pinned to a host-local model.
+        let zt = step(Some("ollama-cloud"), Some("gemma4:latest"));
+        assert_eq!(step_provider_hint(&zt, &catalog).as_deref(), Some("ollama"));
+        // A cloud pin picks its provider's lane.
+        let haiku = step(None, Some("claude-haiku-4-5"));
+        assert_eq!(
+            step_provider_hint(&haiku, &catalog).as_deref(),
+            Some("anthropic")
+        );
+        // No pin, a blank pin, or an unknown pin keeps the hint as written.
+        assert_eq!(
+            step_provider_hint(&step(Some("ollama"), None), &catalog).as_deref(),
+            Some("ollama")
+        );
+        assert_eq!(step_provider_hint(&step(None, Some("  ")), &catalog), None);
+        assert_eq!(
+            step_provider_hint(&step(Some("gemini"), Some("nope")), &catalog).as_deref(),
+            Some("gemini")
+        );
+        // The pin travels in the job args deserialised from a stored step.
+        let stored: ChainStep = serde_json::from_value(
+            serde_json::json!({"tool_name": "reason", "model": "gemma4:latest"}),
+        )
+        .unwrap();
+        assert_eq!(pinned_model(&stored), Some("gemma4:latest"));
+    }
     use serde_json::json;
 
     #[test]

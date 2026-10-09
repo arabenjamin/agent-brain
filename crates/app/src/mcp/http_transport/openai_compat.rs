@@ -230,6 +230,8 @@ fn build_chat_request(
         context_profile: profile_for_model(model),
         synthesis_provider: None,
         synthesis_model: None,
+        // The front door's `model` names a profile, not a catalog model.
+        model: None,
     })
 }
 

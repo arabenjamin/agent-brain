@@ -109,6 +109,14 @@ impl AgentRunnerSkill {
                         "type": "string",
                         "description": "A complete, self-contained instruction for the agent (it has no other context)."
                     },
+                    "model": {
+                        "type": "string",
+                        "description": "Run the agent on this model (a catalog model id or name from list_models) instead of its profile's own. Judged by the routing policy; a model that is unknown or not allowed for this work fails the call with the reason, it never falls back."
+                    },
+                    "read_only": {
+                        "type": "boolean",
+                        "description": "Strip the agent's write tools for this run (store_note, write_workspace_file, …), as a chat sub-agent runs. For a draft or an answer that must not be saved anywhere."
+                    },
                     "max_rounds": {
                         "type": "integer",
                         "minimum": 1,
@@ -243,19 +251,29 @@ impl AgentRunnerSkill {
             task_len = task.len(),
             "run_agent dispatching background agent"
         );
+        // The call's own `model`, else the chain step's pin (`__model`): a
+        // step pin must reach the agent loop, which picks its own config.
+        let model = input
+            .model
+            .as_deref()
+            .or(input.step_model.as_deref())
+            .map(str::trim)
+            .filter(|m| !m.is_empty());
         let findings = runner
-            .run(
+            .run_with_model(
                 agent,
                 task,
                 AgentBudget {
                     max_iterations: effective_rounds(input.max_rounds),
                     // Writing IS the background job; the inner agent keeps its
                     // own TurnWriteGuard for grounding/duplicate suppression.
-                    allow_writes: true,
+                    // `read_only` (an HBI assist drafting into a form) strips them.
+                    allow_writes: !input.read_only,
                     allow_explicit_only: true,
                 },
                 // No sink: collect the findings, do not stream to a user.
                 None,
+                model,
             )
             .await;
 
@@ -301,6 +319,7 @@ impl AgentRunnerSkill {
             "ok": findings.ok,
             "retrieved": findings.retrieved,
             "agent": agent,
+            "model": findings.model,
             "tool_trace": tool_trace,
             "verified": input.verify.is_some().then_some(failures.is_empty()),
             "verification_failures": failures,
@@ -424,6 +443,13 @@ struct RunAgentInput {
     max_rounds: Option<usize>,
     #[serde(default)]
     verify: Option<VerifySpec>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    read_only: bool,
+    /// A chain step's pinned model, stamped into the job args by the queue.
+    #[serde(default, rename = "__model")]
+    step_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

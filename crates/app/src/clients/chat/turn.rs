@@ -566,6 +566,35 @@ impl ChatService {
         // may replace the default. A refused pin is reported in the stream and the
         // turn keeps the chat default, which the ladder walk judges in turn.
         let route_ctx = RouteContext::new(Purpose::Chat, turn_class);
+        // A model chosen for this turn replaces the profile's pin, and is never
+        // quietly swapped: when it cannot run, the turn says why and stops.
+        if let Some(chosen) = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
+            let rows = self
+                .telemetry
+                .as_ref()
+                .map(crate::services::model_router::catalog_models)
+                .unwrap_or_default();
+            let base = config.clone().unwrap_or_default();
+            match crate::services::model_router::pinned_config(&rows, chosen, &base, route_ctx) {
+                Ok(cfg) => profile_model = Some(cfg),
+                Err(reason) => {
+                    let _ = tx
+                        .send(ChatEvent::Error {
+                            message: format!(
+                                "The model chosen for this turn cannot run: {reason}."
+                            ),
+                        })
+                        .await;
+                    let _ = tx.send(ChatEvent::Done).await;
+                    return;
+                }
+            }
+        }
         let mut pin_refusal: Option<String> = None;
         let profile_model = match profile_model {
             Some(m) => match RoutingPolicy::from_env().admit(&m, route_ctx) {

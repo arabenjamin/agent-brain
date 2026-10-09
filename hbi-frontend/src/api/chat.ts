@@ -43,6 +43,8 @@ export interface StreamChatOptions {
   contextProfile?: string;
   synthesisProvider?: string;
   synthesisModel?: string;
+  /** A catalog model this turn must run on ("" or absent = the agent's or chat default). */
+  model?: string;
   onEvent: (event: ChatEvent) => void;
   signal?: AbortSignal;
 }
@@ -61,6 +63,7 @@ export async function streamChat(opts: StreamChatOptions): Promise<void> {
       context_profile: opts.contextProfile,
       synthesis_provider: opts.synthesisProvider,
       synthesis_model: opts.synthesisModel || undefined,
+      model: opts.model || undefined,
     }),
     signal: opts.signal,
   });

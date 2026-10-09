@@ -8,6 +8,7 @@
  * `#updateTimers`), so after each fetch the observers realign and the
  * shortest requested interval wins: one request per tick, not one per view.
  */
+import type { CatalogModel, ProviderInfo } from "../lib/models";
 import { QueryClient, useQuery } from "@tanstack/react-query";
 import { apiJson, query } from "./client";
 import { callTool } from "./mcp";
@@ -135,6 +136,10 @@ export interface ActiveModels {
   active_model?: string;
   chat_provider?: string;
   chat_model?: string;
+  /** Every catalog model, each with the routing policy's verdict per purpose and data class. */
+  catalog_models?: CatalogModel[];
+  /** The provider registry: billing, data policy, whether a key is set. */
+  providers?: ProviderInfo[];
 }
 
 export interface RelatedNote {
@@ -246,6 +251,10 @@ export interface ProfileInfo {
   tools?: string[];
   /** A model the profile pins, if any (`/api/contexts`). */
   model_preference?: string;
+  /** Whether `run_agent` / `delegate` may run it. */
+  spawnable?: boolean;
+  /** `public` lets its work reach providers that may train on prompts; absent = private. */
+  data_class?: string | null;
 }
 
 // ── Hooks ────────────────────────────────────────────────────────────────────

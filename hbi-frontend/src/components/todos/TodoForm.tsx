@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../../api/client";
+import AgentAssist from "../ui/AgentAssist";
 import { todosUrl, type Todo } from "./model";
 
 export default function TodoForm({
@@ -26,6 +27,26 @@ export default function TodoForm({
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // The agent sees only this task, so it carries the todo as it stands.
+  const buildAssistTask = (prompt: string, action?: string) => {
+    const todo =
+      `Todo title: ${title.trim() || "(none yet)"}\n` +
+      `Current description:\n${description.trim() || "(none)"}`;
+    const ask =
+      action === "describe"
+        ? "Write a clear description for this todo: what is to be done, what done looks like, and anything the brain already knows that bears on it."
+        : action === "breakdown"
+          ? "Break this todo into a short ordered checklist of concrete steps, as markdown lines starting with \"- [ ] \"."
+          : prompt;
+    return `${ask}\n\n${todo}\n\nReply with only the text to put in the todo's description: no preamble, no sign-off.`;
+  };
+
+  const applyAssist = (body: string, action?: string) => {
+    if (!body.trim()) return "The agent's answer was empty";
+    setDescription((d) => (action === "breakdown" && d.trim() ? `${d.trim()}\n\n${body.trim()}` : body.trim()));
+    return null;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,6 +121,20 @@ export default function TodoForm({
               onChange={(e) => setDescription(e.target.value)}
             />
           </label>
+
+          <AgentAssist
+            title="Ask an agent to help with this todo"
+            defaultAgent="knowledge-worker"
+            placeholder="What should the agent do with this todo? Or use a preset below."
+            buildTask={buildAssistTask}
+            onResult={(body, _run, action) => applyAssist(body, action)}
+            runLabel="Ask"
+            actions={[
+              { key: "describe", label: "Draft a description" },
+              { key: "breakdown", label: "Break it down" },
+            ]}
+            note="“Break it down” adds to the description; the rest replace it"
+          />
 
           <div style={{ display: "flex", gap: "12px" }}>
             <label style={{ ...labelStyle, flex: 1 }}>

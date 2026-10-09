@@ -272,10 +272,108 @@ pub fn validate_step_array(
     out
 }
 
+/// Every step's pinned `model` must be in the catalog, and a `provider_hint`
+/// written beside it must agree with that model's provider. A hint that
+/// contradicts its model is the Zero Trust schedule: `ollama-cloud` on a step
+/// naming the host-local `gemma4:latest`, which ran on cloud while it said
+/// local. An empty catalog disables the check (fail-open on our own wiring).
+pub fn validate_step_models(
+    steps: &[Value],
+    catalog: &[crate::services::model_router::CatalogModel],
+) -> Vec<Violation> {
+    use crate::services::model_router::{find_model, hint_agrees, provider_hint_for};
+    if catalog.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let Some(model) = step
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        else {
+            continue;
+        };
+        let tool = step.get("tool_name").and_then(Value::as_str).unwrap_or("");
+        let path = format!("steps[{i}] (`{tool}`).model");
+        let Some(row) = find_model(catalog, model) else {
+            out.push(Violation::hard(
+                path,
+                format!(
+                    "`{model}` is not in the model catalog (models.yaml) — this step would \
+                     fail every run; use a catalog model id or name, or remove `model`"
+                ),
+            ));
+            continue;
+        };
+        if let Some(hint) = step.get("provider_hint").and_then(Value::as_str)
+            && !hint_agrees(hint, &row.provider)
+        {
+            out.push(Violation::hard(
+                path,
+                format!(
+                    "`provider_hint: {hint}` contradicts `{}` (provider {}) — set \
+                     `provider_hint: {}` or remove it (it is derived from the model)",
+                    row.model,
+                    row.provider,
+                    provider_hint_for(&row.provider)
+                ),
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_step_model_must_exist_and_agree_with_its_hint() {
+        use crate::services::model_router::CatalogModel;
+        let catalog = vec![
+            CatalogModel {
+                name: "gemma4:latest".into(),
+                provider: "ollama".into(),
+                model: "gemma4:latest".into(),
+            },
+            CatalogModel {
+                name: "gpt-oss:120b-cloud".into(),
+                provider: "ollama-cloud".into(),
+                model: "gpt-oss:120b-cloud".into(),
+            },
+        ];
+        // The Zero Trust schedule as stored on 2026-10-09.
+        let zero_trust = vec![
+            json!({"tool_name": "search_web", "provider_hint": "ollama-cloud", "model": "gemma4:latest"}),
+            json!({"tool_name": "reason", "provider_hint": "ollama", "model": "gemma4:latest"}),
+        ];
+        let v = validate_step_models(&zero_trust, &catalog);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].path.starts_with("steps[0]"), "{v:?}");
+        assert!(
+            render_hard(&v).contains("contradicts"),
+            "{}",
+            render_hard(&v)
+        );
+
+        let unknown = vec![json!({"tool_name": "reason", "model": "gemma4"})];
+        assert!(
+            render_hard(&validate_step_models(&unknown, &catalog))
+                .contains("not in the model catalog")
+        );
+
+        let ok = vec![
+            json!({"tool_name": "reason", "model": "gpt-oss:120b-cloud"}),
+            json!({"tool_name": "reason", "model": "GPT-OSS:120B-CLOUD", "provider_hint": "ollama-cloud"}),
+            json!({"tool_name": "reason", "provider_hint": "ollama"}),
+        ];
+        assert!(validate_step_models(&ok, &catalog).is_empty());
+        // No catalog: nothing to check against.
+        assert!(validate_step_models(&unknown, &[]).is_empty());
+    }
 
     /// Every schema checked into `schemas/` must be valid JSON *and* a schema
     /// the validator can compile — otherwise the envelope layer fails open and

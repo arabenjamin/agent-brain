@@ -754,6 +754,47 @@ mod turn_tests {
         );
     }
 
+    /// A model chosen for the turn that the catalog does not have ends the
+    /// turn with the reason; the turn never answers on another model.
+    #[tokio::test]
+    async fn a_turn_model_that_cannot_run_ends_the_turn_and_calls_nothing() {
+        let server = MockServer::start().await;
+        always(&server, ANSWERED_COMPLETION_SSE).await;
+        let svc = ChatService::with_context_builder(
+            Arc::new(RwLock::new(None)),
+            Arc::new(RwLock::new(ToolRegistry::new())),
+            Arc::new(RwLock::new(Some(cloud_config(&server)))),
+            Arc::new(RwLock::new(None)),
+            None,
+            vec![],
+        );
+        let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
+        let request = ChatRequest {
+            model: Some("no-such-model".into()),
+            ..test_request()
+        };
+        tokio::time::timeout(Duration::from_secs(20), svc.run(request, tx))
+            .await
+            .expect("run() must terminate");
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            seen.push(e);
+        }
+        assert!(
+            seen.iter().any(|e| matches!(e, ChatEvent::Error { message }
+                if message.contains("no-such-model") && message.contains("not in the model catalog"))),
+            "{seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|e| matches!(e, ChatEvent::Message { .. })),
+            "{seen:?}"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn a_refused_primary_is_skipped_for_the_next_permitted_rung() {
         let refused = MockServer::start().await;

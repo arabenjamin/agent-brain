@@ -32,6 +32,9 @@ pub struct SchedulerSkill {
     /// stem (`scheduled_task`, `scheduler_chain`). Loaded once at startup. Empty
     /// = envelope validation disabled (fail-open); the per-step arg gate still runs.
     envelope_schemas: Arc<HashMap<String, Value>>,
+    /// The model catalog a step's `model` is checked against. `None` disables
+    /// that check (fail-open, like the schema layers).
+    telemetry: Option<crate::repository::TelemetryClient>,
 }
 
 impl SchedulerSkill {
@@ -42,7 +45,14 @@ impl SchedulerSkill {
             live_tools: Arc::new(RwLock::new(Vec::new())),
             tool_schemas: Arc::new(RwLock::new(HashMap::new())),
             envelope_schemas: Arc::new(HashMap::new()),
+            telemetry: None,
         }
+    }
+
+    /// Inject the telemetry client whose catalog step models are checked against.
+    pub fn with_telemetry(mut self, telemetry: Option<crate::repository::TelemetryClient>) -> Self {
+        self.telemetry = telemetry;
+        self
     }
 
     /// Inject a pre-populated live tool list (replaces the default empty vec).
@@ -73,7 +83,13 @@ impl SchedulerSkill {
     async fn hard_reject_steps(&self, label: &str, steps: &[Value]) -> Option<String> {
         let live = self.live_tools.read().await;
         let schemas = self.tool_schemas.read().await;
-        let hard = validation::validate_step_array(steps, &live, &schemas);
+        let mut hard = validation::validate_step_array(steps, &live, &schemas);
+        let catalog = self
+            .telemetry
+            .as_ref()
+            .map(crate::services::model_router::catalog_models)
+            .unwrap_or_default();
+        hard.extend(validation::validate_step_models(steps, &catalog));
         if validation::has_hard(&hard) {
             Some(format!(
                 "{label} rejected — {} structural error(s); nothing was saved. \
@@ -86,6 +102,47 @@ impl SchedulerSkill {
         } else {
             None
         }
+    }
+
+    /// A soft warning for each step whose pinned model the routing policy
+    /// would refuse right now for that step's data class. Soft, because a
+    /// cooldown or a spend cap passes; the step dies with the same reason if
+    /// it still holds when the step runs.
+    fn pinned_model_warnings(&self, steps: &[ChainStep]) -> Vec<String> {
+        use crate::services::routing::{Purpose, RouteContext};
+        let Some(tel) = self.telemetry.as_ref() else {
+            return Vec::new();
+        };
+        let rows = crate::services::model_router::catalog_models(tel);
+        steps
+            .iter()
+            .enumerate()
+            .filter_map(|(i, step)| {
+                let model = step
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())?;
+                crate::services::model_router::find_model(&rows, model)?;
+                let ctx =
+                    RouteContext::new(Purpose::Background, step.data_class.unwrap_or_default());
+                crate::services::model_router::pinned_config(
+                    &rows,
+                    model,
+                    &crate::services::LlmConfig::default(),
+                    ctx,
+                )
+                .err()
+                .map(|reason| {
+                    format!(
+                        "step {} (`{}`): {reason}. The step will fail with this reason unless \
+                         it has changed by the time it runs.",
+                        i + 1,
+                        step.tool_name
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Validate an object against its envelope schema (`scheduled_task`,
@@ -751,8 +808,9 @@ impl SchedulerSkill {
                     return ToolCallResult::error(err);
                 }
 
-                let step_warnings =
+                let mut step_warnings =
                     lint_chain_steps(&parsed_steps, &self.live_tools.read().await.clone());
+                step_warnings.extend(self.pinned_model_warnings(&parsed_steps));
 
                 let description = args["description"].as_str();
                 let enabled = args["enabled"].as_bool().unwrap_or(true);
@@ -912,6 +970,11 @@ impl SchedulerSkill {
 
         let live_tools = self.live_tools.read().await;
         let tool_schemas = self.tool_schemas.read().await;
+        let catalog = self
+            .telemetry
+            .as_ref()
+            .map(crate::services::model_router::catalog_models)
+            .unwrap_or_default();
         let disable_broken = args["disable_broken"].as_bool().unwrap_or(false);
 
         let mut healthy: Vec<Value> = Vec::new();
@@ -952,6 +1015,7 @@ impl SchedulerSkill {
             let structural: Vec<String> =
                 validation::validate_step_array(&steps, &[], &tool_schemas)
                     .iter()
+                    .chain(validation::validate_step_models(&steps, &catalog).iter())
                     .map(validation::Violation::render)
                     .collect();
 
@@ -1146,8 +1210,10 @@ fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<String> {
         //
         // Only *omission* is flagged. An explicit `ollama-cloud` is a decision
         // someone made and is left alone — the failure being caught is the
-        // author who never knew the field existed.
-        if step.provider_hint.is_none() {
+        // author who never knew the field existed. A step that pins a `model`
+        // needs no hint: it runs on that model, and the hint is derived from it.
+        if step.provider_hint.is_none() && step.model.as_deref().is_none_or(|m| m.trim().is_empty())
+        {
             warnings.push(format!(
                 "step {n} (`{tool}`): no `provider_hint`, so it routes to the active \
                  model (a cloud model) rather than local. Set `provider_hint: \"ollama\"` \
@@ -1645,6 +1711,20 @@ mod tests {
                 "step {n} routing-by-omission not caught: {w:?}"
             );
         }
+    }
+
+    /// A pinned model decides where a step runs, so its missing hint is not
+    /// routing by omission (the queue derives the hint from the model).
+    #[test]
+    fn lint_does_not_ask_a_pinned_step_for_a_hint() {
+        let pinned: ChainStep = serde_json::from_value(json!({
+            "tool_name": "reason",
+            "arguments": { "question": "q" },
+            "model": "gpt-oss:20b-cloud",
+        }))
+        .unwrap();
+        let w = lint_chain_steps(&[pinned], &[]);
+        assert!(!w.iter().any(|s| s.contains("provider_hint")), "{w:?}");
     }
 
     /// Only omission is a defect. A step that names the cloud on purpose — the

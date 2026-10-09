@@ -769,6 +769,15 @@ The fix keeps every field the editor doesn't edit and lists them under the step.
 - **The Paragon claim needed one more rule.** Its source never names the product, so the honest form is "Paragon Solutions' spyware", and the model wrote that only once the prompt said so in those words.
 - **What no check catches:** "admitted" became "said". That's why a person reads the dry run before the full rewrite.
 
+### A step's model, honoured at last (2026-10-09)
+
+**A field nobody read, and a hint that lied.** A schedule step could carry `model:` since the HBI editor learned to keep unknown fields, but `ChainStep` had no such field and serde dropped it. Zero Trust Architecture Research said `model: gemma4:latest` on both steps, and step 1 also said `provider_hint: ollama-cloud`. It ran step 1 on the cloud default and step 2 on the local llama.cpp model, neither of them what it named. Honouring the field as written would have moved both steps onto host Ollama, which shares the 8 GB GPU with the llama.cpp sidecar. So the never-read field was removed before the deploy (`scripts/fix_step_models.cypher`), and the rules changed so the two can't disagree again:
+- the hint is derived from the model;
+- a contradiction is rejected at upsert;
+- an unknown or refused pin kills the job with the reason rather than running somewhere else.
+
+The done-check was the ledger itself: a step pinned to `gpt-oss:20b-cloud`, which would otherwise have run on `gpt-oss:120b-cloud`, logged exactly one `gpt-oss:20b-cloud` call.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

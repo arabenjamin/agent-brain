@@ -1,3 +1,4 @@
+import ModelPicker from "../ui/ModelPicker";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -480,6 +481,8 @@ function ChatHeader({
   canExport,
   sidebarOpen,
   onToggleSidebar,
+  turnModel,
+  onTurnModel,
 }: {
   activeModelKey: string;
   modelUsage: ModelUsageStat[];
@@ -493,11 +496,15 @@ function ChatHeader({
   canExport: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  /** A model chosen for the next turns; "" = the agent's own or the chat default. */
+  turnModel: string;
+  onTurnModel: (model: string) => void;
 }) {
   const sep = activeModelKey.indexOf("::");
   const chatModel = sep >= 0 ? activeModelKey.slice(sep + 2) : activeModelKey;
   const effective = profile ?? defaultProfile;
-  const pinned = profiles.find((p) => p.name === effective)?.model_preference;
+  const effectiveProfile = profiles.find((p) => p.name === effective);
+  const pinned = effectiveProfile?.model_preference;
   const model = pinned || chatModel;
 
   // TOKEN SPEND, last 24h: the total, with where it went in the tooltip. A
@@ -526,9 +533,18 @@ function ChatHeader({
           {profiles.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
         </select>
       </label>
-      <span className="chat-model" title={pinned ? `${effective} pins ${pinned}` : "The chat model; an agent may delegate to others"}>
-        <span className="wk-dim">model</span> {model || "—"}
-      </span>
+      <label className="chat-model" title="The model this conversation's turns run on; an agent may still delegate to others">
+        <span className="wk-dim">model</span>
+        <ModelPicker
+          value={turnModel}
+          onChange={onTurnModel}
+          purpose="chat"
+          dataClass={effectiveProfile?.data_class === "public" ? "public" : "private"}
+          defaultLabel={pinned ? `${effective}'s own (${pinned})` : `chat default (${model || "—"})`}
+          className="ui-input auto"
+          style={{ maxWidth: 280 }}
+        />
+      </label>
       {modelUsage.length > 0 && (
         <span className="chat-tokens" title={`Last 24 h, all models:\n${breakdown}`}>
           <span className="wk-dim">24h</span> ↑{fmtTokens(tin)} ↓{fmtTokens(tout)}{cost > 0 && ` · $${cost.toFixed(3)}`}
@@ -565,6 +581,9 @@ export default function ChatPanel({
   // null = the deployment's front door: no profile is sent and the server
   // applies CHAT_DEFAULT_PROFILE. (A hardcoded "general" here bypassed it.)
   const [contextProfile, setContextProfileState] = useState<string | null>(storedProfile);
+  // Not remembered across reloads: a model chosen for one conversation should
+  // not quietly carry into the next.
+  const [turnModel, setTurnModel] = useState("");
   const setContextProfile = (name: string | null) => {
     setContextProfileState(name);
     storeProfile(name);
@@ -728,6 +747,7 @@ export default function ChatPanel({
       contextProfile: thread.sessionId.startsWith("jobsearch-")
         ? "job-applicant"
         : contextProfile ?? undefined,
+      model: turnModel || undefined,
       signal: abort.signal,
       onEvent: (evt) => {
         setThread((prev) => {
@@ -907,6 +927,7 @@ export default function ChatPanel({
       sessionId,
       contextProfile: contextProfile ?? undefined,
       synthesisProvider: researchProvider ?? undefined,
+      model: turnModel || undefined,
       signal: abort.signal,
       onEvent: (evt) => {
         setMsgs((prev) =>
@@ -1107,6 +1128,8 @@ export default function ChatPanel({
         canExport={msgs.length > 0}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={toggleSidebar}
+        turnModel={turnModel}
+        onTurnModel={setTurnModel}
       />
 
       <div className="chat-body">

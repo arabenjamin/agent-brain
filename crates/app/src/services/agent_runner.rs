@@ -465,6 +465,9 @@ pub struct AgentFindings {
     /// receipt behind `findings`: a caller can check the prose's claims against
     /// what really happened (empty = the agent ran no tools at all).
     pub tool_trace: Vec<ToolInvocation>,
+    /// The model the loop started on (empty for a rejection). Fallback rungs
+    /// the loop walked are in the usage ledger, not here.
+    pub model: String,
 }
 
 impl AgentFindings {
@@ -476,6 +479,7 @@ impl AgentFindings {
             retrieved: false,
             findings: msg.into(),
             tool_trace: Vec::new(),
+            model: String::new(),
         }
     }
 }
@@ -536,6 +540,22 @@ impl AgentRunner {
         budget: AgentBudget,
         sink: Option<mpsc::Sender<ChatEvent>>,
     ) -> AgentFindings {
+        self.run_with_model(agent, task, budget, sink, None).await
+    }
+
+    /// [`run`](Self::run) on an explicit model (catalog `model` id or `name`)
+    /// instead of the profile's `model_preference`. The pin is judged by the
+    /// routing policy for this run; an unknown or refused pin rejects the run
+    /// with the reason, never falls back to the default (`run_agent`'s `model`).
+    pub async fn run_with_model(
+        &self,
+        agent: &str,
+        task: &str,
+        budget: AgentBudget,
+        sink: Option<mpsc::Sender<ChatEvent>>,
+        model: Option<&str>,
+    ) -> AgentFindings {
+        let model = model.map(str::trim).filter(|m| !m.is_empty());
         let agent = agent.trim();
         if task.trim().is_empty() {
             return AgentFindings::rejected("agent run called with an empty task.");
@@ -623,35 +643,59 @@ impl AgentRunner {
         // override it when the policy admits the pin for this run. A refused pin
         // falls back to `base`; the ladder walk then judges base and every rung.
         let base = self.llm_config.read().await.clone().unwrap_or_default();
-        let cfg = match bundle
-            .profile
-            .model_preference
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(pref) => {
-                let resolved = engine
-                    .resolve_agent_model(&base, pref, bundle.profile.provider_hint.as_deref())
-                    .await
-                    .unwrap_or_else(|| base.clone());
-                match RoutingPolicy::from_env().admit(&resolved, route_ctx) {
-                    Ok(()) => resolved,
+        let pinned = match model {
+            Some(m) => {
+                let rows = match self.tool_handler.read().await.as_ref() {
+                    Some(h) => h
+                        .telemetry()
+                        .map(crate::services::model_router::catalog_models)
+                        .unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                match crate::services::model_router::pinned_config(&rows, m, &base, route_ctx) {
+                    Ok(cfg) => Some(cfg),
                     Err(reason) => {
-                        tracing::warn!(
-                            agent = %agent,
-                            model = %resolved.model,
-                            provider = %resolved.provider_label(),
-                            data_class = %route_ctx.data_class,
-                            reason = %reason,
-                            "sub-agent model_preference refused by routing policy; \
-                             using the chat default"
-                        );
-                        base.clone()
+                        return AgentFindings::rejected(format!(
+                            "'{agent}' was asked to run on a model it cannot use: {reason}."
+                        ));
                     }
                 }
             }
-            None => base.clone(),
+            None => None,
+        };
+        let cfg = if let Some(cfg) = pinned {
+            cfg
+        } else {
+            match bundle
+                .profile
+                .model_preference
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(pref) => {
+                    let resolved = engine
+                        .resolve_agent_model(&base, pref, bundle.profile.provider_hint.as_deref())
+                        .await
+                        .unwrap_or_else(|| base.clone());
+                    match RoutingPolicy::from_env().admit(&resolved, route_ctx) {
+                        Ok(()) => resolved,
+                        Err(reason) => {
+                            tracing::warn!(
+                                agent = %agent,
+                                model = %resolved.model,
+                                provider = %resolved.provider_label(),
+                                data_class = %route_ctx.data_class,
+                                reason = %reason,
+                                "sub-agent model_preference refused by routing policy; \
+                                 using the chat default"
+                            );
+                            base.clone()
+                        }
+                    }
+                }
+                None => base.clone(),
+            }
         };
 
         // Toolset: never `delegate` (enforces depth cap 1). Write tools are
@@ -684,6 +728,8 @@ impl AgentRunner {
             // The sub-agent speaks for itself — no nested worker/voice split.
             synthesis_provider: None,
             synthesis_model: None,
+            // The run's model is `cfg`, chosen above.
+            model: None,
         };
 
         let started = std::time::Instant::now();
@@ -830,6 +876,7 @@ impl AgentRunner {
                 findings: saw_error
                     .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
                 tool_trace: trace,
+                model,
             };
         }
         AgentFindings {
@@ -838,6 +885,7 @@ impl AgentRunner {
             retrieved,
             findings: format_subagent_findings(agent, &answer, &gathered, &trace),
             tool_trace: trace,
+            model,
         }
     }
 

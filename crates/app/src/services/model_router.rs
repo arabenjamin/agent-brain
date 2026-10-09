@@ -20,6 +20,11 @@
 //! If no candidate survives the policy the caller falls back to normal
 //! routing — a missing model degrades the step, never blocks it — and normal
 //! routing is itself judged by the policy in `SharedLlm`.
+//!
+//! A step (or a `run_agent` call) may instead **pin** a model by name
+//! ([`pinned_config`]). A pin is matched exactly against the catalog, never by
+//! substring, and is not a preference: an unknown or refused pin fails the
+//! work with the reason rather than quietly running on something else.
 
 use tracing::{debug, info, warn};
 
@@ -131,6 +136,91 @@ pub fn config_for_provider(
     cfg
 }
 
+/// One row of the model catalog, as much of it as a pin needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogModel {
+    pub name: String,
+    pub provider: String,
+    pub model: String,
+}
+
+/// The catalog's models (empty when the catalog cannot be read).
+pub fn catalog_models(telemetry: &TelemetryClient) -> Vec<CatalogModel> {
+    telemetry
+        .list_models()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|m| {
+            Some(CatalogModel {
+                name: m["name"].as_str()?.to_string(),
+                provider: m["provider"].as_str()?.to_string(),
+                model: m["model"].as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The catalog row a pinned name means: its `model` id or its `name`, ignoring
+/// case. Exact only — "gemma4" must not quietly become `gemma4:31b-cloud`.
+pub fn find_model<'a>(rows: &'a [CatalogModel], wanted: &str) -> Option<&'a CatalogModel> {
+    let wanted = wanted.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    rows.iter()
+        .find(|m| m.model.eq_ignore_ascii_case(wanted))
+        .or_else(|| rows.iter().find(|m| m.name.eq_ignore_ascii_case(wanted)))
+}
+
+/// The step `provider_hint` a provider implies: `ollama` (the queue's local
+/// lane) for any provider billed as local, else the provider's own name. The
+/// queue gives `anthropic` and `gemini` their own semaphores; every other name
+/// shares the default one, as a cloud step with no hint always has.
+pub fn provider_hint_for(provider: &str) -> String {
+    let name = provider_registry::canonical_name(provider);
+    match provider_registry::get(&name) {
+        Some(e) if e.billing != provider_registry::Billing::Local => name,
+        // A provider the registry does not know is called as local Ollama
+        // (`config_for_catalog_entry`), so it rides the local lane too.
+        _ => "ollama".to_string(),
+    }
+}
+
+/// Whether a step's written `provider_hint` agrees with its pinned model's
+/// provider: the derived hint itself, or the provider's own name.
+pub fn hint_agrees(hint: &str, provider: &str) -> bool {
+    let hint = hint.trim();
+    hint.is_empty()
+        || hint.eq_ignore_ascii_case(&provider_hint_for(provider))
+        || provider_registry::canonical_name(hint) == provider_registry::canonical_name(provider)
+}
+
+/// A pinned model's config, admitted by the routing policy for `ctx`. `Err`
+/// says why it cannot run: not in the catalog, or the policy's refusal.
+pub fn pinned_config(
+    rows: &[CatalogModel],
+    wanted: &str,
+    base: &LlmConfig,
+    ctx: RouteContext,
+) -> Result<LlmConfig, String> {
+    let Some(row) = find_model(rows, wanted) else {
+        return Err(format!(
+            "model '{}' is not in the model catalog (models.yaml)",
+            wanted.trim()
+        ));
+    };
+    let cfg = config_for_catalog_entry(base, &row.provider, &row.model);
+    RoutingPolicy::from_env()
+        .admit(&cfg, ctx)
+        .map_err(|reason| {
+            format!(
+                "the routing policy refused model '{}' ({}) for {} {} work: {reason}",
+                row.model, row.provider, ctx.data_class, ctx.purpose
+            )
+        })?;
+    Ok(cfg)
+}
+
 /// Resolve the model config for a step's `required_capabilities`, or `None`
 /// when nothing in the catalog satisfies them under the routing policy for this
 /// work (`ctx`: purpose + data class).
@@ -213,6 +303,56 @@ pub fn resolve_model_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(name: &str, provider: &str, model: &str) -> CatalogModel {
+        CatalogModel {
+            name: name.into(),
+            provider: provider.into(),
+            model: model.into(),
+        }
+    }
+
+    #[test]
+    fn a_pin_matches_exactly_never_by_substring() {
+        let rows = vec![
+            row("claude-haiku-4-5", "anthropic", "claude-haiku-4-5-20251001"),
+            row("gemma4:31b-cloud", "ollama-cloud", "gemma4:31b-cloud"),
+            row("gemma4:latest", "ollama", "gemma4:latest"),
+        ];
+        assert_eq!(
+            find_model(&rows, "GEMMA4:latest").unwrap().provider,
+            "ollama"
+        );
+        assert_eq!(
+            find_model(&rows, "claude-haiku-4-5").unwrap().model,
+            "claude-haiku-4-5-20251001"
+        );
+        assert!(find_model(&rows, "gemma4").is_none());
+        assert!(find_model(&rows, "  ").is_none());
+        let ctx = RouteContext::new(
+            crate::services::routing::Purpose::Background,
+            Default::default(),
+        );
+        let err = pinned_config(&rows, "gemma4", &LlmConfig::default(), ctx).unwrap_err();
+        assert!(err.contains("not in the model catalog"), "{err}");
+    }
+
+    #[test]
+    fn a_hint_must_agree_with_the_pinned_provider() {
+        // Built-in registry: ollama and llamacpp are local, ollama-cloud is not.
+        assert_eq!(provider_hint_for("ollama"), "ollama");
+        assert_eq!(provider_hint_for("llamacpp"), "ollama");
+        assert_eq!(provider_hint_for("ollama-cloud"), "ollama-cloud");
+        assert_eq!(provider_hint_for("anthropic"), "anthropic");
+        // The Zero Trust schedule: a host-local model on a step marked cloud.
+        assert!(!hint_agrees("ollama-cloud", "ollama"));
+        assert!(hint_agrees("ollama", "ollama"));
+        assert!(hint_agrees("ollama", "llamacpp"));
+        assert!(hint_agrees("", "anthropic"));
+        assert!(hint_agrees("anthropic", "anthropic"));
+        // A cloud model on a step marked local.
+        assert!(!hint_agrees("ollama", "ollama-cloud"));
+    }
 
     #[test]
     fn llamacpp_provider_resolves_to_the_sidecar() {

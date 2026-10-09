@@ -1,5 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiRequest } from "../../api/client";
+import { extractJson } from "../../lib/assist";
+import AgentAssist from "../ui/AgentAssist";
+import ModelPicker from "../ui/ModelPicker";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,12 +34,6 @@ interface SkillGroup {
 interface AvailableProvider {
   type: string;
   name: string;
-}
-
-interface CatalogModel {
-  name: string;
-  provider: string;
-  model: string;
 }
 
 interface Props {
@@ -116,7 +113,6 @@ export default function ContextProfileModal({
   const [form, setForm] = useState<AgentDetail>(EMPTY_FORM);
   const [skillGroups, setSkillGroups] = useState<SkillGroup[]>([]);
   const [availableProviders, setAvailableProviders] = useState<AvailableProvider[]>([]);
-  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [fetchingEdit, setFetchingEdit] = useState(false);
@@ -139,9 +135,8 @@ export default function ContextProfileModal({
       .catch(() => {});
     apiRequest(`/api/models`)
       .then((r) => r.json())
-      .then((data: { available_providers?: AvailableProvider[]; catalog_models?: CatalogModel[] }) => {
+      .then((data: { available_providers?: AvailableProvider[] }) => {
         setAvailableProviders(data.available_providers ?? []);
-        setCatalogModels(data.catalog_models ?? []);
       })
       .catch(() => {});
   }, [isOpen]);
@@ -283,7 +278,6 @@ export default function ContextProfileModal({
             form={form}
             skillGroups={skillGroups}
             availableProviders={availableProviders}
-            catalogModels={catalogModels}
             allSelected={allSelected}
             saving={saving}
             error={error}
@@ -513,7 +507,6 @@ function EditPane({
   form,
   skillGroups,
   availableProviders,
-  catalogModels,
   allSelected,
   saving,
   error,
@@ -527,7 +520,6 @@ function EditPane({
   form: AgentDetail;
   skillGroups: SkillGroup[];
   availableProviders: AvailableProvider[];
-  catalogModels: CatalogModel[];
   allSelected: boolean;
   saving: boolean;
   error: string | null;
@@ -622,6 +614,36 @@ function EditPane({
           </div>
         )}
 
+        <AgentAssist
+          title="Ask an agent to draft this profile"
+          defaultAgent="knowledge-worker"
+          placeholder="What should this agent be for? e.g. 'Summarise each day's dead-letter jobs and say which tool is failing most'."
+          buildTask={(prompt) =>
+            `Draft a context profile (an agent definition) for this purpose:\n"${prompt}"\n\n` +
+            `Name: ${form.name.trim() || "(not chosen yet)"}\n` +
+            `Tools it may be given (choose only from these, the fewest that do the job): ${skillGroups.flatMap((g) => g.tools).join(", ")}\n\n` +
+            "Reply with one ```json block holding an object with: description (one sentence), " +
+            "system_prompt (terse imperatives, under 2,000 characters), tools (an array of tool names)."
+          }
+          onResult={(body) => {
+            const text = extractJson(body, "object");
+            if (!text) return `No profile object in the agent's reply:\n${body.slice(0, 400)}`;
+            let o: Record<string, unknown>;
+            try { o = JSON.parse(text); } catch { return "The profile object the agent returned is not valid JSON"; }
+            const known = new Set(skillGroups.flatMap((g) => g.tools));
+            const tools = Array.isArray(o.tools) ? o.tools.filter((t): t is string => typeof t === "string" && known.has(t)) : [];
+            onFormChange({
+              ...form,
+              description: typeof o.description === "string" ? o.description : form.description,
+              system_prompt: typeof o.system_prompt === "string" ? o.system_prompt : form.system_prompt,
+              tools: tools.length > 0 ? tools : form.tools,
+            });
+            return null;
+          }}
+          runLabel="Draft profile"
+          note="Fills description, system prompt and tools; review before saving"
+        />
+
         {field("Name *", "name", { disabled: mode === "edit", placeholder: "e.g. researcher" })}
        
         {field("Description", "description", { rows: 2, placeholder: "What this agent does" })}
@@ -632,18 +654,21 @@ function EditPane({
         })}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          <SelectField
-            label="Model Preference"
-            value={form.model_preference ?? ""}
-            onChange={(v) => onFormChange({ ...form, model_preference: v })}
-            options={[
-              { value: "", label: "— inherit chat default —" },
-              ...catalogModels.map((m) => ({
-                value: m.model,
-                label: `${m.model} · ${m.provider}`,
-              })),
-            ]}
-          />
+          <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+            <span style={{ fontSize: 10, color: "var(--text-muted, #7a8099)", textTransform: "uppercase", letterSpacing: "0.07em" }}>
+              Model Preference
+            </span>
+            <ModelPicker
+              value={form.model_preference ?? ""}
+              onChange={(v) => onFormChange({ ...form, model_preference: v })}
+              purpose="subagent"
+              defaultLabel="— inherit chat default —"
+              style={{
+                background: "var(--bg-card, #1a1e2a)", border: "1px solid var(--border, #2a2f3e)", borderRadius: 5,
+                color: "var(--text, #d4d8e8)", fontFamily: "inherit", fontSize: 11, padding: "6px 9px", width: "100%",
+              }}
+            />
+          </label>
           <SelectField
             label="Provider Hint"
             value={form.provider_hint ?? ""}

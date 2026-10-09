@@ -10,6 +10,7 @@ describe("step drafts", () => {
         provider_hint: "ollama",
         priority: 2,
         data_class: "public",
+        model: "gemma4-e4b",
         max_attempts: 3,
         description: "Find this week's coverage",
       },
@@ -36,5 +37,14 @@ describe("providerLabel", () => {
     expect(providerLabel("ollama")).toBe("Local model");
     expect(providerLabel("", "gpt-oss:120b-cloud")).toBe("Cloud: the brain's active model (gpt-oss:120b-cloud)");
     expect(providerLabel("anthropic", "gpt-oss:120b-cloud")).toBe("anthropic: also cloud, on the brain's active model (gpt-oss:120b-cloud)");
+  });
+});
+
+describe("step model", () => {
+  it("is edited, not carried in extra, and dropped when blank", () => {
+    const [d] = jsonToStepDrafts(JSON.stringify([{ tool_name: "reason", model: "gpt-oss:120b-cloud", provider_hint: "ollama-cloud" }]))!;
+    expect(d.model).toBe("gpt-oss:120b-cloud");
+    expect(d.extra).not.toHaveProperty("model");
+    expect(JSON.parse(stepDraftsToJson([{ ...d, model: " " }]))[0]).not.toHaveProperty("model");
   });
 });

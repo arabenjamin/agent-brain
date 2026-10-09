@@ -1333,7 +1333,15 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
     let (chat_provider, chat_model) = read_cfg(&state.chat_llm_config).await;
 
     let catalog_models = if let Some(ref db) = state.telemetry {
-        db.list_models().ok().map(Value::Array).unwrap_or(json!([]))
+        let mut rows = db.list_models().unwrap_or_default();
+        for row in rows.iter_mut() {
+            let admission = model_admission(
+                row["provider"].as_str().unwrap_or(""),
+                row["model"].as_str().unwrap_or(""),
+            );
+            row["admission"] = admission;
+        }
+        Value::Array(rows)
     } else {
         json!([])
     };
@@ -1359,6 +1367,33 @@ pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> 
         "routing_policy": crate::services::routing::RoutingPolicy::from_env().describe(),
         "catalog_models": catalog_models,
     })).into_response()
+}
+
+/// Whether the routing policy would let `model` run, per purpose and data
+/// class, right now: `null` when it may, else the refusal (spend cap, cooldown,
+/// a private-work rule, a missing key). The model picker shows these, so a
+/// choice that would be refused says so before it is saved.
+fn model_admission(provider: &str, model: &str) -> Value {
+    use crate::services::routing::{DataClass, Purpose, RouteContext, RoutingPolicy};
+    let policy = RoutingPolicy::from_env();
+    let cfg = crate::services::model_router::config_for_catalog_entry(
+        &LlmConfig::default(),
+        provider,
+        model,
+    );
+    let mut out = serde_json::Map::new();
+    for purpose in [Purpose::Background, Purpose::Subagent, Purpose::Chat] {
+        let mut by_class = serde_json::Map::new();
+        for class in [DataClass::Private, DataClass::Public] {
+            let verdict = policy.admit(&cfg, RouteContext::new(purpose, class));
+            by_class.insert(
+                class.as_str().to_string(),
+                verdict.err().map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        out.insert(purpose.as_str().to_string(), Value::Object(by_class));
+    }
+    Value::Object(out)
 }
 
 /// GET /api/llm/budget — the live budget ledger: per-provider usage against

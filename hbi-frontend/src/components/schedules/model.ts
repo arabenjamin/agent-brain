@@ -68,6 +68,12 @@ export interface StepDraft {
   args: ArgPair[];
   /** "" when the step has none: it then runs on cloud. */
   provider_hint: string;
+  /**
+   * A catalog model the step must run on; "" = none (the hint decides). When
+   * set, the brain derives `provider_hint` from it and refuses a contradicting
+   * one, so the editor writes the derived hint.
+   */
+  model: string;
   priority: number;
   /**
    * Every other field the step carries (`data_class`, `max_attempts`,
@@ -79,7 +85,7 @@ export interface StepDraft {
 }
 
 /** The fields the step editor edits itself; everything else rides in `extra`. */
-const EDITED_FIELDS = new Set(["tool_name", "tool", "arguments", "args", "provider_hint", "priority"]);
+const EDITED_FIELDS = new Set(["tool_name", "tool", "arguments", "args", "provider_hint", "model", "priority"]);
 
 export const DEFAULT_PROVIDER = "ollama";
 
@@ -87,7 +93,8 @@ export const DEFAULT_PROVIDER = "ollama";
  * What a step's `provider_hint` actually does (`services/queue.rs`): only
  * "ollama" changes routing, to the local model. Every other value, or none,
  * runs on the brain's active cloud model; the value only chooses which
- * concurrency slot the job waits for. Per-step model choice is Phase 10.
+ * concurrency slot the job waits for. A step that pins a `model` runs on it
+ * instead, and its hint is derived from it.
  */
 export function providerLabel(hint: string, activeModel?: string): string {
   const cloud = activeModel ? `the brain's active model (${activeModel})` : "the brain's active model";
@@ -180,6 +187,7 @@ export function makeDefaultStep(): StepDraft {
     tool_name: "search_notes",
     args: [{ key: "query", value: "{{goal}}" }],
     provider_hint: DEFAULT_PROVIDER,
+    model: "",
     priority: 1,
     extra: {},
   };
@@ -213,6 +221,7 @@ export function stepDraftsToJson(drafts: StepDraft[]): string {
     const step: Record<string, any> = { ...d.extra, tool_name: d.tool_name };
     if (Object.keys(argsObj).length > 0) step.arguments = argsObj;
     if (d.provider_hint) step.provider_hint = d.provider_hint;
+    if (d.model.trim()) step.model = d.model.trim();
     if (d.priority !== 1) step.priority = d.priority;
     return step;
   });
@@ -242,6 +251,7 @@ export function jsonToStepDrafts(json: string): StepDraft[] | null {
         tool_name: toolName,
         args,
         provider_hint: typeof s.provider_hint === "string" ? s.provider_hint : "",
+        model: typeof s.model === "string" ? s.model : "",
         priority: s.priority ?? 1,
         extra,
       };
