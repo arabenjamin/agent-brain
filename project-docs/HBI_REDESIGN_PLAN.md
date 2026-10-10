@@ -1493,7 +1493,7 @@ Built and deployed:
 - **A new note** ("PHASE20-TEST: Chinese hackers breached a Ukrainian ministry, and American officials blamed Beijing.") mentioned china, ukraine and united states, each with its surface form ("Chinese") and `via` ("chinese"), and beijing as itself. The test note was deleted; all four entities existed before it.
 - **43 `demonym` candidates** appeared: american → united states, ukrainian → ukraine, chinese → china, british → united kingdom, italian → italy… No merge happened; they wait in the merge review, reversible as any merge.
 - **Coverage:** no demonym among the 500 waiting entities shown.
-- **`eval-retrieval`:** before, recall@10 0.880 and MRR 0.800 (25 cases). Nothing merged yet, so the "after" is owed once the user accepts demonym merges; record it here then.
+- **`eval-retrieval`:** before, recall@10 0.880 and MRR 0.800 (25 cases, 15:41 UTC). The demonym candidates were merged through the merge review at 15:50–15:52 UTC (46 merges, `method: proposal`, demonyms and other pairs from the same list). After, recall@10 0.880 and MRR 0.800, every case at the same rank: folding nationality words into their places changed nothing retrieval measures.
 
 **Tests:** 898 Rust lib tests (2 new); tsc clean.
 
