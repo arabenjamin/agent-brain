@@ -1193,13 +1193,17 @@ pub async fn candidates(neo4j: &Neo4jClient, entity: Option<&str>, limit: usize)
                 "UNWIND $pairs AS p \
                  MATCH (a:Entity {id: p.a}), (b:Entity {id: p.b}) \
                  WHERE NOT (a)-[:NOT_SAME|RELATED_ENTITY]-(b) \
+                 OPTIONAL MATCH (a)-[v:ALIAS_VERDICT]->(b) \
                  RETURN p.a AS a, p.b AS b, \
-                        COUNT { (a)<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(b) } AS shared",
+                        COUNT { (a)<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(b) } AS shared, \
+                        v.verdict AS verdict, v.p_same AS ps, v.p_related AS pr, \
+                        v.p_different AS pd, v.model AS model, v.version AS version, \
+                        toString(v.at) AS at",
             )
             .param("pairs", pairs),
         )
         .await?;
-    let shared: HashMap<(String, String), i64> = scored
+    let shared: HashMap<(String, String), (i64, Value)> = scored
         .iter()
         .map(|r| {
             (
@@ -1207,14 +1211,28 @@ pub async fn candidates(neo4j: &Neo4jClient, entity: Option<&str>, limit: usize)
                     r.get("a").unwrap_or_default(),
                     r.get("b").unwrap_or_default(),
                 ),
-                r.get::<i64>("shared").unwrap_or(0),
+                (
+                    r.get::<i64>("shared").unwrap_or(0),
+                    match r.get::<String>("verdict") {
+                        Ok(verdict) => json!({
+                            "verdict": verdict,
+                            "p_same": r.get::<f64>("ps").unwrap_or(0.0),
+                            "p_related": r.get::<f64>("pr").unwrap_or(0.0),
+                            "p_different": r.get::<f64>("pd").unwrap_or(0.0),
+                            "model": r.get::<String>("model").unwrap_or_default(),
+                            "version": r.get::<String>("version").unwrap_or_default(),
+                            "at": r.get::<String>("at").unwrap_or_default(),
+                        }),
+                        Err(_) => Value::Null,
+                    },
+                ),
             )
         })
         .collect();
 
-    let mut out: Vec<(i64, i64, Value)> = Vec::new();
+    let mut out: Vec<(u8, i64, i64, Value)> = Vec::new();
     for c in &cands {
-        let Some(s) = shared.get(&(c.from_id.clone(), c.into_id.clone())) else {
+        let Some((s, judge)) = shared.get(&(c.from_id.clone(), c.into_id.clone())) else {
             continue; // already answered
         };
         // An acronym that never shares a note with its expansion is mostly noise.
@@ -1231,6 +1249,10 @@ pub async fn candidates(neo4j: &Neo4jClient, entity: Option<&str>, limit: usize)
             .filter(|o| o.from_id == c.from_id && o.into_id != c.into_id)
             .count();
         out.push((
+            crate::services::alias_judge::rank(
+                judge["verdict"].as_str(),
+                judge["p_same"].as_f64().unwrap_or(0.0),
+            ),
             *s,
             f.mentions.min(t.mentions),
             json!({
@@ -1239,12 +1261,15 @@ pub async fn candidates(neo4j: &Neo4jClient, entity: Option<&str>, limit: usize)
                 "reason": c.reason,
                 "shared_notes": s,
                 "rivals": rivals,
+                "judge": judge,
             }),
         ));
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    // The alias judge's verdict first (confident-same on top, different last),
+    // then shared notes, then how often the rarer one is mentioned.
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
     let total = out.len();
-    let list: Vec<Value> = out.into_iter().take(limit).map(|(_, _, v)| v).collect();
+    let list: Vec<Value> = out.into_iter().take(limit).map(|(_, _, _, v)| v).collect();
     Ok(json!({ "total": total, "candidates": list, "checked": ents.len() }))
 }
 

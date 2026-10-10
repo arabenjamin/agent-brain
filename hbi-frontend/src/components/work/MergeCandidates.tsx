@@ -5,7 +5,7 @@
  * entity's drawer (narrowed to that entity).
  */
 import { useState } from "react";
-import { decideEntities, mergeEntities, REASON_LABEL, type MergeCandidate } from "../../api/entities";
+import { decideEntities, mergeEntities, REASON_LABEL, type AliasVerdict, type MergeCandidate } from "../../api/entities";
 import { EntityLink } from "../drawer/parts";
 
 function Side({ s }: { s: MergeCandidate["from"] }) {
@@ -13,6 +13,28 @@ function Side({ s }: { s: MergeCandidate["from"] }) {
     <EntityLink kind="entity" id={s.id} title={`${s.entity_type} · ${s.mentions} notes`}>
       <strong>{s.name}</strong> <span className="wk-dim">{s.mentions}</span>
     </EntityLink>
+  );
+}
+
+const VERDICT_TEXT: Record<AliasVerdict["verdict"], string> = {
+  same: "looks the same",
+  related: "looks related, not the same",
+  different: "not shown to be the same",
+};
+
+/** The alias judge's verdict, with its probabilities on hover. It sorts the list; the decision stays yours. */
+function Verdict({ v }: { v: AliasVerdict | null }) {
+  if (!v) return <span className="wk-dim"> · not judged yet</span>;
+  const p = { same: v.p_same, related: v.p_related, different: v.p_different }[v.verdict];
+  // Below 0.7 a "same" only leans: both wrong "same" answers on held-out pairs were under 0.6.
+  const confident = v.verdict === "same" && v.p_same >= 0.7;
+  const text = v.verdict === "same" && !confident ? "leans the same" : VERDICT_TEXT[v.verdict];
+  const tone = confident ? "tone-text-green" : "wk-dim";
+  return (
+    <span className={tone}
+      title={`${v.model} (${v.version}), ${new Date(v.at).toLocaleString()}: same ${v.p_same.toFixed(2)} · related ${v.p_related.toFixed(2)} · different or can't tell ${v.p_different.toFixed(2)}`}>
+      {" "}· {v.model}: {text} ({p.toFixed(2)})
+    </span>
   );
 }
 
@@ -37,6 +59,7 @@ function CandidateRow({ c }: { c: MergeCandidate }) {
           {" "}· {c.shared_notes} shared {c.shared_notes === 1 ? "note" : "notes"}
           {c.rivals > 0 && ` · ${c.rivals} other ${c.rivals === 1 ? "name" : "names"} it could be`}
         </span>
+        <Verdict v={c.judge} />
         {error && <span className="tone-text-red"> {error}</span>}
       </span>
       <span className="wk-row-meta">

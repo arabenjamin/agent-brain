@@ -150,13 +150,15 @@ function Merges() {
       <div className="wk-toolbar">
         <a className="btn-ghost" href={hrefTo("work", { view: "feed" })}>← Feed</a>
         <span className="wk-dim">
-          {merges.data ? `${merges.data.total} to decide, the ${Math.min(MERGE_SHOWN, merges.data.total)} with the most shared notes shown` : "Loading…"}
+          {merges.data ? `${merges.data.total} to decide, ${Math.min(MERGE_SHOWN, merges.data.total)} shown` : "Loading…"}
         </span>
       </div>
       {merges.error && <EmptyState tone="red" title="Couldn't load merge proposals" checked={merges.error.message} />}
       <div className="wk-hint">
         Names the brain stored separately that may mean one thing. A merge moves the mentions and keeps the old name as an
-        alias; undo it from the entity's drawer.
+        alias; undo it from the entity's drawer. A local classifier reads the notes behind each pair: the ones it is fairly
+        sure are the same come first, then those it leans on or hasn't judged yet, then related, then the ones it couldn't show are the same,
+        each by shared notes. Its verdict only orders the list.
       </div>
       <MergeCandidates items={merges.data?.candidates ?? []} />
     </div>

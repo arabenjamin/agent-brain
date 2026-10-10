@@ -48,7 +48,7 @@ pub fn local_timeout() -> Duration {
 }
 
 /// Default Ollama API URL.
-const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+pub(crate) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 /// Default `llama-server` OpenAI-compatible endpoint.
 const DEFAULT_LLAMACPP_URL: &str = "http://localhost:8080";

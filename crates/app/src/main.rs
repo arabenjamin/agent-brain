@@ -680,6 +680,9 @@ async fn run_serve(
             client.clone(),
             agent_brain::services::shared_llm::SharedLlm::new(local),
         );
+        // Merge candidates get a local classifier's verdict on idle time
+        // (services/alias_judge.rs); the person still decides each one.
+        agent_brain::services::alias_judge::spawn(client.clone());
     }
 
     let active_model = match config.llm.provider {

@@ -1114,3 +1114,177 @@ Built and deployed:
 **Left as it is:**
 - **The backlog:** about 650 claims with entities are waiting, and more arrive as the claim entity backfill continues, so proposals will accumulate in the Feed's review card.
 - **The other extraction prompt:** the general one used by `store_note` is unchanged.
+
+## 11. Fourth round: Phase 18, reference links (planned 2026-10-09)
+
+Source: the user, reviewing relationships and aliases after Phase 17. Many entities are unfamiliar and need looking up before a relationship or an alias can be decided. The drawer already lists every note that mentions an entity, but nothing says what the entity *is*. The user wants a Wikipedia link for entities and topics.
+
+Decisions taken in the discussion (2026-10-09):
+1. **Background lookups only cover entities named in public sources.** A lookup sends the entity's name to Wikimedia, and names also come from private notes (the résumé, job-search chats, other chats). Claims are the public signal: every claim comes from a video, article or news feed and carries a source URL or outlet. `source_record` notes do not qualify, because the résumé is stored as one. Any other entity is looked up only when the user presses a button in its drawer.
+2. **Measure first** on a fixed sample, with acronyms and common names included on purpose, before anything is built. Done; see §11.1.
+
+### 11.1 Measured (dry run, nothing written)
+
+**The sample:** 53 entities named in claims, frozen and stratified by type: 45 by a hash of the id, plus 8 short names (accc, tdc, drm, vms, kapo, png, uae, vr).
+
+**The pipeline under test:**
+- **Search:** Wikidata `wbsearchentities` for the name, up to 7 candidates.
+- **Candidates:** each one's instance-of (P31) kinds and its English Wikipedia title.
+- **The pick:** `gpt-oss:120b-cloud` sees the candidates and up to 3 claims that mention the entity, and picks one or answers 0.
+
+Graded by hand.
+
+| Method | Picked | Right | Close but not it | Wrong |
+|---|---|---|---|---|
+| Top search result, no model (the baseline) | 37 (every entity with results) | 24 | 0 | 13 |
+| Model, v1 (strict "same kind" rule) | 29 | 29 (1 generic: "county commissioners" → county board) | 0 | 0 |
+| Model, v2 (filed type "may be wrong") + a second, model-suggested search when it answers 0 | 38 | 34 | 2 | 2 |
+| **v2 with no second search for `concept` entities** (the design below) | **35** | **33** | **2** | **0** |
+
+- **Taking the top result is wrong a third of the time:**
+  - William Shakespeare → the family name;
+  - DRM → Digital Radio Mondiale;
+  - PNG → the image format;
+  - VR → a Finnish railway;
+  - Venice Beach → a Tony Hawk game level;
+  - Cora (a private person's daughter) → the given name.
+- **The model's v1 picks were all right, and it answers 0 honestly.** Its reasons:
+  - "none of the listed John Houstons is a senator from Ohio" (the transcript garbled Jon Husted);
+  - "a private individual named Cora";
+  - "Versori is a new product with no candidate".
+- **v1 missed Shergar.** Our graph types the racehorse a `person`, and the strict kind rule refused the stallion. v2 tells the model the filed type may be wrong. That fixed it and changed none of the 29 picks.
+- **The second search finds:**
+  - garbled names (Pento Barbatale → pentobarbital);
+  - names that need a fuller official form (Kapo → Estonian Internal Security Service);
+  - plurals (VMs → virtual machine; Chinese walls → information barrier).
+- **For vague phrases, the second search invents a match:** "system intelligence" → artificial general intelligence, and a UK speech's "European security frameworks" → the EU's Common Security and Defence Policy. So `concept` entities get no second search. That rule also drops one correct pick (Chinese walls).
+- **The two "close" picks are related articles, not the entity:**
+  - "Emirati" (an official) → United Arab Emirates;
+  - "U.S. administrations" → the federal government.
+  
+  Both are useful context, but neither is the entity.
+- **Search misses a deterministic rule can fix:** "metropolitan police department (mpd)" found nothing until the bracket was dropped. The lookup will search the name without its bracket, and the bracket on its own.
+- **Not found, correctly:** new bills, new products, video titles, private people, and fine-tune names like jeff-qwen3.5-0.8b.
+- **This is the tuning set.** The phase measures the final prompt again on a fresh held-out sample before the backfill.
+
+**Rate limits are a design constraint.** Three parallel lookups got HTTP 429 from Wikidata, then `Retry-After: 41` for a while. Wikimedia's policy asks automated clients to send a contact (a URL or email) in the user agent, and throttles anonymous ones harder.
+
+### 11.2 Storage
+
+- **`(:WikiItem {qid, label, description, aliases, kinds, wiki_title, fetched_at, summary, summary_at})`:** one node per Wikidata item, shared by every entity that links to it.
+  - `summary` is the article's first paragraph, from Wikipedia's REST `page/summary`. It is fetched when first shown and cached for 30 days.
+- **`(:Entity)-[:REFERS_TO {status: proposed|confirmed|rejected, method: llm|manual, why, query, model, at, decided_at}]->(:WikiItem)`:**
+  - The user's choices are final, as with relationships.
+  - A rejected link is kept, so it is never proposed again.
+- **Bookkeeping on the entity:** `wiki_checked_at` and `wiki_result` (`proposed` / `none` / `skipped_private`), so nothing is looked up twice. A `none` is re-checked after 90 days: new things get articles.
+- **The candidates** each lookup saw are cached on the entity (`wiki_candidates`, ids only), so "choose another" needs no new search.
+
+### 11.3 The lookup (`services/wiki.rs`)
+
+- **Steps:**
+  1. Search the name, the name without its bracket, and the bracket on its own.
+  2. Fetch the candidates' kinds and English Wikipedia titles.
+  3. The model picks one (the v2 prompt).
+  4. If it answers 0 and the entity is not a `concept`, the model suggests up to 2 search terms. The second search runs, and the model picks again from the merged candidates. The search term used is recorded on the link.
+- **The model:** pinned to `gpt-oss:120b-cloud` (`no_log`, $0), like relation extraction. The local model was not tried, since Phase 17 showed it can't do this kind of choice. The phase measures it once on the held-out set anyway.
+- **Etiquette:**
+  - one request at a time, at least 1 s apart, honouring `Retry-After`;
+  - a user agent with a contact from `WIKIMEDIA_CONTACT`; background lookups stay off until it is set;
+  - a 429 ends the run early and says so.
+- **Privacy:** a background lookup only takes entities with a `MENTIONS` edge from a claim. The model's suggested search terms come from claim text, which is public. An on-demand lookup of a private entity sends only its name and the model's search terms to Wikimedia. The context goes only to the `no_log` model.
+
+### 11.4 Where it runs
+
+- **Background:** a tool, `link_entities {limit, entity_id}`. It runs on `schedules/entity-linking.yaml`, hourly, 20 entities a run, with the step pinned to the cloud model.
+  - **Order:** entities waiting in a review first (relationship proposals, merge candidates), then by how many claims mention them.
+  - **Time:** about 2,000 public entities take a few days of hourly runs. Each run reports how many are waiting.
+- **On demand:** "Look up" in the entity drawer runs `entity_id` for one entity, private or not, because the user pressed it.
+
+### 11.5 HBI
+
+- **Entity drawer, a Reference block:**
+  - the label, the Wikidata description and the article's first paragraph, linked to Wikipedia and Wikidata;
+  - a chip saying suggested / confirmed;
+  - confirm, "not this", "choose another" (the cached candidates), paste a Wikipedia URL, and "Look up";
+  - "No article found (checked 9 Oct)" when there is none, never a blank.
+- **Where decisions are made:** wherever an entity is decided, its one-line Wikidata description shows beside its name:
+  - the relationship review list;
+  - the pair view;
+  - the merge candidates.
+  
+  This is the user's actual need: deciding about an unfamiliar name without leaving the page.
+- **Topics:** most topics are the user's own groupings and have no article. So a topic gets an optional `reference` URL set in the topic form, or `reference:` in its YAML, and the topic drawer shows it. There is no automatic lookup for topics.
+
+### 11.6 Aliases
+
+- **A new merge reason, `wikidata`:** two entities linked to the same WikiItem become a merge candidate with this reason. Example: MSS and Ministry of State Security.
+  - A candidate from two confirmed links ranks above the name rules. A candidate from proposed links shows as "suggested by reference links".
+  - Merges stay proposals (decision 4a).
+- **Wikidata's English aliases** are shown in the Reference block, so "also known as" is visible. They are not written as `EntityAlias` nodes.
+
+### 11.7 Not in this phase
+
+- **Wikidata statements:** employer, member of, located in and part of could corroborate or contradict relationship proposals. A later phase, once links are trusted.
+- **A "Research this" button** that sends the researcher agent to the web for entities with no article.
+
+### 11.8 Phase
+
+| Phase | Scope | Done when |
+|---|---|---|
+| **18. Reference links** | §11.2–11.6: WikiItem + REFERS_TO, the lookup and its etiquette, `link_entities` and its schedule, the drawer's Reference block, descriptions in the review lists, topic reference URLs, `wikidata` merge candidates. | The final prompt is measured on a fresh held-out sample and recorded here; MSS and Ministry of State Security link to the same item and appear as a `wikidata` merge candidate; an entity mentioned only in private notes is never looked up in the background (the run reports it skipped); a rejected link stays rejected through a re-lookup; a topic shows a reference URL the user set. |
+
+### 11.9 Decisions
+
+1. **`WIKIMEDIA_CONTACT`:** what goes in the user agent, an email or a URL such as the repository? *The user's choice.* Background lookups stay off until it is set.
+2. **Close-but-not-it picks** ("Emirati" → UAE): accept them as context, or prompt against them? *Recommend prompting against them:* the link should be the entity itself, and a demonym or an umbrella body is better as "none".
+3. **A Feed card for suggested links?** *Recommend none:* a suggested link is low-stakes and gets decided in the drawer, where it is used. The coverage count (linked / none / waiting) goes on the Knowledge page instead, drillable.
+4. **Re-check "none" after:** *Recommend 90 days.*
+
+### 11.10 Alias verdicts from nimble (built 2026-10-09, ahead of the rest of Phase 18)
+
+Source: the user, after the §11 measurement: "lets use nimble for the alias review. Who knows, we may think of something else to use it for later."
+
+**What nimble is:** a 9B decision model from Bespoke Labs, fine-tuned from Qwen3.5, served by host Ollama at `/v1/systemone`.
+- It answers fixed questions (pick from a list, true or false, a score) with a probability for each option and no free text.
+- It runs as 9.5 GB Q8: about 2.9 GB on the GPU, the rest on the CPU, next to the llama.cpp sidecar.
+- About 2 s a question once loaded.
+
+**Measured first, on the brain's data (scripts in the session scratchpad, `nimble/`):**
+
+| Job | Result | Fit |
+|---|---|---|
+| Aliases: same / related / different, from up to 2 notes with both names and 2 with each alone (40 live candidates, hand-graded) | v1 31/40; **v2 (titles, first names, plurals and misspellings count as the same) 33/40**, no false "same". The names as written (`Senator Collins`) gave 3 false "same"; an "unclear" option was never chosen. | **Built** |
+| Checking the cloud model's relationship proposals (50) | Keeping those above 0.5 raised precision from 74% to 82%, but nonsense passed at 0.99 ("democratic control part of the Obama administration") | A sort key at most |
+| Extracting relationships itself (Phase 17's held-out claims) | About half right, 12–25 s a claim, and HTTP 400 past its 8K-token prompt cap | No |
+| Picking the Wikidata item (§11.1's round-1 candidates) | Agreed with the cloud model on 32 of 38; one confident wrong pick (a private "Cora" → the given name, 0.98) | Not instead of the cloud model |
+
+**Built:**
+- **The judge:** `services/alias_judge.rs` judges every merge candidate on idle time.
+  - It runs 10 pairs a pass, re-checking for real work between pairs, with a 60 s `keep_alive` so the model leaves the GPU after a batch.
+  - `ALIAS_JUDGE_MODEL` names the model (`off` to stop it).
+- **Storage:** `(from)-[:ALIAS_VERDICT {verdict, p_same, p_related, p_different, model, version, at}]->(into)`. A new prompt version or model is judged again.
+- **The candidate list** (`/api/entities/candidates`) carries `judge` and sorts in this order:
+  1. confident same (≥ 0.7);
+  2. leaning same, or not judged yet;
+  3. related;
+  4. different;
+  
+  then by shared notes. The person still decides every pair.
+- **HBI:** each candidate row shows the verdict: "looks the same (0.99)", "leans the same", "looks related, not the same" or "not shown to be the same". The probabilities, model and time are on hover.
+
+**Verified live:**
+- All 68 candidates were judged in about 17 minutes of idle time.
+- **The first deploy sent the options and texts in alphabetical order** (`serde_json`'s `json!` map), not the measured order, and nimble's answers moved.
+  - The 40 tuning pairs matched the dry run only 33 times, with two confident false "same" answers: Mills → Doug Mills at 0.95, and Collins → Mike Collins at 0.92.
+  - Resending the dry run's exact requests proved nimble deterministic. Sorting their keys reproduced the flips.
+  - The request is now built from structs in the measured order, pinned by a test, under prompt version `v2-ordered`.
+- **Graded again after the fix:**
+  - 40 tuning pairs: 32 right, and no false "same".
+  - 28 held-out pairs: 25 right. Cautious misses: Rajab, and CPUs → CPU. One wrong "same": Kushner → Josh Kushner at 0.41.
+  - Before the fix, held-out "General Franks" ≠ Dennis Franks was also a wrong "same", at 0.59. Both are why a "same" under 0.7 only leans.
+  - **No confident "same" (≥ 0.7) was wrong across all 68.**
+- Good catches: PMCs (contractors) ≠ PMC (PubMed Central), and "the King" ≠ the Jordanian king.
+
+**Left for later:**
+- The relationship proposals could use nimble's score as a sort key.
+- §11.6's `wikidata` merge reason pairs naturally with a "same" verdict.

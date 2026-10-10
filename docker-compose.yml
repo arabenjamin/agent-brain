@@ -145,6 +145,9 @@ services:
       # latency + calls/turn. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
       - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-false}
       - OLLAMA_EMBED_MODEL=bge-m3:latest
+      # Merge candidates get a verdict from this host-Ollama classifier on idle
+      # time (services/alias_judge.rs); "off" turns it off. Needs `ollama pull nimble`.
+      - ALIAS_JUDGE_MODEL=${ALIAS_JUDGE_MODEL:-nimble}
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are
       # routinely evicted mid-chain and reloaded per step. Override with a Go

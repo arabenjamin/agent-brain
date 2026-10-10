@@ -857,6 +857,30 @@ Two smaller lessons:
 - **Freeze a measurement sample.** The claim entity backfill was still running, so a sample drawn by query moved between runs, and the first v1/v3 comparison was on different claims.
 - **Loosen the entity-type limits.** 3,076 entities are typed `concept`, many of them real things, so strict type limits threw away correct relations such as "Starship is made by SpaceX".
 
+### A classifier for aliases, not for relationships (HBI §11.10, 2026-10-09)
+
+The user suggested `nimble`, a 9B decision model from Bespoke Labs, to sort through aliases and relationships. It answers fixed questions with a probability per option and writes no text. It was measured on the brain's own data for four jobs before anything was built, and it fit only one of them.
+- **Aliases: yes.** On 40 live merge candidates it was 33 right after one rewording, and it never called two different things the same. It caught merges the name rules would have made: the sailor "Bailey" is not FBI official Andrew Bailey, and "Korra Dawson" is two children, Kora and Dawson.
+- **Checking relationship proposals: no.** It lifted the cloud model's proposals from 74% to 82% precision, but passed nonsense at 0.99.
+- **Extracting relationships: no.** About half right, 12–25 s a claim, and it refused longer claims.
+- **Picking Wikidata items: close, but not instead of the cloud model.** It agreed 32 of 38 times, with one confident wrong pick.
+
+Two findings from the alias prompt:
+- **The names as written made it worse.** Feeding the surface forms (`Senator Collins`, `Tim Scott`) instead of the stored names produced three false "same" answers.
+- **It never chose "unclear".** An option for "can't tell" was offered and never picked, so its "different" also means "can't tell", and the HBI says "not shown to be the same".
+
+**The first deploy didn't match the dry run, and the reason was key order.** The live verdicts agreed with the dry run on only 33 of the 40 tuning pairs. Two were confident and wrong: Mills as Doug Mills at 0.95, and Collins as Mike Collins at 0.92.
+- **What it wasn't:** the texts were identical to the dry run's, and resending the dry run's requests gave the same answers every time, so nimble is deterministic.
+- **What it was:** the Rust request was built with `json!`, and `serde_json` without `preserve_order` writes object keys alphabetically. That put the options in the order different, related, same, and the texts as a, b, both. Sorting the dry run's keys reproduced the flips.
+- **The fix:** the request is now built from structs, which serialize in declaration order, and a test pins it.
+- **The lesson for any classifier like this:** the field order is part of the prompt, so measure and ship the same bytes.
+
+Graded again after the fix:
+- 32 of 40 tuning pairs and 25 of 28 held-out pairs right, with no confident "same" wrong.
+- The wrong "same" answers were all under 0.6: a bare "Kushner" as Josh Kushner (0.41), and before the fix "General Franks" as Dennis Franks (0.59).
+
+So a "same" below 0.7 only leans, and sorts with the unjudged. The verdict orders the merge list; the person still decides every pair.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

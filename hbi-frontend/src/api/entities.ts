@@ -23,6 +23,19 @@ export interface MergeCandidate {
   shared_notes: number;
   /** Other names the same `from` could also be. */
   rivals: number;
+  /** The local alias judge's opinion (`services/alias_judge.rs`); null until judged. */
+  judge: AliasVerdict | null;
+}
+
+export interface AliasVerdict {
+  /** `different` also covers "the texts don't say enough to tell". */
+  verdict: "same" | "related" | "different";
+  p_same: number;
+  p_related: number;
+  p_different: number;
+  model: string;
+  version: string;
+  at: string;
 }
 
 export interface CandidatesResponse {
