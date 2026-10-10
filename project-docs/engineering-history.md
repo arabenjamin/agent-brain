@@ -917,6 +917,14 @@ The user noticed "waterford" filed as an organisation (it is the Michigan townsh
 - **A generator bug worth remembering:** the place's name came from whichever graph entity was linked to its Wikidata item, and for Italy and the UK that entity was "italian" and "british", so both places silently vanished from the table. The place name now skips linked entities that are its own demonyms.
 - **Resolved at extraction, proposed for the backlog.** New mentions go to the place (verified live: "Chinese hackers breached a Ukrainian ministry, and American officials…" mentioned China, Ukraine and the United States, each with its word as `via`). The 43 existing demonym entities whose place exists became `demonym` merge candidates; nothing merged on its own, because "Chinese" is also a language.
 
+### Wikipedia first: a good idea the pipeline couldn't carry (HBI Phase 21, 2026-10-10)
+
+The user's instinct: "Wikipedia is always a fantastic first step … that leads you to the next logical step." We built `wiki_background` and replayed 15 past gaps through the real queue, with and without it. It failed the bar we had set before measuring, and the reasons are worth more than the score.
+- **The background never reached the answers.** Not one arm-B answer cited Wikipedia: the reason step distills its whole context to 3,000 characters, and the encyclopedic text lost every time to the web results. So the only channel Wikipedia had was the web query it rewrote, and adding "Hewlett-Packard" to an ink-alternatives question returned nothing useful.
+- **The local model is the wrong picker.** It named no subject for a question about Kimberly Guilfoyle and chose a surname-list article for "Daniels". Phase 18 had already pinned this choice to the cloud model.
+- **The replay needed two corrections to mean anything.** Past gap answers are stored as notes, so a naive replay retrieves its own old answer (1–7 per question; they were removed for both arms). And two runs of an identical query differed materially in 2 of 8 pairs, so 15 cases can't show a small effect.
+- **Left off, kept measurable.** The tool, the frozen sample (`eval/gap_wikipedia_replay.json`) and the harness (`scripts/replay_gap_wikipedia.py`) stay. A v2 would give the background its own budget, leave the web query alone, and pin the picker to the cloud.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

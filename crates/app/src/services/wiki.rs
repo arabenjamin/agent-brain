@@ -149,6 +149,13 @@ async fn get(url: &str, query: &[(&str, &str)]) -> Result<Value> {
     Ok(v)
 }
 
+/// English Wikipedia's action API, through the same gate.
+pub(crate) async fn wikipedia(params: &[(&str, &str)]) -> Result<Value> {
+    let mut q: Vec<(&str, &str)> = vec![("format", "json"), ("formatversion", "2")];
+    q.extend_from_slice(params);
+    get("https://en.wikipedia.org/w/api.php", &q).await
+}
+
 async fn wikidata(params: &[(&str, &str)]) -> Result<Value> {
     let mut q: Vec<(&str, &str)> = vec![("format", "json")];
     q.extend_from_slice(params);
@@ -364,7 +371,7 @@ pub fn name_variants(name: &str) -> Vec<String> {
 }
 
 /// Candidates for several search terms, deduplicated by item, in order.
-async fn candidates_for(terms: &[String], skip: &HashSet<String>) -> Result<Vec<Item>> {
+pub(crate) async fn candidates_for(terms: &[String], skip: &HashSet<String>) -> Result<Vec<Item>> {
     let mut ids: Vec<String> = Vec::new();
     for t in terms {
         for id in search_ids(t).await? {

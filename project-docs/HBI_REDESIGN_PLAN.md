@@ -1496,3 +1496,49 @@ Built and deployed:
 - **`eval-retrieval`:** before, recall@10 0.880 and MRR 0.800 (25 cases). Nothing merged yet, so the "after" is owed once the user accepts demonym merges; record it here then.
 
 **Tests:** 898 Rust lib tests (2 new); tsc clean.
+
+### Phase 21 outcome (2026-10-10): built, measured, **not switched on**
+
+Built and deployed:
+- **`wiki_background {question, session_id?}`** (`services/wiki_background.rs`, in `WikiSkill`; tool count +1). The model names up to 3 **named** subjects of the question, each is searched on Wikidata, and the model picks the article (or none), as in Phase 18. It returns each article's lead, the section that best matches the question (ignoring the article's own title words) and the domains it cites most, plus `query`, the question with the article titles added. With `session_id` it banks the text in working memory. Wikimedia calls go through the Phase 18 gate.
+- **Changed from §12.4 while building:**
+  - No refusal for private tasks: `search_web` already sends the gap question to outside search engines, and Wikimedia sees less (only the subject terms).
+  - Cited domains are shown to the reasoner, not forced on the search. `search_web` can only restrict to domains, not prefer them.
+  - The smoke test led to named subjects only ("Border control" brought a textbook article), and to ignoring the article's own title words when choosing a section ("guajira" picked a 1769 rebellion for a question about today's border).
+- **Fixed on the way:** `link_entities` clamped `limit` to at least 1, so Phase 19's `limit: 0` backfill also looked up one entity. 0 now means kinds only.
+
+**The replay** (`scripts/replay_gap_wikipedia.py`): 15 past gaps, frozen by id hash from the last 10 days' completed gap tasks, excluding the 20 used in §12.1. Two arms ran through the real queue with the chain's own steps, providers and distillation: A is the production chain, and B adds `wiki_background` before the web search, uses its `query`, and names the BACKGROUND section in the reason prompt. Nothing was stored. Both arms got the same ALREADY KNOWN: `search_notes` with earlier "## Gap synthesis" notes removed, 1–7 per gap, which would otherwise have handed back the old answer.
+
+Graded by hand:
+
+| Gap | B's query | Better | Note |
+|---|---|---|---|
+| EU Kids Act | same | tie | |
+| CFTC and crypto platforms | changed | A | B's first bullet is a vague video claim |
+| US–China operatives | changed | B | Operation Fox Hunt (ProPublica), the MSS |
+| La Guajira border | changed | tie | |
+| circumstantial evidence | same | A | run-to-run noise |
+| HP ink alternatives | changed | A | "Hewlett-Packard" added to the query; B found nothing |
+| Kandahar giant | same | tie | |
+| 7.62 rounds | same | tie | |
+| Daniels' efficiency metrics | changed | mixed | the article picked was a surname list |
+| midterms | same | tie | |
+| national debt | same | tie | |
+| Guilfoyle allegations | same | tie | the local model named no subject |
+| Russia energy policy | changed | tie | |
+| consumer advocacy | changed | tie | |
+| tax platforms | same | A | B drifted to UK parties: noise |
+
+**Verdict: fails** the §12.4 bar (not worse anywhere, better somewhere): B was better once and worse two or three times. The step is **not** in `chains/fill-knowledge-gap.yaml`; the tool stays registered.
+
+**Why, which matters more than the score:**
+- **The background never reached the answers.** No B answer cites Wikipedia. The reason step distills its context to 3,000 characters, and the encyclopedic text lost to the web results, so Wikipedia acted only through the changed query.
+- **Adding article titles to the question can derail the search** (HP).
+- **The local model is weak at naming and picking subjects:** none for Guilfoyle, a surname list for Daniels. Phase 18 pinned this choice to the cloud model for the same reason.
+- **The noise floor is high.** 2 of the 8 pairs with identical queries differed materially between runs, so 15 cases can't show a small effect.
+
+**What a v2 would change, measured the same way before it is switched on:**
+1. Give the background its own budget outside the distillation (or distill it separately).
+2. Search the web with the question unchanged.
+3. Pin subject naming and picking to `gpt-oss:120b-cloud`.
+4. Use more cases, or two runs per arm, to get under the noise.

@@ -414,7 +414,11 @@ The domains the brain tracks. Schema: `schema.md` § Topic, plan: `HBI_REDESIGN_
   - **The user's type is final.** `type_source: manual` (set in the drawer, or by answering "keep" / "use the reference") stops the extraction vote (`entities.rs`) and the questions. "Let the brain decide" removes it and re-runs the vote. A seed's type stays fixed. "Keep" remembers the item in `type_kept_qids`, so that link never asks again.
   - **Wikimedia pages are never references.** A candidate whose class label starts "Wikimedia " (disambiguation, set index, list) is dropped before the model sees it, a pasted URL to one is refused, and a proposed link to an item whose classes reach a `refuse` root is withdrawn.
   - **Classes are cached** as `(:WikiClass)` through the Wikimedia gate. `link_entities` refreshes kinds after its lookups (at most 60 requests a run; an incomplete walk waits for the next), and a link decision in the drawer refreshes that entity. `link_entities {limit: 0}` refreshes kinds only.
+  - **`link_entities {limit: 0}` only refreshes kinds** (it clamped to 1 until Phase 21).
   - **Editing `kinds.yaml` re-derives every kind** (its hash is `kind_version`), from the cache. It shares `entities/` with the alias seed, whose loader ignores its keys; don't give it a top-level `types`, `titles`, `articles`, `keep_distinct` or `entities` key.
+- **`wiki_background`** (`services/wiki_background.rs`, Phase 21) reads Wikipedia for a question: named subjects only, each article picked from Wikidata's candidates, then its lead, best-matching section and most-cited domains. **It is not in the gap chain:** the 15-gap replay failed (HBI plan Phase 21 outcome). Measure any v2 with `scripts/replay_gap_wikipedia.py` on `eval/gap_wikipedia_replay.json` before wiring it in, and remember that the reason step's 3,000-character distillation squeezed the background out entirely.
+  - **Replaying gaps needs the old answers removed:** past runs stored "## Gap synthesis" notes, 1–7 per question, which `search_notes` hands straight back.
+  - **Two runs of one query differ.** 2 of 8 same-query pairs differed materially, so compare arms on more cases or repeated runs.
 
 ### System health, logs, registry (`clients/system.rs`, 2026-10-08)
 
