@@ -63,7 +63,8 @@ impl WikiSkill {
             description: "Read Wikipedia before searching the web: names the question's subjects \
                 (people, places, organisations, events, laws, technologies), finds and picks each one's \
                 English article (or none), and returns each article's first paragraphs, the section that \
-                best matches the question, and the sources the article cites most. `text` is the \
+                best matches the question, and the sources the article cites most, condensed by default to \
+                the facts that answer the question. `text` is the \
                 background, `query` a web query with the article titles added. With `session_id` the text \
                 is also pushed to that working-memory session. Background only: Wikipedia lags recent \
                 events, so search the web as well. Needs WIKIMEDIA_CONTACT."
@@ -73,7 +74,9 @@ impl WikiSkill {
                 "properties": {
                     "question": { "type": "string", "description": "The question being researched." },
                     "session_id": { "type": "string",
-                                    "description": "Working-memory session to push the background text to (role observation)." }
+                                    "description": "Working-memory session to push the background text to (role observation)." },
+                    "condense": { "type": "boolean",
+                                  "description": "Condense the articles to the facts that answer the question, each with its URL, in about 1,500 characters (default true). False returns the leads and sections as they are." }
                 },
                 "required": ["question"]
             }),
@@ -95,7 +98,8 @@ impl WikiSkill {
                 "WIKIMEDIA_CONTACT is not set: Wikimedia asks automated clients for a contact",
             );
         }
-        let (subjects, text, query) = match wb::background(self.llm.as_ref(), q).await {
+        let condense = args["condense"].as_bool().unwrap_or(true);
+        let (subjects, text, query) = match wb::background(self.llm.as_ref(), q, condense).await {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(format!("Wikipedia background failed: {e}")),
         };

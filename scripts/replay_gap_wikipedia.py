@@ -4,7 +4,13 @@ section (search_notes with earlier gap syntheses removed, which would
 otherwise hand back the old answer), then run through the real queue with the
 chain's own steps, providers and distillation. Nothing is stored.
 
-usage: python3 -I scripts/replay_gap_wikipedia.py DIR enqueue|collect
+v1 (B = background step after the stored notes, local model, query with
+article titles added) failed; v2 (the default) puts the condensed background
+first on the cloud pin, leaves the web query alone, gives B's distillation
+1,500 more characters, and runs every arm RUNS times. Arm C (`enqueue-c`) is
+the production chain with that larger budget alone.
+
+usage: python3 -I scripts/replay_gap_wikipedia.py DIR enqueue|collect [v1|v2]
 DIR must hold gaps15.json (the frozen sample is eval/gap_wikipedia_replay.json;
 copy it there); the state and results are written to DIR.
 """
@@ -13,6 +19,9 @@ import yaml
 
 S = sys.argv[1]
 MODE = sys.argv[2]
+VERSION = sys.argv[3] if len(sys.argv) > 3 else "v2"
+RUNS = 2 if VERSION == "v2" else 1
+WIKI_MODEL = "gpt-oss:120b-cloud"
 REPO = "/home/ara/agent-brain"
 BASE = "http://localhost:3001/mcp"
 
@@ -81,11 +90,21 @@ def subst(step, goal, sid):
 
 def steps_for(arm, goal, known, sid):
     out = []
+    if arm == "B" and VERSION == "v2":
+        # First, so it sits in the part of the handoff the distiller always reads.
+        out.append({"tool_name": "wiki_background",
+                    "arguments": {"question": goal, "session_id": sid, "condense": True},
+                    "model": WIKI_MODEL, "provider_hint": "ollama-cloud",
+                    "priority": 1, "max_attempts": 2,
+                    # A refused cloud model or a Wikimedia error means no
+                    # background, not a dead gap (v2: 7 of 34 calls refused).
+                    "optional": True,
+                    "description": "Gap fill: Wikipedia background"})
     bk = subst(BANK_KNOWN, goal, sid)
     bk["arguments"]["content"] = "## ALREADY KNOWN — existing notes from the graph\n" + known
     out.append(bk)
     search = subst(SEARCH, goal, sid)
-    if arm == "B":
+    if arm == "B" and VERSION == "v1":
         out.append({"tool_name": "wiki_background",
                     "arguments": {"question": goal, "session_id": sid},
                     "priority": 1, "max_attempts": 2, "provider_hint": "ollama",
@@ -93,16 +112,24 @@ def steps_for(arm, goal, known, sid):
         search["arguments"]["query"] = "{{_prev.query}}"
     out += [search, subst(BANK_WEB, goal, sid), subst(REASSEMBLE, goal, sid)]
     reason = subst(REASON, goal, sid)
+    if arm == "C":
+        # The production chain with B's larger distill budget and no Wikipedia:
+        # separates the background's effect from the budget's.
+        reason["distill_max_chars"] = reason.get("distill_max_chars", 3000) + 1500
     if arm == "B":
         q = reason["arguments"]["question"]
         assert B_INTRO_OLD in q, "chain reason prompt changed"
         reason["arguments"]["question"] = q.replace(B_INTRO_OLD, B_INTRO_NEW)
+        if VERSION == "v2":
+            reason["distill_max_chars"] = reason.get("distill_max_chars", 3000) + 1500
+            reason["distill_focus"] = (reason.get("distill_focus", "").rstrip()
+                                       + "; keep the BACKGROUND — Wikipedia section's bullets with their Wikipedia URLs")
     out.append(reason)
     return out
 
 
 gaps = json.load(open(f"{S}/gaps15.json"))
-state_p = f"{S}/replay21_state.json"
+state_p = f"{S}/replay21_{VERSION}_state.json"
 
 if MODE == "enqueue":
     sid = session()
@@ -124,9 +151,11 @@ if MODE == "enqueue":
             known, dropped = raw, 0
         entry = {"goal": g["goal"], "dropped_syntheses": dropped}
         for arm in ("A", "B"):
-            wm = f"replay21-{arm}-{i}"
-            ids_raw, err = call(sid, "enqueue_jobs", {"steps": steps_for(arm, g["goal"], known, wm)})
-            entry[arm] = {"session": wm, "enqueue": json.loads(ids_raw) if not err else ids_raw}
+            for run in range(RUNS):
+                key = arm if RUNS == 1 else f"{arm}{run + 1}"
+                wm = f"replay21{VERSION}-{key}-{i}"
+                ids_raw, err = call(sid, "enqueue_jobs", {"steps": steps_for(arm, g["goal"], known, wm)})
+                entry[key] = {"session": wm, "enqueue": json.loads(ids_raw) if not err else ids_raw}
         state[str(i)] = entry
         json.dump(state, open(state_p, "w"), indent=1)
         print(i, "enqueued; dropped syntheses:", dropped, flush=True)
@@ -135,7 +164,7 @@ elif MODE == "collect":
     state = json.load(open(state_p))
     done = 0
     for i, e in sorted(state.items(), key=lambda x: int(x[0])):
-        for arm in ("A", "B"):
+        for arm in [k for k in e if k[0] in "ABC" and not k.endswith("_failed")]:
             ids = e[arm]["enqueue"]["ids"]
             idl = json.dumps(ids)
             out = cypher(f"UNWIND range(0, size({idl})-1) AS k MATCH (j:AgentJob {{id: {idl}[k]}}) "

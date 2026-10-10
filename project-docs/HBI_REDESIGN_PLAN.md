@@ -1542,3 +1542,63 @@ Graded by hand:
 2. Search the web with the question unchanged.
 3. Pin subject naming and picking to `gpt-oss:120b-cloud`.
 4. Use more cases, or two runs per arm, to get under the noise.
+
+### Phase 21 v2 (2026-10-10): the cloud picker, its own budget, and a budget-only control
+
+Source: the user, after v1: "maybe using a cloud model for this sort of task would be a better move." The v1 diagnosis came first: in 6 of the 15 arm-B handoffs the background sat in the part of the input the distiller never reads (it keeps the first 16,000 and the last 8,000 of up to 24,000 characters), and in the other 9 the local distiller dropped it.
+
+**What v2 changed:**
+- **The model:** `wiki_background` pinned to `gpt-oss:120b-cloud`.
+- **`condense`** (default on): the tool reduces the background to about 1,500 characters, at most 3 bullets per article, each citing its Wikipedia URL.
+  - The smoke test caught the condenser inventing summaries of the sites an article cites ("the people.com article focuses on…"). It now sees only the article text, and the cited domains are added afterwards, verbatim.
+  - After the fix it says plainly when an article doesn't cover the question.
+- **Arm B's order and budget:** the background goes first in working memory, B's distill budget is 3,000 + 1,500 characters, and its focus line keeps the background bullets.
+- **The web query is the question unchanged.**
+- **Two runs per arm**, and **arm C**: the production chain with B's larger budget and no Wikipedia, to separate the two effects.
+
+**Graded by hand** (B against A and C, 4 runs without Wikipedia):
+
+| Result | Gaps |
+|---|---|
+| Better with Wikipedia, both runs, citing facts only Wikipedia gave | EU Kids Act ("the binding rules do not expressly cover games"), CFTC (its U.S.-only jurisdiction; the KalshiEX ruling) |
+| Worse with Wikipedia | the 7.62-rounds question in one of two runs: the cloud model named Wolverine, the Terminator and Doomsday as subjects, and the answer cited them |
+| Better in B, but not from Wikipedia | Daniels' efficiency metrics: all six runs got identical web results, and only B's handoff kept the Indiana EO-25-13 page (prompt-wording sensitivity, or chance) |
+| Ties | 10 gaps |
+| No data | tax platforms: both B runs rate-limited |
+
+- **Answers citing Wikipedia:** 4 of 15 gaps, against 0 in v1.
+- **The budget alone doesn't help:** arm C reads like arm A throughout, so production's 3,000 stays.
+- **The cloud pin has an operational cost:** 7 of 34 `wiki_background` calls were refused while `gpt-oss:120b-cloud` cooled down from Ollama Cloud's rate limit. A refused step model dead-letters the step on the first attempt, and that cancels the rest of the chain. The replay's burst (30 chains at once) caused this; production's ~20 gaps a day are spread out, but a refusal would still kill a gap.
+
+**Verdict: a real but small gain, and one fixable harm.** It still fails the strict bar (worse in one run). Before switching on, two fixes, then a re-run of the three gaps that moved (EU Kids Act, CFTC, 7.62 rounds), two runs each:
+1. **Named subjects that are real:** the subjects prompt rules out fictional characters and works unless the question is about fiction.
+2. **A refused or failed Wikipedia step doesn't cancel the gap:** the step reports "no background" and the chain goes on.
+
+**Also found, independent of Wikipedia:** the production gap chain's handoff loses its middle whenever the stored notes are long. ALREADY KNOWN alone runs to 30,000 characters, so the distiller reads the first 16,000 and the last 8,000, and anything between is never seen. Worth its own fix (cap the stored-notes section, or distill it separately).
+
+### Phase 21 v3 check (2026-10-10): both fixes in, still not switched on
+
+Source: the user approved the two fixes and a three-gap check ("go ahead with the two fixes and run the three-gap check").
+
+**The fixes:**
+1. **Real things only:** the subjects prompt rules out fictional characters, franchises and works unless the question is about fiction.
+2. **The Wikipedia step is `optional: true`:** a refused model or a Wikimedia error leaves the gap without background instead of cancelling it. This is the existing optional-step mechanism, built after the weather fetch cancelled a daily brief.
+
+**The check** (arm B only, the EU Kids Act, CFTC and 7.62-rounds gaps, two runs each, against the A and C runs on file), plus a deliberate failure test: the Wikipedia step pinned to a model that doesn't exist.
+
+| | Result |
+|---|---|
+| **Fix 2** | **works.** All 5 dead Wikipedia steps (4 rate-limited, plus the failure test) were skipped, and every gap finished with an answer |
+| **EU Kids Act** | Wikipedia ran in both runs and **neither answer used it**. v2's gain ("the binding rules do not expressly cover games") did not reproduce; B2 was as good as the no-Wikipedia runs |
+| **CFTC** | **no data**: the cloud model was rate-limited in both runs |
+| **7.62 rounds** | rate-limited in both chain runs. A direct check after the cooldown: the one call that ran named **no subjects** (fix 1 holds), and the next two, 5 minutes apart, were refused |
+
+**Decision: `wiki_background` stays out of the gap chain.**
+- **No Wikipedia gain has held up twice:** the EU Kids Act gain didn't reproduce, and the CFTC gain couldn't be retested.
+- **The quota can't carry it.** A gap needs up to 5 cloud calls (subjects, a pick per subject, condensing), so ~20 gaps a day is up to 100 calls on the free `gpt-oss:120b-cloud` tier the hourly `entity-linking` schedule also uses. On the test day even single calls 5 minutes apart were refused.
+
+**What stays:** the tool (with both fixes, usable by chat and agents), the harness with its three arms, and the frozen sample.
+
+**What would reopen it:** a cloud model with headroom, or a background that needs no model calls.
+
+**Separate and still open:** the gap chain's handoff loses its middle when the stored notes are long (see v2).

@@ -924,6 +924,12 @@ The user's instinct: "Wikipedia is always a fantastic first step … that leads 
 - **The local model is the wrong picker.** It named no subject for a question about Kimberly Guilfoyle and chose a surname-list article for "Daniels". Phase 18 had already pinned this choice to the cloud model.
 - **The replay needed two corrections to mean anything.** Past gap answers are stored as notes, so a naive replay retrieves its own old answer (1–7 per question; they were removed for both arms). And two runs of an identical query differed materially in 2 of 8 pairs, so 15 cases can't show a small effect.
 - **Left off, kept measurable.** The tool, the frozen sample (`eval/gap_wikipedia_replay.json`) and the harness (`scripts/replay_gap_wikipedia.py`) stay. A v2 would give the background its own budget, leave the web query alone, and pin the picker to the cloud.
+- **v2 and v3 (same day), at the user's suggestion of a cloud model.**
+  - **The first finding was mechanical.** The distiller keeps the first 16,000 and the last 8,000 of up to 24,000 characters, and in 6 of v1's 15 handoffs the background sat in the dropped middle. (The production chain loses its own middle the same way when stored notes run long: still open.)
+  - **v2** condensed the background with the cloud model and put it first. Two gaps then improved in both runs, citing facts only Wikipedia gave, and one run answered a question about bulletproof creatures with Wolverine and the Terminator. A budget-only control arm showed the larger distill budget alone changes nothing.
+  - **v3** added a "real things only" rule and made the step `optional`. Optional worked: refused steps no longer killed gaps. But the EU Kids Act gain did not reproduce, and the cloud model was refused for most calls: the free `gpt-oss:120b-cloud` tier is shared with hourly entity linking, and a gap would need up to 5 calls.
+  - **The smoke test caught the condenser fabricating:** given the list of domains an article cites, it wrote a summary of each site's "article". It now sees only article text.
+  - **Left off for good reason:** no gain held up twice, and the quota can't carry it.
 
 ## Critical Dev Notes
 

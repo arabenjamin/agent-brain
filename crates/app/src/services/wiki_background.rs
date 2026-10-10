@@ -26,6 +26,8 @@ const MAX_SUBJECTS: usize = 3;
 const LEAD_CHARS: usize = 1200;
 const SECTION_CHARS: usize = 1500;
 const MAX_DOMAINS: usize = 8;
+/// The condensed background's budget (`condense`).
+pub const CONDENSED_CHARS: usize = 1500;
 /// Sections that are lists of links, not text about the subject.
 const SKIP_SECTIONS: &[&str] = &[
     "references",
@@ -108,7 +110,9 @@ pub fn subjects_prompt(question: &str) -> String {
          article: a specific person, place, organisation, event, law, product or programme. Use the name an \
          encyclopedia would use (\"Strait of Hormuz\", not \"Hormuz trade disruption\"). Not general concepts \
          (\"border control\", \"inflation\", \"national debt\"), not the question's angle (\"impact\", \"risks\"), \
-         and nothing too new or too narrow to have an article. If nothing qualifies, give none.\n\
+         and nothing too new or too narrow to have an article. Real things only: no fictional characters, \
+         franchises or works (\"Wolverine\", \"The Terminator\") unless the question asks about that fiction. \
+         If nothing qualifies, give none.\n\
          Output ONLY JSON: {{\"subjects\": [\"...\"]}}"
     )
 }
@@ -246,6 +250,13 @@ pub fn top_domains(links: &[String]) -> Vec<String> {
 
 /// The text the reason step reads.
 pub fn render(subjects: &[Subject]) -> String {
+    render_with(subjects, true)
+}
+
+/// `domains: false` leaves out the cited-sources lines: given them, the
+/// condenser invented a summary for each site ("the people.com article
+/// focuses on…") on the v2 smoke test.
+fn render_with(subjects: &[Subject], domains: bool) -> String {
     let mut out = String::from("## BACKGROUND — Wikipedia (encyclopedic; may lag recent events)\n");
     let mut none = Vec::new();
     for s in subjects {
@@ -255,7 +266,7 @@ pub fn render(subjects: &[Subject]) -> String {
                 if let Some((h, b)) = &a.section {
                     out.push_str(&format!("\n#### {h}\n{b}\n"));
                 }
-                if !a.domains.is_empty() {
+                if domains && !a.domains.is_empty() {
                     out.push_str(&format!(
                         "\nSources this article cites most: {}\n",
                         a.domains.join(", ")
@@ -270,6 +281,49 @@ pub fn render(subjects: &[Subject]) -> String {
     } else if !none.is_empty() {
         out.push_str(&format!(
             "\nNo Wikipedia article found for: {}\n",
+            none.join(", ")
+        ));
+    }
+    out
+}
+
+/// Condensing the background so it survives the chain's handoff (Phase 21
+/// v2): in the v1 replay the full text was squeezed out of every answer.
+pub fn condense_prompt(question: &str, background: &str) -> String {
+    format!(
+        "QUESTION: {question}\n\n{background}\n\n\
+         The background above has one or more Wikipedia articles, each starting with a \"### Title — URL\" line. \
+         For each article, write at most 3 bullets: facts stated in that article's text that help answer the \
+         QUESTION (names, dates, figures, mechanisms). End each bullet with that article's en.wikipedia.org URL \
+         in parentheses. If an article states nothing that helps, write one bullet saying what the subject is. \
+         Use only sentences in the background; add nothing from memory. At most {CONDENSED_CHARS} characters. \
+         Output only the bullets."
+    )
+}
+
+/// The condensed bullets under the section header, with the articles that
+/// had none listed, clipped to the budget.
+pub fn condensed(bullets: &str, subjects: &[Subject]) -> String {
+    let mut out = String::from("## BACKGROUND — Wikipedia (encyclopedic; may lag recent events)\n");
+    out.push_str(&clip(bullets.trim(), CONDENSED_CHARS));
+    out.push('\n');
+    for a in subjects.iter().filter_map(|s| s.article.as_ref()) {
+        if !a.domains.is_empty() {
+            out.push_str(&format!(
+                "Sources {} cites most: {}\n",
+                a.title,
+                a.domains.join(", ")
+            ));
+        }
+    }
+    let none: Vec<&str> = subjects
+        .iter()
+        .filter(|s| s.article.is_none())
+        .map(|s| s.term.as_str())
+        .collect();
+    if !none.is_empty() {
+        out.push_str(&format!(
+            "No Wikipedia article found for: {}\n",
             none.join(", ")
         ));
     }
@@ -327,6 +381,7 @@ async fn article(title: &str, question: &str) -> Result<Article> {
 pub async fn background(
     llm: &dyn LlmProvider,
     question: &str,
+    condense: bool,
 ) -> Result<(Vec<Subject>, String, String)> {
     let terms = llm
         .generate_json(&subjects_prompt(question), None, &["subjects"], 1)
@@ -372,7 +427,16 @@ pub async fn background(
             why,
         });
     }
-    let text = render(&subjects);
+    let mut text = render(&subjects);
+    if condense && subjects.iter().any(|s| s.article.is_some()) {
+        let c = llm
+            .generate(
+                &condense_prompt(question, &render_with(&subjects, false)),
+                None,
+            )
+            .await?;
+        text = condensed(&c, &subjects);
+    }
     let query = web_query(question, &subjects);
     Ok((subjects, text, query))
 }
@@ -397,6 +461,15 @@ pub fn result_json(subjects: &[Subject], text: &str, query: &str, banked: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_subjects_prompt_asks_for_real_named_things() {
+        // v2 replay: "creatures that survive 7.62 rounds" got Wolverine,
+        // the Terminator and Doomsday as subjects, and the answer cited them.
+        let p = subjects_prompt("What creatures survive 7.62 rounds?");
+        assert!(p.contains("Real things only"));
+        assert!(p.contains("Not general concepts"));
+    }
 
     #[test]
     fn subjects_are_trimmed_deduplicated_and_capped() {
@@ -434,6 +507,23 @@ mod tests {
                 &secs
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn the_condensed_background_keeps_its_header_and_names_what_had_no_article() {
+        let s = vec![Subject {
+            term: "Keh clan".into(),
+            article: None,
+            why: None,
+        }];
+        let long = "- fact (https://en.wikipedia.org/wiki/X)\n".repeat(100);
+        let c = condensed(&long, &s);
+        assert!(c.starts_with("## BACKGROUND — Wikipedia"));
+        assert!(c.contains("No Wikipedia article found for: Keh clan"));
+        assert!(
+            c.chars().count() < CONDENSED_CHARS + 200,
+            "clipped to the budget"
         );
     }
 
