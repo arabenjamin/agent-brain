@@ -4,238 +4,127 @@ description: "Aggregates metro Detroit, Michigan, national, world, tech, and bus
 # topic: none — spans topics on purpose
 kind: brief
 interval_seconds: 86400
+# Every step runs locally, top priority, two attempts, unless it says otherwise.
+# Each gather step is named, and the writer reads them all by name
+# ({{steps.<id>}}): no working-memory staging, so nothing to clean up after a
+# failed run (dev_docs get yaml/schedules-daily-news-1).
+defaults:
+  priority: 1
+  max_attempts: 2
+  provider_hint: ollama
 steps:
-  # Why: dev_docs get yaml/schedules-daily-news-2
-  - tool_name: neo4j_query
-    arguments:
-      cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) DETACH DELETE w"
-      readonly: false
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
   # Why: dev_docs get yaml/schedules-daily-news-3
-  - tool_name: search_web
+  - id: detroit
+    tool_name: search_web
     arguments:
       query: "latest Detroit metro news -sports"
       count: 6
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## METRO DETROIT — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: search_web
+  - id: michigan
+    tool_name: search_web
     arguments:
       query: "latest Michigan government politics news -sports"
       count: 6
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## MICHIGAN — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: search_web
+  - id: national
+    tool_name: search_web
     arguments:
       query: "latest US national news headlines"
       count: 8
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## NATIONAL — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: search_web
+  - id: world
+    tool_name: search_web
     arguments:
       query: "latest world news headlines"
       count: 8
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## WORLD — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: search_web
+  - id: tech
+    tool_name: search_web
     arguments:
       query: "latest artificial intelligence technology news"
       count: 6
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## TECHNOLOGY & AI — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: search_web
+  - id: business
+    tool_name: search_web
     arguments:
       query: "latest US economy business news"
       count: 6
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## BUSINESS & POLITICS — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: search_web
+  - id: markets
+    tool_name: search_web
     arguments:
       query: "latest stock market close S&P 500 Dow Nasdaq"
       count: 5
       engine: exa
       recency: day
       news: true
-    priority: 1
     max_attempts: 3
-    provider_hint: ollama
-
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## MARKETS — raw search results\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   # Why: dev_docs get yaml/schedules-daily-news-4
-  - tool_name: http_request
+  - id: weather
+    tool_name: http_request
     arguments:
       method: GET
       url: "https://api.weather.gov/gridpoints/DTX/66,34/forecast"
       headers:
         User-Agent: "agent-brain (ara.benjamin@gmail.com)"
         Accept: "application/geo+json"
-    priority: 1
     max_attempts: 3
     optional: true   # enrichment: a failed fetch must not cancel the brief (2026-09-30)
-    provider_hint: ollama
-
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## WEATHER — NWS api.weather.gov forecast for Detroit, MI (authoritative, not a web search)\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   # Why: dev_docs get yaml/schedules-daily-news-5
-  - tool_name: http_request
+  - id: apitube_michigan
+    tool_name: http_request
     arguments:
       method: GET
       url: "https://api.apitube.io/v1/news/everything?title=Michigan&language.code=en&per_page=2"
       context_name: apitube
-    priority: 1
     max_attempts: 3
     optional: true   # enrichment: a failed fetch must not cancel the brief (2026-09-30)
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## MICHIGAN — ApiTube articles (structured, dated JSON results[]: title, href, published_at, source.domain, description). Prefer these for exact dates and citations in the MICHIGAN / METRO DETROIT sections.\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: http_request
+  - id: apitube_ai
+    tool_name: http_request
     arguments:
       method: GET
       url: "https://api.apitube.io/v1/news/everything?title=artificial%20intelligence&language.code=en&per_page=2"
       context_name: apitube
-    priority: 1
     max_attempts: 3
     optional: true   # enrichment: a failed fetch must not cancel the brief (2026-09-30)
-    provider_hint: ollama
-
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## TECHNOLOGY & AI — ApiTube articles (structured, dated JSON results[]: title, href, published_at, source.domain, description). Prefer these for exact dates and citations in the TECHNOLOGY & AI section.\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   # Why: dev_docs get yaml/schedules-daily-news-6
-  - tool_name: recall_recent
+  - id: activity
+    tool_name: recall_recent
     arguments:
       window: "1d"
       sample_limit: 20
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## BRAIN ACTIVITY (last 24h) — recall_recent JSON: total_notes, by_note_type, by_source_context, and a sample[]. This is what the brain actually did and learned: video_learning = videos it watched, fill_knowledge_gap = gaps it researched, claim/source_record = things it logged, news = briefs. Summarise the shape (counts) and call out anything genuinely new.\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   # ── System status: open work, recent job health, active schedules ─────────
-  - tool_name: neo4j_query
+  - id: status
+    tool_name: neo4j_query
     arguments:
       cypher: >-
         MATCH (t:Task) WHERE t.updated_at >= datetime() - duration('P1D')
@@ -253,24 +142,13 @@ steps:
         UNION ALL
         MATCH (s:ScheduledTask) WITH s.enabled AS k, count(*) AS c
         RETURN 'scheduled_tasks_enabled=' + toString(k) + ': ' + toString(c) AS line
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## SYSTEM STATUS — live counts from the graph: tasks completed/failed in the LAST 24h, tasks open right now, AgentJob statuses over the last 24h, and enabled/disabled ScheduledTask totals. There are no all-time totals here; never describe a count as anything but the window its label names. Report open/failed work plainly; a non-zero failed/dead count is worth flagging.\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   # ── Your items: what waits on the user (HBI plan Phase 13) ──────────────
   # Replaces the daily Todo Review chat: overdue and soon-due items, and agent
   # results or runs waiting for the user, as one block in the brief. Dates are
   # compared as dates (a DATETIME against a string is null in Cypher).
-  - tool_name: neo4j_query
+  - id: items
+    tool_name: neo4j_query
     arguments:
       cypher: >-
         MATCH (t:Todo) WHERE t.status <> 'done'
@@ -286,29 +164,10 @@ steps:
         RETURN why + ': ' + t.title + coalesce(' (due ' + toString(date(t.due_at)) + ')', '') AS line
         ORDER BY CASE why WHEN 'overdue' THEN 0 WHEN 'result to review' THEN 1 WHEN 'agent run to approve' THEN 2 ELSE 3 END
         LIMIT 15
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
-  - tool_name: push_context
-    arguments:
-      session_id: "news-raw-{{date}}"
-      content: "## YOUR ITEMS — the user's open items that want them now: overdue, due within 3 days, an agent result to review, or an agent run to approve (at most 15). An empty list means nothing is waiting.\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  # ── Assemble: pull every banked section out of working memory ───────────
-  - tool_name: neo4j_query
-    arguments:
-      cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) RETURN w.content AS content ORDER BY w.turn_index"
-    priority: 1
-    max_attempts: 3
-    provider_hint: ollama
-
-  # ── Write the briefing from the assembled sections ──────────────────────
-  - tool_name: reason
+  # ── Write the briefing from the named sections ───────────────────────────
+  - id: brief
+    tool_name: reason
     arguments:
       question: |
         Write a structured DAILY BRIEF for {{date}}. This is not only a news
@@ -380,59 +239,76 @@ steps:
         A reader must be able to tell a slow news day from a broken search. (This
         applies to the news sections; the self sections above always have data.)
         Do not output JSON or any code fences. Write in plain prose with Markdown headings only.
-      context: "{{_prev}}"
+      context: |
+        ## BRAIN ACTIVITY (last 24h) — recall_recent JSON: total_notes, by_note_type, by_source_context, and a sample[]. This is what the brain actually did and learned: video_learning = videos it watched, fill_knowledge_gap = gaps it researched, claim/source_record = things it logged, news = briefs. Summarise the shape (counts) and call out anything genuinely new.
+        {{steps.activity}}
+
+        ## SYSTEM STATUS — live counts from the graph: tasks completed/failed in the LAST 24h, tasks open right now, AgentJob statuses over the last 24h, and enabled/disabled ScheduledTask totals. There are no all-time totals here; never describe a count as anything but the window its label names. Report open/failed work plainly; a non-zero failed/dead count is worth flagging.
+        {{steps.status}}
+
+        ## YOUR ITEMS — the user's open items that want them now: overdue, due within 3 days, an agent result to review, or an agent run to approve (at most 15). An empty list means nothing is waiting.
+        {{steps.items}}
+
+        ## METRO DETROIT — raw search results
+        {{steps.detroit}}
+
+        ## MICHIGAN — raw search results
+        {{steps.michigan}}
+
+        ## MICHIGAN — ApiTube articles (structured, dated JSON results[]: title, href, published_at, source.domain, description). Prefer these for exact dates and citations in the MICHIGAN / METRO DETROIT sections.
+        {{steps.apitube_michigan}}
+
+        ## NATIONAL — raw search results
+        {{steps.national}}
+
+        ## WORLD — raw search results
+        {{steps.world}}
+
+        ## TECHNOLOGY & AI — raw search results
+        {{steps.tech}}
+
+        ## TECHNOLOGY & AI — ApiTube articles (structured, dated JSON results[]: title, href, published_at, source.domain, description). Prefer these for exact dates and citations in the TECHNOLOGY & AI section.
+        {{steps.apitube_ai}}
+
+        ## BUSINESS & POLITICS — raw search results
+        {{steps.business}}
+
+        ## MARKETS — raw search results
+        {{steps.markets}}
+
+        ## WEATHER — NWS api.weather.gov forecast for Detroit, MI (authoritative, not a web search)
+        {{steps.weather}}
       store_inference: false
     priority: 2
     max_attempts: 3
     # Why: dev_docs get yaml/schedules-daily-news-7
     provider_hint: ollama-cloud
 
-  - tool_name: store_note
+  - id: stored
+    tool_name: store_note
     arguments:
-      content: "{{_prev}}"
+      content: "{{steps.brief}}"
       note_type: news
       source_context: scheduled_daily_news_brief
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   # Why: dev_docs get yaml/schedules-daily-news-8
   - tool_name: claim
     arguments:
       action: extract
-      text: "{{_prev}}"
-      source_note_id: "{{_prev.id}}"
+      text: "{{steps.brief}}"
+      source_note_id: "{{steps.stored.id}}"
       source_context: daily_news
       limit: 6
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
 
   - tool_name: notify_user
     arguments:
-      message: "{{_prev}}"
+      message: "{{steps.brief}}"
       context: "Daily Brief {{date}}"
       related_session_id: "news-{{date}}"
     priority: 2
-    max_attempts: 2
-    provider_hint: ollama
 
   - tool_name: push_context
     arguments:
       session_id: "news-{{date}}"
-      content: "{{_prev}}"
+      content: "{{steps.brief}}"
       role: assistant
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-
-  # ── Clean up the raw working-memory session ──────────────────────────────
-  - tool_name: neo4j_query
-    arguments:
-      cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) DETACH DELETE w"
-      readonly: false
-    # priority 1, not 0 — the queue is a max-heap, so 0 is the lowest priority
-    # and starves under a fed queue. See chains/fill-knowledge-gap.yaml.
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama

@@ -6,6 +6,21 @@ use uuid::Uuid;
 
 use crate::repository::Neo4jClient;
 
+/// Merge a seed file's `defaults:` into each step; a field the step sets wins.
+/// Lets a file say `provider_hint: llamacpp` once instead of on every step.
+pub fn apply_step_defaults(
+    steps: &mut [serde_json::Value],
+    defaults: &serde_json::Map<String, serde_json::Value>,
+) {
+    for step in steps {
+        if let serde_json::Value::Object(m) = step {
+            for (k, v) in defaults {
+                m.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ChainFile {
     name: String,
@@ -23,6 +38,9 @@ struct ChainFile {
     #[serde(default)]
     no_adversarial: bool,
     steps: Vec<serde_json::Value>,
+    /// Step fields every step gets unless it sets its own (`apply_step_defaults`).
+    #[serde(default)]
+    defaults: serde_json::Map<String, serde_json::Value>,
     /// Default data class for every step that does not set its own
     /// (`services/routing.rs`). Absent ⇒ steps stay private.
     #[serde(default)]
@@ -68,6 +86,7 @@ pub async fn seed_chains_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Re
         };
 
         let mut steps = chain.steps.clone();
+        apply_step_defaults(&mut steps, &chain.defaults);
         if let Some(class) = chain.data_class {
             crate::services::routing::stamp_data_class(&mut steps, class);
         }

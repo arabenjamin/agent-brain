@@ -1,6 +1,6 @@
 # Core and plugins plan
 
-Status: **Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
+Status: **Phase 2a (named step outputs + step defaults) done 2026-10-10: deployed and verified live on daily-news (32 steps → 18, every step completed, claims linked to the stored brief). Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
 
 ## 1. Why
 
@@ -151,10 +151,18 @@ A finished plan becomes one `kind: decision` DevNote and is deleted; `PLANS_INDE
 
 Agents (`run_agent` + a profile) are a third way, where the model chooses the steps.
 
+**Measured 2026-10-10 (one-off Tasks by chain pattern, 60 days):** `fill-knowledge-gap` 890, `video-learning` 644, `article-learning` 75 — pipelines the brain triggers itself, passing an input (topic, URL) through goal text; `consolidate` 29, `document` 25, `prioritize` 12, `deep-dive` 11, `learn` 10, `codebase` 5, `review` 4, `diagnose` 1 — keyword routes guessing at free-text goals by substring; `meta-learn`, `run-agent`, `schedule-review`, `ui-frontend` 0 (`deep-dive-hard` 0 but 7 days old). So a "chain" is either a pipeline with inputs or a keyword router, and a schedule is a pipeline on a timer.
+
+**Decided (owner, 2026-10-10):** one `:Workflow` label replaces both node types (not just one format over two labels); pipelines are called by name with inputs, a free-text goal goes to one default, and chains with no runs in 60 days are deleted unless under 30 days old; the evaluator and critic are opt-in per workflow (`checks:`), not on by default.
+
+**Sequence:** 2a named step outputs + step defaults (additive; rewrite daily-news); 2b the `:Workflow` model, `manage_workflow`, REST, HBI editor, migration of the live graph including runtime-owned schedules; 2c delete the old paths.
+
+**Phase 2a result (2026-10-10):** a step may carry an `id`; later steps read it as `{{steps.<id>}}` or `{{steps.<id>.<path>}}`, and a step that did not complete resolves to a visible marker. References must name an earlier step (rejected at upsert, REST and lint; a unit test lints every seed file). A seed file's `defaults:` is merged into each step. daily-news dropped its WorkingMemory staging (14 push_context steps and both cleanup queries): 32 steps → 18. Rule: `dev_docs get chains/named-step-outputs`.
+
 **The model.** Three separate things:
 
 - **Workflow** — *what*: fixed steps, or `agent:` + `goal:`. Declares `inputs`, `data_class`, `checks`, and step `defaults`.
-- **Trigger** — *when*, a list on the workflow: `manual`, `schedule` (interval), `match` (free-text goal pattern, the old chain routing, kept for `create_task` from chat), and later `event`.
+- **Trigger** — *when*, a list on the workflow: `manual` (by name, with inputs) and `schedule` (interval); later `event`. No `match` trigger: a free-text `create_task` goal runs the one default workflow.
 - **Run** — one execution with its inputs. The existing `:Task` label stays as the run record (renaming it is churn with no gain), gaining `workflow` and `inputs`.
 
 `:SchedulerChain` and `:ScheduledTask` merge into `:Workflow`; `managed_by` (yaml/runtime) carries over unchanged. Callers that build goal strings to hit a regex (`spawn_gap_tasks`, perception scan) call `run_workflow(name, inputs)` instead.

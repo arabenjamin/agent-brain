@@ -11,6 +11,9 @@ struct ScheduleFile {
     description: String,
     interval_seconds: i64,
     steps: Vec<serde_json::Value>,
+    /// Step fields every step gets unless it sets its own.
+    #[serde(default)]
+    defaults: serde_json::Map<String, serde_json::Value>,
     /// Initial enabled state, honored ONLY when the task is first created
     /// (`enabled` is graph-owned and never force-synced afterward). Absent ⇒
     /// `true`, so existing schedules are unaffected; set `false` to seed a task
@@ -115,6 +118,7 @@ pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow:
         };
 
         let mut steps = schedule.steps.clone();
+        crate::services::chain_seeder::apply_step_defaults(&mut steps, &schedule.defaults);
         if let Some(class) = schedule.data_class {
             crate::services::routing::stamp_data_class(&mut steps, class);
         }
@@ -224,6 +228,51 @@ pub async fn seed_schedules_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every seed file's step references name an earlier step once its
+    /// `defaults:` are applied — the check the lint runs on the live graph.
+    #[test]
+    fn seed_files_step_references_resolve() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0;
+        for dir in ["schedules", "chains"] {
+            for entry in std::fs::read_dir(root.join(dir)).unwrap().flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                    continue;
+                }
+                let v: serde_json::Value =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                let mut steps = v["steps"].as_array().cloned().unwrap_or_default();
+                let defaults = v["defaults"].as_object().cloned().unwrap_or_default();
+                crate::services::chain_seeder::apply_step_defaults(&mut steps, &defaults);
+                let hard: Vec<String> = crate::services::validation::validate_step_array(
+                    &steps,
+                    &[],
+                    &Default::default(),
+                )
+                .iter()
+                .map(|v| v.render())
+                .collect();
+                assert!(hard.is_empty(), "{}: {hard:?}", path.display());
+                checked += 1;
+            }
+        }
+        assert!(checked > 10);
+    }
+
+    #[test]
+    fn defaults_fill_only_what_a_step_leaves_unset() {
+        let mut steps = vec![
+            serde_json::json!({"tool_name": "a"}),
+            serde_json::json!({"tool_name": "b", "provider_hint": "ollama-cloud"}),
+        ];
+        let d = serde_json::json!({"provider_hint": "ollama", "priority": 1});
+        crate::services::chain_seeder::apply_step_defaults(&mut steps, d.as_object().unwrap());
+        assert_eq!(steps[0]["provider_hint"], "ollama");
+        assert_eq!(steps[1]["provider_hint"], "ollama-cloud");
+        assert_eq!(steps[1]["priority"], 1);
+    }
 
     #[test]
     fn labels_are_checked_against_the_declared_topics_and_kinds() {

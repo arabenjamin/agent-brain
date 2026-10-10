@@ -201,6 +201,7 @@ const CHAIN_STEP_FIELDS: &[&str] = &[
     "distill_max_chars",
     "distill_focus",
     "optional",
+    "id",
 ];
 
 /// A tool argument written at step level instead of inside `arguments`.
@@ -269,7 +270,67 @@ pub fn validate_step_array(
         ));
         out.extend(misplaced_arguments(i, tool, step, tool_schemas));
     }
+    out.extend(step_ref_violations(steps));
     out
+}
+
+/// Every `{{steps.<id>}}` must name an EARLIER step's `id`, and ids must be
+/// unique. A forward or unknown reference would resolve to a marker on every
+/// run, so it is rejected when written, not discovered in a digest.
+fn step_ref_violations(steps: &[Value]) -> Vec<Violation> {
+    let mut out = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let tool = step.get("tool_name").and_then(Value::as_str).unwrap_or("");
+        let args = step
+            .get("arguments")
+            .map(Value::to_string)
+            .unwrap_or_default();
+        for r in step_refs(&args) {
+            if !seen.contains(&r.as_str()) {
+                let named: Vec<&str> = seen.clone();
+                out.push(Violation::hard(
+                    format!("steps[{i}] (`{tool}`)"),
+                    format!(
+                        "`{{{{steps.{r}}}}}` names no earlier step (earlier step ids: {}) \
+                         — a step can only use the output of a step before it",
+                        if named.is_empty() {
+                            "none".to_string()
+                        } else {
+                            named.join(", ")
+                        }
+                    ),
+                ));
+            }
+        }
+        if let Some(id) = step.get("id").and_then(Value::as_str) {
+            if id.is_empty() || id.contains('.') || id.contains('}') {
+                out.push(Violation::hard(
+                    format!("steps[{i}] (`{tool}`)"),
+                    format!("step id `{id}` must be non-empty with no `.` or `}}`"),
+                ));
+            } else if seen.contains(&id) {
+                out.push(Violation::hard(
+                    format!("steps[{i}] (`{tool}`)"),
+                    format!("step id `{id}` is used twice"),
+                ));
+            } else {
+                seen.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// The step ids a string refers to via `{{steps.<id>}}` / `{{steps.<id>.<path>}}`.
+fn step_refs(s: &str) -> Vec<String> {
+    s.split("{{steps.")
+        .skip(1)
+        .filter_map(|rest| {
+            let token = &rest[..rest.find("}}")?];
+            Some(token.split('.').next().unwrap_or("").trim().to_string())
+        })
+        .collect()
 }
 
 /// Every step's pinned `model` must be in the catalog, and a `provider_hint`
@@ -554,5 +615,20 @@ mod tests {
         });
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
         assert!(!has_hard(&v), "templated strings must pass: {:?}", v);
+    }
+
+    #[test]
+    fn step_refs_must_name_an_earlier_step() {
+        let steps = vec![
+            json!({"tool_name": "a", "id": "news", "arguments": {}}),
+            json!({"tool_name": "b", "arguments": {"x": "{{steps.news.items}} {{steps.later}}"}}),
+            json!({"tool_name": "c", "id": "later", "arguments": {}}),
+            json!({"tool_name": "d", "id": "news", "arguments": {}}),
+        ];
+        let v = step_ref_violations(&steps);
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(v[0].render().contains("steps.later"));
+        assert!(v[0].render().contains("earlier step ids: news"));
+        assert!(v[1].render().contains("used twice"));
     }
 }

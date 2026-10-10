@@ -20,7 +20,7 @@
 //! `update_config()` swaps in a new job semaphore of the requested size; jobs
 //! already holding a permit from the old one finish on it.
 
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
@@ -113,6 +113,9 @@ impl Default for WorkerConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ChainStep {
+    /// Names this step so a later one can use its output as `{{steps.<id>}}`
+    /// (or `{{steps.<id>.<path>}}`), not only the next step via `{{_prev}}`.
+    pub id: Option<String>,
     #[serde(default)]
     pub tool_name: String,
     #[serde(default)]
@@ -417,6 +420,7 @@ impl QueueService {
         }
 
         let mut ids: Vec<String> = Vec::with_capacity(steps.len());
+        let mut step_job_ids = serde_json::Map::new();
         let mut prev_id: Option<String> = None;
         let mut first_job: Option<AgentJob> = None;
 
@@ -547,6 +551,24 @@ impl QueueService {
                 effective_args
             };
 
+            // A step that names earlier steps' outputs carries their job ids, so
+            // `{{steps.<id>}}` resolves by job id when it runs.
+            let effective_args: Option<serde_json::Value> = match effective_args {
+                Some(serde_json::Value::Object(mut m))
+                    if !step_job_ids.is_empty()
+                        && serde_json::Value::Object(m.clone())
+                            .to_string()
+                            .contains("{{steps.") =>
+                {
+                    m.insert(
+                        "__step_jobs".to_string(),
+                        serde_json::Value::Object(step_job_ids.clone()),
+                    );
+                    Some(serde_json::Value::Object(m))
+                }
+                other => other,
+            };
+
             // Stamp the owning task id onto every step so the coordinator can
             // attribute a chain death back to its Task and fail it with a reason.
             let effective_args: Option<serde_json::Value> = match owner_task_id {
@@ -598,6 +620,9 @@ impl QueueService {
                     .map_err(|e| e.to_string())?
             };
 
+            if let Some(sid) = step.id.as_deref().filter(|s| !s.is_empty()) {
+                step_job_ids.insert(sid.to_string(), serde_json::json!(id));
+            }
             prev_id = Some(id.clone());
             ids.push(id);
         }
@@ -1390,6 +1415,7 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
     ///   `{{_prev}}`    — the previous output pasted whole
     /// They never collide: "{{_prev}}" is not a substring of "{{_prev.id}}".
     async fn resolve_step_args(&self, job: &AgentJob) -> Option<Value> {
+        let job = &self.resolve_named_steps(job).await;
         let Some(prev_text) = &job.prev_result else {
             return job.arguments.clone();
         };
@@ -1428,6 +1454,54 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         }
 
         args
+    }
+
+    /// Resolve `{{steps.<id>}}` / `{{steps.<id>.<path>}}` from the jobs named in
+    /// `__step_jobs`. Returns the job with those placeholders filled. A step that
+    /// did not complete resolves to a marker naming its state, never to silence:
+    /// a reader must be able to tell "no news" from "the search failed".
+    async fn resolve_named_steps(&self, job: &AgentJob) -> AgentJob {
+        let Some(map) = job_arg(job, "__step_jobs").and_then(Value::as_object) else {
+            return job.clone();
+        };
+        let mut outputs: HashMap<String, StepOutput> = HashMap::new();
+        for (step_id, job_id) in map {
+            let Some(job_id) = job_id.as_str() else {
+                continue;
+            };
+            let out = match self.neo4j.get_agent_job(job_id).await {
+                Ok(Some(j)) if j.status == AgentJobStatus::Completed => {
+                    // The stored envelope's first text block is all the helpers read.
+                    match j
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.pointer("/content/0/text"))
+                        .and_then(Value::as_str)
+                        .map(|t| ToolCallResult::success_text(t.to_string()))
+                    {
+                        Some(r) => {
+                            let text = extract_result_text(&r);
+                            let raw = structured_prev_to_preserve(&r, &text);
+                            StepOutput::Done { text, raw }
+                        }
+                        None => StepOutput::Missing("completed with no result".into()),
+                    }
+                }
+                Ok(Some(j)) => StepOutput::Missing(format!(
+                    "{}{}",
+                    format!("{:?}", j.status).to_lowercase(),
+                    j.error
+                        .map(|e| format!(": {}", e.chars().take(300).collect::<String>()))
+                        .unwrap_or_default()
+                )),
+                Ok(None) => StepOutput::Missing("job not found".into()),
+                Err(e) => StepOutput::Missing(format!("lookup failed: {e}")),
+            };
+            outputs.insert(step_id.clone(), out);
+        }
+        let mut job = job.clone();
+        job.arguments = job.arguments.map(|a| substitute_step_refs(&a, &outputs));
+        job
     }
 
     async fn on_job_succeeded(self: &Arc<Self>, job: &AgentJob, result: &ToolCallResult) {
@@ -2403,6 +2477,71 @@ fn substitute_prev_paths_in_str(s: &str, root: Option<&serde_json::Value>) -> St
     out
 }
 
+/// A named step's output, as `{{steps.<id>}}` sees it.
+enum StepOutput {
+    /// `text` is what `{{_prev}}` would paste; `raw` the JSON envelope paths
+    /// resolve against (empty when the text already is the whole result).
+    Done { text: String, raw: String },
+    /// The step did not complete; the reason is shown in its place.
+    Missing(String),
+}
+
+/// Replace `{{steps.<id>}}` and `{{steps.<id>.<path>}}` in every string.
+fn substitute_step_refs(val: &Value, outputs: &HashMap<String, StepOutput>) -> Value {
+    match val {
+        Value::String(s) => Value::String(substitute_step_refs_in_str(s, outputs)),
+        Value::Object(obj) => Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), substitute_step_refs(v, outputs)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| substitute_step_refs(v, outputs))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn substitute_step_refs_in_str(s: &str, outputs: &HashMap<String, StepOutput>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("{{steps.") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 8..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let token = after[..end].trim();
+        let (id, path) = match token.split_once('.') {
+            Some((id, path)) => (id, Some(path)),
+            None => (token, None),
+        };
+        let resolved = match (outputs.get(id), path) {
+            (Some(StepOutput::Done { text, .. }), None) => text.clone(),
+            (Some(StepOutput::Done { text, raw }), Some(path)) => {
+                let src = if raw.is_empty() { text } else { raw };
+                serde_json::from_str::<Value>(src)
+                    .ok()
+                    .and_then(|root| lookup_json_path(&root, path).map(render_prev_path_value))
+                    .unwrap_or_default()
+            }
+            (Some(StepOutput::Missing(why)), None) => {
+                format!("[step '{id}' produced no output ({why}); say this section is unavailable]")
+            }
+            // A path into a missing output is absent, like an unresolved `{{_prev.x}}`.
+            (Some(StepOutput::Missing(_)), Some(_)) => String::new(),
+            (None, _) => format!("[step '{id}' is not an earlier step of this chain]"),
+        };
+        out.push_str(&resolved);
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Recursively resolve `{{_prev.<path>}}` / `{{result.<path>}}` against the
 /// previous step's output parsed as JSON.
 ///
@@ -2538,6 +2677,57 @@ mod tests {
         .to_string();
         let result = ToolCallResult::success_text(payload);
         assert_eq!(extract_result_text(&result), "clean prose");
+    }
+
+    #[test]
+    fn step_refs_resolve_whole_output_paths_and_missing_steps() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "news".to_string(),
+            StepOutput::Done {
+                text: "three headlines".into(),
+                raw: json!({"items": [{"title": "A"}], "count": 1}).to_string(),
+            },
+        );
+        outputs.insert(
+            "notes".to_string(),
+            StepOutput::Missing("failed: timeout".into()),
+        );
+        let args = json!({
+            "q": "{{steps.news}} | {{steps.news.count}} | {{steps.news.items.0.title}}",
+            "c": ["{{steps.notes}}", "[{{steps.notes.x}}]", "{{steps.ghost}}", "{{_prev}}"]
+        });
+        let out = substitute_step_refs(&args, &outputs);
+        assert_eq!(out["q"], "three headlines | 1 | A");
+        assert_eq!(
+            out["c"][0],
+            "[step 'notes' produced no output (failed: timeout); say this section is unavailable]"
+        );
+        assert_eq!(out["c"][1], "[]");
+        assert!(
+            out["c"][2]
+                .as_str()
+                .unwrap()
+                .contains("not an earlier step")
+        );
+        assert_eq!(
+            out["c"][3], "{{_prev}}",
+            "other placeholders are left for later passes"
+        );
+    }
+
+    #[test]
+    fn step_ref_text_containing_a_placeholder_is_not_resubstituted() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "a".to_string(),
+            StepOutput::Done {
+                text: "{{steps.a}}".into(),
+                raw: String::new(),
+            },
+        );
+        let out = substitute_step_refs_in_str("x {{steps.a}} y", &outputs);
+        assert_eq!(out, "x {{steps.a}} y");
     }
 
     #[test]
