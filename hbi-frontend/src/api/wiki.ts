@@ -6,6 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiJson, apiSend, query } from "./client";
 import { queryClient } from "./queries";
+import { refreshTypes } from "./types";
 
 export interface WikiItem {
   qid: string;
@@ -91,6 +92,8 @@ async function refresh<T>(p: Promise<T>): Promise<T> {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["wiki"] }),
     queryClient.invalidateQueries({ queryKey: ["entities", "candidates"] }),
+    // A reference decides the entity's kind, and may raise or settle a type question.
+    refreshTypes(),
   ]);
   return r;
 }

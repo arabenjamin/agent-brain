@@ -17,6 +17,7 @@ import { EntityLink, LoadState, Section } from "./parts";
 import RelatedEntities from "./RelatedEntities";
 import EntityRelations from "./EntityRelations";
 import EntityReference from "./EntityReference";
+import EntityType from "./EntityType";
 
 const METHOD_LABEL: Record<string, string> = {
   seed: "curated seed",
@@ -43,7 +44,7 @@ export default function EntityView({ id }: { id: string }) {
     );
   }
   return (
-    <Drawer title={<><span>Entity</span>{d?.entity.entity_type && <Pill tone="orange">{d.entity.entity_type}</Pill>}</>} onClose={closeEntity} wide>
+    <Drawer title={<><span>Entity</span>{d?.entity.entity_type && <Pill tone="orange">{d.entity.entity_type}{d.entity.kind ? ` · ${d.entity.kind}` : ""}</Pill>}</>} onClose={closeEntity} wide>
       {!d ? <LoadState what="entity" id={id} error={q.error} onRetry={() => q.refetch()} /> : <Body d={d} />}
     </Drawer>
   );
@@ -65,6 +66,8 @@ function Body({ d }: { d: EntityDetail }) {
           Search notes for “{d.entity.name}”
         </a>
       </div>
+
+      <EntityType key={`${id}:${d.entity.entity_type}:${d.entity.kind}`} e={d.entity} />
 
       <EntityReference id={id} name={d.entity.name ?? id} />
 

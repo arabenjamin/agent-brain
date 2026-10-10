@@ -285,12 +285,13 @@ impl KnowledgeService {
                 .await?;
         }
 
-        // Type by majority of typed mentions (the first note used to fix it forever).
+        // Type by majority of typed mentions (the first note used to fix it
+        // forever). A curated seed's type and the user's own are final.
         if let Err(e) = neo4j
             .run(
                 neo4rs::query(
                     "MATCH (n:Note {id: $note_id})-[:MENTIONS]->(e:Entity) \
-                     WHERE coalesce(e.type_source, '') <> 'seed' \
+                     WHERE NOT coalesce(e.type_source, '') IN ['seed', 'manual'] \
                      MATCH (:Note)-[m:MENTIONS]->(e) WHERE m.type IS NOT NULL \
                      WITH e, m.type AS t, count(*) AS c ORDER BY c DESC \
                      WITH e, collect(t)[0] AS top \

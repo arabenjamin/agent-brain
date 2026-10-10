@@ -566,6 +566,19 @@ impl HttpTransport {
                 post(crate::clients::wiki::handle_entity_wiki_url),
             )
             .route(
+                "/api/entities/types",
+                get(crate::clients::wiki::handle_entity_types),
+            )
+            .route(
+                "/api/entities/{id}/type",
+                put(crate::clients::wiki::handle_set_entity_type)
+                    .delete(crate::clients::wiki::handle_unlock_entity_type),
+            )
+            .route(
+                "/api/entities/{id}/type/answer",
+                post(crate::clients::wiki::handle_answer_entity_type),
+            )
+            .route(
                 "/api/wiki/describe",
                 post(crate::clients::wiki::handle_wiki_describe),
             )

@@ -374,14 +374,14 @@ pub fn topics_dir() -> PathBuf {
 }
 
 /// FNV-1a: a version hash that is stable across Rust releases (unlike `DefaultHasher`).
-struct Fnv(u64);
+pub(crate) struct Fnv(pub(crate) u64);
 impl Default for Fnv {
     fn default() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
 }
 impl Fnv {
-    fn write(&mut self, bytes: &[u8]) {
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
         for b in bytes {
             self.0 ^= *b as u64;
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);

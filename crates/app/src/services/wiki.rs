@@ -33,6 +33,8 @@ const WIKIDATA_API: &str = "https://www.wikidata.org/w/api.php";
 const SUMMARY_API: &str = "https://en.wikipedia.org/api/rest_v1/page/summary/";
 const SEARCH_LIMIT: &str = "7";
 const MAX_CANDIDATES: usize = 10;
+/// Instance-of classes kept per item for the kind walk.
+const MAX_CLASSES: usize = 6;
 /// Entity types that get no model-suggested second search (see `link_one`).
 const NO_SECOND_SEARCH: &[&str] = &["concept", "event", "programme"];
 const CONTEXT_TEXTS: i64 = 3;
@@ -161,6 +163,9 @@ pub struct Item {
     pub description: String,
     /// Labels of its instance-of (P31) values, at most 3.
     pub kinds: Vec<String>,
+    /// The instance-of (P31) ids themselves, which `entity_kinds` walks up to
+    /// a kind (HBI plan Phase 19).
+    pub class_qids: Vec<String>,
     pub aliases: Vec<String>,
     /// English Wikipedia title, when it has an article.
     pub wiki_title: Option<String>,
@@ -190,16 +195,7 @@ async fn details(ids: &[String]) -> Result<Vec<Item>> {
     ])
     .await?;
     let ents = &v["entities"];
-    let p31 = |e: &Value| -> Vec<String> {
-        e["claims"]["P31"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|c| c["mainsnak"]["datavalue"]["value"]["id"].as_str())
-            .take(3)
-            .map(String::from)
-            .collect()
-    };
+    let p31 = |e: &Value| -> Vec<String> { claim_ids(e, "P31").into_iter().take(3).collect() };
     let kind_ids: Vec<String> = ids
         .iter()
         .flat_map(|i| p31(&ents[i]))
@@ -238,6 +234,7 @@ async fn details(ids: &[String]) -> Result<Vec<Item>> {
                     .iter()
                     .filter_map(|k| kind_labels.get(k).cloned())
                     .collect(),
+                class_qids: claim_ids(e, "P31").into_iter().take(MAX_CLASSES).collect(),
                 aliases: e["aliases"]["en"]
                     .as_array()
                     .into_iter()
@@ -251,6 +248,80 @@ async fn details(ids: &[String]) -> Result<Vec<Item>> {
             }
         })
         .collect())
+}
+
+/// The item ids a claim (`P31` instance of, `P279` subclass of) points at.
+fn claim_ids(e: &Value, prop: &str) -> Vec<String> {
+    e["claims"][prop]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["mainsnak"]["datavalue"]["value"]["id"].as_str())
+        .map(String::from)
+        .collect()
+}
+
+/// The instance-of (P31) ids of items stored before Phase 19 kept them.
+pub(crate) async fn class_qids_of(ids: &[String]) -> Result<HashMap<String, Vec<String>>> {
+    let mut out = HashMap::new();
+    for chunk in ids.chunks(50) {
+        let joined = chunk.join("|");
+        let v = wikidata(&[
+            ("action", "wbgetentities"),
+            ("ids", &joined),
+            ("props", "claims"),
+        ])
+        .await?;
+        for (id, e) in v["entities"].as_object().into_iter().flatten() {
+            if e.get("missing").is_none() {
+                let c: Vec<String> = claim_ids(e, "P31").into_iter().take(MAX_CLASSES).collect();
+                out.insert(id.clone(), c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A Wikidata class: its label and its subclass-of (P279) parents.
+#[derive(Debug, Clone)]
+pub(crate) struct ClassInfo {
+    pub qid: String,
+    pub label: String,
+    pub parents: Vec<String>,
+}
+
+/// Labels and parents of up to 50 classes: one request.
+pub(crate) async fn class_info(ids: &[String]) -> Result<Vec<ClassInfo>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let joined = ids.join("|");
+    let v = wikidata(&[
+        ("action", "wbgetentities"),
+        ("ids", &joined),
+        ("props", "labels|claims"),
+        ("languages", "en|mul"),
+    ])
+    .await?;
+    Ok(ids
+        .iter()
+        .map(|i| {
+            let e = &v["entities"][i.as_str()];
+            ClassInfo {
+                qid: i.clone(),
+                label: label(e).unwrap_or(i).to_string(),
+                // A missing or deleted class has no parents: the walk stops there.
+                parents: claim_ids(e, "P279"),
+            }
+        })
+        .collect())
+}
+
+/// Wikimedia's own pages (a disambiguation page, a set index, a list) are a
+/// list of things, never one. Caught here by their class label so a lookup
+/// costs no extra walk; `entity_kinds` also refuses them by class.
+pub fn is_wikimedia_page(item: &Item) -> bool {
+    item.kinds.iter().any(|k| k.starts_with("Wikimedia "))
 }
 
 /// Item ids Wikidata's search finds for `term`.
@@ -303,7 +374,11 @@ async fn candidates_for(terms: &[String], skip: &HashSet<String>) -> Result<Vec<
         }
     }
     ids.truncate(MAX_CANDIDATES);
-    details(&ids).await
+    Ok(details(&ids)
+        .await?
+        .into_iter()
+        .filter(|i| !is_wikimedia_page(i))
+        .collect())
 }
 
 /// `base` (ending in `/`) plus the title as one encoded path segment.
@@ -453,6 +528,7 @@ async fn store_items(neo4j: &Neo4jClient, items: &[Item]) -> Result<()> {
             m.insert("label".into(), i.label.clone().into());
             m.insert("description".into(), i.description.clone().into());
             m.insert("kinds".into(), i.kinds.clone().into());
+            m.insert("class_qids".into(), i.class_qids.clone().into());
             m.insert("aliases".into(), i.aliases.clone().into());
             m.insert(
                 "wiki_title".into(),
@@ -469,7 +545,8 @@ async fn store_items(neo4j: &Neo4jClient, items: &[Item]) -> Result<()> {
             neo4rs::query(
                 "UNWIND $rows AS r MERGE (w:WikiItem {qid: r.qid}) \
                  SET w.label = r.label, w.description = r.description, w.kinds = r.kinds, \
-                     w.aliases = r.aliases, w.wiki_title = r.wiki_title, w.fetched_at = datetime()",
+                     w.class_qids = r.class_qids, w.aliases = r.aliases, w.wiki_title = r.wiki_title, \
+                     w.fetched_at = datetime()",
             )
             .param("rows", rows),
         )
@@ -725,6 +802,21 @@ pub async fn link_entities(
             }
         }
     }
+    // Kinds for what is linked now (Phase 19), unless Wikimedia is throttling us.
+    let kinds = if throttled.is_none() {
+        match crate::services::entity_kinds::refresh(
+            neo4j,
+            None,
+            crate::services::entity_kinds::BACKGROUND_BUDGET,
+        )
+        .await
+        {
+            Ok(k) => json!(k),
+            Err(e) => json!({ "error": e.to_string() }),
+        }
+    } else {
+        json!({ "skipped": "throttled" })
+    };
     let waiting = waiting_count(neo4j).await.unwrap_or(-1);
     info!(
         read = results.len(),
@@ -742,6 +834,7 @@ pub async fn link_entities(
         "throttled_retry_after": throttled,
         "waiting": waiting,
         "model": model,
+        "kinds": kinds,
         "results": results,
     }))
 }
@@ -843,6 +936,7 @@ pub async fn decide(neo4j: &Neo4jClient, entity: &str, qid: &str, decision: &str
             )));
         }
     }
+    crate::services::entity_kinds::refresh_entity(neo4j, entity).await;
     Ok(Ok(()))
 }
 
@@ -881,6 +975,13 @@ pub async fn set_url(neo4j: &Neo4jClient, entity: &str, url: &str) -> Outcome<It
     else {
         return Ok(Err(format!("Wikidata has no item {qid}")));
     };
+    if is_wikimedia_page(&item) {
+        return Ok(Err(format!(
+            "{} is a Wikimedia page ({}), a list of things rather than one; link the article for the thing itself",
+            item.label,
+            item.kinds.join(", ")
+        )));
+    }
     let exists = neo4j
         .execute(neo4rs::query("MATCH (e:Entity {id: $e}) RETURN e.id AS id").param("e", entity))
         .await?;
@@ -889,6 +990,7 @@ pub async fn set_url(neo4j: &Neo4jClient, entity: &str, url: &str) -> Outcome<It
     }
     store_items(neo4j, std::slice::from_ref(&item)).await?;
     confirm(neo4j, entity, &qid, "manual").await?;
+    crate::services::entity_kinds::refresh_entity(neo4j, entity).await;
     Ok(Ok(item))
 }
 
@@ -1157,6 +1259,7 @@ mod tests {
             label: label.into(),
             description: desc.into(),
             kinds: vec!["human".into()],
+            class_qids: vec!["Q5".into()],
             aliases: vec![],
             wiki_title: None,
         }

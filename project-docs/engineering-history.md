@@ -900,6 +900,16 @@ Two surprises from Wikimedia:
 
 The done-condition's merge pair didn't appear for an honest reason. MSS and Ministry of State Security linked to the same item, but the user had already answered that pair "related", and an answered pair is never proposed again.
 
+### Kinds: Wikidata knew China was a country all along (HBI Phase 19, 2026-10-10)
+
+The user noticed "waterford" filed as an organisation (it is the Michigan township they worked in, named only in the résumé) and "china" as a location rather than a country.
+- **China was our doing.** `entities/aliases.yaml` folds `country: location`. Phase 18 had already linked it to "country in East Asia"; nothing read that back.
+- **Waterford had no vote to fix it.** Its two résumé mentions predate `MENTIONS.type`, so the first extraction (a place read inside a company's address) stood forever, and there was no way to set a type by hand.
+- **Labels can't be mapped:** 214 distinct instance-of labels for 228 linked items. Walking subclass-of to a short root table works, but only nearest-root: in file order YouTube, TikTok and GPS were events (a broad "occurrence" root) and all 9 U.S. states were countries (U.S. state sits under "state"). Nearest-root fixed those and broke the WSJ and NYT into "website" (both list it directly), so generic kinds became `fallback`.
+- **Wrong links make wrong kinds.** A quarter of the disagreements came from bad links ("united kingdom" → the UK government, "chinese" → the PLA, "trump administration" → a set index article). So a disagreement is a question, and Wikimedia pages are refused as links.
+- **Live result:** 1,544 classes cached; 177 entities got a kind, 23 questions opened, 1 set-index link withdrawn. Two questions come from odd Wikidata data that no root table fixes: the "government of the PRC" item is itself filed as a socialist state, and the SX1262's item walks to "geographical feature" via transceiver. They are questions, which is the point.
+- **A Cypher gotcha on the way:** a pattern comprehension can't start from a bare node (`[(w:WikiItem {qid: e.x}) | …]` is a syntax error), and the entity drawer's GET broke on deploy until it became an `OPTIONAL MATCH`.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

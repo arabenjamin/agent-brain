@@ -105,10 +105,15 @@ export interface EntityAlias {
 export interface EntityDetail {
   entity: {
     id: string; name: string | null; entity_type: string | null; created_at: string | null; mentions: number;
-    /** `seed` when the curated seed fixed the name and type. */
+    /** `seed` when the curated seed fixed the name and type; `manual` when the user set the type. */
     type_source?: string | null;
     /** Split back out by an undo: never folded again automatically. */
     distinct?: boolean;
+    /** The fine kind (country, municipality…), from its reference or set by the user. */
+    kind?: string | null;
+    kind_source?: "reference" | "manual" | null;
+    /** Open when the reference's type disagrees with the filed one. */
+    type_question?: { qid: string; label: string | null; description: string | null; kind: string | null; kind_type: string | null } | null;
   };
   aliases?: EntityAlias[];
   notes: Omit<SearchNote, "match">[];

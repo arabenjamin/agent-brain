@@ -206,8 +206,13 @@ Named entities extracted from note content (8 types: `person`, `organisation`, `
 | `id` | String | UUID |
 | `name` | String | Lowercased, unique |
 | `key` | String | Normalised comparison key: lowercase, letters/digits only, a leading article dropped, a leading title dropped before a full name (`u.s. senate` → `ussenate`). Two entities with one key are one thing. `~<name>` on a `distinct` entity |
-| `entity_type` | String | The most common type across its mentions (`MENTIONS.type`), or the seed's type when `type_source: 'seed'` |
-| `type_source` | String? | `seed` for a curated canonical from `entities/*.yaml` (name and type fixed; never pruned) |
+| `entity_type` | String | The most common type across its mentions (`MENTIONS.type`), or the seed's type when `type_source: 'seed'`, or the user's when `type_source: 'manual'` |
+| `type_source` | String? | `seed` for a curated canonical from `entities/*.yaml` (name and type fixed; never pruned) · `manual` when the user set the type or answered a type question (the vote never changes it; "let the brain decide" removes it) |
+| `kind` | String? | The fine kind (`country`, `municipality`, `news outlet`, … from `entities/kinds.yaml`), HBI plan Phase 19, `services/entity_kinds.rs` |
+| `kind_source` | String? | `reference` (from the linked WikiItem's `kind`, only when its `kind_type` agrees with `entity_type`) · `manual` (set by the user; kept in snapshots) |
+| `kind_qid` | String? | The WikiItem a `reference` kind came from |
+| `type_question_qid` | String? | Set while the linked WikiItem's `kind_type` disagrees with `entity_type` and the user hasn't answered: the Feed's "entity types to check" |
+| `type_kept_qids` | String[]? | Items the user answered "keep" against: they never ask again |
 | `distinct` | Boolean? | `true` once a person split it back out (unmerge): never folded automatically again |
 | `wiki_checked_at` | DateTime? | Last reference lookup (`services/wiki.rs`). A `none` is due again after 90 days |
 | `wiki_result` | String? | `proposed` (a link was suggested or set) · `none` (nothing fit) |
@@ -225,10 +230,25 @@ A Wikidata item, shared by every entity linked to it (HBI plan Phase 18, `servic
 | `qid` | String | Wikidata id (`Q1068951`), unique by MERGE |
 | `label` / `description` | String | English, else Wikidata's language-neutral `mul` label (Q937, Albert Einstein, has no `en` label) |
 | `kinds` | String[] | Labels of its instance-of (P31) values, at most 3 |
+| `class_qids` | String[]? | Its instance-of (P31) ids, at most 6 (Phase 19; backfilled for older items when linked) |
+| `kind` / `kind_type` | String? | The kind its classes walk up to, and the coarse type that kind implies (`services/entity_kinds.rs`); null when no root is reached |
+| `wikimedia_page` | Boolean? | A disambiguation page, list or set index: a proposed link to it is withdrawn |
+| `kind_version` | String? | Hash of the `kinds.yaml` the kind was derived with; a different hash re-derives it |
 | `aliases` | String[] | English and `mul` aliases, at most 8 |
 | `wiki_title` | String? | English Wikipedia article title; absent when it has none |
 | `summary` / `summary_at` | String? / DateTime? | The article's first paragraph (REST `page/summary`), fetched when a drawer shows it, cached 30 days |
 | `fetched_at` | DateTime | Last refreshed from Wikidata |
+
+#### `WikiClass`
+
+A Wikidata class on the way from an item's instance-of to a kind (HBI plan Phase 19, `services/entity_kinds.rs`), cached so later walks cost no requests. 1,544 were fetched for the first 226 linked items.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `qid` | String | Wikidata id, unique by MERGE |
+| `label` | String | English or `mul` label |
+| `parents` | String[] | Its subclass-of (P279) ids; empty for a root or a missing class |
+| `fetched_at` | DateTime | When it was fetched |
 
 #### `EntityAlias`
 
@@ -407,7 +427,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `IN_TOPIC` | `(Note)→(Topic)` | `rank: int` (1 = main topic, 2 = as central), `method: 'llm' \| 'rule' \| 'manual'`, `assigned_at: datetime` | Written by the topic assigner (`llm`, or `rule` for an `assign: rules` topic's member rule), or by the user (`manual`, with the note `topics_locked`); an unlocked note's edges are replaced whenever it is classified again |
 | `NOT_IN_TOPIC` | `(Entity)→(Topic)` | `at: datetime` | The user keeps the entity off that topic's map and lists; carried to the survivor by an entity merge |
 | `RELATES` | `(Entity)→(Entity)` | `type` (from `relations/*.yaml`), `method: 'manual' \| 'llm'`, `status: 'active' \| 'proposed' \| 'rejected'`, `evidence: [note id]`, `model` (llm), `created_at`, `decided_at`, `seen_again` (a rejected one proposed again), `from_merge_review` (folded from `RELATED_ENTITY`) | A typed relationship (HBI plan Phase 17, `services/relations.rs`). The user's are active; extracted ones are proposals until accepted or rejected; a rejected one is kept so it is never proposed again. A symmetric type is stored once, from the lower id |
-| `REFERS_TO` | `(Entity)→(WikiItem)` | `status: 'proposed' \| 'confirmed' \| 'rejected'`, `method: 'llm' \| 'manual'`, `why`, `query` (the model-suggested search term, when used), `model`, `at`, `decided_at` | The entity's reference link (HBI plan Phase 18). The model's pick is proposed; the user confirms, rejects, chooses another or pastes a URL. Confirming one rejects any other, so an entity has one reference. A rejected item is never offered to the model for that entity again. Two entities linked (proposed or confirmed) to one item are a `wikidata` merge candidate |
+| `REFERS_TO` | `(Entity)→(WikiItem)` | `status: 'proposed' \| 'confirmed' \| 'rejected'`, `method: 'llm' \| 'manual'`, `why`, `query` (the model-suggested search term, when used), `model`, `at`, `decided_at` | The entity's reference link (HBI plan Phase 18). The model's pick is proposed; the user confirms, rejects, chooses another or pastes a URL. Confirming one rejects any other, so an entity has one reference. A rejected item is never offered to the model for that entity again. A proposed link to a `wikimedia_page` item is set `rejected` by `entity_kinds` with `why` saying so (Phase 19). Two entities linked (proposed or confirmed) to one item are a `wikidata` merge candidate |
 | `ALIAS_VERDICT` | `(Entity)→(Entity)` (candidate `from` → `into`) | `verdict: 'same' \| 'related' \| 'different'`, `p_same`, `p_related`, `p_different` (floats), `model`, `version` (prompt version), `at: datetime` | The alias judge's opinion on a merge candidate (`services/alias_judge.rs`). It only orders the candidate list. A verdict from another model or prompt version is judged again, and a merge deletes it with the node |
 | `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
 | `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |

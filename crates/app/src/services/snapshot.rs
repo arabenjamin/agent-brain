@@ -58,6 +58,10 @@ pub struct EntityRecord {
     pub type_source: Option<String>,
     #[serde(default)]
     pub distinct: bool,
+    /// A kind the user set (HBI plan Phase 19). Kinds from reference links
+    /// are derived again, so only the user's are kept.
+    #[serde(default)]
+    pub manual_kind: Option<String>,
 }
 
 /// An `(:EntityAlias)-[:ALIAS_OF]->(:Entity)`: a name merged into, or curated
@@ -472,7 +476,8 @@ impl SnapshotService {
             "MATCH (e:Entity) RETURN \
              e.id AS id, e.name AS name, e.entity_type AS entity_type, \
              toString(e.created_at) AS created_at, e.key AS key, \
-             e.type_source AS type_source, coalesce(e.distinct, false) AS distinct",
+             e.type_source AS type_source, coalesce(e.distinct, false) AS distinct, \
+             CASE WHEN e.kind_source = 'manual' THEN e.kind END AS manual_kind",
         );
         let rows = self.neo4j.execute(q).await?;
         let mut entities = Vec::new();
@@ -491,6 +496,7 @@ impl SnapshotService {
                 key: row.get("key").ok(),
                 type_source: row.get("type_source").ok(),
                 distinct: row.get("distinct").unwrap_or(false),
+                manual_kind: row.get("manual_kind").ok(),
             });
         }
         Ok(entities)
@@ -626,7 +632,9 @@ impl SnapshotService {
                  ON CREATE SET e.id = $id, e.entity_type = $entity_type, \
                    e.key = CASE WHEN $key = '' THEN null ELSE $key END, \
                    e.type_source = CASE WHEN $type_source = '' THEN null ELSE $type_source END, \
-                   e.distinct = CASE WHEN $distinct THEN true ELSE null END",
+                   e.distinct = CASE WHEN $distinct THEN true ELSE null END, \
+                   e.kind = CASE WHEN $mk = '' THEN null ELSE $mk END, \
+                   e.kind_source = CASE WHEN $mk = '' THEN null ELSE 'manual' END",
             )
             .param("name", entity.name.clone())
             .param("id", entity.id.clone())
@@ -636,7 +644,8 @@ impl SnapshotService {
                 "type_source",
                 entity.type_source.clone().unwrap_or_default(),
             )
-            .param("distinct", entity.distinct);
+            .param("distinct", entity.distinct)
+            .param("mk", entity.manual_kind.clone().unwrap_or_default());
 
             if self.neo4j.run(q).await.is_ok() {
                 count += 1;

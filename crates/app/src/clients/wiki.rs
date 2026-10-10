@@ -10,6 +10,9 @@
 //! - `POST /api/entities/{id}/wiki/url` `{url}` — a Wikipedia or Wikidata URL.
 //! - `POST /api/wiki/describe` `{ids}` — one-line descriptions for review lists.
 //! - `GET  /api/wiki/coverage?bucket=&limit=` — linked / none / waiting, drillable.
+//! - `GET  /api/entities/types` — open type questions and the vocabulary (Phase 19).
+//! - `PUT  /api/entities/{id}/type` `{entity_type, kind?}` / `DELETE` — set by hand / unlock.
+//! - `POST /api/entities/{id}/type/answer` `{answer: keep|reference}`.
 
 use std::sync::Arc;
 
@@ -22,7 +25,7 @@ use serde_json::{Value, json};
 
 use super::rest::{RestState, bad_request, internal, not_found, unavailable};
 use crate::services::queue::ChainStep;
-use crate::services::wiki;
+use crate::services::{entity_kinds, wiki};
 
 const LINK_TOOL: &str = "link_entities";
 
@@ -178,4 +181,73 @@ pub async fn handle_wiki_coverage(
         Ok(Err(e)) => bad_request(e),
         Err(e) => internal(e),
     }
+}
+
+// ─── Entity types and kinds (HBI plan Phase 19, `services/entity_kinds.rs`) ──
+
+#[derive(serde::Deserialize)]
+pub struct TypesQuery {
+    limit: Option<i64>,
+}
+
+/// `GET /api/entities/types` — open type questions, and the types and kinds
+/// the HBI offers.
+pub async fn handle_entity_types(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(q): Query<TypesQuery>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    match entity_kinds::questions(neo4j, q.limit.unwrap_or(100).clamp(1, 500)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// `PUT /api/entities/{id}/type` `{entity_type, kind?}` — set by hand (final).
+/// `DELETE` — let the brain decide again.
+pub async fn handle_set_entity_type(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let Some(t) = body["entity_type"].as_str() else {
+        return bad_request("`entity_type` is required");
+    };
+    outcome(
+        entity_kinds::set_type(neo4j, &id, t, body["kind"].as_str()).await,
+        "Type not set",
+    )
+}
+
+pub async fn handle_unlock_entity_type(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    outcome(entity_kinds::unlock(neo4j, &id).await, "Type not unlocked")
+}
+
+/// `POST /api/entities/{id}/type/answer` `{answer: keep|reference}`.
+pub async fn handle_answer_entity_type(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(neo4j) = state.neo4j.as_ref() else {
+        return unavailable("Neo4j not available");
+    };
+    let Some(a) = body["answer"].as_str() else {
+        return bad_request("`answer` (keep or reference) is required");
+    };
+    outcome(
+        entity_kinds::answer(neo4j, &id, a).await,
+        "Type question not answered",
+    )
 }

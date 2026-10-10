@@ -1338,3 +1338,142 @@ Built and deployed:
 **Left as it is:**
 - **The backlog:** about 3,000 claim-named entities are waiting, about a week at 20 an hour.
 - **Wikidata statements** (employer, member of, located in) as checks on relationship proposals, and a "Research this" button (§11.7).
+
+## 12. Fifth round: Phases 19–21, what an entity is (planned 2026-10-10)
+
+Source: the user, after merging aliases. "Waterford" is filed as an organisation; it is a municipality in Michigan, a township the user worked in, named in the résumé. "China" is filed as a location; a country is more accurate. And when researching a knowledge gap, should the brain start with Wikipedia, "the first step that leads you to the next logical step"? Should it have a dictionary?
+
+### 12.1 What the graph shows (measured 2026-10-10, nothing written)
+
+**Why the two examples are wrong:**
+- **China is a location because we said so.** `entities/aliases.yaml` folds `country: location`. Phase 18 already linked it (proposed) to Q148, "country in East Asia", kinds `sovereign state`. The right answer is in the graph; nothing reads it back into the type. Votes: location 59, organisation 8.
+- **Waterford** is mentioned by two résumé notes ("RCS Technology of Michigan LLC (Waterford, …"). Both mentions predate `MENTIONS.type`, so there is no vote to outvote the first extraction, which read a place inside a company's address as an organisation. It is private, so the background lookup skips it, correctly. An on-demand "Look up" already gives the picker the note text (`services/wiki.rs`, "on demand, whatever mentions it").
+- **There is no way to set a type by hand.** The drawer can merge, hide, relate and link an entity, not retype it.
+
+**The vocabulary is flat and its two largest buckets are not things:**
+
+| Type | Entities | Note |
+|---|---|---|
+| concept | 3,333 | 2,138 have one mention. A sample of 50 is mostly phrases ("missed opportunity in policy messaging", "national security implications", "signs of affection in cats"), with demonyms ("ukrainian", 28 mentions) and some real things (GDPR, right to repair, KV cache) |
+| url | 2,248 | 1,351 have one mention |
+| organisation | 1,218 | |
+| person | 994 | |
+| technology | 732 | |
+| date | 576 | "july 29, 2026", "news-2026-09-11", a timestamp |
+| location | 427 | |
+| others | ~460 | including 22 `Concept` and 9 `API` from before types were lowercased |
+
+**Kinds from Wikidata (the 228 linked entities, proposed or confirmed).** Each WikiItem's instance-of (P31) classes were walked up subclass-of (P279) to a 25-kind root table (`scratchpad/kinds_dryrun2.py`, `nearest.py`).
+- **Labels can't be mapped one by one:** 214 distinct P31 labels for 228 entities.
+- **List-order matching over P279\* is wrong in systematic ways.** With a broad `occurrence` root, YouTube, TikTok, GPS, Meshtastic and Reticulum came out as **events**; with "state" under country, all 9 U.S. states came out as **countries**. Wikidata's upper ontology is tangled.
+- **Nearest root wins** (fewest P279 hops; ties by table order) fixed the 9 states, Moscow, New Orleans, NATO, the Air Force, GRU, the GOP convention (→ event) and flydubai (→ organisation), and made 2 worse (WSJ and NYT → website, a same-hop tie). It needs ~1,550 class fetches for these 228 items (7 hops), about 35 serialised requests; cached, later items cost little.
+- **Result (nearest root):** the derived coarse type agrees with the filed one for **174**, disagrees for **26**, and gives nothing for **28**.
+
+**The disagreements, graded by hand** (the 23 of the list-order run; the nearest-root run's 26 are the same causes plus the walk's own moves):
+
+| Cause | Examples | Count |
+|---|---|---|
+| The reference is right, the filed type wrong | palestinian state → country; cold war → event; obama/biden administration → government; USS Abraham Lincoln, Mayflower → vessel; Eyes Wide Shut → film | ~7 |
+| Arguable either way | TikTok, YouTube (organisation vs website); Denuvo, GPS, GLP-1, Nasdaq Composite | ~6 |
+| **The link is wrong**, so the kind is | "united kingdom" → the UK government; "chinese" → the PLA; "trump administration" → a *set index article*; "cuomo full show"; "lg tvs" → LG Electronics; sx1262 → an unlabelled item | 6 |
+| Demonym linked to its country | british → UK, italian → Italy | 2 |
+| Ontology noise | "chinese government" → country | 1–2 |
+
+So a disagreement is a **question**, never an automatic retype: a quarter of them come from wrong links.
+
+**The 28 with no kind** are mostly *classes*, not named things: voting machine, mRNA, UFOs, agentic AI, ransomware, large language model, reinforcement learning, logic. Eight have no P31 at all (the item *is* a kind of thing). That answers half the dictionary question: Wikidata already says whether a name is a common noun.
+
+**Demonyms.** Wikidata's English demonyms (P1549) of countries and U.S. states: 369. Matched against entity names, **~48 entities are demonyms** (51 matches minus 3 where the demonym is the country's own name: Taiwan, New Zealand, Philippines), 228 mentions. The same word gets every type: chinese (27, location), american (20, concept), iranian (18, location), british (7, organisation), syrians (5, person). "ukrainian" (28) wasn't matched, so Wikidata's list is incomplete and needs a curated file. Phase 18's known bad picks are demonyms ("Chinese" → PLA, "Italian" → Italy).
+
+**Wikipedia for knowledge gaps.** 942 gap tasks so far, ~20 a day. The question text as a Wikipedia search query fails: of 20 recent gaps, **7 returned nothing** and roughly **5 had a relevant top hit** (Synthetic biology; Regulation of AI / China–US relations; Terminal ballistics; 2020s energy crisis). The rest hit noise ("Hormuz … hunger" → Election denial movement; "Edmond de Rothschild and the DOJ" → Balfour Declaration). Graded loosely, about 12 of the 20 have a background article that would help (Strait of Hormuz, Edmond de Rothschild, John Curtis, Supreme Court independence, Hawaii's military role…); about 2 have the specific answer. So Wikipedia is the background step, the search terms must be the question's *subjects*, not the question, and the web search stays.
+
+### 12.2 Phase 19: types you can trust
+
+- **Two levels.** `entity_type` stays the coarse class the extractor gives (person, organisation, location, …), which the local model does reliably. A new `kind` holds the fine one: country, state or province, county, municipality, region, government agency, military, company, news outlet, political party, vessel, film or book, war or battle, … The `country: location` fold stays (it keeps the coarse vocabulary closed); `kind` carries "country".
+- **`entities/kinds.yaml`:** each kind, its coarse type and its Wikidata root classes. A new kind is a YAML edit, not code.
+- **Where the kind comes from**, in this order, the first that answers wins:
+  1. **set by the user** (`type_source: manual`), final, like topic locks;
+  2. a **confirmed** reference link;
+  3. a **proposed** reference link, but only when its coarse type agrees with the filed one, so it refines and never changes the type;
+  4. otherwise no kind; the type is the extraction vote.
+- **Disagreement is a question in the Feed** ("Filed as organisation; its reference says municipality"), answered by Keep / Use the reference / Choose. The answer is stored as `type_source: manual`, and a "keep" is never asked again for that link.
+- **The walk** (`services/wiki.rs`): WikiItem gains `class_qids` (the P31 ids, fetched already and thrown away today). `(:WikiClass {qid, label, parents, fetched_at})` caches each class's P279 parents, up to 7 hops, through the same Wikimedia gate; nearest root wins.
+- **Items that are not things are refused as links:** a Wikimedia disambiguation page, set index or list article never becomes a proposal ("trump administration" → a set index article). An item with no P31 shows "a kind of thing" in the Reference block.
+- **Manual edit in the drawer:** type and kind, with "let the brain decide" to unlock. `PUT /api/entities/{id}/type`.
+- **Backfill:** the 228 linked entities at once, then each new link as `link_entities` writes it.
+
+### 12.3 Phase 20: demonyms
+
+- **`entities/demonyms.yaml`:** demonym → canonical place (`chinese: china`, `americans: united states`), generated once from Wikidata P1549, minus the entries equal to the place's name, then reviewed by hand and completed (ukrainian). Curated data in YAML, per the no-hardcoded-data rule.
+- **Extraction resolves a demonym to its place,** keeping the surface form on `MENTIONS.surface` ("Chinese hackers" mentions China). This is resolution, so it goes through `entity_resolution.rs` like an alias.
+- **The ~48 existing demonym entities become merge candidates** with reason `demonym` through the existing reversible merge (proposals; the user decides), and `link_entities` never looks up a demonym.
+- **Not every use is a nationality:** "Chinese" is also a language and "American" an airline in some notes. The candidates list shows the notes, and a "different" answer is remembered (`NOT_SAME`), as for any pair.
+
+### 12.4 Phase 21: Wikipedia first for knowledge gaps
+
+- **A new first web step in `chains/fill-knowledge-gap.yaml`:** `wiki_background {question}`.
+  1. The model names 1–3 **subjects** of the question (Strait of Hormuz, not the question).
+  2. Each is searched on Wikipedia and the article picked from the candidates, the Phase 18 way (picked, never the top result; 0 allowed).
+  3. The tool returns each article's lead, the section that best matches the question, and the domains of its cited sources.
+  4. It banks as `## BACKGROUND (Wikipedia)` in `gap-{{task_id}}`.
+- **The next step follows from it:** the web search's query adds the article's terms, and the article's cited domains are offered as preferred sources (`include_domains` on engines that read it). That is the "first step that leads to the next".
+- **Nothing found is fine:** the step reports "no article for X" and the chain goes on to the web, as now.
+- **Privacy:** gap tasks come from videos and news. The tool refuses a task whose `data_class` is private.
+- **Etiquette:** the Phase 18 gate. ~20 gaps a day × ~4 calls is nothing.
+- **Measured before it is switched on:** replay 15 past gap tasks with and without the step (the same model), and grade the `## ANSWER`s by hand on correctness, citations and specificity. Ship only if it is not worse anywhere and better somewhere; record the numbers here.
+
+### 12.5 Not in this round
+
+- **The concept and url/date piles.** 2,138 one-mention concepts are mostly phrases, and urls and dates as entities are a decision of their own (they are in the extraction vocabulary on purpose). A later phase: measure what retrieval loses if they go, with `eval-retrieval`, before touching them.
+- **A general dictionary** (WordNet, Wiktionary). Wikidata already separates named things from kinds of things (12.1), and demonyms are the measured gap. Revisit if the concept clean-up needs it.
+- **Gemma or nimble as typers.** The kind is derived, not judged, and the link itself is already picked by the cloud model (18 of 20 right). Neither local model was measured as a typer, and Phase 17 showed E4B can't make this kind of choice.
+
+### 12.6 Phases
+
+| Phase | Scope | Done when |
+|---|---|---|
+| **19. Types you can trust** | §12.2: `kind`, `entities/kinds.yaml`, `class_qids` + `WikiClass`, nearest-root walk, precedence, Feed type questions, manual edit, refuse disambiguation/set-index items, backfill. | Waterford can be set to location / municipality by hand and stays; China shows kind country; the 9 U.S. states show state or province; "trump administration"'s set-index link is refused on re-lookup; the 26 disagreements appear as questions and no type changes without an answer; measured kinds on a fresh held-out set of linked entities are recorded here. |
+| **20. Demonyms** | §12.3: `entities/demonyms.yaml`, resolution at extraction, `demonym` merge candidates, no lookups for demonyms. | A new note saying "Chinese hackers" mentions China with surface "chinese"; the existing demonym entities are candidates, merges reversible; `eval-retrieval` before and after recorded here. |
+| **21. Wikipedia first** | §12.4: `wiki_background`, the gap chain's new step, cited domains as preferred sources. | The 15-gap replay is graded and recorded here, and the step is on only if it passed. |
+
+### 12.7 Decisions (taken 2026-10-10: every recommendation accepted)
+
+1. **Kind from a proposed link that agrees:** apply it (recommended; 174 of 228 agree, and it never changes the coarse type), or wait for confirmation (5 of 228 are confirmed today)?
+2. **Demonyms:** resolve to the place (recommended), or keep them as their own entities with kind `nationality`?
+3. **Type questions in the Feed:** all of them (recommended; ~26 now, then a few a week), or only for entities above some mention count?
+4. **Gap replay grading:** by the user, or by me with the user spot-checking 5 (recommended)?
+
+### Phase 19 outcome (2026-10-10)
+
+Built and deployed:
+- **`entities/kinds.yaml`:** 25 kinds, each with its coarse type and Wikidata root classes, three marked `fallback` (organisation, website, product); a `refuse` list of Wikimedia page classes; the coarse types the HBI offers. Its hash is the kind version.
+- **`services/entity_kinds.rs`:** the nearest-root walk (pure, tested), `(:WikiClass)` caching through the Wikimedia gate, `WikiItem.kind` / `kind_type` / `wikimedia_page`, and the precedence: the user's kind, else the link's kind when its coarse type agrees, else a type question.
+- **`wiki.rs`:** items keep their instance-of ids (`class_qids`); Wikimedia pages are dropped from candidates and refused as pasted URLs; `link_entities` refreshes kinds after its lookups (`limit: 0` refreshes only), and a link decision refreshes that entity.
+- **The vote** (`entities.rs`) skips `type_source: manual` as well as `seed`.
+- **REST:** `GET /api/entities/types`, `PUT` / `DELETE /api/entities/{id}/type`, `POST /api/entities/{id}/type/answer`; `GET /api/entities/{id}` carries `kind`, `kind_source` and the open `type_question`; the Feed gets an "entity types to check" card. Snapshots keep a kind the user set.
+- **HBI:** a Type section in the entity drawer (type · kind and where each came from, the question with "Use …" / "Keep …", Change type… with a kind list, Let the brain decide), the kind in the drawer's header pill, and the Feed's types review list.
+
+**The backfill** (`link_entities {limit: 0}`, live): 1,544 classes fetched, 226 items derived, nothing left waiting. 177 entities got a kind, 23 questions opened, and the "trump administration" set-index link was withdrawn. One root was too broad ("geographic location" took the PRC government) and was removed; the re-derive cost no requests.
+
+**The 23 questions, graded by hand:**
+
+| Cause | Examples | Count |
+|---|---|---|
+| The reference is right | White House → government agency, Cold War → war, USS Abraham Lincoln and Mayflower → vessel, Eyes Wide Shut and 60 Minutes → show, Palestinian state → country, the Obama and Biden administrations | 9 |
+| Arguable | YouTube and TikTok (software vs organisation), GPS, GLP-1, Nasdaq Composite, Denuvo, Epstein files | 7 |
+| The link is wrong | chinese → PLA, LG TVs → LG Electronics, Cuomo Full Show → Cuomo Prime Time, sx1262 → an unlabelled item | 4 |
+| Demonym (Phase 20) | british, italian | 2 |
+| Wikidata's own data | "government of the PRC" is filed as a socialist state | 1 |
+
+**Verified live (the done-condition):**
+- **Waterford** set to location · municipality by hand through the drawer's endpoint, as the user described it. It shows "set by you", and the vote query excludes it.
+- **China** is location · country, from its reference.
+- **The U.S. states** (Michigan, Texas, Ohio…, 12 entities) are state or province; WSJ and NYT are news outlets; NATO an international organisation; Michigan Tech an educational institution.
+- **"trump administration"**'s link to a set index article was withdrawn with the reason; a re-lookup never offers it (candidates drop Wikimedia pages).
+- **No type changed without an answer:** 23 questions, and every entity with one kept its filed type.
+- **The answer paths round-trip:** GPS "keep" → manual, no question; unlock → the question is back. 60 Minutes "use the reference" → concept · show; unlock → the vote's organisation and the question again. An answer with no open question, and a type outside the vocabulary, are refused with the reason.
+
+**Tests:** 896 Rust lib tests (7 new) and 97 vitest.
+
+**Still open:**
+- **The held-out measurement.** These 226 items tuned the root table. The hourly `entity-linking` run adds about 20 links an hour; the next ~40 new links are graded the same way and recorded here before the root table changes again.

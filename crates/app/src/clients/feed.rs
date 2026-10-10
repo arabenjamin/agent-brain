@@ -6,7 +6,7 @@
 //! - **reads**: unread notifications that ask nothing (`needs_action` ones are
 //!   represented by their item);
 //! - **digests**: one card per kind of system signal that is not a row of its
-//!   own (entity merges and extracted relationships to decide, tasks failed and jobs died this week,
+//!   own (entity merges, extracted relationships and entity types to decide, tasks failed and jobs died this week,
 //!   schedules with steps that can't run), each with the count behind it.
 //!
 //! `total` is the number of rows, and is the one number the nav badge, Home's
@@ -137,6 +137,16 @@ pub async fn handle_feed(Extension(state): Extension<Arc<RestState>>) -> impl In
         )
         .await,
         json!({ "view": "feed", "mode": "relations" }),
+    );
+    digest(
+        "entity_types",
+        "entity types to check".into(),
+        count(
+            neo4j,
+            "MATCH (e:Entity) WHERE e.type_question_qid IS NOT NULL RETURN count(e) AS c",
+        )
+        .await,
+        json!({ "view": "feed", "mode": "types" }),
     );
     digest(
         "failed_tasks",

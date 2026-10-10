@@ -561,9 +561,14 @@ pub async fn handle_entity(
             neo4rs::query(
                 "MATCH (e:Entity {id: $id}) \
                  OPTIONAL MATCH (e)<-[m:MENTIONS]-() \
+                 WITH e, count(m) AS mentions \
+                 OPTIONAL MATCH (w:WikiItem {qid: e.type_question_qid}) \
                  RETURN e.name AS name, e.entity_type AS entity_type, \
-                        toString(e.created_at) AS created_at, count(m) AS mentions, \
-                        e.type_source AS type_source, coalesce(e.distinct, false) AS distinct",
+                        toString(e.created_at) AS created_at, mentions, \
+                        e.type_source AS type_source, coalesce(e.distinct, false) AS distinct, \
+                        e.kind AS kind, e.kind_source AS kind_source, \
+                        w.qid AS q_qid, w.label AS q_label, w.description AS q_description, \
+                        w.kind AS q_kind, w.kind_type AS q_kind_type",
             )
             .param("id", id.as_str()),
         )
@@ -679,6 +684,17 @@ pub async fn handle_entity(
             "mentions": mentions,
             "type_source": row.get::<String>("type_source").ok(),
             "distinct": row.get::<bool>("distinct").unwrap_or(false),
+            // HBI plan Phase 19: the fine kind, where it came from, and an
+            // open question when the reference disagrees with the type.
+            "kind": row.get::<String>("kind").ok(),
+            "kind_source": row.get::<String>("kind_source").ok(),
+            "type_question": row.get::<String>("q_qid").ok().map(|qid| json!({
+                "qid": qid,
+                "label": row.get::<String>("q_label").ok(),
+                "description": row.get::<String>("q_description").ok(),
+                "kind": row.get::<String>("q_kind").ok(),
+                "kind_type": row.get::<String>("q_kind_type").ok(),
+            })),
         },
         "aliases": aliases,
         "notes": notes,

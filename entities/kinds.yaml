@@ -1,0 +1,139 @@
+# What kind of thing an entity is (HBI plan Phase 19, §12.2;
+# services/entity_kinds.rs).
+#
+# `entity_type` stays the coarse class the extractor gives. `kind` is the fine
+# one, derived from the entity's reference link: the Wikidata item's
+# instance-of (P31) classes are walked up subclass-of (P279), and the kind
+# whose root is reached in the fewest hops wins (ties: the order below).
+#
+# Measured on 228 linked entities (2026-10-10): list-order matching over the
+# whole subclass tree made YouTube and GPS events and every U.S. state a
+# country, because Wikidata's upper ontology is tangled. Nearest root fixed
+# both. A `fallback` kind is generic: it wins only when no specific kind is
+# reachable, so The Wall Street Journal (a newspaper *and* a website) is a
+# news outlet.
+#
+# A kind's `type` is the coarse type it implies. When that differs from the
+# entity's filed type, the brain asks (Work → Feed → entity types to check);
+# it never retypes on its own: a quarter of the measured disagreements came
+# from wrong links.
+#
+# Editing this file re-derives every kind (its hash is the version). This file
+# shares the dir with the alias seed, whose loader ignores its keys; don't
+# name a top-level key `types`, `titles`, `articles`, `keep_distinct` or
+# `entities` here.
+
+max_hops: 7
+
+# The coarse types the HBI offers when you set a type by hand: the
+# extractor's vocabulary plus the ones kinds imply.
+entity_types:
+  - person
+  - organisation
+  - location
+  - event
+  - technology
+  - product
+  - law
+  - programme
+  - concept
+  - tool
+
+# Wikimedia's own pages are never a reference: a disambiguation page or a set
+# index is a list of things, not one ("trump administration" was linked to a
+# set index article).
+refuse:
+  - Q4167410    # Wikimedia disambiguation page
+  - Q13406463   # Wikimedia list article (set index articles are under it)
+  - Q4167836    # Wikimedia category
+  - Q11266439   # Wikimedia template
+  - Q17633526   # Wikinews article
+
+kinds:
+  - name: person
+    type: person
+    roots: [Q5]                                   # human
+
+  - name: country
+    type: location
+    roots: [Q6256, Q3624078, Q1763527]            # country, sovereign state, constituent country
+  - name: state or province
+    type: location
+    roots: [Q35657, Q107390, Q10864048]           # U.S. state, federated state, first-level admin division
+  - name: county
+    type: location
+    roots: [Q47168, Q28575, Q13410400]            # U.S. county, county, county of Ireland
+  - name: municipality
+    type: location
+    roots: [Q15284, Q515, Q3957, Q532, Q1093829, Q15127012, Q486972]
+    # municipality, city, town, village, city of the U.S., town of the U.S., human settlement
+  - name: region
+    type: location
+    roots: [Q82794, Q1620908, Q3502482]           # geographic region, historical region, cultural region
+  - name: geographic feature
+    type: location
+    roots: [Q618123]                              # geographical feature
+    # Not Q2221906 (geographic location): too broad; "government of the
+    # People's Republic of China" walked up to it.
+  - name: facility
+    type: location
+    roots: [Q13226383, Q41176]                    # facility, building
+
+  - name: government agency
+    type: organisation
+    roots: [Q327333, Q2659904, Q192350]           # government agency, government organisation, ministry
+  - name: military
+    type: organisation
+    roots: [Q8473, Q176799, Q17149090]            # military, military unit, armed organisation
+  - name: political party
+    type: organisation
+    roots: [Q7278]
+  - name: international organisation
+    type: organisation
+    roots: [Q484652, Q245065]                     # international org, intergovernmental org
+  - name: news outlet
+    type: organisation
+    roots: [Q1193236, Q11032, Q15265344, Q1153191, Q1616075, Q2001305]
+    # news media, newspaper, broadcaster, online newspaper, TV station, TV channel
+  - name: educational institution
+    type: organisation
+    roots: [Q2385804]
+  - name: company
+    type: organisation
+    roots: [Q4830453, Q783794, Q891723, Q6881511]  # business, company, public company, enterprise
+  - name: organisation
+    type: organisation
+    roots: [Q43229]
+    fallback: true
+
+  - name: law
+    type: law
+    roots: [Q7748, Q820655, Q686822]              # law, statute, bill
+  - name: war or battle
+    type: event
+    roots: [Q198, Q178561]
+  - name: event
+    type: event
+    roots: [Q1656682]
+
+  - name: software
+    type: technology
+    roots: [Q7397, Q9143]                         # software, programming language
+  - name: protocol or standard
+    type: technology
+    roots: [Q132364, Q317623]                     # communication protocol, technical standard
+  - name: website
+    type: technology
+    roots: [Q35127]
+    fallback: true
+
+  - name: vehicle or vessel
+    type: product
+    roots: [Q42889, Q11446]                       # vehicle, ship
+  - name: film, book or show
+    type: concept
+    roots: [Q11424, Q7725634, Q5398426]           # film, literary work, television series
+  - name: product
+    type: product
+    roots: [Q2424752]
+    fallback: true
