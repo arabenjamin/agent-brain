@@ -69,9 +69,18 @@ steps:
 
   # 3. Reassemble both sections so `context` carries them together rather than
   #    only the push confirmation that {{_prev}} currently holds.
+  #
+  #    ALREADY KNOWN is capped at 15,000 characters, with a marker saying how
+  #    much was left out. The reason step's distiller reads at most 24,000
+  #    characters (the first 16,000 and the last 8,000) and silently drops the
+  #    middle. Measured 2026-10-10 on 143 runs: the stored notes ran to 20,500
+  #    characters at the median (67,000 max), so 73 handoffs went over and lost
+  #    a median 9,000 characters of stored notes from the middle, unmarked. The
+  #    web section never exceeded 7,412, so 15,000 + web stays inside the window.
+  #    search_notes ranks best first, so the cap drops the lowest-ranked notes.
   - tool_name: neo4j_query
     arguments:
-      cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+      cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) WITH w ORDER BY w.turn_index RETURN CASE WHEN w.content STARTS WITH '## ALREADY KNOWN' AND size(w.content) > 15000 THEN left(w.content, 15000) + ' [… stored notes cut here: ' + toString(size(w.content) - 15000) + ' more characters, the lowest-ranked notes, not shown]' ELSE w.content END AS content"
     priority: 1
     max_attempts: 3
     provider_hint: ollama

@@ -931,6 +931,14 @@ The user's instinct: "Wikipedia is always a fantastic first step … that leads 
   - **The smoke test caught the condenser fabricating:** given the list of domains an article cites, it wrote a summary of each site's "article". It now sees only article text.
   - **Left off for good reason:** no gain held up twice, and the quota can't carry it.
 
+### The gap chain lost its stored notes in the middle (2026-10-10)
+
+Found while diagnosing Phase 21: the distiller keeps the head and tail of an oversized handoff and drops the middle, telling no one. Measured on the last 143 production gap runs:
+- **73 handoffs** were over the 24,000-character window, and every one lost part of ALREADY KNOWN (a median 9,000 characters of stored notes).
+- **The web results always survived:** they come last and never exceed 7,412 characters, inside the 8,000-character tail.
+
+So the loss was the brain's own lower-ranked notes, never the new evidence. The reassembly step now caps the stored-notes section at 15,000 characters, the top-ranked part, with a marker giving the size of the cut. No other distilling step overflowed (the one other, 21 runs, peaked at 2,565 characters), so the shared distiller stays as it is.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.
