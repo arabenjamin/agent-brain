@@ -97,7 +97,9 @@ kinds:
     # news media, newspaper, broadcaster, online newspaper, TV station, TV channel
   - name: educational institution
     type: organisation
-    roots: [Q2385804]
+    roots: [Q2385804, Q3918, Q38723]              # educational institution, university, higher education institution
+    # University and higher-ed as direct roots: Utah Valley University also
+    # lists "campus", which reached "region" first (held-out grade, 2026-10-10).
   - name: company
     type: organisation
     roots: [Q4830453, Q783794, Q891723, Q6881511]  # business, company, public company, enterprise
@@ -135,5 +137,5 @@ kinds:
     roots: [Q11424, Q7725634, Q5398426]           # film, literary work, television series
   - name: product
     type: product
-    roots: [Q2424752]
+    roots: [Q2424752, Q10929058]                  # product, product model (PlayStation 5)
     fallback: true

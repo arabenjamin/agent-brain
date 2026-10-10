@@ -1475,8 +1475,23 @@ Built and deployed:
 
 **Tests:** 896 Rust lib tests (7 new) and 97 vitest.
 
-**Still open:**
-- **The held-out measurement.** These 226 items tuned the root table. The hourly `entity-linking` run adds about 20 links an hour; the next ~40 new links are graded the same way and recorded here before the root table changes again.
+**Held-out grade (2026-10-10):** the 30 links `entity-linking` added after the backfill, graded by hand before any change to the root table.
+
+| Result | Count | Notes |
+|---|---|---|
+| Right kind, applied | 26 | 19 countries; Detroit → municipality; HP, Meta → company; Michigan State → educational institution; mlflow → software; the DC police → government agency; 5 people |
+| Close | 1 | NFL → company (a league; "organisation" would be better) |
+| Wrong, raised only as a question | 2 | "Free Palestine" (a slogan, and per Wikidata also a song) → event; Utah Valley University → region |
+| Right question | 1 | Philippines, filed as organisation, the reference says country |
+| No kind | 1 | PS5 ("product model" under no root) |
+
+- **No wrong kind was applied:** both wrong ones were questions, as designed.
+- **The questions' errors came from the root table, not from bad links** (2 of 3 here, against a quarter of disagreements from bad links on the tuning set).
+  - Utah Valley University also lists "campus", which reached "region" first. University and higher-education institution are now direct roots of educational institution.
+  - "Product model" is now a product root.
+  - The re-derive (no Wikimedia requests) fixed both and moved nothing else: educational institution holds the three universities, product holds PS5 and the M5Stack kit.
+  - "Free Palestine" stays a question; no kind fits a slogan.
+- **Operational note:** 1 of the 3 hourly linking runs that afternoon was refused by the cloud rate limit the Phase 21 replays caused.
 
 ### Phase 20 outcome (2026-10-10)
 
