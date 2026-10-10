@@ -55,6 +55,16 @@ struct RulesFile {
     types: HashMap<String, String>,
     #[serde(default)]
     entities: Vec<Canonical>,
+    /// `entities/demonyms.yaml` (HBI plan Phase 20).
+    #[serde(default)]
+    demonyms: Vec<Demonym>,
+}
+
+/// Nationality and people words for one place ("chinese" → china).
+#[derive(Debug, Clone, Deserialize)]
+struct Demonym {
+    place: String,
+    words: Vec<String>,
 }
 
 /// A curated canonical entity and the names that mean it.
@@ -82,6 +92,8 @@ pub struct Rules {
     keep_distinct: HashSet<String>,
     types: HashMap<String, String>,
     pub canonicals: Vec<Canonical>,
+    /// Demonym word → its place's entity name (Phase 20).
+    demonyms: HashMap<String, String>,
 }
 
 impl Rules {
@@ -108,6 +120,12 @@ impl Rules {
                     .into_iter()
                     .map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_lowercase())),
             );
+            for d in f.demonyms {
+                let place = display_name(&d.place);
+                for w in d.words {
+                    r.demonyms.insert(display_name(&w), place.clone());
+                }
+            }
             r.canonicals.extend(f.entities.into_iter().map(|mut c| {
                 c.name = display_name(&c.name);
                 c.aliases = c.aliases.iter().map(|a| display_name(a)).collect();
@@ -195,6 +213,18 @@ impl Rules {
             .iter()
             .find(|p| toks.len() == p.len() + 1 && toks[..p.len()] == p[..])
             .map(|_| toks[toks.len() - 1].clone())
+    }
+
+    /// The place a demonym names ("chinese" → "china"), or `None`.
+    pub fn demonym_place(&self, name: &str) -> Option<&str> {
+        self.demonyms.get(name).map(String::as_str)
+    }
+
+    /// Every demonym word: background reference lookups skip them.
+    pub fn demonym_words(&self) -> Vec<String> {
+        let mut w: Vec<String> = self.demonyms.keys().cloned().collect();
+        w.sort();
+        w
     }
 
     /// The extractor's type folded into the vocabulary (`organization` → `organisation`).
@@ -1039,7 +1069,8 @@ pub struct CandEntity {
 pub struct Candidate {
     pub from_id: String,
     pub into_id: String,
-    /// `surname` · `acronym` · `title` · `plural` · `wikidata` (both link to one Wikidata item).
+    /// `surname` · `acronym` · `title` · `plural` · `demonym` (a nationality
+    /// word and its place) · `wikidata` (both link to one Wikidata item).
     pub reason: &'static str,
 }
 
@@ -1052,6 +1083,7 @@ const ACRONYM_SKIP: &[&str] = &["of", "the", "and", "for", "on", "in", "&"];
 /// - **title:** a title before a bare surname (`senator johnson`) and that
 ///   surname, or a full name ending in it.
 /// - **plural:** a name that is another plus `s`.
+/// - **demonym:** a nationality word (`entities/demonyms.yaml`) and its place.
 pub fn find_candidates(entities: &[CandEntity], rules: &Rules) -> Vec<Candidate> {
     let mut out = Vec::new();
     let mut by_last: HashMap<String, Vec<&CandEntity>> = HashMap::new();
@@ -1130,6 +1162,18 @@ pub fn find_candidates(entities: &[CandEntity], rules: &Rules) -> Vec<Candidate>
                     reason: "title",
                 });
             }
+        }
+    }
+    for e in entities {
+        if let Some(place) = rules.demonym_place(&e.name)
+            && let Some(p) = by_name.get(place)
+            && p.id != e.id
+        {
+            out.push(Candidate {
+                from_id: e.id.clone(),
+                into_id: p.id.clone(),
+                reason: "demonym",
+            });
         }
     }
     for e in entities {
@@ -1633,6 +1677,50 @@ entities:
         let m = plan_merges(&ents, &aliases);
         assert!(m.iter().all(|x| x.into == "openai"), "{m:?}");
         assert_eq!(m.len(), 2);
+    }
+
+    fn shipped_demonyms() -> Rules {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../entities/demonyms.yaml"
+        ))
+        .unwrap();
+        Rules::from_yaml(&text).expect("the shipped demonyms.yaml parses")
+    }
+
+    #[test]
+    fn the_shipped_demonyms_name_their_places() {
+        let r = shipped_demonyms();
+        assert_eq!(r.demonym_place("chinese"), Some("china"));
+        assert_eq!(r.demonym_place("americans"), Some("united states"));
+        assert_eq!(r.demonym_place("italian"), Some("italy"));
+        assert_eq!(r.demonym_place("british"), Some("united kingdom"));
+        assert_eq!(
+            r.demonym_place("ukrainian"),
+            Some("ukraine"),
+            "added by hand"
+        );
+        assert_eq!(r.demonym_place("georgian"), None, "two places share it");
+        assert_eq!(r.demonym_place("finn"), None, "also a name");
+        assert_eq!(r.demonym_place("china"), None);
+    }
+
+    #[test]
+    fn a_demonym_is_a_candidate_for_its_place() {
+        let ents = vec![
+            ce("1", "chinese", "location"),
+            ce("2", "china", "location"),
+            ce("3", "italian", "concept"),
+        ];
+        let c = find_candidates(&ents, &shipped_demonyms());
+        assert!(
+            c.iter()
+                .any(|x| x.from_id == "1" && x.into_id == "2" && x.reason == "demonym")
+        );
+        assert!(
+            !c.iter().any(|x| x.from_id == "3"),
+            "no candidate until the place exists"
+        );
     }
 
     fn ce(id: &str, name: &str, t: &str) -> CandEntity {

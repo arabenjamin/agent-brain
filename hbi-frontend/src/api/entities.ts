@@ -19,7 +19,7 @@ export interface MergeCandidate {
   from: CandidateSide;
   into: CandidateSide;
   /** Why the pair was proposed. */
-  reason: "surname" | "acronym" | "title" | "plural" | "wikidata";
+  reason: "surname" | "acronym" | "title" | "plural" | "demonym" | "wikidata";
   shared_notes: number;
   /** Other names the same `from` could also be. */
   rivals: number;
@@ -51,6 +51,7 @@ export const REASON_LABEL: Record<MergeCandidate["reason"], string> = {
   acronym: "acronym of",
   title: "title + surname of",
   plural: "plural of",
+  demonym: "nationality word for",
   wikidata: "same Wikidata item as",
 };
 

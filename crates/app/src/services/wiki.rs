@@ -765,6 +765,7 @@ pub async fn link_entities(
                          RETURN e.id AS id ORDER BY in_review DESC, m DESC LIMIT $n"
                     ))
                     .param("review", review)
+                    .param("demonyms", demonyms())
                     .param("days", RECHECK_NONE_DAYS)
                     .param("n", limit),
                 )
@@ -840,17 +841,24 @@ pub async fn link_entities(
 }
 
 /// Public entities due a lookup: never checked, or "none" more than 90 days ago.
+/// Demonyms are left out (Phase 20): "Chinese" is China, not an article of its
+/// own, and linking them gave Phase 18's worst picks.
 const WAITING: &str = "MATCH (e:Entity) \
-     WHERE NOT e.entity_type IN ['url', 'date'] \
+     WHERE NOT e.entity_type IN ['url', 'date'] AND NOT e.name IN $demonyms \
        AND EXISTS { (:Note {note_type: 'claim'})-[:MENTIONS]->(e) } \
        AND NOT EXISTS { (e)-[:REFERS_TO {status: 'confirmed'}]->() } \
        AND (e.wiki_checked_at IS NULL \
             OR (e.wiki_result = 'none' AND e.wiki_checked_at < datetime() - duration({days: $days})))";
 
+fn demonyms() -> Vec<String> {
+    crate::services::entity_resolution::Rules::global().demonym_words()
+}
+
 async fn waiting_count(neo4j: &Neo4jClient) -> Result<i64> {
     Ok(neo4j
         .execute(
             neo4rs::query(&format!("{WAITING} RETURN count(e) AS c"))
+                .param("demonyms", demonyms())
                 .param("days", RECHECK_NONE_DAYS),
         )
         .await?
@@ -1169,6 +1177,7 @@ pub async fn coverage(
     limit: i64,
 ) -> Result<std::result::Result<Value, String>> {
     const BUCKET: &str = "MATCH (e:Entity) WHERE NOT e.entity_type IN ['url', 'date'] \
+         AND NOT e.name IN $demonyms \
          AND EXISTS { (:Note {note_type: 'claim'})-[:MENTIONS]->(e) } \
          WITH e, CASE \
            WHEN EXISTS { (e)-[:REFERS_TO {status: 'confirmed'}]->() } THEN 'confirmed' \
@@ -1179,6 +1188,7 @@ pub async fn coverage(
     let counts = neo4j
         .execute(
             neo4rs::query(&format!("{BUCKET} RETURN bucket, count(*) AS c"))
+                .param("demonyms", demonyms())
                 .param("days", RECHECK_NONE_DAYS),
         )
         .await?;
@@ -1226,6 +1236,7 @@ pub async fn coverage(
                      ORDER BY m DESC LIMIT $n"
                 ))
                 .param("days", RECHECK_NONE_DAYS)
+                .param("demonyms", demonyms())
                 .param("b", b)
                 .param("n", limit),
             )

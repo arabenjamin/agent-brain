@@ -188,6 +188,45 @@ impl KnowledgeService {
         ];
 
         let rules = Rules::global();
+        // Demonyms resolve to their place ("Chinese hackers" mentions China,
+        // HBI plan Phase 20) unless the user answered that pair "different"
+        // or "related" in the merge review.
+        let demonyms: Vec<neo4rs::BoltType> = entities
+            .iter()
+            .filter_map(|e| e.get("name").and_then(|v| v.as_str()))
+            .map(er::display_name)
+            .filter_map(|w| {
+                let place = rules.demonym_place(&w)?.to_string();
+                let mut m = std::collections::HashMap::new();
+                m.insert("w".to_string(), neo4rs::BoltType::from(w));
+                m.insert("p".to_string(), place.into());
+                Some(neo4rs::BoltType::from(m))
+            })
+            .collect();
+        let answered: Option<std::collections::HashSet<String>> = if demonyms.is_empty() {
+            Some(Default::default())
+        } else {
+            match neo4j
+                .execute(
+                    neo4rs::query(
+                        "UNWIND $pairs AS p \
+                         MATCH (:Entity {name: p.w})-[:NOT_SAME|RELATED_ENTITY]-(:Entity {name: p.p}) \
+                         RETURN DISTINCT p.w AS w",
+                    )
+                    .param("pairs", demonyms),
+                )
+                .await
+            {
+                Ok(rows) => Some(rows.iter().filter_map(|r| r.get::<String>("w").ok()).collect()),
+                Err(e) => {
+                    // Unknown answers: leave demonyms as they are this time.
+                    warn!(note_id = %note_id, "Demonym answers not read (non-fatal): {}", e);
+                    None
+                }
+            }
+        };
+        // Place name → the demonym it came through, recorded as `MENTIONS.via`.
+        let mut via: std::collections::HashMap<String, String> = Default::default();
         let mut probes: Vec<Probe> = Vec::new();
         for entity in &entities {
             let surface = match entity.get("name").and_then(|v| v.as_str()) {
@@ -199,12 +238,23 @@ impl KnowledgeService {
             if name.len() < 2 || STOPWORDS.contains(&name.as_str()) {
                 continue;
             }
+            let (name, demonym) = match (rules.demonym_place(&name), &answered) {
+                (Some(place), Some(a)) if !a.contains(&name) => (place.to_string(), Some(name)),
+                _ => (name, None),
+            };
             if probes.iter().any(|p| p.name == name) {
                 continue;
             }
             let key = rules.key(&name);
-            let entity_type =
-                rules.entity_type(entity.get("type").and_then(|v| v.as_str()).unwrap_or(""));
+            let entity_type = if demonym.is_some() {
+                // The vote counts the place, whatever the word was filed as.
+                "location".to_string()
+            } else {
+                rules.entity_type(entity.get("type").and_then(|v| v.as_str()).unwrap_or(""))
+            };
+            if let Some(w) = demonym {
+                via.insert(name.clone(), w);
+            }
             probes.push(Probe {
                 upper_in_text: er::text_has_upper(content, &key),
                 name,
@@ -231,7 +281,9 @@ impl KnowledgeService {
             match er::resolve(p, found.get(&p.name).unwrap_or(&Default::default())) {
                 Target::Existing { id, .. } => {
                     row.insert("id".to_string(), id.into());
-                    row.insert("name".to_string(), p.name.clone().into());
+                    // `via` is stamped when this name differs from the entity's.
+                    let through = via.get(&p.name).unwrap_or(&p.name);
+                    row.insert("name".to_string(), through.clone().into());
                     existing.push(neo4rs::BoltType::from(row));
                 }
                 Target::Create => {

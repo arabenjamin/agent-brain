@@ -910,6 +910,13 @@ The user noticed "waterford" filed as an organisation (it is the Michigan townsh
 - **Live result:** 1,544 classes cached; 177 entities got a kind, 23 questions opened, 1 set-index link withdrawn. Two questions come from odd Wikidata data that no root table fixes: the "government of the PRC" item is itself filed as a socialist state, and the SX1262's item walks to "geographical feature" via transceiver. They are questions, which is the point.
 - **A Cypher gotcha on the way:** a pattern comprehension can't start from a bare node (`[(w:WikiItem {qid: e.x}) | …]` is a syntax error), and the entity drawer's GET broke on deploy until it became an `OPTIONAL MATCH`.
 
+### Demonyms: the most-mentioned "place" was an adjective (HBI Phase 20, 2026-10-10)
+
+"chinese" (27 mentions) was filed as a location, "american" (20) as a concept, "british" as an organisation, "syrians" as a person: about 48 entities were nationality words, each typed its own way, and they were the source of Phase 18's worst links ("Chinese" → the PLA, "Italian" → Italy).
+- **Generated, not typed in.** Wikidata's English demonyms (P1549) of sovereign states and U.S. states give 506 words for 234 places once ambiguous words (georgian: the country or the state) and a hand-reviewed list (finn and dane are also names; vatican mostly means the Holy See) are dropped. Ukraine and Saudi Arabia have no English demonym on Wikidata and were added by hand.
+- **A generator bug worth remembering:** the place's name came from whichever graph entity was linked to its Wikidata item, and for Italy and the UK that entity was "italian" and "british", so both places silently vanished from the table. The place name now skips linked entities that are its own demonyms.
+- **Resolved at extraction, proposed for the backlog.** New mentions go to the place (verified live: "Chinese hackers breached a Ukrainian ministry, and American officials…" mentioned China, Ukraine and the United States, each with its word as `via`). The 43 existing demonym entities whose place exists became `demonym` merge candidates; nothing merged on its own, because "Chinese" is also a language.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

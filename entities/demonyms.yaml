@@ -1,0 +1,492 @@
+# Demonyms: nationality and people words resolved to their place (HBI plan
+# Phase 20, §12.3; services/entity_resolution.rs). "Chinese hackers" mentions
+# China, with "chinese" kept as the mention's surface form.
+#
+# Generated 2026-10-10 from Wikidata's English demonyms (P1549) of current
+# sovereign states and U.S. states, then reviewed by hand. Plurals were
+# added for -an and -i words. Dropped:
+# - a demonym equal to its place's name (Taiwan, New Zealand);
+# - a word two places share, as ambiguous: congolese, dominican, dominicans, georgian, georgians.
+# - by hand, words that usually mean something else: finn (also a name); dane (also a name); vatican (mostly the Holy See, an institution); washingtonian (the state or D.C.); persian (the language, the Gulf, cats); tejano (an ethnic group and a music); mongol (a people, not Mongolia's nationals); hawaii resident (not a word); new hampshireman (awkward form); new hampshirewoman (awkward form).
+# `place` is the entity name the graph uses, where an entity is linked to
+# the place's Wikidata item, else the item's English label.
+#
+# Not every use is a nationality ("Chinese" is also a language). A pair the
+# user answers "different" or "related" in the merge review stops the word
+# resolving; remove it here too.
+
+demonyms:
+  - place: "ukraine"   # Q212, added by hand: Wikidata has no English demonym
+    words: ["ukrainian", "ukrainians"]
+  - place: "saudi arabia"   # Q851, added by hand: Wikidata has no English demonym
+    words: ["saudi", "saudis", "saudi arabian", "saudi arabians"]
+  - place: "northern ireland"   # Q26, added by hand: Wikidata has no English demonym
+    words: ["northern irish"]
+  - place: "afghanistan"   # Q889, country
+    words: ["afghan", "afghans"]
+  - place: "alabama"   # Q173, us state
+    words: ["alabaman", "alabamans", "alabamian", "alabamians"]
+  - place: "alaska"   # Q797, us state
+    words: ["alaskans"]
+  - place: "albania"   # Q222, country, not in the graph yet
+    words: ["albanian", "albanians"]
+  - place: "algeria"   # Q262, country, not in the graph yet
+    words: ["algerian", "algerians"]
+  - place: "andorra"   # Q228, country, not in the graph yet
+    words: ["andorran", "andorrans"]
+  - place: "angola"   # Q916, country, not in the graph yet
+    words: ["angolan", "angolans"]
+  - place: "antigua and barbuda"   # Q781, country, not in the graph yet
+    words: ["antiguan", "antiguans", "barbudan", "barbudans"]
+  - place: "argentina"   # Q414, country
+    words: ["argentine", "argentinian", "argentinians"]
+  - place: "arizona"   # Q816, us state
+    words: ["arizonan", "arizonans"]
+  - place: "arkansas"   # Q1612, us state, not in the graph yet
+    words: ["arkanite", "arkansan", "arkansans", "arkansawyan", "arkansawyans", "arkansawyer", "arkansawyers", "arkansian", "arkansians", "arkie", "arkies"]
+  - place: "armenia"   # Q399, country
+    words: ["armenian", "armenians"]
+  - place: "australia"   # Q408, country
+    words: ["aussie", "aussies", "australian", "australians"]
+  - place: "austria"   # Q40, country, not in the graph yet
+    words: ["austrian", "austrians"]
+  - place: "azerbaijan"   # Q227, country
+    words: ["azerbaijani", "azerbaijanis", "azeri", "azeris"]
+  - place: "bahamas"   # Q778, country
+    words: ["bahamian", "bahamians"]
+  - place: "bahrain"   # Q398, country
+    words: ["bahraini", "bahrainis"]
+  - place: "bangladesh"   # Q902, country
+    words: ["bangladeshi", "bangladeshis"]
+  - place: "barbados"   # Q244, country, not in the graph yet
+    words: ["barbadian", "barbadians"]
+  - place: "belarus"   # Q184, country
+    words: ["belarusian", "belarusians"]
+  - place: "belgium"   # Q31, country
+    words: ["belgian", "belgians"]
+  - place: "belize"   # Q242, country, not in the graph yet
+    words: ["belizean", "belizeans"]
+  - place: "benin"   # Q962, country, not in the graph yet
+    words: ["beninese"]
+  - place: "bhutan"   # Q917, country, not in the graph yet
+    words: ["bhutanese"]
+  - place: "bolivia"   # Q750, country, not in the graph yet
+    words: ["bolivian", "bolivians"]
+  - place: "bosnia and herzegovina"   # Q225, country
+    words: ["bosnian", "bosnians", "herzegovinian", "herzegovinians"]
+  - place: "botswana"   # Q963, country, not in the graph yet
+    words: ["batswana", "botswanan", "botswanans", "motswana"]
+  - place: "brazil"   # Q155, country
+    words: ["brazilian", "brazilians"]
+  - place: "bulgaria"   # Q219, country
+    words: ["bulgarian", "bulgarians"]
+  - place: "burkina faso"   # Q965, country, not in the graph yet
+    words: ["burkinabe"]
+  - place: "burundi"   # Q967, country, not in the graph yet
+    words: ["burundian", "burundians"]
+  - place: "california"   # Q99, us state
+    words: ["californian", "californians"]
+  - place: "cambodia"   # Q424, country
+    words: ["cambodian", "cambodians"]
+  - place: "cameroon"   # Q1009, country
+    words: ["cameroonian", "cameroonians"]
+  - place: "canada"   # Q16, country
+    words: ["canadian", "canadians"]
+  - place: "cape verde"   # Q1011, country, not in the graph yet
+    words: ["cabo verdean", "cabo verdeans", "cape verdean", "cape verdeans"]
+  - place: "central african republic"   # Q929, country
+    words: ["central african", "central africans"]
+  - place: "chad"   # Q657, country, not in the graph yet
+    words: ["chadian", "chadians"]
+  - place: "chile"   # Q298, country, not in the graph yet
+    words: ["chilean", "chileans"]
+  - place: "china"   # Q148, country
+    words: ["chinese"]
+  - place: "colombia"   # Q739, country
+    words: ["colombian", "colombians"]
+  - place: "colorado"   # Q1261, us state
+    words: ["coloradan", "coloradans", "coloradoan", "coloradoans"]
+  - place: "comoros"   # Q970, country, not in the graph yet
+    words: ["comoran", "comorans", "comorian", "comorians"]
+  - place: "connecticut"   # Q779, us state
+    words: ["connecticuter", "connecticutian", "connecticutians", "nutmegger"]
+  - place: "costa rica"   # Q800, country
+    words: ["costa rican", "costa ricans"]
+  - place: "croatia"   # Q224, country, not in the graph yet
+    words: ["croatian", "croatians"]
+  - place: "cuba"   # Q241, country
+    words: ["cuban", "cubans"]
+  - place: "cyprus"   # Q229, country, not in the graph yet
+    words: ["cypriot"]
+  - place: "czech republic"   # Q213, country, not in the graph yet
+    words: ["czech"]
+  - place: "delaware"   # Q1393, us state, not in the graph yet
+    words: ["delawarean", "delawareans"]
+  - place: "denmark"   # Q756617, country
+    words: ["danes", "danish"]
+  - place: "djibouti"   # Q977, country, not in the graph yet
+    words: ["djiboutian", "djiboutians"]
+  - place: "ecuador"   # Q736, country
+    words: ["ecuadoran", "ecuadorans", "ecuadorian", "ecuadorians"]
+  - place: "egypt"   # Q79, country
+    words: ["egyptian", "egyptians"]
+  - place: "el salvador"   # Q792, country, not in the graph yet
+    words: ["salvadoran", "salvadorans"]
+  - place: "equatorial guinea"   # Q983, country
+    words: ["equatoguinean", "equatoguineans", "equatorial guinean", "equatorial guineans"]
+  - place: "eritrea"   # Q986, country, not in the graph yet
+    words: ["eritrean", "eritreans"]
+  - place: "estonia"   # Q191, country
+    words: ["estonian", "estonians"]
+  - place: "eswatini"   # Q1050, country, not in the graph yet
+    words: ["emaswati", "emaswatis", "liswati", "liswatis", "swazi", "swazis"]
+  - place: "ethiopia"   # Q115, country, not in the graph yet
+    words: ["ethiopian", "ethiopians"]
+  - place: "federated states of micronesia"   # Q702, country, not in the graph yet
+    words: ["micronesian", "micronesians"]
+  - place: "fiji"   # Q712, country
+    words: ["fijian", "fijians"]
+  - place: "finland"   # Q33, country
+    words: ["finnish"]
+  - place: "florida"   # Q812, us state
+    words: ["floridan", "floridans", "floridian", "floridians"]
+  - place: "france"   # Q142, country
+    words: ["french"]
+  - place: "gabon"   # Q1000, country
+    words: ["gabonese"]
+  - place: "germany"   # Q183, country
+    words: ["german", "germans"]
+  - place: "ghana"   # Q117, country, not in the graph yet
+    words: ["ghanaian", "ghanaians"]
+  - place: "greece"   # Q41, country
+    words: ["greek"]
+  - place: "grenada"   # Q769, country, not in the graph yet
+    words: ["grenadian", "grenadians"]
+  - place: "guatemala"   # Q774, country
+    words: ["guatemalan", "guatemalans"]
+  - place: "guinea"   # Q1006, country, not in the graph yet
+    words: ["guinean", "guineans"]
+  - place: "guinea-bissau"   # Q1007, country, not in the graph yet
+    words: ["bissau-guinean", "bissau-guineans", "guinea-bissauan", "guinea-bissauans"]
+  - place: "guyana"   # Q734, country, not in the graph yet
+    words: ["guyanese"]
+  - place: "haiti"   # Q790, country, not in the graph yet
+    words: ["haitian", "haitians"]
+  - place: "honduras"   # Q783, country
+    words: ["honduran", "hondurans"]
+  - place: "hungary"   # Q28, country, not in the graph yet
+    words: ["hungarian", "hungarians"]
+  - place: "idaho"   # Q1221, us state, not in the graph yet
+    words: ["idahoan", "idahoans"]
+  - place: "illinois"   # Q1204, us state
+    words: ["illinoian", "illinoians", "illinoisan", "illinoisans", "illinoisian", "illinoisians"]
+  - place: "india"   # Q668, country
+    words: ["indian", "indians"]
+  - place: "indiana"   # Q1415, us state
+    words: ["hoosier"]
+  - place: "indonesia"   # Q252, country
+    words: ["indonesian", "indonesians"]
+  - place: "iowa"   # Q1546, us state
+    words: ["iowan", "iowans"]
+  - place: "iran"   # Q794, country
+    words: ["iranian", "iranians"]
+  - place: "iraq"   # Q796, country
+    words: ["iraqi", "iraqis"]
+  - place: "ireland"   # Q27, country
+    words: ["irish"]
+  - place: "israel"   # Q801, country
+    words: ["israeli", "israelis"]
+  - place: "italy"   # Q38, country
+    words: ["italian", "italians"]
+  - place: "ivory coast"   # Q1008, country, not in the graph yet
+    words: ["ivoirian", "ivoirians", "ivorian", "ivorians"]
+  - place: "jamaica"   # Q766, country, not in the graph yet
+    words: ["jamaican", "jamaicans"]
+  - place: "japan"   # Q17, country
+    words: ["japanese"]
+  - place: "jordan"   # Q810, country
+    words: ["jordanian", "jordanians"]
+  - place: "kansas"   # Q1558, us state, not in the graph yet
+    words: ["kansan", "kansans"]
+  - place: "kazakhstan"   # Q232, country, not in the graph yet
+    words: ["kazakh", "kazakhstani", "kazakhstanis"]
+  - place: "kentucky"   # Q1603, us state
+    words: ["kentuckian", "kentuckians"]
+  - place: "kenya"   # Q114, country
+    words: ["kenyan", "kenyans"]
+  - place: "kiribati"   # Q710, country, not in the graph yet
+    words: ["i-kiribati", "i-kiribatis"]
+  - place: "kosovo"   # Q1246, country, not in the graph yet
+    words: ["kosovan", "kosovans", "kosovar"]
+  - place: "kuwait"   # Q817, country, not in the graph yet
+    words: ["kuwaiti", "kuwaitis"]
+  - place: "kyrgyzstan"   # Q813, country, not in the graph yet
+    words: ["kyrgyz", "kyrgyzstani", "kyrgyzstanis"]
+  - place: "laos"   # Q819, country, not in the graph yet
+    words: ["lao", "laotian", "laotians"]
+  - place: "latvia"   # Q211, country, not in the graph yet
+    words: ["latvian", "latvians"]
+  - place: "lebanon"   # Q822, country
+    words: ["lebanese"]
+  - place: "lesotho"   # Q1013, country
+    words: ["basotho", "mosotho"]
+  - place: "liberia"   # Q1014, country, not in the graph yet
+    words: ["liberian", "liberians"]
+  - place: "libya"   # Q1016, country
+    words: ["libyan", "libyans"]
+  - place: "liechtenstein"   # Q347, country, not in the graph yet
+    words: ["liechtensteiner"]
+  - place: "lithuania"   # Q37, country, not in the graph yet
+    words: ["lithuanian", "lithuanians"]
+  - place: "louisiana"   # Q1588, us state
+    words: ["louisianian", "louisianians"]
+  - place: "luxembourg"   # Q32, country, not in the graph yet
+    words: ["luxembourgian", "luxembourgians", "luxembourgish"]
+  - place: "madagascar"   # Q1019, country
+    words: ["malagasy"]
+  - place: "maine"   # Q724, us state
+    words: ["mainer"]
+  - place: "malawi"   # Q1020, country, not in the graph yet
+    words: ["malawian", "malawians"]
+  - place: "malaysia"   # Q833, country
+    words: ["malaysian", "malaysians"]
+  - place: "maldives"   # Q826, country, not in the graph yet
+    words: ["maldivian", "maldivians"]
+  - place: "mali"   # Q912, country
+    words: ["malian", "malians"]
+  - place: "malta"   # Q233, country, not in the graph yet
+    words: ["maltese"]
+  - place: "marshall islands"   # Q709, country, not in the graph yet
+    words: ["marshallese"]
+  - place: "maryland"   # Q1391, us state
+    words: ["marylander"]
+  - place: "massachusetts"   # Q771, us state
+    words: ["bay stater", "massachusettsan", "massachusettsans", "massachusite"]
+  - place: "mauritania"   # Q1025, country, not in the graph yet
+    words: ["mauritanian", "mauritanians"]
+  - place: "mauritius"   # Q1027, country, not in the graph yet
+    words: ["mauritian", "mauritians"]
+  - place: "mexico"   # Q96, country
+    words: ["mexican", "mexicans"]
+  - place: "michigan"   # Q1166, us state
+    words: ["michigander", "michiganian", "michiganians"]
+  - place: "minnesota"   # Q1527, us state
+    words: ["minnesotan", "minnesotans"]
+  - place: "mississippi"   # Q1494, us state, not in the graph yet
+    words: ["mississippian", "mississippians"]
+  - place: "missouri"   # Q1581, us state
+    words: ["missourian", "missourians"]
+  - place: "moldova"   # Q217, country
+    words: ["moldavian", "moldavians", "moldovan", "moldovans"]
+  - place: "monaco"   # Q235, country, not in the graph yet
+    words: ["monacan", "monacans", "monegasque"]
+  - place: "mongolia"   # Q711, country, not in the graph yet
+    words: ["mongolian", "mongolians"]
+  - place: "montana"   # Q1212, us state, not in the graph yet
+    words: ["montanan", "montanans"]
+  - place: "montenegro"   # Q236, country
+    words: ["montenegrin"]
+  - place: "morocco"   # Q1028, country
+    words: ["moroccan", "moroccans"]
+  - place: "mozambique"   # Q1029, country, not in the graph yet
+    words: ["mozambican", "mozambicans"]
+  - place: "myanmar"   # Q836, country
+    words: ["burmese", "myanma"]
+  - place: "namibia"   # Q1030, country
+    words: ["namibian", "namibians"]
+  - place: "nauru"   # Q697, country, not in the graph yet
+    words: ["nauruan", "nauruans"]
+  - place: "nebraska"   # Q1553, us state
+    words: ["nebraskan", "nebraskans"]
+  - place: "nepal"   # Q837, country, not in the graph yet
+    words: ["nepalese", "nepali", "nepalis"]
+  - place: "netherlands"   # Q29999, country
+    words: ["dutch"]
+  - place: "nevada"   # Q1227, us state
+    words: ["nevadan", "nevadans"]
+  - place: "new hampshire"   # Q759, us state
+    words: ["granite stater", "new hampshirite"]
+  - place: "new jersey"   # Q1408, us state
+    words: ["new jerseyan", "new jerseyans", "new jerseyite"]
+  - place: "new mexico"   # Q1522, us state, not in the graph yet
+    words: ["new mexican", "new mexicans"]
+  - place: "new york"   # Q1384, us state
+    words: ["new yorker"]
+  - place: "new zealand"   # Q664, country
+    words: ["new zealander"]
+  - place: "nicaragua"   # Q811, country, not in the graph yet
+    words: ["nicaraguan", "nicaraguans"]
+  - place: "niger"   # Q1032, country, not in the graph yet
+    words: ["nigerien"]
+  - place: "nigeria"   # Q1033, country
+    words: ["nigerian", "nigerians"]
+  - place: "north carolina"   # Q1454, us state
+    words: ["north carolinian", "north carolinians"]
+  - place: "north dakota"   # Q1207, us state, not in the graph yet
+    words: ["north dakotan", "north dakotans"]
+  - place: "north korea"   # Q423, country
+    words: ["north korean", "north koreans"]
+  - place: "north macedonia"   # Q221, country, not in the graph yet
+    words: ["macedonian", "macedonians"]
+  - place: "norway"   # Q20, country
+    words: ["norwegian", "norwegians"]
+  - place: "ohio"   # Q1397, us state
+    words: ["ohioan", "ohioans"]
+  - place: "oklahoma"   # Q1649, us state
+    words: ["oklahomie"]
+  - place: "oman"   # Q842, country
+    words: ["omani", "omanis"]
+  - place: "oregon"   # Q824, us state, not in the graph yet
+    words: ["oregoner", "oregonian", "oregonians"]
+  - place: "pakistan"   # Q843, country
+    words: ["pakistani", "pakistanis"]
+  - place: "palau"   # Q695, country
+    words: ["palauan", "palauans"]
+  - place: "palestine"   # Q219060, country
+    words: ["palestinian", "palestinians"]
+  - place: "panama"   # Q804, country, not in the graph yet
+    words: ["panamanian", "panamanians"]
+  - place: "papua new guinea"   # Q691, country
+    words: ["papua new guinean", "papua new guineans"]
+  - place: "paraguay"   # Q733, country, not in the graph yet
+    words: ["paraguayan", "paraguayans"]
+  - place: "pennsylvania"   # Q1400, us state
+    words: ["pennsylvanian", "pennsylvanians"]
+  - place: "peru"   # Q419, country
+    words: ["peruvian", "peruvians"]
+  - place: "philippines"   # Q928, country
+    words: ["filipina", "filipino", "philippine"]
+  - place: "poland"   # Q36, country
+    words: ["polish"]
+  - place: "portugal"   # Q45, country, not in the graph yet
+    words: ["portuguese"]
+  - place: "qatar"   # Q846, country
+    words: ["qatari", "qataris"]
+  - place: "rhode island"   # Q1387, us state, not in the graph yet
+    words: ["rhode islander"]
+  - place: "romania"   # Q218, country
+    words: ["romanian", "romanians"]
+  - place: "russia"   # Q159, country
+    words: ["russian", "russians"]
+  - place: "rwanda"   # Q1037, country
+    words: ["rwandan", "rwandans", "rwandese"]
+  - place: "saint kitts and nevis"   # Q763, country, not in the graph yet
+    words: ["kittitian", "kittitians", "nevisian", "nevisians"]
+  - place: "saint lucia"   # Q760, country, not in the graph yet
+    words: ["saint lucian", "saint lucians"]
+  - place: "saint vincent and the grenadines"   # Q757, country, not in the graph yet
+    words: ["saint vincentian", "saint vincentians", "vincentian", "vincentians", "vincy"]
+  - place: "samoa"   # Q683, country, not in the graph yet
+    words: ["samoan", "samoans"]
+  - place: "san marino"   # Q238, country, not in the graph yet
+    words: ["sammarinese"]
+  - place: "senegal"   # Q1041, country, not in the graph yet
+    words: ["senegalese"]
+  - place: "serbia"   # Q403, country
+    words: ["serbian", "serbians"]
+  - place: "seychelles"   # Q1042, country, not in the graph yet
+    words: ["seychellois", "seychelloise"]
+  - place: "sierra leone"   # Q1044, country
+    words: ["sierra leonean", "sierra leoneans"]
+  - place: "singapore"   # Q334, country, not in the graph yet
+    words: ["singaporean", "singaporeans"]
+  - place: "slovakia"   # Q214, country, not in the graph yet
+    words: ["slovak"]
+  - place: "slovenia"   # Q215, country
+    words: ["slovene", "slovenian", "slovenians"]
+  - place: "solomon islands"   # Q685, country, not in the graph yet
+    words: ["solomon islander"]
+  - place: "somalia"   # Q1045, country, not in the graph yet
+    words: ["somali", "somalian", "somalians", "somalis"]
+  - place: "south africa"   # Q258, country
+    words: ["south african", "south africans"]
+  - place: "south carolina"   # Q1456, us state
+    words: ["south carolinian", "south carolinians"]
+  - place: "south dakota"   # Q1211, us state, not in the graph yet
+    words: ["south dakotan", "south dakotans"]
+  - place: "south korea"   # Q884, country
+    words: ["south korean", "south koreans"]
+  - place: "south sudan"   # Q958, country, not in the graph yet
+    words: ["south sudanese"]
+  - place: "spain"   # Q29, country
+    words: ["spaniard", "spanish"]
+  - place: "sri lanka"   # Q854, country, not in the graph yet
+    words: ["sri lankan", "sri lankans"]
+  - place: "sudan"   # Q1049, country
+    words: ["sudanese"]
+  - place: "suriname"   # Q730, country, not in the graph yet
+    words: ["surinamese"]
+  - place: "sweden"   # Q34, country, not in the graph yet
+    words: ["swedish"]
+  - place: "switzerland"   # Q39, country
+    words: ["swiss"]
+  - place: "syria"   # Q858, country
+    words: ["syrian", "syrians"]
+  - place: "são tomé and príncipe"   # Q1039, country, not in the graph yet
+    words: ["santomean", "santomeans", "sao tomean", "sao tomeans"]
+  - place: "taiwan"   # Q865, country
+    words: ["taiwanese"]
+  - place: "tajikistan"   # Q863, country, not in the graph yet
+    words: ["tajikistani", "tajikistanis"]
+  - place: "tanzania"   # Q924, country, not in the graph yet
+    words: ["tanzanian", "tanzanians"]
+  - place: "tennessee"   # Q1509, us state
+    words: ["tennessean", "tennesseans"]
+  - place: "texas"   # Q1439, us state
+    words: ["texan", "texans", "texian", "texians", "texican", "texicans"]
+  - place: "thailand"   # Q869, country, not in the graph yet
+    words: ["thai", "thais"]
+  - place: "the gambia"   # Q1005, country, not in the graph yet
+    words: ["gambian", "gambians"]
+  - place: "timor-leste"   # Q574, country, not in the graph yet
+    words: ["east timorese"]
+  - place: "togo"   # Q945, country, not in the graph yet
+    words: ["togolese"]
+  - place: "tonga"   # Q678, country, not in the graph yet
+    words: ["tongan", "tongans"]
+  - place: "trinidad and tobago"   # Q754, country, not in the graph yet
+    words: ["trinidadian", "trinidadians"]
+  - place: "tunisia"   # Q948, country, not in the graph yet
+    words: ["tunisian", "tunisians"]
+  - place: "turkey"   # Q43, country
+    words: ["turkish"]
+  - place: "turkmenistan"   # Q874, country, not in the graph yet
+    words: ["turkmen", "turkmenistani", "turkmenistanis"]
+  - place: "tuvalu"   # Q672, country, not in the graph yet
+    words: ["tuvaluan", "tuvaluans"]
+  - place: "uganda"   # Q1036, country, not in the graph yet
+    words: ["ugandan", "ugandans"]
+  - place: "united arab emirates"   # Q878, country
+    words: ["emirati", "emiratis", "emiri", "emirian", "emirians", "emiris"]
+  - place: "united kingdom"   # Q145, country
+    words: ["british", "briton"]
+  - place: "united states"   # Q30, country
+    words: ["american", "americans"]
+  - place: "uruguay"   # Q77, country, not in the graph yet
+    words: ["uruguayan", "uruguayans"]
+  - place: "utah"   # Q829, us state
+    words: ["utahn"]
+  - place: "uzbekistan"   # Q265, country, not in the graph yet
+    words: ["uzbek", "uzbekistani", "uzbekistanis"]
+  - place: "vanuatu"   # Q686, country
+    words: ["ni-vanuatu", "vanuatuan", "vanuatuans"]
+  - place: "venezuela"   # Q717, country
+    words: ["venezuelan", "venezuelans"]
+  - place: "vermont"   # Q16551, us state, not in the graph yet
+    words: ["vermonter"]
+  - place: "vietnam"   # Q881, country
+    words: ["vietnamese"]
+  - place: "virginia"   # Q1370, us state
+    words: ["virginian", "virginians"]
+  - place: "west virginia"   # Q1371, us state
+    words: ["west virginian", "west virginians"]
+  - place: "wisconsin"   # Q1537, us state
+    words: ["wisconsinite"]
+  - place: "wyoming"   # Q1214, us state
+    words: ["wyomingian", "wyomingians", "wyomingite"]
+  - place: "yemen"   # Q805, country
+    words: ["yemeni", "yemenis"]
+  - place: "zambia"   # Q953, country
+    words: ["zambian", "zambians"]
+  - place: "zimbabwe"   # Q954, country, not in the graph yet
+    words: ["zimbabwean", "zimbabweans"]
