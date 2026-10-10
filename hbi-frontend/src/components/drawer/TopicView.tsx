@@ -65,12 +65,17 @@ function OneTopic({ name }: { name: string }) {
       <h3 className="dw-title">{t.label}</h3>
       {editing ? (
         <TopicForm
-          existing={{ name: t.name, label: t.label, description: t.description, source_lists: t.source_lists, assign: t.assign, members: t.members }}
+          existing={{ name: t.name, label: t.label, description: t.description, source_lists: t.source_lists, assign: t.assign, members: t.members, reference: t.reference }}
           onCancel={() => setEditing(false)}
           onSaved={(_, note) => { setEditing(false); setMsg({ ok: true, text: note }); }}
         />
       ) : (
-        <div className="dw-note">{t.description}</div>
+        <>
+          <div className="dw-note">{t.description}</div>
+          {t.reference && (
+            <div className="dw-dim">Reference: <a href={t.reference} target="_blank" rel="noreferrer">{t.reference.replace(/^https?:\/\//, "")} ↗</a></div>
+          )}
+        </>
       )}
       {t.assign === "rules" && (
         <div className="dw-note">

@@ -67,6 +67,12 @@ pub struct TopicDef {
     /// `assign: rules`: a note matching any rule joins the topic.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<MemberRule>,
+    /// A page about the topic, set by the user (HBI plan Phase 18). Most
+    /// topics are the user's own groupings with no Wikipedia article, so
+    /// there is no automatic lookup. Not part of the version: editing it
+    /// classifies nothing again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// How notes get into a topic.
@@ -401,7 +407,7 @@ pub async fn sync(neo4j: &Neo4jClient, topics: &Topics) -> Result<usize> {
                  REMOVE t.schedules \
                  SET t.label = r.label, t.description = r.description, \
                      t.source_lists = r.source_lists, t.assign = r.assign, \
-                     t.members = r.members, t.managed_by = 'yaml', \
+                     t.members = r.members, t.reference = r.reference, t.managed_by = 'yaml', \
                      t.synced_at = datetime()",
             )
             .param("rows", rows),
@@ -452,6 +458,13 @@ fn def_row(d: &TopicDef) -> neo4rs::BoltType {
             .unwrap_or_else(|_| "[]".into())
             .into(),
     );
+    m.insert(
+        "reference".to_string(),
+        d.reference
+            .as_deref()
+            .map(|r| r.trim().to_string().into())
+            .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
+    );
     m.into()
 }
 
@@ -465,7 +478,7 @@ pub async fn reload(neo4j: &Neo4jClient) -> Result<Arc<Topics>> {
                     coalesce(t.description, '') AS description, \
                     coalesce(t.source_lists, []) AS source_lists, \
                     coalesce(t.assign, 'classifier') AS assign, \
-                    coalesce(t.members, '[]') AS members",
+                    coalesce(t.members, '[]') AS members, t.reference AS reference",
         ))
         .await?;
     let defs: Vec<TopicDef> = rows
@@ -480,6 +493,7 @@ pub async fn reload(neo4j: &Neo4jClient) -> Result<Arc<Topics>> {
                     .unwrap_or_default(),
                 members: serde_json::from_str(&r.get::<String>("members").unwrap_or_default())
                     .unwrap_or_default(),
+                reference: r.get::<String>("reference").ok().filter(|s| !s.is_empty()),
             })
         })
         .filter(|d| !d.description.trim().is_empty())
@@ -601,6 +615,15 @@ pub fn check_def(def: &TopicDef, current: &Topics, create: bool) -> Result<(), S
                 .into(),
         );
     }
+    if let Some(r) = def.reference.as_deref() {
+        let r = r.trim();
+        if !(r.starts_with("https://") || r.starts_with("http://"))
+            || r.len() > 500
+            || r.contains(char::is_whitespace)
+        {
+            return Err("reference must be one http(s) URL of at most 500 characters".into());
+        }
+    }
     if def.assign == Assign::Classifier && !def.members.is_empty() {
         return Err(
             "member rules apply only with assign: rules (the classifier ignores them)".into(),
@@ -643,7 +666,7 @@ pub async fn save(
                  ON CREATE SET t.created_at = datetime() \
                  SET t.label = $r.label, t.description = $r.description, \
                      t.source_lists = $r.source_lists, t.assign = $r.assign, \
-                     t.members = $r.members, t.managed_by = 'runtime', \
+                     t.members = $r.members, t.reference = $r.reference, t.managed_by = 'runtime', \
                      t.updated_at = datetime()",
             )
             .param("r", def_row(def)),
@@ -736,7 +759,7 @@ pub async fn reset(neo4j: &Neo4jClient, name: &str) -> Result<Result<Arc<Topics>
                  ON CREATE SET t.created_at = datetime() \
                  SET t.label = $r.label, t.description = $r.description, \
                      t.source_lists = $r.source_lists, t.assign = $r.assign, \
-                     t.members = $r.members, t.managed_by = 'yaml', \
+                     t.members = $r.members, t.reference = $r.reference, t.managed_by = 'yaml', \
                      t.synced_at = datetime() REMOVE t.updated_at",
             )
             .param("r", def_row(&seed)),
@@ -1180,6 +1203,15 @@ mod tests {
         assert!(err(def("new", "x"), true).contains("reserved"));
         assert!(err(def("new-one", "  "), true).contains("required"));
         assert!(err(def("new-one", &"y".repeat(MAX_DESCRIPTION + 1)), true).contains("under"));
+        let mut with_ref = def("new-one", "x");
+        with_ref.reference = Some("https://en.wikipedia.org/wiki/Geopolitics".into());
+        assert!(check_def(&with_ref, &t, true).is_ok());
+        with_ref.reference = Some("not a url".into());
+        assert!(
+            check_def(&with_ref, &t, true)
+                .unwrap_err()
+                .contains("reference")
+        );
         let mut no_label = def("new-one", "x");
         no_label.label = " ".into();
         assert!(

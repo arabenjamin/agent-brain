@@ -87,6 +87,8 @@ export interface TopicDef {
   /** `classifier`: the local model decides. `rules`: only `members` rules and the user. */
   assign?: "classifier" | "rules";
   members?: MemberRule[];
+  /** A page about the topic (a Wikipedia article, say), set by the user. Not part of the definition. */
+  reference?: string | null;
 }
 
 export interface TopicDetail {
@@ -97,6 +99,7 @@ export interface TopicDetail {
     updated_at: string | null;
     assign: "classifier" | "rules";
     members: MemberRule[];
+    reference: string | null;
   };
   /** Its topics/*.yaml definition, if a file declares it (what Reset restores). */
   seed: TopicDef | null;

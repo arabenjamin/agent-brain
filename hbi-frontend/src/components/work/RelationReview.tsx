@@ -9,10 +9,12 @@ import { decideRelation, useProposedRelations, type ProposedRelation } from "../
 import { hrefTo } from "../../nav";
 import { EntityLink } from "../drawer/parts";
 import { EmptyState } from "../ui";
+import { useWikiHints, type WikiHint as Hint } from "../../api/wiki";
+import WikiHint from "../drawer/WikiHint";
 
 const SHOWN = 40;
 
-function Row({ r }: { r: ProposedRelation }) {
+function Row({ r, hints }: { r: ProposedRelation; hints: Record<string, Hint> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const decide = async (accept: boolean) => {
@@ -28,8 +30,9 @@ function Row({ r }: { r: ProposedRelation }) {
   return (
     <div className="wk-row rel-review">
       <span className="wk-row-main">
-        <EntityLink kind="entity" id={r.from}>{r.from_name}</EntityLink> <b>{r.reads}</b>{" "}
+        <EntityLink kind="entity" id={r.from}>{r.from_name}</EntityLink><WikiHint h={hints[r.from]} /> <b>{r.reads}</b>{" "}
         {r.other.id ? <EntityLink kind="entity" id={r.other.id}>{r.other.name}</EntityLink> : r.other.name}
+        {r.other.id && <WikiHint h={hints[r.other.id]} />}
         {r.evidence_text && (
           <div className="wk-dim rel-review-quote">
             “{r.evidence_text.slice(0, 260)}{r.evidence_text.length > 260 ? "…" : ""}”{" "}
@@ -50,6 +53,7 @@ function Row({ r }: { r: ProposedRelation }) {
 export default function RelationReview() {
   const q = useProposedRelations(SHOWN);
   const d = q.data;
+  const hints = useWikiHints((d?.proposed ?? []).flatMap((r) => [r.from, r.other.id ?? ""]).filter(Boolean)).data ?? {};
   return (
     <div className="wk-lane scroll">
       <div className="wk-toolbar">
@@ -62,7 +66,7 @@ export default function RelationReview() {
         you: accept it, reject it (it is never proposed again), or open an entity to change its type.
       </div>
       {d && d.total === 0 && <EmptyState title="Nothing to review" checked="No proposed relationship is waiting; the extraction schedule adds more every 30 minutes while claims remain." />}
-      {d?.proposed.map((r) => <Row key={`${r.from}|${r.type}|${r.to}`} r={r} />)}
+      {d?.proposed.map((r) => <Row key={`${r.from}|${r.type}|${r.to}`} r={r} hints={hints} />)}
     </div>
   );
 }

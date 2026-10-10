@@ -7,12 +7,17 @@
 import { useState } from "react";
 import { decideEntities, mergeEntities, REASON_LABEL, type AliasVerdict, type MergeCandidate } from "../../api/entities";
 import { EntityLink } from "../drawer/parts";
+import { useWikiHints, type WikiHint as Hint } from "../../api/wiki";
+import WikiHint from "../drawer/WikiHint";
 
-function Side({ s }: { s: MergeCandidate["from"] }) {
+function Side({ s, hint }: { s: MergeCandidate["from"]; hint?: Hint }) {
   return (
-    <EntityLink kind="entity" id={s.id} title={`${s.entity_type} · ${s.mentions} notes`}>
-      <strong>{s.name}</strong> <span className="wk-dim">{s.mentions}</span>
-    </EntityLink>
+    <>
+      <EntityLink kind="entity" id={s.id} title={`${s.entity_type} · ${s.mentions} notes`}>
+        <strong>{s.name}</strong> <span className="wk-dim">{s.mentions}</span>
+      </EntityLink>
+      <WikiHint h={hint} />
+    </>
   );
 }
 
@@ -38,7 +43,7 @@ function Verdict({ v }: { v: AliasVerdict | null }) {
   );
 }
 
-function CandidateRow({ c }: { c: MergeCandidate }) {
+function CandidateRow({ c, hints }: { c: MergeCandidate; hints: Record<string, Hint> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const act = (f: () => Promise<unknown>) => async () => {
@@ -54,7 +59,7 @@ function CandidateRow({ c }: { c: MergeCandidate }) {
   return (
     <div className="wk-row wk-todo em-row">
       <span className="wk-row-main">
-        <Side s={c.from} /> <span className="wk-dim">{REASON_LABEL[c.reason]}</span> <Side s={c.into} />
+        <Side s={c.from} hint={hints[c.from.id]} /> <span className="wk-dim">{REASON_LABEL[c.reason]}</span> <Side s={c.into} hint={hints[c.into.id]} />
         <span className="wk-dim">
           {" "}· {c.shared_notes} shared {c.shared_notes === 1 ? "note" : "notes"}
           {c.rivals > 0 && ` · ${c.rivals} other ${c.rivals === 1 ? "name" : "names"} it could be`}
@@ -77,9 +82,10 @@ function CandidateRow({ c }: { c: MergeCandidate }) {
 }
 
 export default function MergeCandidates({ items }: { items: MergeCandidate[] }) {
+  const hints = useWikiHints(items.flatMap((c) => [c.from.id, c.into.id])).data ?? {};
   return (
     <>
-      {items.map((c) => <CandidateRow key={`${c.from.id}-${c.into.id}`} c={c} />)}
+      {items.map((c) => <CandidateRow key={`${c.from.id}-${c.into.id}`} c={c} hints={hints} />)}
     </>
   );
 }

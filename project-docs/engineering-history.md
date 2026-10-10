@@ -881,6 +881,25 @@ Graded again after the fix:
 
 So a "same" below 0.7 only leans, and sorts with the unjudged. The verdict orders the merge list; the person still decides every pair.
 
+### Reference links: the top search result is wrong a third of the time (HBI Phase 18, 2026-10-09)
+
+The user wanted a Wikipedia link for entities they didn't recognise while reviewing relationships and aliases.
+- **Privacy first.** A lookup sends a name to Wikimedia, and names also come from the résumé and private chats. So background lookups cover only entities a claim mentions. Claims are from videos, articles and news; `source_record` doesn't count, because the résumé is stored as one. Anything else is looked up only when the user presses "Look up".
+- **Measured before building:**
+  - Wikidata's top search result was wrong 13 of 37 times: DRM → Digital Radio Mondiale, PNG → the image format, VR → a Finnish railway.
+  - `gpt-oss:120b-cloud`, choosing from the candidates with claim context and allowed to answer none, was right 33 of 35 on the tuning set.
+  - A model-suggested second search rescued garbled names (Pento Barbatale → pentobarbital) but invented matches for vague phrases ("system intelligence" → AGI).
+- **The held-out sets found what tuning didn't:**
+  - The first fresh set's two wrong picks were a video and a show title, linked through the second search to their subject (WaveNet; CNN's old Cuomo Prime Time).
+  - So events and programmes lost the second search, like concepts. A second fresh set then gave 18 right, 1 close and 1 wrong of 20 proposals.
+  - Nationality words keep slipping past the prompt's rule ("Chinese" → the PLA in the first scheduled run). Picks stay proposals the user rejects in the drawer.
+
+Two surprises from Wikimedia:
+- **The rate limit.** Three parallel lookups drew HTTP 429 and a 41 s `Retry-After`. Every call now goes through one serialised gate with the user's contact in the user agent, and a 429 pauses all lookups.
+- **The labels.** Albert Einstein's item has no English label, only a language-neutral `mul` one, so he showed as "Q937". Requests ask for `en|mul`.
+
+The done-condition's merge pair didn't appear for an honest reason. MSS and Ministry of State Security linked to the same item, but the user had already answered that pair "related", and an answered pair is never proposed again.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

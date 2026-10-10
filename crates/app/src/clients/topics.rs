@@ -449,6 +449,7 @@ pub async fn handle_topic(
             // Who puts notes in it, and the rules when that is `rules`.
             "assign": Topics::global().get(&name).map(|d| d.assign).unwrap_or_default(),
             "members": Topics::global().get(&name).map(|d| d.members.clone()).unwrap_or_default(),
+            "reference": Topics::global().get(&name).and_then(|d| d.reference.clone()),
             "updated_at": t.get::<String>("updated_at").ok(),
         },
         // The topics/*.yaml definition, when one exists: what "reset" restores,
@@ -521,7 +522,15 @@ fn body_def(body: &Value, name: Option<&str>) -> Result<TopicDef, String> {
             })?
         }
     };
+    let reference = match body.get("reference") {
+        None => old.and_then(|d| d.reference.clone()),
+        Some(Value::Null) => None,
+        Some(Value::String(r)) if r.trim().is_empty() => None,
+        Some(Value::String(r)) => Some(r.trim().to_string()),
+        Some(_) => return Err("reference must be a URL or null".into()),
+    };
     Ok(TopicDef {
+        reference,
         label: pick("label", old.map(|d| &d.label)),
         description: pick("description", old.map(|d| &d.description)),
         source_lists,

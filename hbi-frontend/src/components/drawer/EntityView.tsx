@@ -16,6 +16,7 @@ import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section } from "./parts";
 import RelatedEntities from "./RelatedEntities";
 import EntityRelations from "./EntityRelations";
+import EntityReference from "./EntityReference";
 
 const METHOD_LABEL: Record<string, string> = {
   seed: "curated seed",
@@ -64,6 +65,8 @@ function Body({ d }: { d: EntityDetail }) {
           Search notes for “{d.entity.name}”
         </a>
       </div>
+
+      <EntityReference id={id} name={d.entity.name ?? id} />
 
       <Aliases aliases={d.aliases ?? []} />
 

@@ -174,6 +174,7 @@ A domain the brain tracks. `topics/*.yaml` (`TOPICS_DIR`) seeds them, synced by 
 | `managed_by` | String | `yaml` (its file applies) or `runtime` (edited in the HBI; its file, if any, no longer applies) |
 | `assign` | String | `classifier` (the local model decides) or `rules` (only `members` rules and the user; left out of the classifier prompt) |
 | `members` | String | JSON list of member rules `{note_type?, source_context?, content_contains?}` (`assign: rules`) |
+| `reference` | String? | A page about the topic (an http(s) URL) set by the user or `reference:` in YAML. Not part of `version`: editing it classifies nothing again |
 | `created_at` / `synced_at` / `updated_at` | DateTime | Native `DATETIME`, UTC (`updated_at`: last HBI edit) |
 
 #### `RetiredTopic`
@@ -208,7 +209,26 @@ Named entities extracted from note content (8 types: `person`, `organisation`, `
 | `entity_type` | String | The most common type across its mentions (`MENTIONS.type`), or the seed's type when `type_source: 'seed'` |
 | `type_source` | String? | `seed` for a curated canonical from `entities/*.yaml` (name and type fixed; never pruned) |
 | `distinct` | Boolean? | `true` once a person split it back out (unmerge): never folded automatically again |
+| `wiki_checked_at` | DateTime? | Last reference lookup (`services/wiki.rs`). A `none` is due again after 90 days |
+| `wiki_result` | String? | `proposed` (a link was suggested or set) · `none` (nothing fit) |
+| `wiki_candidates` | String[]? | Wikidata ids the last lookup saw, in order (the drawer's "choose another", with no new search) |
+| `wiki_version` | String? | The pick prompt's version for the last lookup |
+| `wiki_pending_at` | DateTime? | An on-demand lookup is queued (cleared when it runs; ignored after 15 minutes) |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+
+#### `WikiItem`
+
+A Wikidata item, shared by every entity linked to it (HBI plan Phase 18, `services/wiki.rs`). Written for every candidate a lookup sees, so a drawer can offer them without searching again.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `qid` | String | Wikidata id (`Q1068951`), unique by MERGE |
+| `label` / `description` | String | English, else Wikidata's language-neutral `mul` label (Q937, Albert Einstein, has no `en` label) |
+| `kinds` | String[] | Labels of its instance-of (P31) values, at most 3 |
+| `aliases` | String[] | English and `mul` aliases, at most 8 |
+| `wiki_title` | String? | English Wikipedia article title; absent when it has none |
+| `summary` / `summary_at` | String? / DateTime? | The article's first paragraph (REST `page/summary`), fetched when a drawer shows it, cached 30 days |
+| `fetched_at` | DateTime | Last refreshed from Wikidata |
 
 #### `EntityAlias`
 
@@ -387,6 +407,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `IN_TOPIC` | `(Note)→(Topic)` | `rank: int` (1 = main topic, 2 = as central), `method: 'llm' \| 'rule' \| 'manual'`, `assigned_at: datetime` | Written by the topic assigner (`llm`, or `rule` for an `assign: rules` topic's member rule), or by the user (`manual`, with the note `topics_locked`); an unlocked note's edges are replaced whenever it is classified again |
 | `NOT_IN_TOPIC` | `(Entity)→(Topic)` | `at: datetime` | The user keeps the entity off that topic's map and lists; carried to the survivor by an entity merge |
 | `RELATES` | `(Entity)→(Entity)` | `type` (from `relations/*.yaml`), `method: 'manual' \| 'llm'`, `status: 'active' \| 'proposed' \| 'rejected'`, `evidence: [note id]`, `model` (llm), `created_at`, `decided_at`, `seen_again` (a rejected one proposed again), `from_merge_review` (folded from `RELATED_ENTITY`) | A typed relationship (HBI plan Phase 17, `services/relations.rs`). The user's are active; extracted ones are proposals until accepted or rejected; a rejected one is kept so it is never proposed again. A symmetric type is stored once, from the lower id |
+| `REFERS_TO` | `(Entity)→(WikiItem)` | `status: 'proposed' \| 'confirmed' \| 'rejected'`, `method: 'llm' \| 'manual'`, `why`, `query` (the model-suggested search term, when used), `model`, `at`, `decided_at` | The entity's reference link (HBI plan Phase 18). The model's pick is proposed; the user confirms, rejects, chooses another or pastes a URL. Confirming one rejects any other, so an entity has one reference. A rejected item is never offered to the model for that entity again. Two entities linked (proposed or confirmed) to one item are a `wikidata` merge candidate |
 | `ALIAS_VERDICT` | `(Entity)→(Entity)` (candidate `from` → `into`) | `verdict: 'same' \| 'related' \| 'different'`, `p_same`, `p_related`, `p_different` (floats), `model`, `version` (prompt version), `at: datetime` | The alias judge's opinion on a merge candidate (`services/alias_judge.rs`). It only orders the candidate list. A verdict from another model or prompt version is judged again, and a merge deletes it with the node |
 | `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
 | `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |

@@ -13,6 +13,8 @@ import { relTime } from "../../lib/time";
 import { hrefTo } from "../../nav";
 import { EmptyState, Pill } from "../ui";
 import { EntityLink, LoadState, Section } from "./parts";
+import { useWikiHints } from "../../api/wiki";
+import WikiHint from "./WikiHint";
 
 export function PairNotes({ a, b, topic }: { a: string; b: string; topic?: string }) {
   const q = usePair(a, b, topic);
@@ -26,8 +28,15 @@ function PairBody({ d }: { d: NonNullable<ReturnType<typeof usePair>["data"]> })
   const [adding, setAdding] = useState(false);
   const live = d.relations.filter((r) => r.status !== "rejected");
   const rejected = d.relations.length - live.length;
+  const hints = useWikiHints([d.a.id, d.b.id]).data ?? {};
+  const described = [d.a, d.b].filter((e) => hints[e.id]?.description);
   return (
     <div className="rel-pair">
+      {described.length > 0 && (
+        <div className="dw-dim">
+          {described.map((e, i) => <span key={e.id}>{i > 0 && " · "}{e.name}<WikiHint h={hints[e.id]} /></span>)}
+        </div>
+      )}
       {live.length > 0 && <ul className="dw-list">{live.map((r) => <RelationRow key={`${r.from}|${r.type}|${r.to}`} r={r} types={types.data?.types ?? []} />)}</ul>}
       <div className="item-actions">
         {live.length === 0 && <span className="dw-dim">No typed relationship between them{rejected ? ` (${rejected} rejected)` : ""}.</span>}

@@ -46,6 +46,7 @@ pub mod traits;
 pub mod transcribe;
 pub mod validation;
 pub mod web_result;
+pub mod wiki;
 
 pub use agent_runner::{
     AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,

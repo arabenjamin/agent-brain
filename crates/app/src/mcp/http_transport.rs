@@ -550,6 +550,30 @@ impl HttpTransport {
                 get(crate::clients::related::handle_proposed_relations),
             )
             .route(
+                "/api/entities/{id}/wiki",
+                get(crate::clients::wiki::handle_entity_wiki),
+            )
+            .route(
+                "/api/entities/{id}/wiki/lookup",
+                post(crate::clients::wiki::handle_entity_wiki_lookup),
+            )
+            .route(
+                "/api/entities/{id}/wiki/decide",
+                post(crate::clients::wiki::handle_entity_wiki_decide),
+            )
+            .route(
+                "/api/entities/{id}/wiki/url",
+                post(crate::clients::wiki::handle_entity_wiki_url),
+            )
+            .route(
+                "/api/wiki/describe",
+                post(crate::clients::wiki::handle_wiki_describe),
+            )
+            .route(
+                "/api/wiki/coverage",
+                get(crate::clients::wiki::handle_wiki_coverage),
+            )
+            .route(
                 "/api/entities/{id}/related",
                 get(crate::clients::related::handle_related),
             )

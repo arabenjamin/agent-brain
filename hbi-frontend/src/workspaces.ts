@@ -56,6 +56,7 @@ export const WORKSPACES: Workspace[] = [
       { id: "map", label: "Map" },
       { id: "graph", label: "Neighbourhood" },
       { id: "timeline", label: "Timeline" },
+      { id: "references", label: "References" },
     ],
   },
   {

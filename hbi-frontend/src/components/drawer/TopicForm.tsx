@@ -17,6 +17,7 @@ export default function TopicForm({ existing, onSaved, onCancel }: {
   const [lists, setLists] = useState((existing?.source_lists ?? []).join(", "));
   const [assign, setAssign] = useState<"classifier" | "rules">(existing?.assign ?? "classifier");
   const [members, setMembers] = useState<MemberRule[]>(existing?.members ?? []);
+  const [reference, setReference] = useState(existing?.reference ?? "");
   const setRule = (i: number, k: keyof MemberRule, v: string) =>
     setMembers((m) => m.map((r, j) => (j === i ? { ...r, [k]: v || undefined } : r)));
   const [busy, setBusy] = useState(false);
@@ -33,8 +34,8 @@ export default function TopicForm({ existing, onSaved, onCancel }: {
     const rules = assign === "rules" ? members.filter((r) => r.note_type || r.source_context || r.content_contains) : [];
     try {
       const r = existing
-        ? await updateTopic(existing.name, { label, description, source_lists, assign, members: rules })
-        : await createTopic({ name, label, description, source_lists, assign, members: rules });
+        ? await updateTopic(existing.name, { label, description, source_lists, assign, members: rules, reference: reference.trim() || null })
+        : await createTopic({ name, label, description, source_lists, assign, members: rules, reference: reference.trim() || null });
       onSaved(r.topic.name, r.note);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -63,6 +64,10 @@ export default function TopicForm({ existing, onSaved, onCancel }: {
           {description.trim().length} / {MAX_DESCRIPTION}
           {existing && definitionChanged && " · saving re-classifies every note while the brain is idle (about 4 hours for the whole graph)"}
         </span>
+      </label>
+      <label>
+        <span className="wk-dim">Reference (optional): a page about the topic, such as a Wikipedia article. Changing it classifies nothing again.</span>
+        <input className="ui-input" type="url" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="https://en.wikipedia.org/wiki/…" />
       </label>
       <label>
         <span className="wk-dim">Who puts notes in it</span>

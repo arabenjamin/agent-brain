@@ -148,6 +148,9 @@ services:
       # Merge candidates get a verdict from this host-Ollama classifier on idle
       # time (services/alias_judge.rs); "off" turns it off. Needs `ollama pull nimble`.
       - ALIAS_JUDGE_MODEL=${ALIAS_JUDGE_MODEL:-nimble}
+      # Wikimedia asks automated clients for a contact in the user agent; entity
+      # linking (services/wiki.rs) refuses to look anything up without one. Set in .env.
+      - WIKIMEDIA_CONTACT=${WIKIMEDIA_CONTACT-}
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are
       # routinely evicted mid-chain and reloaded per step. Override with a Go

@@ -15,6 +15,6 @@ describe("entity resolution client", () => {
   });
 
   it("labels every proposal reason", () => {
-    expect(Object.keys(REASON_LABEL).sort()).toEqual(["acronym", "plural", "surname", "title"]);
+    expect(Object.keys(REASON_LABEL).sort()).toEqual(["acronym", "plural", "surname", "title", "wikidata"]);
   });
 });

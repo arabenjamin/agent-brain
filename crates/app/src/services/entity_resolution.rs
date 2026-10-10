@@ -1039,7 +1039,7 @@ pub struct CandEntity {
 pub struct Candidate {
     pub from_id: String,
     pub into_id: String,
-    /// `surname` · `acronym` · `title` · `plural`.
+    /// `surname` · `acronym` · `title` · `plural` · `wikidata` (both link to one Wikidata item).
     pub reason: &'static str,
 }
 
@@ -1171,6 +1171,46 @@ pub async fn candidates(neo4j: &Neo4jClient, entity: Option<&str>, limit: usize)
         .collect();
     let by_id: HashMap<&str, &CandEntity> = ents.iter().map(|e| (e.id.as_str(), e)).collect();
     let mut cands = find_candidates(&ents, Rules::global());
+    // Two entities whose reference links (proposed or confirmed) are one
+    // Wikidata item (HBI plan §11.6): the rarer folds into the commoner.
+    let seen: HashSet<(String, String)> = cands
+        .iter()
+        .flat_map(|c| {
+            [
+                (c.from_id.clone(), c.into_id.clone()),
+                (c.into_id.clone(), c.from_id.clone()),
+            ]
+        })
+        .collect();
+    let shared_items = neo4j
+        .execute(neo4rs::query(
+            "MATCH (a:Entity)-[la:REFERS_TO]->(:WikiItem)<-[lb:REFERS_TO]-(b:Entity) \
+             WHERE a.id < b.id AND la.status IN ['proposed', 'confirmed'] \
+               AND lb.status IN ['proposed', 'confirmed'] \
+             RETURN DISTINCT a.id AS a, b.id AS b",
+        ))
+        .await?;
+    for r in &shared_items {
+        let (Ok(a), Ok(b)) = (r.get::<String>("a"), r.get::<String>("b")) else {
+            continue;
+        };
+        let (Some(ea), Some(eb)) = (by_id.get(a.as_str()), by_id.get(b.as_str())) else {
+            continue; // one of them is no longer mentioned
+        };
+        if seen.contains(&(a.clone(), b.clone())) {
+            continue;
+        }
+        let (from, into) = if ea.mentions <= eb.mentions {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        cands.push(Candidate {
+            from_id: from,
+            into_id: into,
+            reason: "wikidata",
+        });
+    }
     if let Some(id) = entity {
         cands.retain(|c| c.from_id == id || c.into_id == id);
     }

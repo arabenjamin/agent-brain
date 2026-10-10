@@ -1,0 +1,32 @@
+# Entity linking (HBI plan Phase 18, §11).
+#
+# Finds which Wikidata item (and English Wikipedia article) entities are and
+# proposes it as their reference link, for the user to confirm in the entity
+# drawer. Only entities named in claims (public sources: videos, articles,
+# news) are looked up here; anything else only when the user presses "Look up".
+# The step pins gpt-oss:120b-cloud (Ollama Cloud, no_log, $0): choosing from
+# Wikidata's candidates with claim context it was right 33 of 35 times with 0
+# wrong on the tuning set, while taking the top search result was wrong 13 of
+# 37 times. The drawer's "Look up" button runs this same step, so this is the
+# one place the model is pinned.
+#
+# Wikimedia rate-limits: lookups run one request at a time, a second apart,
+# with WIKIMEDIA_CONTACT in the user agent, and a 429 ends the run early.
+# 20 entities an hour clears the ~3,100 public entities in about a week.
+name: "Entity linking: propose Wikipedia reference links for entities"
+description: "Hourly: looks up to 20 entities named in claims on Wikidata, picks the item their claims describe (or none), and proposes it as the entity's reference link for the user to confirm. A 'no article' answer is checked again after 90 days."
+kind: maintenance
+# Shipped off, then turned on (2026-10-09) once the final prompt was measured
+# on a fresh held-out set: 18 of 20 proposals right, 1 close, 1 wrong.
+enabled: true
+# topic: none — spans topics on purpose
+interval_seconds: 3600
+steps:
+  - tool_name: link_entities
+    arguments:
+      limit: 20
+    model: gpt-oss:120b-cloud
+    provider_hint: ollama-cloud
+    priority: 3
+    max_attempts: 1
+    description: "Propose reference links for 20 entities"

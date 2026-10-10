@@ -1233,12 +1233,14 @@ Graded by hand.
 |---|---|---|
 | **18. Reference links** | §11.2–11.6: WikiItem + REFERS_TO, the lookup and its etiquette, `link_entities` and its schedule, the drawer's Reference block, descriptions in the review lists, topic reference URLs, `wikidata` merge candidates. | The final prompt is measured on a fresh held-out sample and recorded here; MSS and Ministry of State Security link to the same item and appear as a `wikidata` merge candidate; an entity mentioned only in private notes is never looked up in the background (the run reports it skipped); a rejected link stays rejected through a re-lookup; a topic shows a reference URL the user set. |
 
-### 11.9 Decisions
+### 11.9 Decisions (taken 2026-10-09)
 
-1. **`WIKIMEDIA_CONTACT`:** what goes in the user agent, an email or a URL such as the repository? *The user's choice.* Background lookups stay off until it is set.
+1. **`WIKIMEDIA_CONTACT`:** what goes in the user agent, an email or a URL such as the repository? *The user chose their email.* It is set in the gitignored `.env`, not in `docker-compose.yml`, which only passes it through.
 2. **Close-but-not-it picks** ("Emirati" → UAE): accept them as context, or prompt against them? *Recommend prompting against them:* the link should be the entity itself, and a demonym or an umbrella body is better as "none".
 3. **A Feed card for suggested links?** *Recommend none:* a suggested link is low-stakes and gets decided in the drawer, where it is used. The coverage count (linked / none / waiting) goes on the Knowledge page instead, drillable.
 4. **Re-check "none" after:** *Recommend 90 days.*
+
+Decisions 2–4 were taken as recommended.
 
 ### 11.10 Alias verdicts from nimble (built 2026-10-09, ahead of the rest of Phase 18)
 
@@ -1288,3 +1290,51 @@ Source: the user, after the §11 measurement: "lets use nimble for the alias rev
 **Left for later:**
 - The relationship proposals could use nimble's score as a sort key.
 - §11.6's `wikidata` merge reason pairs naturally with a "same" verdict.
+
+### Phase 18 outcome (2026-10-09)
+
+Built and deployed:
+- **Storage** (`services/wiki.rs`): `(:Entity)-[:REFERS_TO {status, method, why, query, model}]->(:WikiItem {qid, label, description, kinds, aliases, wiki_title, summary})`.
+  - The model's pick is `proposed`. Confirming one rejects any other, and a rejected item is never offered to the model for that entity again.
+  - Each lookup stamps `wiki_checked_at` / `wiki_result` / `wiki_candidates` on the entity, and "none" is checked again after 90 days.
+- **The lookup:**
+  - It searches the name, and for `x (y)` also `x` and `y`. It fetches each candidate's English (or language-neutral `mul`) label, description, kinds, aliases and article.
+  - `gpt-oss:120b-cloud` picks one or answers 0 (prompt v4).
+  - Only for named things (not `concept`, `event` or `programme`), a model-suggested second search follows.
+  - All Wikimedia calls go through one gate: serialised, 1.1 s apart, paused by a 429's `Retry-After`, with `WIKIMEDIA_CONTACT` in the user agent.
+- **Where it runs:**
+  - `link_entities` (tool count +1), run hourly over 20 claim-named entities by `schedules/entity-linking.yaml`. Review queues come first, then the most-mentioned.
+  - "Look up" in the drawer enqueues the same step with `on_demand`, so one place pins the model.
+- **REST:** the entity's reference, look up, confirm / reject, set by URL, one-line descriptions, and coverage by bucket (drillable).
+- **HBI:**
+  - The entity drawer's **Reference** block: label, description, kinds, the article's first paragraph, aliases, Wikipedia and Wikidata links, why the model picked it, Confirm / Not this / Choose another / paste a URL / Look up. With no link it says "no article found (checked …)" or why it was not looked up.
+  - One-line descriptions beside names in the relationship review, the pair view and the merge candidates.
+  - A **References** view under Knowledge: suggested / confirmed / no article / waiting, each drilling to its entities.
+  - A topic **reference URL** in the topic form and drawer, outside the topic version.
+- **Aliases:** a `wikidata` merge reason for two entities on one item, judged by nimble like any other.
+
+**Measured through the real path** (REST → queue → `link_entities` on the pinned model), graded by hand:
+
+| Prompt | Set | Proposed | Right | Close but not it | Wrong | Correctly none | Missed |
+|---|---|---|---|---|---|---|---|
+| v3 | 30 fresh entities | 23 | 19 | 2 (Italian → Italy, Cuban → Cuba) | 2 (a makemore video → WaveNet; "Cuomo Full Show" → CNN's Cuomo Prime Time) | 6 | 1 (Congresswoman Harshbarger) |
+| **v4** (nationality rule spelled out; no second search for events and programmes) | **30 more fresh entities** | **20** | **18** | **1** (the Marines → "marine force") | **1** (M5Stack Cardputer kit → M5Core) | **6** | **4** (Senate Agriculture Committee, Invictus, Lambda, "Juggalo gathering") |
+
+- **v3's wrong picks both came from the second search**, on a video and a show title, which it linked to their subject. v4 takes that search away from events and programmes. v4's one wrong pick also came from a second search.
+- **The misses are cautious:** the right item wasn't among the candidates (Invictus Games, Lambda the GPU company), or the name was too generic to search ("Juggalo gathering", set by URL in the test below).
+- **The first scheduled run** (the 20 most-mentioned waiting entities) gave 17 right, 1 fair reading ("White House" → Executive Office of the President), and 2 close-but-not-it: "United Kingdom" → the UK government, and "Chinese" → the People's Liberation Army, through a second search despite the nationality rule.
+- **Wikidata's labels:** Albert Einstein's item has no English label, only a language-neutral `mul` one, so it showed as "Q937". Every request now asks for `en|mul`, and the 5 stored items affected were repaired (2 more have no label at all).
+
+**Verified live (the done-condition):**
+- **Measured on a fresh held-out sample:** recorded above.
+- **MSS and Ministry of State Security:** both linked to Q1068951 (Ministry of State Security of the People's Republic of China). They do **not** appear as a `wikidata` merge candidate, because the user answered that pair "related" in the merge review before (Phase 17 folded it into `related_to`), and an answered pair is never proposed again. The new reason does work: "Cuban" ↔ "Cuba" appeared, and nimble judged it "related".
+- **Private entities are skipped in the background:** `link_entities` on the résumé-only entity "arabenjamin" returned `skipped_private`, with no candidates and nothing stored.
+- **Rejected stays rejected:** WaveNet was rejected for the makemore video, a re-lookup offered the model everything else, and it answered none.
+- **Confirm and set by URL:** Ministry of State Security's link was confirmed, with its article summary and aliases (MSS, Guoanbu) shown. "Juggalo gathering" was set from its Wikipedia URL. A bogus item and a non-Wikipedia URL were refused with the reason.
+- **A topic's reference URL:** the save path is covered by tests. No topic was edited live, because a save makes the topic runtime-owned. The first one is the user's.
+
+**Tests:** 889 Rust lib tests (5 new) and 97 vitest.
+
+**Left as it is:**
+- **The backlog:** about 3,000 claim-named entities are waiting, about a week at 20 an hour.
+- **Wikidata statements** (employer, member of, located in) as checks on relationship proposals, and a "Research this" button (§11.7).

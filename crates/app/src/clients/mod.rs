@@ -32,6 +32,8 @@ pub mod system;
 #[cfg(feature = "http-transport")]
 pub mod topics;
 #[cfg(feature = "http-transport")]
+pub mod wiki;
+#[cfg(feature = "http-transport")]
 pub mod work;
 
 pub use chat::{ChatEvent, ChatHistoryMessage, ChatRequest, ChatService};

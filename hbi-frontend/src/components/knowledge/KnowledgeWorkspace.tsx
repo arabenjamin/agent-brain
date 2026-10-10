@@ -9,6 +9,7 @@
  * - Map: the domains — topic hubs and the entities their notes mention (TopicMap);
  *   with `focus=<entity id>`, that entity's neighbourhood (EntityNeighbourhood).
  * - Timeline: when the results were written.
+ * - References: which entities have a Wikipedia reference link (References).
  *
  * `within=<topic>` narrows everything to one topic.
  *
@@ -29,6 +30,7 @@ import GraphPanel from "../graph/GraphPanel";
 import { DrillBanner, EmptyState, Pill } from "../ui";
 import TopicMap from "./TopicMap";
 import EntityNeighbourhood from "./EntityNeighbourhood";
+import References from "./References";
 
 export interface KnowledgeParams {
   q?: string;
@@ -45,6 +47,8 @@ export interface KnowledgeParams {
   focus?: string;
   /** Map neighbourhood: count only this topic's notes. */
   scope?: string;
+  /** References: confirmed · proposed · none · waiting. */
+  bucket?: string;
 }
 
 const MODES: { id: SearchMode; label: string; hint: string }[] = [
@@ -112,7 +116,9 @@ export default function KnowledgeWorkspace({ view, params }: { view: string; par
         <button type="submit" className="btn">Search</button>
         <button type="button" className="btn-ghost" onClick={() => openEntity("note", "new")}>+ New note</button>
       </form>
-      {view === "map" && params.focus ? (
+      {view === "references" ? (
+        <References bucket={params.bucket} />
+      ) : view === "map" && params.focus ? (
         <EntityNeighbourhood id={params.focus} scope={params.scope} />
       ) : view === "map" ? (
         <TopicMap />
