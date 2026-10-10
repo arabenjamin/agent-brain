@@ -1,22 +1,4 @@
-# chains/run-agent.yaml
-#
-# The Task front door to the shared agent loop (Phase 3 of
-# UNIFIED_AGENT_EXECUTION_PLAN). A Task whose goal is prefixed "run agent:" (or
-# "delegate to agent:") is handed to ONE overseeing agent that decides its own
-# steps, calls tools, and returns a cited answer — the "one agent per task" grain
-# (plan §5). This is how a background Task reaches the same loop chat's `delegate`
-# uses, instead of a fixed sequence of single tool calls.
-#
-# `agent: "auto"` lets run_agent pick the best-fitting spawnable agent by
-# specialty (Phase 2 select_agent). If none fit, the step is rejected naming the
-# roster — the cue to construct one instead.
-#
-# GATING: `run_agent` is only registered when SUBAGENT_ENABLED is on (default
-# OFF). With the feature off this chain is still seeded, but its run_agent step
-# fails as "no such tool" if a matching Task is ever created — so only create
-# "run agent:" Tasks with the feature enabled.
-#
-# {{goal_topic}} is {{goal}} with the routing prefix stripped.
+# Why: dev_docs get yaml/chains-run-agent-1
 name: run-agent
 # `pattern` is the required primary match; `patterns` adds alternatives (both are
 # seeded and matched by CONTAINS).

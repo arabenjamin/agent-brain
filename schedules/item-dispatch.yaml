@@ -1,14 +1,4 @@
-# Item dispatch (HBI plan Phase 13; TODO_DELAYED_PROMPT_PLAN.md Phase 3).
-#
-# Runs the user's items assigned to an agent once they are due. A schedule's
-# steps are enqueued verbatim, so it cannot loop over N items itself: the loop
-# is the tool (`dispatch_due_todos`), as `poll_media_sources` is for media.
-# An item handed over in the HBI is offered a run at once; this poll catches
-# due dates and failed runs. Hourly: a run is a Task in Work's lineage, and a
-# 15-minute poll would add ~96 run records a day for no faster answer.
-#
-# The tool keeps the guardrails: an agent that can act outside the graph waits
-# for the user's approval, at most 3 runs per item, at most 3 started per poll.
+# Why: dev_docs get yaml/schedules-item-dispatch-1
 name: "Item dispatch: run the user's items assigned to an agent when they are due"
 description: "Hourly: offers every due item assigned to an agent a run (read-only agents start, the rest wait for approval in the Feed), and hands failed runs back for a retry or for review."
 kind: maintenance

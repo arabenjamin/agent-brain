@@ -1,15 +1,4 @@
-# schedules/slm-benchmark-watch.yaml
-#
-# The "Soft layer" of the Critical Tech Dependency Mapping project: track small
-# language models (roughly 1B-7B) that reach frontier-equivalent capability on a
-# task class, and keep a current "Tier 2" recommendation list.
-#
-# This one has teeth for agent-brain specifically: the models it surfaces are
-# candidates for OLLAMA_LOCAL_MODEL and for the models.yaml catalog, so the final
-# section is written as an actionable recommendation rather than a news summary.
-#
-# Same banking idiom as hardware-tripwire.yaml — {{_prev}} carries only the
-# previous step, so sweeps are banked in "slmwatch-{{task_id}}" and reassembled.
+# Why: dev_docs get yaml/schedules-slm-benchmark-watch-1
 name: "Bi-weekly SLM benchmark watch: track frontier-equivalent small models in the 1B-7B range"
 description: "Bi-weekly sweep of new small-model releases and benchmark results, compared against the previous run, ending in an updated Tier 2 recommendation list for local deployment."
 topic: ai-ml
@@ -206,14 +195,7 @@ steps:
     provider_hint: ollama
     description: "Re-read the report alone"
 
-  # 8. Persist under the retrieval key used by the next run and the monthly audit.
-  #
-  #    note_type is `source_record`, not `semantic`. Nothing in this report is
-  #    knowledge the brain established — every figure in it is a benchmark
-  #    number some external page asserted, unverified. Typed `semantic` it came
-  #    back out of retrieval unlabelled and was relayed in chat as settled fact
-  #    ("ToRA-7B has emerged as a powerhouse"). As `source_record`, label_claims
-  #    prefixes it on retrieval with an explicit not-verified marker.
+  # Why: dev_docs get yaml/schedules-slm-benchmark-watch-2
   - tool_name: store_note
     arguments:
       content: "# SLM benchmark watch — {{date}}\n\n{{_prev}}"
@@ -224,14 +206,7 @@ steps:
     provider_hint: ollama
     description: "Store the benchmark watch report"
 
-  # 9. Break the report into individually checkable claims. A benchmark score is
-  #    exactly the shape the claims layer exists for: attributable, dated, and
-  #    corroborable against an independent domain. Without this the whole report
-  #    is one undifferentiated blob that retrieval can only accept or reject.
-  #
-  #    Chained directly off store_note: `{{_prev}}` is the stored report and
-  #    `{{_prev.id}}` is that note's id, so every claim carries an ASSERTED_IN
-  #    edge back to the run that produced it.
+  # Why: dev_docs get yaml/schedules-slm-benchmark-watch-3
   - tool_name: claim
     arguments:
       action: extract

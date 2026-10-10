@@ -4,13 +4,7 @@ topic: agent-brain
 kind: maintenance
 interval_seconds: 43200
 steps:
-  # One windowed query, then reason. Replaced 2026-10-02: the old chain ran
-  # three gathering steps, but {{_prev}} carries only the step immediately
-  # before `reason`, so the job counts and dead letters never reached it — and
-  # that last step was `list_tasks`, whose totals are ALL-TIME. The 10-02 report
-  # read "428 failed" (all-time; 9 in the past week) as current and called the
-  # brain's health "poor … systemic instability". Every row here names its
-  # window, and recent failures carry their reason.
+  # Why: dev_docs get yaml/schedules-health-monitor-1
   - tool_name: neo4j_query
     arguments:
       cypher: >-

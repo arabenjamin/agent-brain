@@ -1,21 +1,4 @@
-# Claim verification sweep — work through the unverified claim backlog.
-#
-# Claim extraction (video-learning, daily-news, learn) is cheap and runs at
-# ingest; verification costs a web search plus an assessment call per claim, so
-# it runs here in bounded batches rather than inline. That keeps ingestion fast
-# and spends the search budget deliberately.
-#
-# `claim(action=verify)` searches for independent coverage, records the evidence
-# as its own note, judges support/contradiction from that evidence alone, and
-# recomputes status from the resulting edges. It never rewrites a claim: the
-# assertion is preserved exactly as made, and only what surrounds it changes.
-#
-# Absence of evidence leaves a claim UNVERIFIED, never refuted. A niche claim
-# nobody else has covered is not thereby false, and treating silence as
-# refutation would quietly mark true-but-unreported things wrong.
-#
-# The `name` is the Neo4j MERGE key — do not change it without deleting the old
-# (:ScheduledTask) node.
+# Why: dev_docs get yaml/schedules-claim-verification-1
 name: "Claim verification: gather evidence for unverified claims and record what it says"
 description: "Works through the unverified claim backlog in batches: searches for independent evidence, records it, and recomputes each claim's status from the evidence found. Never edits the claim itself."
 # topic: none — spans topics on purpose

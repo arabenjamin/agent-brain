@@ -1,12 +1,4 @@
-# Relation extraction (HBI plan Phase 17).
-#
-# Reads claims that name two or more entities and proposes the typed
-# relationships they state, for the user to accept or reject (Work → Feed).
-# The step pins gpt-oss:120b-cloud (Ollama Cloud, no_log, $0): on a held-out
-# set of 30 claims it was right 8 of 9 times (5 of 9 strictly), while the local
-# Gemma-4-E4B got 2 of 8 and answered "none" even for the prompt's own example.
-# 30 claims a run, every 30 minutes: the backlog (~2.5k claims) clears in
-# about two days without crowding other cloud work.
+# Why: dev_docs get yaml/schedules-relation-extraction-1
 name: "Relation extraction: propose typed relationships stated in claims"
 description: "Every 30 minutes: reads up to 30 claims that name two or more entities and proposes the relationships they state (works for, leads, member of, …) for the user's review. Rejected ones are never proposed again."
 kind: maintenance

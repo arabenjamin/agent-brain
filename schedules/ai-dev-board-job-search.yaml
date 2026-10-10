@@ -1,21 +1,4 @@
-# AI Dev Board Job Search — daily, two boards, RESUME-MATCHED, deterministic.
-#
-# Reads each job's DESCRIPTION against Ara's resume and surfaces only the roles
-# whose JD actually matches his stack, best-fit first. The board's own match_score
-# ranks against a generic skill list; this chain re-reads the full JD text (title,
-# tags, description) against resume-grounded signals and ranks by that fit — all
-# deterministically in execute_code (Python; never let the local model reproduce
-# links or invent a fit). The resume is pulled live from the graph
-# (source_context:"resume") so it tracks resume edits.
-#
-# ACTIVATION: the live node is YAML-managed + enabled, so editing these steps
-# force-syncs on the next brain restart (enabled is graph-owned and stays true).
-#
-# Pattern (mirrors hardware-tripwire): each source + the resume is banked into a
-# jobsearch-scratch-<date> WorkingMemory session under a unique MARKER line,
-# reassembled with neo4j_query, matched/ranked by execute_code, pushed into the
-# fresh jobsearch-<date> session so notify_user opens a resumable chat where a
-# reply routes to the job-applicant profile (session-pinned in clients/chat/turn.rs).
+# Why: dev_docs get yaml/schedules-ai-dev-board-job-search-1
 name: AI Dev Board Job Search
 description: "Daily remote AI/ML engineering roles from aidevboard + worklittle, ranked by how well each JD matches Ara's resume, into a fresh resumable chat."
 topic: my-job-search

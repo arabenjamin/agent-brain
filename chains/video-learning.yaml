@@ -1,13 +1,4 @@
-# chains/video-learning.yaml
-#
-# Watch/ingest a video and learn from it: fetch transcript, summarize,
-# compare against existing knowledge (NEW vs KNOWN vs CHANGED), and store a
-# sourced note linked to a :Media dedup node.
-#
-# {{_prev}} only carries the PREVIOUS step's output, so intermediate outputs are
-# banked in the WorkingMemory session "video-{{task_id}}" and reassembled with a
-# neo4j_query step before any step that needs more than one of them. The final
-# step deletes the scratch session (same idiom as chains/daily-news.yaml).
+# Why: dev_docs get yaml/chains-video-learning-1
 name: video-learning
 pattern: "watch video:"
 patterns:
@@ -18,18 +9,10 @@ priority: 40
 no_adversarial: true       # ingestion isn't high-stakes planning — skip pre-flight
 description: "Watch/ingest a video: fetch transcript, map-reduce summarize, compare against existing knowledge, and store a sourced semantic note linked to its :Media node."
 steps:
-  # 1. Fetch metadata + transcript (captions) and map-reduce summarize INSIDE
-  #    the tool (chains are fixed-length; transcripts are not). `url` accepts the
-  #    raw goal ("watch video: <url>"); the tool extracts the first http(s) URL
-  #    and upserts a :Media node (dedup). Returns structured JSON:
-  #    { video_id, title, channel, url, summary, key_concepts, ... }.
+  # Why: dev_docs get yaml/chains-video-learning-2
   - tool_name: ingest_media
     arguments:
-      # `{{goal_topic}}`, NOT `{{goal}}`: the task goal is "watch video: <url>"
-      # and `{{goal}}` passes the routing prefix through as part of the URL, so
-      # ingest_media received "watch video: https://youtube.com/watch?v=..."
-      # (observed 2026-09-11). Same rule CLAUDE.md already states for search
-      # steps — anything consumed as DATA wants the topic, not the routing line.
+      # Why: dev_docs get yaml/chains-video-learning-3
       url: "{{goal_topic}}"
       source_context: video_learning
       store: false
@@ -85,16 +68,7 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # LOCAL, deliberately — see the same note in chains/fill-knowledge-gap.yaml.
-    # This chain runs once per watched video, and `poll_media_sources` produces
-    # up to MEDIA_WATCH_MAX_PER_SOURCE videos from every active source on every
-    # 12-hourly poll (29 tasks in one poll, measured 2026-08-31). It is a
-    # per-item chain, not a standing report, so its cloud cost scales with the
-    # watchlist and nothing bounds it.
-    #
-    # This step also has a second-order cost the others do not: its "## FOLLOW UP"
-    # section is what `spawn_gap_tasks` turns into gap tasks, so every run here
-    # creates up to `max` further chain runs. Keeping it local caps both.
+    # Why: dev_docs get yaml/chains-video-learning-4
     provider_hint: ollama
     # Distilled handoff: this is the one cloud-routed step in the chain, and its
     # {{_prev}} is the full reassembled transcript summary. Safe to compress here
@@ -108,16 +82,7 @@ steps:
       asides, and sponsor/housekeeping segments
     description: "New-vs-known comparison"
 
-  # 4b. Fan the '## FOLLOW UP' concepts out into 'fill knowledge gap:' Tasks
-  #     (feeds the curiosity engine). Pure side-effect: echoes the analysis text
-  #     back unchanged, so {{_prev}} still carries it into the banking step below.
-  # `max` is a fan-out multiplier, not a quality knob. Each gap task is a full
-  # chains/fill-knowledge-gap.yaml run (2 searches + a reason step), so this
-  # number multiplies against the videos-per-poll cap: 15 active sources x 2
-  # videos x `max` x 2 polls/day. At 4 that is up to 240 gap-fill chains a day,
-  # which is what buried the queue on 2026-08-31 (54 jobs still queued and 18
-  # reason steps parked three hours into the day). Lowered to 2. The follow-up
-  # concepts are ranked, so the ones dropped are the weakest of each video's list.
+  # Why: dev_docs get yaml/chains-video-learning-5
   - tool_name: spawn_gap_tasks
     arguments:
       text: "{{_prev}}"
@@ -164,15 +129,7 @@ steps:
     provider_hint: ollama
     description: "Store the sourced summary note"
 
-  # Extract checkable assertions from the stored note into individual claims.
-  # {{_prev}} is store_note's echo of the note content. The extractor reads
-  # attribution out of the text itself (the summary names the channel), so the
-  # claims carry who asserted them. Pure side-effect on the chain: this is the
-  # last content step, so nothing downstream depends on its output.
-  # Chained directly off store_note. `{{_prev}}` is the note body (the queue
-  # unwraps the result envelope's `answer`); `{{_prev.id}}` reaches into that
-  # same envelope for the note id, giving each claim an ASSERTED_IN edge back
-  # to the note it was extracted from.
+  # Why: dev_docs get yaml/chains-video-learning-6
   - tool_name: claim
     arguments:
       action: extract

@@ -1,12 +1,4 @@
-# chains/article-learning.yaml
-#
-# Read a web article from an `article_rss` MediaSource and learn from it: fetch
-# and extract the text, summarize, compare against existing knowledge, store a
-# source_record, and extract claims. The article twin of video-learning.yaml —
-# same banking idiom, same local routing, same epistemics.
-#
-# Tasks arrive as "read article: <url>" from poll_media_sources (one per new
-# feed item, capped per source by MEDIA_WATCH_MAX_PER_SOURCE).
+# Why: dev_docs get yaml/chains-article-learning-1
 name: article-learning
 pattern: "read article:"
 patterns:
@@ -15,11 +7,7 @@ patterns:
 priority: 40
 description: "Read/ingest a web article: extract its text, summarize, compare against existing knowledge, and store a sourced note with its claims extracted."
 steps:
-  # 1. Fetch, extract readable text, map-reduce summarize INSIDE the tool, and
-  #    record the :Media dedup node linked to the feed it came from. A page with
-  #    no extractable article (paywall, script-rendered) fails here and is
-  #    recorded so the next poll does not re-create the Task.
-  #    `{{goal_topic}}`, not `{{goal}}`: the routing prefix is not part of the URL.
+  # Why: dev_docs get yaml/chains-article-learning-2
   - tool_name: ingest_article
     arguments:
       url: "{{goal_topic}}"

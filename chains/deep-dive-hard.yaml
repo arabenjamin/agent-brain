@@ -1,16 +1,4 @@
-# chains/deep-dive-hard.yaml
-#
-# The paid twin of chains/deep-dive.yaml (read that file for the steps and the
-# verify rules — they are identical). Reached ONLY by a goal you write with the
-# "deep dive (hard):" prefix, e.g. from chat:
-#   create_task("deep dive (hard): How does age's X25519 recipient stanza wrap the file key?")
-# Nothing scheduled produces that prefix, so the brain never decides on its own
-# to spend. It runs `deep-diver-hard` (Claude Sonnet 5), which on 2026-10-05
-# was the only model to answer the Reticulum hash question correctly.
-#
-# Cost: ~$2 for a 16-round run before prompt caching; less with it. Bounded by
-# the anthropic spend cap (checked before every call) and ROUTING_PAID_FOR
-# naming `subagent`.
+# Why: dev_docs get yaml/chains-deep-dive-hard-1
 name: deep-dive-hard
 pattern: "deep dive (hard):"
 # Ahead of deep-dive (12). The patterns cannot collide ("deep dive:" never
@@ -27,19 +15,7 @@ steps:
     arguments:
       agent: deep-diver-hard
       max_rounds: 16
-      # Checked against the agent's real tool trace: it must have read a page,
-      # and Rust code must come with a passing sandbox test run. A failure
-      # prefixes the answer UNVERIFIED and store_note keeps it out of semantic.
-      # Checked against the agent's real tool trace: it must have read a page;
-      # Rust code needs a passing sandbox test; every cited path:line must
-      # exist; the last clippy run must be clean; and a question that asks
-      # for Rust cannot answer "not
-      # applicable". A failure prefixes the answer UNVERIFIED and store_note
-      # keeps it out of semantic.
-      #
-      # There is no chain-made "first read" any more: two versions (a search
-      # + a model-picked URL, then a GitHub tree lookup) fetched nothing on
-      # 2026-10-05, while the agent found Reticulum's source by itself.
+      # Why: dev_docs get yaml/chains-deep-dive-hard-2
       verify:
         require_tools: [mcp_call]
         code_requires_tests: true

@@ -11,14 +11,7 @@ description: "Learning / research: search the web for current information, reaso
 # trains on prompts. See project-docs/PROVIDER_ROUTING_PLAN.md §3.
 data_class: private
 steps:
-  # Step flow and {{_prev}} chain:
-  #   1. search_web → external results (the graph can't answer a research goal
-  #                   about material it doesn't contain — re-chewing internal
-  #                   notes produced meta-commentary the evaluator rejected)
-  #   2. reason     → facts grounded ONLY in the gathered results
-  #                   (context pins the prompt; without it reason RAGs the graph)
-  #   3. store_note → durable semantic note that satisfies research
-  #                   success_criteria ("concrete, verifiable facts")
+  # Why: dev_docs get yaml/chains-learn-1
   - tool_name: search_web
     arguments:
       # goal_topic, not goal: strips any routing prefix so the query carries the

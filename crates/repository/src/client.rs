@@ -54,6 +54,7 @@ impl Neo4jClient {
             // Without these, every `MATCH (n:Note {id: $id})` is a full label scan.
             "CREATE CONSTRAINT note_id IF NOT EXISTS FOR (n:Note) REQUIRE n.id IS UNIQUE",
             "CREATE CONSTRAINT task_id IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS UNIQUE",
+            "CREATE CONSTRAINT dev_note_id IF NOT EXISTS FOR (d:DevNote) REQUIRE d.id IS UNIQUE",
             // Media-learning: the watchlist name and the video/episode dedup key.
             "CREATE CONSTRAINT media_source_name IF NOT EXISTS FOR (m:MediaSource) REQUIRE m.name IS UNIQUE",
             // :Media.id is the platform video/episode id — the dedup key checked before every
@@ -69,6 +70,10 @@ impl Neo4jClient {
             "CREATE INDEX note_next_review IF NOT EXISTS FOR (n:Note) ON (n.next_review_at)",
             // Full-text index for BM25 hybrid search
             "CREATE FULLTEXT INDEX note_content_fulltext IF NOT EXISTS FOR (n:Note) ON EACH [n.content]",
+            // Developer notes (services/dev_notes.rs): their own indexes, so dev history
+            // never mixes into retrieval over :Note.
+            "CREATE VECTOR INDEX dev_note_embeddings IF NOT EXISTS FOR (d:DevNote) ON (d.embedding) OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}",
+            "CREATE FULLTEXT INDEX dev_note_fulltext IF NOT EXISTS FOR (d:DevNote) ON EACH [d.title, d.content, d.subsystem]",
             // Working memory session index
             "CREATE INDEX working_memory_session IF NOT EXISTS FOR (w:WorkingMemory) ON (w.session_id)",
             // Entity type index

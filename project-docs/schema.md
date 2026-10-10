@@ -412,6 +412,20 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `no_adversarial` | Boolean | If true, skip adversarial pre-flight even when task has `success_criteria` |
 | `evaluation_rubric` | String? | Overrides `Task.success_criteria` as the evaluator goal text |
 
+#### `DevNote`
+
+Developer documentation in the graph (`services/dev_notes.rs`; rules: `dev_docs get dev-notes/rules`). Separate from `:Note` on purpose, with its own indexes `dev_note_embeddings` and `dev_note_fulltext`. Seeded create-only from `devdocs/devnotes.jsonl`.
+
+| Property | Type | Description |
+|---|---|---|
+| `id` | String | Unique (`dev_note_id` constraint) |
+| `kind` | String | `rule` · `history` · `decision` · `plan` |
+| `subsystem`, `title`, `content` | String | Fulltext-indexed |
+| `paths` | List<String> | Files the note is about |
+| `source` | String | Where it came from (a former doc, a YAML file, `dev_docs`) |
+| `date` | String | Local date written (`YYYY-MM-DD`) |
+| `embedding` | List<Float> | bge-m3 of title + first 4000 chars; backfilled at startup |
+
 #### `RemovedTool`
 
 A tombstone for a tool the brain no longer has (`services/self_model.rs`). Written at startup when a `:ToolDef` vanishes from the registry, annotated from `architecture/removed-tools.yaml`, and deleted if the tool is registered again. `list_capabilities(kind=tools)` lists them under `removed`.

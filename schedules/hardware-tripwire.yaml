@@ -1,19 +1,4 @@
-# schedules/hardware-tripwire.yaml
-#
-# The "Hard layer" of the Critical Tech Dependency Mapping project: watch the AI
-# accelerator supply chain for disruption signals before they reach mainstream news.
-#
-# {{_prev}} only carries the PREVIOUS step's output, so each search_web result is
-# banked into the WorkingMemory session "tripwire-{{task_id}}" and reassembled with
-# a neo4j_query step before the reason step (same idiom as chains/video-learning.yaml).
-# The prior run's note is banked first so the reason step performs a DELTA against
-# it rather than re-describing the world from scratch.
-#
-# EVERY step must carry `provider_hint: ollama` except the single synthesis step.
-# `use_local` in queue.rs is `provider_hint == Some("ollama")`, so an OMITTED hint
-# is not "default local" — it routes to the active config, which is a cloud model.
-# The runtime definition that shadowed this file for two weeks omitted the hint on
-# all six of its steps and put four searches and a store_note on cloud for nothing.
+# Why: dev_docs get yaml/schedules-hardware-tripwire-1
 name: "Weekly hardware tripwire: scan the AI accelerator supply chain for disruption signals"
 description: "Weekly scan of HBM3e/memory, CoWoS/advanced packaging, raw-material + geopolitical signals, and substitution/alternative architectures. Compares fresh findings against the previous run's baseline and stores a delta report."
 topic: semiconductors
@@ -24,11 +9,7 @@ interval_seconds: 604800
 data_class: public
 
 steps:
-  # 1. Pull the previous tripwire report (or the original hand-written BASELINE
-  #    note on the very first run) so this run can diff against it.
-  #    `NOT (n)-[:PART_OF]->()` excludes store_note's semantic chunks: chunks
-  #    inherit source_context from their parent, so without this filter the
-  #    "prior baseline" can come back as a 300-char fragment of one section.
+  # Why: dev_docs get yaml/schedules-hardware-tripwire-2
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (n:Note) WHERE (n.source_context = 'hardware_tripwire' OR n.content STARTS WITH 'BASELINE: State of AI Accelerator Hardware') AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
@@ -47,11 +28,7 @@ steps:
     provider_hint: ollama
     description: "Bank prior baseline"
 
-  # 2-4. Three independent signal sweeps, each banked immediately.
-  #     source_list: semiconductors (2026-10-06). Unrestricted, these returned
-  #     mostly unrecognised SEO-style sites (dailysynapse.com, sotkn.com,
-  #     eastasiabrief.com…); restricted, TrendForce, DigiTimes, The Elec, EE
-  #     Times, Nikkei Asia, Reuters and the FT — where this news breaks.
+  # Why: dev_docs get yaml/schedules-hardware-tripwire-3
   - tool_name: search_web
     arguments:
       query: "HBM3e HBM4 supply SK Hynix Micron Samsung memory yield capacity allocation"
@@ -115,22 +92,7 @@ steps:
     provider_hint: ollama
     description: "Bank materials signal"
 
-  # 4d. Substitution sweep. The three sweeps above measure how tight a
-  #     bottleneck is; this one measures whether it can be routed around, which
-  #     is a different question and changes what a tightening signal means. A
-  #     constrained input with a maturing substitute is a price event; the same
-  #     constraint with no alternative in sight is a capacity ceiling.
-  #
-  #     This scope arrived via six near-duplicate schedules a chat session
-  #     created on 2026-08-25 (see CLAUDE.md, "A runtime node shadows its YAML
-  #     file"). Folded in here as a fourth sweep rather than widened into the
-  #     raw-materials query above: each sweep is deliberately narrow, and one
-  #     query spanning export controls, memory architectures, and battery
-  #     chemistries returns worse results for all three.
-  #     Split in two on 2026-10-06: memory alternatives are covered by the
-  #     semiconductors list, battery and material substitution are not (no
-  #     battery outlets on it yet), and one query mixing both pulled EE Times
-  #     archive pages mis-dated as current.
+  # Why: dev_docs get yaml/schedules-hardware-tripwire-4
   - tool_name: search_web
     arguments:
       query: "alternative memory architecture 3D X-DRAM HBM substitute qualification timeline"
@@ -231,25 +193,12 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # Synthesis benefits from a stronger model; the router picks the best catalog
-    # match within CLOUD_TIER. Any hint other than "ollama" uses the active config.
-    # Paid synthesis: `deep_reasoning` is held only by claude-sonnet-5. When the
-    # spend cap or ROUTING_PAID_FOR refuses it, the step runs on this
-    # provider_hint (gpt-oss) instead — see the note in models.yaml.
+    # Why: dev_docs get yaml/schedules-hardware-tripwire-5
     provider_hint: ollama-cloud
     required_capabilities: ["deep_reasoning"]
     description: "Delta analysis vs prior baseline"
 
-  # 7. Persist. `source_context` is the retrieval key for the next run's step 1
-  #    and for the monthly synthesis audit — do not rename it casually.
-  #
-  #    note_type is `source_record`, not `semantic`. Nothing in this report is
-  #    knowledge the brain established — every figure is a lead time, a price,
-  #    or a capacity number that some external page asserted. Typed `semantic`
-  #    it comes back out of retrieval unlabelled and gets relayed as settled
-  #    fact; that is exactly how the sibling SLM watch ended up reporting a
-  #    Sept-2023 benchmark as a current standing. This step was missed when the
-  #    epistemics layer landed and was caught later by `lint_chain_steps`.
+  # Why: dev_docs get yaml/schedules-hardware-tripwire-6
   - tool_name: store_note
     arguments:
       content: "# Hardware tripwire — {{date}}\n\n{{_prev}}"

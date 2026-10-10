@@ -1,27 +1,4 @@
-# Intelligence agency claims monitor — daily.
-#
-# Replaces the runtime-authored GDELT version (disabled 2026-09-26): it called
-# https://api.gdeltproject.org/api/v2/events/events, which does not exist, so 14
-# of 15 runs since 09-08 reasoned over a 404 page and were recorded "completed".
-# See project-docs/BRAIN_ASSESSMENT_FIXES_PLAN.md, step 5.
-#
-# Sources, both already free and keyed:
-#   - ApiTube (`apitube` ApiContext, 100 req/day; 3 calls/run). `title=` is the
-#     only topical filter that works, and it is AND-ed: `title=CIA OR Mossad`
-#     returned only titles naming BOTH (verified 2026-09-26), so each keyword is
-#     its own call. `sort.by=published_at` returns newest first; ApiTube defaults
-#     the window to the last 31 days. ~17 KB per article, so per_page stays at 2.
-#   - SearXNG via search_web, restricted to the `news` SourceList.
-#
-# Every search passes `prior_knowledge: false`. The graph-first block would quote
-# our own earlier notes, and the report would restate them as today's news. The
-# prior report is supplied separately, labelled as such, for the delta.
-#
-# The first run (2026-09-26) reached back to 2016 because an empty prior report
-# was read as "everything is new", and a spy-museum travel piece matched
-# `espionage`. Gates 2 and 4 of the report prompt exist for those two cases.
-#
-# This is public news, so the report runs as data_class: public.
+# Why: dev_docs get yaml/schedules-intelligence-agency-claims-monitor-1
 name: "intelligence-agency-claims-monitor"
 description: "Daily sweep of news about intelligence agencies (CIA, NSA, FBI, Mossad, GRU/FSB/SVR, MI6, MSS) making or facing claims, via ApiTube + SearXNG news. Dated delta against the prior report, stored as a source_record with claims extracted."
 topic: national-security

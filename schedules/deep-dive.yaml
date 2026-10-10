@@ -1,20 +1,4 @@
-# schedules/deep-dive.yaml
-#
-# The brain's self-directed exercise, replacing schedules/brain-exercise.yaml
-# (paused 2026-10-03). That one picked the entity with the most mentions and
-# fewest notes, which picked the brain's own vocabulary ("knowledge gap",
-# "brain") and source names ("c-span", "newsnation"), and asked to "research"
-# it as a whole: 0 of 9 runs succeeded.
-#
-# This one starts from what the brain is actually working on and narrows:
-#   open todos + technologies in recent notes + recent research topics
-#   + the "NEXT" question of each prior deep dive
-#   → one theme → one specific, answerable question
-#   → a "deep dive:" Task, answered by chains/deep-dive.yaml (the deep-diver
-#     agent: graph, web, and for a technical topic a sandbox-tested Rust
-#     example placed in this codebase).
-# Each answer ends with a narrower NEXT question, which the next run sees, so a
-# theme is followed down over several runs instead of restated at the top.
+# Why: dev_docs get yaml/schedules-deep-dive-1
 name: "Deep dive: narrow a broad theme into one specific question and answer it"
 description: "Every two days: reasons over open todos, recent technologies and research topics, and prior deep dives; picks one theme and narrows it to a specific question (preferring a concrete Rust/agent-brain angle for technical themes); creates a 'deep dive:' Task that the deep-diver agent answers."
 # topic: none — spans topics on purpose
@@ -34,11 +18,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # Cloud, deliberately. One call every two days. The first run on local E4B
-  # (2026-10-03) ignored the narrowing instruction and returned "How should a
-  # Vault service be built in Rust…" — the todo restated as a question.
-  # Narrowing a theme to an answerable question is the judgement this whole
-  # schedule exists for.
+  # Why: dev_docs get yaml/schedules-deep-dive-2
   - tool_name: reason
     arguments:
       question: |

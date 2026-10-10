@@ -2,9 +2,16 @@
 
 Guidance for working with the Agent Brain codebase. Forked from [Agent Api](https://github.com/arabenjamin/agent-api) and since rewritten into a persistent, self-improving autonomous agent brain.
 
-This file is loaded into every session, so it holds only what applies to most work. **Detail lives in `project-docs/`** — see "Where things are documented" below, and read the matching section before changing a subsystem.
+This file holds only what applies to most work. **Detail lives in the graph as dev notes** (subsystem rules, their incidents, plans): query them before changing a subsystem.
 
-> **Do not add content to this file.** New rules, lessons, env vars and plan status go in the matching `project-docs/` file. If a new doc is needed, add one row to the "Where things are documented" table pointing at it, and nothing more.
+```bash
+scripts/dev_docs.sh search "<question>" [subsystem] [path]  |  get <id>
+scripts/dev_docs.sh write rule|history|decision|plan "<subsystem>" "<title>" "<content>|-" [paths] [id]
+```
+
+Brain down? `grep devdocs/devnotes.jsonl` (the git seed; the graph rewrites it on every write). A cited former doc (`HBI_REDESIGN_PLAN.md §9`) is searchable by that name as `subsystem`.
+
+> **Do not add content to this file.** A new rule or lesson is a dev note; env vars go in `project-docs/env.md`.
 
 ## Project Overview
 
@@ -66,21 +73,20 @@ YAML seed dirs:     chains/ schedules/ contexts/ sources/ sources-media/ mcp-ser
 - **Failures must be visible.** A truncated result is marked, a count must be drillable to its rows, and an empty answer names what does exist. A tool error and a quality miss (`isError: false`) are different things; check the tool's actual output before blaming the model.
 - **A local small-model prompt is a size budget** (keep it near 2-3k chars, terse imperatives). Local E4B handles one-shot synthesis; investigative loops need cloud. Measure the answer against a cloud twin before pinning an agent local.
 - **Sandboxes** (`sandbox`, `rust-sandbox`) stay on an internal network with no egress and no `ports:` mapping. A failed run is a successful tool call.
-- **Docs first:** update README and the `project-docs/` files to reflect changes. A new subsystem rule goes in `project-docs/subsystem-rules.md`, its incident story in `project-docs/engineering-history.md`, never here.
+- **Docs first:** update README and the reference files to reflect changes. A new subsystem rule is a `rule` dev note, its incident story a `history` note, never here and never a new markdown file.
 
-## Where things are documented
+## Reference files (read on demand)
 
 | Topic | File |
 |---|---|
-| Every subsystem's operative rules (scheduler, evaluator, critic, chains, self-knowledge tools, chat loop, front door, schedules, curiosity engine, epistemics, search ladder, media, MCP client, context profiles, going local) + data model + critical dev notes | `project-docs/subsystem-rules.md` |
-| Why each rule exists (incidents, measurements) | `project-docs/engineering-history.md` |
+| Rules, history, plan decisions | dev notes (`scripts/dev_docs.sh`) |
 | Environment variables | `project-docs/env.md` |
-| Plan docs and their phase status | `project-docs/PLANS_INDEX.md` |
 | Graph schema, timestamps | `project-docs/schema.md` |
 | Skill registry, init order | `project-docs/architecture_context.md` |
-| Tool counts, feature status | `project-docs/STATUS.md` |
 | CLI | `project-docs/cli.md` |
-| Fine-tuning | `project-docs/FINE_TUNING_PLAYBOOK.md`, `RUST_FINETUNE_EXPERIMENT.md` |
+| Active plans | `project-docs/PLANS_INDEX.md` |
+| Fine-tuning | `project-docs/FINE_TUNING_PLAYBOOK.md` |
+| Live tool list, counts | `list_capabilities` (`kind: tools`) / `GET /api/tools` |
 
 ## Branch Strategy
 DO NOT REMOVE THIS LINE:Never write in credidation to LLMs or coding agents or assistants.

@@ -5,8 +5,8 @@ write better Rust), written so the next fine-tune (a different model, a
 different specialty) starts from what we learned instead of rediscovering it.
 
 - **The lab notebook** with every measurement is
-  [`RUST_FINETUNE_EXPERIMENT.md`](RUST_FINETUNE_EXPERIMENT.md).
-- **The long-term plan** is [`FINE_TUNING_PLAN.md`](FINE_TUNING_PLAN.md).
+  the `RUST_FINETUNE_EXPERIMENT` dev notes (`scripts/dev_docs.sh search "<question>" RUST_FINETUNE_EXPERIMENT`).
+- **The long-term plan** is the `FINE_TUNING_PLAN` dev notes (kind `plan`).
 - **The code** is `workspace/finetune/` (its own git repo).
 
 **Status:** written 2026-09-12; results completed 2026-09-13, when Experiment 1

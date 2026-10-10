@@ -38,6 +38,14 @@ cargo run -- serve --transport http --api-key my-secret-key  # with auth
 cargo run -- init-db
 ```
 
+## Restore a snapshot
+
+```bash
+agent-brain restore-snapshot <file.json.gz> [--dry-run]
+```
+
+Restores a knowledge-graph snapshot from `KNOWLEDGE_SNAPSHOT_DIR` (notes, tasks, entities, aliases, procedures, relationships). MERGE semantics: safe on a non-empty graph, nothing is deleted. `--dry-run` prints what the file holds. In compose: `docker compose exec agent-brain agent-brain restore-snapshot /home/agent/snapshots/<file>`.
+
 ## Repair notes
 
 ```bash

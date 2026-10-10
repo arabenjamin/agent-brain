@@ -1,22 +1,4 @@
-# chains/fill-knowledge-gap.yaml
-#
-# The curiosity engine. Gap tasks are spawned by `spawn_gap_tasks` (from a
-# video's "## FOLLOW UP" section) and by the daily news-analysis schedule.
-#
-# This chain searches BOTH the graph and the web, then answers the gap from the
-# union of the two. Searching only internal notes — which is what this chain did
-# before 2026-08-10 — cannot fill a knowledge gap by definition: a gap is
-# precisely the thing the graph does not contain. The result was self-referential
-# "Gap synthesis" notes that re-chewed prior notes and drifted into meta-
-# commentary about the source material instead of answering anything.
-#
-# {{_prev}} only carries the PREVIOUS step's output, so the two search results
-# are banked in the WorkingMemory session "gap-{{task_id}}" and reassembled with
-# a neo4j_query step before the reason step (same idiom as chains/daily-news.yaml
-# and chains/video-learning.yaml).
-#
-# {{goal_topic}} is {{goal}} with the "fill knowledge gap:" prefix stripped — the
-# prefix is for chain routing and is noise inside a search query.
+# Why: dev_docs get yaml/chains-fill-knowledge-gap-1
 name: fill-knowledge-gap
 pattern: "fill knowledge gap:"
 # Below learn's 50: gap goals routinely read "fill knowledge gap: Research the
@@ -67,17 +49,7 @@ steps:
     provider_hint: ollama
     description: "Gap fill: bank web results"
 
-  # 3. Reassemble both sections so `context` carries them together rather than
-  #    only the push confirmation that {{_prev}} currently holds.
-  #
-  #    ALREADY KNOWN is capped at 15,000 characters, with a marker saying how
-  #    much was left out. The reason step's distiller reads at most 24,000
-  #    characters (the first 16,000 and the last 8,000) and silently drops the
-  #    middle. Measured 2026-10-10 on 143 runs: the stored notes ran to 20,500
-  #    characters at the median (67,000 max), so 73 handoffs went over and lost
-  #    a median 9,000 characters of stored notes from the middle, unmarked. The
-  #    web section never exceeded 7,412, so 15,000 + web stays inside the window.
-  #    search_notes ranks best first, so the cap drops the lowest-ranked notes.
+  # Why: dev_docs get yaml/chains-fill-knowledge-gap-2
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) WITH w ORDER BY w.turn_index RETURN CASE WHEN w.content STARTS WITH '## ALREADY KNOWN' AND size(w.content) > 15000 THEN left(w.content, 15000) + ' [… stored notes cut here: ' + toString(size(w.content) - 15000) + ' more characters, the lowest-ranked notes, not shown]' ELSE w.content END AS content"
@@ -117,23 +89,7 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # LOCAL, deliberately — this step is the single largest cloud consumer in
-    # the system, and it is the one where per-call quality matters least.
-    #
-    # The cost is not per run, it is per gap task, and gap tasks fan out
-    # multiplicatively: `poll_media_sources` takes MEDIA_WATCH_MAX_PER_SOURCE (2)
-    # videos from each of 15 active sources, and chains/video-learning.yaml calls
-    # `spawn_gap_tasks` with `max` per video. Measured 2026-08-31: one 12-hourly
-    # poll produced 29 `watch video:` tasks and 59 `fill knowledge gap:` tasks in
-    # three hours — 88 cloud `reason` calls at ~5.1k input tokens each, against a
-    # prior baseline of 47-80 cloud calls PER DAY. The five standing weekly
-    # reports together are 1.4 cloud calls/day. This chain, uncapped, is ~99% of
-    # background cloud spend, and every token it takes is a token chat cannot use.
-    #
-    # Nothing about the work needs a frontier model: the step summarises search
-    # results the chain just fetched into three fixed headings, with the payload
-    # already distilled locally below. If a specific gap genuinely needs stronger
-    # synthesis, raise it as a one-shot Task rather than putting every gap on cloud.
+    # Why: dev_docs get yaml/chains-fill-knowledge-gap-3
     provider_hint: ollama
     # Distilled handoff: raw SERP payloads are mostly boilerplate and this is the
     # cloud-routed step. URLs are preserved because the prompt requires citations.
@@ -165,24 +121,7 @@ steps:
     provider_hint: ollama
     description: "Gap fill: complete the task"
 
-  # 5. Clean up the scratch working-memory session.
-  #
-  #    priority 1, NOT 0. The queue is a max-heap — `PrioritizedJob`'s Ord sorts
-  #    priority descending, and `repository/src/agent_job.rs` pops with
-  #    `ORDER BY j.priority DESC, j.created_at ASC` — so 0 is the LOWEST
-  #    priority and runs only when nothing at 1 or 2 is waiting. Under a
-  #    continuously-fed queue that resolves to never: measured 2026-08-31, the
-  #    last priority-0 job to complete finished at 06:31Z, ~10 hours earlier,
-  #    with 93 queued behind it (89 of them this cleanup step, oldest 3h38m).
-  #    Cleanup stopped running the moment the media poll began filling the queue
-  #    with priority-1/2 work, and left 203 orphaned WorkingMemory nodes across
-  #    99 abandoned scratch sessions. It does not self-correct while work arrives.
-  #
-  #    Priority 0 was expressing "not urgent", which is true and not the same as
-  #    "skippable" — this step must eventually run or the graph accumulates
-  #    scratch forever. At priority 1 it interleaves with the search steps at
-  #    negligible cost: one Cypher DETACH DELETE, no LLM call, no network.
-  #    Deferring something that costs nothing buys nothing.
+  # Why: dev_docs get yaml/chains-fill-knowledge-gap-4
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'gap-{{task_id}}'}) DETACH DELETE w"

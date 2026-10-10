@@ -1,9 +1,4 @@
-# PAUSED 2026-10-03, superseded by schedules/deep-dive.yaml. Picking the entity
-# with the most mentions and fewest notes chose the brain's own vocabulary
-# ("knowledge gap", "brain") and source names, and asked to research each as a
-# whole topic: 0 of 9 runs succeeded. `enabled` is graph-owned, so the live node
-# stays paused across restarts; `enabled: false` keeps a fresh graph from seeding
-# it on.
+# Why: dev_docs get yaml/schedules-brain-exercise-1
 enabled: false
 name: "Brain exercise: pick a topic from the knowledge graph and create a self-directed research task"
 description: "Weekly self-directed exercise — analyses entity mentions to find a topic the brain encounters often but knows little about, then creates a research Task with success criteria so the evaluator loop grades the outcome."
@@ -11,15 +6,7 @@ description: "Weekly self-directed exercise — analyses entity mentions to find
 kind: learning
 interval_seconds: 604800
 steps:
-  # Step flow and {{_prev}} chain:
-  #   1. neo4j_query → entities ranked by mentions vs. how much semantic knowledge
-  #                    exists about them (high mentions + few semantic notes = a
-  #                    topic the brain keeps encountering but hasn't studied)
-  #   2. reason      → picks ONE topic and emits a single research-goal sentence
-  #   3. create_task → creates the research Task; the scheduler routes it through
-  #                    the learn chain ("research" keyword) and, because
-  #                    success_criteria is set, appends the evaluator step —
-  #                    the exercise is graded, which is the point
+  # Why: dev_docs get yaml/schedules-brain-exercise-2
   - tool_name: neo4j_query
     arguments:
       # Channel and watchlist names are excluded: every watched video mentions

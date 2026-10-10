@@ -1,23 +1,4 @@
-# Weekly API scout — SEEDED DISABLED for human review.
-#
-# `enabled: false` is honored ONLY on first creation (enabled is graph-owned and
-# never force-synced — see CLAUDE.md "ScheduledTask ownership"). So this task is
-# created OFF and will not run until you turn it on after reviewing what it does:
-#
-#   MATCH (s:ScheduledTask {name:'Weekly API scout: discover free public REST APIs for our interests, ingest the keyless ones, flag key-gated ones to the human'})
-#   SET s.enabled = true, s.next_run_at = datetime()
-#
-# It runs ONE run_agent step driving the `api-scout` spawnable profile through the
-# shared AgentRunner. Requires SUBAGENT_ENABLED=true (it is). The sub-agent runs
-# on the unmetered base model, ingests keyless APIs via ingest_api, and
-# notify_user's the human about key-gated ones — it never signs up or invents a
-# key. Its own procedure/safety rules live in contexts/api-scout.yaml.
-#
-# A ScheduledTask's steps run VERBATIM (no chain matching, no evaluator), so the
-# behaviour is defined by the agent profile, not by chain routing.
-#
-# The `name` is the Neo4j MERGE key — do not change it without deleting the old
-# (:ScheduledTask) node, or the old one keeps running alongside this one.
+# Why: dev_docs get yaml/schedules-api-scout-1
 name: "Weekly API scout: discover free public REST APIs for our interests, ingest the keyless ones, flag key-gated ones to the human"
 description: "Weekly: runs the api-scout sub-agent to find free REST APIs in the brain's interest areas; ingests keyless specs via ingest_api and notifies the human about APIs that require a key. Seeded disabled for review."
 # topic: none — spans topics on purpose

@@ -9,6 +9,7 @@ pub mod claims;
 pub mod clock;
 pub mod context_builder;
 pub mod cypher_guard;
+pub mod dev_notes;
 pub mod entity_kinds;
 pub mod entity_resolution;
 pub mod gpu_lease;

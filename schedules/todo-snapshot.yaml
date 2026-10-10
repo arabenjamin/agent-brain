@@ -4,12 +4,7 @@ description: "Daily snapshot of active todos summarised into a semantic note so 
 kind: maintenance
 interval_seconds: 86400
 steps:
-  # Step flow and {{_prev}} chain:
-  #   1. neo4j_query → active todos as JSON rows
-  #   2. reason      → markdown summary grouped by priority
-  #                    (context carries the todos so the RAG path is bypassed —
-  #                     prevents contamination from previously stored snapshots)
-  #   3. store_note  → persists the summary as a semantic note
+  # Why: dev_docs get yaml/schedules-todo-snapshot-1
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] RETURN t.title AS title, t.description AS description, t.priority AS priority, t.status AS status, t.due_at AS due_at, t.tags AS tags ORDER BY t.priority ASC, t.due_at ASC"

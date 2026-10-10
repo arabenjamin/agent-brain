@@ -1,6 +1,6 @@
 # Core and plugins plan
 
-Status: **Phase 0 done 2026-10-10 (staged, not yet deployed); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
+Status: **Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
 
 ## 1. Why
 
@@ -129,6 +129,16 @@ A finished plan becomes one `kind: decision` DevNote and is deleted; `PLANS_INDE
 
 **Exit:** CLAUDE.md + spec ≤ 40 KB; a coding agent asked "why does the queue do X" gets the relevant notes from `dev_docs`; graph wipe + `init-db` restores DevNotes from the export.
 
+### Phase 1 result (2026-10-10)
+
+- **Built:** `services/dev_notes.rs` (`:DevNote`, own vector + fulltext indexes, RRF hybrid search, create-only seed, startup embedding backfill, export after every write); the `dev_docs` tool (search/get/write; `self-analyst` allowlist); `scripts/dev_docs.sh` for coding agents, because an MCP client lists only the front-door profile's tools (calls are not filtered, listing is); `restore-snapshot` CLI (closes the Phase 0 finding).
+- **Migrated:** 25 docs (1.0 MB) → 590 notes split by heading (`rule` 52, `history` 147, `decision` 317, `plan` 74); 59 YAML comment blocks (729 lines) from chains/schedules → notes, each replaced by `# Why: dev_docs get <id>` (parsed YAML verified identical before/after). `project-docs/` 1.19 MB → 142 KB of reference files: env, schema, cli, architecture_context, USAGE, README_DUCKDB, FINE_TUNING_PLAYBOOK, PLANS_INDEX (now active plans only), this plan and SOURCE_QUALITY_PLAN.
+- **Not bin-sorted.** The plan's third bin ("describes code that no longer exists → drop") was not applied note by note: everything moved, because a note costs nothing until queried and judging 590 sections is better done when a query surfaces a stale one (`write` replaces it).
+- **Removed with it:** the `doc-update` schedule (it rewrote a git-log digest into STATUS.md every 12h; `git log` is the changelog) and `scripts/self_learn.py` / `self_reflect.py` (hand-written architecture notes listing removed tools; they called `decompose_goal`).
+- **Citation convention instead of 36 edits:** code comments citing a former doc (`HBI_REDESIGN_PLAN.md §9.2`) stay; `dev_docs` `subsystem` matches a note's source, so the name finds the notes.
+- **CLAUDE.md** rewritten around dev notes, 7.7 KB → 7.6 KB.
+- **After deploy:** run `scripts/phase1_cleanup.cypher` (the doc-update schedule node).
+
 ## 6. Phase 2 — workflows: one concept for chains and schedules
 
 **The difference today.** Both are lists of `ChainStep` run by the same queue. They differ on two unrelated axes:
@@ -237,6 +247,7 @@ Entities, topics, the Feed (items, todos, dispatch), search, HTTP, MCP client, N
 |---|---|---|---|---|---|---|---|
 | 2026-10-10 | baseline | 95.6K | 17.4K | — | 19.4K | CLAUDE.md 7.7 KB (points into 1.18 MB of docs) | 104 |
 | 2026-10-10 | Phase 0 | 87.7K (code 71.1K) | 16.6K | — | 19.3K | CLAUDE.md 7.7 KB (docs −2 stale registries) | 62 |
+| 2026-10-10 | Phase 1 | 88.3K (code 71.7K) | 16.7K | — | 19.3K | CLAUDE.md 7.6 KB; project-docs 1.19 MB → 142 KB | 63 |
 
 ## 10. Open questions
 

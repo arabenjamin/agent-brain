@@ -288,7 +288,7 @@ impl CodebaseSkill {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to codebase root (e.g. 'project-docs/TODO.md'). Must end in .md."
+                        "description": "File path relative to codebase root (e.g. 'project-docs/env.md'). Must end in .md."
                     },
                     "content": {
                         "type": "string",

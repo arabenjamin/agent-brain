@@ -1,38 +1,4 @@
-# schedules/off-grid-networking-monitor.yaml
-#
-# Standing watch on off-grid / decentralized mesh networking (Meshtastic,
-# Reticulum, LoRa, and adjacent protocols), backing the "Off Grid Decentralized
-# network" todo.
-#
-# This schedule was originally created at runtime from a chat session on
-# 2026-08-12 and was structurally broken in three ways. Its first and only run
-# is the documentation for why each rule below exists:
-#
-#   1. The `reason` step passed no `context`, so the search results it had just
-#      fetched were discarded and it answered from RAG over the graph:
-#      "there is no information regarding new hardware releases or specific
-#      protocol updates" — written moments after a search returned 5 results.
-#   2. The `store_note` content was the literal string
-#      "Updates on off-grid networking research for {{date}}." with no
-#      {{_prev}}, so the stored note WAS that sentence. The findings were
-#      thrown away every run.
-#   3. It stored `semantic` with no `source_context`, so the placeholder
-#      accumulated as "knowledge the brain established" and no future run
-#      could retrieve its predecessor to perform a delta.
-#
-# A fourth failure, from the rewritten version, on 2026-08-19: step 6 is the
-# only cloud-routed step here, and it died 3/3 on a transport error reaching
-# ollama.com, dead-lettering and failing the owning Task. `SharedLlm` only fell
-# back to local on 429/403 at the time, so an unreachable host burned all three
-# attempts while the local model sat idle, and the week's report simply did not
-# exist. `classify_unavailable` now covers transport and 5xx failures too — see
-# the fallback note under Critical Dev Notes in CLAUDE.md. The lesson for this
-# file: a single cloud step is a single point of failure for the whole run, and
-# a missing weekly report looks exactly like a quiet week in the field.
-#
-# Same banking idiom as slm-benchmark-watch.yaml — {{_prev}} carries only the
-# previous step's output, so consecutive searches would discard all but the
-# last. Each sweep is banked into "offgrid-{{task_id}}" and reassembled.
+# Why: dev_docs get yaml/schedules-off-grid-networking-monitor-1
 name: "Off-Grid Networking Monitor"
 description: "Weekly sweep of off-grid and decentralized mesh networking developments (Meshtastic, Reticulum, LoRa, and alternatives), compared against the previous run, ending in an actionable delta and a hardware/setup note."
 topic: off-grid-networking
@@ -228,13 +194,7 @@ steps:
     provider_hint: ollama
     description: "Re-read the report alone"
 
-  # 8. Persist under the retrieval key step 1 reads back.
-  #
-  #    note_type is `source_record`, not `semantic`. Nothing here is knowledge
-  #    the brain established — every figure is something an external page
-  #    asserted, and this field's sources skew to forums and vendor pages.
-  #    As `source_record`, label_claims prefixes it on retrieval with an
-  #    explicit not-verified marker instead of letting it be relayed as fact.
+  # Why: dev_docs get yaml/schedules-off-grid-networking-monitor-2
   - tool_name: store_note
     arguments:
       content: "# Off-grid networking watch — {{date}}\n\n{{_prev}}"

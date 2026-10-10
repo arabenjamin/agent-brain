@@ -119,6 +119,19 @@ pub enum Command {
         report: Option<String>,
     },
 
+    /// Restore a knowledge-graph snapshot (`.json.gz` from KNOWLEDGE_SNAPSHOT_DIR).
+    ///
+    /// MERGE semantics: safe on a non-empty graph; existing nodes are updated,
+    /// nothing is deleted. `--dry-run` reports what the file holds.
+    RestoreSnapshot {
+        /// Path to the snapshot file.
+        path: String,
+
+        /// Count what would be restored; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Score retrieval quality against a golden set (read-only).
     ///
     /// Runs each (query → expected note) case in the fixture through the real

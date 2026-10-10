@@ -1,16 +1,4 @@
-# schedules/tech-dependency-synthesis.yaml
-#
-# The correlation layer of the Critical Tech Dependency Mapping project: read the
-# accumulated "Hard layer" (hardware-tripwire.yaml) and "Soft layer"
-# (slm-benchmark-watch.yaml) reports and test the standing hypothesis that
-# hardware scarcity is what drives small-model adoption.
-#
-# This schedule performs NO web search by design — it is a correlation pass over
-# evidence the other two schedules already gathered. If those have not run, it
-# says so instead of inventing a correlation.
-#
-# Retrieval keys: source_context 'hardware_tripwire' and 'slm_benchmark_watch'.
-# Changing those in the other two files breaks this one.
+# Why: dev_docs get yaml/schedules-tech-dependency-synthesis-1
 name: "Monthly tech dependency synthesis: correlate hardware scarcity against small-model adoption"
 description: "Monthly correlation pass over accumulated hardware tripwire and SLM benchmark reports. Tests the asymmetric-advantage hypothesis, records a verdict with its confidence, and spawns a research task on the weakest link in the argument."
 topic: semiconductors

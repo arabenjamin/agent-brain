@@ -2,21 +2,11 @@ name: "Daily todo review: check outstanding todos and open a chat session to dis
 description: "Reviews pending todos daily, asks the user clarifying questions, and opens a dedicated chat session for follow-up."
 # topic: none — spans topics on purpose
 kind: brief
-# RETIRED 2026-10-09 (HBI plan §9.9 decision 3): open items now go into the
-# Daily Brief as a "Your items" block, and the Feed is where they live. This
-# opened a new chat every day (45 of the last 100 notifications). `enabled` is
-# honoured only on create; the live node was turned off with a targeted SET
-# (paused_reason says why). Kept so it can be turned back on.
+# Why: dev_docs get yaml/schedules-todo-review-chat-1
 enabled: false
 interval_seconds: 86400
 steps:
-  # Step flow and {{_prev}} chain:
-  #   1. neo4j_query  → raw todo rows JSON
-  #   2. reason       → agent opening message (markdown)     [returns {"answer":"..."}]
-  #   3. notify_user  → delivers message, opens "todos-{{date}}" session
-  #                     [returns {"answer":"[msg]"} so next step gets clean text]
-  #   4. push_context → seeds "todos-{{date}}" session with the agent message
-  #                     so it appears as chat history when user clicks "Continue"
+  # Why: dev_docs get yaml/schedules-todo-review-chat-2
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] RETURN t.id AS id, t.title AS title, t.description AS description, t.priority AS priority, t.status AS status, t.due_at AS due_at ORDER BY t.priority ASC, t.created_at ASC LIMIT 15"

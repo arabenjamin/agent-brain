@@ -4,13 +4,7 @@ description: "Twice-daily review of overdue todos — reasons over the live todo
 kind: maintenance
 interval_seconds: 43200
 steps:
-  # Step flow and {{_prev}} chain:
-  #   1. neo4j_query → overdue pending/in-progress todos as JSON rows
-  #   2. reason      → per-todo agent-assistance assessment
-  #                    (context carries the todos so the RAG path is bypassed —
-  #                     without it, reason retrieves its own previous review notes
-  #                     and critiques those instead of answering)
-  #   3. store_note  → persists the review as an episodic note
+  # Why: dev_docs get yaml/schedules-overdue-todo-review-1
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (t:Todo) WHERE t.status IN ['pending','in_progress'] AND t.due_at IS NOT NULL AND t.due_at < datetime() RETURN t.id AS id, t.title AS title, t.description AS description, t.due_at AS due_at ORDER BY t.due_at ASC LIMIT 20"

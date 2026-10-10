@@ -3,6 +3,7 @@ pub mod agent;
 pub mod agent_runner;
 pub mod claims;
 pub mod codebase;
+pub mod dev_docs;
 pub mod dynamic;
 pub mod exec;
 pub mod http;

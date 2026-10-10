@@ -1,19 +1,4 @@
-# Autonomous watchlist curation — the brain proposes NEW channels/podcasts to
-# watch, based on the topics it studies, and stages them for human review.
-#
-# Flow: reason over what this knowledge base focuses on to build a search query
-# -> web-search for channels/podcasts on those topics -> discover_media_sources
-# picks the good ones, resolves them (YouTube URL -> channel_id; podcast feed
-# validated), and upserts each as an INACTIVE :MediaSource (active:false).
-# Nothing is polled or transcribed until a human activates it via
-# manage_media_source (action=upsert, active=true) or the frontend.
-#
-# Self-gating: discover_media_sources is a no-op unless MEDIA_DISCOVERY_ENABLED
-# =true, so this schedule is safe to seed everywhere. Capped per run by
-# MEDIA_DISCOVERY_MAX (default 3).
-#
-# The `name` is the Neo4j MERGE key — do not change it without deleting the old
-# (:ScheduledTask) node.
+# Why: dev_docs get yaml/schedules-discover-media-sources-1
 name: "Discover media sources: propose new channels and podcasts to watch"
 description: "Weekly: reasons about the brain's own topics, searches for channels/podcasts on them, and stages the best as INACTIVE :MediaSource nodes for human review. Gated by MEDIA_DISCOVERY_ENABLED; capped by MEDIA_DISCOVERY_MAX."
 # topic: none — spans topics on purpose

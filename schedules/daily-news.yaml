@@ -1,57 +1,11 @@
-# Daily news briefing — expanded coverage (metro Detroit, Michigan, national,
-# world, tech, business, markets, weather).
-#
-# Engine note (2026-10-02): the seven news searches request `engine: exa` with
-# `recency: day` and `news: true` — see the note above the first search step.
-# The history below is why google_news was used until then; it ranked by
-# relevance and returned stale stories once the queries said "today".
-#
-# Earlier engine note: the seven news searches requested `engine: google_news`, which
-# routes to SerpApi's Google News engine. `engine` only PROMOTES that engine to
-# the head of the failover ladder — SearXNG and the rest remain as fallbacks —
-# so once SerpApi's shared monthly quota is spent, the brief degrades to SearXNG
-# automatically instead of failing (see skills/search.rs). General/background
-# data mining does NOT set `engine`, so it keeps leading with the unmetered
-# self-hosted SearXNG.
-#
-# Outage + recovery (resolved 2026-09-08): from 2026-09-05 SerpApi's Google News
-# engine returned `503 "We couldn't get valid results … Please try again later."`
-# after a 90s timeout (4 of 7 news searches failed on 2026-09-05), which dropped
-# every failed section through to SearXNG's news-incapable engine set and made
-# the brief read "no news." As a stopgap the steps were switched to plain
-# `engine: serpapi` (Google organic). That stopgap under-delivered: organic
-# results are undated evergreen pages, so on 2026-09-08 the reason step could not
-# date-verify them and the brief came back near-empty (weather + one 3-month-old
-# story). google_news was re-tested live on 2026-09-08 and answers again with
-# dated, source-named stories, so the steps are reverted to it here — that is the
-# correct engine for a dated daily brief. If it 503s again, the ladder still
-# falls through, but the right stopgap is to fix the query freshness, not to drop
-# to organic. `source_list` is intentionally omitted: news queries already return
-# usable metro/Michigan results without a site: restriction, and the
-# site-restricted SearXNG queries were what produced the junk-results problem.
-#
-# Pattern note: {{_prev}} only carries the IMMEDIATELY PRECEDING step's output,
-# so each search_web step is followed by a push_context step that banks the
-# results into the date-scoped working-memory session "news-raw-{{date}}".
-# A neo4j_query step then collects every section at once and hands the full
-# bundle to the reason step. The final step deletes the raw session entries.
-#
-# The `name` is the Neo4j MERGE key — do not change it without deleting the
-# old (:ScheduledTask) node, or the old chain keeps running alongside this one.
+# Why: dev_docs get yaml/schedules-daily-news-1
 name: "Daily news aggregation and briefing: aggregate headlines from world, tech, and business, then write and store a daily briefing"
 description: "Aggregates metro Detroit, Michigan, national, world, tech, and business headlines plus a stock-market recap and Detroit weather, then writes and stores a structured daily briefing."
 # topic: none — spans topics on purpose
 kind: brief
 interval_seconds: 86400
 steps:
-  # ── Clear any leftover raw session FIRST (self-healing) ──────────────────
-  # The cleanup step at the END only runs if the whole chain succeeds. If a
-  # later step dies (e.g. the writer hits a provider error), its banked blocks
-  # survive in news-raw-{{date}}, and the NEXT run's gather pulls the
-  # accumulation — which compounds until the writer's context overflows
-  # (observed 2026-09-08: four failed runs stacked to ~306K tokens and every
-  # subsequent run 400'd on context length). Deleting at the start makes each
-  # run idempotent regardless of how the previous one ended.
+  # Why: dev_docs get yaml/schedules-daily-news-2
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'news-raw-{{date}}'}) DETACH DELETE w"
@@ -60,14 +14,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # ── Collect: search each topic, bank results in working memory ──────────
-  # 2026-10-02: Exa news + recency:day, not google_news. Google News ranks by
-  # relevance, so "… today" returned months-old pages (0 of 8 current for the
-  # world query); Exa with a one-day window returned CNBC, Al Jazeera, France24
-  # and Politico from that day. ~210 Exa searches/month of the $10 credit. The
-  # ladder still falls back to SearXNG and Tavily with the same recency/news
-  # filters. Queries say "latest", never a date: a literal date over-constrains.
-  # "-sports": the user does not want sports in the brief.
+  # Why: dev_docs get yaml/schedules-daily-news-3
   - tool_name: search_web
     arguments:
       query: "latest Detroit metro news -sports"
@@ -208,26 +155,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # ── Weather: an API, not a web search ───────────────────────────────────
-  # This was `search_web "Detroit Michigan weather forecast today"` until
-  # 2026-09-01, and it never once produced a forecast. A forecast is
-  # structured, perishable data; a search returns *links to pages that render
-  # it*, and a result snippet almost never contains the numbers. With the
-  # mainstream SearXNG engines CAPTCHA-blocked (see searxng/settings.yml) the
-  # four results on 09-01 were: the Detroit-Windsor tunnel Wikipedia article,
-  # a Michigan weather blog last updated January 2023, a Detroit nostalgia
-  # site, and a Czech forecast page. The model then correctly wrote "No results
-  # collected today" — the brief was honest, the input was junk.
-  #
-  # Because that is 4 results and not 0, `search_web`'s ladder counted rung one
-  # as having answered and never fell through to a keyed engine. Zero-result
-  # fall-through cannot catch this; only using the right source can.
-  #
-  # api.weather.gov (US NWS) is free, needs no key, and has no quota. The
-  # gridpoint URL is stable for a fixed location and was derived once from
-  # https://api.weather.gov/points/42.3314,-83.0458 (Detroit, MI) ->
-  # .properties.forecast. Re-derive it that way if the location changes.
-  # NWS requires a descriptive User-Agent and 403s without one.
+  # Why: dev_docs get yaml/schedules-daily-news-4
   - tool_name: http_request
     arguments:
       method: GET
@@ -249,17 +177,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # ── ApiTube: TOPICAL structured, dated articles (supplements google_news) ──
-  # Additive, not a replacement: if ApiTube is unreachable, these blocks are
-  # simply absent and the google_news sections above still carry the brief. Auth
-  # (X-API-Key) is injected from the seeded `apitube` ApiContext, so no key
-  # appears here. Free tier is 100 req/day; these are 2 calls/run.
-  #
-  # Verified live 2026-09-08: `title=<keyword>` is the only reliable topical
-  # filter — `category` and `source.country.code` returned unrelated/global
-  # results, so they are NOT used. `title=Michigan` and `title=artificial
-  # intelligence` both return today-dated, on-topic articles with source + date.
-  # Response: results[] with title, href, published_at, source.domain, description.
+  # Why: dev_docs get yaml/schedules-daily-news-5
   - tool_name: http_request
     arguments:
       method: GET
@@ -298,11 +216,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # ── The brain's OWN day: what it watched / researched / learned (24h) ──────
-  # recall_recent is the deterministic time-window count (by note_type +
-  # source_context, plus a sample) — this is the "what has the system been doing
-  # all night / did it learn anything new" section. Local-day-aware; window=1d
-  # covers overnight.
+  # Why: dev_docs get yaml/schedules-daily-news-6
   - tool_name: recall_recent
     arguments:
       window: "1d"
@@ -470,20 +384,7 @@ steps:
       store_inference: false
     priority: 2
     max_attempts: 3
-    # Write the brief on the active cloud model (OLLAMA_MODEL), which is now
-    # `gpt-oss:120b-cloud` — it follows the "plain Markdown, no JSON, no code
-    # fences" instruction and does not empty-complete on this prompt.
-    #
-    # DELIBERATELY NOT `required_capabilities: ["reasoning"]`. That routes to the
-    # selection_rank winner for `reasoning`, which at CLOUD_TIER 2 is
-    # `gemini-2.5-flash` (rank 5) — and on 2026-09-08 it wrapped the whole brief
-    # in a ```json {"answer": "..."} fence despite the instruction, so the
-    # envelope never unwrapped and store_note/notify_user persisted a JSON blob
-    # instead of the Markdown brief. Plain `provider_hint: ollama-cloud` lands on
-    # gpt-oss directly and renders clean Markdown. (The earlier worry that
-    # ollama-cloud fell through to empty-completing `gemma4:31b-cloud` is stale:
-    # OLLAMA_MODEL is gpt-oss now. If OLLAMA_MODEL ever changes back to a weak
-    # model, pin this step explicitly rather than re-adding the reasoning route.)
+    # Why: dev_docs get yaml/schedules-daily-news-7
     provider_hint: ollama-cloud
 
   - tool_name: store_note
@@ -495,13 +396,7 @@ steps:
     max_attempts: 2
     provider_hint: ollama
 
-  # Extract checkable assertions from the brief before it is presented. News is
-  # the highest-volume external source the brain ingests, and a daily brief that
-  # reads as settled fact is exactly how framing becomes belief.
-  # `{{_prev.id}}` reaches into store_note's result envelope for the note id, so
-  # each claim gets an ASSERTED_IN edge back to the brief it came from. The
-  # claim tool echoes its input as `answer`, so the brief still flows unchanged
-  # to notify_user and push_context below.
+  # Why: dev_docs get yaml/schedules-daily-news-8
   - tool_name: claim
     arguments:
       action: extract

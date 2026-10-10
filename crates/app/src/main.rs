@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
             };
             run_rewrite_claims(&config, opts, report.as_deref()).await
         }
+        Some(Command::RestoreSnapshot { path, dry_run }) => {
+            run_restore_snapshot(&config, &path, dry_run).await
+        }
         Some(Command::EvalRetrieval {
             fixture,
             k,
@@ -290,6 +293,16 @@ fn build_chat_llm_config(config: &Config) -> LlmConfig {
 /// Runs standalone (no MCP server) so it can be executed against a live deployment
 /// with the scheduler paused. Embeddings route through the same LLM config the
 /// server uses, so vectors are computed with the configured embed model.
+async fn run_restore_snapshot(config: &Config, path: &str, dry_run: bool) -> Result<()> {
+    let client = connect_neo4j(config).await?;
+    let svc = agent_brain::services::SnapshotService::new(client, std::path::PathBuf::new());
+    let stats = svc
+        .restore_snapshot(std::path::Path::new(path), dry_run)
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&stats)?);
+    Ok(())
+}
+
 async fn run_repair_notes(config: &Config, dry_run: bool) -> Result<()> {
     use agent_brain::services::repair;
     use std::sync::Arc;

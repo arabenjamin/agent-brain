@@ -1,46 +1,11 @@
-# schedules/capability-mining.yaml
-#
-# Weekly capability mining. Reframed to mine REAL signal instead of an empty
-# `(:Todo)` set: the previous query matched `(:Todo)` nodes, of which there are
-# none, so the local model received no grounding and free-associated generic
-# "an LLM agent should have..." suggestions the brain already implements.
-#
-# The durable capability-gap signal is repeatedly-FAILING tasks: when the same
-# capability (goal prefix) fails or blocks over and over, that is a concrete,
-# grounded gap worth building for. Their `context` carries the reason WHY: an
-# evaluator/adversarial critique when the task had success_criteria, and — for
-# scheduler-dispatched chains that simply died — a "[FAILURE]" line written by
-# the queue coordinator (fail_task_with_reason) naming the dead step and its
-# last error. Earlier, a died chain left the run stuck in_progress until the
-# 6-hour stale reaper flipped it to 'failed' with only boilerplate context, so
-# this step reasoned over nothing and free-associated; that gap is now closed.
-#
-# NOTE: the name is kept byte-for-byte identical to the pre-existing node. The
-# seeder only force-syncs yaml-owned (or legacy) nodes — a runtime-owned node is
-# skipped — so the live node's `managed_by` was flipped to 'yaml' once to hand
-# ownership to this file. From then on the seeder force-syncs these steps on
-# every startup.
+# Why: dev_docs get yaml/schedules-capability-mining-1
 name: "Capability mining: identify agent/tool candidates from todos and repeated patterns"
 description: "Weekly self-improvement scan. Aggregates repeatedly-failing/blocked Tasks by capability (goal prefix) plus a sample of their failure context, then reasons over that REAL signal to propose ScheduledTask, dynamic-tool, or skill-gap candidates. Result is stored as a capability_mining reflection note."
 topic: agent-brain
 kind: maintenance
 interval_seconds: 604800
 steps:
-  # Step flow and {{_prev}} chain:
-  #   1. neo4j_query → capabilities (goal prefixes) that fail/block repeatedly,
-  #                    with counts + a sample of each one's failure context.
-  #   2. reason      → grounded ONLY on {{_prev}} (passed via `context`, NOT the
-  #                    question — passing it in the question triggers the RAG
-  #                    self-contamination loop where reason retrieves its own
-  #                    prior capability_mining notes). Emits JSON candidates.
-  #   3. store_note  → persists the candidates as a reflection for review.
-  #   4. run_agent   → deep-diver takes the FIRST candidate and grounds it in
-  #                    this codebase: the files and functions it touches, and
-  #                    a Rust sketch of the change, compile-checked in the
-  #                    sandbox where it can stand alone. Before this step every
-  #                    run ended in general advice ("add retry logic", "improve
-  #                    validation") with no file, no function, and no code.
-  #   5. store_note  → persists the grounded proposal.
+  # Why: dev_docs get yaml/schedules-capability-mining-2
   - tool_name: neo4j_query
     arguments:
       cypher: "MATCH (t:Task) WHERE t.status IN ['failed','blocked'] WITH split(t.goal, ':')[0] AS capability, t ORDER BY t.updated_at DESC WITH capability, count(*) AS failures, collect(DISTINCT t.status) AS statuses, collect(substring(coalesce(t.context,''), 0, 600))[0..3] AS sample_context WHERE failures >= 2 RETURN capability, failures, statuses, sample_context ORDER BY failures DESC LIMIT 20"

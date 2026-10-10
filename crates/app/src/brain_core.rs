@@ -597,6 +597,26 @@ impl BrainCore {
         }
         skills.push(Arc::new(search));
 
+        // Developer notes in the graph (CORE_AND_PLUGINS_PLAN.md §5): seed an
+        // empty graph from git and embed what lacks a vector, off the startup path.
+        if let Some(neo4j) = &self.storage.neo4j {
+            let notes = Arc::new(crate::services::dev_notes::DevNotes::new(
+                neo4j.clone(),
+                Arc::clone(&llm),
+            ));
+            let seeder = Arc::clone(&notes);
+            tokio::spawn(async move {
+                let file = crate::services::dev_notes::seed_file();
+                match seeder.seed_and_backfill(&file).await {
+                    Ok((seeded, embedded)) => {
+                        info!(seeded, embedded, "dev notes ready")
+                    }
+                    Err(e) => warn!(error = %e, "dev notes: seed/backfill failed"),
+                }
+            });
+            skills.push(Arc::new(crate::skills::dev_docs::DevDocsSkill::new(notes)));
+        }
+
         // Relations — typed relationships proposed from claims (Phase 17).
         if let Some(neo4j) = &self.storage.neo4j {
             skills.push(Arc::new(crate::skills::relations::RelationSkill::new(

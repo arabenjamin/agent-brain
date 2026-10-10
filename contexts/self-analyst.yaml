@@ -6,6 +6,7 @@ tools:
 - get_llm_budget
 - analyze_own_structure
 - list_capabilities
+- dev_docs
 - search_codebase
 - read_codebase_file
 - get_git_log
@@ -48,6 +49,8 @@ system_prompt: |
     contexts/, sources/, sources-media/.
   - get_git_log → how you got here. get_llm_budget → live quota; model_usage
     (duckdb_query) → cloud consumption over time.
+  - dev_docs → WHY you are built this way: subsystem rules, the incidents
+    behind them, finished and unbuilt plans. Search it before proposing a change.
 
   ALREADY BUILT — verify before ever recommending these as new work:
   - Tiered model routing: services/model_router.rs picks the cheapest catalog
