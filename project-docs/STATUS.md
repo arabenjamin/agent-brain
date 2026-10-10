@@ -35,32 +35,36 @@
 
 ---
 
-## Skill Registry (79 tools static + N runtime)
+## Skill Registry (61 static tools + `list_tasks` built-in dynamic + N runtime)
+
+Live list: `list_capabilities` (`kind: tools`) or `GET /api/tools`. Phase 0 of
+CORE_AND_PLUGINS_PLAN.md (2026-10-10) removed 43 tools (41 deleted, 2 folded);
+`list_capabilities` lists them under `removed` with their replacements.
+
 | Skill | Path | Tools | Notes |
 |-------|------|-------|-------|
-| CodebaseSkill | `src/skills/codebase.rs` | 14 | Codebase analysis, git logs/diffs, proposals, workspace files |
-| DynamicSkill | `src/skills/dynamic.rs` | 8 | Runtime tool definition and procedures |
-| KnowledgeSkill | `src/skills/knowledge.rs` | 8 | RAG, reasoning, consolidation, adversarial plan review; `recall_recent` pages with `offset`/`next_offset`, names a filter value passed in the wrong slot, and delivers a filtered set to the user in full via `ToolCallResult::bulk` (out of the model's context) |
-| MediaSkill | `src/skills/media.rs` | 7 | Watch/summarize videos (yt-dlp captions), watchlist, RSS polling, discovery |
-| GitSkill | `src/skills/git.rs` | 6 | git status/commit/push/branch/PR + codebase file writes |
-| TaskSkill | `src/skills/task.rs` | 5 | Goal tracking, decomposition, outcomes, reflection |
-| AgentSkill | `src/skills/agent.rs` | 5 | Background job queue + sequential chaining |
-| SchedulerSkill | `src/skills/scheduler.rs` | 4 | Autonomous background scheduler |
-| WsSkill | `src/skills/ws.rs` | 4 | WebSocket connection management |
-| ModelSkill | `src/skills/model.rs` | 3 | Model registry + selection |
-| WorkingMemorySkill | `src/skills/working_memory.rs` | 3 | Session scratchpad and summarisation |
-| HttpSkill | `src/skills/http.rs` | 2 | Generic HTTP requests and ApiContext management |
-| QuerySkill | `src/skills/query.rs` | 7 | Neo4j (Cypher, schema-guarded) + DuckDB (SQL) primitives; deterministic reads: describe_graph, recent_tasks, list_apis, list_endpoints, list_capabilities (the brain's own tool/agent inventory) |
-| SearchSkill | `src/skills/search.rs` | 2 | Web search with engine failover ladder (SearXNG → Google → SerpApi → Brave) + usage ledger; every result is prefixed with WHAT WE ALREADY KNOW from the graph (hybrid notes + ingested APIs + watched media) |
-| SleepSkill | `src/skills/sleep.rs` | 2 | Experience digestion and gap analysis |
-| ClaimSkill | `src/skills/claims.rs` | 1 | Claim extraction, verification, corroboration tiering |
-| ConstructorSkill | `src/skills/constructor.rs` | 1 | Agent construction and reuse |
-| ContextSkill | `src/skills/context.rs` | 1 | Context profile management |
-| ExecSkill | `src/skills/exec.rs` | 1 | Sandboxed Python execution (`execute_code`) — tool-integrated reasoning |
-| ResourceSkill | `src/skills/resource.rs` | 1 | Shared resource/token registry |
-| **Total** | | **79** | |
+| KnowledgeSkill | `src/skills/knowledge.rs` | 8 | store_note, search_notes, recall_recent, prune_old_notes, consolidate_memories, reason, synthesize_knowledge, adversarial_plan_review |
+| CodebaseSkill | `src/skills/codebase.rs` | 8 | read_codebase_file, search_codebase, get_git_log, analyze_own_structure, write_codebase_doc, write_proposal (a Feed item), workspace pair when `WORKSPACE_DIR` is set |
+| QuerySkill | `src/skills/query.rs` | 8 | neo4j_query (schema-guarded), duckdb_query, describe_graph, recent_tasks, list_apis, list_endpoints, list_capabilities, snapshot_architecture |
+| MediaSkill | `src/skills/media.rs` | 6 | ingest_media, ingest_article, poll_media_sources, manage_media_source, discover_media_sources, spawn_gap_tasks |
+| AgentSkill | `src/skills/agent.rs` | 3 | enqueue_jobs, manage_job (HBI cancel/retry), dead_letter |
+| SchedulerSkill | `src/skills/scheduler.rs` | 3 | scheduler_control (incl. `action: tick`), manage_chain, manage_scheduled_task |
+| TaskSkill | `src/skills/task.rs` | 3 | create_task, update_task, reflect_on_work |
+| HttpSkill | `src/skills/http.rs` | 3 | http_request, define_api_context, ingest_api |
+| SearchSkill | `src/skills/search.rs` | 2 | search_web (engine failover ladder; prefixed with WHAT WE ALREADY KNOW), get_search_usage |
+| McpClientSkill | `src/skills/mcp_client.rs` | 2 | mcp_list_tools (no `server` ⇒ the servers), mcp_call |
+| AgentRunnerSkill | `src/skills/agent_runner.rs` | 2 | run_agent, select_agent (`SUBAGENT_ENABLED`) |
+| ModelSkill | `src/skills/model.rs` | 2 | get_llm_budget, gpu_lease |
+| WorkingMemorySkill | `src/skills/working_memory.rs` | 2 | push_context, notify_user |
+| TodoSkill | `src/skills/todo.rs` | 2 | manage_todo, dispatch_due_todos |
+| WikiSkill | `src/skills/wiki.rs` | 2 | link_entities, wiki_background |
+| ClaimSkill | `src/skills/claims.rs` | 1 | claim (extract, verify, corroboration tiering) |
+| RelationsSkill | `src/skills/relations.rs` | 1 | extract_relations |
+| AcledSkill | `src/skills/acled.rs` | 1 | acled_events (registered only with ACLED credentials) |
+| ExecSkill | `src/skills/exec.rs` | 1 | execute_code (sandboxed Python) |
+| DynamicSkill | `src/skills/dynamic.rs` | 1+N | manage_dynamic_tool + graph-defined tools (built-in: list_tasks) |
+| **Total** | | **61** | |
 
-**KnowledgeSkill tools (7):** `store_note`, `search_notes`, `prune_old_notes`, `consolidate_memories`, `reason`, `synthesize_knowledge`, `adversarial_plan_review`
 
 ---
 
@@ -113,13 +117,6 @@
 - Wakes immediately on any incoming tool call via `notify_activity()`
 - Configurable via `IDLE_SLEEP_AFTER_TICKS` and `SLEEP_INTERVAL_SECS` env vars; runtime via `configure_scheduler`
 
-### Additional Tools Added
-
-- `list_notes` — ordered note listing with optional type filter; used by KnowledgePanel initial load
-- `search_by_entity` — find notes by named entity (partial name match, optional type filter)
-- `delete_note` — permanent note deletion
-- `update_note` — in-place note content update preserving all graph edges
-
 ### Tier 2 HBI Frontend (all complete)
 
 - **2.1 Graph container sizing** — ResizeObserver + `useLayoutEffect` in GraphPanel
@@ -135,35 +132,26 @@
 
 ## Recent Changes (auto)
 
-### 2026-09-26
+### 2026-10-09
 
-- fix: generate_json takes the first complete object with the required keys (`65f2fb0`)
-- fix: cited ids are checked, the first JSON object wins, misplaced step arguments are rejected (`ca181f6`)
-- feat: Tavily, Exa and Serper search engines; intelligence monitor rebuilt on ApiTube + SearXNG (`8eaf51a`)
-- chore: bound claim reset at deploy time; record results (`b1bc695`)
-- fix: verifier reads external evidence only; a malformed tool call says it did not run (`8f8bd66`)
+- feat(hbi): phase 18 — Wikipedia reference links for entities (`1fd1fd8`)
+- feat(entities): nimble verdicts on merge candidates; plan Phase 18 reference links (`c3c3e7d`)
+- feat(hbi): phase 17 — typed relationships between entities (`8a3f07f`)
+- feat(hbi): phase 16 — how entities relate, and claims with entities (`b4b632a`)
+- feat(hbi): phases 14–15 — editable topics, manual topic edits, rule topics (`88c123a`)
+- Subsystem Rules (`c6efa57`)
+- feat(hbi): phase 13 — items as agent work (`f3d4c21`)
+- feat(hbi): phase 12 — one item record and the Feed (`b969cd6`)
+- feat(hbi): phase 11 — schedules by topic and kind (`4425a80`)
+- feat(hbi): phase 10 — a model wherever an agent works (`f05ea73`)
+- fix(claims): typography is not a rewrite; record the full claim rewrite (`3bcbf1e`)
 
-### 2026-09-23
+### 2026-10-08
 
-- feat: GPU lease — hand the whole GPU to a training run, keep the brain on cloud (`a6851e5`)
-- feat: provider concurrency gate — one slot per request, chat first (`717b536`)
-- feat: budget ledger — limits act before the call, not after a 429 (`7610cbd`)
-- feat: one routing policy decides where every LLM call may go (`af144b3`)
-
-### 2026-09-14
-
-- feat: provider registry — any OpenAI-compatible API is a YAML entry (`614c5d9`)
-
-### 2026-09-12
-
-- feat: check the graph before searching the web; fix embedding, tokens, profiles (`79e419a`)
-- feat: give the brain a tool for its own inventory; stop guessed labels reading as absence (`f9b1750`)
-
-### 2026-09-11
-
-- fix: stop a hung job living forever; reject live streams; enumerate notes by label (`2397e2e`)
-- fix: Ollama's silent 4096 context; read_codebase_file paging; keep code-analyst on cloud (`f2618f0`)
-- feat: local Gemma-4-E4B front door; move chat and sub-agents off gpt-oss (`d0bfb70`)
+- feat(hbi): phase 9 — honest provenance, claims that stand alone (`91cb1d3`)
+- feat(hbi): phase 8 — honest fixes: claim sources, provenance, step editor (`b6d6d63`)
+- docs(hbi): plan the second round — Phases 8–13 (`f2fb404`)
+- feat(hbi): phase 7 — Chat shows what each turn actually did (`01df23f`)
 
 ## Known Issues / Backlog
 
@@ -188,7 +176,7 @@
 
   Not swapped yet — it changes the prose of every background note indefinitely, so it is the user's call. `granite4:latest` is the recommendation (already in `models.yaml` at `selection_rank: 120`, 131 072 context, so no catalog change is needed); the swap is one line, `OLLAMA_LOCAL_MODEL` in compose, and `vision` steps keep routing to `gemma4` through the capability router regardless. Note models cannot co-reside on this card — a swap is a replacement, not an addition.
 - **Media-watch fan-out is the burst source.** 15 active sources × `MEDIA_WATCH_MAX_PER_SOURCE` (2) × 2 polls/day ≈ 30 videos per poll, each an `ingest_media` map-reduce (~6 LLM calls) plus `reason` + `claim`, plus up to 2 gap tasks. That is ~7 GPU-hours/day arriving in two piles rather than spread out. Lowering `MEDIA_WATCH_MAX_PER_SOURCE` to 1 halves the burst; spreading the poll interval would smooth it without reducing what the brain learns.
-- **SSE push for job results on stdio transport** — stdio path has no session manager; callers must poll `get_job_result`. No lightweight fix without adding an event bus.
+- **SSE push for job results on stdio transport** — stdio path has no session manager; callers must poll the job with `neo4j_query`. No lightweight fix without adding an event bus.
 - **Local Ollama distiller times out under load.** Recurring `Handoff distillation failed — passing raw output: operation timed out (host.docker.internal:11434)` on `distill_prev` steps (observed 2026-09-08). Non-fatal — the step falls back to raw upstream output — but the distill pass is effectively dead when the local model is busy (the map-reduce/media burst saturates it). Same root as the local-model timeout note in CLAUDE.md; the fix is scheduling headroom (spread the media poll) or a dedicated distiller model, not a code change.
 - **YouTube throttles the container's IP.** `poll_media_sources` feed fetches and `yt-dlp` subtitle downloads intermittently get 404/500/429 from YouTube when a poll fans every source at once; the same IDs return 200 minutes later. `list_feed_videos` now retries with backoff (2026-09-08), which recovers a throttled feed within a poll. `yt-dlp` 429s on captions are still unhandled (a video just fails that cycle and is retried next poll via dedup). The channel IDs are correct — do not "fix" them.
 - **Rhai scripting in procedure steps** — basic `on_failure` and `{{context.steps.N}}` conditionals added; full Rhai embed for dynamic logic still deferred.
@@ -200,7 +188,6 @@
 - ~~`graph_query_endpoint` CONTAINS fallback~~ — embeddings auto-generated at ingest time
 - ~~Parent task stuck `in_progress` after subtasks complete~~ — `update_task` auto-completes parent when all subtasks done
 - ~~DynamicSkill load on stdio~~ — `build_skills()` is async; `load_from_neo4j().await` called at startup
-- ~~Per-provider semaphores not resizable~~ — `Arc<RwLock<Arc<Semaphore>>>` wrapper; `set_worker_config` swaps inner semaphore atomically
 - ~~Auto-snapshot before `prune_old_notes`~~ — `AUTO_SNAPSHOT_BEFORE_PRUNE` env var; hook fires before deletion queries (default false)
 - ~~`verify_knowledge_integrity` O(n²) duplicate check~~ — `LIMIT 50` applied in Cypher, truncation warning in response
 - ~~`goal_to_steps()` missing failure/web/learn branches~~ — added failure analysis, web research, learn/study, improved default
