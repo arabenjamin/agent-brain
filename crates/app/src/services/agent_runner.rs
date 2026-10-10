@@ -894,9 +894,8 @@ impl AgentRunner {
     /// chain or schedule step can route to an agent without a model call.
     ///
     /// `agent` is `None` when the roster is empty or nothing clears
-    /// [`MIN_SELECTION_OVERLAP`] — the caller's cue to `construct_agent` instead
-    /// (the "build" half of choose-or-build). The full roster is always returned
-    /// so a caller with no match can show the options or decide to build.
+    /// [`MIN_SELECTION_OVERLAP`]. The full roster is always returned so a caller
+    /// with no match can show the options.
     pub async fn select_agent(&self, goal: &str) -> AgentSelection {
         let roster_profiles = match self.context_builder.read().await.clone() {
             Some(cb) => cb.spawnable_profiles().await,

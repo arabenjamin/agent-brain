@@ -6,7 +6,6 @@ use axum::{
     body::Body,
     extract::Request,
     http::{StatusCode, header::AUTHORIZATION},
-    middleware::Next,
     response::{IntoResponse, Response},
 };
 use std::sync::Arc;
@@ -163,11 +162,6 @@ impl ApiKeyAuth {
 
         self.validate_header(header_value)
     }
-
-    /// Get the configuration.
-    pub fn config(&self) -> &AuthConfig {
-        &self.config
-    }
 }
 
 /// Compare two byte slices in constant time relative to their contents.
@@ -184,16 +178,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
-}
-
-/// Axum middleware layer for API key authentication.
-pub async fn auth_middleware(
-    auth: Arc<ApiKeyAuth>,
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, AuthError> {
-    auth.authenticate(&request)?;
-    Ok(next.run(request).await)
 }
 
 #[cfg(test)]
@@ -242,7 +226,6 @@ mod tests {
     #[test]
     fn test_api_key_auth_disabled() {
         let auth = ApiKeyAuth::disabled();
-        assert!(!auth.config().is_enabled());
 
         // Should pass without any header
         let result = auth.validate_header("Bearer anything");

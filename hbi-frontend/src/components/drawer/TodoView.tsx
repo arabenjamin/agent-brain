@@ -99,7 +99,7 @@ export default function TodoView({ id }: { id: string }) {
               <span>
                 {!t.origin || t.origin.kind === "user" ? "you"
                   : t.origin.kind === "proposal" && t.origin.ref
-                    ? <EntityLink kind="proposal" id={t.origin.ref}>{ORIGIN_LABELS.proposal}: {t.origin.ref}</EntityLink>
+                    ? <EntityLink kind="task" id={t.origin.ref}>{ORIGIN_LABELS.proposal} from task {t.origin.ref.slice(0, 8)}</EntityLink>
                     : <>{ORIGIN_LABELS[t.origin.kind] ?? t.origin.kind}{t.origin.ref && <span className="dw-dim"> · {t.origin.ref.slice(0, 8)}</span>}</>}
               </span>
               <span>Thread</span>

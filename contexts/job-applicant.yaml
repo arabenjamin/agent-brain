@@ -8,7 +8,6 @@ description: >
 # the turn overflow the free cloud tier and the local fallback (2026-09-09).
 tools:
   - search_notes
-  - list_notes
   - store_note
   - create_task
   - mcp_list_tools

@@ -90,10 +90,6 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         .await
     }
 
-    async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>> {
-        KnowledgeService::find_related_notes(self, note_id).await
-    }
-
     async fn prune_old_notes(
         &self,
         days_stale: i64,
@@ -133,10 +129,6 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         KnowledgeService::synthesize_knowledge(self, topic, limit).await
     }
 
-    async fn review_due_notes(&self, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
-        KnowledgeService::review_due_notes(self, limit).await
-    }
-
     async fn reason(
         &self,
         question: &str,
@@ -163,17 +155,6 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         KnowledgeService::explain_reasoning(self, decision, task_id, limit).await
     }
 
-    async fn export_graph_visualization(
-        &self,
-        max_nodes: usize,
-    ) -> anyhow::Result<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
-        KnowledgeService::export_graph_visualization(self, max_nodes).await
-    }
-
-    async fn get_note(&self, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
-        KnowledgeService::get_note(self, id).await
-    }
-
     async fn search_by_entity(
         &self,
         entity_name: &str,
@@ -198,27 +179,11 @@ impl crate::services::traits::KnowledgeStore for KnowledgeService {
         KnowledgeService::label_buckets(self).await
     }
 
-    async fn list_notes(
-        &self,
-        limit: usize,
-        note_type: Option<&str>,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        KnowledgeService::list_notes(self, limit, note_type).await
-    }
-
     async fn recall_window(
         &self,
         spec: crate::services::traits::RecallSpec<'_>,
     ) -> anyhow::Result<serde_json::Value> {
         KnowledgeService::recall_window(self, spec).await
-    }
-
-    async fn delete_note(&self, id: &str) -> anyhow::Result<bool> {
-        KnowledgeService::delete_note(self, id).await
-    }
-
-    async fn update_note(&self, id: &str, content: &str) -> anyhow::Result<bool> {
-        KnowledgeService::update_note(self, id, content).await
     }
 
     async fn reason_structured(

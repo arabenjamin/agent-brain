@@ -27,23 +27,6 @@ use tracing::{debug, warn};
 
 use crate::services::traits::LlmProvider;
 
-/// Structured summary returned by `ingest` — the payload chains reason over.
-#[derive(Debug, Clone, Serialize)]
-pub struct MediaSummary {
-    pub video_id: String,
-    pub title: String,
-    pub channel: String,
-    pub channel_id: String,
-    pub url: String,
-    pub published_at: String,
-    pub duration_secs: i64,
-    /// `captions` | `whisper`
-    pub transcript_source: String,
-    pub summary: String,
-    pub key_concepts: Vec<String>,
-    pub transcript_len: usize,
-}
-
 /// A recent item discovered from a channel/playlist/podcast feed.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FeedItem {

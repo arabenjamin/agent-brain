@@ -30,7 +30,7 @@ use super::transport_trait::{McpTransport, TransportMessage};
 
 // Re-export sub-configs so existing external callers (e.g. tests) that import
 // them from `crate::mcp::server` still compile.
-pub use crate::brain_core::{CodebaseConfig, JobServices, SearchConfig, StorageConfig};
+pub use crate::brain_core::{CodebaseConfig, JobServices, StorageConfig};
 
 // ============================================================================
 // Errors / State
@@ -166,24 +166,6 @@ impl McpServerCore {
     /// Set the LLM configuration.
     pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
         self.brain = self.brain.with_llm_config(config);
-        self
-    }
-
-    /// Set the Brave API Key for searching.
-    pub fn with_brave_api_key(mut self, key: impl Into<String>) -> Self {
-        self.brain = self.brain.with_brave_api_key(key);
-        self
-    }
-
-    /// Set the Google API Key and CX for searching.
-    pub fn with_google_config(mut self, key: impl Into<String>, cx: impl Into<String>) -> Self {
-        self.brain = self.brain.with_google_config(key, cx);
-        self
-    }
-
-    /// Set the SerpApi Key for searching.
-    pub fn with_serpapi_key(mut self, key: impl Into<String>) -> Self {
-        self.brain = self.brain.with_serpapi_key(key);
         self
     }
 

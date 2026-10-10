@@ -90,10 +90,9 @@ impl AgentRunnerSkill {
                  back as this step's result. The agent is a curated context profile (its own \
                  model, toolset, and system prompt) that decides its own steps, calls tools, and \
                  returns a cited answer — use it for the open-ended part of a task (research, \
-                 build, review), not for a single deterministic tool call. Prefer an existing \
-                 agent over constructing a new one: pass `agent: \"auto\"` to auto-pick the \
-                 best-fitting agent, or a specific name. Only construct a bespoke agent when \
-                 `run_agent` reports that none fit. The agent does NOT see the rest of the chain \
+                 build, review), not for a single deterministic tool call. Pass `agent: \"auto\"` \
+                 to auto-pick the best-fitting agent, or a specific name. When none fits, say so \
+                 plainly: a new agent is a new context profile, which a person adds. The agent does NOT see the rest of the chain \
                  or the conversation: put everything it needs into `task`. It may write (store \
                  notes, workspace files). A wrong or non-spawnable `agent` name returns the list \
                  of agents you can use."
@@ -170,8 +169,7 @@ impl AgentRunnerSkill {
             name: "select_agent".to_string(),
             description:
                 "Pick the best-fitting spawnable agent for a goal, without running it. Returns \
-                 the chosen agent name (or none, when nothing fits — a signal to construct a new \
-                 agent) plus the full roster. Deterministic (specialty match, no model call), so \
+                 the chosen agent name (or none, when nothing fits) plus the full roster. Deterministic (specialty match, no model call), so \
                  a chain step can route to an agent cheaply; then call `run_agent` with the \
                  chosen name, or pass `run_agent` `agent: \"auto\"` to do both in one step."
                     .to_string(),

@@ -8,8 +8,6 @@ mod temporal;
 mod todo;
 
 #[cfg(feature = "telemetry")]
-pub mod datasets;
-#[cfg(feature = "telemetry")]
 pub mod telemetry;
 
 pub use agent_brain_models::ScheduledTask;
@@ -20,8 +18,6 @@ pub use scheduled_task::YamlSyncOutcome;
 pub use temporal::node_ts;
 pub use todo::{TODO_ORIGINS, TODO_STATUSES, Todo, TodoItemPatch};
 
-#[cfg(feature = "telemetry")]
-pub use datasets::{DatasetStore, ReliefwebRow};
 #[cfg(feature = "telemetry")]
 pub use telemetry::TelemetryClient;
 
@@ -61,17 +57,6 @@ impl TelemetryClient {
         Ok(())
     }
 
-    pub fn get_recent_gaps(&self, _limit: usize) -> anyhow::Result<Vec<(String, String, String)>> {
-        Ok(vec![])
-    }
-
-    pub fn get_training_examples(
-        &self,
-        _min_score: Option<i32>,
-    ) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(vec![])
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_model(
         &self,
@@ -96,10 +81,6 @@ impl TelemetryClient {
 
     pub fn list_models(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         Ok(vec![])
-    }
-
-    pub fn get_model_system_prompt(&self, _name: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
     }
 
     pub fn select_models(

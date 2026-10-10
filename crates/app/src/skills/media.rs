@@ -3,8 +3,6 @@
 //! Tools:
 //! - `ingest_media` — fetch transcript, map-reduce summarize, upsert the
 //!   `:Media` dedup node, and (optionally) store a linked summary note.
-//! - `fetch_transcript` — raw transcript text only (Q&A / RAG grounding).
-//! - `list_channel_videos` — recent un-ingested items from a channel/playlist.
 //! - `poll_media_sources` — autonomous watch: fan out new videos into
 //!   `"watch video: <url>"` Tasks (gated by `MEDIA_WATCH_ENABLED`).
 //! - `manage_media_source` — runtime CRUD for the `:MediaSource` watchlist.
@@ -96,43 +94,6 @@ impl MediaSkill {
                     "force": {"type": "boolean", "description": "Re-summarize even if already ingested (default false)"}
                 },
                 "required": ["url"]
-            }),
-        }
-    }
-
-    fn fetch_transcript_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "fetch_transcript".to_string(),
-            description:
-                "Fetch the raw transcript text of a video (captions only, no summarization). \
-                 Useful for direct Q&A or grounding."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Video URL, or text containing one"}
-                },
-                "required": ["url"]
-            }),
-        }
-    }
-
-    fn list_channel_videos_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_channel_videos".to_string(),
-            description:
-                "List recent, not-yet-ingested items from a YouTube channel/playlist (free RSS \
-                 feed) or a podcast RSS feed. Pass `source` (a MediaSource name, a \
-                 channel_id/playlist_id, or a podcast feed URL) or explicit `kind`+`ref`."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "source": {"type": "string", "description": "MediaSource name, a channel_id/playlist_id, or a podcast feed URL"},
-                    "kind": {"type": "string", "enum": ["youtube_channel", "youtube_playlist", "podcast_rss", "article_rss"], "description": "Explicit source kind"},
-                    "ref": {"type": "string", "description": "Explicit channel_id / playlist_id / podcast feed URL"},
-                    "limit": {"type": "integer", "description": "Max items to return (default 15)"}
-                }
             }),
         }
     }
@@ -433,61 +394,6 @@ impl MediaSkill {
             "summary": summary,
             "key_concepts": key_concepts,
         }))
-    }
-
-    async fn handle_fetch_transcript(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: UrlInput = match parse_args(arguments) {
-            Ok(i) => i,
-            Err(e) => return e,
-        };
-        let url = MediaService::extract_first_url(&input.url)
-            .unwrap_or_else(|| input.url.trim().to_string());
-        match self.svc.fetch_transcript(&url).await {
-            Ok((meta, transcript, source)) => ToolCallResult::success_json(json!({
-                "video_id": meta.id,
-                "title": meta.title,
-                "url": meta.url,
-                "transcript_source": source,
-                "length": transcript.len(),
-                "transcript": transcript,
-            })),
-            Err(e) => ToolCallResult::error(format!("Could not fetch transcript: {e}")),
-        }
-    }
-
-    async fn handle_list_channel_videos(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: ListInput = match parse_args(arguments) {
-            Ok(i) => i,
-            Err(e) => return e,
-        };
-
-        let (kind, reference) = match self.resolve_source(&input).await {
-            Ok(kr) => kr,
-            Err(msg) => return ToolCallResult::error(msg),
-        };
-
-        let items = match self.svc.list_feed_videos(&kind, &reference).await {
-            Ok(v) => v,
-            Err(e) => return ToolCallResult::error(format!("Feed listing failed: {e}")),
-        };
-
-        let limit = input.limit.unwrap_or(15);
-        let mut fresh = Vec::new();
-        for item in items {
-            if self
-                .neo4j
-                .media_exists(&item.video_id)
-                .await
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            fresh.push(item);
-            if fresh.len() >= limit {
-                break;
-            }
-        }
-        ToolCallResult::success_json(fresh)
     }
 
     async fn handle_poll_media_sources(&self) -> ToolCallResult {
@@ -967,27 +873,6 @@ impl MediaSkill {
         // Pass-through: return the analysis unchanged so downstream steps see it.
         ToolCallResult::success_text(input.text)
     }
-
-    /// Resolve `(kind, ref)` from a MediaSource name, explicit kind+ref, or a
-    /// bare channel/playlist id (inferred from its prefix).
-    async fn resolve_source(&self, input: &ListInput) -> Result<(String, String), String> {
-        if let (Some(kind), Some(reference)) = (&input.kind, &input.reference) {
-            return Ok((kind.clone(), reference.clone()));
-        }
-        let Some(source) = &input.source else {
-            return Err("provide 'source' (a MediaSource name or channel/playlist id) or explicit 'kind'+'ref'".into());
-        };
-        if let Ok(Some(ms)) = self.neo4j.get_media_source(source).await {
-            return Ok((ms.kind, ms.reference));
-        }
-        match infer_kind(source) {
-            Some(kind) => Ok((kind.to_string(), source.clone())),
-            None => Err(format!(
-                "could not resolve '{source}' — not a known MediaSource name and not a \
-                 recognizable channel/playlist id"
-            )),
-        }
-    }
 }
 
 fn watch_enabled() -> bool {
@@ -1030,27 +915,6 @@ fn unique_slug(name: &str, taken: &std::collections::HashSet<String>) -> String 
         .unwrap_or(base)
 }
 
-/// Infer a source kind from a bare reference: a YouTube id prefix, or an
-/// http(s) URL (a podcast feed). YouTube *watch/channel* page URLs are left
-/// unresolved — those belong in `ingest_media`, not a feed listing.
-fn infer_kind(reference: &str) -> Option<&'static str> {
-    if reference.starts_with("UC") {
-        Some("youtube_channel")
-    } else if ["PL", "UU", "OL", "FL", "RD"]
-        .iter()
-        .any(|p| reference.starts_with(p))
-    {
-        Some("youtube_playlist")
-    } else if (reference.starts_with("http://") || reference.starts_with("https://"))
-        && !reference.contains("youtube.com")
-        && !reference.contains("youtu.be")
-    {
-        Some("podcast_rss")
-    } else {
-        None
-    }
-}
-
 #[async_trait]
 impl Skill for MediaSkill {
     fn name(&self) -> &str {
@@ -1061,8 +925,6 @@ impl Skill for MediaSkill {
         vec![
             Self::ingest_media_def(),
             Self::ingest_article_def(),
-            Self::fetch_transcript_def(),
-            Self::list_channel_videos_def(),
             Self::poll_media_sources_def(),
             Self::manage_media_source_def(),
             Self::spawn_gap_tasks_def(),
@@ -1074,8 +936,6 @@ impl Skill for MediaSkill {
         match tool_name {
             "ingest_media" => Some(self.handle_ingest_media(arguments).await),
             "ingest_article" => Some(self.handle_ingest_article(arguments).await),
-            "fetch_transcript" => Some(self.handle_fetch_transcript(arguments).await),
-            "list_channel_videos" => Some(self.handle_list_channel_videos(arguments).await),
             "poll_media_sources" => Some(self.handle_poll_media_sources().await),
             "manage_media_source" => Some(self.handle_manage_media_source(arguments).await),
             "spawn_gap_tasks" => Some(self.handle_spawn_gap_tasks(arguments).await),
@@ -1226,27 +1086,10 @@ struct IngestArticleInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct UrlInput {
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct GapInput {
     text: String,
     #[serde(default)]
     max: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListInput {
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default, rename = "ref")]
-    reference: Option<String>,
-    #[serde(default)]
-    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1296,14 +1139,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn infers_channel_and_playlist_kinds() {
-        assert_eq!(infer_kind("UCabcdef"), Some("youtube_channel"));
-        assert_eq!(infer_kind("PLabcdef"), Some("youtube_playlist"));
-        assert_eq!(infer_kind("UUabcdef"), Some("youtube_playlist"));
-        assert_eq!(infer_kind("randomthing"), None);
-    }
-
-    #[test]
     fn unique_slug_dedups_and_sanitizes() {
         let mut taken = std::collections::HashSet::new();
         assert_eq!(
@@ -1316,17 +1151,6 @@ mod tests {
             "two-minute-papers-2"
         );
         assert_eq!(unique_slug("   ***   ", &taken), "source");
-    }
-
-    #[test]
-    fn infers_podcast_feed_url() {
-        assert_eq!(
-            infer_kind("https://feeds.example.com/show.xml"),
-            Some("podcast_rss")
-        );
-        // YouTube URLs are not feed refs — they belong in ingest_media.
-        assert_eq!(infer_kind("https://www.youtube.com/watch?v=x"), None);
-        assert_eq!(infer_kind("https://youtu.be/x"), None);
     }
 
     #[test]

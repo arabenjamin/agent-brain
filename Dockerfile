@@ -84,10 +84,8 @@ COPY --chown=agent:agent entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Pre-create runtime directories with correct ownership so named volumes inherit permissions
-RUN mkdir -p /home/agent/snapshots /home/agent/telemetry /home/agent/proposals \
-             /home/agent/.ssh \
-    && chown -R agent:agent /home/agent/snapshots /home/agent/telemetry \
-                            /home/agent/proposals /home/agent/.ssh \
+RUN mkdir -p /home/agent/snapshots /home/agent/telemetry /home/agent/.ssh \
+    && chown -R agent:agent /home/agent/snapshots /home/agent/telemetry /home/agent/.ssh \
     && chmod 700 /home/agent/.ssh
 
 # Switch to non-root user

@@ -215,7 +215,6 @@ services:
       - RUST_SANDBOX_URL=http://rust-sandbox:8000
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
-      - PROPOSALS_DIR=/home/agent/proposals
       - WORKSPACE_DIR=/home/agent/workspace
       - LOG_LEVEL=info
       - LOG_FORMAT=json
@@ -225,8 +224,6 @@ services:
       - SCHEMAS_DIR=/home/agent/agent-brain/schemas              # envelope validation for schedules/chains (services/validation.rs)
       - SCHEDULES_DIR=/home/agent/agent-brain/schedules
       - SOURCES_DIR=/home/agent/agent-brain/sources
-      - DATASETS_DIR=/home/agent/agent-brain/datasets                # GDELT/ReliefWeb ETL config (datasets/*.yaml)
-      - DATASETS_DB_PATH=/home/agent/telemetry/datasets.duckdb       # ETL'd rows; separate file from telemetry
       - RELIEFWEB_APPNAME=${RELIEFWEB_APPNAME:-}                     # ReliefWeb's pre-approved appname (not a secret)
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
       - MCP_SERVERS_DIR=/home/agent/agent-brain/mcp-servers      # external MCP servers the brain may call (aidevboard, worklittle, exa, tavily)
@@ -261,7 +258,6 @@ services:
       - brain_snapshots:/home/agent/snapshots
       - brain_ssh:/home/agent/.ssh          # persists signing key across rebuilds
       - ./telemetry:/home/agent/telemetry
-      - ./proposals:/home/agent/proposals
       - ./workspace:/home/agent/workspace
     depends_on:
       neo4j:

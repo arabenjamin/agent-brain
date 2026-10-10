@@ -3,11 +3,6 @@
 use super::*;
 
 impl KnowledgeService {
-    /// Return notes whose spaced-repetition review is due.
-    pub async fn list_notes(&self, limit: usize, note_type: Option<&str>) -> Result<Vec<Value>> {
-        self.list_notes_filtered(limit, note_type, None).await
-    }
-
     /// Enumerate notes, optionally narrowed by `note_type` and/or `source_context`.
     ///
     /// `source_context` enumeration exists because similarity search cannot do it:

@@ -41,7 +41,7 @@ Every agent turn — the "hippocampus" store for experience replay and fine-tuni
 
 ### `knowledge_gaps`
 
-Queries the agent couldn't answer — used by `SleepSkill` to surface topics for self-improvement.
+Search failures written by `search_web` (engine errors, empty results). Query it with `duckdb_query`.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -412,6 +412,19 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `no_adversarial` | Boolean | If true, skip adversarial pre-flight even when task has `success_criteria` |
 | `evaluation_rubric` | String? | Overrides `Task.success_criteria` as the evaluator goal text |
 
+#### `RemovedTool`
+
+A tombstone for a tool the brain no longer has (`services/self_model.rs`). Written at startup when a `:ToolDef` vanishes from the registry, annotated from `architecture/removed-tools.yaml`, and deleted if the tool is registered again. `list_capabilities(kind=tools)` lists them under `removed`.
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | String | Tool name; MERGE key |
+| `removed_at` | DateTime | When the sync first saw it gone (UTC) |
+| `skill`, `description` | String? | Copied from the vanished `:ToolDef` |
+| `reason` | String? | Evidence for the removal (from the YAML) |
+| `commit` | String? | Last commit that still had it: `git show <commit>:<path>` recovers it |
+| `replaced_by` | String? | What to use instead |
+
 ---
 
 ### Relationships
@@ -432,7 +445,7 @@ Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. S
 | `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
 | `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |
-| `SUBTASK_OF` | `(Task)→(Task)` | — | Sub-task created by `decompose_goal` |
+| `SUBTASK_OF` | `(Task)→(Task)` | — | Sub-task of a parent task |
 | `DEPENDS_ON` | `(Task)→(Task)` | — | Task ordering dependency |
 | `USES` | `(DynamicTool)→(Procedure)` | — | Dynamic tool backed by a named procedure |
 

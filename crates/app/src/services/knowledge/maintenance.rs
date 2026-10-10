@@ -3,40 +3,6 @@
 use super::*;
 
 impl KnowledgeService {
-    pub async fn review_due_notes(&self, limit: usize) -> Result<Vec<Value>> {
-        let cypher = r#"
-        MATCH (n:Note)
-        WHERE n.next_review_at <= datetime()
-          AND NOT COALESCE(n.note_type, 'semantic') IN ['consolidated', 'outcome', 'news', 'news_raw']
-        RETURN n.id AS id, n.content AS content, n.note_type AS note_type,
-               toString(n.next_review_at) AS next_review_at, n.access_count AS access_count
-        ORDER BY n.next_review_at ASC LIMIT $limit
-        "#;
-
-        let query = neo4rs::query(cypher).param("limit", limit as i64);
-        let rows = self.neo4j.execute(query).await?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            let id = row.get::<String>("id").unwrap_or_default();
-            let content = row.get::<String>("content").unwrap_or_default();
-            let note_type = row
-                .get::<String>("note_type")
-                .unwrap_or_else(|_| "semantic".to_string());
-            let next_review = row.get::<String>("next_review_at").unwrap_or_default();
-            let access_count = row.get::<i64>("access_count").unwrap_or(0);
-            results.push(serde_json::json!({
-                "id": id,
-                "content": content,
-                "note_type": note_type,
-                "next_review_at": next_review,
-                "access_count": access_count
-            }));
-        }
-
-        Ok(results)
-    }
-
     /// Delete stale notes. When score_threshold/lambda provided, uses adaptive decay scoring.
     /// When dry_run=true, returns candidate count without deleting.
     /// `min_retain` and `max_pct` guard against over-pruning: at most `max_pct` of total notes

@@ -519,72 +519,6 @@ impl Neo4jClient {
     // Progress tracking
     // =========================================================================
 
-    /// Update progress for a running job.
-    pub async fn update_job_progress(
-        &self,
-        id: &str,
-        percent: u8,
-        message: Option<&str>,
-        metadata: Option<&serde_json::Value>,
-    ) -> Result<(), RepositoryError> {
-        let now = Utc::now().to_rfc3339();
-        let percent_i64 = percent.min(100) as i64;
-        let metadata_str = metadata.map(|v| v.to_string()).unwrap_or_default();
-
-        let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
-             SET j.progress_percent = $percent, \
-                 j.progress_message = $message, \
-                 j.progress_metadata = $metadata, \
-                 j.progress_updated_at = datetime($now), \
-                 j.updated_at = datetime($now)",
-        )
-        .param("id", id)
-        .param("percent", percent_i64)
-        .param("message", message.unwrap_or(""))
-        .param("metadata", metadata_str)
-        .param("now", now);
-
-        self.run(q).await
-    }
-
-    /// Get the current progress for a job.
-    pub async fn get_job_progress(
-        &self,
-        id: &str,
-    ) -> Result<Option<(u8, Option<String>, Option<String>)>, RepositoryError> {
-        let q = query(
-            "MATCH (j:AgentJob {id: $id}) \
-             RETURN j.progress_percent AS percent, \
-                    j.progress_message AS message, \
-                    toString(j.progress_updated_at) AS updated_at",
-        )
-        .param("id", id);
-
-        let rows = self.execute(q).await?;
-        if let Some(row) = rows.into_iter().next() {
-            let percent: Option<i64> = row.get("percent").unwrap_or(None);
-            let message: Option<String> = row.get("message").unwrap_or(None);
-            let updated_at: Option<String> = row.get("updated_at").unwrap_or(None);
-
-            let msg = if message.as_deref().unwrap_or("").is_empty() {
-                None
-            } else {
-                message
-            };
-
-            let pct = percent.map(|v| v as u8);
-
-            if let Some(p) = pct {
-                Ok(Some((p, msg, updated_at)))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
     // =========================================================================
     // TTL and expiration
     // =========================================================================
@@ -682,28 +616,6 @@ impl Neo4jClient {
             .unwrap_or(0);
 
         Ok(count > 0)
-    }
-
-    /// Get dead letter queue statistics.
-    pub async fn get_dead_letter_stats(&self) -> Result<serde_json::Value, RepositoryError> {
-        let q = query(
-            "MATCH (j:AgentJob {status: 'dead_letter'}) \
-             RETURN j.dead_letter_reason AS reason, count(j) AS n",
-        );
-
-        let rows = self.execute(q).await?;
-        let mut map = serde_json::Map::new();
-        let mut total: i64 = 0;
-        for row in &rows {
-            let reason = row
-                .get::<String>("reason")
-                .unwrap_or_else(|_| "unknown".to_string());
-            let n = row.get::<i64>("n").unwrap_or(0);
-            map.insert(reason, serde_json::json!(n));
-            total += n;
-        }
-        map.insert("total".to_string(), serde_json::json!(total));
-        Ok(serde_json::Value::Object(map))
     }
 
     // =========================================================================

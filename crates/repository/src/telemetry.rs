@@ -189,32 +189,6 @@ impl TelemetryClient {
         Ok(())
     }
 
-    /// Retrieve recent knowledge gaps for analysis.
-    pub fn get_recent_gaps(&self, limit: usize) -> Result<Vec<(String, String, String)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-
-        let mut stmt = conn.prepare(
-            "SELECT query, COALESCE(context, ''), gap_type 
-             FROM knowledge_gaps 
-             ORDER BY timestamp DESC 
-             LIMIT ?",
-        )?;
-
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-
-        let mut gaps = Vec::new();
-        for row in rows {
-            gaps.push(row?);
-        }
-
-        Ok(gaps)
-    }
-
     // =========================================================================
     // Model registry
     // =========================================================================
@@ -308,21 +282,6 @@ impl TelemetryClient {
             out.push(r?);
         }
         Ok(out)
-    }
-
-    /// Return the system_prompt for a given model name, or None if not found.
-    pub fn get_model_system_prompt(&self, name: &str) -> Result<Option<String>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-        let mut stmt = conn.prepare("SELECT system_prompt FROM model_registry WHERE name = ?")?;
-        let mut rows = stmt.query(params![name])?;
-        if let Some(row) = rows.next()? {
-            Ok(row.get(0)?)
-        } else {
-            Ok(None)
-        }
     }
 
     /// Select models that satisfy capability and cost constraints.
@@ -925,36 +884,6 @@ impl TelemetryClient {
     // =========================================================================
     // Training data export
     // =========================================================================
-
-    /// Export successful interactions for fine-tuning.
-    /// Returns a list of (prompt, response) tuples.
-    pub fn get_training_examples(&self, min_score: Option<i32>) -> Result<Vec<(String, String)>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
-
-        let sql = if let Some(score) = min_score {
-            // Get explicitly rated good responses
-            format!(
-                "SELECT prompt, response FROM interactions WHERE success = true AND feedback_score >= {}",
-                score
-            )
-        } else {
-            // Get all successful responses
-            "SELECT prompt, response FROM interactions WHERE success = true".to_string()
-        };
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-
-        let mut examples = Vec::new();
-        for row in rows {
-            examples.push(row?);
-        }
-
-        Ok(examples)
-    }
 
     /// Execute a read-only SQL query and return results as a JSON array.
     ///

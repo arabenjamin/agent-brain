@@ -136,10 +136,6 @@ impl KnowledgeStore for MockKnowledgeStore {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn find_related_notes(&self, _note_id: &str) -> anyhow::Result<Vec<(String, f64)>> {
-        Ok(vec![])
-    }
-
     async fn prune_old_notes(
         &self,
         _days_stale: i64,
@@ -176,10 +172,6 @@ impl KnowledgeStore for MockKnowledgeStore {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn review_due_notes(&self, _limit: usize) -> anyhow::Result<Vec<Value>> {
-        Ok(vec![])
-    }
-
     async fn reason(
         &self,
         _question: &str,
@@ -212,17 +204,6 @@ impl KnowledgeStore for MockKnowledgeStore {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn export_graph_visualization(
-        &self,
-        _max_nodes: usize,
-    ) -> anyhow::Result<(Vec<Value>, Vec<Value>)> {
-        Ok((vec![], vec![]))
-    }
-
-    async fn get_note(&self, _id: &str) -> anyhow::Result<Option<Value>> {
-        Ok(None)
-    }
-
     async fn search_by_entity(
         &self,
         _entity_name: &str,
@@ -232,14 +213,6 @@ impl KnowledgeStore for MockKnowledgeStore {
         self.search_result
             .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn list_notes(
-        &self,
-        _limit: usize,
-        _note_type: Option<&str>,
-    ) -> anyhow::Result<Vec<Value>> {
-        Ok(vec![])
     }
 
     async fn list_notes_filtered(
@@ -291,14 +264,6 @@ impl KnowledgeStore for MockKnowledgeStore {
                 "note_type": note_type,
             },
         }))
-    }
-
-    async fn delete_note(&self, _id: &str) -> anyhow::Result<bool> {
-        Ok(true)
-    }
-
-    async fn update_note(&self, _id: &str, _content: &str) -> anyhow::Result<bool> {
-        Ok(true)
     }
 
     async fn reason_structured(
@@ -378,20 +343,6 @@ impl TaskStore for MockTaskStore {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn get_task(&self, _id: &str) -> anyhow::Result<Option<Task>> {
-        self.get_result
-            .clone()
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn link_subtask(&self, _parent_id: &str, _child_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn link_task_dependency(&self, _from_id: &str, _to_id: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     async fn update_task_status(&self, _id: &str, _status: TaskStatus) -> anyhow::Result<()> {
         self.update_status_result
             .as_ref()
@@ -417,10 +368,6 @@ impl TaskStore for MockTaskStore {
         self.store_outcome_result
             .clone()
             .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn list_tasks(&self, _status: Option<&str>, _limit: usize) -> anyhow::Result<Vec<Value>> {
-        Ok(vec![])
     }
 
     async fn auto_complete_parent_if_done(&self, _task_id: &str) -> anyhow::Result<Option<String>> {
@@ -481,19 +428,6 @@ impl WorkingMemoryStore for MockWorkingMemoryStore {
 
     async fn list_sessions(&self, _limit: i64) -> anyhow::Result<Vec<Value>> {
         Ok(vec![])
-    }
-
-    async fn get_all_entries(&self, _session_id: &str) -> anyhow::Result<Vec<Value>> {
-        self.get_all_result
-            .clone()
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn delete_session(&self, _session_id: &str) -> anyhow::Result<()> {
-        self.delete_result
-            .as_ref()
-            .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     async fn archive_session(&self, _session_id: &str) -> anyhow::Result<()> {

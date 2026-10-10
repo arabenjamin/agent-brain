@@ -233,28 +233,6 @@ impl KnowledgeService {
         Ok(results)
     }
 
-    /// Find notes related to a given note via RELATES_TO edges.
-    pub async fn find_related_notes(&self, note_id: &str) -> Result<Vec<(String, f64)>> {
-        let cypher = r#"
-        MATCH (n:Note {id: $note_id})-[r:RELATES_TO]->(m:Note)
-        RETURN m.content AS content, r.similarity AS score
-        ORDER BY r.similarity DESC
-        LIMIT 10
-        "#;
-
-        let query = neo4rs::query(cypher).param("note_id", note_id);
-        let rows = self.neo4j.execute(query).await?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            let content = row.get::<String>("content").unwrap_or_default();
-            let score = row.get::<f64>("score").unwrap_or(0.0);
-            results.push((content, score));
-        }
-
-        Ok(results)
-    }
-
     /// Search notes using hybrid BM25 + vector RRF, with optional graph expansion.
     /// Updates spaced-repetition fields on accessed notes.
     /// Pass `entity_expansion = true` to bridge through shared Entity nodes after

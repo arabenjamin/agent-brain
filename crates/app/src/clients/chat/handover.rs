@@ -21,7 +21,7 @@ pub(super) const HANDOVER_TOTAL_CHARS: usize = 16000;
 /// safely continue from it (and even repeat it). Conservative: an unknown
 /// mutating shape counts as a write.
 pub(super) fn call_is_read_only(tool: &str, args: &Value) -> bool {
-    if WRITE_TOOLS.contains(&tool) || tool == "run_agent" || tool == "use_model" {
+    if WRITE_TOOLS.contains(&tool) || tool == "run_agent" {
         return false;
     }
     const MUTATING_PREFIXES: [&str; 12] = [

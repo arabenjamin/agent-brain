@@ -81,9 +81,6 @@ function ItemRow({ t, openId }: { t: FeedItem; openId?: string }) {
         {error && <span className="tone-text-red"> · {error}</span>}
       </button>
       <span className="wk-row-meta wk-feed-actions">
-        {origin === "proposal" && t.origin?.ref && (
-          <button type="button" className="btn-ghost" disabled={busy} onClick={() => openEntity("proposal", t.origin!.ref!)}>Open proposal</button>
-        )}
         <button type="button" className="btn-ghost" disabled={busy} title="Open this item's conversation"
           onClick={() => act(async () => openSession(await ensureThread(t)))}>Reply</button>
         {awaiting ? (

@@ -861,10 +861,6 @@ async fn relay_brain_event(event: BrainEvent, sessions: &SessionManager) {
             sessions.notify_all("agent_chat", data).await;
             return;
         }
-        // Scheduler events are broadcast-only — no per-session routing yet.
-        BrainEvent::SchedulerTick { .. }
-        | BrainEvent::SchedulerSleepEntered
-        | BrainEvent::SchedulerSleepExited => return,
     };
 
     let data = serde_json::json!({

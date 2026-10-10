@@ -111,9 +111,7 @@ impl Neo4jClient {
 
     /// Delete completed/cancelled tasks older than `days`, in batches, to keep
     /// the Task label from growing unboundedly (the scheduler scans it every tick).
-    ///
-    /// Tasks referenced by an AgentSpec (`PERFORMED` / `CONSTRUCTED_FOR`) are kept —
-    /// they are the constructor's learning history. Returns total deleted.
+    /// Returns total deleted.
     pub async fn delete_old_completed_tasks(&self, days: u32) -> Result<usize, RepositoryError> {
         if days == 0 {
             return Ok(0);
@@ -125,7 +123,6 @@ impl Neo4jClient {
                  WHERE t.status IN ['completed', 'cancelled'] \
                    AND coalesce(t.updated_at, t.created_at) \
                        < datetime() - duration({days: $days}) \
-                   AND NOT EXISTS { MATCH (:AgentSpec)-[:PERFORMED|CONSTRUCTED_FOR]->(t) } \
                  WITH t LIMIT 1000 \
                  DETACH DELETE t \
                  RETURN count(*) AS n",
@@ -306,24 +303,6 @@ impl Neo4jClient {
         Ok(!rows.is_empty())
     }
 
-    /// Link a child task as a subtask of a parent via SUBTASK_OF edge.
-    pub async fn link_subtask(
-        &self,
-        parent_id: &str,
-        child_id: &str,
-    ) -> Result<(), RepositoryError> {
-        let q = query(
-            "MATCH (parent:Task {id: $parent_id}), (child:Task {id: $child_id}) \
-             MERGE (child)-[:SUBTASK_OF]->(parent)",
-        )
-        .param("parent_id", parent_id)
-        .param("child_id", child_id);
-
-        self.run(q).await?;
-        info!(parent_id = %parent_id, child_id = %child_id, "Linked subtask");
-        Ok(())
-    }
-
     /// List tasks with optional status filter and optional subtask parent info.
     pub async fn list_tasks(
         &self,
@@ -379,24 +358,6 @@ impl Neo4jClient {
             }));
         }
         Ok(tasks)
-    }
-
-    /// Create a DEPENDS_ON edge: `from_id` cannot start until `to_id` completes.
-    pub async fn link_task_dependency(
-        &self,
-        from_id: &str,
-        to_id: &str,
-    ) -> Result<(), RepositoryError> {
-        let q = query(
-            "MATCH (a:Task {id: $from_id}), (b:Task {id: $to_id}) \
-             MERGE (a)-[:DEPENDS_ON]->(b)",
-        )
-        .param("from_id", from_id)
-        .param("to_id", to_id);
-
-        self.run(q).await?;
-        info!(from_id = %from_id, to_id = %to_id, "Linked task dependency");
-        Ok(())
     }
 
     /// If all sub-tasks of a parent are now completed, mark the parent completed too.
@@ -479,32 +440,5 @@ impl Neo4jClient {
 
         info!(note_id = %id, "Stored outcome note");
         Ok(id)
-    }
-
-    /// Record how a constructed AgentSpec performed on a task — the Phase 3
-    /// learning edge. Called by the queue's evaluator hook after every graded
-    /// run (pass AND fail: failures are the more valuable signal).
-    /// Returns `true` when the task was linked to an AgentSpec.
-    pub async fn record_agent_spec_performance(
-        &self,
-        task_id: &str,
-        score: f64,
-        passed: bool,
-    ) -> Result<bool, RepositoryError> {
-        let rows = self
-            .execute(
-                query(
-                    "MATCH (a:AgentSpec)-[:CONSTRUCTED_FOR]->(t:Task {id: $task_id}) \
-                     CREATE (a)-[:PERFORMED {score: $score, passed: $passed, \
-                                             at: datetime($at)}]->(t) \
-                     RETURN a.id AS id",
-                )
-                .param("task_id", task_id)
-                .param("score", score)
-                .param("passed", passed)
-                .param("at", Utc::now().to_rfc3339()),
-            )
-            .await?;
-        Ok(!rows.is_empty())
     }
 }

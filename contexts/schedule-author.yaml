@@ -12,7 +12,6 @@ specialty: >-
   authoring a correct, lint-clean scheduled-task step chain (the interval + steps
   array for manage_scheduled_task) — reach for it before hand-writing a schedule
 tools:
-  - context
   - neo4j_query
   - list_tasks
 # Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over

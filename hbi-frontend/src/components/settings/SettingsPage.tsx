@@ -309,7 +309,7 @@ function SchedulerSection() {
         )}
         <button type="button" className="btn-ghost" disabled={!!busy || !s.enabled}
           title={s.enabled ? "Run one tick now instead of waiting" : "Start the scheduler first"}
-          onClick={() => run("Tick", "run_scheduler_tick", {})}>Run a tick now</button>
+          onClick={() => run("Tick", "scheduler_control", { action: "tick" })}>Run a tick now</button>
         {busy && <span className="home-dim">{busy}…</span>}
       </div>
 

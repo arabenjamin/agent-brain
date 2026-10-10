@@ -210,8 +210,6 @@ pub trait KnowledgeStore: Send + Sync {
         source_context: Option<&str>,
     ) -> anyhow::Result<Vec<Value>>;
 
-    async fn find_related_notes(&self, note_id: &str) -> anyhow::Result<Vec<(String, f64)>>;
-
     #[allow(clippy::too_many_arguments)]
     async fn prune_old_notes(
         &self,
@@ -236,8 +234,6 @@ pub trait KnowledgeStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<(String, String)>;
 
-    async fn review_due_notes(&self, limit: usize) -> anyhow::Result<Vec<Value>>;
-
     async fn reason(
         &self,
         question: &str,
@@ -258,22 +254,12 @@ pub trait KnowledgeStore: Send + Sync {
         limit: usize,
     ) -> anyhow::Result<(String, Vec<Value>)>;
 
-    async fn export_graph_visualization(
-        &self,
-        max_nodes: usize,
-    ) -> anyhow::Result<(Vec<Value>, Vec<Value>)>;
-
-    async fn get_note(&self, id: &str) -> anyhow::Result<Option<Value>>;
-
     async fn search_by_entity(
         &self,
         entity_name: &str,
         entity_type: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<Value>>;
-
-    async fn list_notes(&self, limit: usize, note_type: Option<&str>)
-    -> anyhow::Result<Vec<Value>>;
 
     /// Enumerate notes by LABEL — `note_type` and/or `source_context` — rather
     /// than ranking them by similarity. When the caller already knows the label,
@@ -316,10 +302,6 @@ pub trait KnowledgeStore: Send + Sync {
     /// "not the complete list".
     async fn recall_window(&self, spec: RecallSpec<'_>) -> anyhow::Result<Value>;
 
-    async fn delete_note(&self, id: &str) -> anyhow::Result<bool>;
-
-    async fn update_note(&self, id: &str, content: &str) -> anyhow::Result<bool>;
-
     async fn reason_structured(
         &self,
         question: &str,
@@ -349,12 +331,6 @@ pub trait TaskStore: Send + Sync {
         success_criteria: Option<&str>,
     ) -> anyhow::Result<String>;
 
-    async fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>>;
-
-    async fn link_subtask(&self, parent_id: &str, child_id: &str) -> anyhow::Result<()>;
-
-    async fn link_task_dependency(&self, from_id: &str, to_id: &str) -> anyhow::Result<()>;
-
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()>;
 
     async fn store_reflection_note(
@@ -368,8 +344,6 @@ pub trait TaskStore: Send + Sync {
         content: &str,
         task_id: Option<&str>,
     ) -> anyhow::Result<String>;
-
-    async fn list_tasks(&self, status: Option<&str>, limit: usize) -> anyhow::Result<Vec<Value>>;
 
     /// If all subtasks of the parent are completed, auto-complete the parent too.
     /// Returns `Some(parent_id)` if the parent was auto-completed, `None` otherwise.
@@ -406,12 +380,6 @@ pub trait WorkingMemoryStore: Send + Sync {
 
     /// Return session summaries (session_id, started_at, msg_count, title).
     async fn list_sessions(&self, limit: i64) -> anyhow::Result<Vec<Value>>;
-
-    /// Return all entries for `session_id` ordered by turn (no limit).
-    async fn get_all_entries(&self, session_id: &str) -> anyhow::Result<Vec<Value>>;
-
-    /// Delete all WorkingMemory nodes for `session_id`.
-    async fn delete_session(&self, session_id: &str) -> anyhow::Result<()>;
 
     /// Mark a session archived (hidden from default list but preserved for training data).
     async fn archive_session(&self, session_id: &str) -> anyhow::Result<()>;

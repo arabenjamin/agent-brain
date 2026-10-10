@@ -17,7 +17,6 @@ fn test_create_task_tool_exists() {
     let task_skill = TaskSkill::new(
         SharedLlm::new(Arc::new(RwLock::new(None::<LlmConfig>))),
         None,
-        None,
     );
     registry.register_skill(Box::new(task_skill));
 
@@ -39,7 +38,6 @@ fn test_create_task_tool_exists() {
 async fn test_create_task_without_db() {
     let task_skill = TaskSkill::new(
         SharedLlm::new(Arc::new(RwLock::new(None::<LlmConfig>))),
-        None,
         None,
     );
     let handler = ToolHandler::new(vec![Box::new(task_skill)]);
@@ -91,7 +89,6 @@ async fn test_create_task_with_live_db() {
     let task_skill = TaskSkill::new(
         SharedLlm::new(Arc::new(RwLock::new(None::<LlmConfig>))),
         Some(Arc::new(client.clone())),
-        None,
     );
     let handler = ToolHandler::new(vec![Box::new(task_skill)]);
 

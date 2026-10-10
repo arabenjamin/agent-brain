@@ -55,40 +55,40 @@ cargo run --release -- init-db
 cargo run --release -- serve
 ```
 
-## MCP Tools (~50 tools)
+## MCP Tools
+
+The live list is `list_capabilities` (`kind: tools`) or `GET /api/tools`; it
+also names tools that were removed and what replaced them. A guide by group:
 
 ### Knowledge
-`store_note`, `search_notes`, `prune_old_notes`, `consolidate_memories`, `reason`, `synthesize_knowledge`
+`store_note`, `search_notes`, `recall_recent`, `prune_old_notes`, `consolidate_memories`, `reason`, `synthesize_knowledge`
 
 ### Tasks
-`create_task`, `reflect_on_work`, `decompose_goal`, `update_task`, `record_outcome`
+`create_task`, `update_task`, `list_tasks`, `reflect_on_work`
 
 ### Job Queue
-`manage_job`, `set_worker_config`, `enqueue_jobs`, `dead_letter`, `update_job_progress`
+`enqueue_jobs`, `manage_job`, `dead_letter`
 
 ### Scheduler
-`scheduler_control`, `run_scheduler_tick`, `manage_chain`, `manage_scheduled_task`
+`scheduler_control` (`action: tick` runs one now), `manage_chain`, `manage_scheduled_task`
 
 ### Working Memory
-`push_context`, `notify_user`, `summarise_session`
+`push_context`, `notify_user`
 
 ### Codebase
-`read_codebase_file`, `list_codebase_files`, `search_codebase`, `get_file_tree`, `get_git_log`, `get_git_diff`, `list_proposals`, `read_proposal`, `dismiss_proposal`, `write_proposal`, `analyze_own_structure`
+`read_codebase_file`, `search_codebase`, `get_git_log`, `analyze_own_structure`, `write_codebase_doc`, `write_proposal` (a Feed item for the user to review)
 
 ### Query
-`neo4j_query`, `duckdb_query`
-
-### WebSocket
-`ws_connect`, `ws_send`, `ws_receive`, `ws_close`
+`neo4j_query`, `duckdb_query`, `describe_graph`, `list_capabilities`
 
 ### Dynamic Tools
-`manage_dynamic_tool`, `execute_procedure`, `store_procedure`
+`manage_dynamic_tool`
 
-### HTTP / API
-`http_request`, `define_api_context`
+### HTTP / API / MCP
+`http_request`, `define_api_context`, `ingest_api`, `mcp_list_tools` (no `server` lists the servers), `mcp_call`
 
 ### Model
-`use_model`, `reload_models`
+`get_llm_budget`, `gpu_lease`
 
 ### Code Execution
 `execute_code`
@@ -104,7 +104,7 @@ as a *successful* tool call, so the model can fix the code rather than burn a
 retry. Registered only when `SANDBOX_URL` is set.
 
 ### Other
-`search_web`, `get_search_usage`, `resource`, `context`, `digest_experiences`, `analyze_gaps`
+`search_web`, `get_search_usage`
 
 `search_web` walks an engine failover ladder (`SEARCH_ENGINE_ORDER`, default
 `searxng,google,serpapi,brave`) so one exhausted free tier cannot fail the call.

@@ -1,9 +1,8 @@
 //! Codebase Skill — read-only access to the agent's own local source code.
 //!
-//! Provides 7 tools:
-//! - **Filesystem (6)**: read_codebase_file, list_codebase_files, search_codebase,
-//!   get_file_tree, get_git_log, get_git_diff
-//! - **Self-analysis (1)**: analyze_own_structure
+//! Tools: read_codebase_file, search_codebase, get_git_log, analyze_own_structure,
+//! write_codebase_doc, write_proposal (a Feed item, no file), and the workspace
+//! pair when WORKSPACE_DIR is set.
 //!
 //! GitHub API access is intentionally NOT a native tool — use the generic
 //! `http_request` tool with `context_name="github"`. The `github` ApiContext
@@ -216,8 +215,6 @@ pub struct CodebaseSkill {
     codebase_dir: Option<PathBuf>,
     /// Writable workspace directory (from WORKSPACE_DIR) — separate from the read-only codebase.
     workspace_dir: Option<PathBuf>,
-    /// Directory where fix proposals are written (from PROPOSALS_DIR, default ./proposals).
-    proposals_dir: Option<PathBuf>,
     /// Optional knowledge store for analyze_own_structure(store_as_note=true).
     knowledge: Option<Arc<dyn KnowledgeStore>>,
     /// Optional Neo4j client for querying dynamic capabilities (chains, tools, procedures).
@@ -228,7 +225,6 @@ impl CodebaseSkill {
     pub fn new(
         codebase_dir: Option<PathBuf>,
         workspace_dir: Option<PathBuf>,
-        proposals_dir: Option<PathBuf>,
         knowledge: Option<Arc<dyn KnowledgeStore>>,
         neo4j: Option<Neo4jClient>,
     ) -> Self {
@@ -242,13 +238,9 @@ impl CodebaseSkill {
         if let Some(ref dir) = workspace_dir {
             info!(path = %dir.display(), "CodebaseSkill: workspace directory configured");
         }
-        if let Some(ref dir) = proposals_dir {
-            info!(path = %dir.display(), "CodebaseSkill: proposals directory configured");
-        }
         Self {
             codebase_dir,
             workspace_dir,
-            proposals_dir,
             knowledge,
             neo4j,
         }
@@ -316,32 +308,6 @@ impl CodebaseSkill {
         }
     }
 
-    fn list_codebase_files_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_codebase_files".to_string(),
-            description:
-                "List files in the codebase, optionally filtered by directory and filename pattern."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "directory": {
-                        "type": "string",
-                        "description": "Directory to list (relative to codebase root, default: root)"
-                    },
-                    "pattern": {
-                        "type": "string",
-                        "description": "Filename suffix or substring to filter (e.g. '.rs', 'mod.rs')"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum files to return (default: 100)"
-                    }
-                }
-            }),
-        }
-    }
-
     fn search_codebase_def() -> ToolDefinition {
         ToolDefinition {
             name: "search_codebase".to_string(),
@@ -375,28 +341,6 @@ impl CodebaseSkill {
         }
     }
 
-    fn get_file_tree_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "get_file_tree".to_string(),
-            description:
-                "Get a tree view of the codebase directory structure, skipping build artifacts."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "directory": {
-                        "type": "string",
-                        "description": "Subdirectory to tree (relative to codebase root, default: root)"
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "description": "Maximum depth to traverse (default: 4, max: 8)"
-                    }
-                }
-            }),
-        }
-    }
-
     fn get_git_log_def() -> ToolDefinition {
         ToolDefinition {
             name: "get_git_log".to_string(),
@@ -421,93 +365,10 @@ impl CodebaseSkill {
         }
     }
 
-    fn get_git_diff_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "get_git_diff".to_string(),
-            description: "Get the git diff between two refs (commits, branches, tags).".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "from_ref": {
-                        "type": "string",
-                        "description": "Starting git ref (e.g. 'HEAD~5', 'main', a commit hash)"
-                    },
-                    "to_ref": {
-                        "type": "string",
-                        "description": "Ending ref (default: 'HEAD')"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Limit diff to this path (relative to codebase root)"
-                    }
-                },
-                "required": ["from_ref"]
-            }),
-        }
-    }
-
-    fn list_proposals_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "list_proposals".to_string(),
-            description: "List all pending fix proposals in the proposals directory. Returns a JSON array sorted newest-first.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "include_applied": {
-                        "type": "boolean",
-                        "description": "Also include applied/dismissed proposals (default: false)"
-                    }
-                }
-            }),
-        }
-    }
-
-    fn read_proposal_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "read_proposal".to_string(),
-            description: "Read the full markdown content of a specific proposal by filename."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "Proposal filename as returned by list_proposals"
-                    }
-                },
-                "required": ["filename"]
-            }),
-        }
-    }
-
-    fn dismiss_proposal_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "dismiss_proposal".to_string(),
-            description:
-                "Mark a proposal as applied or dismissed, moving it to proposals/applied/."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": "Proposal filename to dismiss"
-                    },
-                    "reason": {
-                        "type": "string",
-                        "enum": ["applied", "rejected", "obsolete"],
-                        "description": "Why this proposal is being dismissed"
-                    }
-                },
-                "required": ["filename", "reason"]
-            }),
-        }
-    }
-
     fn write_proposal_def() -> ToolDefinition {
         ToolDefinition {
             name: "write_proposal".to_string(),
-            description: "Write a structured fix proposal to the proposals directory for human review. Use this after diagnosing a bug or improvement — it stages the proposal as a markdown file without touching the source code.".to_string(),
+            description: "Put a structured fix proposal in the user's Feed for review. Use this after diagnosing a bug or improvement — it never touches the source code; the user applies or dismisses it from the Feed.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -834,40 +695,6 @@ impl CodebaseSkill {
         ))
     }
 
-    async fn handle_list_codebase_files(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Args {
-            directory: Option<String>,
-            pattern: Option<String>,
-            max_results: Option<usize>,
-        }
-        let args: Args = match parse_args(arguments) {
-            Ok(a) => a,
-            Err(e) => return e,
-        };
-        let max = args.max_results.unwrap_or(100).min(500);
-        let start_dir = match &args.directory {
-            Some(d) => match self.safe_path(d) {
-                Ok(p) => p,
-                Err(e) => return e,
-            },
-            None => match self.root() {
-                Ok(p) => p,
-                Err(e) => return e,
-            },
-        };
-
-        let mut files: Vec<String> = Vec::new();
-        collect_files(&start_dir, &start_dir, &args.pattern, &mut files, max);
-        files.sort();
-
-        ToolCallResult::success_text(format!(
-            "Found {} file(s):\n{}",
-            files.len(),
-            files.join("\n")
-        ))
-    }
-
     async fn handle_search_codebase(&self, arguments: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
         struct Args {
@@ -966,7 +793,7 @@ impl CodebaseSkill {
                     "semantic search, so a question or description will never match. Search ",
                     "for an identifier, symbol, or exact phrase that appears verbatim in the ",
                     "source (e.g. `max_attempts`, `fn retry`, `impl QueueService`). To find ",
-                    "code by concept, use `get_file_tree` or `analyze_own_structure` to ",
+                    "code by concept, use `analyze_own_structure` (it includes the tree) to ",
                     "locate the file, then `read_codebase_file`."
                 )
                 .to_string()
@@ -994,35 +821,6 @@ impl CodebaseSkill {
                 results.join("\n---\n")
             ))
         }
-    }
-
-    async fn handle_get_file_tree(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Args {
-            directory: Option<String>,
-            max_depth: Option<usize>,
-        }
-        let args: Args = match parse_args(arguments) {
-            Ok(a) => a,
-            Err(e) => return e,
-        };
-        let max_depth = args.max_depth.unwrap_or(4).min(8);
-        let start = match &args.directory {
-            Some(d) => match self.safe_path(d) {
-                Ok(p) => p,
-                Err(e) => return e,
-            },
-            None => match self.root() {
-                Ok(p) => p,
-                Err(e) => return e,
-            },
-        };
-
-        let root_name = start.file_name().and_then(|n| n.to_str()).unwrap_or(".");
-        let mut out = format!("{}/\n", root_name);
-        build_tree(&start, "", max_depth, 0, &mut out);
-
-        ToolCallResult::success_text(out)
     }
 
     async fn handle_get_git_log(&self, arguments: Option<Value>) -> ToolCallResult {
@@ -1075,202 +873,9 @@ impl CodebaseSkill {
         }
     }
 
-    async fn handle_get_git_diff(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Args {
-            from_ref: String,
-            to_ref: Option<String>,
-            path: Option<String>,
-        }
-        let args: Args = match parse_args(arguments) {
-            Ok(a) => a,
-            Err(e) => return e,
-        };
-        let root = match self.root() {
-            Ok(r) => r,
-            Err(e) => return e,
-        };
-        let to = args.to_ref.as_deref().unwrap_or("HEAD");
-
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&root);
-        cmd.arg("diff");
-        cmd.arg(format!("{}..{}", args.from_ref, to));
-        cmd.arg("--stat");
-        if let Some(ref p) = args.path {
-            cmd.arg("--").arg(p);
-        }
-
-        match cmd.output().await {
-            Ok(out) if out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout).to_string();
-                ToolCallResult::success_text(if text.trim().is_empty() {
-                    format!("No differences between {} and {}", args.from_ref, to)
-                } else {
-                    text
-                })
-            }
-            Ok(out) => ToolCallResult::error(String::from_utf8_lossy(&out.stderr).to_string()),
-            Err(e) => ToolCallResult::error(format!("git command failed: {e}")),
-        }
-    }
-
     // =========================================================================
     // Proposal reader / manager
     // =========================================================================
-
-    async fn handle_list_proposals(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize, Default)]
-        struct Args {
-            include_applied: Option<bool>,
-        }
-        let args: Args = parse_args(arguments).unwrap_or_default();
-
-        let proposals_dir = match &self.proposals_dir {
-            Some(d) => d.clone(),
-            None => return ToolCallResult::error("PROPOSALS_DIR not configured"),
-        };
-
-        let mut entries: Vec<serde_json::Value> = Vec::new();
-
-        let dirs_to_scan: Vec<(PathBuf, bool)> = if args.include_applied.unwrap_or(false) {
-            vec![
-                (proposals_dir.clone(), false),
-                (proposals_dir.join("applied"), true),
-            ]
-        } else {
-            vec![(proposals_dir.clone(), false)]
-        };
-
-        for (dir, is_applied) in dirs_to_scan {
-            let mut read_dir = match tokio::fs::read_dir(&dir).await {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            while let Ok(Some(entry)) = read_dir.next_entry().await {
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.ends_with(".md") {
-                    continue;
-                }
-                let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-
-                // Parse metadata from the markdown header.
-                let (title, severity) = proposal_meta(&content, &name);
-                let task_id = content
-                    .lines()
-                    .find(|l| l.contains("**Task ID:**"))
-                    .and_then(|l| l.split('`').nth(1))
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-                let created = content
-                    .lines()
-                    .find(|l| l.contains("**Created:**"))
-                    .and_then(|l| l.split("**Created:**").nth(1))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-
-                entries.push(serde_json::json!({
-                    "filename": name,
-                    "title": title,
-                    "severity": severity,
-                    "task_id": task_id,
-                    "created": created,
-                    "applied": is_applied,
-                }));
-            }
-        }
-
-        // Sort newest-first by filename (timestamp prefix ensures lexicographic == chronological).
-        entries.sort_by(|a, b| {
-            b["filename"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(a["filename"].as_str().unwrap_or(""))
-        });
-
-        ToolCallResult::success_text(
-            serde_json::to_string_pretty(&serde_json::json!({ "proposals": entries }))
-                .unwrap_or_default(),
-        )
-    }
-
-    async fn handle_read_proposal(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Args {
-            filename: String,
-        }
-        let args: Args = match parse_args(arguments) {
-            Ok(a) => a,
-            Err(e) => return e,
-        };
-
-        let proposals_dir = match &self.proposals_dir {
-            Some(d) => d.clone(),
-            None => return ToolCallResult::error("PROPOSALS_DIR not configured"),
-        };
-
-        // Accept filenames from both pending and applied subdirs.
-        let candidates = [
-            proposals_dir.join(&args.filename),
-            proposals_dir.join("applied").join(&args.filename),
-        ];
-        for path in &candidates {
-            if path.exists() {
-                return match tokio::fs::read_to_string(path).await {
-                    Ok(c) => ToolCallResult::success_text(c),
-                    Err(e) => ToolCallResult::error(format!("Cannot read proposal: {e}")),
-                };
-            }
-        }
-        ToolCallResult::error(format!("Proposal '{}' not found", args.filename))
-    }
-
-    async fn handle_dismiss_proposal(&self, arguments: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Args {
-            filename: String,
-            reason: String,
-        }
-        let args: Args = match parse_args(arguments) {
-            Ok(a) => a,
-            Err(e) => return e,
-        };
-
-        let proposals_dir = match &self.proposals_dir {
-            Some(d) => d.clone(),
-            None => return ToolCallResult::error("PROPOSALS_DIR not configured"),
-        };
-
-        let src = proposals_dir.join(&args.filename);
-        if !src.exists() {
-            return ToolCallResult::error(format!("Proposal '{}' not found", args.filename));
-        }
-
-        let applied_dir = proposals_dir.join("applied");
-        if let Err(e) = tokio::fs::create_dir_all(&applied_dir).await {
-            return ToolCallResult::error(format!("Cannot create applied dir: {e}"));
-        }
-
-        let dst = applied_dir.join(&args.filename);
-        if let Err(e) = tokio::fs::rename(&src, &dst).await {
-            return ToolCallResult::error(format!("Failed to move proposal: {e}"));
-        }
-
-        info!(filename = %args.filename, reason = %args.reason, "proposal dismissed");
-        if let Some(neo4j) = &self.neo4j
-            && let Ok(Some(t)) = neo4j.find_todo_by_origin("proposal", &args.filename).await
-            && t.status != "done"
-        {
-            let _ = neo4j
-                .update_todo(&t.id, None, None, Some("done"), None, None, None)
-                .await;
-        }
-        ToolCallResult::success_text(format!(
-            "Proposal '{}' marked as {} and moved to applied/.",
-            args.filename, args.reason
-        ))
-    }
 
     // =========================================================================
     // Proposal writer
@@ -1292,82 +897,35 @@ impl CodebaseSkill {
             Err(e) => return e,
         };
 
-        let proposals_dir = match &self.proposals_dir {
-            Some(d) => d.clone(),
-            None => {
-                return ToolCallResult::error(
-                    "PROPOSALS_DIR not configured — set PROPOSALS_DIR env var",
-                );
-            }
+        let Some(neo4j) = &self.neo4j else {
+            return ToolCallResult::error("write_proposal needs Neo4j: a proposal is a Feed item");
         };
-
-        if let Err(e) = tokio::fs::create_dir_all(&proposals_dir).await {
-            return ToolCallResult::error(format!("Cannot create proposals dir: {e}"));
-        }
-
-        let now = chrono::Utc::now();
-        let timestamp = now.format("%Y%m%dT%H%M%SZ");
-        // Slugify the title for the filename.
-        let slug: String = args
-            .title
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '-' })
-            .collect::<String>()
-            .split('-')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        let filename = format!(
-            "{}-{}-{}.md",
-            timestamp,
-            &args.task_id[..8.min(args.task_id.len())],
-            slug
-        );
-        let path = proposals_dir.join(&filename);
-
         let affected = args.affected_file.as_deref().unwrap_or("unknown");
-        let mut content = format!(
-            "# Proposal: {title}\n\n\
-             - **Created:** {ts}\n\
-             - **Task ID:** `{task_id}`\n\
+        let mut body = format!(
+            "- **Task ID:** `{task_id}`\n\
              - **Severity:** {severity}\n\
              - **Affected file:** `{affected}`\n\n\
              ## Diagnosis\n\n{diagnosis}\n\n\
              ## Proposed Fix\n\n{proposed_fix}\n",
-            title = args.title,
-            ts = now.to_rfc3339(),
             task_id = args.task_id,
             severity = args.severity,
-            affected = affected,
             diagnosis = args.diagnosis,
             proposed_fix = args.proposed_fix,
         );
         if let Some(ref snippet) = args.code_snippet {
-            content.push_str(&format!("\n## Code\n\n```\n{}\n```\n", snippet));
+            body.push_str(&format!("\n## Code\n\n```\n{}\n```\n", snippet));
         }
-        content.push_str(
-            "\n---\n*Auto-generated by agent-brain. Human review required before applying.*\n",
-        );
-
-        if let Err(e) = tokio::fs::write(&path, &content).await {
-            return ToolCallResult::error(format!("Failed to write proposal: {e}"));
+        // Reviewing a proposal is work for the user: it lives in their Feed,
+        // whole — there is no proposal file (CORE_AND_PLUGINS_PLAN.md §4).
+        match proposal_item(neo4j, &args.task_id, &args.title, &args.severity, body).await {
+            Ok(id) => {
+                info!(item = %id, severity = %args.severity, "write_proposal: item created");
+                ToolCallResult::success_text(format!(
+                    "Proposal is in the user's Feed as item {id}. Human review required before applying."
+                ))
+            }
+            Err(e) => ToolCallResult::error(format!("Failed to create the proposal item: {e}")),
         }
-
-        info!(file = %filename, severity = %args.severity, "write_proposal: proposal staged");
-        // Reviewing a proposal is work for the user: it is an item in their Feed.
-        let item = match &self.neo4j {
-            Some(neo4j) => match proposal_item(neo4j, &filename, &args.title, &args.severity).await
-            {
-                Ok(id) => format!("\nItem for the user's review: {id}"),
-                Err(e) => format!("\nWARNING: the review item was not created: {e}"),
-            },
-            None => String::new(),
-        };
-        ToolCallResult::success_text(format!(
-            "Proposal written: {filename}\nPath: {}\nReview and apply manually when ready.{item}",
-            path.display()
-        ))
     }
 
     // =========================================================================
@@ -1607,13 +1165,18 @@ impl CodebaseSkill {
         }
 
         // Section 1: Directory tree (depth 3)
-        let tree = self
-            .handle_get_file_tree(Some(json!({"max_depth": 3})))
-            .await;
-        sections.push(format!(
-            "## Directory Structure\n```\n{}\n```",
-            extract_text(&tree)
-        ));
+        let tree = match self.root() {
+            Ok(root) => {
+                let mut out = format!(
+                    "{}/\n",
+                    root.file_name().and_then(|n| n.to_str()).unwrap_or(".")
+                );
+                build_tree(&root, "", 3, 0, &mut out);
+                out
+            }
+            Err(e) => extract_text(&e),
+        };
+        sections.push(format!("## Directory Structure\n```\n{tree}\n```"));
 
         // Section 2: Workspace Cargo.toml
         if let Ok(p) = self.safe_path("Cargo.toml")
@@ -1762,14 +1325,8 @@ impl Skill for CodebaseSkill {
     fn tools(&self) -> Vec<ToolDefinition> {
         let mut tools = vec![
             Self::read_codebase_file_def(),
-            Self::list_codebase_files_def(),
             Self::search_codebase_def(),
-            Self::get_file_tree_def(),
             Self::get_git_log_def(),
-            Self::get_git_diff_def(),
-            Self::list_proposals_def(),
-            Self::read_proposal_def(),
-            Self::dismiss_proposal_def(),
             Self::write_proposal_def(),
             Self::write_codebase_doc_def(),
             Self::analyze_own_structure_def(),
@@ -1784,14 +1341,8 @@ impl Skill for CodebaseSkill {
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         match tool_name {
             "read_codebase_file" => Some(self.handle_read_codebase_file(arguments).await),
-            "list_codebase_files" => Some(self.handle_list_codebase_files(arguments).await),
             "search_codebase" => Some(self.handle_search_codebase(arguments).await),
-            "get_file_tree" => Some(self.handle_get_file_tree(arguments).await),
             "get_git_log" => Some(self.handle_get_git_log(arguments).await),
-            "get_git_diff" => Some(self.handle_get_git_diff(arguments).await),
-            "list_proposals" => Some(self.handle_list_proposals(arguments).await),
-            "read_proposal" => Some(self.handle_read_proposal(arguments).await),
-            "dismiss_proposal" => Some(self.handle_dismiss_proposal(arguments).await),
             "write_proposal" => Some(self.handle_write_proposal(arguments).await),
             "write_codebase_doc" => Some(self.handle_write_codebase_doc(arguments).await),
             "write_workspace_file" => Some(self.handle_write_workspace_file(arguments).await),
@@ -1967,7 +1518,6 @@ fn search_in_dir(
     }
 }
 
-/// Build an ASCII directory tree into `out`.
 fn build_tree(dir: &Path, prefix: &str, max_depth: usize, depth: usize, out: &mut String) {
     if depth >= max_depth {
         return;
@@ -2023,28 +1573,13 @@ pub fn detect_repo_root() -> Option<PathBuf> {
     }
 }
 
-/// A proposal's title and severity, from its markdown header.
-fn proposal_meta(content: &str, filename: &str) -> (String, String) {
-    let title = content
-        .lines()
-        .find(|l| l.starts_with("# Proposal:"))
-        .map(|l| l.trim_start_matches("# Proposal:").trim().to_string())
-        .unwrap_or_else(|| filename.to_string());
-    let severity = content
-        .lines()
-        .find(|l| l.contains("**Severity:**"))
-        .and_then(|l| l.split("**Severity:**").nth(1))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    (title, severity)
-}
-
-/// The item that asks the user to review a proposal (once per file).
+/// The item that asks the user to review a proposal: the proposal itself.
 async fn proposal_item(
     neo4j: &Neo4jClient,
-    filename: &str,
+    task_id: &str,
     title: &str,
     severity: &str,
+    body: String,
 ) -> anyhow::Result<String> {
     let priority = match severity.to_lowercase().as_str() {
         "critical" | "high" => 1,
@@ -2053,48 +1588,17 @@ async fn proposal_item(
     };
     let item = crate::services::items::NewItem {
         title: format!("Review proposal: {title}"),
-        description: Some(format!(
-            "A code proposal ({severity}) waits for review: {filename}. Apply it by hand, or dismiss it."
-        )),
+        description: Some(body),
         priority: Some(priority),
         patch: crate::repository::TodoItemPatch {
             assignee: Some(Some("user".into())),
             origin_kind: Some(Some("proposal".into())),
-            origin_ref: Some(Some(filename.to_string())),
+            origin_ref: Some(Some(task_id.to_string())),
             ..Default::default()
         },
         ..Default::default()
     };
     Ok(crate::services::items::create_item(neo4j, item).await?.0.id)
-}
-
-/// Give every pending proposal file an item, once (idempotent: an item is
-/// found again by its origin). Run at startup. Returns the items created.
-pub async fn backfill_proposal_items(neo4j: &Neo4jClient, dir: &std::path::Path) -> usize {
-    let Ok(mut read_dir) = tokio::fs::read_dir(dir).await else {
-        return 0;
-    };
-    let mut created = 0;
-    while let Ok(Some(entry)) = read_dir.next_entry().await {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".md") {
-            continue;
-        }
-        if matches!(
-            neo4j.find_todo_by_origin("proposal", &name).await,
-            Ok(Some(_))
-        ) {
-            continue;
-        }
-        let content = tokio::fs::read_to_string(entry.path())
-            .await
-            .unwrap_or_default();
-        let (title, severity) = proposal_meta(&content, &name);
-        if proposal_item(neo4j, &name, &title, &severity).await.is_ok() {
-            created += 1;
-        }
-    }
-    created
 }
 
 #[cfg(test)]

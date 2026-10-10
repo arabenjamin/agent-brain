@@ -270,22 +270,6 @@ impl Neo4jClient {
         let rows = self.execute(query(cypher)).await?;
         Ok(rows.into_iter().map(row_to_media_source).collect())
     }
-
-    /// Fetch a single `:MediaSource` by name.
-    pub async fn get_media_source(&self, name: &str) -> Result<Option<MediaSourceRecord>> {
-        let rows = self
-            .execute(
-                query(
-                    "MATCH (s:MediaSource {name: $name}) \
-                     RETURN s.name AS name, s.kind AS kind, s.ref AS ref, \
-                            s.description AS description, s.active AS active, \
-                            s.managed_by AS managed_by",
-                )
-                .param("name", name),
-            )
-            .await?;
-        Ok(rows.into_iter().next().map(row_to_media_source))
-    }
 }
 
 fn row_to_media_source(row: neo4rs::Row) -> MediaSourceRecord {

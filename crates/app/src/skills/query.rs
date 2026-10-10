@@ -358,7 +358,7 @@ impl QuerySkill {
                         "type": "string",
                         "enum": ["summary", "tools", "agents", "profiles"],
                         "description": "summary (default): counts + roster + per-skill tallies. \
-                                        tools: every tool name. agents: spawnable agents only. \
+                                        tools: every tool name, plus `removed` (tools the brain no longer has, with replaced_by). agents: spawnable agents only. \
                                         profiles: every context profile, spawnable or not."
                     },
                     "profile": {
@@ -714,6 +714,20 @@ impl QuerySkill {
                 .await
             {
                 response["skills"] = json!(Self::rows_to_json(rows));
+            }
+            // Tools the brain used to have: a call to one of these is not a typo,
+            // and `replaced_by` names what to use instead.
+            if let Ok(rows) = neo4j
+                .execute(neo4rs::query(
+                    "MATCH (r:RemovedTool) RETURN r.name AS name, \
+                            coalesce(r.replaced_by, '') AS replaced_by, \
+                            coalesce(r.reason, '') AS reason, \
+                            toString(date(r.removed_at)) AS removed_on \
+                     ORDER BY r.name",
+                ))
+                .await
+            {
+                response["removed"] = json!(Self::rows_to_json(rows));
             }
             return ToolCallResult::success_json(response);
         }

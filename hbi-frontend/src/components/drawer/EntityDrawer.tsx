@@ -3,15 +3,14 @@
  * the URL (`openEntity("note", id)` → `#/<workspace>?note=<id>`), so the
  * drawer survives reloads and every open entity is a shareable link.
  *
- * Kinds: note (Phase 0, enriched in Phase 3); task, job, schedule, todo,
- * proposal (Phase 2); entity (Phase 3); topic (Phase 4b).
+ * Kinds: note (Phase 0, enriched in Phase 3); task, job, schedule, todo
+ * (Phase 2); entity (Phase 3); topic (Phase 4b). A proposal is a todo.
  */
 import { useRoute } from "../../router";
 import { drawerTarget } from "./entities";
 import EntityView from "./EntityView";
 import JobView from "./JobView";
 import NoteView from "./NoteView";
-import ProposalView from "./ProposalView";
 import ScheduleView from "./ScheduleView";
 import TaskView from "./TaskView";
 import TodoView from "./TodoView";
@@ -38,7 +37,5 @@ export default function EntityDrawer() {
       return <ScheduleView key={target.id} id={target.id} />;
     case "todo":
       return <TodoView key={target.id} id={target.id} />;
-    case "proposal":
-      return <ProposalView key={target.id} filename={target.id} />;
   }
 }

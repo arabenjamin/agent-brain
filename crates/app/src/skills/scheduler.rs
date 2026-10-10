@@ -1,6 +1,6 @@
 //! Scheduler Skill — controls the autonomous self-improvement loop.
 //!
-//! 4 tools: `scheduler_control`, `run_scheduler_tick`, `manage_chain`, `manage_scheduled_task`
+//! 3 tools: `scheduler_control` (incl. `action: tick`), `manage_chain`, `manage_scheduled_task`
 //! Scheduler status and chain listing are served by REST: GET /api/scheduler/status,
 //! /api/scheduler/chains. Scheduled-task listing is deliberately NOT REST-only —
 //! see `manage_scheduled_task(action=list)`.
@@ -175,9 +175,10 @@ impl SchedulerSkill {
     fn scheduler_control_def() -> ToolDefinition {
         ToolDefinition {
             name: "scheduler_control".to_string(),
-            description: "Start, stop, or reconfigure the autonomous scheduler loop. \
+            description: "Start, stop, tick, or reconfigure the autonomous scheduler loop. \
                 action=start: enable the loop (optionally set interval/session). \
                 action=stop: pause the loop (running jobs are not affected). \
+                action=tick: run one tick now, bypassing the timer; returns tasks found/dispatched. \
                 action=configure: update any combination of runtime settings."
                 .to_string(),
             input_schema: json!({
@@ -185,8 +186,8 @@ impl SchedulerSkill {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["start", "stop", "configure"],
-                        "description": "start: enable loop. stop: pause loop. configure: update settings."
+                        "enum": ["start", "stop", "tick", "configure"],
+                        "description": "start: enable loop. stop: pause loop. tick: run one tick now. configure: update settings."
                     },
                     "interval_secs": {
                         "type": "integer",
@@ -232,17 +233,6 @@ impl SchedulerSkill {
         }
     }
 
-    fn run_scheduler_tick_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "run_scheduler_tick".to_string(),
-            description: "Execute a scheduler tick immediately, bypassing the timer. \
-                          Lists pending tasks, builds job chains, and enqueues them. \
-                          Returns the number of tasks found and dispatched."
-                .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
-
     // =========================================================================
     // Handlers
     // =========================================================================
@@ -267,6 +257,9 @@ impl SchedulerSkill {
             None => return ToolCallResult::error("Invalid args: `action` is required".to_string()),
         };
 
+        if input.action == "tick" {
+            return self.handle_run_scheduler_tick().await;
+        }
         let cfg = match input.action.as_str() {
             "start" => {
                 self.service
@@ -1433,10 +1426,7 @@ impl Skill for SchedulerSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        let mut tools = vec![
-            Self::scheduler_control_def(),
-            Self::run_scheduler_tick_def(),
-        ];
+        let mut tools = vec![Self::scheduler_control_def()];
         if self.neo4j.is_some() {
             tools.push(Self::manage_chain_def());
             tools.push(Self::manage_scheduled_task_def());
@@ -1447,7 +1437,6 @@ impl Skill for SchedulerSkill {
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         let result = match tool_name {
             "scheduler_control" => self.handle_scheduler_control(arguments).await,
-            "run_scheduler_tick" => self.handle_run_scheduler_tick().await,
             "manage_chain" => self.handle_manage_chain(arguments).await,
             "manage_scheduled_task" => self.handle_manage_scheduled_task(arguments).await,
             _ => return None,

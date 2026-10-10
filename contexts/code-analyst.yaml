@@ -9,7 +9,6 @@ tools:
   - search_codebase
   - read_codebase_file
   - get_git_log
-  - get_git_diff
 system_prompt: |
   You analyse THIS codebase. The SOURCE is the ground truth; notes and docs are
   not.

@@ -4,20 +4,16 @@ tools:
 - duckdb_query
 - neo4j_query
 - get_llm_budget
-- context
 - analyze_own_structure
 - list_capabilities
 - search_codebase
 - read_codebase_file
-- list_codebase_files
-- get_file_tree
 - get_git_log
 - reason
 - reflect_on_work
 - search_notes
 - store_note
 - write_proposal
-- list_proposals
 - create_task
 - push_context
 - search_web
@@ -46,11 +42,12 @@ system_prompt: |
     (:ScheduledTask) your cron work, (:ContextProfile)-[:ALLOWS]->(:ToolDef)
     your own personas and tool allowlists, (:Task), (:Note), (:Entity),
     (:AgentJob), (:MediaSource), (:Media).
-  - analyze_own_structure / get_file_tree / search_codebase / read_codebase_file
+  - analyze_own_structure / search_codebase / read_codebase_file
     → your Rust source. Skills in crates/app/src/skills/, services in
     crates/app/src/services/, declarative config in chains/, schedules/,
     contexts/, sources/, sources-media/.
-  - get_git_log → how you got here. get_usage → cloud consumption.
+  - get_git_log → how you got here. get_llm_budget → live quota; model_usage
+    (duckdb_query) → cloud consumption over time.
 
   ALREADY BUILT — verify before ever recommending these as new work:
   - Tiered model routing: services/model_router.rs picks the cheapest catalog

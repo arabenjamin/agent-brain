@@ -11,7 +11,6 @@
 import type { CatalogModel, ProviderInfo } from "../lib/models";
 import { QueryClient, useQuery } from "@tanstack/react-query";
 import { apiJson, query } from "./client";
-import { callTool } from "./mcp";
 import { onNotification } from "./mcp";
 
 export const queryClient = new QueryClient({
@@ -31,7 +30,6 @@ export const keys = {
   activity: (hours: number) => ["activity", hours] as const,
   schedules: ["schedules"] as const,
   todos: ["todos"] as const,
-  proposals: ["proposals"] as const,
   modelUsage: (hours: number) => ["models", "usage", hours] as const,
   activeModels: ["models", "active"] as const,
   llmBudget: ["llm", "budget"] as const,
@@ -195,15 +193,6 @@ export interface Todo {
   tags?: string[];
 }
 
-export interface Proposal {
-  filename: string;
-  title: string;
-  severity: "low" | "medium" | "high" | string;
-  task_id: string;
-  created: string;
-  applied: boolean;
-}
-
 export interface ModelUsage {
   model: string;
   total_calls: number;
@@ -304,17 +293,6 @@ export function useTodos(pollMs = 60_000) {
   });
 }
 
-/** Code proposals awaiting review (`list_proposals`; applied ones excluded). */
-export function useProposals(pollMs = 120_000) {
-  return useQuery({
-    queryKey: keys.proposals,
-    queryFn: async () => {
-      const raw = await callTool("list_proposals", { include_applied: false });
-      return ((JSON.parse(raw) as { proposals?: Proposal[] }).proposals ?? []);
-    },
-    refetchInterval: pollMs,
-  });
-}
 
 export function useModelUsage(hours = 24, pollMs = 60_000) {
   return useQuery({

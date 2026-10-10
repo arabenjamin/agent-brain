@@ -54,7 +54,7 @@ const SKILL_META: Record<string, SkillMeta> = {
   codebase: {
     icon:  "💻",
     color: "var(--accent)",
-    desc:  "Read files, search code, browse git log/diff, and manage codebase improvement proposals.",
+    desc:  "Read files, search code, browse the git log, and put code proposals in the Feed.",
   },
   model: {
     icon:  "🤖",

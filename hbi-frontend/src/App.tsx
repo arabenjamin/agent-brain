@@ -115,7 +115,7 @@ export default function App() {
   // Drill-down filters key their panel, so a new drill remounts it cleanly.
   const historyDrill = { mode: p.mode, taskStatus: p.task_status, jobStatus: p.job_status, since: p.since };
   // The entity the drawer has open, so a lane can highlight its row.
-  const openId = p.task ?? p.job ?? p.schedule ?? p.todo ?? p.proposal;
+  const openId = p.task ?? p.job ?? p.schedule ?? p.todo;
   const knowledgeParams = {
     q: p.q, mode: p.mode, type: p.type, hops: p.hops,
     since: p.since, verified_since: p.verified_since, within: p.within,

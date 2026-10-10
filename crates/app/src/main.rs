@@ -721,8 +721,7 @@ async fn run_serve(
                         directory = %parent.display(),
                         error = %e,
                         "Failed to create telemetry directory — DuckDB will not open. \
-                         Disabled: SleepSkill (digest_experiences/export_training_data), \
-                         QuerySkill (duckdb_query), model usage tracking."
+                         Disabled: QuerySkill (duckdb_query), model usage tracking."
                     );
                     false
                 }
@@ -750,8 +749,7 @@ async fn run_serve(
                         path = %path,
                         error = %e,
                         "Failed to initialize DuckDB telemetry. \
-                         Disabled: SleepSkill (digest_experiences/export_training_data), \
-                         QuerySkill (duckdb_query), model usage tracking."
+                         Disabled: QuerySkill (duckdb_query), model usage tracking."
                     );
                     None
                 }

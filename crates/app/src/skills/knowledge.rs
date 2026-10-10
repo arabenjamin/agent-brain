@@ -529,7 +529,7 @@ impl KnowledgeSkill {
                         }
                         ToolCallResult::success_json(out)
                     }
-                    Err(e) => ToolCallResult::error(format!("list_notes failed: {}", e)),
+                    Err(e) => ToolCallResult::error(format!("note enumeration failed: {}", e)),
                 };
             }
             return ToolCallResult::error(

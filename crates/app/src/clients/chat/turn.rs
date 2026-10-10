@@ -732,7 +732,7 @@ impl ChatService {
             None => {
                 let _ = inner_tx
                     .send(ChatEvent::Error {
-                        message: "No LLM provider configured. Use `use_model` to set one.".into(),
+                        message: "No LLM provider configured. Set CHAT_DEFAULT_PROFILE or a provider in models.yaml.".into(),
                     })
                     .await;
                 let _ = inner_tx.send(ChatEvent::Done).await;

@@ -35,7 +35,7 @@ pub fn architecture_dir() -> PathBuf {
         .into()
 }
 
-fn load_yaml<T: for<'de> Deserialize<'de> + Default>(file: &str) -> T {
+pub(crate) fn load_yaml<T: for<'de> Deserialize<'de> + Default>(file: &str) -> T {
     let p = architecture_dir().join(file);
     match std::fs::read_to_string(&p)
         .map_err(anyhow::Error::from)

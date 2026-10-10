@@ -5,8 +5,8 @@
 //! hybrid search) · `recall` (deterministic listings and local-day windows) ·
 //! `labels` (claim / source-record labelling on every retrieval path) ·
 //! `entities` · `maintenance` (review + pruning) · `reasoning` (`reason`, critic,
-//! gap tasks) · `analysis` (synthesize / audit / explain) · `consolidation` ·
-//! `export`. `store_trait` is the forwarding `KnowledgeStore` impl.
+//! gap tasks) · `analysis` (synthesize / audit / explain) · `consolidation`.
+//! `store_trait` is the forwarding `KnowledgeStore` impl.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +25,6 @@ use agent_brain_models::ProvenanceFlag;
 mod analysis;
 mod consolidation;
 mod entities;
-mod export;
 mod labels;
 mod maintenance;
 mod reasoning;

@@ -1,6 +1,6 @@
 //! Agent Skill — manages the background job queue.
 //!
-//! 5 tools: `enqueue_jobs`, `manage_job`, `set_worker_config`, `dead_letter`, `update_job_progress`
+//! 3 tools: `enqueue_jobs`, `manage_job` (the HBI cancel/retry buttons), `dead_letter`
 //! Queue stats → GET /api/queue/status  |  Drain → POST /api/queue/drain
 //! List jobs   → GET /api/jobs or neo4j_query: MATCH (j:AgentJob) RETURN j ORDER BY j.created_at DESC LIMIT 50
 
@@ -55,49 +55,6 @@ impl AgentSkill {
         }
     }
 
-    fn set_worker_config_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "set_worker_config".to_string(),
-            description:
-                "Update queue worker settings at runtime. Use enabled=false to pause processing."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "max_concurrent": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Global max simultaneous job executions (informational)"
-                    },
-                    "max_concurrent_ollama": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Concurrency limit for Ollama (local) jobs — takes effect immediately"
-                    },
-                    "max_concurrent_anthropic": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Concurrency limit for Anthropic API jobs — takes effect immediately"
-                    },
-                    "max_concurrent_gemini": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Concurrency limit for Gemini API jobs — takes effect immediately"
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Enable (true) or pause (false) job processing"
-                    },
-                    "poll_interval_secs": {
-                        "type": "integer",
-                        "minimum": 5,
-                        "description": "How often the coordinator polls Neo4j for missed jobs"
-                    }
-                }
-            }),
-        }
-    }
-
     fn enqueue_jobs_def() -> ToolDefinition {
         ToolDefinition {
             name: "enqueue_jobs".to_string(),
@@ -106,7 +63,7 @@ impl AgentSkill {
                  In a chain, step 1 is queued immediately; each subsequent step is held as 'parked' \
                  until its predecessor completes successfully. \
                  If any step exhausts all retries the remaining steps are automatically cancelled. \
-                 Returns the list of job IDs in order. Poll results with get_job_result."
+                 Returns the list of job IDs in order. Read results with neo4j_query on (:AgentJob {id})."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -187,30 +144,6 @@ impl AgentSkill {
         }
     }
 
-    fn update_job_progress_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "update_job_progress".to_string(),
-            description: "Update progress for a running job (0-100 percent). Use from within a job to report progress.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "job_id": { "type": "string", "description": "The job ID to update" },
-                    "percent": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 100,
-                        "description": "Progress percentage (0-100)"
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Optional status message describing current phase"
-                    }
-                },
-                "required": ["job_id", "percent"]
-            }),
-        }
-    }
-
     // =========================================================================
     // Handlers
     // =========================================================================
@@ -251,42 +184,6 @@ impl AgentSkill {
                 ToolCallResult::error(format!("Unknown action `{other}`. Use cancel or retry."))
             }
         }
-    }
-
-    async fn handle_set_worker_config(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize, Default)]
-        struct Input {
-            max_concurrent: Option<usize>,
-            max_concurrent_ollama: Option<usize>,
-            max_concurrent_anthropic: Option<usize>,
-            max_concurrent_gemini: Option<usize>,
-            enabled: Option<bool>,
-            poll_interval_secs: Option<u64>,
-        }
-        let input: Input = args
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-
-        let cfg = self
-            .queue
-            .update_config(
-                input.max_concurrent,
-                input.max_concurrent_ollama,
-                input.max_concurrent_anthropic,
-                input.max_concurrent_gemini,
-                input.enabled,
-                input.poll_interval_secs,
-            )
-            .await;
-
-        ToolCallResult::success_text(
-            json!({
-                "max_concurrent": cfg.max_concurrent,
-                "enabled": cfg.enabled,
-                "poll_interval_secs": cfg.poll_interval_secs,
-            })
-            .to_string(),
-        )
     }
 
     async fn handle_enqueue_jobs(&self, args: Option<Value>) -> ToolCallResult {
@@ -409,31 +306,6 @@ impl AgentSkill {
             )),
         }
     }
-
-    async fn handle_update_job_progress(&self, args: Option<Value>) -> ToolCallResult {
-        #[derive(Deserialize)]
-        struct Input {
-            job_id: String,
-            percent: u8,
-            message: Option<String>,
-        }
-        let input: Input = match args.and_then(|v| serde_json::from_value(v).ok()) {
-            Some(i) => i,
-            None => return ToolCallResult::error("Missing required fields"),
-        };
-
-        match self
-            .queue
-            .update_progress(&input.job_id, input.percent, input.message.as_deref(), None)
-            .await
-        {
-            Ok(_) => ToolCallResult::success_text(
-                json!({ "updated": true, "job_id": input.job_id, "percent": input.percent })
-                    .to_string(),
-            ),
-            Err(e) => ToolCallResult::error(format!("Error: {e}")),
-        }
-    }
 }
 
 #[async_trait]
@@ -446,9 +318,7 @@ impl Skill for AgentSkill {
         vec![
             Self::enqueue_jobs_def(),
             Self::manage_job_def(),
-            Self::set_worker_config_def(),
             Self::dead_letter_def(),
-            Self::update_job_progress_def(),
         ]
     }
 
@@ -456,9 +326,7 @@ impl Skill for AgentSkill {
         match tool_name {
             "enqueue_jobs" => Some(self.handle_enqueue_jobs(arguments).await),
             "manage_job" => Some(self.handle_manage_job(arguments).await),
-            "set_worker_config" => Some(self.handle_set_worker_config(arguments).await),
             "dead_letter" => Some(self.handle_dead_letter(arguments).await),
-            "update_job_progress" => Some(self.handle_update_job_progress(arguments).await),
             _ => None,
         }
     }
@@ -476,15 +344,13 @@ mod tests {
         vec![
             AgentSkill::enqueue_jobs_def(),
             AgentSkill::manage_job_def(),
-            AgentSkill::set_worker_config_def(),
             AgentSkill::dead_letter_def(),
-            AgentSkill::update_job_progress_def(),
         ]
     }
 
     #[test]
-    fn tools_list_has_five_tools() {
-        assert_eq!(tool_defs().len(), 5);
+    fn tools_list_has_three_tools() {
+        assert_eq!(tool_defs().len(), 3);
     }
 
     #[test]
@@ -493,9 +359,7 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"enqueue_jobs"));
         assert!(names.contains(&"manage_job"));
-        assert!(names.contains(&"set_worker_config"));
         assert!(names.contains(&"dead_letter"));
-        assert!(names.contains(&"update_job_progress"));
     }
 
     #[test]

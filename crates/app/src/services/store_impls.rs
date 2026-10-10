@@ -129,36 +129,6 @@ impl WorkingMemoryStore for Neo4jClient {
             .collect())
     }
 
-    async fn get_all_entries(&self, session_id: &str) -> anyhow::Result<Vec<Value>> {
-        let cypher = r#"
-        MATCH (w:WorkingMemory {session_id: $session_id})
-        RETURN w.turn_index AS turn, w.role AS role, w.content AS content
-        ORDER BY w.turn_index ASC
-        "#;
-
-        let q = neo4rs::query(cypher).param("session_id", session_id);
-        let rows = self
-            .execute(q)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        Ok(rows
-            .iter()
-            .map(|row| {
-                json!({
-                    "turn": row.get::<i64>("turn").unwrap_or(0),
-                    "role": row.get::<String>("role").unwrap_or_default(),
-                    "content": row.get::<String>("content").unwrap_or_default()
-                })
-            })
-            .collect())
-    }
-
-    async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        let q = neo4rs::query("MATCH (w:WorkingMemory {session_id: $session_id}) DETACH DELETE w")
-            .param("session_id", session_id);
-        self.run(q).await.map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
     async fn archive_session(&self, session_id: &str) -> anyhow::Result<()> {
         let q = neo4rs::query(
             "MATCH (w:WorkingMemory {session_id: $session_id}) SET w.archived = true",
@@ -185,24 +155,6 @@ impl TaskStore for Neo4jClient {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
-    async fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>> {
-        Neo4jClient::get_task(self, id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn link_subtask(&self, parent_id: &str, child_id: &str) -> anyhow::Result<()> {
-        Neo4jClient::link_subtask(self, parent_id, child_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn link_task_dependency(&self, from_id: &str, to_id: &str) -> anyhow::Result<()> {
-        Neo4jClient::link_task_dependency(self, from_id, to_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()> {
         Neo4jClient::update_task_status(self, id, status)
             .await
@@ -225,12 +177,6 @@ impl TaskStore for Neo4jClient {
         task_id: Option<&str>,
     ) -> anyhow::Result<String> {
         Neo4jClient::store_outcome_note(self, content, task_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
-    }
-
-    async fn list_tasks(&self, status: Option<&str>, limit: usize) -> anyhow::Result<Vec<Value>> {
-        Neo4jClient::list_tasks(self, status, limit)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))
     }

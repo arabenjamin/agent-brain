@@ -26,20 +26,16 @@ use tracing::{debug, error, info, warn};
 use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::queue::QueueService;
-use crate::services::resource_registry::ResourceRegistry;
 use crate::services::{
     AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, MediaService, SharedLlm,
     SnapshotService,
 };
-#[cfg(feature = "websocket")]
-use crate::skills::ws::WsSkill;
 use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
-    codebase::CodebaseSkill, constructor::ConstructorSkill, context::ContextSkill,
-    dynamic::DynamicSkill, exec::ExecSkill, git::GitSkill, http::HttpSkill,
+    codebase::CodebaseSkill, dynamic::DynamicSkill, exec::ExecSkill, http::HttpSkill,
     knowledge::KnowledgeSkill, mcp_client::McpClientSkill, media::MediaSkill, model::ModelSkill,
-    query::QuerySkill, resource::ResourceSkill, scheduler::SchedulerSkill, search::SearchSkill,
-    sleep::SleepSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
+    query::QuerySkill, scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
+    working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -83,12 +79,6 @@ pub enum BrainEvent {
         /// Optional session the brain wants to continue (for context).
         related_session_id: Option<String>,
     },
-    /// The scheduler completed one autonomous tick.
-    SchedulerTick { tasks_dispatched: usize },
-    /// The scheduler entered idle/sleep mode.
-    SchedulerSleepEntered,
-    /// The scheduler woke up from idle/sleep mode.
-    SchedulerSleepExited,
 }
 
 /// Broadcast channel capacity for [`BrainEvent`].
@@ -112,7 +102,6 @@ fn agent_runner_enabled() -> bool {
 pub struct StorageConfig {
     pub neo4j: Option<Neo4jClient>,
     pub telemetry: Option<TelemetryClient>,
-    pub dataset_dir: PathBuf,
     /// Directory for context profile YAML files.
     pub contexts_dir: PathBuf,
     /// Directory for knowledge graph snapshots.
@@ -124,9 +113,6 @@ impl Default for StorageConfig {
         Self {
             neo4j: None,
             telemetry: None,
-            dataset_dir: std::env::var("DATASET_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./datasets")),
             contexts_dir: std::env::var("CONTEXTS_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("./contexts")),
@@ -137,33 +123,12 @@ impl Default for StorageConfig {
     }
 }
 
-/// Web search API keys.
-pub struct SearchConfig {
-    pub brave_key: Option<String>,
-    pub google_key: Option<String>,
-    pub google_cx: Option<String>,
-    pub serpapi_key: Option<String>,
-}
-
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            brave_key: std::env::var("BRAVE_API_KEY").ok(),
-            google_key: std::env::var("GOOGLE_API_KEY").ok(),
-            google_cx: std::env::var("GOOGLE_CX").ok(),
-            serpapi_key: std::env::var("SERPAPI_KEY").ok(),
-        }
-    }
-}
-
 /// Codebase self-analysis config (read-only access to the agent's own source).
 pub struct CodebaseConfig {
     /// Root directory of the codebase. Auto-detected from `Cargo.toml` walk-up if unset.
     pub codebase_dir: Option<PathBuf>,
     /// Writable workspace for generated code, scripts, and experiments. Set via `WORKSPACE_DIR`.
     pub workspace_dir: Option<PathBuf>,
-    /// Directory where the brain writes structured fix proposals. Defaults to `./proposals`.
-    pub proposals_dir: Option<PathBuf>,
 }
 
 impl Default for CodebaseConfig {
@@ -173,14 +138,9 @@ impl Default for CodebaseConfig {
             .ok()
             .or_else(crate::skills::codebase::detect_repo_root);
         let workspace_dir = std::env::var("WORKSPACE_DIR").map(PathBuf::from).ok();
-        let proposals_dir = std::env::var("PROPOSALS_DIR")
-            .map(PathBuf::from)
-            .ok()
-            .or_else(|| Some(PathBuf::from("./proposals")));
         Self {
             codebase_dir,
             workspace_dir,
-            proposals_dir,
         }
     }
 }
@@ -215,10 +175,9 @@ pub struct BrainCore {
     pub(crate) tool_registry: Arc<RwLock<ToolRegistry>>,
     pub(crate) tool_handler: Arc<RwLock<Option<ToolHandler>>>,
 
-    // --- storage, LLM, search ---
+    // --- storage, LLM ---
     pub(crate) storage: StorageConfig,
     pub(crate) llm_config: Arc<RwLock<Option<LlmConfig>>>,
-    search: SearchConfig,
     codebase: CodebaseConfig,
 
     // --- background services ---
@@ -257,7 +216,6 @@ impl BrainCore {
             tool_handler: Arc::new(RwLock::new(None)),
             storage: StorageConfig::default(),
             llm_config: Arc::new(RwLock::new(None)),
-            search: SearchConfig::default(),
             codebase: CodebaseConfig::default(),
             jobs: JobServices::default(),
             system_prompt: String::new(),
@@ -268,15 +226,6 @@ impl BrainCore {
             agent_runner: Arc::new(RwLock::new(None)),
             event_tx,
         }
-    }
-
-    /// Subscribe to brain events.
-    ///
-    /// Returns a [`broadcast::Receiver`] that receives all [`BrainEvent`]s
-    /// emitted after the subscription is created.  Lagging receivers will see
-    /// [`broadcast::error::RecvError::Lagged`] if they fall too far behind.
-    pub fn subscribe(&self) -> broadcast::Receiver<BrainEvent> {
-        self.event_tx.subscribe()
     }
 
     /// Return a clone of the underlying broadcast sender.
@@ -304,22 +253,6 @@ impl BrainCore {
 
     pub fn with_llm_config(mut self, config: LlmConfig) -> Self {
         self.llm_config = Arc::new(RwLock::new(Some(config)));
-        self
-    }
-
-    pub fn with_brave_api_key(mut self, key: impl Into<String>) -> Self {
-        self.search.brave_key = Some(key.into());
-        self
-    }
-
-    pub fn with_google_config(mut self, key: impl Into<String>, cx: impl Into<String>) -> Self {
-        self.search.google_key = Some(key.into());
-        self.search.google_cx = Some(cx.into());
-        self
-    }
-
-    pub fn with_serpapi_key(mut self, key: impl Into<String>) -> Self {
-        self.search.serpapi_key = Some(key.into());
         self
     }
 
@@ -653,11 +586,7 @@ impl BrainCore {
             .neo4j
             .as_ref()
             .map(|n| Arc::new(n.clone()) as Arc<dyn crate::services::TaskStore>);
-        skills.push(Arc::new(TaskSkill::new(
-            Arc::clone(&llm),
-            task_store,
-            queue_arc.clone(),
-        )));
+        skills.push(Arc::new(TaskSkill::new(Arc::clone(&llm), task_store)));
 
         // The knowledge store gives search_web's prior-knowledge probe hybrid
         // recall — see `SearchSkill::with_knowledge`.
@@ -688,14 +617,6 @@ impl BrainCore {
                 Arc::clone(&llm),
                 self.storage.telemetry.clone(),
             )));
-        }
-
-        // ETL-loaded datasets (GDELT events, ReliefWeb reports) in their own
-        // DuckDB file. Absent the file, the tools are not registered.
-        if let Some(ds) =
-            crate::skills::datasets::DatasetSkill::from_env(self.storage.neo4j.clone())
-        {
-            skills.push(Arc::new(ds));
         }
 
         // ACLED conflict-event data. Absent credentials the tool is not
@@ -740,29 +661,15 @@ impl BrainCore {
         skills.push(Arc::new(CodebaseSkill::new(
             self.codebase.codebase_dir.clone(),
             self.codebase.workspace_dir.clone(),
-            self.codebase.proposals_dir.clone(),
             knowledge.clone(),
             self.storage.neo4j.clone(),
         )));
-        // Branch/commit/push/PR — always registered; requires CODEBASE_DIR.
-        skills.push(Arc::new(GitSkill::new(self.codebase.codebase_dir.clone())));
-        // DuckDB-backed model catalog; shares the live LLM config.
-        skills.push(Arc::new(ModelSkill::new(
-            self.llm_config.clone(),
-            self.storage.telemetry.clone(),
-            self.catalog_path.clone(),
-        )));
-        if let Some(telemetry) = &self.storage.telemetry {
-            skills.push(Arc::new(SleepSkill::new(
-                telemetry.clone(),
-                self.storage.dataset_dir.clone(),
-            )));
-        }
+        skills.push(Arc::new(ModelSkill));
 
-        if let (Some(neo4j), Some(k)) = (&self.storage.neo4j, &knowledge) {
+        if let Some(neo4j) = &self.storage.neo4j {
             let wm_store: Arc<dyn crate::services::WorkingMemoryStore> = Arc::new(neo4j.clone());
             skills.push(Arc::new(
-                WorkingMemorySkill::new(wm_store, Arc::clone(k), Arc::clone(&llm))
+                WorkingMemorySkill::new(wm_store)
                     .with_notification_support(Arc::new(neo4j.clone()), self.event_tx.clone()),
             ));
         }
@@ -779,9 +686,6 @@ impl BrainCore {
                     .with_telemetry(self.storage.telemetry.clone()),
             ));
         }
-        if let Some(cb) = &context_builder_arc {
-            skills.push(Arc::new(ContextSkill::new(Arc::clone(cb))));
-        }
         // The user's items (todos), readable and writable by the brain.
         if let Some(neo4j) = &self.storage.neo4j {
             skills.push(Arc::new(crate::skills::todo::TodoSkill::new(
@@ -791,22 +695,6 @@ impl BrainCore {
                 knowledge.clone(),
             )));
         }
-        // Agent Constructor (needs the self-model in Neo4j + queue for dispatch).
-        if let Some(neo4j) = &self.storage.neo4j {
-            skills.push(Arc::new(ConstructorSkill::new(
-                neo4j.clone(),
-                queue_arc.clone(),
-                Arc::clone(&llm),
-                self.storage.telemetry.clone(),
-            )));
-        }
-
-        #[cfg(feature = "websocket")]
-        skills.push(Arc::new(WsSkill::new()));
-        skills.push(Arc::new(ResourceSkill::new(Arc::new(
-            ResourceRegistry::new(),
-        ))));
-
         // `run_agent` — gated on SUBAGENT_ENABLED (the same switch that turns on
         // chat `delegate`; sub-agents are the mechanism). The runner slot is
         // empty until the ChatService (its loop engine) is created; the tool
@@ -871,7 +759,7 @@ impl BrainCore {
 
         // Sync the self-model meta-graph (ToolDef / ContextProfile / ModelDef)
         // now that the registry is fully populated. Non-fatal: a missing
-        // self-model degrades the Agent Constructor, not the brain.
+        // self-model degrades self-inspection, not the brain.
         if let Some(ref neo4j) = self.storage.neo4j {
             let skills_with_tools = self.tool_registry.read().await.skills_with_tools();
             let profiles = match context_builder_arc {
@@ -1008,56 +896,22 @@ impl BrainCore {
         }
 
         // ── Procedure + DynamicTool pairs ─────────────────────────────────
-        let tools: &[(&str, &str, &str, &str, &str)] = &[
-            (
-                "list_sessions",
-                "List working-memory sessions ordered by most recent first. \
-                 Returns session_id, started_at, message count, and title.",
-                r#"{"type":"object","properties":{}}"#,
-                "MATCH (w:WorkingMemory) \
-                 WITH w.session_id AS sid, toString(min(w.created_at)) AS started_at, count(w) AS msg_count \
-                 OPTIONAL MATCH (first:WorkingMemory {session_id: sid, turn_index: 0}) \
-                 RETURN sid AS session_id, started_at, msg_count, COALESCE(first.content, sid) AS title \
-                 ORDER BY started_at DESC LIMIT 50",
-                "List all working-memory sessions with metadata",
-            ),
-            (
-                "get_job_result",
-                "Get the full details and result of a background job by its ID.",
-                r#"{"type":"object","properties":{"job_id":{"type":"string","description":"Job ID returned by enqueue_jobs"}},"required":["job_id"]}"#,
-                "MATCH (j:AgentJob {id: '{{input.job_id}}'}) \
-                 RETURN j.id AS id, j.tool_name AS tool_name, j.status AS status, \
-                        j.result_json AS result_json, j.error AS error, \
-                        j.priority AS priority, j.attempt_count AS attempt_count, \
-                        toString(j.created_at) AS created_at",
-                "Fetch agent job by ID",
-            ),
-            (
-                "search_procedures",
-                "Search stored procedures by name or description using keyword matching.",
-                r#"{"type":"object","properties":{"query":{"type":"string","description":"Keyword to search in procedure names and descriptions"}},"required":["query"]}"#,
-                "MATCH (p:Procedure) \
-                 WHERE toLower(p.name) CONTAINS toLower('{{input.query}}') \
-                    OR toLower(p.description) CONTAINS toLower('{{input.query}}') \
-                 RETURN p.id AS id, p.name AS name, p.description AS description, \
-                        toString(p.created_at) AS created_at \
-                 ORDER BY p.name LIMIT 10",
-                "Search procedures by keyword",
-            ),
-            (
-                "list_tasks",
-                "List tasks, OPEN WORK FIRST (created/in_progress/blocked, then failed, then \
+        // Retired built-ins (list_sessions, get_job_result, search_procedures,
+        // list_notes) are removed from the graph by scripts/phase0_cleanup.cypher.
+        let tools: &[(&str, &str, &str, &str, &str)] = &[(
+            "list_tasks",
+            "List tasks, OPEN WORK FIRST (created/in_progress/blocked, then failed, then \
                  completed), including parent_id for sub-tasks. Every row also carries \
                  whole-graph status totals (total_tasks, status_failed, …). This is a 20-row \
                  WINDOW, not the full set — judge overall state from the totals, never from \
                  the rows. For other filtering use neo4j_query directly.",
-                r#"{"type":"object","properties":{}}"#,
-                // Ordering and totals both exist to prevent one specific failure:
-                // asked "where did we leave off", the brain called this tool, got
-                // 20 recently-completed rows, and reported a "clean slate" while
-                // 210 tasks sat failed. Newest-first hid the open work; no totals
-                // meant the window looked like the whole picture.
-                "MATCH (t:Task) \
+            r#"{"type":"object","properties":{}}"#,
+            // Ordering and totals both exist to prevent one specific failure:
+            // asked "where did we leave off", the brain called this tool, got
+            // 20 recently-completed rows, and reported a "clean slate" while
+            // 210 tasks sat failed. Newest-first hid the open work; no totals
+            // meant the window looked like the whole picture.
+            "MATCH (t:Task) \
                  WITH count(t) AS total_tasks, \
                       sum(CASE WHEN t.status = 'created'     THEN 1 ELSE 0 END) AS status_created, \
                       sum(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS status_in_progress, \
@@ -1079,21 +933,8 @@ impl BrainCore {
                         parent.id AS parent_id, \
                         total_tasks, status_created, status_in_progress, \
                         status_blocked, status_failed, status_completed",
-                "List tasks with open work first, plus whole-graph status totals",
-            ),
-            (
-                "list_notes",
-                "List recently created notes in reverse-chronological order. \
-                 Returns a 200-char content preview. For type filtering use neo4j_query.",
-                r#"{"type":"object","properties":{}}"#,
-                "MATCH (n:Note) \
-                 RETURN n.id AS id, n.note_type AS note_type, \
-                        left(n.content, 200) AS content_preview, \
-                        toString(n.created_at) AS created_at \
-                 ORDER BY n.created_at DESC LIMIT 20",
-                "List recent notes ordered by creation date",
-            ),
-        ];
+            "List tasks with open work first, plus whole-graph status totals",
+        )];
 
         for (name, description, schema, query, purpose) in tools {
             let steps = serde_json::to_string(&json!([{
@@ -1210,18 +1051,6 @@ impl BrainCore {
                     "Failed to read schedules directory. Refusing to start."
                 );
                 std::process::exit(1);
-            }
-        }
-
-        // Every pending code proposal is an item for the user (once).
-        if let Some(dir) = std::env::var("PROPOSALS_DIR")
-            .ok()
-            .filter(|d| !d.trim().is_empty())
-            .map(PathBuf::from)
-        {
-            let n = crate::skills::codebase::backfill_proposal_items(neo4j, &dir).await;
-            if n > 0 {
-                info!(created = n, "Created review items for pending proposals");
             }
         }
     }

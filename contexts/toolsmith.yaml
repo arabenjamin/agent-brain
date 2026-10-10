@@ -8,7 +8,6 @@ tools:
   - analyze_own_structure
   - list_capabilities
   - manage_dynamic_tool
-  - execute_procedure
   - http_request
   - define_api_context
   - reason
@@ -44,8 +43,8 @@ system_prompt: |
      with http_request if unsure). If the dry-run fails, read the error, FIX the
      pipeline, and define again. Do not give up after one failure.
 
-  4. PROVE IT. After the tool is defined, actually run it once (execute_procedure or
-     by invoking the pipeline via manage_dynamic_tool's dry-run) against the real
+  4. PROVE IT. After the tool is defined, actually run it once (call the new tool, or
+     dry-run the pipeline via manage_dynamic_tool) against the real
      spec and report what got stored — how many endpoints were captured and whether
      they look correct.
 

@@ -11,16 +11,13 @@ use uuid::Uuid;
 
 use crate::brain_core::BrainEvent;
 use crate::repository::Neo4jClient;
-use crate::services::traits::{KnowledgeStore, LlmProvider, WorkingMemoryStore};
+use crate::services::traits::WorkingMemoryStore;
 use crate::skills::Skill;
-use agent_brain_models::ProvenanceFlag;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 
-/// Working Memory Skill — push/retrieve session context and summarise into long-term memory.
+/// Working Memory Skill — push session context; `notify_user`.
 pub struct WorkingMemorySkill {
     store: Arc<dyn WorkingMemoryStore>,
-    knowledge: Arc<dyn KnowledgeStore>,
-    llm: Arc<dyn LlmProvider>,
     /// Optional Neo4j client for persisting `AgentNotification` nodes.
     neo4j: Option<Arc<Neo4jClient>>,
     /// Optional event bus for broadcasting `AgentChatInitiated` events.
@@ -28,15 +25,9 @@ pub struct WorkingMemorySkill {
 }
 
 impl WorkingMemorySkill {
-    pub fn new(
-        store: Arc<dyn WorkingMemoryStore>,
-        knowledge: Arc<dyn KnowledgeStore>,
-        llm: Arc<dyn LlmProvider>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn WorkingMemoryStore>) -> Self {
         Self {
             store,
-            knowledge,
-            llm,
             neo4j: None,
             event_tx: None,
         }
@@ -114,31 +105,6 @@ impl WorkingMemorySkill {
                     }
                 },
                 "required": ["message"]
-            }),
-        }
-    }
-
-    fn summarise_session_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "summarise_session".to_string(),
-            description: "Use the LLM to summarise all working-memory entries for a session into \
-                         a consolidated Note in long-term memory. Optionally deletes the raw \
-                         working-memory entries after summarising."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session identifier"
-                    },
-                    "delete_after_summarise": {
-                        "type": "boolean",
-                        "description": "If true, delete all WorkingMemory entries for the session \
-                                        after storing the consolidated note (default: false)"
-                    }
-                },
-                "required": ["session_id"]
             }),
         }
     }
@@ -282,89 +248,6 @@ impl WorkingMemorySkill {
             Err(e) => ToolCallResult::error(format!("Failed to push context: {}", e)),
         }
     }
-
-    async fn handle_summarise_session(&self, arguments: Option<Value>) -> ToolCallResult {
-        let input: SummariseSessionInput = match parse_args(arguments) {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-
-        info!(session_id = %input.session_id, "Summarising session into long-term memory");
-
-        // 1. Fetch all entries via the store trait
-        let rows = match self.store.get_all_entries(&input.session_id).await {
-            Ok(r) => r,
-            Err(e) => {
-                return ToolCallResult::error(format!("Failed to fetch session entries: {}", e));
-            }
-        };
-
-        if rows.is_empty() {
-            return ToolCallResult::error(format!(
-                "No entries found for session '{}'",
-                input.session_id
-            ));
-        }
-
-        let entries_text: String = rows
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                let role = entry
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                format!("[Turn {i} | {role}] {content}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let entries_summarised = rows.len();
-
-        // 2. LLM summarise
-        let prompt = format!(
-            "Summarise this agent session into a compact memory note:\n{}",
-            entries_text
-        );
-
-        let summary = match self.llm.generate(&prompt, None).await {
-            Ok(s) => s,
-            Err(e) => return ToolCallResult::error(format!("LLM summarisation failed: {}", e)),
-        };
-
-        // 3. Store in long-term memory as a consolidated note
-        let note_id = match self
-            .knowledge
-            .store_note(
-                &summary,
-                Some("consolidated"),
-                Some(&input.session_id),
-                None,
-                Some(ProvenanceFlag::SynthesisInference),
-            )
-            .await
-        {
-            Ok((id, _)) => id,
-            Err(e) => return ToolCallResult::error(format!("Failed to store summary note: {}", e)),
-        };
-
-        // 4. Optionally delete session entries
-        let deleted = if input.delete_after_summarise {
-            let _ = self.store.delete_session(&input.session_id).await;
-            true
-        } else {
-            false
-        };
-
-        let response = json!({
-            "id": note_id,
-            "session_id": input.session_id,
-            "entries_summarised": entries_summarised,
-            "deleted": deleted
-        });
-        ToolCallResult::success_json(response)
-    }
 }
 
 #[async_trait]
@@ -374,7 +257,7 @@ impl Skill for WorkingMemorySkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        let mut tools = vec![Self::push_context_def(), Self::summarise_session_def()];
+        let mut tools = vec![Self::push_context_def()];
         if self.neo4j.is_some() {
             tools.push(Self::notify_user_def());
         }
@@ -385,7 +268,6 @@ impl Skill for WorkingMemorySkill {
         match tool_name {
             "notify_user" => Some(self.handle_notify_user(arguments).await),
             "push_context" => Some(self.handle_push_context(arguments).await),
-            "summarise_session" => Some(self.handle_summarise_session(arguments).await),
             _ => None,
         }
     }
@@ -414,13 +296,6 @@ struct PushContextInput {
     role: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SummariseSessionInput {
-    session_id: String,
-    #[serde(default)]
-    delete_after_summarise: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,18 +303,14 @@ mod tests {
     use std::sync::Arc;
 
     fn skill(wm: MockWorkingMemoryStore) -> WorkingMemorySkill {
-        WorkingMemorySkill::new(
-            Arc::new(wm),
-            Arc::new(MockKnowledgeStore::default()),
-            Arc::new(MockLlm::ok("session summary text")),
-        )
+        WorkingMemorySkill::new(Arc::new(wm))
     }
 
     // -- tool registry --------------------------------------------------------
 
     #[test]
     fn tools_list_has_correct_count() {
-        assert_eq!(skill(MockWorkingMemoryStore::default()).tools().len(), 2);
+        assert_eq!(skill(MockWorkingMemoryStore::default()).tools().len(), 1);
     }
 
     #[test]
@@ -515,76 +386,5 @@ mod tests {
                 .unwrap(),
         );
         assert!(msg.contains("store down"));
-    }
-
-    // -- summarise_session ----------------------------------------------------
-
-    #[tokio::test]
-    async fn summarise_session_success() {
-        let r = result_json(
-            skill(MockWorkingMemoryStore::default())
-                .execute(
-                    "summarise_session",
-                    Some(serde_json::json!({"session_id": "sess-1"})),
-                )
-                .await
-                .unwrap(),
-        );
-        assert_eq!(r["session_id"], "sess-1");
-        assert_eq!(r["entries_summarised"], 2);
-        assert_eq!(r["deleted"], false);
-    }
-
-    #[tokio::test]
-    async fn summarise_session_with_delete() {
-        let r = result_json(
-            skill(MockWorkingMemoryStore::default())
-                .execute(
-                    "summarise_session",
-                    Some(serde_json::json!({
-                        "session_id": "sess-1",
-                        "delete_after_summarise": true
-                    })),
-                )
-                .await
-                .unwrap(),
-        );
-        assert_eq!(r["deleted"], true);
-    }
-
-    #[tokio::test]
-    async fn summarise_session_empty_returns_error() {
-        let wm = MockWorkingMemoryStore {
-            get_all_result: Ok(vec![]),
-            ..Default::default()
-        };
-        let msg = result_error(
-            skill(wm)
-                .execute(
-                    "summarise_session",
-                    Some(serde_json::json!({"session_id": "empty"})),
-                )
-                .await
-                .unwrap(),
-        );
-        assert!(msg.contains("No entries found"));
-    }
-
-    #[tokio::test]
-    async fn summarise_session_llm_error() {
-        let s = WorkingMemorySkill::new(
-            Arc::new(MockWorkingMemoryStore::default()),
-            Arc::new(MockKnowledgeStore::default()),
-            Arc::new(MockLlm::err("llm down")),
-        );
-        let msg = result_error(
-            s.execute(
-                "summarise_session",
-                Some(serde_json::json!({"session_id": "sess-1"})),
-            )
-            .await
-            .unwrap(),
-        );
-        assert!(msg.contains("llm down"));
     }
 }

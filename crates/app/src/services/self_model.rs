@@ -12,12 +12,17 @@
 //!   cost_per_1k_output, capabilities, synced_at})` — from the DuckDB model registry
 //! - `(:ContextProfile)-[:ALLOWS]->(:ToolDef)` — profile tool allowlists
 //!   (`allows_all: true` instead of edges when the profile's list is empty)
+//! - `(:RemovedTool {name, removed_at, skill, description, reason, commit,
+//!   replaced_by})` — a tombstone, so the brain remembers a tool it no longer
+//!   has. Created here when a ToolDef vanishes; `reason`/`commit`/`replaced_by`
+//!   come from `architecture/removed-tools.yaml` (CORE_AND_PLUGINS_PLAN.md §4).
 //!
 //! Chains and schedules are deliberately NOT duplicated here — they already
 //! live in the graph as `(:SchedulerChain)` and `(:ScheduledTask)` nodes.
 //!
 //! Sync is a full refresh: current entries are MERGEd, entries that no longer
-//! exist in their source are deleted (DETACH, so stale ALLOWS edges go too).
+//! exist in their source are deleted (DETACH, so stale ALLOWS edges go too) —
+//! except a vanished tool, which leaves a `:RemovedTool` behind.
 
 use std::path::Path;
 
@@ -207,7 +212,7 @@ pub struct SelfModelStats {
 }
 
 /// Sync the self-model meta-graph. Non-fatal by design: callers log the error
-/// and continue — a missing self-model degrades the constructor, not the brain.
+/// and continue — a missing self-model degrades self-inspection, not the brain.
 pub async fn sync_self_model(
     neo4j: &Neo4jClient,
     skills_with_tools: &[(String, Vec<ToolDefinition>)],
@@ -222,8 +227,7 @@ pub async fn sync_self_model(
     for (skill_name, tools) in skills_with_tools {
         for t in tools {
             tool_names.push(t.name.clone());
-            // Argument names from the JSON schema — the Agent Constructor
-            // grounds its plans in these (and validates required ones).
+            // Argument names from the JSON schema.
             let arg_names: Vec<String> = t.input_schema["properties"]
                 .as_object()
                 .map(|m| m.keys().cloned().collect())
@@ -255,12 +259,27 @@ pub async fn sync_self_model(
             stats.tools += 1;
         }
     }
+    // A tool that vanished leaves a tombstone; one that came back loses it.
     neo4j
         .run(
-            neo4rs::query("MATCH (d:ToolDef) WHERE NOT d.name IN $names DETACH DELETE d")
+            neo4rs::query(
+                "MATCH (d:ToolDef) WHERE NOT d.name IN $names \
+                 MERGE (r:RemovedTool {name: d.name}) \
+                 ON CREATE SET r.removed_at = datetime($now), r.skill = d.skill, \
+                               r.description = d.description \
+                 DETACH DELETE d",
+            )
+            .param("names", tool_names.clone())
+            .param("now", now.as_str()),
+        )
+        .await?;
+    neo4j
+        .run(
+            neo4rs::query("MATCH (r:RemovedTool) WHERE r.name IN $names DELETE r")
                 .param("names", tool_names.clone()),
         )
         .await?;
+    let removed = annotate_removed_tools(neo4j, &tool_names).await;
 
     // ── ContextProfile + ALLOWS edges ────────────────────────────────────
     let profile_names: Vec<String> = profiles.iter().map(|p| p.name.clone()).collect();
@@ -297,6 +316,25 @@ pub async fn sync_self_model(
                     .param("name", p.name.as_str()),
             )
             .await?;
+        // An allowlist entry with no registered tool would be dropped by the
+        // MATCH below without a word. Say so, with the replacement if known.
+        let missing: Vec<String> = p
+            .tools
+            .iter()
+            .filter(|t| !tool_names.contains(t))
+            .map(|t| match removed.get(t) {
+                Some(Some(by)) => format!("{t} (removed; use {by})"),
+                Some(None) => format!("{t} (removed)"),
+                None => t.clone(),
+            })
+            .collect();
+        if !missing.is_empty() {
+            warn!(
+                profile = %p.name,
+                missing = %missing.join(", "),
+                "context profile allowlist names tools that are not registered — dropped"
+            );
+        }
         if !p.tools.is_empty() {
             neo4j
                 .run(
@@ -377,4 +415,65 @@ pub async fn sync_self_model(
         "Self-model meta-graph synced"
     );
     Ok(stats)
+}
+
+/// One entry of `architecture/removed-tools.yaml`.
+#[derive(Debug, serde::Deserialize)]
+struct RemovedToolNote {
+    name: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    commit: Option<String>,
+    #[serde(default)]
+    replaced_by: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct RemovedTools {
+    #[serde(default)]
+    tools: Vec<RemovedToolNote>,
+}
+
+/// Write the YAML's reasons onto the tombstones (creating one for a tool that
+/// was removed before tombstones existed; skipping any tool in `live`), and
+/// return every tombstone's
+/// `replaced_by`, keyed by tool name.
+async fn annotate_removed_tools(
+    neo4j: &Neo4jClient,
+    live: &[String],
+) -> std::collections::HashMap<String, Option<String>> {
+    let notes: RemovedTools = crate::services::architecture::load_yaml("removed-tools.yaml");
+    // A listed tool that is registered again is not removed.
+    for n in notes.tools.iter().filter(|n| !live.contains(&n.name)) {
+        let r = neo4j
+            .run(
+                neo4rs::query(
+                    "MERGE (r:RemovedTool {name: $name}) \
+                     ON CREATE SET r.removed_at = datetime() \
+                     SET r.reason = $reason, r.commit = $commit, r.replaced_by = $replaced_by",
+                )
+                .param("name", n.name.as_str())
+                .param("reason", n.reason.as_str())
+                .param("commit", n.commit.clone().unwrap_or_default())
+                .param("replaced_by", n.replaced_by.clone().unwrap_or_default()),
+            )
+            .await;
+        if let Err(e) = r {
+            warn!(tool = %n.name, error = %e, "removed-tools: tombstone not annotated");
+        }
+    }
+    let rows = neo4j
+        .execute(neo4rs::query(
+            "MATCH (r:RemovedTool) RETURN r.name AS name, coalesce(r.replaced_by, '') AS by",
+        ))
+        .await
+        .unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|row| {
+            let name = row.get::<String>("name").ok()?;
+            let by = row.get::<String>("by").ok().filter(|b| !b.is_empty());
+            Some((name, by))
+        })
+        .collect()
 }

@@ -1,0 +1,55 @@
+# Tools the brain no longer has. self_model.rs writes each as a (:RemovedTool)
+# tombstone so the brain remembers what is gone and what replaces it: a profile
+# or prompt naming one is flagged at startup, and list_capabilities(kind=tools)
+# lists them under `removed`.
+#
+# `commit` is the last commit that still had the tool: `git show <commit>:<path>`
+# recovers it. Evidence for each removal: CORE_AND_PLUGINS_PLAN.md §4 (tool-call
+# history in telemetry since 2026-06-12; zero or near-zero calls).
+
+tools:
+  # Phase 0, 2026-10-10 — never called
+  - { name: git_commit, commit: 1aed101, reason: "never called; the brain does not commit" }
+  - { name: git_push, commit: 1aed101, reason: "never called; the brain does not push" }
+  - { name: git_create_pr, commit: 1aed101, reason: "never called" }
+  - { name: git_create_branch, commit: 1aed101, reason: "never called" }
+  - { name: git_status, commit: 1aed101, reason: "never called" }
+  - { name: get_git_diff, commit: 1aed101, reason: "never called", replaced_by: get_git_log }
+  - { name: write_codebase_file, commit: 1aed101, reason: "never called; code changes are proposals", replaced_by: write_proposal }
+  - { name: get_file_tree, commit: 1aed101, reason: "never called", replaced_by: analyze_own_structure }
+  - { name: list_codebase_files, commit: 1aed101, reason: "1 call in four months", replaced_by: search_codebase }
+  - { name: ws_connect, commit: 1aed101, reason: "WebSocket skill never called" }
+  - { name: ws_send, commit: 1aed101, reason: "WebSocket skill never called" }
+  - { name: ws_receive, commit: 1aed101, reason: "WebSocket skill never called" }
+  - { name: ws_close, commit: 1aed101, reason: "WebSocket skill never called" }
+  - { name: resource, commit: 1aed101, reason: "never called; its use was sharing WebSocket connections" }
+  - { name: store_procedure, commit: 1aed101, reason: "procedural memory never called" }
+  - { name: search_procedures, commit: 1aed101, reason: "never called" }
+  - { name: execute_procedure, commit: 1aed101, reason: "8 calls, none since 2026-09-07; dynamic tools still run procedures", replaced_by: manage_dynamic_tool }
+  - { name: record_outcome, commit: 1aed101, reason: "never called" }
+  - { name: use_model, commit: 1aed101, reason: "never called; models come from models.yaml and profiles" }
+  - { name: reload_models, commit: 1aed101, reason: "never called; restart reloads models.yaml" }
+  - { name: set_worker_config, commit: 1aed101, reason: "never called" }
+  - { name: get_job_result, commit: 1aed101, reason: "never called", replaced_by: neo4j_query }
+  - { name: update_job_progress, commit: 1aed101, reason: "never called" }
+  - { name: decompose_goal, commit: 1aed101, reason: "never called" }
+  - { name: analyze_gaps, commit: 1aed101, reason: "never called; knowledge_gaps stays queryable", replaced_by: duckdb_query }
+  - { name: digest_experiences, commit: 1aed101, reason: "never called; fine-tuning uses workspace/finetune scripts" }
+  - { name: summarise_session, commit: 1aed101, reason: "never called" }
+  - { name: list_sessions, commit: 1aed101, reason: "never called; GET /api/sessions serves the UI" }
+  - { name: read_proposal, commit: 1aed101, reason: "proposal files never written; a proposal is a Feed item" }
+  - { name: dismiss_proposal, commit: 1aed101, reason: "proposal files never written; dismiss the Feed item" }
+  - { name: list_proposals, commit: 1aed101, reason: "150 calls, all empty; proposals are Feed items" }
+  - { name: reliefweb_reports, commit: 1aed101, reason: "ReliefWeb dropped by the owner 2026-10-10" }
+  - { name: gdelt_events, commit: 1aed101, reason: "GDELT retired as a source 2026-10-06" }
+  - { name: dataset_sync, commit: 1aed101, reason: "served only GDELT and ReliefWeb" }
+  - { name: dataset_status, commit: 1aed101, reason: "served only GDELT and ReliefWeb" }
+  - { name: construct_agent, commit: 1aed101, reason: "5 calls, all on 2026-06-12", replaced_by: run_agent }
+  - { name: fetch_transcript, commit: 1aed101, reason: "7 calls, none since 2026-08-05", replaced_by: ingest_media }
+  - { name: list_channel_videos, commit: 1aed101, reason: "16 calls, none since 2026-08-05", replaced_by: poll_media_sources }
+  - { name: list_notes, commit: 1aed101, reason: "17 calls, none since 2026-09-07", replaced_by: recall_recent }
+  - { name: context, commit: 1aed101, reason: "3 calls, none since 2026-08-08", replaced_by: list_capabilities }
+  - { name: get_usage, commit: 1aed101, reason: "3 calls, none since 2026-08-08", replaced_by: duckdb_query }
+  # Folded into another tool
+  - { name: run_scheduler_tick, commit: 1aed101, reason: "folded", replaced_by: "scheduler_control (action: tick)" }
+  - { name: mcp_list_servers, commit: 1aed101, reason: "folded", replaced_by: "mcp_list_tools (no server)" }

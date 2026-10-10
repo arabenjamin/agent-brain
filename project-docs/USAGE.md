@@ -139,14 +139,14 @@ See `project-docs/env.md` for the complete variable reference.
 {"name": "reason", "arguments": {"question": "How should I handle Stripe duplicate requests?"}}
 ```
 
-### Decompose a goal and let the scheduler run it
+### Create a task and let the scheduler run it now
 
 ```json
 {"name": "create_task", "arguments": {"goal": "Audit all loaded APIs for broken endpoints"}}
-{"name": "decompose_goal", "arguments": {"goal_task_id": "<id>", "max_steps": 5}}
-{"name": "run_scheduler_tick", "arguments": {}}
-{"name": "queue_status", "arguments": {}}
+{"name": "scheduler_control", "arguments": {"action": "tick"}}
 ```
+
+Queue state is `GET /api/queue/status`.
 
 ### Submit a background job chain
 
@@ -165,37 +165,21 @@ See `project-docs/env.md` for the complete variable reference.
 ### Ingest and query an API
 
 ```json
-{"name": "ingest_openapi", "arguments": {"source": "https://petstore3.swagger.io/api/v3/openapi.json"}}
-{"name": "graph_query_endpoint", "arguments": {"query": "pets"}}
-{"name": "execute_http_request", "arguments": {"method": "GET", "url": "https://petstore3.swagger.io/api/v3/pet/1"}}
+{"name": "ingest_api", "arguments": {"spec_url": "https://petstore3.swagger.io/api/v3/openapi.json"}}
+{"name": "list_endpoints", "arguments": {"api": "Swagger Petstore - OpenAPI 3.0"}}
+{"name": "http_request", "arguments": {"method": "GET", "url": "https://petstore3.swagger.io/api/v3/pet/1"}}
 ```
 
-### Switch LLM provider at runtime
+### Choose the model
 
-```json
-{"name": "use_model", "arguments": {"provider": "Anthropic", "model": "claude-haiku-4-5-20251001"}}
-```
+Models come from `models.yaml` and each context profile's `model_preference`;
+`get_llm_budget` shows what each provider has left.
 
 ---
 
-## Skill Capabilities (90 tools across 15 skills)
+## Skill Capabilities
 
-See `project-docs/tools.md` for full input/output schemas.
+The tool list is live: `list_capabilities` (`kind: tools`, or `skill: <name>` for
+one skill's tools with descriptions) or `GET /api/tools`. Removed tools are
+listed there too, with what replaced them.
 
-| Skill | Tools | Description |
-|-------|-------|-------------|
-| `KnowledgeSkill` | 16 | Notes, RAG, reasoning, entity extraction |
-| `TaskSkill` | 6 | Goals, decomposition, reflection, outcomes |
-| `AgentSkill` | 8 | Background job queue management |
-| `SchedulerSkill` | 5 | Autonomous tick loop |
-| `ApiSkill` | 14 | OpenAPI ingest, query, execute, heal, export |
-| `ModelSkill` | 5 | LLM provider switching and model registry |
-| `ContextSkill` | 4 | YAML context profiles |
-| `WorkingMemorySkill` | 4 | Session scratchpad |
-| `DynamicSkill` | 4+N | Runtime tool definition |
-| `ProcedureSkill` | 2 | Named multi-step workflows |
-| `ResourceSkill` | 4 | Shared connection/token registry |
-| `WsSkill` | 5 | WebSocket connections |
-| `AdminSkill` | 10 | Graph cleanup, snapshots, integrity |
-| `SearchSkill` | 1 | Web search |
-| `SleepSkill` | 2 | Experience digestion, gap analysis |

@@ -5,7 +5,7 @@ use super::*;
 /// Tools that constitute *retrieval*: after one of these runs, the turn has
 /// consulted something outside the model's own weights.
 ///
-/// The list is deliberately narrow. `read_file`/`get_file_tree` are retrieval in
+/// The list is deliberately narrow. `read_file`-style tools are retrieval in
 /// the literal sense but say nothing about the *world*, and the failure this
 /// guards against is a note about an external technology written from prior
 /// alone. Graph reads count because "what do we already know" is a legitimate
@@ -14,9 +14,7 @@ pub(super) const RETRIEVAL_TOOLS: &[&str] = &[
     "search_web",
     "search_notes",
     "neo4j_query",
-    "fetch_transcript",
     "ingest_media",
-    "list_channel_videos",
     "http_request",
     "get_search_usage",
     "execute_code",

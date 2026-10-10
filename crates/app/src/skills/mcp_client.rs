@@ -1,7 +1,8 @@
 //! MCP Client Skill — call tools on EXTERNAL MCP servers from the brain.
 //!
-//! Three passthrough tools make any registered server usable from chat and from
-//! chains/schedules: `mcp_list_servers`, `mcp_list_tools`, `mcp_call`. Servers
+//! Two passthrough tools make any registered server usable from chat and from
+//! chains/schedules: `mcp_list_tools` (no `server` ⇒ the registered servers) and
+//! `mcp_call`. Servers
 //! are `(:McpServer)` nodes seeded from `mcp-servers/*.yaml`; a bare `https://`
 //! URL is also accepted directly for a keyless server. Auth secrets live only in
 //! env vars (the node stores the env var NAME). Runs in the brain process, which
@@ -75,39 +76,27 @@ impl McpClientSkill {
         }
 
         Err(format!(
-            "No MCP server named '{server}'. Use `mcp_list_servers` to see registered servers, \
+            "No MCP server named '{server}'. Call `mcp_list_tools` with no `server` to see registered servers, \
              or pass a full https:// URL for a keyless server."
         ))
-    }
-
-    fn list_servers_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "mcp_list_servers".to_string(),
-            description: "List the external MCP servers the brain can call (registered :McpServer \
-                          nodes). Returns name, url, description, and enabled flag. Use before \
-                          mcp_list_tools / mcp_call to see what is available (e.g. aidevboard, \
-                          worklittle for jobs)."
-                .to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
     }
 
     fn list_tools_def() -> ToolDefinition {
         ToolDefinition {
             name: "mcp_list_tools".to_string(),
-            description: "List the tools a specific external MCP server exposes (its tools/list). \
-                          Call this to discover a server's tool names and argument schemas before \
-                          mcp_call."
+            description: "Without `server`: list the external MCP servers the brain can call \
+                          (name, url, description, enabled). With `server`: list the tools that \
+                          server exposes (its tools/list), to discover tool names and argument \
+                          schemas before mcp_call."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "server": {
                         "type": "string",
-                        "description": "Registered server name (from mcp_list_servers) or a full https:// URL for a keyless server."
+                        "description": "Registered server name (omit to list them) or a full https:// URL for a keyless server."
                     }
-                },
-                "required": ["server"]
+                }
             }),
         }
     }
@@ -175,8 +164,8 @@ impl McpClientSkill {
 
     async fn handle_list_tools(&self, args: Option<Value>) -> ToolCallResult {
         let args = args.unwrap_or_default();
-        let Some(server) = args["server"].as_str() else {
-            return ToolCallResult::error("`server` is required".to_string());
+        let Some(server) = args["server"].as_str().filter(|s| !s.trim().is_empty()) else {
+            return self.handle_list_servers().await;
         };
         let cfg = match self.resolve_server(server).await {
             Ok(c) => c,
@@ -264,16 +253,11 @@ impl Skill for McpClientSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::list_servers_def(),
-            Self::list_tools_def(),
-            Self::call_def(),
-        ]
+        vec![Self::list_tools_def(), Self::call_def()]
     }
 
     async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
         match name {
-            "mcp_list_servers" => Some(self.handle_list_servers().await),
             "mcp_list_tools" => Some(self.handle_list_tools(args).await),
             "mcp_call" => Some(self.handle_call(args).await),
             _ => None,

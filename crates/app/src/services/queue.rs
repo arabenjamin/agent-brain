@@ -78,9 +78,6 @@ const DEFAULT_MAX_CONCURRENT_OLLAMA: usize = 2;
 const DEFAULT_MAX_CONCURRENT_ANTHROPIC: usize = 2;
 const DEFAULT_MAX_CONCURRENT_GEMINI: usize = 5;
 
-/// Progress tuple: (percent, message, updated_at).
-pub type JobProgressTuple = (u8, Option<String>, Option<String>);
-
 /// Runtime configuration for the queue coordinator.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
@@ -382,48 +379,6 @@ impl QueueService {
     // =========================================================================
     // Public queue API
     // =========================================================================
-
-    /// Submit a new job.  Persists to Neo4j, pushes to in-memory heap, and
-    /// notifies the coordinator.  Returns the new job ID.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn enqueue(
-        &self,
-        tool_name: &str,
-        arguments: Option<&serde_json::Value>,
-        priority: u8,
-        max_attempts: u32,
-        session_id: Option<&str>,
-        parent_job_id: Option<&str>,
-        provider_hint: Option<&str>,
-    ) -> Result<String, String> {
-        let job = self
-            .neo4j
-            .create_agent_job(
-                tool_name,
-                arguments,
-                priority,
-                max_attempts,
-                session_id,
-                parent_job_id,
-                provider_hint,
-                None,
-                None,
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // create_agent_job returns the full record — no reload needed.
-        let id = job.id.clone();
-        self.heap.lock().await.push(PrioritizedJob {
-            priority: job.priority,
-            created_at: job.created_at.clone(),
-            job,
-        });
-        self.notify.notify_one();
-
-        Ok(id)
-    }
 
     /// Submit a sequential chain of jobs.
     ///
@@ -769,49 +724,6 @@ impl QueueService {
         Ok(cancelled_ids.len())
     }
 
-    /// Update the runtime worker configuration.  Returns the new config.
-    ///
-    /// Per-provider semaphore sizes are updated by swapping in a new semaphore with
-    /// the requested capacity.  Jobs already holding a permit from the old semaphore
-    /// continue unaffected; new jobs pick up the replacement.
-    pub async fn update_config(
-        &self,
-        max_concurrent: Option<usize>,
-        max_concurrent_ollama: Option<usize>,
-        max_concurrent_anthropic: Option<usize>,
-        max_concurrent_gemini: Option<usize>,
-        enabled: Option<bool>,
-        poll_interval_secs: Option<u64>,
-    ) -> WorkerConfig {
-        let mut cfg = self.config.write().await;
-        if let Some(v) = max_concurrent {
-            cfg.max_concurrent = v;
-        }
-        if let Some(v) = max_concurrent_ollama {
-            cfg.max_concurrent_ollama = v;
-            *self.semaphore_ollama.write().await = Arc::new(Semaphore::new(v));
-        }
-        if let Some(v) = max_concurrent_anthropic {
-            cfg.max_concurrent_anthropic = v;
-            *self.semaphore_anthropic.write().await = Arc::new(Semaphore::new(v));
-        }
-        if let Some(v) = max_concurrent_gemini {
-            cfg.max_concurrent_gemini = v;
-            *self.semaphore_gemini.write().await = Arc::new(Semaphore::new(v));
-        }
-        if let Some(v) = enabled {
-            cfg.enabled = v;
-            if v {
-                // Re-enable: wake coordinator in case there are queued jobs.
-                self.notify.notify_one();
-            }
-        }
-        if let Some(v) = poll_interval_secs {
-            cfg.poll_interval_secs = v;
-        }
-        cfg.clone()
-    }
-
     /// Return queue statistics (in-memory + Neo4j).
     pub async fn stats(&self) -> serde_json::Value {
         let db_stats = self
@@ -872,28 +784,6 @@ impl QueueService {
     // Progress tracking
     // =========================================================================
 
-    /// Update progress for a running job.
-    pub async fn update_progress(
-        &self,
-        job_id: &str,
-        percent: u8,
-        message: Option<&str>,
-        metadata: Option<&serde_json::Value>,
-    ) -> Result<(), String> {
-        self.neo4j
-            .update_job_progress(job_id, percent, message, metadata)
-            .await
-            .map_err(|e| e.to_string())
-    }
-
-    /// Get progress for a job.
-    pub async fn get_job_progress(&self, job_id: &str) -> Result<Option<JobProgressTuple>, String> {
-        self.neo4j
-            .get_job_progress(job_id)
-            .await
-            .map_err(|e| e.to_string())
-    }
-
     // =========================================================================
     // TTL and expiration
     // =========================================================================
@@ -930,14 +820,6 @@ impl QueueService {
     pub async fn delete_dead_letter(&self, job_id: &str) -> Result<bool, String> {
         self.neo4j
             .delete_dead_letter(job_id)
-            .await
-            .map_err(|e| e.to_string())
-    }
-
-    /// Get dead letter queue statistics.
-    pub async fn get_dead_letter_stats(&self) -> Result<serde_json::Value, String> {
-        self.neo4j
-            .get_dead_letter_stats()
             .await
             .map_err(|e| e.to_string())
     }
@@ -1598,33 +1480,13 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
         let Some(score) = parse_evaluator_score(result_text) else {
             // No parseable score or verdict keyword. Treating this as a failing
             // 3.0 (the old behaviour) burned up to 3 retry chains on mere format
-            // drift from the local model. Unparseable output is a pass, and the
-            // AgentSpec is NOT graded with an invented number.
+            // drift from the local model. Unparseable output is a pass.
             warn!(
                 job_id = %job.id,
                 "Evaluator output unparseable (no Score line or verdict) — treating as pass"
             );
             return false;
         };
-
-        // Learning edge: if this task was built by the Agent Constructor, record
-        // the graded outcome on its AgentSpec — pass AND fail (failures are the
-        // more valuable signal).
-        if let Some(tid) = task_id {
-            match self
-                .neo4j
-                .record_agent_spec_performance(tid, score as f64, score >= min_score as f32)
-                .await
-            {
-                Ok(true) => {
-                    info!(task_id = %tid, score = score, "Recorded AgentSpec PERFORMED edge")
-                }
-                Ok(false) => {} // not a constructed task — nothing to learn onto
-                Err(e) => {
-                    warn!(task_id = %tid, error = %e, "Failed to record AgentSpec performance")
-                }
-            }
-        }
 
         if score >= min_score as f32 {
             info!(job_id = %job.id, score = score, "Evaluator: score passed");
@@ -2201,7 +2063,6 @@ fn should_meta_learn(tool_name: &str) -> bool {
         "adversarial_plan_review",
         "prune_old_notes",
         "review_due_notes",
-        "record_outcome",
         "get_task",
         "list_tasks",
     ];

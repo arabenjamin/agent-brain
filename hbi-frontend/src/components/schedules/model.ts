@@ -113,7 +113,7 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Knowledge",
     tools: [
-      "store_note", "search_notes", "list_notes", "recall_recent",
+      "store_note", "search_notes", "recall_recent",
       "consolidate_memories", "prune_old_notes",
       "synthesize_knowledge", "reason",
     ],
@@ -121,21 +121,18 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Tasks",
     tools: [
-      "create_task", "update_task", "list_tasks", "decompose_goal",
-      "reflect_on_work", "record_outcome",
+      "create_task", "update_task", "list_tasks", "reflect_on_work",
     ],
   },
   {
     group: "Agent Jobs",
     tools: [
-      "enqueue_jobs", "manage_job", "manage_chain",
-      "get_job_result", "dead_letter",
-      "update_job_progress", "set_worker_config",
+      "enqueue_jobs", "manage_job", "manage_chain", "dead_letter",
     ],
   },
   {
     group: "Working Memory",
-    tools: ["push_context", "summarise_session", "list_sessions", "notify_user"],
+    tools: ["push_context", "notify_user"],
   },
   {
     group: "HTTP / Search",
@@ -147,19 +144,15 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   },
   {
     group: "Proposals",
-    tools: ["write_proposal", "read_proposal", "list_proposals", "dismiss_proposal"],
+    tools: ["write_proposal"],
   },
   {
     group: "Scheduler",
-    tools: ["manage_scheduled_task", "scheduler_control", "run_scheduler_tick"],
+    tools: ["manage_scheduled_task", "scheduler_control"],
   },
   {
-    group: "Model",
-    tools: ["use_model", "reload_models"],
-  },
-  {
-    group: "Procedures / Dynamic",
-    tools: ["manage_dynamic_tool", "execute_procedure", "store_procedure", "search_procedures"],
+    group: "Dynamic tools",
+    tools: ["manage_dynamic_tool"],
   },
   {
     group: "Query",
@@ -168,17 +161,8 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Codebase",
     tools: [
-      "read_codebase_file", "list_codebase_files", "search_codebase",
-      "get_git_log", "get_git_diff", "get_file_tree", "analyze_own_structure",
+      "read_codebase_file", "search_codebase", "get_git_log", "analyze_own_structure",
     ],
-  },
-  {
-    group: "Context / Resources",
-    tools: ["context", "resource"],
-  },
-  {
-    group: "WebSocket",
-    tools: ["ws_connect", "ws_send", "ws_receive", "ws_close"],
   },
 ];
 
