@@ -598,7 +598,11 @@ mod fallback_ladder_tests {
             .mount(&fallback)
             .await;
 
-        let svc = chat_service(vec![cloud_config(&fallback)]);
+        // A different model: the primary's 500 benches its model in the budget,
+        // and each rung is re-judged just before it is tried.
+        let svc = chat_service(vec![
+            cloud_config(&fallback).with_model("subagent-fallback-model"),
+        ]);
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
         // allow_delegate = false, a bounded budget — the sub-agent shape.
         svc.run_bounded_loop(

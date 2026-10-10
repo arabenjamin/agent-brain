@@ -168,8 +168,8 @@ services:
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Free-tier OpenAI-compatible providers (models.yaml `providers:`). Both are
-      # declared data_policy may_train; CLOUD_TIER routing does not know them, so
-      # only an explicit /chat profile pin reaches them until the policy router.
+      # declared data_policy may_train and opened to private work by
+      # `private_ok_for` (2026-10-10): the cloud overflow after Ollama Cloud.
       - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - MCP_TRANSPORT=http

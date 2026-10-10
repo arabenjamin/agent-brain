@@ -662,6 +662,14 @@ async fn run_serve(
     // Before anything builds a config from the catalog: endpoints and key env
     // var names for every provider come from here.
     catalog.install_providers();
+    {
+        let ladder = catalog.resolve_background_fallback_ladder(&llm_config, &llm_config.model);
+        info!(
+            models = %ladder.iter().map(|c| c.model.as_str()).collect::<Vec<_>>().join(", "),
+            "Background fallback ladder resolved"
+        );
+        agent_brain::services::shared_llm::install_background_fallback(ladder);
+    }
 
     // Topic assignment: the local model classifies notes against topics/*.yaml
     // while the brain is idle (services/topics.rs). The HTTP server is the

@@ -253,6 +253,7 @@ Unchanged from the earlier draft:
   - `/api/models` returns the registry: key env var names and `key_configured`, never values. Startup warns on provider issues; guard tests assert the checked-in declarations have none and that the training free tiers stay `may_train`.
   - **Not routable yet, by design:** `candidate_allowed` rejects `mistral`/`openrouter` and the sub-agent clamp drops `OpenAiCompat`. Only an explicit `/chat` profile pin reaches them until Phase 2.
 - [x] **Phase 2: Policy router.** Done 2026-09-15.
+  - **2026-10-10 follow-up:** the Ollama Cloud free quota ran out, and the owner opened `mistral` and `openrouter` to all private work (`private_ok_for: [chat, subagent, background]`). Their models moved from ranks 350–372 to 100–108 (behind Ollama Cloud, ahead of local), joined the chat ladder before granite4, and form the new `background_fallback_ladder`. On the free key only `ministral-14b-latest` (30 rpm) and `codestral-latest` (125 rpm) answer; medium, small and magistral report a 0/minute limit, so they left the catalog. Ollama's account-wide "usage limit" 429 now benches the whole provider for an hour (`services/budget.rs`).
   - `services/routing.rs`:
     - `RoutingPolicy` is built from `ROUTING_BILLING`, falling back to the `CLOUD_TIER` mapping, plus `ROUTING_PAID_FOR`.
     - `check_entry` runs the §4 filters in order: registered, enabled, key, billing, paid purpose and spend cap, data policy, then loop limits for sub-agents.

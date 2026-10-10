@@ -32,11 +32,8 @@ defaults:
 #                may use this provider despite its data_policy — the owner's
 #                override, kept apart from the provider's terms. Omitted ⇒ none.
 #
-# Phase 1 status: endpoints and keys come from here and `model_usage.provider`
-# records who served each call. Routing still runs on CLOUD_TIER, which does not
-# know `mistral` or `openrouter` — no capability step, sub-agent or fallback
-# rung can land on them; only an explicit /chat profile `model_preference` can.
-# A provider left out of this section falls back to the built-in table in
+# Every call is judged by the routing policy (services/routing.rs) against
+# these declarations. A provider left out of this section falls back to the built-in table in
 # services/provider_registry.rs, which matches the old hardcoded endpoints.
 providers:
   ollama:
@@ -70,6 +67,9 @@ providers:
     api_key_env: MISTRAL_API_KEY
     limits: { concurrency: 1 }
     terms: "Experiment (free) plan: inputs and outputs may be used to train Mistral models"
+    # Owner's decision (2026-10-10): the Ollama Cloud free quota ran out, and
+    # every private purpose may use Mistral rather than drop to local E4B.
+    private_ok_for: [chat, subagent, background]
   openrouter:
     kind: openai_compat
     billing: free
@@ -78,6 +78,9 @@ providers:
     api_key_env: OPENROUTER_API_KEY
     limits: { rpm: 20, rpd: 50, concurrency: 1 }
     terms: ":free endpoints — upstream providers may log and train on prompts; 50 requests/day without credits"
+    # Owner's decision (2026-10-10), same as mistral. Sub-agents are still
+    # refused here by the 50 requests/day limit, not by privacy.
+    private_ok_for: [chat, subagent, background]
   anthropic:
     kind: anthropic
     billing: paid
@@ -121,14 +124,15 @@ providers:
 #            lives here (rank 5); see the note in the Gemini block on why its
 #            cost is 0.0 and how a 429 falls back down to the ollama-cloud tier.
 #   10–99    ollama-cloud — the contested band, since these all tie at $0
+#   100–109  free tiers that MAY TRAIN on prompts (Mistral, OpenRouter :free),
+#            open to private work by `private_ok_for` (2026-10-10). Behind every
+#            Ollama Cloud model, ahead of local: the cloud overflow when the
+#            Ollama free quota is spent.
 #   110–199  ollama local — also $0, so they compete with the above and lose at
 #            tier 1 by design. Ranked anyway: three of them tie at 128000, so
 #            tier 0 was previously picking between them arbitrarily.
 #   210+     paid providers — cost already separates these; rank breaks ties
 #            within a price point (the two gemini flash-lites are both 0.0005).
-#   350–399  free tiers that MAY TRAIN on prompts (Mistral, OpenRouter :free).
-#            Behind everything else on purpose: overflow for public work once
-#            the policy router admits them, never a preference.
 #
 # Rank is global, not per-capability, so check every capability a model claims
 # before moving it. The live example: `gemma4:31b-cloud` sits at 30 rather than
@@ -565,23 +569,28 @@ models:
       over stored knowledge, and use many other tools. Think step-by-step
       before acting and use available tools for grounded answers.
 
-  # ── Free tiers that MAY TRAIN on prompts (rank 350–399) ───────────────────────
-  # `data_policy: may_train` in `providers:` above. CLOUD_TIER routing does not
-  # know these providers, so no capability step, sub-agent or fallback rung can
-  # land on them; they are reachable only by an explicit /chat profile pin until
-  # the policy router admits them for `data_class: public` work. Ranked behind
-  # every no_log model so that, once admitted, they are overflow rather than a
-  # preference. Model ids checked against each provider's /v1/models 2026-09-13.
-  mistral-medium-latest:
+  # ── Free tiers that MAY TRAIN on prompts (rank 100–109) ───────────────────────
+  # `data_policy: may_train` in `providers:` above, opened to private work by
+  # `private_ok_for`. Ranked behind every Ollama Cloud model and ahead of local,
+  # so a capability step lands here only when Ollama Cloud is refused (quota
+  # spent, cooling down). Model ids checked against each provider's /v1/models
+  # 2026-09-13.
+  # Probed on the free key 2026-10-10 (x-ratelimit-limit-req-minute per model):
+  # mistral-medium/small, magistral-medium/small and mistral-vibe-cli are
+  # 0/minute on this plan (429 on every call), mistral-large is 403. They are
+  # left out: a rung that can only fail turns one failure into two. Re-probe
+  # before adding one back. Both entries below passed a tool-call probe.
+  ministral-14b-latest:
     provider: mistral
-    model: "mistral-medium-latest"
+    model: "ministral-14b-latest"
     context_window: 262144
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
-    selection_rank: 350
+    selection_rank: 100
+    limits: { rpm: 30 }   # per model, from the response headers
     capabilities:
       - reasoning
-      - code
+      - fast
       - vision
 
   codestral-latest:
@@ -590,21 +599,10 @@ models:
     context_window: 256000
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
-    selection_rank: 352
+    selection_rank: 104
+    limits: { rpm: 125 }   # per model, from the response headers
     capabilities:
       - code
-
-  mistral-small-latest:
-    provider: mistral
-    model: "mistral-small-latest"
-    context_window: 262144
-    cost_per_1k_input: 0.0
-    cost_per_1k_output: 0.0
-    selection_rank: 354
-    capabilities:
-      - reasoning
-      - fast
-      - vision
 
   "nvidia/nemotron-3-super-120b-a12b:free":
     provider: openrouter
@@ -612,7 +610,7 @@ models:
     context_window: 262144
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
-    selection_rank: 370
+    selection_rank: 106
     capabilities:
       - reasoning
       - code
@@ -623,7 +621,7 @@ models:
     context_window: 262144
     cost_per_1k_input: 0.0
     cost_per_1k_output: 0.0
-    selection_rank: 372
+    selection_rank: 108
     capabilities:
       - reasoning
 
@@ -718,9 +716,33 @@ models:
 # Gemini rung is more likely to 429 than to rescue a turn. Gemini stays a
 # background-reasoning model (1 call/step), not a chat rung. See docker-compose
 # CHAT_LLM_MODEL for the 2026-09-06 measurement.
+#
+# Mistral and OpenRouter rungs (2026-10-10): the Ollama Free usage limit is
+# account-wide, so when it is spent every ollama-cloud rung above 429s at once
+# (the budget then benches the whole provider, see services/budget.rs) and the
+# turn used to land on granite4. The may_train rungs sit between the two; their
+# owner's `private_ok_for` override is what lets a private turn use them.
+# OpenRouter's 50 requests/day is metered by the budget and refused for
+# sub-agent loops, so it is the last cloud rung.
 chat_fallback_ladder:
   - gpt-oss:120b-cloud
   - nemotron-3-super:cloud
   - gpt-oss:20b-cloud
   - nemotron-3-nano:30b-cloud
+  - ministral-14b-latest
+  - codestral-latest
+  - "nvidia/nemotron-3-super-120b-a12b:free"
   - granite4:latest
+
+# ── Background fallback ladder ────────────────────────────────────────────────
+# Cloud rungs a background `generate()` (queue steps, `reason`, capability-
+# routed calls) walks after its primary and the active model fail as
+# unavailable (429, 5xx, transport) or are refused, before it drops to the
+# local model. Each rung is judged by the routing policy for the step's purpose
+# and data_class, like every other rung. Before 2026-10-10 the chain went
+# straight from Ollama Cloud to local E4B.
+background_fallback_ladder:
+  - ministral-14b-latest
+  - codestral-latest
+  - "nvidia/nemotron-3-super-120b-a12b:free"
+  - "google/gemma-4-31b-it:free"

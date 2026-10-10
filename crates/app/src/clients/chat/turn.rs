@@ -31,6 +31,25 @@ pub(super) fn admit_rungs(
     (kept, refused)
 }
 
+/// Re-judge a rung just before it is tried. [`admit_rungs`] judges the ladder
+/// once, when the turn starts; a rung benched since (an earlier rung's 429
+/// said the whole account is out of quota) must be skipped rather than spend
+/// a call on a known failure.
+pub(super) fn still_admitted(cfg: &LlmConfig, ctx: RouteContext) -> bool {
+    match RoutingPolicy::from_env().admit(cfg, ctx) {
+        Ok(()) => true,
+        Err(reason) => {
+            warn!(
+                model = %cfg.model,
+                provider = %cfg.provider_label(),
+                reason = %reason,
+                "ladder rung refused since the turn began — skipping it"
+            );
+            false
+        }
+    }
+}
+
 /// What one model's attempt at a turn amounted to.
 ///
 /// The distinction the fallback ladder turns on is not "did it error" but **did
@@ -782,6 +801,11 @@ impl ChatService {
                 let mut prior_calls: Vec<PriorCall> = Vec::new();
 
                 for (i, cfg) in candidates.into_iter().enumerate() {
+                    // The last rung is always tried, so the turn still ends
+                    // through the every-rung-spent report below.
+                    if i > 0 && i != last && !still_admitted(&cfg, route_ctx) {
+                        continue;
+                    }
                     if i > 0 && !prior_calls.is_empty() {
                         warn!(
                             model = %cfg.model,

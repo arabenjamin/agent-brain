@@ -31,6 +31,11 @@ pub struct ModelCatalog {
     /// [`Self::resolve_chat_fallback_ladder`] for how names become configs.
     #[serde(default)]
     pub chat_fallback_ladder: Vec<String>,
+    /// Ordered catalog keys a background `generate()` walks after its primary
+    /// and the active model, before the local model. See the block comment on
+    /// `background_fallback_ladder` in `models.yaml`.
+    #[serde(default)]
+    pub background_fallback_ladder: Vec<String>,
     /// The `providers:` section — how to reach each provider and what kind of
     /// provider it is. Laid over the built-in table in
     /// [`provider_registry::builtin`], so an entry left out keeps today's
@@ -121,6 +126,7 @@ impl ModelCatalog {
                     .to_string(),
             ),
             chat_fallback_ladder: Vec::new(),
+            background_fallback_ladder: Vec::new(),
             providers: HashMap::new(),
         }
     }
@@ -208,14 +214,44 @@ impl ModelCatalog {
         base: &crate::services::LlmConfig,
         active_model: &str,
     ) -> Vec<crate::services::LlmConfig> {
+        self.resolve_ladder(
+            "chat_fallback_ladder",
+            &self.chat_fallback_ladder,
+            base,
+            active_model,
+        )
+    }
+
+    /// Resolve `background_fallback_ladder` the same way as the chat ladder.
+    pub fn resolve_background_fallback_ladder(
+        &self,
+        base: &crate::services::LlmConfig,
+        active_model: &str,
+    ) -> Vec<crate::services::LlmConfig> {
+        self.resolve_ladder(
+            "background_fallback_ladder",
+            &self.background_fallback_ladder,
+            base,
+            active_model,
+        )
+    }
+
+    fn resolve_ladder(
+        &self,
+        ladder: &str,
+        names: &[String],
+        base: &crate::services::LlmConfig,
+        active_model: &str,
+    ) -> Vec<crate::services::LlmConfig> {
         let mut out = Vec::new();
         let mut seen: Vec<String> = vec![active_model.to_string()];
 
-        for name in &self.chat_fallback_ladder {
+        for name in names {
             let Some(entry) = self.models.get(name) else {
                 warn!(
                     model = %name,
-                    "chat_fallback_ladder names a model that is not in the catalog — skipping"
+                    ladder,
+                    "fallback ladder names a model that is not in the catalog — skipping"
                 );
                 continue;
             };
@@ -689,8 +725,11 @@ mod tests {
 
     #[test]
     fn private_work_never_reaches_a_training_provider_for_any_capability() {
+        // Unless the owner opened that provider to background work by name
+        // (`private_ok_for`, models.yaml) — Mistral and OpenRouter since
+        // 2026-10-10. The override is the only way through.
         use crate::services::provider_registry::DataPolicy;
-        use crate::services::routing::DataClass;
+        use crate::services::routing::{DataClass, Purpose};
         let c = real_catalog();
         let registry = provider_registry::merged(&c.providers);
         let mut caps: Vec<String> = c
@@ -703,9 +742,10 @@ mod tests {
         for cap in caps {
             for name in routes_under_policy(&c, &cap, DataClass::Private, &deployed_policy()) {
                 let provider = provider_registry::canonical_name(&c.models[&name].provider);
-                assert_eq!(
-                    registry[&provider].data_policy,
-                    DataPolicy::NoLog,
+                let p = &registry[&provider];
+                assert!(
+                    p.data_policy == DataPolicy::NoLog
+                        || p.private_ok_for.contains(&Purpose::Background),
                     "private {cap} work admitted {name} on {provider}"
                 );
             }
@@ -750,6 +790,37 @@ mod tests {
                 registry[name].data_policy,
                 DataPolicy::MayTrain,
                 "{name} data_policy"
+            );
+        }
+    }
+
+    /// Private reasoning keeps preferring Ollama Cloud; Mistral is the next
+    /// cloud rung, ahead of every local model, and Gemini (no override for
+    /// background) is never admitted.
+    #[test]
+    fn private_reasoning_overflows_to_mistral_before_local() {
+        use crate::services::routing::DataClass;
+        let got = routes_under_policy(
+            &real_catalog(),
+            "reasoning",
+            DataClass::Private,
+            &deployed_policy(),
+        );
+        let pos = |m: &str| got.iter().position(|x| x == m);
+        assert_eq!(got.first().map(String::as_str), Some("gpt-oss:120b-cloud"));
+        let mistral = pos("ministral-14b-latest").expect("mistral admitted");
+        let local = pos("gemma4:latest").expect("local admitted");
+        assert!(mistral < local, "{got:?}");
+        assert!(pos("gemini-2.5-flash").is_none(), "{got:?}");
+    }
+
+    #[test]
+    fn every_background_fallback_rung_resolves() {
+        let c = real_catalog();
+        for name in &c.background_fallback_ladder {
+            assert!(
+                c.models.contains_key(name),
+                "background ladder names unknown model {name}"
             );
         }
     }

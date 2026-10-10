@@ -122,6 +122,9 @@ impl SubagentLoopRunner for ChatService {
         let mut last_error: Option<String> = None;
         let mut prior_calls: Vec<PriorCall> = Vec::new();
         for (i, cand) in candidates.into_iter().enumerate() {
+            if i > 0 && !still_admitted(&cand, RouteContext::current()) {
+                continue;
+            }
             if i > 0 {
                 warn!(
                     model = %cand.model,

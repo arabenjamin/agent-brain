@@ -939,6 +939,10 @@ Found while diagnosing Phase 21: the distiller keeps the head and tail of an ove
 
 So the loss was the brain's own lower-ranked notes, never the new evidence. The reassembly step now caps the stored-notes section at 15,000 characters, the top-ranked part, with a marker giving the size of the cut. No other distilling step overflowed (the one other, 21 runs, peaked at 2,565 characters), so the shared distiller stays as it is.
 
+### The Ollama free quota ran out and nothing caught the fall (2026-10-10)
+
+By 18:34 UTC `gpt-oss:120b-cloud` had served 1,323 calls that day, and then every Ollama Cloud model answered `429 You reached the Free usage limit`. Mistral and OpenRouter had working keys in the container and **zero** requests. Three things were behind that. Both providers were `may_train`, so all private work (nearly everything) was refused. Neither was on any fallback path: the chat ladder went four Ollama Cloud rungs → granite4, and the background chain went active → local. And the budget treated each 429 as a per-model limit with a 60 s backoff, so every turn re-tried all four dead rungs before reaching local. The owner opened both providers to every private purpose (`private_ok_for`). They now rank 100–108, sit on both ladders (`background_fallback_ladder` is new), and an account-quota 429 benches the whole provider for an hour. The first live sub-agent run then reached Mistral and got 429 on both catalogued models. `x-ratelimit-limit-req-minute: 0`: `mistral-medium` and `mistral-small` (and magistral) had been dropped from the free plan since the 2026-09-13 check, while `ministral-14b` (30/min) and `codestral` (125/min) answered and made tool calls. The catalog now lists only those two. Lesson: **a quota that belongs to the account must be benched at the account.** Per-model cooldowns were right for Mistral and OpenRouter (measured per model), but wrong for Ollama's plan-wide limit.
+
 ## Critical Dev Notes
 
 **LlmConfig:** `base_url` is `Option<String>`. Default model: `"qwen3.5:4b"`. Tests: `config.base_url.as_deref()`.

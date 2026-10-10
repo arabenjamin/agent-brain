@@ -15,8 +15,10 @@
 //!   cooldowns and the last rate-limit headers seen.
 //!   On the providers measured, limits and 429s are per model (one Mistral model
 //!   was rate-limited while another answered; one OpenRouter `:free` model was
-//!   limited upstream while another worked), so a cooldown never benches a
-//!   whole provider.
+//!   limited upstream while another worked), so a rate limit benches the model,
+//!   not the provider. The exception is an **account-wide quota** (Ollama's
+//!   "You reached the Free usage limit"): every model of the provider answers
+//!   the same 429, so the provider is benched for an hour and then re-probed.
 //!
 //! Cooldowns come from, most trusted first: a `Retry-After` header, or a
 //! `remaining = 0` header with its reset time; a retry hint in the error body
@@ -39,6 +41,12 @@ const BACKOFF_STEPS_SECS: [i64; 3] = [60, 300, 3600];
 /// How long a model the provider reports a limit of 0 for stays benched before
 /// one call re-probes it.
 const LIMIT_ZERO_COOLDOWN_SECS: i64 = 3600;
+/// How long a provider whose account-wide quota is spent stays benched before
+/// one call re-probes it.
+const ACCOUNT_QUOTA_COOLDOWN_SECS: i64 = 3600;
+/// Phrases in a 429 body that mean the whole account is out, not one model.
+/// Ollama Cloud: "You reached the Free usage limit. Pro is $20/month ...".
+const ACCOUNT_QUOTA_MARKERS: [&str; 1] = ["usage limit"];
 /// How long a model that answered 5xx is skipped before it is tried again.
 const SERVER_ERROR_COOLDOWN_SECS: i64 = 60;
 /// The sliding window a declared `rpm` is counted over.
@@ -148,6 +156,8 @@ struct Usage {
 pub struct BudgetBook {
     providers: HashMap<String, ProviderCounters>,
     models: HashMap<(String, String), ModelState>,
+    /// Provider-wide benches (account quota spent): until, reason.
+    provider_cooldowns: HashMap<String, (DateTime<Utc>, String)>,
 }
 
 impl BudgetBook {
@@ -162,6 +172,34 @@ impl BudgetBook {
         c.spend_today += o.cost;
         c.spend_month += o.cost;
         c.window.push_back(now);
+
+        if o.success {
+            self.provider_cooldowns.remove(&name);
+        } else if o.error_kind == Some("rate_limited")
+            && let Some(text) = o.error_text
+        {
+            let lower = text.to_ascii_lowercase();
+            if ACCOUNT_QUOTA_MARKERS.iter().any(|m| lower.contains(m)) {
+                let until = now + Duration::seconds(ACCOUNT_QUOTA_COOLDOWN_SECS);
+                if self
+                    .provider_cooldowns
+                    .get(&name)
+                    .is_none_or(|(current, _)| until > *current)
+                {
+                    warn!(
+                        provider = %name,
+                        "account-wide quota spent; benching every model of the provider for an hour"
+                    );
+                    self.provider_cooldowns.insert(
+                        name.clone(),
+                        (
+                            until,
+                            "account usage limit reached; re-probed after an hour".to_string(),
+                        ),
+                    );
+                }
+            }
+        }
 
         let m = self.models.entry((name, o.model.to_string())).or_default();
         m.counters.roll(now);
@@ -291,6 +329,14 @@ impl BudgetBook {
                 "{model} is cooling down until {} UTC ({})",
                 until.format("%H:%M:%S"),
                 m.cooldown_reason.as_deref().unwrap_or("rate limited")
+            ));
+        }
+        if let Some((until, reason)) = self.provider_cooldowns.get(&name)
+            && *until > now
+        {
+            return Err(format!(
+                "{name} is cooling down until {} UTC ({reason})",
+                until.format("%H:%M:%S")
             ));
         }
         if let Some(limits) = model_limits {
@@ -465,6 +511,16 @@ impl BudgetBook {
                 );
                 o.insert("month_spend_usd".into(), json!(u.spend_month));
                 o.insert("last_minute_requests".into(), json!(u.last_minute));
+                let bench = self
+                    .provider_cooldowns
+                    .get(&name)
+                    .filter(|(until, _)| *until > now);
+                o.insert("cooling_down".into(), json!(bench.is_some()));
+                o.insert(
+                    "cooldown_until".into(),
+                    json!(bench.map(|(t, _)| t.to_rfc3339())),
+                );
+                o.insert("cooldown_reason".into(), json!(bench.map(|(_, r)| r)));
                 o.insert(
                     "headroom".into(),
                     json!({
@@ -963,6 +1019,39 @@ mod tests {
         );
         assert!(
             b.verdict("gemini", "gemini-3.8-flash", &e, at(12, 1, 1))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_account_usage_limit_benches_the_whole_provider() {
+        let mut b = BudgetBook::default();
+        let e = entry("kind: openai_compat\nbilling: free\ndata_policy: no_log");
+        let now = at(12, 0, 0);
+        let body = "OllamaCloud error (429 Too Many Requests): {\"error\":{\"message\":\
+                    \"You reached the Free usage limit. Pro is $20/month\"}}";
+        b.record(
+            &rate_limited("ollama-cloud", "gpt-oss:120b-cloud", Some(body)),
+            now,
+        );
+        // A model that never 429'd is refused too: the quota is the account's.
+        let err = b
+            .verdict("ollama-cloud", "nemotron-3-super:cloud", &e, now)
+            .unwrap_err();
+        assert!(err.contains("usage limit"), "{err}");
+        // Re-probed after the hour; a success lifts the bench.
+        let later = now + Duration::seconds(ACCOUNT_QUOTA_COOLDOWN_SECS + 1);
+        assert!(
+            b.verdict("ollama-cloud", "nemotron-3-super:cloud", &e, later)
+                .is_ok()
+        );
+        b.record(
+            &rate_limited("ollama-cloud", "gpt-oss:20b-cloud", Some(body)),
+            now,
+        );
+        b.record(&call("ollama-cloud", "gpt-oss:20b-cloud"), now);
+        assert!(
+            b.verdict("ollama-cloud", "nemotron-3-super:cloud", &e, now)
                 .is_ok()
         );
     }
