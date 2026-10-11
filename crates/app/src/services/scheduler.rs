@@ -194,6 +194,10 @@ impl SchedulerService {
                 }
             };
 
+            // TODO(scheduler-last-tick): the first tick comes a full interval
+            // after start, and `last_run_at` is in-memory only, so the HBI's
+            // Home card says "last tick never" for that long after every
+            // restart (see the note in hbi-frontend HomePanel.tsx).
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {}
                 _ = self.wakeup.notified() => {}
