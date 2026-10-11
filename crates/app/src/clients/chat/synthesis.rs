@@ -54,103 +54,51 @@ impl ChatService {
         tool_trace: &[(String, bool)],
         tx: mpsc::Sender<ChatEvent>,
     ) {
-        let provider_str = match &request.synthesis_provider {
-            Some(p) => p.to_lowercase(),
+        let provider = match &request.synthesis_provider {
+            Some(p) if p.eq_ignore_ascii_case("claude") => "anthropic".to_string(),
+            Some(p) => crate::services::provider_registry::canonical_name(p),
             None => return,
         };
-
-        // Read the current live config so we can fall back to its API key if the
-        // env var isn't set (e.g. key was supplied via use_model, not via env).
-        let live_config = self.llm_config.read().await.clone();
-
-        let (provider, default_model, api_key, base_url) = match provider_str.as_str() {
-            "gemini" => {
-                let key = std::env::var("GEMINI_API_KEY")
-                    .ok()
-                    .filter(|k| !k.is_empty())
-                    .or_else(|| {
-                        live_config
-                            .as_ref()
-                            .filter(|c| c.provider == LlmProviderType::Gemini)
-                            .and_then(|c| c.api_key.clone())
-                            .filter(|k| !k.is_empty())
-                    });
-                (
-                    LlmProviderType::Gemini,
-                    std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into()),
-                    key,
-                    None,
-                )
-            }
-            "anthropic" | "claude" => {
-                let key = std::env::var("ANTHROPIC_API_KEY")
-                    .ok()
-                    .filter(|k| !k.is_empty())
-                    .or_else(|| {
-                        live_config
-                            .as_ref()
-                            .filter(|c| c.provider == LlmProviderType::Anthropic)
-                            .and_then(|c| c.api_key.clone())
-                            .filter(|k| !k.is_empty())
-                    });
-                (
-                    LlmProviderType::Anthropic,
-                    "claude-haiku-4-5-20251001".to_string(),
-                    key,
-                    None,
-                )
-            }
-            // Ollama and Ollama Cloud are the $0 rungs, and the reason this
-            // arm exists: the split is only useful if the *voice* model can be
-            // one we already run. `config_for_catalog_entry` is the same
-            // primitive capability routing and the fallback ladder use to turn
-            // a catalog name into a callable config — endpoint and credentials
-            // come from the environment, never from a checked-in file.
-            "ollama" | "ollama-cloud" | "ollamacloud" => {
-                let model = request
-                    .synthesis_model
-                    .clone()
-                    .or_else(|| std::env::var("CHAT_SYNTHESIS_MODEL").ok())
-                    .filter(|m| !m.is_empty())
-                    .unwrap_or_else(|| "gemma4:31b-cloud".to_string());
-                let cfg = crate::services::model_router::config_for_catalog_entry(
-                    &LlmConfig::default(),
-                    &provider_str,
-                    &model,
-                );
-                (
-                    cfg.provider,
-                    model,
-                    cfg.api_key.clone(),
-                    cfg.base_url.clone(),
-                )
-            }
-            other => {
-                let _ = tx
-                    .send(ChatEvent::Error {
-                        message: format!(
-                            "Unknown synthesis provider: {other}. \
-                             Use 'ollama', 'ollama-cloud', 'gemini', or 'anthropic'."
-                        ),
-                    })
-                    .await;
-                return;
-            }
+        if crate::services::provider_registry::get(&provider).is_none() {
+            let _ = tx
+                .send(ChatEvent::Error {
+                    message: format!(
+                        "Unknown synthesis provider: {provider}. Use a provider from \
+                         models.yaml `providers:` (e.g. 'ollama-cloud', 'gemini', 'anthropic')."
+                    ),
+                })
+                .await;
+            return;
+        }
+        // Ollama and Ollama Cloud are the $0 rungs, and the reason synthesis can
+        // run on them: the split is only useful if the *voice* model can be one
+        // we already run.
+        let default_model = match provider.as_str() {
+            "gemini" => std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into()),
+            "anthropic" => "claude-haiku-4-5-20251001".to_string(),
+            _ => std::env::var("CHAT_SYNTHESIS_MODEL")
+                .ok()
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| "gemma4:31b-cloud".to_string()),
         };
+        let model = request
+            .synthesis_model
+            .clone()
+            .filter(|m| !m.is_empty())
+            .unwrap_or(default_model);
 
-        let model = request.synthesis_model.clone().unwrap_or(default_model);
-
-        let provider_label = provider.to_string();
-
-        let synth_config = LlmConfig {
-            provider,
-            model: model.clone(),
-            api_key,
-            base_url,
-            temperature: 0.7,
-            timeout: Duration::from_secs(120),
-            ..LlmConfig::default()
-        };
+        // Endpoint and key from the provider registry, the same primitive
+        // capability routing and the fallback ladder use.
+        let synth_config = crate::services::model_router::config_for_catalog_entry(
+            &LlmConfig {
+                temperature: 0.7,
+                timeout: Duration::from_secs(120),
+                ..LlmConfig::default()
+            },
+            &provider,
+            &model,
+        );
+        let provider_label = synth_config.provider_label();
 
         // The voice model reads everything the turn gathered, so it answers to
         // the same routing policy as the turn.

@@ -4,12 +4,15 @@
 //! `LlmProviderType::LlamaCpp` (the `llama-server` sidecar) and
 //! `LlmProviderType::OpenAiCompat` — any provider-registry entry of
 //! `kind: openai_compat` (Mistral, OpenRouter, …), whose base URL and key the
-//! registry supplies.
+//! registry supplies — and `LlmProviderType::Gemini`, through Google's
+//! OpenAI-compatible API (CORE_AND_PLUGINS_PLAN 6b: measured against the native
+//! `generateContent` API on 2026-10-11, same latency, same prompt/completion
+//! token counts, thinking on in both).
 //!
-//! Endpoints used:
-//! - `POST /v1/chat/completions` — chat and single-turn generation
-//! - `POST /v1/embeddings`       — vector embeddings (model must support it)
-//! - `GET  /health`              — liveness probe
+//! Endpoints used, under [`api_root`]:
+//! - `POST {root}/chat/completions` — chat and single-turn generation
+//! - `POST {root}/embeddings`       — vector embeddings (model must support it)
+//! - `GET  {base}/health`, else `GET {root}/models` — liveness probe
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -17,20 +20,44 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::{LlmProvider, LlmProviderError, ProviderConfig};
-use crate::services::llm::{ChatMessage, LlmResponse};
+use crate::services::llm::{ChatMessage, LlmProviderType, LlmResponse};
+
+/// Google's OpenAI-compatible API root, used when a Gemini config names none.
+pub const GEMINI_OPENAI_ROOT: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+
+/// The versioned root an OpenAI-wire request path hangs off: `{base}/v1`, except
+/// Gemini's, which is `/v1beta/openai` (no `/v1`). `default_base` is used when
+/// the config names no base URL. Shared with the chat adapter
+/// (`clients/chat/openai_loop.rs`), so both build the same URLs.
+pub fn api_root(provider: LlmProviderType, base_url: Option<&str>, default_base: &str) -> String {
+    match provider {
+        LlmProviderType::Gemini => base_url.unwrap_or(GEMINI_OPENAI_ROOT).to_string(),
+        _ => format!("{}/v1", base_url.unwrap_or(default_base)),
+    }
+}
 
 pub struct OpenAiCompatProvider {
     client: Client,
     config: ProviderConfig,
+    root: String,
 }
 
 impl OpenAiCompatProvider {
-    pub fn new(config: ProviderConfig) -> Self {
+    pub fn new(config: ProviderConfig, provider: LlmProviderType) -> Self {
         let client = Client::builder()
             .timeout(config.timeout)
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self { client, config }
+        let root = api_root(
+            provider,
+            config.base_url.as_deref(),
+            "http://localhost:8000",
+        );
+        Self {
+            client,
+            config,
+            root,
+        }
     }
 
     fn base_url(&self) -> &str {
@@ -144,7 +171,7 @@ impl LlmProvider for OpenAiCompatProvider {
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmProviderError> {
         let text = super::prepare_embed_input(text)?;
-        let url = format!("{}/v1/embeddings", self.base_url());
+        let url = format!("{}/embeddings", self.root);
         let req = EmbedRequest {
             model: &self.config.model,
             input: text,
@@ -188,7 +215,7 @@ impl LlmProvider for OpenAiCompatProvider {
             Ok(r) => r.status().is_success(),
             Err(_) => {
                 // Fall back to /v1/models — some servers don't expose /health
-                let models_url = format!("{}/v1/models", self.base_url());
+                let models_url = format!("{}/models", self.root);
                 match self.maybe_auth(self.client.get(&models_url)).send().await {
                     Ok(r) => r.status().is_success(),
                     Err(e) => {
@@ -203,7 +230,7 @@ impl LlmProvider for OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     async fn chat_inner(&self, messages: Vec<OaiMessage>) -> Result<LlmResponse, LlmProviderError> {
-        let url = format!("{}/v1/chat/completions", self.base_url());
+        let url = format!("{}/chat/completions", self.root);
 
         let req = ChatRequest {
             model: &self.config.model,
@@ -258,5 +285,30 @@ impl OpenAiCompatProvider {
             tokens_in,
             tokens_out,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemini_root_has_no_v1_and_others_do() {
+        assert_eq!(
+            api_root(LlmProviderType::Gemini, None, "http://x"),
+            GEMINI_OPENAI_ROOT
+        );
+        assert_eq!(
+            api_root(
+                LlmProviderType::OpenAiCompat,
+                Some("https://api.mistral.ai"),
+                "http://x"
+            ),
+            "https://api.mistral.ai/v1"
+        );
+        assert_eq!(
+            api_root(LlmProviderType::LlamaCpp, None, "http://localhost:8000"),
+            "http://localhost:8000/v1"
+        );
     }
 }

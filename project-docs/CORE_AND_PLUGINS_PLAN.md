@@ -421,6 +421,13 @@ Rule: `dev_docs get plugins/api`.
   - **Verified live:** tool-using chat turns on gemini-2.5-flash, 3.6-flash and 3.8-flash (one 3.8 attempt lost its stream mid-body once, Google-side, and is now ledgered); a host-Ollama turn read 6,164 prompt tokens. 766 + plugin unit tests, clippy clean; `eval-retrieval` unchanged 0.880 / 0.800. Test sessions deleted.
   - **Size: −131 lines** (code 61.3K → 61.1K). Small because the round loop (`round_loop.rs`) had already unified the loops' control flow; the text loop was the one adapter left to delete, and the Gemini handling and its tests took some back. The rule is now the dev note "Chat wire adapters".
 - **6b — the LLM stack** (≈4.4K: llm, providers, routing, budget, gate, registry, model config/router, shared_llm): fold what overlaps; Gemini through its OpenAI-compatible API if it measures the same.
+
+  **6b result (2026-10-11).** Surveyed first: of the stack's ~5.1K lines of code, routing (may this run?), budget (is there headroom?), the gate (how many at once?) and the registry (how to reach it?) each answer a different question, so folding them would remove no duplication. The duplication was elsewhere:
+  - **Gemini's native provider** (`llm_providers/gemini.rs`, 391 lines) duplicated `OpenAiCompatProvider`. Measured against it on 2026-10-11 (gemini-2.5-flash, 3 prompts × 2 wires): same latency, the same prompt and completion counts (what the ledger books), thinking on in both, JSON every time. Deleted; Gemini runs on `OpenAiCompatProvider`, with one `api_root` helper (Gemini's root is `/v1beta/openai`, no `/v1`) shared with the chat adapter. Its `embed` (text-embedding-004, 768 dims against a 1024-dim index) went with it; embeddings were always host Ollama anyway.
+  - **Four hand-built per-provider configs → one builder.** `main.rs build_llm_config` (a 7-arm match), the `CHAT_LLM_*` override, research synthesis and capability routing each turned a provider into endpoint + key. The first three now call `config_for_catalog_entry` like the fourth does. `config.rs` loses the per-provider key and model fields (keys are never in `Config` now; the registry names the env var), and its two copies of the provider-name parser. `LLM_PROVIDER` and `CHAT_LLM_PROVIDER` take any registry name.
+  - **Verified live:** active model and provider unchanged (`gpt-oss:120b-cloud`, `ollama-cloud`); `search_notes` returns relevant notes (embeddings through the rebuilt active config); a research turn synthesised on gemini-2.5-flash through the new provider, with token counts in the ledger. Unit tests and clippy clean; `eval-retrieval` unchanged 0.880 / 0.800. Test session deleted.
+  - **Not done:** `LlmClient`'s three-way embedding-provider fallback could pin to host Ollama unconditionally, but no live config reaches the other branches; left. Rule: dev note "One way to build an LlmConfig".
+  - **Size: −0.5K** (code 61.1K → 60.6K).
 - **6c — search engines as YAML**, declared like LLM providers instead of Rust per engine.
 - **6d — REST clients**: `rest.rs` (1.9K) and the per-feature clients share their plumbing.
 - **6e — generated tool schemas** from typed argument structs instead of hand-written JSON.
@@ -441,6 +448,7 @@ Rule: `dev_docs get plugins/api`.
 | 2026-10-11 | Phase 4 | 75.6K (code 61.3K) | 14.3K | 15.4K (6 plugins; epistemics 3.9K) | 18.9K | CLAUDE.md 7.6 KB | 42 (+19 from plugins, +1 osint-data with its keys) |
 | 2026-10-11 | Phase 5 | 75.6K (code 61.3K) | 14.3K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6a | 75.6K (code 61.1K) | 14.5K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
+| 2026-10-11 | Phase 6b | 75.1K (code 60.6K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 
 ## 10. Open questions
 

@@ -13,7 +13,7 @@ use agent_brain::mcp::McpServer;
 #[cfg(feature = "http-transport")]
 use agent_brain::mcp::{HttpTransport, HttpTransportConfig, McpServerCore};
 use agent_brain::repository::Neo4jClient;
-use agent_brain::services::{LlmConfig, ModelCatalog, llm::LlmProviderType};
+use agent_brain::services::{LlmConfig, ModelCatalog};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -146,99 +146,25 @@ async fn warn_on_string_timestamps(client: &Neo4jClient) {
 }
 
 fn build_llm_config(config: &Config) -> LlmConfig {
+    config_for_active(config, &config.llm.provider, &config.llm.model)
+}
+
+/// The config for `provider` + `model`, built the way every routed config is
+/// (`model_router::config_for_catalog_entry`: endpoint and key from the
+/// provider registry) on a base that pins embeddings to host Ollama.
+fn config_for_active(config: &Config, provider: &str, model: &str) -> LlmConfig {
     let llm = &config.llm;
-    let mut base = LlmConfig::default().with_provider(llm.provider);
-
-    match llm.provider {
-        LlmProviderType::Ollama => {
-            base = base
-                .with_base_url(llm.ollama_local_url.clone())
-                .with_model(llm.ollama_model.clone());
-            if let Some(key) = &llm.ollama_api_key {
-                base = base.with_api_key(key);
-            }
-            if let Some(embed_model) = &llm.ollama_embed_model {
-                base = base.with_embed_model(embed_model);
-            }
-        }
-        LlmProviderType::OllamaCloud => {
-            base = base
-                .with_base_url(llm.ollama_url.clone())
-                .with_model(llm.ollama_model.clone());
-            if let Some(key) = &llm.ollama_api_key {
-                base = base.with_api_key(key);
-            }
-            // Embeddings always route to local Ollama
-            base = base.with_embed_base_url(llm.ollama_local_url.clone());
-            if let Some(embed_model) = &llm.ollama_embed_model {
-                base = base.with_embed_model(embed_model);
-            }
-        }
-        LlmProviderType::OpenAiCompat => {
-            // Not selectable through LLM_PROVIDER: a generic OpenAI-compatible
-            // provider is reached through the provider registry
-            // (`model_router::config_for_catalog_entry`), which supplies its
-            // endpoint and key. Keep embeddings local regardless.
-            base = base
-                .with_model(llm.ollama_model.clone())
-                .with_embed_base_url(llm.ollama_local_url.clone());
-            if let Some(embed_model) = &llm.ollama_embed_model {
-                base = base.with_embed_model(embed_model);
-            }
-        }
-        LlmProviderType::LlamaCpp => {
-            // llama.cpp's OpenAI-compatible endpoint. Endpoint/model come from
-            // LLAMACPP_URL / LLAMACPP_MODEL (this arm is only reached when the
-            // *active* provider is llama.cpp; background jobs use
-            // build_local_llm_config instead).
-            let url = std::env::var("LLAMACPP_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".to_string());
-            let model =
-                std::env::var("LLAMACPP_MODEL").unwrap_or_else(|_| llm.ollama_model.clone());
-            base = base.with_base_url(url).with_model(model);
-            // Embeddings always route to local Ollama.
-            base = base.with_embed_base_url(llm.ollama_local_url.clone());
-            if let Some(embed_model) = &llm.ollama_embed_model {
-                base = base.with_embed_model(embed_model);
-            }
-        }
-        LlmProviderType::Anthropic => {
-            if let Some(key) = &llm.anthropic_api_key {
-                base = base.with_api_key(key);
-            }
-            if let Some(model) = &llm.anthropic_model {
-                base = base.with_model(model);
-            }
-            // Use local embedding model even for cloud generation
-            if let Some(embed_model) = &llm.ollama_embed_model {
-                base = base.with_embed_model(embed_model);
-            }
-        }
-        LlmProviderType::Gemini => {
-            // Google's endpoint, not the default's host-Ollama URL: chat reads
-            // base_url (clients/chat/openai_loop.rs completions_url).
-            base.base_url = None;
-            if let Some(key) = &llm.gemini_api_key {
-                base = base.with_api_key(key);
-            }
-            if let Some(model) = &llm.gemini_model {
-                base = base.with_model(model);
-            }
-            // Use local embedding model even for cloud generation
-            if let Some(embed_model) = &llm.ollama_embed_model {
-                base = base.with_embed_model(embed_model);
-            }
-        }
+    let mut base = LlmConfig::default().with_embed_base_url(llm.ollama_local_url.clone());
+    if let Some(embed_model) = &llm.ollama_embed_model {
+        base = base.with_embed_model(embed_model);
     }
-
     // Applied for every provider: the embedding endpoint is always local Ollama,
     // so even an Anthropic/Gemini deployment has a local model worth keeping
     // resident. Non-Ollama providers never serialize the field.
     if let Some(ka) = &llm.ollama_keep_alive {
         base = base.with_keep_alive(ka);
     }
-
-    base
+    agent_brain::services::model_router::config_for_catalog_entry(&base, provider, model)
 }
 
 /// Build the LLM config for the human-facing chat adapter.
@@ -259,14 +185,15 @@ fn build_chat_llm_config(config: &Config) -> LlmConfig {
         return build_llm_config(config);
     }
 
-    // Apply overrides on top of the brain's base config.
-    let mut base = build_llm_config(config);
-    if let Some(provider) = chat.provider {
-        base = base.with_provider(provider);
-    }
-    if let Some(ref model) = chat.model {
-        base = base.with_model(model);
-    }
+    // A provider override is a different registry entry (its endpoint and
+    // key); a model override alone keeps the brain's provider.
+    let provider = chat.provider.as_deref().unwrap_or(&config.llm.provider);
+    let model = match (&chat.model, &chat.provider) {
+        (Some(m), _) => m.clone(),
+        (None, Some(p)) => agent_brain::config::default_model_for(p),
+        (None, None) => config.llm.model.clone(),
+    };
+    let mut base = config_for_active(config, provider, &model);
     if let Some(ref key) = chat.api_key {
         base = base.with_api_key(key);
     }
@@ -636,19 +563,7 @@ async fn run_serve(
         );
     }
 
-    let active_model = match config.llm.provider {
-        LlmProviderType::Anthropic => config
-            .llm
-            .anthropic_model
-            .clone()
-            .unwrap_or_else(|| config.llm.ollama_model.clone()),
-        LlmProviderType::Gemini => config
-            .llm
-            .gemini_model
-            .clone()
-            .unwrap_or_else(|| config.llm.ollama_model.clone()),
-        _ => config.llm.ollama_model.clone(),
-    };
+    let active_model = config.llm.model.clone();
     // Initialize Telemetry (always attempted; stub returns Err when feature disabled)
     #[allow(unused_variables)]
     let telemetry = if let Some(path) = &config.telemetry.db_path {

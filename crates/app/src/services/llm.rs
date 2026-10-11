@@ -434,8 +434,7 @@ impl LlmClient {
     /// Create a new LLM client with custom configuration.
     pub fn with_config(config: LlmConfig) -> Result<Self, LlmError> {
         use crate::services::llm_providers::{
-            ProviderConfig, anthropic::AnthropicProvider, gemini::GeminiProvider,
-            ollama::OllamaProvider,
+            ProviderConfig, anthropic::AnthropicProvider, ollama::OllamaProvider,
         };
 
         let provider_config = ProviderConfig {
@@ -456,7 +455,7 @@ impl LlmClient {
             // not the native Ollama /api/chat endpoint.
             LlmProviderType::OllamaCloud => {
                 use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
-                Arc::new(OpenAiCompatProvider::new(provider_config))
+                Arc::new(OpenAiCompatProvider::new(provider_config, config.provider))
             }
             // llama.cpp's `llama-server` speaks the same OpenAI-compatible wire
             // format as Ollama Cloud, so it reuses the same provider. `keep_alive`
@@ -464,12 +463,13 @@ impl LlmClient {
             // server launch, not per-request).
             // Generic OpenAI-compatible providers (Mistral, OpenRouter, …) use the
             // same client; their endpoint and key come from the provider registry.
-            LlmProviderType::LlamaCpp | LlmProviderType::OpenAiCompat => {
+            // Gemini too, through Google's OpenAI-compatible API
+            // (`openai_compat::api_root`; CORE_AND_PLUGINS_PLAN 6b).
+            LlmProviderType::LlamaCpp | LlmProviderType::OpenAiCompat | LlmProviderType::Gemini => {
                 use crate::services::llm_providers::openai_compat::OpenAiCompatProvider;
-                Arc::new(OpenAiCompatProvider::new(provider_config))
+                Arc::new(OpenAiCompatProvider::new(provider_config, config.provider))
             }
             LlmProviderType::Anthropic => Arc::new(AnthropicProvider::new(provider_config)),
-            LlmProviderType::Gemini => Arc::new(GeminiProvider::new(provider_config)),
         };
 
         // Initialize embedding provider (separate from generation if requested)

@@ -24,19 +24,12 @@ struct OpenAiTurn {
 
 /// Where the provider serves `chat/completions`.
 fn completions_url(config: &LlmConfig) -> String {
-    match config.provider {
-        LlmProviderType::Gemini => format!(
-            "{}/chat/completions",
-            config
-                .base_url
-                .as_deref()
-                .unwrap_or("https://generativelanguage.googleapis.com/v1beta/openai")
-        ),
-        _ => format!(
-            "{}/v1/chat/completions",
-            config.base_url.as_deref().unwrap_or("https://ollama.com")
-        ),
-    }
+    let root = crate::services::llm_providers::openai_compat::api_root(
+        config.provider,
+        config.base_url.as_deref(),
+        "https://ollama.com",
+    );
+    format!("{root}/chat/completions")
 }
 
 impl OpenAiTurn {

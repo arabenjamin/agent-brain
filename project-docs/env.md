@@ -18,7 +18,7 @@ Copy `.env.example` to `.env` and configure:
 | `LOCAL_LLM_BACKEND` | `ollama` | Generation backend for background/scheduled jobs (`provider_hint:"ollama"` steps). `ollama` = host Ollama at `OLLAMA_LOCAL_URL`/`OLLAMA_LOCAL_MODEL`. `llamacpp` = the llama.cpp `llama-server` sidecar (OpenAI-compatible) at `LLAMACPP_URL`/`LLAMACPP_MODEL`. **Compose sets `llamacpp`.** Embeddings are unaffected either way. Selected in `services/llm.rs::build_local_llm_config`. See "llama.cpp backend" below |
 | `LLAMACPP_URL` | `http://localhost:8080` | `llama-server` OpenAI-compatible endpoint, used only when `LOCAL_LLM_BACKEND=llamacpp`. **Compose sets `http://llamacpp:8080`** (the sidecar service). One model per instance; context/GPU-offload are launch flags on the service, not per-request. **`-c` is divided by `-np`** — it is the total KV pool, not the per-request limit, whenever the server reports `kv_unified = 'false'` (which it does). Size it as *(per-request context × `-np`)* and read the startup line `srv load_model: initializing, n_slots = N, n_ctx_slot = M` — `n_ctx_slot` is the only number that matters, and `-c` alone does not tell you what it will be. Compose runs `-c 32768 -np 2` ⇒ 16384/request |
 | `LLAMACPP_MODEL` | `local` | Model label sent in the OpenAI request when `LOCAL_LLM_BACKEND=llamacpp` (falls back to `OLLAMA_LOCAL_MODEL`). Cosmetic/ledger only — a single-model `llama-server` serves whatever GGUF it was launched with (see the service `--alias`) regardless. **Compose sets `gemma4-e4b`** (Gemma-4-E4B; the `llamacpp` service `-hf`'s `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M`) |
-| `OLLAMA_MODEL` | `qwen3.5:4b` | LLM model to use for text generation |
+| `OLLAMA_MODEL` | `granite4:latest` | The active model (`LLM_PROVIDER`'s), unless that provider has its own `*_MODEL` set below |
 | `OLLAMA_EMBED_MODEL` | - | Ollama model for embeddings (e.g. `bge-m3:latest`). Falls back to `OLLAMA_MODEL` if unset |
 | `OLLAMA_API_KEY` | - | API key for Ollama Cloud authentication. Get one at `ollama.com/settings/keys` |
 | `OLLAMA_LOCAL_MODEL` | `gemma4:latest` (**compose sets `granite4:latest`**) | Model used exclusively for all background/scheduled jobs. Always routes to `OLLAMA_LOCAL_URL` — never touches cloud quota. The code default is stale: it names a model that does not fit this GPU. See "Pick the local model by residency, not by leaderboard" below |
@@ -83,7 +83,7 @@ Copy `.env.example` to `.env` and configure:
 | `GITHUB_TOKEN` | - | GitHub personal access token. Read by the seeded `github` `ApiContext` and auto-injected into `http_request` calls with `context_name="github"` |
 | `APITUBE_API_KEY` | - | ApiTube news API key. Read by the seeded `apitube` `ApiContext` (header `X-API-Key`) and injected into `http_request` with `context_name="apitube"`. The Daily Brief uses it (`.../v1/news/everything`) alongside `google_news`. Free tier **100 req/day**. Passed through in `docker-compose.yml` (no `env_file` on the brain). **Gotchas (verified 2026-09-08):** each `results[]` article carries 33 fields incl. `body`+`body_html`+`story` (full text ×3) ≈ **8K tokens/article**, and `fields`/`response.fields` are IGNORED — un-trimmable, so keep `per_page` tiny (2) or it overflows a 131K context. Topical filtering works ONLY via `title=<kw>` (`category`/`source.country.code` return unrelated/global). Language is `language.code=en` (plain `language=en` is silently ignored) |
 | `ACLED_EMAIL` / `ACLED_PASSWORD` | - | ACLED account login for `acled_events`. ACLED has no API keys: the client does an OAuth password grant (`client_id=acled`; access token 24 h, refresh 14 d, cached in memory, re-login on 401). They are the `osint-data` plugin's `requires.env` (`plugins/osint-data/`): unset ⇒ the plugin is skipped with that reason (`GET /api/plugins`) and `acled_events` is not registered. Put them in `.env`; passed through in compose |
-| `CHAT_LLM_PROVIDER` | *(same as brain)* | Override the LLM provider for human-facing `/chat` sessions. Accepted values: `ollama`, `ollama-cloud`, `anthropic`, `gemini`. When unset, chat uses the same provider as the brain. |
+| `CHAT_LLM_PROVIDER` | *(same as brain)* | Override the LLM provider for human-facing `/chat` sessions: any provider-registry name (`models.yaml` `providers:`, e.g. `ollama`, `ollama-cloud`, `anthropic`, `gemini`, `mistral`); its endpoint and key come from the registry. Without `CHAT_LLM_MODEL` it runs that provider's `*_MODEL`, else `OLLAMA_MODEL`. When unset, chat uses the same provider as the brain. |
 | `CHAT_LLM_MODEL` | *(same as brain)* | Override the model name for chat (e.g. `claude-opus-4-5`). When unset, chat uses the brain's model. |
 | `CHAT_API_KEY` | *(same as brain)* | Override the API key used by the chat LLM. When unset, inherits the brain's key. |
 | `CHAT_LLM_BASE_URL` | *(same as brain)* | Override the base URL for the chat LLM endpoint. |
@@ -95,11 +95,11 @@ Copy `.env.example` to `.env` and configure:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | `ollama`/`anthropic`/`gemini` |
+| `LLM_PROVIDER` | `ollama` | The active provider: any provider-registry name (`ollama`, `ollama-cloud`, `llamacpp`, `anthropic`, `gemini`, or a `providers:` entry). Built like every routed config (`model_router::config_for_catalog_entry`); an unknown name runs as host Ollama |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
-| `ANTHROPIC_MODEL` | — | Anthropic model name |
+| `ANTHROPIC_MODEL` | — | The active model when `LLM_PROVIDER=anthropic` (else `OLLAMA_MODEL`) |
 | `GEMINI_API_KEY` | — | Gemini API key |
-| `GEMINI_MODEL` | — | Gemini model name |
+| `GEMINI_MODEL` | — | The active model when `LLM_PROVIDER=gemini` (else `OLLAMA_MODEL`); also synthesis's Gemini default (`gemini-2.5-flash`). Gemini is called through Google's OpenAI-compatible API |
 | `IDLE_SLEEP_AFTER_TICKS` | `3` | Consecutive idle ticks before entering sleep mode |
 | `SLEEP_INTERVAL_SECS` | `1800` | Scheduler tick interval while in sleep mode (seconds) |
 | `KNOWLEDGE_SNAPSHOT_DIR` | `./snapshots` | Directory for knowledge graph snapshots |

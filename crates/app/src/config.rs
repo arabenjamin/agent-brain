@@ -21,21 +21,22 @@ pub struct DatabaseConfig {
     pub password: String,
 }
 
-/// LLM provider selection and per-provider settings.
+/// The brain's active LLM: which provider and model, plus the host-Ollama
+/// settings every config inherits (embeddings always run there). Endpoints and
+/// keys are not here: the provider registry (`models.yaml` `providers:`) names
+/// the env vars that hold them, and `model_router::config_for_catalog_entry`
+/// reads them, for this config as for every routed one.
 #[derive(Debug, Clone)]
 pub struct LlmProviderConfig {
-    pub provider: crate::services::llm::LlmProviderType,
-    /// Ollama Cloud endpoint (default: https://ollama.com). Used when provider=ollama-cloud.
-    pub ollama_url: String,
-    /// Local Ollama endpoint (default: http://localhost:11434).
-    /// Always used for embeddings, and for provider=ollama.
+    /// A provider-registry name (`LLM_PROVIDER`, folded by `canonical_name`;
+    /// default `ollama`). A name the registry does not know runs as host Ollama.
+    pub provider: String,
+    /// The active model: `ANTHROPIC_MODEL`, `GEMINI_MODEL` or `LLAMACPP_MODEL`
+    /// for those providers when set, else `OLLAMA_MODEL`.
+    pub model: String,
+    /// Host Ollama (default: http://localhost:11434), where embeddings run.
     pub ollama_local_url: String,
-    pub ollama_model: String,
-    /// Model used exclusively for background/scheduled jobs on the local Ollama instance.
-    /// Defaults to `OLLAMA_LOCAL_MODEL` env var, falls back to `"gemma4:latest"`.
-    pub ollama_local_model: String,
     pub ollama_embed_model: Option<String>,
-    pub ollama_api_key: Option<String>,
     /// How long Ollama keeps a model resident in VRAM after a request, as a Go
     /// duration string (`30m`, `2h`).  A negative duration (`-1m`) pins the model
     /// indefinitely.  `None` leaves Ollama's own default (5m) in place.
@@ -44,10 +45,19 @@ pub struct LlmProviderConfig {
     /// model can be evicted between consecutive steps of the same chain and pay a
     /// full reload each time.  Env var: `OLLAMA_KEEP_ALIVE`.
     pub ollama_keep_alive: Option<String>,
-    pub anthropic_api_key: Option<String>,
-    pub anthropic_model: Option<String>,
-    pub gemini_api_key: Option<String>,
-    pub gemini_model: Option<String>,
+}
+
+/// The model a provider runs when `LLM_PROVIDER` / `CHAT_LLM_PROVIDER` names it
+/// and no model is given: its own `*_MODEL` env var, else `OLLAMA_MODEL`.
+pub fn default_model_for(provider: &str) -> String {
+    let own = match provider {
+        "anthropic" => env::var("ANTHROPIC_MODEL").ok(),
+        "gemini" => env::var("GEMINI_MODEL").ok(),
+        "llamacpp" => env::var("LLAMACPP_MODEL").ok(),
+        _ => None,
+    };
+    own.or_else(|| env::var("OLLAMA_MODEL").ok())
+        .unwrap_or_else(|| "granite4:latest".to_string())
 }
 
 /// Validate a Go duration string (`30m`, `2h`, `-1m`, `1h30m`) before it is sent
@@ -100,9 +110,9 @@ pub(crate) fn validate_go_duration(s: &str) -> Option<String> {
 /// consolidation/embeddings).
 #[derive(Debug, Clone, Default)]
 pub struct ChatLlmConfig {
-    /// Override the LLM provider for chat (e.g. `"anthropic"`).
-    /// Env var: `CHAT_LLM_PROVIDER`
-    pub provider: Option<crate::services::llm::LlmProviderType>,
+    /// Override the LLM provider for chat: a provider-registry name (e.g.
+    /// `"anthropic"`). Env var: `CHAT_LLM_PROVIDER`
+    pub provider: Option<String>,
     /// Override the model name for chat (e.g. `"claude-opus-4-5"`).
     /// Env var: `CHAT_LLM_MODEL`
     pub model: Option<String>,
@@ -162,52 +172,25 @@ impl Config {
                 password: env::var("NEO4J_PASSWORD")
                     .map_err(|_| ConfigError::Missing("NEO4J_PASSWORD"))?,
             },
-            llm: LlmProviderConfig {
-                provider: env::var("LLM_PROVIDER")
-                    .map(|s| match s.to_lowercase().as_str() {
-                        "anthropic" => crate::services::llm::LlmProviderType::Anthropic,
-                        "gemini" => crate::services::llm::LlmProviderType::Gemini,
-                        "ollama-cloud" | "ollamacloud" => {
-                            crate::services::llm::LlmProviderType::OllamaCloud
-                        }
-                        "llamacpp" | "llama-cpp" | "llama.cpp" => {
-                            crate::services::llm::LlmProviderType::LlamaCpp
-                        }
-                        _ => crate::services::llm::LlmProviderType::Ollama,
-                    })
-                    .unwrap_or_default(),
-                ollama_url: env::var("OLLAMA_URL")
-                    .unwrap_or_else(|_| "https://ollama.com".to_string()),
-                ollama_local_url: env::var("OLLAMA_LOCAL_URL")
-                    .unwrap_or_else(|_| "http://localhost:11434".to_string()),
-                ollama_model: env::var("OLLAMA_MODEL")
-                    .unwrap_or_else(|_| "granite4:latest".to_string()),
-                ollama_local_model: env::var("OLLAMA_LOCAL_MODEL")
-                    .unwrap_or_else(|_| "gemma4:latest".to_string()),
-                ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
-                ollama_api_key: env::var("OLLAMA_API_KEY").ok(),
-                ollama_keep_alive: env::var("OLLAMA_KEEP_ALIVE")
-                    .ok()
-                    .and_then(|s| validate_go_duration(s.trim())),
-                anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
-                anthropic_model: env::var("ANTHROPIC_MODEL").ok(),
-                gemini_api_key: env::var("GEMINI_API_KEY").ok(),
-                gemini_model: env::var("GEMINI_MODEL").ok(),
+            llm: {
+                let provider = crate::services::provider_registry::canonical_name(
+                    &env::var("LLM_PROVIDER").unwrap_or_else(|_| "ollama".to_string()),
+                );
+                LlmProviderConfig {
+                    model: default_model_for(&provider),
+                    provider,
+                    ollama_local_url: env::var("OLLAMA_LOCAL_URL")
+                        .unwrap_or_else(|_| "http://localhost:11434".to_string()),
+                    ollama_embed_model: env::var("OLLAMA_EMBED_MODEL").ok(),
+                    ollama_keep_alive: env::var("OLLAMA_KEEP_ALIVE")
+                        .ok()
+                        .and_then(|s| validate_go_duration(s.trim())),
+                }
             },
             chat_llm: ChatLlmConfig {
-                provider: env::var("CHAT_LLM_PROVIDER").ok().map(|s| {
-                    match s.to_lowercase().as_str() {
-                        "anthropic" => crate::services::llm::LlmProviderType::Anthropic,
-                        "gemini" => crate::services::llm::LlmProviderType::Gemini,
-                        "ollama-cloud" | "ollamacloud" => {
-                            crate::services::llm::LlmProviderType::OllamaCloud
-                        }
-                        "llamacpp" | "llama-cpp" | "llama.cpp" => {
-                            crate::services::llm::LlmProviderType::LlamaCpp
-                        }
-                        _ => crate::services::llm::LlmProviderType::Ollama,
-                    }
-                }),
+                provider: env::var("CHAT_LLM_PROVIDER")
+                    .ok()
+                    .map(|s| crate::services::provider_registry::canonical_name(&s)),
                 model: env::var("CHAT_LLM_MODEL").ok(),
                 api_key: env::var("CHAT_API_KEY").ok(),
                 base_url: env::var("CHAT_LLM_BASE_URL").ok(),
@@ -239,18 +222,11 @@ impl Config {
                 password: "testpassword".to_string(),
             },
             llm: LlmProviderConfig {
-                provider: crate::services::llm::LlmProviderType::Ollama,
-                ollama_url: "https://ollama.com".to_string(),
+                provider: "ollama".to_string(),
+                model: "granite4:latest".to_string(),
                 ollama_local_url: "http://localhost:11434".to_string(),
-                ollama_model: "granite4:latest".to_string(),
-                ollama_local_model: "gemma4:latest".to_string(),
                 ollama_embed_model: None,
-                ollama_api_key: None,
                 ollama_keep_alive: None,
-                anthropic_api_key: None,
-                anthropic_model: None,
-                gemini_api_key: None,
-                gemini_model: None,
             },
             chat_llm: ChatLlmConfig::default(),
             logging: LoggingConfig {
@@ -295,7 +271,8 @@ mod tests {
     fn test_config_defaults() {
         let config = Config::test_config();
         assert_eq!(config.database.uri, "bolt://localhost:7687");
-        assert_eq!(config.llm.ollama_model, "granite4:latest");
+        assert_eq!(config.llm.provider, "ollama");
+        assert_eq!(config.llm.model, "granite4:latest");
         assert_eq!(config.logging.format, LogFormat::Pretty);
     }
 
