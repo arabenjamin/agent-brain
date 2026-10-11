@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveRoute, LEGACY_PATHS } from "../workspaces";
-import { summariseScheduler } from "../lib/scheduler";
+import { summariseScheduler, tickTiming } from "../lib/scheduler";
+import { untilTime } from "../lib/time";
 import { matchCommands, paletteResults, queryCommands, staticCommands } from "../components/palette/commands";
 import { hrefTo, keptParams } from "../nav";
 import type { SchedulerStatus } from "../api/queries";
@@ -156,5 +157,30 @@ describe("nav", () => {
 
   it("builds hrefs without empty params", () => {
     expect(hrefTo("work", { view: "jobs", since: undefined, status: "" })).toBe("#/work?view=jobs");
+  });
+});
+
+describe("tickTiming", () => {
+  const now = Date.parse("2026-10-11T20:00:00Z");
+  const at = (secs: number) => new Date(now + secs * 1000).toISOString();
+
+  it("says when the first tick comes on a fresh brain, not 'never'", () => {
+    expect(tickTiming(status({}, { next_tick_at: at(240) }), now)).toBe("first tick in 4m");
+  });
+
+  it("shows the last tick (kept across restarts) and the next", () => {
+    expect(tickTiming(status({}, { last_run_at: at(-180), next_tick_at: at(120) }), now))
+      .toBe("last tick 3m ago · next in 2m");
+  });
+
+  it("promises no next tick while paused or mid-tick", () => {
+    expect(tickTiming(status({ enabled: false }, { last_run_at: at(-60), next_tick_at: at(60) }), now))
+      .toBe("last tick 1m ago");
+    expect(tickTiming(status({}, { is_running: true, next_tick_at: at(-5) }), now)).toBe("no tick yet");
+  });
+
+  it("reads a passed deadline as due now", () => {
+    expect(untilTime(at(-3), now)).toBe("now");
+    expect(untilTime(null, now)).toBe("");
   });
 });

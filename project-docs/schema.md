@@ -428,6 +428,15 @@ A tombstone for a tool the brain no longer has (`services/self_model.rs`). Writt
 | `commit` | String? | Last commit that still had it: `git show <commit>:<path>` recovers it |
 | `replaced_by` | String? | What to use instead |
 
+#### `SchedulerState`
+One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when it last ran after a restart instead of "never" (`crates/scheduler/src/scheduler.rs`, `persist_tick` / `restore_last_tick`). The rest of the scheduler's state is in memory.
+
+| Property | Type | Description |
+|---|---|---|
+| `id` | String | Always `scheduler` |
+| `last_run_at` | DateTime | When the last tick ran (UTC), loop or `scheduler_control tick` |
+| `last_error` | String? | That tick's error; null when it succeeded |
+
 ---
 
 ### Relationships

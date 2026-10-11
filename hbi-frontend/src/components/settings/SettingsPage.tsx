@@ -17,7 +17,7 @@ import {
   useSchedulerStatus,
   type SchedulerStatus,
 } from "../../api/queries";
-import { summariseScheduler } from "../../lib/scheduler";
+import { summariseScheduler, tickTiming } from "../../lib/scheduler";
 import { formatLocal, relTime } from "../../lib/time";
 import { goTo } from "../../nav";
 import AgentsEditor from "./AgentsEditor";
@@ -297,7 +297,7 @@ function SchedulerSection() {
         <span className="home-dim">{s.detail}</span>
       </div>
       <div className="settings-actions home-dim">
-        Last tick {relTime(data.state.last_run_at)} ({formatLocal(data.state.last_run_at)}) · {data.state.tasks_dispatched} tasks dispatched since start
+        {tickTiming(data).replace(/^./, (c) => c.toUpperCase())}{data.state.last_run_at ? ` (${formatLocal(data.state.last_run_at)})` : ""} · {data.state.tasks_dispatched} tasks dispatched since start
       </div>
       <div className="settings-actions">
         {s.enabled ? (

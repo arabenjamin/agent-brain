@@ -19,6 +19,17 @@ export function formatLocal(raw: string | null | undefined): string {
   return d ? d.toLocaleString() : "—";
 }
 
+/** "in 4m", "in 2h"; "now" once due; "" when absent. */
+export function untilTime(raw: string | null | undefined, now: number = Date.now()): string {
+  const d = parseTime(raw);
+  if (!d) return "";
+  const secs = Math.ceil((d.getTime() - now) / 1000);
+  if (secs <= 0) return "now";
+  if (secs < 60) return `in ${secs}s`;
+  if (secs < 3600) return `in ${Math.ceil(secs / 60)}m`;
+  return `in ${Math.round(secs / 3600)}h`;
+}
+
 /** "just now", "5m ago", "3d ago"; "never" when absent. */
 export function relTime(raw: string | null | undefined, now: number = Date.now()): string {
   const d = parseTime(raw);

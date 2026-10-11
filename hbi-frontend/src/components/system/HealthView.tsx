@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiSend } from "../../api/client";
 import { useSystemHealth, type ComponentStatus, type HealthIssue, type SystemHealth } from "../../api/system";
-import { formatLocal, relTime } from "../../lib/time";
+import { formatLocal, relTime, untilTime } from "../../lib/time";
 import { hrefTo } from "../../nav";
 import { Card, EmptyState, Pill, Stat, type Tone } from "../ui";
 
@@ -103,6 +103,8 @@ function SchedulerCard({ s }: { s: any }) {
         <Stat label="Last tick" value={relTime(s?.state?.last_run_at) || "never"} title={formatLocal(s?.state?.last_run_at)} />
         <Stat label="Errors in a row" value={`${s?.state?.consecutive_errors ?? 0} / ${s?.config?.error_budget ?? "?"}`}
           title="It pauses itself when this reaches the budget" />
+        <Stat label="Next tick" value={on && !s?.state?.is_running ? untilTime(s?.state?.next_tick_at) || "—" : "—"}
+          title={formatLocal(s?.state?.next_tick_at)} />
         <Stat label="Tick every" value={`${Math.round((s?.config?.interval_secs ?? 0) / 60)} min`} />
       </div>
       {s?.state?.last_error && <div className="tone-text-red sys-detail">Last error: {s.state.last_error}</div>}

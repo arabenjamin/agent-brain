@@ -19,7 +19,7 @@ import {
 } from "../../api/queries";
 import { diffCounts, useArchitecture } from "../../api/system";
 import { assessedShare, useTopics } from "../../api/topics";
-import { summariseScheduler } from "../../lib/scheduler";
+import { summariseScheduler, tickTiming } from "../../lib/scheduler";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
 import { hrefTo } from "../../nav";
@@ -80,16 +80,7 @@ function BrainTile() {
           <a href={hrefTo("settings", { section: "scheduler" })} title={s.detail}>
             <Pill tone={s.tone}>{s.label}</Pill>
           </a>
-          {/* TODO(scheduler-last-tick): this reads "last tick never" for up to a
-              full interval (5 min) after every brain restart, which looks like a
-              stalled scheduler. Seen 2026-10-11: `last_run_at` lives only in
-              SchedulerService's in-memory state (services/scheduler.rs), and the
-              loop sleeps `interval_secs` BEFORE its first tick, so a fresh
-              process honestly has none; it filled in at the first tick
-              (15:08 restart → 15:13). Fix later: persist the last tick (or read
-              the latest dispatch from the graph), or say "first tick in ~N min"
-              when the process is younger than one interval. */}
-          <span className="home-dim">last tick {relTime(sched.data.state.last_run_at)}</span>
+          <span className="home-dim">{tickTiming(sched.data)}</span>
         </div>
         <div className="home-dim home-detail">{s.detail}</div>
         <div className="ui-stats">

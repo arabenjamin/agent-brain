@@ -93,6 +93,10 @@ pub struct SchedulerState {
     pub is_sleeping: bool,
     /// RFC3339 timestamp of the last `notify_activity()` call (i.e. last incoming tool call).
     pub last_activity_at: Option<String>,
+    /// When the loop's current sleep ends: the next tick is due by then (a
+    /// wakeup can bring it sooner). Lets a fresh process say when its first
+    /// tick comes instead of "never".
+    pub next_tick_at: Option<String>,
 }
 
 /// Result returned from a single scheduler tick.
@@ -181,6 +185,7 @@ impl SchedulerService {
     // =========================================================================
 
     async fn run_loop(self: Arc<Self>) {
+        self.restore_last_tick().await;
         loop {
             // Snapshot the effective interval before sleeping.
             // When in sleep mode use the longer sleep_interval_secs; otherwise interval_secs.
@@ -194,10 +199,8 @@ impl SchedulerService {
                 }
             };
 
-            // TODO(scheduler-last-tick): the first tick comes a full interval
-            // after start, and `last_run_at` is in-memory only, so the HBI's
-            // Home card says "last tick never" for that long after every
-            // restart (see the note in hbi-frontend HomePanel.tsx).
+            self.state.write().await.next_tick_at =
+                Some((Utc::now() + chrono::Duration::seconds(interval_secs as i64)).to_rfc3339());
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {}
                 _ = self.wakeup.notified() => {}
@@ -214,54 +217,44 @@ impl SchedulerService {
                 continue;
             }
 
-            // Mark running (snapshot, don't hold across await)
-            {
-                let mut st = self.state.write().await;
-                st.is_running = true;
-            }
-
-            let now = Utc::now().to_rfc3339();
-            match self.do_tick().await {
-                Ok(result) => {
-                    let mut st = self.state.write().await;
-                    st.consecutive_errors = 0;
-                    st.tasks_dispatched += result.tasks_dispatched as u64;
-                    st.last_run_at = Some(now);
-                    st.last_error = None;
-                    st.is_running = false;
-                    info!(
-                        tasks_found = result.tasks_found,
-                        dispatched = result.tasks_dispatched,
-                        skipped = result.skipped,
-                        new_tasks = result.new_tasks_created,
-                        "Scheduler tick completed"
-                    );
-                }
-                Err(e) => {
-                    let error_budget = self.config.read().await.error_budget;
-                    let consecutive = {
-                        let mut st = self.state.write().await;
-                        st.consecutive_errors += 1;
-                        st.last_error = Some(e.clone());
-                        st.last_run_at = Some(now);
-                        st.is_running = false;
-                        st.consecutive_errors
-                    };
-
-                    warn!(error = %e, consecutive = consecutive, "Scheduler tick failed");
-
-                    if consecutive >= error_budget {
-                        self.config.write().await.enabled = false;
-                        warn!(
-                            consecutive = consecutive,
-                            "Scheduler auto-paused after exhausting error budget"
-                        );
-                    }
-                }
-            }
+            // Bookkeeping, logging and the error budget are run_tick's.
+            let _ = self.run_tick().await;
         }
 
         info!("SchedulerService loop exited");
+    }
+
+    /// Record a finished tick on the singleton `(:SchedulerState)`, so the
+    /// last tick survives a restart. Best-effort: a failed write only costs
+    /// the display.
+    async fn persist_tick(&self, at: &str, error: Option<&str>) {
+        let q = neo4rs::query(
+            "MERGE (s:SchedulerState {id: 'scheduler'}) \
+             SET s.last_run_at = datetime($at), s.last_error = $error",
+        )
+        .param("at", at)
+        .param("error", error.map(str::to_string));
+        if let Err(e) = self.neo4j.run(q).await {
+            debug!(error = %e, "scheduler: last tick not persisted");
+        }
+    }
+
+    /// Before the first sleep: the last tick of an earlier process, so the
+    /// HBI shows when the scheduler last ran instead of "never" for the
+    /// first interval after every restart.
+    async fn restore_last_tick(&self) {
+        let q = neo4rs::query(
+            "MATCH (s:SchedulerState {id: 'scheduler'}) \
+             RETURN toString(s.last_run_at) AS at, s.last_error AS error",
+        );
+        let Ok(rows) = self.neo4j.execute(q).await else {
+            return;
+        };
+        if let Some(r) = rows.first() {
+            let mut st = self.state.write().await;
+            st.last_run_at = r.get::<String>("at").ok();
+            st.last_error = r.get::<String>("error").ok();
+        }
     }
 
     // =========================================================================
@@ -1463,6 +1456,7 @@ impl SchedulerService {
                 "idle_ticks": st.idle_ticks,
                 "is_sleeping": st.is_sleeping,
                 "last_activity_at": st.last_activity_at,
+                "next_tick_at": st.next_tick_at,
             }
         })
     }
@@ -1473,37 +1467,49 @@ impl SchedulerService {
         self.wakeup.notify_one();
     }
 
-    /// Execute a tick immediately (synchronous, bypasses the timer).
-    /// Updates state counters the same way the background loop does.
+    /// Execute a tick now and record it: the background loop's ticks and
+    /// `scheduler_control tick` both come through here, so both update the
+    /// counters, persist the last tick and spend the error budget alike.
     pub async fn run_tick(&self) -> Result<TickResult, String> {
+        self.state.write().await.is_running = true;
         let now = Utc::now().to_rfc3339();
-        match self.do_tick().await {
-            Ok(result) => {
-                let mut st = self.state.write().await;
-                st.tasks_dispatched += result.tasks_dispatched as u64;
-                st.last_run_at = Some(now);
-                st.last_error = None;
-                Ok(result)
+        let outcome = self.do_tick().await;
+        let error = outcome.as_ref().err().cloned();
+        let consecutive = {
+            let mut st = self.state.write().await;
+            st.is_running = false;
+            st.last_run_at = Some(now.clone());
+            st.last_error = error.clone();
+            match &outcome {
+                Ok(result) => {
+                    st.consecutive_errors = 0;
+                    st.tasks_dispatched += result.tasks_dispatched as u64;
+                }
+                Err(_) => st.consecutive_errors += 1,
             }
+            st.consecutive_errors
+        };
+        self.persist_tick(&now, error.as_deref()).await;
+        match &outcome {
+            Ok(result) => info!(
+                tasks_found = result.tasks_found,
+                dispatched = result.tasks_dispatched,
+                skipped = result.skipped,
+                new_tasks = result.new_tasks_created,
+                "Scheduler tick completed"
+            ),
             Err(e) => {
-                let error_budget = self.config.read().await.error_budget;
-                let consecutive = {
-                    let mut st = self.state.write().await;
-                    st.consecutive_errors += 1;
-                    st.last_error = Some(e.clone());
-                    st.last_run_at = Some(now);
-                    st.consecutive_errors
-                };
-                if consecutive >= error_budget {
+                warn!(error = %e, consecutive, "Scheduler tick failed");
+                if consecutive >= self.config.read().await.error_budget {
                     self.config.write().await.enabled = false;
                     warn!(
-                        consecutive = consecutive,
-                        "Scheduler auto-paused after exhausting error budget (via run_tick)"
+                        consecutive,
+                        "Scheduler auto-paused after exhausting error budget"
                     );
                 }
-                Err(e)
             }
         }
+        outcome
     }
 }
 

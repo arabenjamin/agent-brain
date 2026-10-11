@@ -72,6 +72,8 @@ export interface SchedulerStatus {
     last_run_at: string | null;
     last_activity_at: string | null;
     last_error: string | null;
+    /** When the current sleep ends; the next tick is due by then. */
+    next_tick_at?: string | null;
   };
 }
 

@@ -8,6 +8,7 @@
  */
 import type { SchedulerStatus } from "../api/queries";
 import type { Tone } from "../components/ui";
+import { relTime, untilTime } from "./time";
 
 export type SchedulerPhase = "auto-paused" | "paused" | "ticking" | "sleeping" | "erroring" | "idle";
 
@@ -63,4 +64,18 @@ export function summariseScheduler(s: SchedulerStatus): SchedulerSummary {
     tone: "green",
     detail: `Ticking every ${Math.round(config.interval_secs / 60)} min`,
   };
+}
+
+/**
+ * "last tick 3m ago · next in 2m". The last tick survives a restart (the
+ * scheduler persists it); a brain that has never ticked says when its first
+ * tick comes rather than "never", which read as a stalled scheduler. No
+ * "next" while paused.
+ */
+export function tickTiming(s: SchedulerStatus, now: number = Date.now()): string {
+  const { config, state } = s;
+  const next = config.enabled && !state.is_running ? untilTime(state.next_tick_at, now) : "";
+  if (!state.last_run_at) return next ? `first tick ${next}` : "no tick yet";
+  const last = `last tick ${relTime(state.last_run_at, now)}`;
+  return next ? `${last} · next ${next}` : last;
 }
