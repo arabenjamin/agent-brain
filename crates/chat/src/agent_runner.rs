@@ -59,7 +59,7 @@ pub trait SubagentLoopRunner: Send + Sync {
         tx: mpsc::Sender<ChatEvent>,
         allow_delegate: bool,
         max_iterations: usize,
-    );
+    ) -> LadderReport;
 
     /// Resolve a profile's `model_preference` (+ optional `provider_hint`) to a
     /// full config against the live model catalog. `None` keeps `base`.
@@ -69,6 +69,24 @@ pub trait SubagentLoopRunner: Send + Sync {
         model_pref: &str,
         provider_hint: Option<&str>,
     ) -> Option<LlmConfig>;
+}
+
+/// One model the fallback ladder tried for a sub-agent run.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RungAttempt {
+    pub model: String,
+    pub provider: String,
+    /// Why this rung gave no answer; `None` for the rung that answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What the ladder did for one run: the rungs it tried, in order, and the
+/// ones the routing policy refused before trying (`"model: reason"`).
+#[derive(Debug, Clone, Default)]
+pub struct LadderReport {
+    pub attempts: Vec<RungAttempt>,
+    pub refused: Vec<String>,
 }
 
 /// Execution budget for one agent run.
@@ -465,9 +483,15 @@ pub struct AgentFindings {
     /// receipt behind `findings`: a caller can check the prose's claims against
     /// what really happened (empty = the agent ran no tools at all).
     pub tool_trace: Vec<ToolInvocation>,
-    /// The model the loop started on (empty for a rejection). Fallback rungs
-    /// the loop walked are in the usage ledger, not here.
+    /// The model that answered, else the last one tried; empty for a
+    /// rejection or when no rung could run. Not the profile's preference: on
+    /// 2026-10-11 a run reported `gpt-oss:120b-cloud`, which routing had
+    /// refused, beside granite4's timeout error.
     pub model: String,
+    /// Every rung the fallback ladder tried, in order, with why each failed.
+    pub attempts: Vec<RungAttempt>,
+    /// Rungs the routing policy refused before trying (`"model: reason"`).
+    pub refused: Vec<String>,
 }
 
 impl AgentFindings {
@@ -480,8 +504,60 @@ impl AgentFindings {
             findings: msg.into(),
             tool_trace: Vec::new(),
             model: String::new(),
+            attempts: Vec::new(),
+            refused: Vec::new(),
         }
     }
+}
+
+/// The answering model, else the last one tried.
+fn model_that_ran(report: &LadderReport) -> String {
+    report
+        .attempts
+        .iter()
+        .find(|a| a.error.is_none())
+        .or(report.attempts.last())
+        .map(|a| a.model.clone())
+        .unwrap_or_default()
+}
+
+/// Why a run produced no answer, rung by rung: each model tried with its own
+/// error, then the refused ones. One error alone hid the cause on 2026-10-11:
+/// the report showed granite4's timeout while the Mistral 400s that started
+/// the failure were only in the log.
+fn no_answer_text(agent: &str, report: &LadderReport, last_error: Option<&str>) -> String {
+    let short = |e: &str| -> String {
+        let e = e.trim();
+        if e.chars().count() > 240 {
+            format!("{}…", e.chars().take(240).collect::<String>())
+        } else {
+            e.to_string()
+        }
+    };
+    let mut out = format!("Sub-agent `{agent}` returned no answer.");
+    if report.attempts.is_empty() {
+        if let Some(e) = last_error {
+            out.push_str(&format!(" {}", short(e)));
+        }
+    } else {
+        out.push_str(" Tried:");
+        for a in &report.attempts {
+            let why = a.error.as_deref().map(short);
+            out.push_str(&format!(
+                "\n- {} ({}): {}",
+                a.model,
+                a.provider,
+                why.as_deref().unwrap_or("ran, but its answer was empty")
+            ));
+        }
+    }
+    if !report.refused.is_empty() {
+        out.push_str(&format!(
+            "\nRefused by the routing policy: {}",
+            report.refused.join("; ")
+        ));
+    }
+    out
 }
 
 /// Runs a profile as a bounded agent loop and returns structured findings.
@@ -736,12 +812,14 @@ impl AgentRunner {
         if let Some(ref tx) = sink {
             let _ = tx
                 .send(ChatEvent::Thinking {
-                    content: format!("🔎 delegating to `{agent}` sub-agent ({})…", cfg.model),
+                    content: format!(
+                        "🔎 delegating to `{agent}` sub-agent (first choice {})…",
+                        cfg.model
+                    ),
                 })
                 .await;
         }
 
-        let model = cfg.model.clone();
         let (sub_tx, mut sub_rx) = mpsc::channel::<ChatEvent>(128);
         // allow_delegate = false: an agent cannot delegate further (depth cap 1).
         // Scope the usage-ledger label to `subagent:<agent>` around the loop so
@@ -846,7 +924,8 @@ impl AgentRunner {
             (answer, saw_error, gathered, trace)
         };
 
-        let (_, (answer, saw_error, gathered, trace)) = tokio::join!(provider_loop, drain);
+        let (report, (answer, saw_error, gathered, trace)) = tokio::join!(provider_loop, drain);
+        let model = model_that_ran(&report);
         // The worker actually consulted the world iff it ran ≥1 successful tool.
         let retrieved = !gathered.is_empty();
 
@@ -873,10 +952,11 @@ impl AgentRunner {
                 ok: false,
                 rejected: false,
                 retrieved,
-                findings: saw_error
-                    .unwrap_or_else(|| format!("Sub-agent `{agent}` ({model}) returned nothing.")),
+                findings: no_answer_text(agent, &report, saw_error.as_deref()),
                 tool_trace: trace,
                 model,
+                attempts: report.attempts,
+                refused: report.refused,
             };
         }
         AgentFindings {
@@ -886,6 +966,8 @@ impl AgentRunner {
             findings: format_subagent_findings(agent, &answer, &gathered, &trace),
             tool_trace: trace,
             model,
+            attempts: report.attempts,
+            refused: report.refused,
         }
     }
 
@@ -1121,6 +1203,63 @@ fn format_tool_receipt(agent: &str, trace: &[ToolInvocation]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rung(model: &str, error: Option<&str>) -> RungAttempt {
+        RungAttempt {
+            model: model.into(),
+            provider: "p".into(),
+            error: error.map(String::from),
+        }
+    }
+
+    #[test]
+    fn the_reported_model_is_the_one_that_ran() {
+        let failed = LadderReport {
+            attempts: vec![
+                rung("ministral", Some("400")),
+                rung("granite4", Some("timeout")),
+            ],
+            refused: vec!["gpt-oss:120b-cloud: cooling down".into()],
+        };
+        assert_eq!(
+            model_that_ran(&failed),
+            "granite4",
+            "the last one tried, not the refused preference"
+        );
+        let answered = LadderReport {
+            attempts: vec![rung("ministral", Some("400")), rung("codestral", None)],
+            refused: vec![],
+        };
+        assert_eq!(model_that_ran(&answered), "codestral");
+        assert_eq!(model_that_ran(&LadderReport::default()), "");
+    }
+
+    #[test]
+    fn a_failed_run_names_every_rungs_error() {
+        let r = LadderReport {
+            attempts: vec![
+                rung(
+                    "ministral-14b-latest",
+                    Some("400 Unexpected role 'tool' after role 'user'"),
+                ),
+                rung("granite4:latest", Some("Ollama stream read error")),
+            ],
+            refused: vec!["gpt-oss:120b-cloud: cooling down".into()],
+        };
+        let t = no_answer_text("code-analyst", &r, Some("Ollama stream read error"));
+        assert!(
+            t.contains("ministral-14b-latest (p): 400 Unexpected role"),
+            "{t}"
+        );
+        assert!(
+            t.contains("granite4:latest (p): Ollama stream read error"),
+            "{t}"
+        );
+        assert!(
+            t.contains("Refused by the routing policy: gpt-oss:120b-cloud"),
+            "{t}"
+        );
+    }
 
     #[test]
     fn extract_sources_pulls_unique_urls_from_tool_previews() {

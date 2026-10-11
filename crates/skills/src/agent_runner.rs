@@ -317,7 +317,11 @@ impl AgentRunnerSkill {
             "ok": findings.ok,
             "retrieved": findings.retrieved,
             "agent": agent,
+            // The model that answered (else the last one tried), every rung
+            // the fallback ladder tried with its error, and the refused ones.
             "model": findings.model,
+            "attempts": findings.attempts,
+            "refused": findings.refused,
             "tool_trace": tool_trace,
             "verified": input.verify.is_some().then_some(failures.is_empty()),
             "verification_failures": failures,

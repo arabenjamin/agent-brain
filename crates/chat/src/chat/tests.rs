@@ -605,17 +605,31 @@ mod fallback_ladder_tests {
         ]);
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
         // allow_delegate = false, a bounded budget — the sub-agent shape.
-        svc.run_bounded_loop(
-            cloud_config(&primary),
-            vec![],
-            None,
-            test_request(),
-            "sys".into(),
-            tx,
-            false,
-            MAX_TOOL_ITERATIONS,
-        )
-        .await;
+        let report = svc
+            .run_bounded_loop(
+                cloud_config(&primary),
+                vec![],
+                None,
+                test_request(),
+                "sys".into(),
+                tx,
+                false,
+                MAX_TOOL_ITERATIONS,
+            )
+            .await;
+
+        // The report names what ran: the primary with its error, then the
+        // fallback that answered (not the preferred model alone).
+        assert_eq!(report.attempts.len(), 2, "{report:?}");
+        assert!(
+            report.attempts[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("500")),
+            "{report:?}"
+        );
+        assert_eq!(report.attempts[1].model, "subagent-fallback-model");
+        assert_eq!(report.attempts[1].error, None);
 
         let mut seen = Vec::new();
         while let Some(e) = rx.recv().await {
@@ -652,17 +666,23 @@ mod fallback_ladder_tests {
 
         let svc = chat_service(vec![cloud_config(&fallback)]);
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(128);
-        svc.run_bounded_loop(
-            cloud_config(&primary),
-            vec![],
-            None,
-            test_request(),
-            "sys".into(),
-            tx,
-            false,
-            MAX_TOOL_ITERATIONS,
-        )
-        .await;
+        let report = svc
+            .run_bounded_loop(
+                cloud_config(&primary),
+                vec![],
+                None,
+                test_request(),
+                "sys".into(),
+                tx,
+                false,
+                MAX_TOOL_ITERATIONS,
+            )
+            .await;
+        assert!(!report.attempts.is_empty(), "{report:?}");
+        assert!(
+            report.attempts.iter().all(|a| a.error.is_some()),
+            "no rung answered, so every attempt carries its error: {report:?}"
+        );
 
         let mut seen = Vec::new();
         while let Some(e) = rx.recv().await {

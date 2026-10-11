@@ -82,7 +82,7 @@ impl SubagentLoopRunner for ChatService {
         tx: mpsc::Sender<ChatEvent>,
         allow_delegate: bool,
         max_iterations: usize,
-    ) {
+    ) -> LadderReport {
         // Walk [cfg] + the chat fallback ladder, exactly as the top-level chat
         // path does, so a transient provider failure on a sub-agent turn (a 500,
         // a rate-limit, a dropped connection) degrades to the next rung instead of
@@ -107,24 +107,33 @@ impl SubagentLoopRunner for ChatService {
         // The sub-agent's route context (scoped by AgentRunner::run) decides which
         // rungs it may use; a refused rung is skipped, never tried.
         let (candidates, refused) = admit_rungs(candidates, RouteContext::current());
+        let mut report = LadderReport {
+            attempts: Vec::new(),
+            refused,
+        };
         if candidates.is_empty() {
             let _ = tx
                 .send(ChatEvent::Error {
                     message: format!(
                         "No model may run this sub-agent under the routing policy: {}",
-                        refused.join("; ")
+                        report.refused.join("; ")
                     ),
                 })
                 .await;
-            return;
+            return report;
         }
 
         let mut last_error: Option<String> = None;
         let mut prior_calls: Vec<PriorCall> = Vec::new();
         for (i, cand) in candidates.into_iter().enumerate() {
             if i > 0 && !still_admitted(&cand, RouteContext::current()) {
+                report.refused.push(format!(
+                    "{}: refused after an earlier rung failed",
+                    cand.model
+                ));
                 continue;
             }
+            let (model, provider) = (cand.model.clone(), cand.provider_label());
             if i > 0 {
                 warn!(
                     model = %cand.model,
@@ -169,9 +178,32 @@ impl SubagentLoopRunner for ChatService {
             {
                 // The rung produced real output; the drain reads it off `tx` and
                 // the channel closing on return ends the turn.
-                AttemptOutcome::Delivered => return,
-                AttemptOutcome::Unanswered { error } => last_error = error.or(last_error),
+                AttemptOutcome::Delivered => {
+                    report.attempts.push(RungAttempt {
+                        model,
+                        provider,
+                        error: None,
+                    });
+                    return report;
+                }
+                AttemptOutcome::Unanswered { error } => {
+                    report.attempts.push(RungAttempt {
+                        model,
+                        provider,
+                        error: Some(
+                            error
+                                .clone()
+                                .unwrap_or_else(|| "produced no answer".to_string()),
+                        ),
+                    });
+                    last_error = error.or(last_error);
+                }
                 AttemptOutcome::Interrupted { error, calls } => {
+                    report.attempts.push(RungAttempt {
+                        model,
+                        provider,
+                        error: Some(error.clone()),
+                    });
                     prior_calls.extend(calls);
                     last_error = Some(error);
                 }
@@ -183,6 +215,7 @@ impl SubagentLoopRunner for ChatService {
         if let Some(message) = last_error {
             let _ = tx.send(ChatEvent::Error { message }).await;
         }
+        report
     }
 
     async fn resolve_agent_model(
