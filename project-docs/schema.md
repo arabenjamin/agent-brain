@@ -393,7 +393,7 @@ HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; a
 
 #### `DevNote`
 
-Developer documentation in the graph (`services/dev_notes.rs`; rules: `dev_docs get dev-notes/rules`). Separate from `:Note` on purpose, with its own indexes `dev_note_embeddings` and `dev_note_fulltext`. Seeded create-only from `devdocs/devnotes.jsonl`.
+Developer documentation in the graph (the `developer` plugin's `dev_notes.rs`, which creates the label's indexes; rules: `dev_docs get dev-notes/rules`). Separate from `:Note` on purpose, with its own indexes `dev_note_embeddings` and `dev_note_fulltext`. Seeded create-only from `devdocs/devnotes.jsonl`.
 
 | Property | Type | Description |
 |---|---|---|

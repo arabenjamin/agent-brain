@@ -38,6 +38,7 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
         Arc::new(agent_brain_plugin_reference::Reference),
         Arc::new(agent_brain_plugin_developer::Developer),
         Arc::new(agent_brain_plugin_epistemics::Epistemics),
+        Arc::new(agent_brain_plugin_sandbox::Sandbox),
     ]
 }
 

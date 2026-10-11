@@ -1,10 +1,9 @@
 //! Knowledge: storing notes, hybrid retrieval, reasoning over what is stored,
-//! consolidation and maintenance, plus the store traits skills depend on, the
-//! dev notes and the retrieval eval. Split out of the app crate in
+//! consolidation and maintenance, plus the store traits skills depend on and
+//! the retrieval eval. Split out of the app crate in
 //! CORE_AND_PLUGINS_PLAN 6f; the app re-exports each module at its old
 //! `services::` path.
 
-pub mod dev_notes;
 pub mod knowledge;
 pub mod retrieval_eval;
 pub mod traits;

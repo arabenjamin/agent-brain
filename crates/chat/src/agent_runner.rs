@@ -166,7 +166,7 @@ pub fn answer_rust_code(answer: &str) -> Option<String> {
 }
 
 /// The `[dependencies]` lines of the sandbox's crate manifest
-/// (`rust-sandbox/crates/Cargo.toml`), keyed by the name code `use`s
+/// (`plugins/sandbox/rust/crates/Cargo.toml`), keyed by the name code `use`s
 /// (`ed25519-dalek` → `ed25519_dalek`). Each line is copied verbatim into a
 /// generated manifest, so versions and features stay what the cache holds.
 pub fn sandbox_dependencies(manifest: &str) -> Vec<(String, String)> {

@@ -1,6 +1,6 @@
 # Rust compile/test sandbox for `execute_code(language: "rust")`.
 #
-# Same isolation contract as ../sandbox (see docker-compose.yml): internal-only
+# Same isolation contract as ../python (see docker-compose.yml): internal-only
 # network, no credentials, no bind mounts, read-only root. Two differences, both
 # measured rather than assumed:
 #

@@ -3,7 +3,7 @@
 pub use agent_brain_chat::agent_runner;
 pub use agent_brain_graph::{architecture, clock, entity_resolution, snapshot, topics};
 pub use agent_brain_host::{plugin_host, plugins, self_model};
-pub use agent_brain_knowledge::{dev_notes, knowledge, retrieval_eval, traits, web_result};
+pub use agent_brain_knowledge::{knowledge, retrieval_eval, traits, web_result};
 pub use agent_brain_llm::{
     budget, gpu_lease, llm, llm_providers, model_config, model_router, provider_gate,
     provider_registry, routing, shared_llm,

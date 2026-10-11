@@ -1,15 +1,14 @@
 //! `dev_docs`: the brain's engineering history, subsystem rules and plan
-//! decisions, queried from `(:DevNote)` (`services/dev_notes.rs`). For coding
+//! decisions, queried from `(:DevNote)` (`dev_notes.rs`). For coding
 //! agents and the self-analyst; not in the general profile.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use agent_brain_knowledge::dev_notes::{DevNote, DevNotes, KINDS};
-use agent_brain_protocol::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_plugin_api::{Skill, ToolCallResult, ToolDefinition, async_trait};
+
+use crate::dev_notes::{DevNote, DevNotes, KINDS};
 
 const DEFAULT_LIMIT: usize = 8;
 const MAX_LIMIT: usize = 30;
@@ -118,7 +117,7 @@ impl DevDocsSkill {
                     date: String::new(),
                 };
                 let id = self.notes.write(n).await.map_err(|e| format!("{e:#}"))?;
-                Ok(json!({ "id": id, "exported": agent_brain_knowledge::dev_notes::seed_file() }))
+                Ok(json!({ "id": id, "exported": self.notes.seed_file() }))
             }
             other => Err(format!(
                 "Unknown action '{other}': use search, get or write."

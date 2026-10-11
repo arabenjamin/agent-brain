@@ -352,12 +352,15 @@ impl AgentRunnerSkill {
         failures
     }
 
-    /// Compile and test `code` as shown, then lint it, in the rust-sandbox.
+    /// Compile and test `code` as shown, then lint it, in the rust-sandbox
+    /// (the `sandbox` plugin's `execute_code`).
     async fn rerun(&self, runner: &AgentRunner, spec: &VerifySpec, code: &str) -> Vec<String> {
         let manifest = self
             .codebase_dir
             .as_ref()
-            .and_then(|d| std::fs::read_to_string(d.join("rust-sandbox/crates/Cargo.toml")).ok())
+            .and_then(|d| {
+                std::fs::read_to_string(d.join("plugins/sandbox/rust/crates/Cargo.toml")).ok()
+            })
             .unwrap_or_default();
         let files = answer_crate(code, &sandbox_dependencies(&manifest));
         let run = |command: &'static str| {

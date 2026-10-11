@@ -60,3 +60,6 @@ tools:
 
   # Phase 3d, 2026-10-10 — dynamic tools become declared tools in bundles
   - { name: manage_dynamic_tool, commit: 1749e97, reason: "8 calls ever (none since 2026-09-26), none left a tool; tools are declared in a bundle's tools/", replaced_by: manage_plugin }
+
+  # Phase 6g, 2026-10-11 — never called as a tool; the fine-tuning script uses REST
+  - { name: gpu_lease, commit: 63d65c6, reason: "0 calls since telemetry began (2026-06-12); scripts/gpu_lease.sh drives the lease over REST", replaced_by: "POST /api/gpu-lease" }

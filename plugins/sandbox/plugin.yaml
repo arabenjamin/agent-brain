@@ -1,0 +1,6 @@
+# Code execution: the execute_code tool (crate/) and the two sandbox services it
+# calls (python/, rust/; built by docker-compose.yml on an internal network with
+# no egress). Without SANDBOX_URL or RUST_SANDBOX_URL the plugin offers no tool.
+name: sandbox
+version: 1
+description: "Run Python or Rust in an isolated, offline sandbox (execute_code): compute an answer instead of asserting it, or compile and test a crate."

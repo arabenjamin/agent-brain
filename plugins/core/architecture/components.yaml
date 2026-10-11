@@ -46,7 +46,7 @@ components:
     probe: http
     url_env: SANDBOX_URL
     path: /health
-    purpose: execute_code (no network egress).
+    purpose: execute_code, the sandbox plugin (no network egress).
 
   - name: rust-sandbox
     label: Rust sandbox
@@ -54,7 +54,7 @@ components:
     probe: http
     url_env: RUST_SANDBOX_URL
     path: /health
-    purpose: execute_code with language rust (offline compile and test).
+    purpose: execute_code with language rust, the sandbox plugin (offline compile and test).
 
   - name: whisper
     label: Whisper transcription

@@ -86,18 +86,19 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `media`: `ingest_media`, `ingest_article`, `poll_media_sources`, `manage_media_source`, `discover_media_sources`, `spawn_gap_tasks`
 - `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`
 - `alias-judge`: no tools; ranks entity merge candidates on idle time (`ALIAS_JUDGE_MODEL`)
-- `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`; the architecture view at `/api/plugins/developer/architecture`
+- `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`, `dev_docs` (the dev notes, `scripts/dev_docs.sh`); the architecture view at `/api/plugins/developer/architecture`
 - `epistemics`: `claim` (extract, verify against independent web evidence, list, sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
 - `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
+- `sandbox`: `execute_code` (below); the bundle also holds the two sandbox images (`python/`, `rust/`)
 - `personal`: no tools; the owner's own workflows, agents and topics, from a private repo mounted at `/home/agent/plugins-private` (`PLUGINS_EXTRA_DIRS`); absent elsewhere
 
 ### HTTP / API / MCP
 `http_request`, `define_api_context`, `ingest_api`, `mcp_list_tools` (no `server` lists the servers), `mcp_call`
 
 ### Model
-`get_llm_budget`, `gpu_lease`
+`get_llm_budget` (the GPU lease is REST: `/api/gpu-lease`)
 
-### Code Execution
+### Code Execution (the `sandbox` plugin)
 `execute_code`
 
 Runs Python in an isolated `sandbox` sidecar and returns what it printed, so
@@ -108,7 +109,7 @@ read-only root filesystem, dropped capabilities, none of the brain's
 credentials, and no bind mounts; every input must be passed inline in the code.
 `numpy`, `sympy`, and `pandas` are available. A failed run returns its traceback
 as a *successful* tool call, so the model can fix the code rather than burn a
-retry. Registered only when `SANDBOX_URL` is set.
+retry. Offered only when `SANDBOX_URL` (or `RUST_SANDBOX_URL`, for `language: "rust"`) is set.
 
 ### Other
 `search_web`, `get_search_usage`
@@ -181,7 +182,7 @@ todo             Manage todos over HTTP
 | `MCP_TRANSPORT` | `stdio` | Transport type |
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind |
 | `MCP_API_KEY` | — | HTTP auth |
-| `SANDBOX_URL` | — | Code-execution sandbox endpoint. Unset ⇒ `execute_code` is not registered |
+| `SANDBOX_URL` | — | Code-execution sandbox endpoint (the `sandbox` plugin). Unset ⇒ no `execute_code` |
 | `PLUGINS_DIR` / `PLUGINS_ENABLED` | `plugins` / *(core only)* | Where the seed bundles live, and which load besides `core` (see `project-docs/env.md`) |
 | `TZ` | — (⇒ UTC) | Wall-clock timezone (e.g. `America/Detroit`). What the brain **says** about time is local; what it **stores** stays UTC. Unset means its "today" is UTC's, which is a different day for part of every day outside UTC |
 

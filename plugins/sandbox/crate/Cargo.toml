@@ -1,0 +1,14 @@
+[package]
+name = "agent-brain-plugin-sandbox"
+version.workspace = true
+edition.workspace = true
+
+# A plugin crate depends on agent-brain-plugin-api and external crates only
+# (scripts/check_plugin_deps.sh).
+[dependencies]
+agent-brain-plugin-api = { path = "../../../crates/plugin-api" }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

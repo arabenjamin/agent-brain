@@ -15,6 +15,9 @@
 //! - **Embeddings are backfilled**, so a note written while the GPU is leased
 //!   (or the embedder is down) is still found by BM25 and gains its vector at
 //!   the next start.
+//! - **The `developer` plugin's** since CORE_AND_PLUGINS_PLAN 6g (a core
+//!   service until then): it reaches the graph and the embedder through the
+//!   host's `Graph` and `Llm` capabilities, and creates its schema in `start`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,9 +28,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::knowledge::sanitize_lucene_query;
-use crate::traits::LlmProvider;
-use agent_brain_repository::Neo4jClient;
+use agent_brain_plugin_api::graph::{self, Row};
+use agent_brain_plugin_api::{Graph, Llm};
 
 /// `rule` (still true; needed to change code safely), `history` (why, an
 /// incident, a measurement), `decision` (a finished plan), `plan` (designed,
@@ -54,20 +56,38 @@ pub struct DevNote {
     pub date: String,
 }
 
+/// The label's constraint and its own indexes, so dev history never mixes
+/// with `:Note` retrieval.
+pub const SCHEMA: &[&str] = &[
+    "CREATE CONSTRAINT dev_note_id IF NOT EXISTS FOR (d:DevNote) REQUIRE d.id IS UNIQUE",
+    "CREATE VECTOR INDEX dev_note_embeddings IF NOT EXISTS FOR (d:DevNote) ON (d.embedding) \
+     OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}",
+    "CREATE FULLTEXT INDEX dev_note_fulltext IF NOT EXISTS FOR (d:DevNote) \
+     ON EACH [d.title, d.content, d.subsystem]",
+];
+
 /// `{CODEBASE_DIR}/devdocs/devnotes.jsonl` (the repo is bind-mounted read-write).
-pub fn seed_file() -> PathBuf {
-    let root = std::env::var("CODEBASE_DIR").unwrap_or_else(|_| ".".into());
-    PathBuf::from(root).join("devdocs").join("devnotes.jsonl")
+pub fn seed_file(codebase_dir: Option<String>) -> PathBuf {
+    PathBuf::from(codebase_dir.unwrap_or_else(|| ".".into()))
+        .join("devdocs")
+        .join("devnotes.jsonl")
 }
 
 pub struct DevNotes {
-    neo4j: Neo4jClient,
-    llm: Arc<dyn LlmProvider>,
+    graph: Arc<dyn Graph>,
+    llm: Arc<dyn Llm>,
+    seed: PathBuf,
 }
 
 impl DevNotes {
-    pub fn new(neo4j: Neo4jClient, llm: Arc<dyn LlmProvider>) -> Self {
-        Self { neo4j, llm }
+    pub fn new(graph: Arc<dyn Graph>, llm: Arc<dyn Llm>, seed: PathBuf) -> Self {
+        Self { graph, llm, seed }
+    }
+
+    /// The git seed this store reads when the graph is empty and rewrites
+    /// after every write.
+    pub fn seed_file(&self) -> &Path {
+        &self.seed
     }
 
     async fn embed(&self, n: &DevNote) -> Option<Vec<f32>> {
@@ -94,9 +114,9 @@ impl DevNotes {
         } else {
             format!("MERGE (d:DevNote {{id: $id}}) ON CREATE {set}")
         };
-        self.neo4j
+        self.graph
             .run(
-                neo4rs::query(&cypher)
+                graph::query(&cypher)
                     .param("id", n.id.as_str())
                     .param("kind", n.kind.as_str())
                     .param("subsystem", n.subsystem.as_str())
@@ -111,9 +131,9 @@ impl DevNotes {
     }
 
     async fn set_embedding(&self, id: &str, v: Vec<f32>) -> Result<()> {
-        self.neo4j
+        self.graph
             .run(
-                neo4rs::query("MATCH (d:DevNote {id: $id}) SET d.embedding = $v")
+                graph::query("MATCH (d:DevNote {id: $id}) SET d.embedding = $v")
                     .param("id", id)
                     .param("v", v),
             )
@@ -123,7 +143,8 @@ impl DevNotes {
 
     /// Seed an EMPTY graph from the jsonl file, then embed any note without a
     /// vector. Returns (seeded, embedded). A missing file seeds nothing.
-    pub async fn seed_and_backfill(&self, file: &Path) -> Result<(usize, usize)> {
+    pub async fn seed_and_backfill(&self) -> Result<(usize, usize)> {
+        let file = self.seed.as_path();
         let existing = self.count().await?;
         let mut seeded = 0;
         if existing == 0 && file.exists() {
@@ -134,8 +155,8 @@ impl DevNotes {
             info!(seeded, file = %file.display(), "dev notes seeded from git");
         }
         let rows = self
-            .neo4j
-            .execute(neo4rs::query(
+            .graph
+            .execute(graph::query(
                 "MATCH (d:DevNote) WHERE d.embedding IS NULL \
                  RETURN d.id AS id, d.title AS title, d.content AS content",
             ))
@@ -163,8 +184,8 @@ impl DevNotes {
 
     pub async fn count(&self) -> Result<i64> {
         let rows = self
-            .neo4j
-            .execute(neo4rs::query("MATCH (d:DevNote) RETURN count(d) AS n"))
+            .graph
+            .execute(graph::query("MATCH (d:DevNote) RETURN count(d) AS n"))
             .await?;
         Ok(rows
             .first()
@@ -187,7 +208,7 @@ impl DevNotes {
             n.id = format!("{}/{}", slug(&n.subsystem), slug(&n.title));
         }
         if n.date.is_empty() {
-            n.date = agent_brain_graph::clock::today();
+            n.date = chrono::Local::now().format("%Y-%m-%d").to_string();
         }
         // A rewrite keeps where the note came from: the former doc name in
         // `source` is what a cited `HBI_REDESIGN_PLAN.md §9` is searched by.
@@ -200,15 +221,15 @@ impl DevNotes {
         if let Some(v) = self.embed(&n).await {
             self.set_embedding(&n.id, v).await?;
         }
-        self.export(&seed_file()).await?;
+        self.export(&self.seed).await?;
         Ok(n.id)
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<DevNote>> {
         let rows = self
-            .neo4j
+            .graph
             .execute(
-                neo4rs::query(
+                graph::query(
                     "MATCH (d:DevNote {id: $id}) RETURN d.id AS id, d.kind AS kind, \
                      d.subsystem AS subsystem, d.title AS title, d.content AS content, \
                      d.paths AS paths, d.source AS source, d.date AS date",
@@ -250,9 +271,9 @@ impl DevNotes {
             .await
         {
             let rows = self
-                .neo4j
+                .graph
                 .execute(
-                    neo4rs::query(
+                    graph::query(
                         "CALL db.index.vector.queryNodes('dev_note_embeddings', $k, $v) \
                          YIELD node RETURN node.id AS id",
                     )
@@ -268,9 +289,9 @@ impl DevNotes {
             }
         }
         let rows = self
-            .neo4j
+            .graph
             .execute(
-                neo4rs::query(
+                graph::query(
                     "CALL db.index.fulltext.queryNodes('dev_note_fulltext', $q, {limit: $k}) \
                      YIELD node RETURN node.id AS id",
                 )
@@ -288,9 +309,9 @@ impl DevNotes {
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
         let ids: Vec<String> = ranked.iter().map(|(id, _)| id.clone()).collect();
         let rows = self
-            .neo4j
+            .graph
             .execute(
-                neo4rs::query(
+                graph::query(
                     "UNWIND $ids AS id MATCH (d:DevNote {id: id}) \
                      WHERE ($kind = '' OR d.kind = $kind) \
                        AND ($sub = '' OR toLower(d.subsystem) CONTAINS toLower($sub) \
@@ -331,8 +352,8 @@ impl DevNotes {
     /// Every note, ordered by id, without embeddings — the git seed.
     pub async fn export(&self, file: &Path) -> Result<usize> {
         let rows = self
-            .neo4j
-            .execute(neo4rs::query(
+            .graph
+            .execute(graph::query(
                 "MATCH (d:DevNote) RETURN d.id AS id, d.kind AS kind, d.subsystem AS subsystem, \
                  d.title AS title, d.content AS content, d.paths AS paths, d.source AS source, \
                  d.date AS date ORDER BY d.id",
@@ -353,7 +374,7 @@ impl DevNotes {
     }
 }
 
-fn row_to_note(r: &neo4rs::Row) -> DevNote {
+fn row_to_note(r: &Row) -> DevNote {
     DevNote {
         id: r.get("id").unwrap_or_default(),
         kind: r.get("kind").unwrap_or_default(),
@@ -376,6 +397,23 @@ pub fn read_jsonl(file: &Path) -> Result<Vec<DevNote>> {
                 .with_context(|| format!("{}:{}: bad dev note", file.display(), i + 1))
         })
         .collect()
+}
+
+/// Escape Lucene's reserved characters (a copy of the core's
+/// `sanitize_lucene_query`), so a query like `services/queue.rs` is text.
+fn sanitize_lucene_query(q: &str) -> String {
+    const SPECIAL: &[char] = &[
+        '\\', '+', '-', '!', '(', ')', ':', '^', '[', ']', '"', '{', '}', '~', '*', '?', '|', '&',
+        '/',
+    ];
+    let mut out = String::with_capacity(q.len() + 8);
+    for c in q.chars() {
+        if SPECIAL.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn slug(s: &str) -> String {

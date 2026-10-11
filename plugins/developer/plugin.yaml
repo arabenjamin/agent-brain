@@ -1,8 +1,9 @@
 # The brain working on its own code: read/search/git-log the source, write
 # docs and proposals (Feed items, never code changes), self-analysis, and the
-# architecture view with weekly snapshots. Rust code in crate/ (nine tools and
+# architecture view with weekly snapshots, and the dev notes (:DevNote, seeded
+# from devdocs/devnotes.jsonl). Rust code in crate/ (ten tools and
 # /api/plugins/developer/architecture). The core keeps components and
 # tombstones (architecture/) and hands its router source over.
 name: developer
 version: 1
-description: "Codebase tools (read_codebase_file, search_codebase, get_git_log, write_codebase_doc, write_proposal, analyze_own_structure, workspace files), the architecture view and snapshot_architecture, the doc-update, brain-api-sync, diagnose and capability-mining workflows, and the code-analyst and self-analyst agents."
+description: "Codebase tools (read_codebase_file, search_codebase, get_git_log, write_codebase_doc, write_proposal, analyze_own_structure, workspace files), the architecture view and snapshot_architecture, the dev notes (dev_docs), the doc-update, brain-api-sync, diagnose and capability-mining workflows, and the code-analyst and self-analyst agents."

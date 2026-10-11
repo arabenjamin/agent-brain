@@ -8,6 +8,10 @@
 //!   inventory, the bundle's `layout.yaml`, weekly snapshots and their diffs,
 //!   at `/api/plugins/developer/architecture`. The core keeps what it needs
 //!   itself (components, tombstones) and hands the router source over.
+//! - **Dev notes** (`dev_notes.rs`, `dev_docs.rs`): the brain's engineering
+//!   rules, history and plan decisions as `:DevNote`, for coding agents
+//!   (`dev_docs`, `scripts/dev_docs.sh`). Seeded from `devdocs/devnotes.jsonl`
+//!   when the graph has none; the file is rewritten after every write.
 //! - Workflows `codebase` (doc-update), `brain-api-sync`, `diagnose`,
 //!   `capability-mining`; profiles `code-analyst`, `self-analyst`.
 
@@ -17,6 +21,8 @@ use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait, axum};
 
 mod arch;
 mod codebase;
+mod dev_docs;
+mod dev_notes;
 mod routes;
 mod snapshot;
 
@@ -37,6 +43,9 @@ impl Plugin for Developer {
         if let Some(g) = ctx.graph.clone() {
             skills.push(Arc::new(snapshot::SnapshotSkill::new(g)));
         }
+        if let Some(notes) = dev_notes(ctx) {
+            skills.push(Arc::new(dev_docs::DevDocsSkill::new(notes)));
+        }
         skills
     }
 
@@ -51,12 +60,31 @@ impl Plugin for Developer {
         let Some(g) = &ctx.graph else {
             return Ok(());
         };
-        for stmt in arch::SCHEMA {
+        for stmt in arch::SCHEMA.iter().chain(dev_notes::SCHEMA) {
             g.query(stmt, serde_json::json!({})).await?;
+        }
+        // Seed an empty graph from git and embed what lacks a vector, off the
+        // startup path (the embedder may still be loading).
+        if let Some(notes) = dev_notes(ctx) {
+            tokio::spawn(async move {
+                match notes.seed_and_backfill().await {
+                    Ok((seeded, embedded)) => tracing::info!(seeded, embedded, "dev notes ready"),
+                    Err(e) => tracing::warn!(error = %e, "dev notes: seed/backfill failed"),
+                }
+            });
         }
         if let Some(s) = arch::ensure_baseline(g.as_ref()).await? {
             tracing::info!(summary = %s.summary, "Architecture baseline snapshot taken");
         }
         Ok(())
     }
+}
+
+/// The dev-note store, when the host gives a graph and an embedder.
+fn dev_notes(ctx: &PluginContext) -> Option<Arc<dev_notes::DevNotes>> {
+    Some(Arc::new(dev_notes::DevNotes::new(
+        ctx.graph.clone()?,
+        ctx.llm.clone()?,
+        dev_notes::seed_file(ctx.env("CODEBASE_DIR")),
+    )))
 }

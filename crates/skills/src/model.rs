@@ -1,4 +1,5 @@
-//! ModelSkill — the LLM budget view and the GPU lease (both process-wide services).
+//! ModelSkill — the LLM budget view. The GPU lease is driven over REST
+//! (`/api/gpu-lease`, `workspace/finetune/scripts/gpu_lease.sh`).
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -28,30 +29,6 @@ impl ModelSkill {
         }
     }
 
-    fn gpu_lease_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "gpu_lease".to_string(),
-            description: "Lease the GPU to a job that needs all of it (fine-tuning). While held, \
-                local models are refused, local-pinned background jobs wait, embeddings pause \
-                (search falls back to BM25) and the brain runs on cloud providers; on release, \
-                notes stored meanwhile are embedded and linked. Leases expire (default 12 h, \
-                max 72 h); acquire again as the same holder to extend. Actions: status, \
-                acquire (holder, reason, ttl_hours), release (holder, or force)."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["status", "acquire", "release"] },
-                    "holder": { "type": "string", "description": "Who holds the GPU, e.g. finetune." },
-                    "reason": { "type": "string" },
-                    "ttl_hours": { "type": "integer", "minimum": 1, "maximum": 72 },
-                    "force": { "type": "boolean", "description": "Release a lease held by someone else." }
-                },
-                "required": ["action"]
-            }),
-        }
-    }
-
     // =========================================================================
     // Handlers
     // =========================================================================
@@ -64,20 +41,14 @@ impl Skill for ModelSkill {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::get_llm_budget_def(), Self::gpu_lease_def()]
+        vec![Self::get_llm_budget_def()]
     }
 
-    async fn execute(&self, name: &str, args: Option<Value>) -> Option<ToolCallResult> {
+    async fn execute(&self, name: &str, _args: Option<Value>) -> Option<ToolCallResult> {
         match name {
             "get_llm_budget" => Some(ToolCallResult::success_json(
                 agent_brain_llm::budget::snapshot_json(),
             )),
-            "gpu_lease" => Some(
-                match agent_brain_llm::gpu_lease::handle(args.unwrap_or_else(|| json!({}))).await {
-                    Ok(v) => ToolCallResult::success_json(v),
-                    Err(e) => ToolCallResult::error(e),
-                },
-            ),
             _ => None,
         }
     }

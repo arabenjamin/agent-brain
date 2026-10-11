@@ -5,14 +5,13 @@ pub use agent_brain_retrieve::{
     http, mcp_client, query, search, search_engines, search_query, serde_flex,
 };
 pub use agent_brain_skills::{
-    agent, agent_runner, dev_docs, exec, knowledge, model, scheduler, task, todo, working_memory,
+    agent, agent_runner, knowledge, model, scheduler, task, todo, working_memory,
 };
 
 pub use agent_brain_host::{bundle_tools, plugin_manager};
 
 pub use agent::AgentSkill;
 pub use agent_runner::AgentRunnerSkill;
-pub use exec::ExecSkill;
 pub use http::HttpSkill;
 pub use knowledge::KnowledgeSkill;
 pub use query::QuerySkill;

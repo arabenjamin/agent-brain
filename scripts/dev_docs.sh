@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Query the brain's developer notes (`dev_docs` tool, services/dev_notes.rs)
+# Query the brain's developer notes (`dev_docs` tool, the developer plugin's dev_notes.rs)
 # from a shell — for coding agents whose MCP client only lists the front-door
 # profile's tools. Needs the brain up; if it is down, grep devdocs/devnotes.jsonl.
 #

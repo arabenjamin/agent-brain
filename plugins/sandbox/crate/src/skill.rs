@@ -11,12 +11,13 @@
 //! is the signal a model needs to fix it.
 //!
 //! Execution happens in the `sandbox` (Python) and `rust-sandbox` compose
-//! services, never in this process. See docker-compose.yml for the isolation
+//! services (built from this bundle's `python/` and `rust/`), never in this
+//! process. See docker-compose.yml for the isolation
 //! contract — an `internal: true` network with no egress, a read-only
 //! filesystem, no credentials, and no bind mounts. This skill is only the
 //! client.
 //!
-//! Registered only when `SANDBOX_URL` and/or `RUST_SANDBOX_URL` is set, and a
+//! Offered only when `SANDBOX_URL` and/or `RUST_SANDBOX_URL` is set, and a
 //! language is only offered when its sandbox is configured, so a deployment
 //! without one simply lacks it instead of failing every call.
 
@@ -26,14 +27,13 @@ use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tracing::{info, warn};
 
-use agent_brain_protocol::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
+use agent_brain_plugin_api::{Skill, ToolCallResult, ToolDefinition, parse_args};
 
 /// Python ceilings, mirroring the sandbox's own caps.
 const PYTHON_MAX_TIMEOUT_MS: u64 = 120_000;
 const PYTHON_DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// Rust ceilings: a cold build of a crate with dependencies takes far longer
-/// than a Python script. Mirrors rust-sandbox/server.py.
+/// than a Python script. Mirrors rust/server.py.
 const RUST_MAX_TIMEOUT_MS: u64 = 300_000;
 const RUST_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
@@ -52,13 +52,13 @@ fn normalize_url(raw: Option<String>) -> Option<String> {
 }
 
 impl ExecSkill {
-    /// Read the sandbox endpoints from the environment.
+    /// Read the sandbox endpoints through `env` (the plugin context's).
     ///
     /// `None` when neither `SANDBOX_URL` nor `RUST_SANDBOX_URL` is set — the
-    /// caller skips registration entirely in that case.
-    pub fn from_env() -> Option<Self> {
-        let python = normalize_url(std::env::var("SANDBOX_URL").ok());
-        let rust = normalize_url(std::env::var("RUST_SANDBOX_URL").ok());
+    /// plugin then offers no tool.
+    pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let python = normalize_url(env("SANDBOX_URL"));
+        let rust = normalize_url(env("RUST_SANDBOX_URL"));
         if python.is_none() && rust.is_none() {
             return None;
         }
@@ -436,13 +436,6 @@ mod tests {
 
     use super::*;
 
-    /// `SANDBOX_URL` is process-global and cargo runs these in parallel threads,
-    /// so the tests that mutate it raced: each would clear the var while the
-    /// other was mid-assertion, and `base_url_loses_trailing_slash` failed
-    /// intermittently on an unrelated change. The comment claiming "single-
-    /// threaded test, no other thread reads the environment" was simply untrue.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn input(value: Value) -> ExecuteCodeInput {
         serde_json::from_value(value).expect("valid input")
     }
@@ -454,43 +447,32 @@ mod tests {
         )
     }
 
+    fn env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k| {
+            vars.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
     #[test]
     fn from_env_rejects_blank_url() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Safety: serialised against the other env-mutating tests by ENV_LOCK.
-        unsafe {
-            std::env::set_var("SANDBOX_URL", "   ");
-            std::env::remove_var("RUST_SANDBOX_URL");
-        }
-        assert!(ExecSkill::from_env().is_none());
-        unsafe { std::env::remove_var("SANDBOX_URL") };
-        assert!(ExecSkill::from_env().is_none());
+        assert!(ExecSkill::from_env(env(&[("SANDBOX_URL", "   ")])).is_none());
+        assert!(ExecSkill::from_env(env(&[])).is_none());
     }
 
     #[test]
     fn base_url_loses_trailing_slash() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Safety: serialised against the other env-mutating tests by ENV_LOCK.
-        unsafe {
-            std::env::set_var("SANDBOX_URL", "http://sandbox:8000/");
-            std::env::remove_var("RUST_SANDBOX_URL");
-        }
-        let skill = ExecSkill::from_env().expect("skill should build");
+        let skill = ExecSkill::from_env(env(&[("SANDBOX_URL", "http://sandbox:8000/")]))
+            .expect("skill should build");
         assert_eq!(skill.python_url.as_deref(), Some("http://sandbox:8000"));
-        unsafe { std::env::remove_var("SANDBOX_URL") };
     }
 
     #[test]
     fn rust_sandbox_alone_registers_the_tool() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Safety: serialised against the other env-mutating tests by ENV_LOCK.
-        unsafe {
-            std::env::remove_var("SANDBOX_URL");
-            std::env::set_var("RUST_SANDBOX_URL", "http://rust-sandbox:8000/");
-        }
-        let skill = ExecSkill::from_env().expect("rust-only skill should build");
+        let skill = ExecSkill::from_env(env(&[("RUST_SANDBOX_URL", "http://rust-sandbox:8000/")]))
+            .expect("rust-only skill should build");
         assert_eq!(skill.languages(), vec!["rust"]);
-        unsafe { std::env::remove_var("RUST_SANDBOX_URL") };
     }
 
     #[test]

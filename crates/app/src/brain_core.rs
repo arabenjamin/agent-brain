@@ -30,7 +30,7 @@ use crate::services::{
     AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, exec::ExecSkill, http::HttpSkill,
+    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, http::HttpSkill,
     knowledge::KnowledgeSkill, mcp_client::McpClientSkill, model::ModelSkill, query::QuerySkill,
     scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
     working_memory::WorkingMemorySkill,
@@ -576,26 +576,6 @@ impl BrainCore {
         }
         skills.push(Arc::new(search));
 
-        // Developer notes in the graph (CORE_AND_PLUGINS_PLAN.md §5): seed an
-        // empty graph from git and embed what lacks a vector, off the startup path.
-        if let Some(neo4j) = &self.storage.neo4j {
-            let notes = Arc::new(crate::services::dev_notes::DevNotes::new(
-                neo4j.clone(),
-                Arc::clone(&llm),
-            ));
-            let seeder = Arc::clone(&notes);
-            tokio::spawn(async move {
-                let file = crate::services::dev_notes::seed_file();
-                match seeder.seed_and_backfill(&file).await {
-                    Ok((seeded, embedded)) => {
-                        info!(seeded, embedded, "dev notes ready")
-                    }
-                    Err(e) => warn!(error = %e, "dev notes: seed/backfill failed"),
-                }
-            });
-            skills.push(Arc::new(crate::skills::dev_docs::DevDocsSkill::new(notes)));
-        }
-
         // Generic Neo4j + DuckDB primitives.
         let query_skill = Arc::new(QuerySkill::new(
             self.storage.neo4j.clone(),
@@ -609,12 +589,6 @@ impl BrainCore {
         )));
         // Tools on external MCP servers (:McpServer nodes).
         skills.push(Arc::new(McpClientSkill::new(self.storage.neo4j.clone())));
-        // Sandboxed code execution. Absent SANDBOX_URL the tool is not
-        // registered at all, rather than registered and always failing.
-        if let Some(exec_skill) = ExecSkill::from_env() {
-            skills.push(Arc::new(exec_skill));
-        }
-
         skills.push(Arc::new(ModelSkill));
 
         if let Some(neo4j) = &self.storage.neo4j {

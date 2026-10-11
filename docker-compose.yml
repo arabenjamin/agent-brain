@@ -210,7 +210,7 @@ services:
       # all, so a deployment without the sandbox service degrades cleanly.
       - SANDBOX_URL=http://sandbox:8000
       # Offline Rust compile/test sandbox. Unset => execute_code offers no
-      # `language: "rust"`. See rust-sandbox/ and RUST_FINETUNE_EXPERIMENT.md.
+      # `language: "rust"`. See plugins/sandbox/rust/ and RUST_FINETUNE_EXPERIMENT.md.
       - RUST_SANDBOX_URL=http://rust-sandbox:8000
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
@@ -223,7 +223,7 @@ services:
       # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,personal}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,personal}
       # More bundle dirs (colon-separated), searched after plugins/: the private
       # repo of the owner's own seeds (`personal`), mounted below.
       - PLUGINS_EXTRA_DIRS=/home/agent/plugins-private
@@ -427,7 +427,7 @@ services:
   # one restores the egress this design exists to remove.
   sandbox:
     build:
-      context: ./sandbox
+      context: ./plugins/sandbox/python
       dockerfile: Dockerfile
     read_only: true
     tmpfs:
@@ -449,13 +449,13 @@ services:
   #   - /work is tmpfs WITHOUT noexec: Rust compiles test binaries and build
   #     scripts and must run them. The network is still the boundary.
   #   - Crates are pre-fetched into the image at build time
-  #     (rust-sandbox/crates/Cargo.toml) and cargo runs --offline against that
+  #     (plugins/sandbox/rust/crates/Cargo.toml) and cargo runs --offline against that
   #     read-only cache. tmpfs pages count against mem_limit, hence 4g.
   #
   # Do NOT put this service on brain-internal or add a `ports:` mapping.
   rust-sandbox:
     build:
-      context: ./rust-sandbox
+      context: ./plugins/sandbox/rust
       dockerfile: Dockerfile
     read_only: true
     tmpfs:

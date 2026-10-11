@@ -7,7 +7,7 @@ parsed test summary. The isolation that matters lives in docker-compose.yml
 (no egress, no credentials, read-only root); this process adds per-run limits,
 path validation, and the offline cargo environment.
 
-Stdlib-only, like ../sandbox/server.py.
+Stdlib-only, like ../python/server.py.
 """
 
 import json

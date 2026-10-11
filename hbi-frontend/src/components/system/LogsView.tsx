@@ -77,7 +77,7 @@ export default function LogsView() {
           {LEVELS.map((l) => <option key={l} value={l}>{l}+</option>)}
         </select>
         <input className="ui-input lg-target" list="lg-targets" value={target} onChange={(e) => setTarget(e.target.value)}
-          placeholder="module, e.g. services::gpu_lease (‑prefix to drop)" title="Target prefixes, comma-separated; -prefix drops one" />
+          placeholder="module, e.g. agent_brain_llm::gpu_lease (‑prefix to drop)" title="Target prefixes, comma-separated; -prefix drops one" />
         <datalist id="lg-targets">
           {targets.map(([t]) => <option key={t} value={t} />)}
         </datalist>
