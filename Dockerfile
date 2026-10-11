@@ -18,6 +18,16 @@ COPY crates/models/Cargo.toml    ./crates/models/
 COPY crates/repository/Cargo.toml ./crates/repository/
 COPY crates/app/Cargo.toml       ./crates/app/
 COPY crates/plugin-api/Cargo.toml ./crates/plugin-api/
+COPY crates/llm/Cargo.toml        ./crates/llm/
+COPY crates/host/Cargo.toml ./crates/host/
+COPY crates/api/Cargo.toml ./crates/api/
+COPY crates/skills/Cargo.toml ./crates/skills/
+COPY crates/retrieve/Cargo.toml ./crates/retrieve/
+COPY crates/scheduler/Cargo.toml ./crates/scheduler/
+COPY crates/chat/Cargo.toml ./crates/chat/
+COPY crates/work/Cargo.toml ./crates/work/
+COPY crates/knowledge/Cargo.toml ./crates/knowledge/
+COPY crates/graph/Cargo.toml ./crates/graph/
 # In-tree plugin crates (workspace members plugins/*/crate).
 COPY plugins/osint-data/crate/Cargo.toml ./plugins/osint-data/crate/
 COPY plugins/media/crate/Cargo.toml ./plugins/media/crate/
@@ -32,6 +42,16 @@ RUN mkdir -p crates/protocol/src \
              crates/repository/src \
              crates/app/src \
              crates/plugin-api/src \
+             crates/llm/src \
+             crates/host/src \
+             crates/api/src \
+             crates/skills/src \
+             crates/retrieve/src \
+             crates/scheduler/src \
+             crates/chat/src \
+             crates/work/src \
+             crates/knowledge/src \
+             crates/graph/src \
              plugins/osint-data/crate/src \
              plugins/media/crate/src \
              plugins/alias-judge/crate/src \
@@ -42,6 +62,16 @@ RUN mkdir -p crates/protocol/src \
     echo "" > crates/repository/src/lib.rs && \
     echo "" > crates/app/src/lib.rs && \
     echo "" > crates/plugin-api/src/lib.rs && \
+    echo "" > crates/llm/src/lib.rs && \
+    echo "" > crates/host/src/lib.rs && \
+    echo "" > crates/api/src/lib.rs && \
+    echo "" > crates/skills/src/lib.rs && \
+    echo "" > crates/retrieve/src/lib.rs && \
+    echo "" > crates/scheduler/src/lib.rs && \
+    echo "" > crates/chat/src/lib.rs && \
+    echo "" > crates/work/src/lib.rs && \
+    echo "" > crates/knowledge/src/lib.rs && \
+    echo "" > crates/graph/src/lib.rs && \
     echo "" > plugins/osint-data/crate/src/lib.rs && \
     echo "" > plugins/media/crate/src/lib.rs && \
     echo "" > plugins/alias-judge/crate/src/lib.rs && \

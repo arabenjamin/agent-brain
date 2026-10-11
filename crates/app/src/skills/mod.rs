@@ -1,24 +1,14 @@
-pub mod agent;
-pub mod agent_runner;
-pub mod bundle_tools;
-pub mod dev_docs;
-pub mod exec;
-pub mod http;
-pub mod knowledge;
-pub mod mcp_client;
-pub mod model;
-pub mod plugin_manager;
-pub mod query;
-pub mod scheduler;
-pub mod search;
-pub mod search_engines;
-pub mod search_query;
-pub mod serde_flex;
-pub mod task;
-#[cfg(test)]
-pub mod test_helpers;
-pub mod todo;
-pub mod working_memory;
+// The skills live in `agent-brain-retrieve` and `agent-brain-skills`
+// (CORE_AND_PLUGINS_PLAN 6f) and keep their `skills::` paths here. The plugin
+// tools are in `agent-brain-host` with the plugin machinery.
+pub use agent_brain_retrieve::{
+    http, mcp_client, query, search, search_engines, search_query, serde_flex,
+};
+pub use agent_brain_skills::{
+    agent, agent_runner, dev_docs, exec, knowledge, model, scheduler, task, todo, working_memory,
+};
+
+pub use agent_brain_host::{bundle_tools, plugin_manager};
 
 pub use agent::AgentSkill;
 pub use agent_runner::AgentRunnerSkill;

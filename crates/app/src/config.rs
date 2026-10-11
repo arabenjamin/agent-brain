@@ -1,4 +1,5 @@
-use serde::Deserialize;
+pub use agent_brain_graph::logging::{LogFormat, LoggingConfig};
+use agent_brain_llm::llm::validate_go_duration;
 use std::env;
 
 /// Top-level configuration loaded from environment variables.
@@ -60,45 +61,6 @@ pub fn default_model_for(provider: &str) -> String {
         .unwrap_or_else(|| "granite4:latest".to_string())
 }
 
-/// Validate a Go duration string (`30m`, `2h`, `-1m`, `1h30m`) before it is sent
-/// to Ollama as `keep_alive`.
-///
-/// Ollama rejects a malformed `keep_alive` with a 400, and `keep_alive` rides on
-/// *every* generate/chat/embeddings request — so a typo in the env var would take
-/// down all LLM calls rather than degrade one. This fails closed: anything that
-/// doesn't parse is dropped with a warning and Ollama keeps its own default.
-///
-/// Note the bare-number case is deliberately rejected. Ollama accepts a raw JSON
-/// *number* as seconds, but we serialize the value as a string, and `"30"` is not
-/// a valid Go duration — so requiring a unit suffix keeps the two representations
-/// from diverging.
-pub(crate) fn validate_go_duration(s: &str) -> Option<String> {
-    const UNITS: [&str; 6] = ["ns", "us", "ms", "s", "m", "h"];
-
-    let valid = !s.is_empty() && {
-        // Must end in a known unit, and every character must be part of a
-        // number/unit sequence (covers compound forms like "1h30m").
-        let ends_in_unit = UNITS.iter().any(|u| s.ends_with(u));
-        let body_ok = s
-            .strip_prefix('-')
-            .unwrap_or(s)
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c.is_ascii_alphabetic());
-        let has_digit = s.chars().any(|c| c.is_ascii_digit());
-        ends_in_unit && body_ok && has_digit
-    };
-
-    if valid {
-        Some(s.to_string())
-    } else {
-        tracing::warn!(
-            value = %s,
-            "OLLAMA_KEEP_ALIVE is not a valid Go duration (e.g. '30m', '2h', '-1m' for indefinite) — ignoring"
-        );
-        None
-    }
-}
-
 /// Optional LLM overrides for the human-facing chat adapter.
 ///
 /// Any field left `None` falls through to the corresponding value in
@@ -137,13 +99,6 @@ impl ChatLlmConfig {
     }
 }
 
-/// Structured logging configuration.
-#[derive(Debug, Clone)]
-pub struct LoggingConfig {
-    pub level: String,
-    pub format: LogFormat,
-}
-
 /// Optional DuckDB telemetry sink and model catalog.
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
@@ -151,14 +106,6 @@ pub struct TelemetryConfig {
     pub db_path: Option<String>,
     /// Path to the YAML model catalog (default: `models.yaml`).
     pub model_catalog_path: String,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Pretty,
-    Json,
 }
 
 impl Config {

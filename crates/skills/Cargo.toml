@@ -1,0 +1,28 @@
+[package]
+name = "agent-brain-skills"
+version.workspace = true
+edition.workspace = true
+description = "Agent Brain's core tools: knowledge, tasks, todos, working memory, agents, scheduler, models, dev notes, sandboxes"
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+agent-brain-repository = { path = "../repository" }
+agent-brain-protocol = { path = "../protocol" }
+agent-brain-llm = { path = "../llm" }
+agent-brain-graph = { path = "../graph" }
+agent-brain-knowledge = { path = "../knowledge" }
+agent-brain-work = { path = "../work" }
+agent-brain-scheduler = { path = "../scheduler" }
+agent-brain-chat = { path = "../chat" }
+agent-brain-retrieve = { path = "../retrieve" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+neo4rs = { workspace = true }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

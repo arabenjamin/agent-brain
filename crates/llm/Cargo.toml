@@ -1,0 +1,21 @@
+[package]
+name = "agent-brain-llm"
+version.workspace = true
+edition.workspace = true
+description = "Agent Brain's LLM stack: providers, registry, routing policy, budget, gate, model selection"
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+agent-brain-repository = { path = "../repository" }
+agent-brain-plugin-api = { path = "../plugin-api" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+neo4rs = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

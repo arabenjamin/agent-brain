@@ -44,20 +44,20 @@ More: `project-docs/cli.md`. Endpoints: `POST/GET/DELETE /mcp`, `GET /health`, `
 
 ## Project Structure
 
-Cargo workspace; source is in `crates/*/src/`, not `src/`.
+Cargo workspace; source is in `crates/*/src/`, not `src/`. A crate depends only on those listed above it.
 
 ```
-crates/protocol/    agent-brain-protocol: MCP types, Skill trait, ToolHandler
-crates/models/      pure data types (agent_job, task, scheduled_task, procedure, provenance)
-crates/repository/  Neo4j + DuckDB layer (client.rs init_schema, agent_job.rs, telemetry.rs, temporal.rs)
-crates/app/src/
-  main.rs, cli.rs, config.rs, brain_core.rs (storage + LLM + skill registry + scheduler)
-  clients/chat/     ChatService — one round loop for every provider (round_loop.rs)
-  services/         knowledge/, llm*, routing/budget/provider_gate, model_router, queue, scheduler,
-                    agent_runner, context_builder, *_seeder, validation, cypher_guard, graph_schema
-  skills/           one file per skill (`list_capabilities` for live counts)
-  mcp/              server.rs, tools.rs, transport.rs, http_transport.rs (+ openai_compat.rs)
-Plugins:            plugins/<name>/ (plugin.yaml, seeds, crate/ on crates/plugin-api); models.yaml
+protocol/ models/ repository/   MCP types + Skill trait; data types; Neo4j + DuckDB layer
+llm/        providers, registry, routing, budget, gate, model selection
+graph/      plugin bundles, logging, clock, entity resolution, topics, snapshots
+knowledge/  notes, hybrid retrieval, reasoning, consolidation, store traits
+work/       queue + ToolHandler, workflows, validation, profiles/context, MCP client
+scheduler/  scheduler, items, run repair      chat/  ChatService round loop + sub-agents
+retrieve/   search, http/ingest_api, MCP tools, queries   skills/  other core tools
+api/        HBI REST      host/  plugin host, manage_plugin, self-model
+app/src/    main, cli, config, brain_core, mcp/ (server, transports); `services::`,
+            `skills::`, `clients::` re-export the crates above at their old paths
+Plugins:    plugins/<name>/ (plugin.yaml, seeds, crate/ on crates/plugin-api); models.yaml
 ```
 
 ## Rules that apply to most changes

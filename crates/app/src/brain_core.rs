@@ -43,41 +43,7 @@ use crate::services::SchedulerService;
 // BrainEvent — the internal event bus
 // ============================================================================
 
-/// Events emitted by the brain core and broadcast to all subscribers.
-///
-/// Transport adapters (HTTP, REST) subscribe via [`BrainCore::subscribe`] and
-/// route events to their own notification channels (e.g. SSE push to client).
-#[derive(Debug, Clone)]
-pub enum BrainEvent {
-    /// A background job completed successfully.
-    JobCompleted {
-        job_id: String,
-        tool_name: String,
-        session_id: Option<String>,
-        result_preview: Option<String>,
-    },
-    /// A background job failed but may be retried.
-    JobFailed {
-        job_id: String,
-        tool_name: String,
-        session_id: Option<String>,
-        error: String,
-    },
-    /// A background job exhausted all retries and is permanently dead.
-    JobDead {
-        job_id: String,
-        tool_name: String,
-        session_id: Option<String>,
-        error: String,
-    },
-    /// The brain created a proactive notification for the user.
-    AgentChatInitiated {
-        notification_id: String,
-        message: String,
-        /// Optional session the brain wants to continue (for context).
-        related_session_id: Option<String>,
-    },
-}
+pub use agent_brain_work::events::BrainEvent;
 
 /// Broadcast channel capacity for [`BrainEvent`].
 const BRAIN_EVENT_CAPACITY: usize = 256;
@@ -719,6 +685,7 @@ impl BrainCore {
                 queue: queue_arc.clone(),
                 codebase_dir: self.codebase.codebase_dir.clone(),
                 workspace_dir: self.codebase.workspace_dir.clone(),
+                router_source: crate::mcp::ROUTER_SOURCE,
             };
             let (plugin_skills, accepted) = crate::services::plugins::plugin_skills(
                 &crate::services::plugins::Plugins::global(),

@@ -112,12 +112,13 @@ export interface LogQuery {
  * Their warnings and errors always show.
  */
 export const ACTIVITY_TARGETS = [
-  "agent_brain::services::queue",
-  "agent_brain::services::scheduler",
-  "agent_brain::services::agent_runner",
-  "agent_brain::services::knowledge",
-  "agent_brain::skills",
-  "agent_brain::clients::chat",
+  "agent_brain_work::queue",
+  "agent_brain_scheduler::scheduler",
+  "agent_brain_chat::agent_runner",
+  "agent_brain_knowledge::knowledge",
+  "agent_brain_skills",
+  "agent_brain_retrieve",
+  "agent_brain_chat::chat",
   "agent_brain_repository::task",
   "agent_brain_repository::agent_job",
 ];

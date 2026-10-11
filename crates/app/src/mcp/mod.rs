@@ -17,9 +17,13 @@ pub mod http_transport;
 pub mod protocol;
 pub mod server;
 pub mod session;
-pub mod tools;
+pub use agent_brain_work::tools;
 pub mod transport;
 pub mod transport_trait;
+
+/// The HTTP transport's source, compiled in: its `.route(..)` calls are the
+/// core's routes (the developer plugin parses them).
+pub const ROUTER_SOURCE: &str = include_str!("http_transport.rs");
 
 pub use crate::brain_core::BrainCore;
 #[cfg(feature = "http-transport")]

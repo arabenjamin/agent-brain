@@ -6,12 +6,12 @@
 #   scripts/size_budget.sh            # table + check
 #   HARD_LIMIT=8000 scripts/size_budget.sh
 #
-# The `app` crate is exempt until Phase 6 splits it; it is reported, not failed.
+# Phase 6f split `app` into crates under the limit; nothing is exempt by default.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HARD_LIMIT="${HARD_LIMIT:-8000}"
-EXEMPT="${EXEMPT:-app}"
+EXEMPT="${EXEMPT:-}"
 
 count() {
   find "$1" -name '*.rs' -print0 | xargs -0 awk '

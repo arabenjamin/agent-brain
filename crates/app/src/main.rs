@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     // 2,000 lines: at a few lines per scheduler tick plus job lines, 500 held
     // only about an hour, too short to see what happened overnight.
     let log_buffer = agent_brain::logging::LogBuffer::new(2000);
-    logging::init_with_buffer(&config, Some(log_buffer.clone()));
+    logging::init_with_buffer(&config.logging, Some(log_buffer.clone()));
 
     info!(
         neo4j_uri = %config.database.uri,

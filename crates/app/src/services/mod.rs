@@ -1,41 +1,18 @@
-pub mod agent_runner;
-pub mod architecture;
-pub mod budget;
-pub mod clock;
-pub mod context_builder;
-pub mod cypher_guard;
-pub mod dev_notes;
-pub mod entity_resolution;
-pub mod gpu_lease;
-pub mod graph_schema;
-pub mod item_dispatch;
-pub mod items;
-pub mod knowledge;
-pub mod llm;
-pub mod llm_providers;
-pub mod mcp_client;
-pub mod model_config;
-pub mod model_router;
-pub mod plugin_host;
-pub mod plugins;
-pub mod profiles;
-pub mod provider_gate;
-pub mod provider_registry;
-pub mod queue;
-pub mod repair;
-pub mod retrieval_eval;
-pub mod routing;
-pub mod scheduler;
-pub mod self_model;
-pub mod shared_llm;
-pub mod snapshot;
-pub mod store_impls;
-pub mod topics;
-pub mod traits;
-pub mod validation;
-pub mod web_result;
-pub mod workflow_seeder;
-pub mod workflows;
+// Modules split into their own crates (CORE_AND_PLUGINS_PLAN 6f) keep their
+// `services::` paths here.
+pub use agent_brain_chat::agent_runner;
+pub use agent_brain_graph::{architecture, clock, entity_resolution, snapshot, topics};
+pub use agent_brain_host::{plugin_host, plugins, self_model};
+pub use agent_brain_knowledge::{dev_notes, knowledge, retrieval_eval, traits, web_result};
+pub use agent_brain_llm::{
+    budget, gpu_lease, llm, llm_providers, model_config, model_router, provider_gate,
+    provider_registry, routing, shared_llm,
+};
+pub use agent_brain_scheduler::{item_dispatch, items, repair, scheduler};
+pub use agent_brain_work::{
+    context_builder, cypher_guard, graph_schema, mcp_client, profiles, queue, store_impls,
+    validation, workflow_seeder, workflows,
+};
 
 pub use agent_runner::{
     AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,
@@ -48,4 +25,5 @@ pub use queue::{ChainStep, QueueService, WorkerConfig};
 pub use scheduler::{SchedulerConfig, SchedulerService};
 pub use shared_llm::SharedLlm;
 pub use snapshot::SnapshotService;
-pub use traits::{KnowledgeStore, LlmProvider, TaskStore, WorkingMemoryStore};
+pub use store_impls::{TaskStore, WorkingMemoryStore};
+pub use traits::{KnowledgeStore, LlmProvider};

@@ -1,0 +1,31 @@
+[package]
+name = "agent-brain-retrieve"
+version.workspace = true
+edition.workspace = true
+description = "Agent Brain's retrieval tools: web search, HTTP and API ingest, MCP client, graph and telemetry queries"
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+agent-brain-repository = { path = "../repository" }
+agent-brain-protocol = { path = "../protocol" }
+agent-brain-llm = { path = "../llm" }
+agent-brain-graph = { path = "../graph" }
+agent-brain-knowledge = { path = "../knowledge" }
+agent-brain-work = { path = "../work" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+neo4rs = { workspace = true }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = "2"
+uuid = { workspace = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"

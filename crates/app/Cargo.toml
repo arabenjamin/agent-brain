@@ -17,13 +17,16 @@ agent-brain-models = { path = "../models" }
 agent-brain-repository = { path = "../repository" }
 agent-brain-protocol = { path = "../protocol" }
 agent-brain-plugin-api = { path = "../plugin-api" }
-# In-tree plugin crates, compiled in and enabled at runtime (services/plugins.rs).
-agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate" }
-agent-brain-plugin-media = { path = "../../plugins/media/crate" }
-agent-brain-plugin-alias-judge = { path = "../../plugins/alias-judge/crate" }
-agent-brain-plugin-reference = { path = "../../plugins/reference/crate" }
-agent-brain-plugin-developer = { path = "../../plugins/developer/crate" }
-agent-brain-plugin-epistemics = { path = "../../plugins/epistemics/crate" }
+agent-brain-llm = { path = "../llm" }
+agent-brain-host = { path = "../host" }
+agent-brain-api = { path = "../api", optional = true }
+agent-brain-skills = { path = "../skills" }
+agent-brain-retrieve = { path = "../retrieve" }
+agent-brain-scheduler = { path = "../scheduler" }
+agent-brain-chat = { path = "../chat" }
+agent-brain-work = { path = "../work" }
+agent-brain-knowledge = { path = "../knowledge" }
+agent-brain-graph = { path = "../graph" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -34,17 +37,8 @@ neo4rs = { workspace = true }
 # HTTP client
 reqwest = { workspace = true }
 
-# URL parsing
-url = "2"
-
-# Regular expressions
-regex = "1"
-
 # Serialization
-serde = { workspace = true }
 serde_json = { workspace = true }
-
-jsonschema = { workspace = true }
 
 # Date/time and UUIDs
 chrono = { workspace = true }
@@ -64,9 +58,6 @@ tracing-subscriber = { workspace = true }
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
-# YAML parsing (model catalog)
-serde_yaml = { workspace = true }
-
 # HTTP transport — Axum-based MCP server (optional — enable with 'http-transport' feature)
 axum = { version = "0.8", features = ["http2"], optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
@@ -76,17 +67,8 @@ async-stream = { version = "0.3", optional = true }
 async-trait = "0.1"
 futures-util = "0.3"
 
-
-# Gzip compression for snapshot files
-flate2 = "1"
-zip = { version = "6", default-features = false, features = ["deflate"] }
-
 [features]
-http-transport = ["dep:axum", "dep:tower-http", "dep:tower",
+http-transport = ["dep:agent-brain-api", "dep:axum", "dep:tower-http", "dep:tower",
                   "dep:tokio-stream", "dep:async-stream"]
 telemetry      = ["agent-brain-repository/telemetry"]
 default        = ["http-transport", "telemetry"]
-
-[dev-dependencies]
-wiremock = "0.6"
-tempfile = "3"

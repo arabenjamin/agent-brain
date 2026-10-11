@@ -1,0 +1,32 @@
+[package]
+name = "agent-brain-work"
+version.workspace = true
+edition.workspace = true
+description = "Agent Brain's work layer: job queue, tool dispatch, workflows, profiles and context, stores, MCP client"
+
+[dependencies]
+agent-brain-models = { path = "../models" }
+agent-brain-repository = { path = "../repository" }
+agent-brain-protocol = { path = "../protocol" }
+agent-brain-plugin-api = { path = "../plugin-api" }
+agent-brain-llm = { path = "../llm" }
+agent-brain-graph = { path = "../graph" }
+agent-brain-knowledge = { path = "../knowledge" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+jsonschema = { workspace = true }
+neo4rs = { workspace = true }
+regex = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
