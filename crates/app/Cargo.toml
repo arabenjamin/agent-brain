@@ -16,6 +16,9 @@ path = "src/main.rs"
 agent-brain-models = { path = "../models" }
 agent-brain-repository = { path = "../repository" }
 agent-brain-protocol = { path = "../protocol" }
+agent-brain-plugin-api = { path = "../plugin-api" }
+# In-tree plugin crates, compiled in and enabled at runtime (services/plugins.rs).
+agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate" }
 
 # Async runtime
 tokio = { workspace = true }

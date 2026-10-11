@@ -133,13 +133,9 @@ impl EventQuery {
 
 impl AcledClient {
     /// `None` unless both `ACLED_EMAIL` and `ACLED_PASSWORD` are set.
-    pub fn from_env() -> Option<Self> {
-        let email = std::env::var("ACLED_EMAIL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())?;
-        let password = std::env::var("ACLED_PASSWORD")
-            .ok()
-            .filter(|v| !v.is_empty())?;
+    pub fn from_ctx(ctx: &agent_brain_plugin_api::PluginContext) -> Option<Self> {
+        let email = ctx.env("ACLED_EMAIL")?;
+        let password = ctx.env("ACLED_PASSWORD")?;
         Some(Self {
             // Explicit agent: ACLED's Cloudflare blocks some default ones
             // outright (error 1010 for Python's urllib, 2026-10-06).

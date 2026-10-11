@@ -57,7 +57,7 @@ crates/app/src/
                     agent_runner, context_builder, *_seeder, validation, cypher_guard, graph_schema
   skills/           one file per skill (`list_capabilities` for live counts)
   mcp/              server.rs, tools.rs, transport.rs, http_transport.rs (+ openai_compat.rs)
-Seed bundles:       plugins/core/ (workflows/ contexts/ sources/ schemas/ topics/ …); models.yaml
+Plugins:            plugins/<name>/ (plugin.yaml, seeds, crate/ on crates/plugin-api); models.yaml
 ```
 
 ## Rules that apply to most changes

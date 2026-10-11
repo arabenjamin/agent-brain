@@ -1,0 +1,6 @@
+# Open-source conflict and event data. Rust code in crate/ (acled_events).
+name: osint-data
+version: 1
+description: "ACLED conflict-event data (acled_events): live queries, summarised, with ACLED's attribution."
+requires:
+  env: [ACLED_EMAIL, ACLED_PASSWORD]

@@ -1,0 +1,9 @@
+[package]
+name = "agent-brain-plugin-api"
+version.workspace = true
+edition.workspace = true
+
+# The only brain crate an in-process plugin may depend on (with external
+# crates). scripts/check_plugin_deps.sh enforces it in CI.
+[dependencies]
+agent-brain-protocol = { path = "../protocol" }

@@ -17,20 +17,27 @@ COPY crates/protocol/Cargo.toml ./crates/protocol/
 COPY crates/models/Cargo.toml    ./crates/models/
 COPY crates/repository/Cargo.toml ./crates/repository/
 COPY crates/app/Cargo.toml       ./crates/app/
+COPY crates/plugin-api/Cargo.toml ./crates/plugin-api/
+# In-tree plugin crates (workspace members plugins/*/crate).
+COPY plugins/osint-data/crate/Cargo.toml ./plugins/osint-data/crate/
 
 # Create dummy source files matching the workspace structure so that
 # cargo can resolve and compile all dependencies without the real source.
 RUN mkdir -p crates/protocol/src \
              crates/models/src \
              crates/repository/src \
-             crates/app/src && \
+             crates/app/src \
+             crates/plugin-api/src \
+             plugins/osint-data/crate/src && \
     echo "" > crates/protocol/src/lib.rs && \
     echo "" > crates/models/src/lib.rs && \
     echo "" > crates/repository/src/lib.rs && \
     echo "" > crates/app/src/lib.rs && \
+    echo "" > crates/plugin-api/src/lib.rs && \
+    echo "" > plugins/osint-data/crate/src/lib.rs && \
     echo "fn main() {}" > crates/app/src/main.rs && \
     cargo build --release 2>/dev/null || true && \
-    rm -rf crates/*/src \
+    rm -rf crates/*/src plugins/*/crate/src \
            target/release/.fingerprint/agent* \
            target/release/deps/agent* \
            target/release/deps/libagent* \
@@ -38,6 +45,7 @@ RUN mkdir -p crates/protocol/src \
 
 # Copy actual source code
 COPY crates ./crates
+COPY plugins ./plugins
 
 # Build the application
 RUN cargo build --release

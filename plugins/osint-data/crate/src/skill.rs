@@ -2,7 +2,7 @@
 //!
 //! Registered only when `ACLED_EMAIL` and `ACLED_PASSWORD` are set: a tool
 //! that can only fail would cost every caller a wasted call. Licence and
-//! storage rules live in `services/acled.rs`.
+//! storage rules live in `client.rs`.
 
 use std::sync::Arc;
 
@@ -11,9 +11,8 @@ use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::services::acled::{AcledClient, EVENT_TYPES, EventQuery, MAX_LIMIT, summarize_events};
-use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
+use crate::client::{AcledClient, EVENT_TYPES, EventQuery, MAX_LIMIT, summarize_events};
+use agent_brain_plugin_api::{PluginContext, Skill, ToolCallResult, ToolDefinition, parse_args};
 
 /// Sample rows returned when the caller names no `sample`.
 const DEFAULT_SAMPLE: usize = 15;
@@ -71,8 +70,8 @@ fn parse_date(field: &str, v: Option<&str>) -> Result<Option<NaiveDate>, String>
 }
 
 impl AcledSkill {
-    pub fn from_env() -> Option<Self> {
-        AcledClient::from_env().map(|c| Self {
+    pub fn from_ctx(ctx: &PluginContext) -> Option<Self> {
+        AcledClient::from_ctx(ctx).map(|c| Self {
             client: Arc::new(c),
         })
     }

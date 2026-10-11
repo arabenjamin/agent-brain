@@ -223,6 +223,12 @@ pub async fn sync_self_model(
     let mut stats = SelfModelStats::default();
 
     // ── ToolDef ──────────────────────────────────────────────────────────
+    // Which plugin registered each tool (none = the core).
+    let plugin_of: std::collections::HashMap<String, String> =
+        crate::services::plugins::code_status()
+            .into_iter()
+            .flat_map(|(plugin, c)| c.tools.into_iter().map(move |t| (t, plugin.clone())))
+            .collect();
     let mut tool_names: Vec<String> = Vec::new();
     for (skill_name, tools) in skills_with_tools {
         for t in tools {
@@ -246,19 +252,34 @@ pub async fn sync_self_model(
                         "MERGE (d:ToolDef {name: $name}) \
                          SET d.description = $description, d.skill = $skill, \
                              d.arg_names = $arg_names, d.required_args = $required_args, \
-                             d.synced_at = datetime($now)",
+                             d.plugin = $plugin, d.synced_at = datetime($now)",
                     )
                     .param("name", t.name.as_str())
                     .param("description", t.description.as_str())
                     .param("skill", skill_name.as_str())
                     .param("arg_names", arg_names)
                     .param("required_args", required_args)
+                    .param(
+                        "plugin",
+                        plugin_of.get(&t.name).cloned().unwrap_or_default(),
+                    )
                     .param("now", now.as_str()),
                 )
                 .await?;
             stats.tools += 1;
         }
     }
+    // A plugin's tool gone because its plugin is off is not a removal: no
+    // tombstone (it comes back with the plugin).
+    neo4j
+        .run(
+            neo4rs::query(
+                "MATCH (d:ToolDef) WHERE NOT d.name IN $names \
+                 AND coalesce(d.plugin, '') <> '' DETACH DELETE d",
+            )
+            .param("names", tool_names.clone()),
+        )
+        .await?;
     // A tool that vanished leaves a tombstone; one that came back loses it.
     neo4j
         .run(

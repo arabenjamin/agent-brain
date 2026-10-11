@@ -10,8 +10,11 @@
 //! A bundle whose manifest is missing or wrong, or whose `requires` are not
 //! met, is skipped with the reason; `GET /api/plugins` shows it.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
+
+use agent_brain_plugin_api::{Plugin, PluginContext};
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -317,6 +320,110 @@ fn core_only_warnings(root: &Path, name: &str) -> Vec<String> {
             format!("{k}/ is read from the core bundle only; this plugin's {k}/ is not loaded")
         })
         .collect()
+}
+
+// ── In-process plugins (Phase 3c) ──────────────────────────────────────────
+
+/// The plugin crates compiled into this binary. Each is instantiated only
+/// when its bundle loaded.
+pub fn compiled() -> Vec<Arc<dyn Plugin>> {
+    vec![Arc::new(agent_brain_plugin_osint_data::OsintData)]
+}
+
+/// What a bundle's Rust code contributed, or why it contributed nothing.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct CodeStatus {
+    pub tools: Vec<String>,
+    pub error: Option<String>,
+}
+
+fn code_cell() -> &'static RwLock<HashMap<String, CodeStatus>> {
+    static C: OnceLock<RwLock<HashMap<String, CodeStatus>>> = OnceLock::new();
+    C.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// The code status recorded at startup, by plugin (for `GET /api/plugins`).
+pub fn code_status() -> HashMap<String, CodeStatus> {
+    code_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// The skills of every compiled plugin whose bundle loaded. `taken` holds the
+/// tool names already registered (the core's); a plugin that would claim one
+/// of them, or one an earlier plugin claimed, is refused whole and the reason
+/// recorded. A loaded bundle with a `crate/` this binary did not compile is
+/// reported too. Records the result for [`code_status`].
+pub fn plugin_skills(
+    plugins: &Plugins,
+    compiled: &[Arc<dyn Plugin>],
+    taken: &[String],
+    env: agent_brain_plugin_api::EnvFn,
+) -> Vec<Arc<dyn agent_brain_plugin_api::Skill>> {
+    let mut claimed: Vec<String> = taken.to_vec();
+    let mut status: HashMap<String, CodeStatus> = HashMap::new();
+    let mut out: Vec<Arc<dyn agent_brain_plugin_api::Skill>> = Vec::new();
+    for b in plugins.loaded() {
+        let Some(plugin) = compiled.iter().find(|p| p.name() == b.name) else {
+            if b.root.join("crate").is_dir() {
+                let error =
+                    "the bundle has a crate/ that this binary was not built with".to_string();
+                warn!(plugin = %b.name, "{error}");
+                status.insert(
+                    b.name.clone(),
+                    CodeStatus {
+                        tools: vec![],
+                        error: Some(error),
+                    },
+                );
+            }
+            continue;
+        };
+        let ctx = PluginContext::new(&b.name, Arc::clone(&env));
+        let skills = plugin.tools(&ctx);
+        let names: Vec<String> = skills
+            .iter()
+            .flat_map(|s| s.tools().into_iter().map(|t| t.name))
+            .collect();
+        let clash: Vec<&String> = names
+            .iter()
+            .enumerate()
+            .filter(|(i, n)| claimed.contains(n) || names[..*i].contains(n))
+            .map(|(_, n)| n)
+            .collect();
+        if !clash.is_empty() {
+            let error = format!(
+                "tool name already taken: {}; the plugin's tools are left out",
+                clash
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            tracing::error!(plugin = %b.name, "{error}");
+            status.insert(
+                b.name.clone(),
+                CodeStatus {
+                    tools: vec![],
+                    error: Some(error),
+                },
+            );
+            continue;
+        }
+        info!(plugin = %b.name, tools = %names.join(", "), "Plugin tools registered");
+        claimed.extend(names.iter().cloned());
+        status.insert(
+            b.name.clone(),
+            CodeStatus {
+                tools: names,
+                error: None,
+            },
+        );
+        out.extend(skills);
+    }
+    *code_cell().write().unwrap_or_else(|e| e.into_inner()) = status;
+    out
 }
 
 // ── ON-CREATE seeds: source lists, media sources, MCP servers ──────────────
@@ -731,6 +838,108 @@ mod tests {
             Some("media"),
         );
         assert_eq!(unavailable_reason(&taken, &live, &mcp, &loaded), None);
+    }
+
+    struct Fake(&'static str, Vec<&'static str>);
+    struct FakeSkill(Vec<&'static str>);
+
+    #[async_trait::async_trait]
+    impl agent_brain_plugin_api::Skill for FakeSkill {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn tools(&self) -> Vec<agent_brain_plugin_api::ToolDefinition> {
+            self.0
+                .iter()
+                .map(|n| {
+                    serde_json::from_value(
+                        serde_json::json!({"name": n, "description": "", "inputSchema": {}}),
+                    )
+                    .unwrap()
+                })
+                .collect()
+        }
+        async fn execute(
+            &self,
+            _: &str,
+            _: Option<serde_json::Value>,
+        ) -> Option<agent_brain_plugin_api::ToolCallResult> {
+            None
+        }
+    }
+
+    impl Plugin for Fake {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn tools(&self, _: &PluginContext) -> Vec<Arc<dyn agent_brain_plugin_api::Skill>> {
+            vec![Arc::new(FakeSkill(self.1.clone()))]
+        }
+    }
+
+    #[test]
+    fn a_plugin_that_would_shadow_a_tool_is_refused_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        bundle(d, "core", "name: core\n");
+        for n in ["good", "shadow", "twice", "idle"] {
+            bundle(d, n, &format!("name: {n}\n"));
+        }
+        bundle(d, "nocode", "name: nocode\n");
+        std::fs::create_dir_all(d.join("nocode").join("crate")).unwrap();
+        let enabled: Vec<String> = ["good", "shadow", "twice", "nocode"]
+            .map(String::from)
+            .to_vec();
+        let p = Plugins::load(d, &enabled, &|_| None);
+        let compiled: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(Fake("good", vec!["good_tool"])),
+            Arc::new(Fake("shadow", vec!["search_web", "other"])),
+            Arc::new(Fake("twice", vec!["good_tool"])),
+            Arc::new(Fake("idle", vec!["idle_tool"])),
+        ];
+        let skills = plugin_skills(
+            &p,
+            &compiled,
+            &["search_web".into()],
+            Arc::new(|_: &str| None),
+        );
+        let names: Vec<String> = skills
+            .iter()
+            .flat_map(|s| s.tools())
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["good_tool"],
+            "only the plugin with free names registers; an un-enabled one never runs"
+        );
+        let st = code_status();
+        assert_eq!(st["good"].tools, ["good_tool"]);
+        assert!(
+            st["shadow"]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("search_web")
+        );
+        assert!(st["twice"].error.as_deref().unwrap().contains("good_tool"));
+        assert!(
+            st["nocode"]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("not built with")
+        );
+        assert!(!st.contains_key("idle"));
+    }
+
+    #[test]
+    fn every_compiled_plugin_has_a_bundle() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        for plugin in compiled() {
+            let m = read_manifest(&dir.join(plugin.name()), plugin.name());
+            assert!(m.is_ok(), "{}: {:?}", plugin.name(), m.err());
+        }
     }
 
     #[test]

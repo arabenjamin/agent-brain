@@ -32,6 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets
+      - run: scripts/check_plugin_deps.sh
       - run: cargo test --lib
 
   # ---------------------------------------------------------------------------
@@ -69,6 +70,9 @@ jobs:
 
       - name: Unit tests
         run: cargo test --lib
+
+      - name: Plugin crates depend only on plugin-api
+        run: scripts/check_plugin_deps.sh
 
       - name: Release build
         run: cargo build --release

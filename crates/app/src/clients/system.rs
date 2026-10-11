@@ -408,10 +408,12 @@ pub async fn handle_health(Extension(state): Extension<Arc<RestState>>) -> impl 
 
 /// GET /api/plugins — every bundle in `PLUGINS_DIR`: whether it loaded and
 /// why not, what it ships (files per seed kind, workflows seeded from it),
-/// and every workflow that cannot run, with the reason.
+/// what its Rust code registered (or why nothing), and every workflow that
+/// cannot run, with the reason.
 pub async fn handle_plugins(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
     use crate::services::plugins::{CORE_ONLY_KINDS, MERGED_KINDS, Plugins};
     let plugins = Plugins::global();
+    let code = crate::services::plugins::code_status();
     let workflows = match state.neo4j.as_ref() {
         Some(n) => n.list_workflows(false).await.map_err(|e| e.to_string()),
         None => Err("Neo4j not available".into()),
@@ -430,6 +432,10 @@ pub async fn handle_plugins(Extension(state): Extension<Arc<RestState>>) -> impl
                 })
                 .collect();
             v["files"] = Value::Object(files);
+            // What its Rust code contributed, or why nothing (plugins::plugin_skills).
+            if let Some(c) = code.get(&b.name) {
+                v["code"] = json!(c);
+            }
             if let Ok(wfs) = &workflows {
                 v["workflows"] = json!(
                     wfs.iter()

@@ -654,15 +654,6 @@ impl BrainCore {
             )));
         }
 
-        // ACLED conflict-event data. Absent credentials the tool is not
-        // registered at all, rather than registered and always failing.
-        match crate::skills::acled::AcledSkill::from_env() {
-            Some(acled) => skills.push(Arc::new(acled)),
-            None => debug!(
-                "ACLED not configured (ACLED_EMAIL/ACLED_PASSWORD) — acled_events not registered"
-            ),
-        }
-
         // Generic Neo4j + DuckDB primitives.
         skills.push(Arc::new(QuerySkill::new(
             self.storage.neo4j.clone(),
@@ -739,6 +730,23 @@ impl BrainCore {
                 AgentRunnerSkill::new(Arc::clone(&self.agent_runner))
                     .with_codebase_dir(self.codebase.codebase_dir.clone()),
             ));
+        }
+
+        // In-process plugins whose bundles loaded (services/plugins.rs). They
+        // come after every core skill and before DynamicSkill; a plugin that
+        // would take a name already registered is refused whole.
+        {
+            let taken: Vec<String> = skills
+                .iter()
+                .flat_map(|s| s.tools().into_iter().map(|t| t.name))
+                .collect();
+            let plugin_skills = crate::services::plugins::plugin_skills(
+                &crate::services::plugins::Plugins::global(),
+                &crate::services::plugins::compiled(),
+                &taken,
+                Arc::new(|k: &str| std::env::var(k).ok()),
+            );
+            skills.extend(plugin_skills);
         }
 
         // Runtime-defined tools last: a DynamicTool can never shadow a built-in.
