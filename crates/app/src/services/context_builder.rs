@@ -79,6 +79,11 @@ pub struct ContextProfile {
     /// `requires` are available (`services/profiles.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<crate::services::profiles::PromptSection>,
+    /// Chat sessions whose id starts with one of these run this profile when
+    /// the request names none: a workflow that opens a session for replies
+    /// (`notify_user` with a session id) owns the replies, however terse.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_prefixes: Vec<String>,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].
@@ -121,6 +126,18 @@ pub struct Protocol {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<ProtocolStep>,
+}
+
+/// See [`ContextBuilderService::profile_for_session`].
+fn session_owner<'a>(
+    profiles: impl Iterator<Item = &'a ContextProfile>,
+    session: &str,
+) -> Option<String> {
+    profiles
+        .flat_map(|p| p.session_prefixes.iter().map(move |x| (x, &p.name)))
+        .filter(|(x, _)| !x.is_empty() && session.starts_with(x.as_str()))
+        .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(b.1.cmp(a.1)))
+        .map(|(_, n)| n.clone())
 }
 
 /// Whether a `pre_load_query` should run as Cypher rather than as a keyword.
@@ -391,6 +408,12 @@ impl ContextBuilderService {
     /// Return a cloned profile by name.
     pub async fn get_profile(&self, name: &str) -> Option<ContextProfile> {
         self.profiles.read().await.get(name).cloned()
+    }
+
+    /// The profile that claims `session` by one of its `session_prefixes`
+    /// (the longest prefix wins, then the name, so the pick is stable).
+    pub async fn profile_for_session(&self, session: &str) -> Option<String> {
+        session_owner(self.profiles.read().await.values(), session)
     }
 
     /// Return all loaded profiles sorted by name.
@@ -882,6 +905,24 @@ fn protocol_result_text(result: &agent_brain_protocol::ToolCallResult) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_belongs_to_the_profile_with_the_longest_prefix() {
+        let p = |name: &str, prefixes: &[&str]| -> ContextProfile {
+            serde_json::from_value(serde_json::json!({
+                "name": name, "description": "d", "session_prefixes": prefixes,
+            }))
+            .unwrap()
+        };
+        let all = [p("a", &["job"]), p("b", &["jobsearch-"]), p("c", &[""])];
+        assert_eq!(
+            session_owner(all.iter(), "jobsearch-2026-10-11").as_deref(),
+            Some("b")
+        );
+        assert_eq!(session_owner(all.iter(), "jobs").as_deref(), Some("a"));
+        // An empty prefix claims nothing.
+        assert_eq!(session_owner(all.iter(), "chat-1"), None);
+    }
 
     /// Every shipped context profile (except the boot/init protocol files, which
     /// the loader skips) must deserialize as a `ContextProfile`. The loader only

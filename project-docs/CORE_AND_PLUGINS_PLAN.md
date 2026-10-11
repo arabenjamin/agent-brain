@@ -368,6 +368,20 @@ Rule: `dev_docs get plugins/api`.
   - `eval-retrieval` 0.880 / 0.800, unchanged.
   - Tests: 806 core and 20 developer; five plugin crates pass the dependency check.
 
+**Pack 5, `personal` (2026-10-11; owner asked for the private repo to be initialised locally, the remote to come later).**
+- **Where it lives.** `../agent-brain-personal` (its own git repo, `main`, no remote yet), bundle `personal/`. Compose mounts it read-only at `/home/agent/plugins-private` (`PLUGINS_PRIVATE_HOST_DIR` overrides the host path) and sets `PLUGINS_EXTRA_DIRS` to it, a new loader setting: more bundle dirs, searched after `plugins/` and before the runtime dir. `manage_plugin` refuses their names.
+- **Moved (16 files).** Workflows `daily-news` (the Detroit brief, the sports filter, the owner's email in a User-Agent), `ai-dev-board-job-search`, `off-grid-networking-monitor`, `api-scout`; profiles `job-applicant` and `api-scout`; the JOB APPLICATION RULE, out of `general.yaml` into an `extends: general` file; topics `my-job-search`, `michigan`, `off-grid-networking`, `nia`; source list `michigan-news`; MCP servers `aidevboard` and `worklittle`. `general.yaml`'s NIA and off-grid examples are rewritten generically.
+- **Topics became a merged kind.** One topic per file, stamped `plugin` on `(:Topic)`; `_scope.yaml` still from the core only; a plugin cannot replace a core topic. When the plugin is off its topics stay in the graph with their notes (sync never deletes them), out of the classifier's prompt.
+- **Found live and fixed: turning a plugin off reclassified every note.** The topic version hashed only the offered topics, so the smaller set changed it and the idle assigner began re-judging all 14K notes (64 done, deleting their edges to the dormant topics, before `personal` went back on). Dormant topics now count toward the version, and the classifier leaves a note's edges to them alone. Notes made while a plugin is off are not offered its topics when it returns; that is the price of not re-judging everything.
+- **The `jobsearch-` hardcode in chat is gone.** A profile declares `session_prefixes`; a chat session whose id starts with one runs that profile unless the request names one (`job-applicant` declares `jobsearch-`).
+- **Left in the core, deliberately.** Test fixtures that mention Detroit or the job search, `demonyms` (geography), and `deep-dive-pick`'s "No sports." line.
+- **Verified live.**
+  - `personal` loads from `/home/agent/plugins-private/personal`. Its four workflows keep their `enabled` and next-run times; topics keep their notes (436, 171, 35, 20) under an unchanged version; `general` gets the job-application section from the plugin.
+  - A chat in a `jobsearch-` session ran `job-applicant` (the test session was deleted after).
+  - With `personal` off, init-db included: 8 topics offered and the same version, the 4 dormant topics kept with their notes (`GET /api/topics` now shows `plugin` and `dormant`), coverage identical, nothing waiting; the four workflows unavailable with the reason, its profiles and the `general` section gone, no profile warnings. Back on, all available.
+  - One runtime (graph-owned) workflow carries the `nia` topic label. It is not in the repo and still runs with `personal` off; the label only matters when it is edited.
+  - `eval-retrieval` 0.880 / 0.800, unchanged. 808 core tests; clippy clean.
+
 ## 9. Phases 5–6, and measurements
 
 **Phase 5 — chat as a modal** (independent of the others; can run any time). Ctrl-K stays navigation. **Ctrl-J opens an Ask modal** with an agent picker (default the front-door profile), the session list, and the context dock. The Chat workspace and `ChatPanel` go. Old `#/chat…` links and `notify_user`'s `related_session_id` (e.g. a resumable `jobsearch-{{date}}` session) open the modal on that session; nothing that links to chat today may dead-end.

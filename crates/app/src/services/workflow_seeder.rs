@@ -316,7 +316,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert!(checked > 20, "only {checked} workflows found");
+        assert!(checked >= 15, "only {checked} workflows found");
         assert_eq!(
             defaults.len(),
             1,

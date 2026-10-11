@@ -404,8 +404,8 @@ async fn run_init_db(config: &Config) -> Result<()> {
     info!("Database schema initialized successfully");
 
     // Topics first: a workflow's `topic` is checked against them, and the
-    // graph's set includes topics created in the HBI. From the core bundle's
-    // topics/*.yaml; notes are classified later, by the idle-time assigner in
+    // graph's set includes topics created in the HBI. From the core's
+    // and loaded plugins' topics/*.yaml; notes are classified later, by the idle-time assigner in
     // `serve`.
     let topics = agent_brain::services::topics::Topics::global();
     match agent_brain::services::topics::sync(&client, &topics).await {

@@ -865,7 +865,6 @@ mod tests {
         for (file, want) in [
             ("GeneralDefault-Orchrestator.yaml", DataClass::Private),
             ("researcher.yaml", DataClass::Private),
-            ("api-scout.yaml", DataClass::Public),
         ] {
             let text = std::fs::read_to_string(dir.join(file)).expect("profile readable");
             let p: ContextProfile = serde_yaml::from_str(&text).expect("profile parses");

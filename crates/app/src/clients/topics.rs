@@ -67,7 +67,7 @@ pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> impl In
     let rows = match neo4j
         .execute(neo4rs::query(
             "MATCH (t:Topic) \
-             RETURN t.name AS name, t.label AS label, t.description AS description, \
+             RETURN t.name AS name, t.label AS label, t.description AS description, t.plugin AS plugin, \
                     COLLECT { MATCH (s:Workflow) WHERE s.topic = t.name RETURN s.name } AS schedules, t.source_lists AS source_lists, \
                     COUNT { (:Note)-[:IN_TOPIC]->(t) } AS notes, \
                     COUNT { (:Note)-[r:IN_TOPIC]->(t) WHERE r.rank = 1 } AS main, \
@@ -91,6 +91,10 @@ pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> impl In
                 "notes": r.get::<i64>("notes").unwrap_or(0),
                 "main": r.get::<i64>("main").unwrap_or(0),
                 "week": r.get::<i64>("week").unwrap_or(0),
+                "plugin": r.get::<String>("plugin").ok(),
+                // Its plugin is off: kept with its notes, not offered to the
+                // classifier (`services/topics.rs`).
+                "dormant": r.get::<String>("name").ok().is_some_and(|n| topics.get(&n).is_none()),
             })
         })
         .collect();
@@ -454,7 +458,7 @@ pub async fn handle_topic(
         },
         // The topics/*.yaml definition, when one exists: what "reset" restores,
         // and what a runtime-owned topic shadows.
-        "seed": Topics::load_dir(&topic_service::topics_dir()).get(&name).cloned(),
+        "seed": Topics::load_bundles().get(&name).cloned(),
         "reclassify": reclassify_status(neo4j).await,
         "schedules": schedules,
         "entities": entities,
@@ -536,6 +540,7 @@ fn body_def(body: &Value, name: Option<&str>) -> Result<TopicDef, String> {
         source_lists,
         assign,
         members,
+        plugin: old.and_then(|d| d.plugin.clone()),
         name,
     })
 }

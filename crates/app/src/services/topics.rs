@@ -73,6 +73,10 @@ pub struct TopicDef {
     /// classifies nothing again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// The plugin bundle whose `topics/` declares it (`None` = the core).
+    /// Set by the loader, never read from the file; not part of the version.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
 }
 
 /// How notes get into a topic.
@@ -175,7 +179,9 @@ pub struct Scope {
 pub struct Topics {
     pub defs: Vec<TopicDef>,
     pub scope: Scope,
-    /// Changes whenever a name, a description or the scope changes.
+    /// Changes whenever a name, a description or the scope changes. Dormant
+    /// topics (their plugin is off) count too, so turning a plugin off or on
+    /// does not send every note back to the classifier.
     pub version: String,
 }
 
@@ -184,11 +190,20 @@ impl Topics {
         Self::with_scope(defs, Scope::default())
     }
 
-    pub fn with_scope(mut defs: Vec<TopicDef>, scope: Scope) -> Self {
+    pub fn with_scope(defs: Vec<TopicDef>, scope: Scope) -> Self {
+        Self::with_dormant(defs, scope, &[])
+    }
+
+    /// `defs` are offered to the classifier; `dormant` (topics of plugins
+    /// that are off) only count toward the version.
+    pub fn with_dormant(mut defs: Vec<TopicDef>, scope: Scope, dormant: &[TopicDef]) -> Self {
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs.dedup_by(|a, b| a.name == b.name);
+        let mut all: Vec<&TopicDef> = defs.iter().chain(dormant).collect();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        all.dedup_by(|a, b| a.name == b.name);
         let mut h = Fnv::default();
-        for d in &defs {
+        for d in all {
             h.write(d.name.as_bytes());
             h.write(b"\x1f");
             h.write(d.description.trim().as_bytes());
@@ -364,12 +379,46 @@ impl Topics {
 
 fn cell() -> &'static RwLock<Arc<Topics>> {
     static T: OnceLock<RwLock<Arc<Topics>>> = OnceLock::new();
-    T.get_or_init(|| RwLock::new(Arc::new(Topics::load_dir(&topics_dir()))))
+    T.get_or_init(|| RwLock::new(Arc::new(Topics::load_bundles())))
 }
 
-/// The core bundle's `topics/` (read from core only: `services/plugins.rs`).
+/// The core bundle's `topics/` (its `_scope.yaml` is the only scope).
 pub fn topics_dir() -> PathBuf {
     crate::services::plugins::Plugins::global().core_dir("topics")
+}
+
+/// The loaded bundles that are not the core: whose topics may be offered.
+fn loaded_plugins() -> Vec<String> {
+    crate::services::plugins::Plugins::global()
+        .loaded()
+        .map(|b| b.name.clone())
+        .filter(|n| n != crate::services::plugins::CORE)
+        .collect()
+}
+
+impl Topics {
+    /// The core's topics and scope, then each loaded plugin's `topics/`
+    /// (CORE_AND_PLUGINS_PLAN Phase 4: one topic per file; a plugin's
+    /// `_scope.yaml` is ignored). A name already declared is skipped with a
+    /// warning: a plugin cannot replace a core topic.
+    pub fn load_bundles() -> Self {
+        let core = Self::load_dir(&topics_dir());
+        let mut defs = core.defs;
+        for (plugin, dir) in crate::services::plugins::Plugins::global().dirs("topics") {
+            if plugin == crate::services::plugins::CORE {
+                continue;
+            }
+            for mut d in Self::load_dir(&dir).defs {
+                if defs.iter().any(|e| e.name == d.name) {
+                    warn!(%plugin, topic = %d.name, "topics: a plugin declares a topic that already exists — skipped");
+                    continue;
+                }
+                d.plugin = Some(plugin.clone());
+                defs.push(d);
+            }
+        }
+        Self::with_scope(defs, core.scope)
+    }
 }
 
 /// FNV-1a: a version hash that is stable across Rust releases (unlike `DefaultHasher`).
@@ -407,7 +456,7 @@ pub async fn sync(neo4j: &Neo4jClient, topics: &Topics) -> Result<usize> {
                  SET t.label = r.label, t.description = r.description, \
                      t.source_lists = r.source_lists, t.assign = r.assign, \
                      t.members = r.members, t.reference = r.reference, t.managed_by = 'yaml', \
-                     t.synced_at = datetime()",
+                     t.plugin = r.plugin, t.synced_at = datetime()",
             )
             .param("rows", rows),
         )
@@ -418,9 +467,13 @@ pub async fn sync(neo4j: &Neo4jClient, topics: &Topics) -> Result<usize> {
             neo4rs::query(
                 "MATCH (t:Topic) WHERE NOT t.name IN $names \
                    AND coalesce(t.managed_by, 'yaml') <> 'runtime' \
+                   AND (coalesce(t.plugin, '') = '' OR t.plugin IN $loaded) \
                  WITH t, t.name AS name DETACH DELETE t RETURN collect(name) AS gone",
             )
-            .param("names", names),
+            .param("names", names)
+            // A topic whose plugin is off stays, dormant, with its notes:
+            // it comes back with the plugin.
+            .param("loaded", loaded_plugins()),
         )
         .await?
         .first()
@@ -464,6 +517,13 @@ fn def_row(d: &TopicDef) -> neo4rs::BoltType {
             .map(|r| r.trim().to_string().into())
             .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
     );
+    m.insert(
+        "plugin".to_string(),
+        d.plugin
+            .clone()
+            .map(Into::into)
+            .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
+    );
     m.into()
 }
 
@@ -473,11 +533,13 @@ fn def_row(d: &TopicDef) -> neo4rs::BoltType {
 pub async fn reload(neo4j: &Neo4jClient) -> Result<Arc<Topics>> {
     let rows = neo4j
         .execute(neo4rs::query(
-            "MATCH (t:Topic) RETURN t.name AS name, coalesce(t.label, t.name) AS label, \
+            "MATCH (t:Topic) \
+             RETURN t.name AS name, coalesce(t.label, t.name) AS label, \
                     coalesce(t.description, '') AS description, \
                     coalesce(t.source_lists, []) AS source_lists, \
                     coalesce(t.assign, 'classifier') AS assign, \
-                    coalesce(t.members, '[]') AS members, t.reference AS reference",
+                    coalesce(t.members, '[]') AS members, t.reference AS reference, \
+                    t.plugin AS plugin",
         ))
         .await?;
     let defs: Vec<TopicDef> = rows
@@ -493,15 +555,22 @@ pub async fn reload(neo4j: &Neo4jClient) -> Result<Arc<Topics>> {
                 members: serde_json::from_str(&r.get::<String>("members").unwrap_or_default())
                     .unwrap_or_default(),
                 reference: r.get::<String>("reference").ok().filter(|s| !s.is_empty()),
+                plugin: r.get::<String>("plugin").ok().filter(|s| !s.is_empty()),
             })
         })
         .filter(|d| !d.description.trim().is_empty())
         .collect();
+    // A topic whose plugin is off stays in the graph with its notes, out of
+    // the classifier's prompt but in the version.
+    let loaded = loaded_plugins();
+    let (defs, dormant): (Vec<TopicDef>, Vec<TopicDef>) = defs
+        .into_iter()
+        .partition(|d| d.plugin.as_ref().is_none_or(|p| loaded.contains(p)));
     if defs.is_empty() {
         return Ok(Topics::global());
     }
     let scope = Topics::load_dir(&topics_dir()).scope;
-    let topics = Topics::set_global(Topics::with_scope(defs, scope));
+    let topics = Topics::set_global(Topics::with_dormant(defs, scope, &dormant));
     neo4j
         .run(
             neo4rs::query("MATCH (t:Topic) SET t.version = $v").param("v", topics.version.as_str()),
@@ -707,7 +776,7 @@ pub async fn delete(neo4j: &Neo4jClient, name: &str) -> Result<Result<Deleted, S
             schedules.join(", ")
         )));
     }
-    let retired_seed = Topics::load_dir(&topics_dir()).get(name).is_some();
+    let retired_seed = Topics::load_bundles().get(name).is_some();
     let notes = neo4j
         .execute(
             neo4rs::query(
@@ -746,7 +815,7 @@ pub async fn delete(neo4j: &Neo4jClient, name: &str) -> Result<Result<Deleted, S
 
 /// Put a topic back to its YAML definition (undoing HBI edits or a delete).
 pub async fn reset(neo4j: &Neo4jClient, name: &str) -> Result<Result<Arc<Topics>, String>> {
-    let Some(seed) = Topics::load_dir(&topics_dir()).get(name).cloned() else {
+    let Some(seed) = Topics::load_bundles().get(name).cloned() else {
         return Ok(Err(format!("no topics/*.yaml file declares '{name}'")));
     };
     neo4j
@@ -759,7 +828,7 @@ pub async fn reset(neo4j: &Neo4jClient, name: &str) -> Result<Result<Arc<Topics>
                  SET t.label = $r.label, t.description = $r.description, \
                      t.source_lists = $r.source_lists, t.assign = $r.assign, \
                      t.members = $r.members, t.reference = $r.reference, t.managed_by = 'yaml', \
-                     t.synced_at = datetime() REMOVE t.updated_at",
+                     t.plugin = $r.plugin, t.synced_at = datetime() REMOVE t.updated_at",
             )
             .param("r", def_row(&seed)),
         )
@@ -940,8 +1009,12 @@ pub async fn classify_note(
     neo4j
         .run(
             neo4rs::query(
+                // Edges to a dormant topic (its plugin is off) are not the
+                // classifier's to judge: they stay for when it comes back.
                 "MATCH (n:Note {id: $id}) \
-                 OPTIONAL MATCH (n)-[old:IN_TOPIC]->() DELETE old \
+                 OPTIONAL MATCH (n)-[old:IN_TOPIC]->(ot:Topic) \
+                   WHERE coalesce(ot.plugin, '') = '' OR ot.plugin IN $loaded \
+                 DELETE old \
                  WITH DISTINCT n \
                  SET n.topics_version = $version, n.topics_at = datetime() REMOVE n.topics_failed \
                  WITH n \
@@ -952,6 +1025,7 @@ pub async fn classify_note(
             )
             .param("id", note_id)
             .param("version", topics.version.as_str())
+            .param("loaded", loaded_plugins())
             .param("ranked", ranked),
         )
         .await?;
@@ -1176,6 +1250,26 @@ mod tests {
         assert!(p.contains("- ai-ml: AI as a field."));
         assert!(p.contains("- us-politics: The US federal government."));
         assert!(p.ends_with(&format!("TEXT:\n{}", "x".repeat(CLASSIFY_CHARS))));
+    }
+
+    #[test]
+    fn a_plugin_going_off_keeps_the_version_and_leaves_the_prompt() {
+        let all = Topics::from_defs(vec![def("a", "Alpha."), def("b", "Beta.")]);
+        let off = Topics::with_dormant(
+            vec![def("a", "Alpha.")],
+            Scope::default(),
+            &[def("b", "Beta.")],
+        );
+        assert_eq!(off.version, all.version);
+        assert_eq!(off.defs.len(), 1);
+        assert!(!off.prompt("").contains("Beta."));
+        // A dormant topic's definition still counts: editing it is a change.
+        let edited = Topics::with_dormant(
+            vec![def("a", "Alpha.")],
+            Scope::default(),
+            &[def("b", "Bet.")],
+        );
+        assert_ne!(edited.version, all.version);
     }
 
     fn def(name: &str, description: &str) -> TopicDef {

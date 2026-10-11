@@ -30,6 +30,19 @@ pub fn runtime_dir() -> PathBuf {
     PathBuf::from(std::env::var("PLUGINS_RUNTIME_DIR").unwrap_or_else(|_| "plugins-runtime".into()))
 }
 
+/// `PLUGINS_EXTRA_DIRS`: colon-separated folders of bundles kept outside the
+/// repo (the owner's private repo, mounted read-only). Searched after
+/// `PLUGINS_DIR`; a bundle there loads when `PLUGINS_ENABLED` names it.
+pub fn extra_dirs() -> Vec<PathBuf> {
+    std::env::var("PLUGINS_EXTRA_DIRS")
+        .unwrap_or_default()
+        .split(':')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 /// Seed dirs read from every enabled bundle.
 pub const MERGED_KINDS: &[&str] = &[
     "workflows",
@@ -40,12 +53,15 @@ pub const MERGED_KINDS: &[&str] = &[
     "schemas",
     "tools",
     "apis",
+    "topics",
 ];
 
 /// Seed dirs read from the core bundle only, for now: each builds one global
-/// set (`_scope.yaml`, the entity rules) that has no merge rule yet. A plugin
-/// shipping one is reported, never silently ignored.
-pub const CORE_ONLY_KINDS: &[&str] = &["topics", "entities", "relations", "architecture"];
+/// set (the entity rules, relation vocabulary, the core's own architecture)
+/// that has no merge rule yet. A plugin shipping one is reported, never
+/// silently ignored. (`topics/` merged in Phase 4: one topic per file, and
+/// `_scope.yaml` from the core only.)
+pub const CORE_ONLY_KINDS: &[&str] = &["entities", "relations", "architecture"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -99,11 +115,18 @@ pub struct Bundle {
     /// In `PLUGINS_RUNTIME_DIR`: written by the brain, not shipped in git.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub runtime: bool,
+    /// In one of `PLUGINS_EXTRA_DIRS` (the owner's private repo).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Plugins {
     pub dir: PathBuf,
+    /// Folders of bundles kept outside the repo (`PLUGINS_EXTRA_DIRS`: the
+    /// owner's private repo), searched after `dir`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_dirs: Vec<PathBuf>,
     /// Where brain-written bundles live (`manage_plugin`).
     pub runtime_dir: Option<PathBuf>,
     pub bundles: Vec<Bundle>,
@@ -113,7 +136,7 @@ impl Plugins {
     /// The bundles under `dir`, `core` first, then `enabled` in order, then
     /// any others present (as `NotEnabled`). `env` answers `requires.env`.
     pub fn load(dir: &Path, enabled: &[String], env: &dyn Fn(&str) -> Option<String>) -> Self {
-        Self::load_from(dir, None, enabled, env)
+        Self::load_from(dir, &[], None, enabled, env)
     }
 
     /// As [`Self::load`], also finding bundles in `runtime` (brain-written).
@@ -121,20 +144,30 @@ impl Plugins {
     /// `enabled` names it, like any other.
     pub fn load_from(
         dir: &Path,
+        extra: &[PathBuf],
         runtime: Option<&Path>,
         enabled: &[String],
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Self {
-        let root_of = |name: &str| -> (PathBuf, bool) {
+        // Where a bundle named `name` is: shipped, then an extra dir, then the
+        // runtime dir. (root, runtime?, external?)
+        let root_of = |name: &str| -> (PathBuf, bool, bool) {
             let shipped = dir.join(name);
+            if shipped.join("plugin.yaml").is_file() {
+                return (shipped, false, false);
+            }
+            if let Some(e) = extra
+                .iter()
+                .map(|d| d.join(name))
+                .find(|r| r.join("plugin.yaml").is_file())
+            {
+                return (e, false, true);
+            }
             match runtime {
-                Some(r)
-                    if !shipped.join("plugin.yaml").is_file()
-                        && r.join(name).join("plugin.yaml").is_file() =>
-                {
-                    (r.join(name), true)
+                Some(r) if r.join(name).join("plugin.yaml").is_file() => {
+                    (r.join(name), true, false)
                 }
-                _ => (shipped, false),
+                _ => (shipped, false, false),
             }
         };
         let mut wanted: Vec<String> = vec![CORE.to_string()];
@@ -159,6 +192,7 @@ impl Plugins {
                         root: root_of(&name).0,
                         warnings: core_only_warnings(&root_of(&name).0, &name),
                         runtime: root_of(&name).1,
+                        external: root_of(&name).2,
                         manifest: m.ok(),
                         name,
                         status: Status::Loaded,
@@ -166,6 +200,7 @@ impl Plugins {
                     Check::Fail(reason) => bundles.push(Bundle {
                         root: root_of(&name).0,
                         runtime: root_of(&name).1,
+                        external: root_of(&name).2,
                         manifest: m.ok(),
                         name,
                         status: Status::Skipped(reason),
@@ -186,6 +221,7 @@ impl Plugins {
                     bundles.push(Bundle {
                         root: root_of(&name).0,
                         runtime: root_of(&name).1,
+                        external: root_of(&name).2,
                         manifest: m.ok(),
                         name,
                         status: Status::Skipped(reason),
@@ -198,9 +234,9 @@ impl Plugins {
         }
         // Keep the requested order for everything that resolved.
         bundles.sort_by_key(|b| wanted.iter().position(|w| *w == b.name));
-        let mut others: Vec<String> = [Some(dir), runtime]
-            .into_iter()
-            .flatten()
+        let mut others: Vec<String> = std::iter::once(dir)
+            .chain(extra.iter().map(PathBuf::as_path))
+            .chain(runtime)
             .filter_map(|d| std::fs::read_dir(d).ok())
             .flat_map(|e| e.flatten())
             .filter(|e| e.path().join("plugin.yaml").is_file())
@@ -210,11 +246,12 @@ impl Plugins {
         others.sort();
         others.dedup();
         for name in others {
-            let (root, runtime) = root_of(&name);
+            let (root, runtime, external) = root_of(&name);
             bundles.push(Bundle {
                 manifest: read_manifest(&root, &name).ok(),
                 root,
                 runtime,
+                external,
                 name,
                 status: Status::NotEnabled,
                 warnings: vec![],
@@ -222,6 +259,7 @@ impl Plugins {
         }
         Self {
             dir: dir.to_path_buf(),
+            extra_dirs: extra.to_vec(),
             runtime_dir: runtime.map(Path::to_path_buf),
             bundles,
         }
@@ -239,7 +277,7 @@ impl Plugins {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let p = Plugins::load_from(&dir, Some(&runtime_dir()), &enabled, &|k| {
+            let p = Plugins::load_from(&dir, &extra_dirs(), Some(&runtime_dir()), &enabled, &|k| {
                 std::env::var(k).ok()
             });
             for b in &p.bundles {
@@ -934,7 +972,7 @@ mod tests {
         for k in MERGED_KINDS.iter().chain(CORE_ONLY_KINDS) {
             assert!(p.core_dir(k).is_dir(), "core bundle lacks {k}/");
         }
-        assert!(p.files("workflows", "yaml").len() > 20);
+        assert!(p.files("workflows", "yaml").len() >= 15);
     }
 
     #[test]
@@ -991,7 +1029,9 @@ mod tests {
             std::fs::create_dir_all(d.join(b).join("workflows")).unwrap();
             std::fs::write(d.join(b).join("workflows").join(f), "").unwrap();
         }
+        // Topics merge (one per file); entities stay core-only.
         std::fs::create_dir_all(d.join("extra").join("topics")).unwrap();
+        std::fs::create_dir_all(d.join("extra").join("entities")).unwrap();
         let p = Plugins::load(d, &["extra".into()], &|_| None);
         let names: Vec<String> = p
             .files("workflows", "yaml")
@@ -1001,7 +1041,7 @@ mod tests {
         assert_eq!(names, ["core/a.yaml", "core/b.yaml", "extra/0.yaml"]);
         let extra = p.bundles.iter().find(|b| b.name == "extra").unwrap();
         assert_eq!(extra.warnings.len(), 1);
-        assert!(extra.warnings[0].starts_with("topics/"));
+        assert!(extra.warnings[0].starts_with("entities/"));
     }
 
     fn wf(

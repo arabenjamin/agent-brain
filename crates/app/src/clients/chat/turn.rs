@@ -463,18 +463,18 @@ impl ChatService {
         } else if request.context_profile.is_some() {
             request.context_profile.clone()
         } else if let Some(ref cb) = cb_opt {
-            // Reply-to-apply routing: the daily job search opens a
-            // `jobsearch-<date>` session, and a reply there is about applying to a
-            // listed role. auto_assign sees ONLY the reply text, so a natural terse
-            // reply ("#1", "the Harvey one") scores 0 and falls back to `general`,
-            // which lacks the aidevboard apply tools — the apply flow then silently
-            // fails. Pin the job-applicant profile for these sessions so any reply
-            // reaches it. An explicit `context_profile` (handled above) still wins.
-            if session_id
-                .as_deref()
-                .is_some_and(|s| s.starts_with("jobsearch-"))
-            {
-                Some("job-applicant".to_string())
+            // A session a workflow opened for replies belongs to the profile
+            // that declares its prefix (`session_prefixes`). auto_assign sees
+            // ONLY the reply text, so a terse reply ("#1", "the Harvey one")
+            // scored 0 and fell back to `general`, which lacked the tools the
+            // reply needed, and the flow silently failed. An explicit
+            // `context_profile` (handled above) still wins.
+            let pinned = match session_id.as_deref() {
+                Some(s) => cb.profile_for_session(s).await,
+                None => None,
+            };
+            if pinned.is_some() {
+                pinned
             } else if std::env::var("CHAT_DEFAULT_PROFILE")
                 .ok()
                 .is_some_and(|v| !v.trim().is_empty())

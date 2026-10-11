@@ -345,6 +345,15 @@ fn writable(name: &str) -> Result<(), String> {
             "'{name}' is a shipped bundle; manage_plugin writes only its own bundles. Pick another name."
         ));
     }
+    if Plugins::global()
+        .extra_dirs
+        .iter()
+        .any(|d| d.join(name).exists())
+    {
+        return Err(format!(
+            "'{name}' is a bundle in PLUGINS_EXTRA_DIRS; manage_plugin writes only its own bundles. Pick another name."
+        ));
+    }
     let target = plugins::runtime_dir().join(name);
     if target.exists() {
         match plugins::read_manifest(&target, name) {
@@ -667,8 +676,9 @@ mod tests {
     fn file_paths() {
         assert_eq!(file_path_ok("workflows/daily-x.yaml"), Ok(false));
         assert_eq!(file_path_ok("schemas/thing.json"), Ok(true));
+        assert_eq!(file_path_ok("topics/x.yaml"), Ok(false));
         assert!(
-            file_path_ok("topics/x.yaml")
+            file_path_ok("entities/x.yaml")
                 .unwrap_err()
                 .contains("core bundle only")
         );
