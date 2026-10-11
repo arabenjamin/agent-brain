@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::{Extension, Json, extract::Path, response::IntoResponse};
 use serde_json::{Value, json};
 
-use super::rest::{RestState, bad_request, internal, not_found, unavailable};
+use super::rest::{RestState, bad_request, internal, not_found, or_500, unavailable};
 use crate::services::item_dispatch::{Dispatcher, MAX_RUNS, Outcome, post_to_thread};
 use crate::services::items;
 
@@ -271,10 +271,7 @@ pub async fn handle_send_back(
         Ok(t) => t,
         Err(r) => return *r,
     };
-    let outcome = match d.dispatch(&fresh, true).await {
-        Ok(o) => o,
-        Err(e) => return internal(e),
-    };
+    let outcome = or_500!(d.dispatch(&fresh, true).await);
     if let Outcome::NotReady(_) = &outcome {
         // Leave it where the user can act on it again.
         let _ = neo4j

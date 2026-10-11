@@ -19,7 +19,7 @@ use std::sync::Arc;
 use axum::{Extension, Json, extract::Path, response::IntoResponse};
 use serde_json::{Value, json};
 
-use super::rest::{RestState, bad_request, internal, not_found, unavailable};
+use super::rest::{RestState, bad_request, graph, internal, not_found, or_500, unavailable};
 use crate::repository::{Neo4jClient, node_ts};
 
 /// Result text shown inline in a chain; the job view returns more.
@@ -362,10 +362,8 @@ pub async fn handle_task_lineage(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
-    let rows = match neo4j
+    let neo4j = graph!(state);
+    let rows = or_500!(neo4j
         .execute(
             neo4rs::query(
                 "MATCH (t:Task {id: $id}) \
@@ -379,11 +377,7 @@ pub async fn handle_task_lineage(
             )
             .param("id", id.as_str()),
         )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+        .await);
     let Some(row) = rows.first() else {
         return not_found();
     };
@@ -488,16 +482,14 @@ pub async fn handle_job_detail(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
-    let rows = match neo4j
-        .execute(neo4rs::query("MATCH (j:AgentJob {id: $id}) RETURN j").param("id", id.as_str()))
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+    let neo4j = graph!(state);
+    let rows = or_500!(
+        neo4j
+            .execute(
+                neo4rs::query("MATCH (j:AgentJob {id: $id}) RETURN j").param("id", id.as_str())
+            )
+            .await
+    );
     let Some(node) = rows.first().and_then(|r| r.get::<neo4rs::Node>("j").ok()) else {
         return not_found();
     };
@@ -575,13 +567,8 @@ fn workflow_json(wf: &crate::repository::Workflow) -> Value {
 pub async fn handle_list_workflows(
     Extension(state): Extension<Arc<RestState>>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
-    let workflows = match neo4j.list_workflows(false).await {
-        Ok(s) => s,
-        Err(e) => return internal(e),
-    };
+    let neo4j = graph!(state);
+    let workflows = or_500!(neo4j.list_workflows(false).await);
     let (runs, runs_error) = match runs_by_workflow(neo4j).await {
         Ok(r) => (r, None),
         Err(e) => (HashMap::new(), Some(e)),
@@ -605,9 +592,7 @@ pub async fn handle_workflow_detail(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let wf = match neo4j.get_workflow(&id).await {
         Ok(Some(wf)) => wf,
         Ok(None) => return not_found(),
@@ -704,9 +689,7 @@ pub async fn handle_todo_detail(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match neo4j.get_todo(&id).await {
         Ok(Some(todo)) => {
             Json(json!({ "todo": todo, "tasks": spawned_tasks(neo4j, &id).await })).into_response()
@@ -725,9 +708,7 @@ pub async fn handle_todo_to_task(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let todo = match neo4j.get_todo(&id).await {
         Ok(Some(t)) => t,
         Ok(None) => return not_found(),
@@ -741,10 +722,7 @@ pub async fn handle_todo_to_task(
         context.push_str("\n\n");
         context.push_str(d);
     }
-    let task_id = match neo4j.create_task(&todo.title, Some(&context), None).await {
-        Ok(t) => t,
-        Err(e) => return internal(e),
-    };
+    let task_id = or_500!(neo4j.create_task(&todo.title, Some(&context), None).await);
     if let Err(e) = neo4j
         .run(
             neo4rs::query(
@@ -872,39 +850,32 @@ pub async fn handle_workflow_topic_mix(
     Extension(state): Extension<Arc<RestState>>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let days: i64 = params
         .get("days")
         .and_then(|d| d.parse().ok())
         .filter(|d| (1..=90).contains(d))
         .unwrap_or(30);
     let since = format!("P{days}D");
-    let schedules = match neo4j.list_workflows(false).await {
-        Ok(s) => s,
-        Err(e) => return internal(e),
-    };
+    let schedules = or_500!(neo4j.list_workflows(false).await);
     let id_of: HashMap<&str, &str> = schedules
         .iter()
         .map(|w| (w.name.as_str(), w.id.as_str()))
         .collect();
 
     // 1. Runs in the window, by workflow id.
-    let run_rows = match neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (t:Task) WHERE t.workflow IS NOT NULL \
+    let run_rows = or_500!(
+        neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (t:Task) WHERE t.workflow IS NOT NULL \
                    AND t.created_at >= datetime() - duration($since) \
                  RETURN t.id AS id, t.workflow AS workflow",
+                )
+                .param("since", since.as_str()),
             )
-            .param("since", since.as_str()),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+            .await
+    );
     let mut schedule_of: HashMap<String, String> = HashMap::new();
     let mut runs: HashMap<String, usize> = HashMap::new();
     for r in &run_rows {

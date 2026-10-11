@@ -24,7 +24,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use super::rest::{RestState, bad_request, internal, not_found, unavailable};
+use super::rest::{RestState, bad_request, graph, internal, not_found, or_500};
 use super::work::clip;
 use crate::repository::Neo4jClient;
 use crate::services::topics::{
@@ -58,13 +58,11 @@ async fn count(neo4j: &Neo4jClient, cypher: &str, topics: &Topics) -> i64 {
 }
 
 pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let topics = Topics::global();
     let topics = topics.as_ref();
     let v = topics.version.as_str();
-    let rows = match neo4j
+    let rows = or_500!(neo4j
         .execute(neo4rs::query(
             "MATCH (t:Topic) \
              RETURN t.name AS name, t.label AS label, t.description AS description, t.plugin AS plugin, \
@@ -74,11 +72,7 @@ pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> impl In
                     COUNT { (n:Note)-[:IN_TOPIC]->(t) WHERE n.created_at >= datetime() - duration('P7D') } AS week \
              ORDER BY notes DESC",
         ))
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+        .await);
     let list: Vec<Value> = rows
         .iter()
         .map(|r| {
@@ -179,27 +173,21 @@ pub async fn handle_map(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let per_topic = params
         .get("per_topic")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(DEFAULT_PER_TOPIC)
         .clamp(1, MAX_PER_TOPIC);
 
-    let topic_rows = match neo4j
+    let topic_rows = or_500!(neo4j
         .execute(neo4rs::query(
             "MATCH (t:Topic) \
              RETURN t.name AS name, t.label AS label, \
                     COUNT { (:Note)-[:IN_TOPIC]->(t) } AS notes, \
                     COUNT { (n:Note)-[:IN_TOPIC]->(t) WHERE n.created_at >= datetime() - duration('P7D') } AS week",
         ))
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+        .await);
     let topics: Vec<Value> = topic_rows
         .iter()
         .map(|r| {
@@ -213,24 +201,22 @@ pub async fn handle_map(
         .collect();
 
     // Each topic's entities, ranked by how many of the topic's notes mention them.
-    let link_rows = match neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (t:Topic) \
+    let link_rows = or_500!(
+        neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (t:Topic) \
                  CALL (t) { \
                    MATCH (t)<-[:IN_TOPIC]-(n:Note)-[:MENTIONS]->(e:Entity) \
                    WHERE NOT e.entity_type IN ['url', 'date'] AND NOT (e)-[:NOT_IN_TOPIC]->(t) \
                    RETURN e, count(DISTINCT n) AS w ORDER BY w DESC LIMIT $k \
                  } \
                  RETURN t.name AS topic, e.id AS id, w",
+                )
+                .param("k", per_topic),
             )
-            .param("k", per_topic),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+            .await
+    );
     let links: Vec<Value> = link_rows
         .iter()
         .map(|r| {
@@ -265,10 +251,7 @@ pub async fn handle_map(
             .param("ids", ids),
         )
         .await;
-    let ent_rows = match ent_rows {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+    let ent_rows = or_500!(ent_rows);
     let entities: Vec<Value> = ent_rows
         .iter()
         .map(|r| {
@@ -318,10 +301,8 @@ pub async fn handle_topic(
     Extension(state): Extension<Arc<RestState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
-    let rows = match neo4j
+    let neo4j = graph!(state);
+    let rows = or_500!(neo4j
         .execute(
             neo4rs::query(
                 "MATCH (t:Topic {name: $name}) \
@@ -334,11 +315,7 @@ pub async fn handle_topic(
             )
             .param("name", name.as_str()),
         )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+        .await);
     let Some(t) = rows.first() else {
         return not_found();
     };
@@ -568,9 +545,7 @@ pub async fn handle_create(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let def = match body_def(&body, None) {
         Ok(d) => d,
         Err(e) => return bad_request(e),
@@ -590,9 +565,7 @@ pub async fn handle_update(
     Path(name): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     if body
         .get("name")
         .and_then(|v| v.as_str())
@@ -619,9 +592,7 @@ pub async fn handle_delete(
     Extension(state): Extension<Arc<RestState>>,
     Path(name): Path<String>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match topic_service::delete(neo4j, &name).await {
         Ok(Ok(d)) => Json(json!({ "deleted": d })).into_response(),
         Ok(Err(e)) => bad_request(format!("Topic not deleted: {e}")),
@@ -634,9 +605,7 @@ pub async fn handle_reset(
     Extension(state): Extension<Arc<RestState>>,
     Path(name): Path<String>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let before = Topics::global().version.clone();
     match topic_service::reset(neo4j, &name).await {
         Ok(Ok(t)) => saved(&t, &name, &before),
@@ -653,9 +622,7 @@ pub async fn handle_set_note_topics(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let Some(list) = body["topics"].as_array() else {
         return bad_request(
             "`topics` must be an array of topic names, main first (empty: fits no topic)",
@@ -676,9 +643,7 @@ pub async fn handle_unlock_note_topics(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match topic_service::unlock_note(neo4j, &id).await {
         Ok(true) => Json(json!({
             "locked": false,
@@ -707,9 +672,7 @@ pub async fn handle_unhide_entity(
 }
 
 async fn hide(state: Arc<RestState>, id: String, topic: String, on: bool) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match topic_service::hide_entity(neo4j, &id, &topic, on).await {
         Ok(true) => Json(json!({ "entity": id, "topic": topic, "hidden": on })).into_response(),
         Ok(false) => bad_request(format!("No entity '{id}' or no topic '{topic}'")),

@@ -212,20 +212,6 @@ impl Neo4jClient {
         Ok(())
     }
 
-    /// Mark all unread notifications as read.
-    pub async fn mark_all_notifications_read(&self) -> Result<()> {
-        self.graph
-            .run(
-                neo4rs::query(
-                    "MATCH (n:AgentNotification {read: false}) \
-                     SET n.read = true, n.read_at = datetime($ts)",
-                )
-                .param("ts", chrono::Utc::now().to_rfc3339().as_str()),
-            )
-            .await?;
-        Ok(())
-    }
-
     /// Execute a query that returns rows.
     pub async fn execute(&self, query: Query) -> Result<Vec<Row>> {
         let mut result = self.graph.execute(query).await?;

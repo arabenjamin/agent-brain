@@ -167,6 +167,40 @@ impl RestAdapter {
 // Helpers
 // ============================================================================
 
+/// The graph client from a handler's state, or return a 503 from the handler:
+/// `let neo4j = graph!(state);` (default message) or
+/// `graph!(state, "Todo storage not available")`.
+macro_rules! graph {
+    ($state:expr) => {
+        graph!($state, "Neo4j not available")
+    };
+    ($state:expr, $msg:expr) => {
+        match $state.neo4j.as_ref() {
+            Some(n) => n,
+            None => return $crate::clients::rest::unavailable($msg),
+        }
+    };
+}
+pub(crate) use graph;
+
+/// The `Ok` value, or return a 500 from the handler: `or_500!(expr)` reports
+/// the error, `or_500!(expr, "Failed to list notes")` prefixes it.
+macro_rules! or_500 {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return $crate::clients::rest::internal(e),
+        }
+    };
+    ($e:expr, $prefix:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return $crate::clients::rest::internal(format!("{}: {e}", $prefix)),
+        }
+    };
+}
+pub(crate) use or_500;
+
 /// Return a 503 JSON response.
 pub(crate) fn unavailable(msg: &str) -> Response {
     (
@@ -292,9 +326,7 @@ pub async fn handle_list_todos(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Todo storage not available");
-    };
+    let neo4j = graph!(state, "Todo storage not available");
 
     let status_filter = params.get("status").map(String::as_str);
     match neo4j.list_todos(status_filter).await {
@@ -314,9 +346,7 @@ pub async fn handle_create_todo(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Todo storage not available");
-    };
+    let neo4j = graph!(state, "Todo storage not available");
 
     let Some(title) = body.get("title").and_then(|v| v.as_str()) else {
         return (
@@ -382,9 +412,7 @@ pub async fn handle_get_todo(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Todo storage not available");
-    };
+    let neo4j = graph!(state, "Todo storage not available");
 
     match neo4j.get_todo(&id).await {
         Ok(Some(todo)) => Json(crate::services::items::item_json(&todo)).into_response(),
@@ -399,9 +427,7 @@ pub async fn handle_update_todo(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Todo storage not available");
-    };
+    let neo4j = graph!(state, "Todo storage not available");
 
     let patch = match check_todo_body(&state, &body).await {
         Ok(p) => p,
@@ -491,9 +517,7 @@ pub async fn handle_delete_todo(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Todo storage not available");
-    };
+    let neo4j = graph!(state, "Todo storage not available");
 
     match neo4j.delete_todo(&id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -511,9 +535,7 @@ pub async fn handle_list_workflows(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Workflow storage not available");
-    };
+    let neo4j = graph!(state, "Workflow storage not available");
     let enabled_only = params.get("enabled_only").is_some_and(|v| v == "true");
     match neo4j.list_workflows(enabled_only).await {
         Ok(w) => Json(serde_json::json!({ "workflows": w })).into_response(),
@@ -569,9 +591,7 @@ pub async fn handle_create_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Workflow storage not available");
-    };
+    let neo4j = graph!(state, "Workflow storage not available");
     match save_workflow(&state, neo4j, None, true, &body).await {
         Ok(saved) => {
             // Drafted from an item ("make it a workflow"): link it back.
@@ -602,9 +622,7 @@ pub async fn handle_get_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Workflow storage not available");
-    };
+    let neo4j = graph!(state, "Workflow storage not available");
     match neo4j.get_workflow(&id).await {
         Ok(Some(wf)) => Json(serde_json::json!(wf)).into_response(),
         Ok(None) => not_found(),
@@ -618,9 +636,7 @@ pub async fn handle_update_workflow(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Workflow storage not available");
-    };
+    let neo4j = graph!(state, "Workflow storage not available");
     match save_workflow(&state, neo4j, Some(&id), false, &body).await {
         Ok(saved) => {
             // Turned on: an item it was drafted from is done ("became a workflow").
@@ -647,9 +663,7 @@ pub async fn handle_delete_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Workflow storage not available");
-    };
+    let neo4j = graph!(state, "Workflow storage not available");
     match neo4j.delete_workflow(&id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => not_found(),
@@ -801,9 +815,7 @@ pub async fn handle_get_graph(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let max_nodes: i64 = params
         .get("max_nodes")
@@ -960,104 +972,6 @@ pub async fn handle_get_graph(
         "seeded": !seeds.is_empty(),
         "nodes": nodes,
         "edges": edges,
-    }))
-    .into_response()
-}
-
-/// GET /api/health — rich runtime health snapshot (scheduler + queue + knowledge + tasks).
-pub async fn handle_api_health(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
-    let Some(ref handle) = state.scheduler else {
-        return unavailable("Scheduler not available");
-    };
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
-
-    let guard = handle.read().await;
-    let Some(ref svc) = *guard else {
-        return unavailable("Scheduler not yet initialised");
-    };
-
-    let scheduler_status = svc.status().await;
-    let queue_stats = svc.queue_stats().await;
-
-    let note_rows = neo4j
-        .execute(neo4rs::query(
-            "MATCH (n:Note) RETURN n.note_type AS note_type, count(n) AS n ORDER BY n DESC",
-        ))
-        .await
-        .unwrap_or_default();
-    let mut notes_by_type = serde_json::Map::new();
-    let mut total_notes: i64 = 0;
-    for row in &note_rows {
-        let nt = row
-            .get::<String>("note_type")
-            .unwrap_or_else(|_| "unknown".to_string());
-        let n = row.get::<i64>("n").unwrap_or(0);
-        notes_by_type.insert(nt, json!(n));
-        total_notes += n;
-    }
-    notes_by_type.insert("total".to_string(), json!(total_notes));
-
-    let task_rows = neo4j
-        .execute(neo4rs::query(
-            "MATCH (t:Task) RETURN t.status AS status, count(t) AS n ORDER BY n DESC",
-        ))
-        .await
-        .unwrap_or_default();
-    let mut tasks_by_status = serde_json::Map::new();
-    let mut total_tasks: i64 = 0;
-    for row in &task_rows {
-        let s = row
-            .get::<String>("status")
-            .unwrap_or_else(|_| "unknown".to_string());
-        let n = row.get::<i64>("n").unwrap_or(0);
-        tasks_by_status.insert(s, json!(n));
-        total_tasks += n;
-    }
-    tasks_by_status.insert("total".to_string(), json!(total_tasks));
-
-    let dead_24h: i64 = neo4j
-        .execute(neo4rs::query(
-            "MATCH (j:AgentJob) \
-             WHERE j.status IN ['dead', 'dead_letter'] \
-               AND j.updated_at >= datetime() - duration({hours: 24}) \
-             RETURN count(j) AS n",
-        ))
-        .await
-        .ok()
-        .and_then(|rows| rows.first().and_then(|r| r.get::<i64>("n").ok()))
-        .unwrap_or(0);
-
-    // The commit the running binary was built from (written at startup).
-    let version = neo4j
-        .execute(neo4rs::query(
-            "MATCH (b:BrainVersion {id: 'current'}) \
-             RETURN b.sha AS sha, b.branch AS branch, b.dirty AS dirty, \
-                    b.subject AS subject, toString(b.deployed_at) AS deployed_at",
-        ))
-        .await
-        .ok()
-        .and_then(|rows| {
-            rows.first().map(|r| {
-                json!({
-                    "sha": r.get::<String>("sha").ok(),
-                    "branch": r.get::<String>("branch").ok(),
-                    "dirty": r.get::<bool>("dirty").ok(),
-                    "subject": r.get::<String>("subject").ok(),
-                    "deployed_at": r.get::<String>("deployed_at").ok(),
-                })
-            })
-        });
-
-    Json(json!({
-        "scheduler": scheduler_status,
-        "queue": queue_stats,
-        "knowledge": { "notes_by_type": serde_json::Value::Object(notes_by_type) },
-        "tasks": { "by_status": serde_json::Value::Object(tasks_by_status) },
-        // `dead` and `dead_letter` both mean a job that will not run again.
-        "alerts": { "dead_jobs_last_24h": dead_24h },
-        "version": version,
     }))
     .into_response()
 }
@@ -1230,38 +1144,6 @@ pub async fn handle_delete_context_profile(
     }
 }
 
-/// GET /api/http-contexts — list all ApiContext nodes (name, base_url, auth_scheme).
-pub async fn handle_list_http_contexts(
-    Extension(state): Extension<Arc<RestState>>,
-) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
-
-    let cypher = "MATCH (c:ApiContext) \
-                  RETURN c.name AS name, c.base_url AS base_url, \
-                         c.auth_scheme AS auth_scheme, c.description AS description \
-                  ORDER BY c.name ASC";
-
-    match neo4j.execute(neo4rs::query(cypher)).await {
-        Ok(rows) => {
-            let contexts: Vec<Value> = rows
-                .iter()
-                .map(|row| {
-                    json!({
-                        "name":        row.get::<String>("name").unwrap_or_default(),
-                        "base_url":    row.get::<String>("base_url").unwrap_or_default(),
-                        "auth_scheme": row.get::<String>("auth_scheme").unwrap_or_default(),
-                        "description": row.get::<String>("description").unwrap_or_default(),
-                    })
-                })
-                .collect();
-            Json(json!({ "count": contexts.len(), "contexts": contexts })).into_response()
-        }
-        Err(e) => internal(format!("Failed to list API contexts: {e}")),
-    }
-}
-
 /// GET /api/models — active provider + catalog models.
 pub async fn handle_list_models(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
     use crate::services::LlmProviderType;
@@ -1382,9 +1264,7 @@ pub async fn handle_list_jobs(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let statuses = parse_statuses(&params);
     let limit: i64 = params
@@ -1463,9 +1343,7 @@ pub async fn handle_list_notes(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let limit: i64 = params
         .get("limit")
@@ -1552,9 +1430,7 @@ pub async fn handle_create_note(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let Some(content) = body
         .get("content")
@@ -1628,9 +1504,7 @@ pub async fn handle_update_note(
     Path(note_id): Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let Some(content) = body
         .get("content")
@@ -1689,9 +1563,7 @@ pub async fn handle_delete_note(
     Extension(state): Extension<Arc<RestState>>,
     Path(note_id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     // Check existence first so we can return 404 accurately.
     let check =
@@ -1717,9 +1589,7 @@ pub async fn handle_get_note(
     Extension(state): Extension<Arc<RestState>>,
     Path(note_id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     // Everything the HBI's note drawer shows: provenance and epistemic status
     // with the content, the note's place among chunks, and what it mentions.
@@ -1844,9 +1714,7 @@ pub async fn handle_get_related_notes(
     Extension(state): Extension<Arc<RestState>>,
     Path(note_id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let q = neo4rs::query(
         "MATCH (n:Note {id: $id})-[r:RELATES_TO]->(m:Note) \
@@ -1880,9 +1748,7 @@ pub async fn handle_list_tasks(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let limit: i64 = params
         .get("limit")
@@ -1971,9 +1837,7 @@ pub async fn handle_list_sessions(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let limit: i64 = params
         .get("limit")
@@ -1994,9 +1858,7 @@ pub async fn handle_get_session_entries(
     Path(session_id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
 
     let limit: usize = params
         .get("limit")
@@ -2019,9 +1881,7 @@ pub async fn handle_archive_session(
     Extension(state): Extension<Arc<RestState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match neo4j.archive_session(&session_id).await {
         Ok(()) => Json(json!({ "status": "archived", "session_id": session_id })).into_response(),
         Err(e) => internal(format!("Failed to archive session: {e}")),
@@ -2079,9 +1939,7 @@ pub async fn handle_get_activity(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let hours = window_hours(&params);
     let since = (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
 
@@ -2292,27 +2150,6 @@ pub async fn handle_mark_notification_read(
             .into_response();
     };
     match neo4j.mark_notification_read(&id).await {
-        Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /api/notifications/read-all
-pub async fn handle_mark_all_notifications_read(
-    Extension(state): Extension<Arc<RestState>>,
-) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error": "No database"})),
-        )
-            .into_response();
-    };
-    match neo4j.mark_all_notifications_read().await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

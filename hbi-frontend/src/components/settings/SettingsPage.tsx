@@ -72,7 +72,7 @@ function ConnectionSection() {
   const check = async () => {
     setChecking(true);
     try {
-      const h = await apiJson<{ queue?: { coordinator?: { alive: boolean } } }>("/api/health");
+      const h = await apiJson<{ queue?: { coordinator?: { alive: boolean } } }>("/api/system/health");
       setState({ ok: true, text: `Connected. Queue coordinator ${h.queue?.coordinator?.alive ? "alive" : "NOT alive"}.` });
     } catch (e) {
       setState({ ok: false, text: e instanceof Error ? e.message : String(e) });
@@ -359,7 +359,7 @@ function AboutSection() {
   const [health, setHealth] = useState<HealthVersion | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    apiJson<HealthVersion>("/api/health").then(setHealth, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    apiJson<HealthVersion>("/api/system/health").then(setHealth, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   const v = health?.version;
@@ -369,7 +369,7 @@ function AboutSection() {
       {error && <EmptyState tone="red" title="Couldn't reach the brain" checked={error} />}
       {health && !v && (
         <EmptyState title="The brain did not report a version"
-          checked="/api/health returned no `version` (no BrainVersion node yet, or a brain older than this frontend)." />
+          checked="/api/system/health returned no `version` (no BrainVersion node yet, or a brain older than this frontend)." />
       )}
       {v && (
         <div className="settings-form">

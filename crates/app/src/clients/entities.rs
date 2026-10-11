@@ -18,7 +18,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use super::rest::{RestState, bad_request, internal, unavailable};
+use super::rest::{RestState, bad_request, graph, internal, or_500};
 use crate::services::entity_resolution as er;
 
 const DEFAULT_LIMIT: usize = 25;
@@ -28,9 +28,7 @@ pub async fn handle_candidates(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let limit = params
         .get("limit")
         .and_then(|l| l.parse::<usize>().ok())
@@ -56,13 +54,11 @@ pub async fn handle_merge(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<MergeBody>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     if body.from_id == body.into_id {
         return bad_request("from_id and into_id are the same entity");
     }
-    let names = match neo4j
+    let names = or_500!(neo4j
         .execute(
             neo4rs::query(
                 "MATCH (f:Entity {id: $f}), (t:Entity {id: $t}) RETURN f.name AS f, t.name AS t",
@@ -70,11 +66,7 @@ pub async fn handle_merge(
             .param("f", body.from_id.as_str())
             .param("t", body.into_id.as_str()),
         )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+        .await);
     let Some(row) = names.first() else {
         return bad_request(format!(
             "no entity with id '{}' or '{}'",
@@ -100,9 +92,7 @@ pub async fn handle_decide(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<DecideBody>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match er::decide(neo4j, &body.a_id, &body.b_id, &body.verdict).await {
         Ok(()) => Json(json!({ "ok": true, "verdict": body.verdict })).into_response(),
         Err(e) => bad_request(format!("{e:#}")),
@@ -113,9 +103,7 @@ pub async fn handle_unmerge(
     Extension(state): Extension<Arc<RestState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match er::unmerge(neo4j, &name).await {
         Ok(o) => {
             let seeded = er::Rules::global()

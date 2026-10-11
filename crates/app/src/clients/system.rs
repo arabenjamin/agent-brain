@@ -16,7 +16,7 @@ use axum::{Extension, Json, response::IntoResponse};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::rest::{RestState, unavailable};
+use super::rest::{RestState, graph};
 pub use crate::services::architecture::{Component, architecture_dir, components};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -470,9 +470,7 @@ pub async fn handle_plugins(Extension(state): Extension<Arc<RestState>>) -> impl
 }
 
 pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let skills: Vec<Value> = match &state.tool_registry {
         Some(r) => r
             .read()

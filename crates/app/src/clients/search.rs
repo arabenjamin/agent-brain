@@ -21,7 +21,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use super::rest::{RestState, internal, not_found, unavailable};
+use super::rest::{RestState, graph, not_found, or_500, unavailable};
 use super::work::clip;
 use crate::repository::Neo4jClient;
 use crate::services::knowledge::{MatchTrace, TRACE_NO_VECTOR, sanitize_lucene_query};
@@ -296,9 +296,7 @@ pub async fn handle_search(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let query = params
         .get("q")
         .map(|s| s.trim().to_string())
@@ -455,9 +453,7 @@ pub async fn handle_lookup(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     match lookup_id(neo4j, &id.trim().to_lowercase()).await {
         Some(v) => Json(v).into_response(),
         None => not_found(),
@@ -518,9 +514,7 @@ pub async fn handle_lookup_many(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let mut seen = std::collections::HashSet::new();
     let ids: Vec<String> = body["ids"]
         .as_array()
@@ -553,13 +547,12 @@ pub async fn handle_entity(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
-    let rows = match neo4j
-        .execute(
-            neo4rs::query(
-                "MATCH (e:Entity {id: $id}) \
+    let neo4j = graph!(state);
+    let rows = or_500!(
+        neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (e:Entity {id: $id}) \
                  OPTIONAL MATCH (e)<-[m:MENTIONS]-() \
                  WITH e, count(m) AS mentions \
                  OPTIONAL MATCH (w:WikiItem {qid: e.type_question_qid}) \
@@ -569,14 +562,11 @@ pub async fn handle_entity(
                         e.kind AS kind, e.kind_source AS kind_source, \
                         w.qid AS q_qid, w.label AS q_label, w.description AS q_description, \
                         w.kind AS q_kind, w.kind_type AS q_kind_type",
+                )
+                .param("id", id.as_str()),
             )
-            .param("id", id.as_str()),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+            .await
+    );
     let Some(row) = rows.first() else {
         // An entity merged away keeps its id on the alias: say where it went.
         let merged = neo4j

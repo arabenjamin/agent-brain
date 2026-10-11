@@ -18,7 +18,7 @@ use axum::{Extension, Json, response::IntoResponse};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
-use super::rest::{RestState, unavailable};
+use super::rest::{RestState, graph};
 use crate::repository::Todo;
 use crate::services::items;
 
@@ -70,9 +70,7 @@ async fn count(neo4j: &crate::repository::Neo4jClient, cypher: &str) -> Result<i
 }
 
 pub async fn handle_feed(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let now = Utc::now();
     let today = crate::services::clock::today();
     let mut errors: Vec<Value> = Vec::new();

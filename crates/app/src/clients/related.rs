@@ -29,7 +29,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use super::rest::{RestState, bad_request, internal, not_found, unavailable};
+use super::rest::{RestState, bad_request, graph, internal, not_found, or_500};
 use super::work::clip;
 
 /// Added to both mention counts: two entities that share their only note
@@ -125,9 +125,7 @@ pub async fn handle_related(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let topic = topic(&params);
     match related_rows(neo4j, &id, &topic, limit(&params, DEFAULT_LIMIT)).await {
         Ok(Some((total, related))) => Json(json!({
@@ -149,17 +147,16 @@ pub async fn handle_pair(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let (Some(a), Some(b)) = (params.get("a"), params.get("b")) else {
         return bad_request("`a` and `b` (entity ids) are required");
     };
     let topic = topic(&params);
-    let rows = match neo4j
-        .execute(
-            neo4rs::query(&format!(
-                "MATCH (ea:Entity {{id: $a}}), (eb:Entity {{id: $b}}) \
+    let rows = or_500!(
+        neo4j
+            .execute(
+                neo4rs::query(&format!(
+                    "MATCH (ea:Entity {{id: $a}}), (eb:Entity {{id: $b}}) \
                  OPTIONAL CALL (ea, eb) {{ \
                    MATCH (ea)<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(eb) WHERE {IN_TOPIC} \
                    RETURN n ORDER BY n.created_at DESC \
@@ -169,17 +166,14 @@ pub async fn handle_pair(
                         [n IN ns[0..$limit] | {{id: n.id, note_type: n.note_type, \
                           source_context: n.source_context, content: n.content, \
                           created_at: toString(n.created_at)}}] AS notes"
-            ))
-            .param("a", a.as_str())
-            .param("b", b.as_str())
-            .param("topic", topic.as_str())
-            .param("limit", limit(&params, 20)),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+                ))
+                .param("a", a.as_str())
+                .param("b", b.as_str())
+                .param("topic", topic.as_str())
+                .param("limit", limit(&params, 20)),
+            )
+            .await
+    );
     let Some(r) = rows.first() else {
         return bad_request(format!("No entity '{a}' or '{b}'"));
     };
@@ -218,9 +212,7 @@ pub async fn handle_neighbourhood(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+    let neo4j = graph!(state);
     let topic = topic(&params);
     let (total, related) = match related_rows(neo4j, &id, &topic, limit(&params, NEIGHBOURS)).await
     {
@@ -233,7 +225,7 @@ pub async fn handle_neighbourhood(
         .filter_map(|r| r["id"].as_str().map(String::from))
         .collect();
     ids.push(id.clone());
-    let rows = match neo4j
+    let rows = or_500!(neo4j
         .execute(
             neo4rs::query(
                 "MATCH (x:Entity) WHERE x.id IN $ids \
@@ -245,11 +237,7 @@ pub async fn handle_neighbourhood(
             )
             .param("ids", ids.clone()),
         )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+        .await);
     let mentions: HashMap<String, i64> = rows
         .iter()
         .filter_map(|r| {
@@ -282,21 +270,19 @@ pub async fn handle_neighbourhood(
             })
         })
         .collect();
-    let pairs = match neo4j
-        .execute(
-            neo4rs::query(&format!(
-                "MATCH (x:Entity)<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(y:Entity) \
+    let pairs = or_500!(
+        neo4j
+            .execute(
+                neo4rs::query(&format!(
+                    "MATCH (x:Entity)<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(y:Entity) \
                  WHERE x.id IN $ids AND y.id IN $ids AND x.id < y.id AND {IN_TOPIC} \
                  RETURN x.id AS a, y.id AS b, count(DISTINCT n) AS shared"
-            ))
-            .param("ids", ids)
-            .param("topic", topic.as_str()),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
+                ))
+                .param("ids", ids)
+                .param("topic", topic.as_str()),
+            )
+            .await
+    );
     let links: Vec<Value> = pairs
         .iter()
         .filter_map(|r| {

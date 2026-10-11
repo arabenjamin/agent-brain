@@ -437,6 +437,13 @@ Rule: `dev_docs get plugins/api`.
   - **Verified live:** one explicit search per engine, old binary then new, same query: Exa, Tavily, Serper, google_news identical results and shape; SerpApi now 3 of 3; SearXNG answered; Brave dropped (Exa answered); Currents 0 (its known AND-every-keyword behaviour) and fell through; Webz 2 results with its balance logged. Unit tests (19 for the engines, including that every bundled file parses and the ladder order is unchanged) and clippy clean; `eval-retrieval` unchanged 0.880 / 0.800.
   - **Size: −0.3K** (code 60.6K → 60.3K); `search.rs` 2,978 → 1,438 lines, `search_engines.rs` 1,166 with tests, plus 10 YAML files.
 - **6d — REST clients**: `rest.rs` (1.9K) and the per-feature clients share their plumbing.
+
+  **6d result (2026-10-11).** Surveyed first: 72 routes, and every one under `/api` but three is called by the HBI (or is an external front door: `/mcp`, `/v1/*`, `/health`). The per-feature clients already shared `rest.rs`'s error helpers, so the duplication was the per-handler plumbing, and one duplicate endpoint:
+  - **`/api/health` folded into `/api/system/health`.** Its only caller, the Settings page (connection check + About version), reads the same `queue.coordinator.alive` and `version` from the one-call system health. Its unread `alerts.dead_jobs_last_24h` went with it; dead jobs stay visible in `queue.by_status` and the Work workspace's Failed/Dead filter. **Deleted, no caller:** `/api/http-contexts` (`list_apis` covers it) and `POST /api/notifications/read-all` (and its repository function).
+  - **`graph!` and `or_500!`** (`clients/rest.rs`) replace 53 copies of the Neo4j guard and 17 `let … = match … { Ok(v) => v, Err(e) => return internal(…) }` blocks. A `match` with several meaningful arms stays a `match`. Mechanical and compiler-checked; handlers keep their return types.
+  - **Verified live:** every parameter-free GET endpoint snapshotted on the old binary and the new (status + response shape): identical, except `/api/scheduler/status`, whose runtime fields are null in the minutes after any restart (the open last-tick TODO; the handler is unchanged). The removed routes answer 404; the HBI reaches `/api/system/health` through nginx. 765 unit tests, clippy, `tsc`, 101 vitest tests; `eval-retrieval` unchanged 0.880 / 0.800.
+  - **Not done:** converting hand-mapped rows (`row.get::<String>("x").unwrap_or_default()`, ~290 lines) to `row.to::<Value>()` would change `""`/`0` defaults to `null` in responses the HBI's types read; not worth the UI risk for its size.
+  - **Size: −0.3K** (code 60.3K → 60.0K). Rule: dev note "REST handler plumbing".
 - **6e — generated tool schemas** from typed argument structs instead of hand-written JSON.
 - **6f — split `app` into core crates** under the per-crate budget (6K soft / 8K hard), last, so it moves code that has already shrunk.
 - **6g — second extraction round**: the WebSocket tools and the sandboxes to plugins, then a survey of what else neither retrieves, stores nor reasons (snapshots, `gpu_lease`, dev notes, self-model …), measured before anything moves.
@@ -457,6 +464,7 @@ Rule: `dev_docs get plugins/api`.
 | 2026-10-11 | Phase 6a | 75.6K (code 61.1K) | 14.5K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6b | 75.1K (code 60.6K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6c | 74.7K (code 60.3K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
+| 2026-10-11 | Phase 6d | 74.4K (code 60.0K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 
 ## 10. Open questions
 

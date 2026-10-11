@@ -346,7 +346,6 @@ impl HttpTransport {
             )
             // --- read-only API endpoints (formerly MCP tools) ---
             .route("/api/graph", get(rest_handlers::handle_get_graph))
-            .route("/api/health", get(rest_handlers::handle_api_health))
             .route("/api/activity", get(rest_handlers::handle_get_activity))
             // --- Knowledge search (clients/search.rs) ---
             .route("/api/search", get(crate::clients::search::handle_search))
@@ -475,10 +474,6 @@ impl HttpTransport {
                 "/api/contexts/{name}/reset",
                 post(rest_handlers::handle_reset_context_profile),
             )
-            .route(
-                "/api/http-contexts",
-                get(rest_handlers::handle_list_http_contexts),
-            )
             .route("/api/models", get(rest_handlers::handle_list_models))
             .route("/api/models/usage", get(rest_handlers::handle_model_usage))
             .route("/api/llm/budget", get(rest_handlers::handle_llm_budget))
@@ -542,10 +537,6 @@ impl HttpTransport {
             .route(
                 "/api/notifications",
                 get(rest_handlers::handle_list_notifications),
-            )
-            .route(
-                "/api/notifications/read-all",
-                axum::routing::post(rest_handlers::handle_mark_all_notifications_read),
             )
             .route(
                 "/api/notifications/{id}/read",
