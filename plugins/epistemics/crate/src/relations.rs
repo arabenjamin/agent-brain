@@ -1,7 +1,7 @@
 //! Typed relationships between entities (HBI plan §10.5, Phase 17).
 //!
 //! `(:Entity)-[:RELATES {type, method, status, evidence, …}]->(:Entity)`:
-//! - **A closed vocabulary.** the core bundle's `relations/*.yaml` lists the
+//! - **A closed vocabulary.** the bundle's `relations.yaml` lists the
 //!   types, each with a definition and the entity types allowed at each end.
 //!   The user picks from it and the extractor may use nothing else.
 //! - **The user's edges are final.** `method: 'manual'`, `status: 'active'`.
@@ -23,8 +23,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
 
-use crate::repository::Neo4jClient;
-use crate::services::LlmProvider;
+use agent_brain_plugin_api::Llm;
+
+use crate::db::{Db, query};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct RelType {
@@ -69,41 +70,34 @@ pub struct Vocabulary {
 }
 
 impl Vocabulary {
-    /// Every `*.yaml` in `dir` with a `types:` list. A missing dir: no types.
-    pub fn load_dir(dir: &Path) -> Self {
+    /// The `types:` list in `path`. A missing file: no types.
+    pub fn load_file(path: &Path) -> Self {
         let mut types: Vec<RelType> = Vec::new();
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            warn!(dir = %dir.display(), "relations: no vocabulary dir — no relationship types");
+        if !path.is_file() {
+            warn!(path = %path.display(), "relations: no vocabulary file — no relationship types");
             return Self::default();
-        };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for p in paths {
-            if p.extension().and_then(|e| e.to_str()) != Some("yaml") {
-                continue;
-            }
-            match std::fs::read_to_string(&p)
-                .map_err(anyhow::Error::from)
-                .and_then(|t| serde_yaml::from_str::<File>(&t).map_err(Into::into))
-            {
-                Ok(f) => {
-                    for t in f.types {
-                        if t.name.trim().is_empty() || types.iter().any(|x| x.name == t.name) {
-                            warn!(path = %p.display(), name = %t.name, "relations: type skipped (empty or repeated)");
-                            continue;
-                        }
-                        types.push(t);
+        }
+        match std::fs::read_to_string(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|t| serde_yaml::from_str::<File>(&t).map_err(Into::into))
+        {
+            Ok(f) => {
+                for t in f.types {
+                    if t.name.trim().is_empty() || types.iter().any(|x| x.name == t.name) {
+                        warn!(path = %path.display(), name = %t.name, "relations: type skipped (empty or repeated)");
+                        continue;
                     }
+                    types.push(t);
                 }
-                Err(e) => warn!(path = %p.display(), error = %e, "relations: file skipped"),
             }
+            Err(e) => warn!(path = %path.display(), error = %e, "relations: file skipped"),
         }
         Self { types }
     }
 
     pub fn global() -> &'static Vocabulary {
         static V: OnceLock<Vocabulary> = OnceLock::new();
-        V.get_or_init(|| Vocabulary::load_dir(&relations_dir()))
+        V.get_or_init(|| Vocabulary::load_file(&relations_file()))
     }
 
     pub fn get(&self, name: &str) -> Option<&RelType> {
@@ -115,9 +109,9 @@ impl Vocabulary {
     }
 }
 
-/// The core bundle's `relations/` (read from core only: `services/plugins.rs`).
-pub fn relations_dir() -> PathBuf {
-    crate::services::plugins::Plugins::global().core_dir("relations")
+/// The bundle's `relations.yaml`.
+pub fn relations_file() -> PathBuf {
+    crate::bundle_root().join("relations.yaml")
 }
 
 /// The stored direction: symmetric types go from the lower id.
@@ -262,7 +256,7 @@ fn rel_type(name: &str) -> Result<&'static RelType, String> {
 /// Set a relationship by hand: active, and the user's. A proposed or
 /// rejected extraction of the same edge becomes the user's.
 pub async fn set_manual(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     from: &str,
     to: &str,
     type_name: &str,
@@ -278,7 +272,7 @@ pub async fn set_manual(
     let (a, b) = ordered(t, from, to);
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) \
                  MERGE (a)-[r:RELATES {type: $type}]->(b) \
                  ON CREATE SET r.created_at = datetime(), r.evidence = [] \
@@ -305,7 +299,7 @@ pub async fn set_manual(
 
 /// Accept or reject a proposed (extracted) relationship.
 pub async fn decide(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     from: &str,
     to: &str,
     type_name: &str,
@@ -319,7 +313,7 @@ pub async fn decide(
     let status = if accept { "active" } else { "rejected" };
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (:Entity {id: $a})-[r:RELATES {type: $type}]->(:Entity {id: $b}) \
                  SET r.status = $status, r.decided_at = datetime() RETURN r.method AS method",
             )
@@ -341,7 +335,7 @@ pub async fn decide(
 
 /// Remove a relationship. The user's own is deleted; an extracted one is
 /// kept as `rejected`, so extraction never proposes it again.
-pub async fn remove(neo4j: &Neo4jClient, from: &str, to: &str, type_name: &str) -> Outcome<Value> {
+pub async fn remove(neo4j: &Db, from: &str, to: &str, type_name: &str) -> Outcome<Value> {
     let t = match rel_type(type_name) {
         Ok(t) => t,
         Err(e) => return Ok(Err(e)),
@@ -349,7 +343,7 @@ pub async fn remove(neo4j: &Neo4jClient, from: &str, to: &str, type_name: &str) 
     let (a, b) = ordered(t, from, to);
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (:Entity {id: $a})-[r:RELATES {type: $type}]->(:Entity {id: $b}) \
                  WITH r, r.method = 'llm' AS extracted \
                  FOREACH (_ IN CASE WHEN extracted THEN [1] ELSE [] END | \
@@ -376,13 +370,7 @@ pub async fn remove(neo4j: &Neo4jClient, from: &str, to: &str, type_name: &str) 
 
 /// Change a relationship's type: the old one is removed (an extracted one
 /// rejected), and the new one is the user's, with the old evidence.
-pub async fn relabel(
-    neo4j: &Neo4jClient,
-    from: &str,
-    to: &str,
-    old: &str,
-    new: &str,
-) -> Outcome<Value> {
+pub async fn relabel(neo4j: &Db, from: &str, to: &str, old: &str, new: &str) -> Outcome<Value> {
     let (t_old, t_new) = match (rel_type(old), rel_type(new)) {
         (Ok(a), Ok(b)) => (a, b),
         (Err(e), _) | (_, Err(e)) => return Ok(Err(e)),
@@ -390,7 +378,7 @@ pub async fn relabel(
     let (a, b) = ordered(t_old, from, to);
     let evidence: Vec<String> = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (:Entity {id: $a})-[r:RELATES {type: $type}]->(:Entity {id: $b}) \
                  RETURN coalesce(r.evidence, []) AS ev",
             )
@@ -410,7 +398,7 @@ pub async fn relabel(
     if out.is_ok() && !evidence.is_empty() {
         neo4j
             .run(
-                neo4rs::query(
+                query(
                     "MATCH (:Entity {id: $a})-[r:RELATES {type: $type}]->(:Entity {id: $b}) \
                      SET r.evidence = coalesce(r.evidence, []) + \
                          [x IN $ev WHERE NOT x IN coalesce(r.evidence, [])]",
@@ -427,19 +415,14 @@ pub async fn relabel(
 
 /// Write one extracted relation as a proposal. Never touches the user's
 /// edges or a rejected one, other than counting that it was seen again.
-async fn propose(
-    neo4j: &Neo4jClient,
-    c: &Candidate,
-    note_id: &str,
-    model: &str,
-) -> Result<&'static str> {
+async fn propose(neo4j: &Db, c: &Candidate, note_id: &str, model: &str) -> Result<&'static str> {
     let Some(t) = Vocabulary::global().get(&c.r#type) else {
         return Ok("skipped");
     };
     let (a, b) = ordered(t, &c.from, &c.to);
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) \
                  MERGE (a)-[r:RELATES {type: $type}]->(b) \
                  ON CREATE SET r.method = 'llm', r.status = 'proposed', r.created_at = datetime(), \
@@ -477,8 +460,8 @@ async fn propose(
 /// `only` re-reads one claim, read before or not.
 /// The model is whatever the caller's LLM routes to (the schedule pins one).
 pub async fn extract_from_claims(
-    neo4j: &Neo4jClient,
-    llm: &dyn LlmProvider,
+    neo4j: &Db,
+    llm: &dyn Llm,
     limit: i64,
     only: Option<&str>,
 ) -> Result<Value> {
@@ -490,7 +473,7 @@ pub async fn extract_from_claims(
     }
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (n:Note {note_type: 'claim'}) \
                  WHERE (CASE WHEN $only = '' THEN n.entities_at IS NOT NULL AND n.relations_at IS NULL \
                         ELSE n.id = $only END) \
@@ -514,7 +497,7 @@ pub async fn extract_from_claims(
         }));
     }
     let waiting = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (n:Note {note_type: 'claim'}) \
              WHERE n.entities_at IS NOT NULL AND n.relations_at IS NULL \
                AND COUNT { (n)-[:MENTIONS]->(e:Entity) WHERE NOT e.entity_type IN ['url', 'date'] } >= 2 \
@@ -524,12 +507,8 @@ pub async fn extract_from_claims(
         .first()
         .and_then(|r| r.get::<i64>("c").ok())
         .unwrap_or(0);
-    // The model the step pinned (`SharedLlm::model_name` says only "dynamic").
-    let model = crate::services::queue::SELECTED_LLM
-        .try_with(|v| v.as_ref().map(|c| c.model.clone()))
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| llm.model_name().to_string());
+    // The model the step pinned (the host's `model_name` reads the pin).
+    let model = llm.model_name();
     let mut tally: HashMap<&'static str, i64> = HashMap::new();
     let mut dropped: HashMap<String, i64> = HashMap::new();
     let (mut read, mut failed) = (0i64, 0i64);
@@ -538,15 +517,21 @@ pub async fn extract_from_claims(
             continue;
         };
         let ents: Vec<Mentioned> = r
-            .get::<Vec<neo4rs::BoltMap>>("ents")
+            .get::<Vec<Value>>("ents")
             .unwrap_or_default()
             .into_iter()
             .filter_map(|m| {
+                let f = |k: &str| {
+                    m.get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
                 Some(Mentioned {
-                    id: m.get::<String>("id").ok()?,
-                    name: m.get::<String>("name").unwrap_or_default(),
-                    surface: m.get::<String>("surface").unwrap_or_default(),
-                    entity_type: m.get::<String>("entity_type").unwrap_or_default(),
+                    id: m.get("id").and_then(Value::as_str)?.to_string(),
+                    name: f("name"),
+                    surface: f("surface"),
+                    entity_type: f("entity_type"),
                 })
             })
             .collect();
@@ -575,7 +560,7 @@ pub async fn extract_from_claims(
         }
         neo4j
             .run(
-                neo4rs::query(
+                query(
                     "MATCH (n:Note {id: $id}) SET n.relations_at = datetime(), n.relations_found = $found",
                 )
                 .param("id", id.as_str())
@@ -599,9 +584,9 @@ pub async fn extract_from_claims(
 
 /// Fold the merge list's "related" answers (`RELATED_ENTITY`, Phase 4a) into
 /// `related_to` relationships the user set. Run by `init-db`; idempotent.
-pub async fn fold_related_entity(neo4j: &Neo4jClient) -> Result<i64> {
+pub async fn fold_related_entity(neo4j: &Db) -> Result<i64> {
     let rows = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (a:Entity)-[x:RELATED_ENTITY]-(b:Entity) WHERE a.id < b.id \
              MERGE (a)-[r:RELATES {type: 'related_to'}]->(b) \
              ON CREATE SET r.method = 'manual', r.status = 'active', r.evidence = [], \
@@ -621,9 +606,7 @@ mod tests {
     use super::*;
 
     fn vocab() -> Vocabulary {
-        Vocabulary::load_dir(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/relations"),
-        )
+        Vocabulary::load_file(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../relations.yaml"))
     }
 
     fn ents() -> Vec<Mentioned> {

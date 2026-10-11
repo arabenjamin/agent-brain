@@ -23,6 +23,7 @@ use crate::services::snapshot::SnapshotService;
 use agent_brain_models::ProvenanceFlag;
 
 mod analysis;
+pub mod claim_label;
 mod consolidation;
 mod entities;
 mod labels;

@@ -57,11 +57,12 @@ pub const MERGED_KINDS: &[&str] = &[
 ];
 
 /// Seed dirs read from the core bundle only, for now: each builds one global
-/// set (the entity rules, relation vocabulary, the core's own architecture)
-/// that has no merge rule yet. A plugin shipping one is reported, never
-/// silently ignored. (`topics/` merged in Phase 4: one topic per file, and
-/// `_scope.yaml` from the core only.)
-pub const CORE_ONLY_KINDS: &[&str] = &["entities", "relations", "architecture"];
+/// set (the entity rules, the core's own architecture) that has no merge rule
+/// yet. A plugin shipping one is reported, never silently ignored. (`topics/`
+/// merged in Phase 4: one topic per file, and `_scope.yaml` from the core
+/// only. The relation vocabulary left with the epistemics plugin, as its
+/// bundle's `relations.yaml`.)
+pub const CORE_ONLY_KINDS: &[&str] = &["entities", "architecture"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -421,6 +422,7 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
         Arc::new(agent_brain_plugin_alias_judge::AliasJudge),
         Arc::new(agent_brain_plugin_reference::Reference),
         Arc::new(agent_brain_plugin_developer::Developer),
+        Arc::new(agent_brain_plugin_epistemics::Epistemics),
     ]
 }
 
@@ -859,6 +861,9 @@ async fn stamp(neo4j: &Neo4jClient, label: &str, name: &str, plugin: &str) {
 /// Why `wf` cannot run now, or `None`. A step's tool must be registered, an
 /// `mcp_call` step's server must exist and be enabled, and a yaml-owned
 /// workflow's plugin must be loaded. `live_tools` empty = not known, unchecked.
+/// A step marked `optional` may name a tool that is not registered: the
+/// queue skips it and the run goes on (a media workflow's `claim` step while
+/// epistemics is off).
 pub fn unavailable_reason(
     wf: &crate::repository::Workflow,
     live_tools: &[String],
@@ -887,7 +892,11 @@ pub fn unavailable_reason(
             add("a step names no tool (`tool_name`)".into());
             continue;
         };
-        if !live_tools.is_empty() && !live_tools.iter().any(|t| t == tool) {
+        let optional = step
+            .get("optional")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !optional && !live_tools.is_empty() && !live_tools.iter().any(|t| t == tool) {
             add(format!("tool '{tool}' is not registered"));
         }
         if tool == "mcp_call"
@@ -1092,6 +1101,13 @@ mod tests {
              MCP server 'off' is disabled; MCP server 'nobody' is not registered; \
              a step names no tool (`tool_name`)"
         );
+        // An optional step may name a missing tool: the queue skips it.
+        let optional = wf(
+            json!([{"tool_name": "store_note"}, {"tool_name": "claim", "optional": true}]),
+            "yaml",
+            Some("core"),
+        );
+        assert_eq!(unavailable_reason(&optional, &live, &mcp, &loaded), None);
         // A runtime-owned copy is judged by what it calls, not by its plugin.
         let taken = wf(
             json!([{"tool_name": "store_note"}]),

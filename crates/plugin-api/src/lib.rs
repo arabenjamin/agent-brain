@@ -24,6 +24,10 @@ pub use serde_json::{Map, Value};
 pub use agent_brain_protocol as protocol;
 pub use agent_brain_protocol::{Skill, ToolCallResult, ToolDefinition, parse_args};
 
+pub mod json;
+pub mod notes;
+pub mod web;
+
 /// An in-process plugin: Rust code that contributes tools.
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -261,6 +265,10 @@ pub trait Llm: Send + Sync {
 
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String>;
 
+    /// The embedding the core gives notes (bge-m3 on host Ollama), for a
+    /// plugin that writes its own retrievable notes.
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
+
     /// Generate and parse JSON, re-prompting with the parse error up to
     /// `max_retries` times; an object must carry `required_keys`.
     async fn generate_json(
@@ -270,6 +278,17 @@ pub trait Llm: Send + Sync {
         required_keys: &[&str],
         max_retries: u32,
     ) -> anyhow::Result<Value>;
+}
+
+/// The core's web search (`search_web`'s engines and ranking).
+#[async_trait]
+pub trait Search: Send + Sync {
+    /// Up to `count` results for `query`, external sources only (no "what we
+    /// already know" block from the graph), as `search_web` returns them: a
+    /// JSON array of `{title, link, snippet, …}`, perhaps behind the
+    /// SearXNG fallback banner (`web::strip_fallback_banner`). `Err` is the
+    /// search's own error text.
+    async fn web(&self, query: &str, count: u8) -> Result<String, String>;
 }
 
 /// Running the host's workflows.
@@ -321,10 +340,12 @@ pub struct PluginContext {
     pub activity: Option<Arc<dyn Activity>>,
     pub feed: Option<Arc<dyn Feed>>,
     pub introspection: Option<Arc<dyn Introspection>>,
+    pub search: Option<Arc<dyn Search>>,
     files: Option<FilesFn>,
     root: Option<PathBuf>,
     background: bool,
     day_start: Option<Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>>,
+    current_task: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 impl PluginContext {
@@ -341,10 +362,12 @@ impl PluginContext {
             activity: None,
             feed: None,
             introspection: None,
+            search: None,
             files: None,
             root: None,
             background: false,
             day_start: None,
+            current_task: None,
         }
     }
 
@@ -392,6 +415,18 @@ impl PluginContext {
     pub fn with_day_start(mut self, f: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>) -> Self {
         self.day_start = Some(f);
         self
+    }
+
+    /// The host side: attach the lookup of the Task a running job belongs to.
+    pub fn with_current_task(mut self, f: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Self {
+        self.current_task = Some(f);
+        self
+    }
+
+    /// The Task whose workflow run is calling this tool right now (a queue
+    /// job's owner), for provenance; `None` outside a run.
+    pub fn current_task(&self) -> Option<String> {
+        self.current_task.as_ref().and_then(|f| f())
     }
 
     /// The plugin this context belongs to.

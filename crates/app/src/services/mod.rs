@@ -1,8 +1,6 @@
 pub mod agent_runner;
 pub mod architecture;
 pub mod budget;
-pub mod claim_rewrite;
-pub mod claims;
 pub mod clock;
 pub mod context_builder;
 pub mod cypher_guard;
@@ -24,7 +22,6 @@ pub mod profiles;
 pub mod provider_gate;
 pub mod provider_registry;
 pub mod queue;
-pub mod relations;
 pub mod repair;
 pub mod retrieval_eval;
 pub mod routing;

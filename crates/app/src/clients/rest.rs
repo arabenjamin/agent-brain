@@ -1778,7 +1778,7 @@ pub async fn handle_get_note(
                     .into_iter()
                     .filter_map(|m| {
                         let id = m.get::<String>("id").ok()?;
-                        let r = crate::services::claims::source_reference(
+                        let r = agent_brain_plugin_api::notes::source_reference(
                             &m.get::<String>("content").unwrap_or_default(),
                         );
                         Some(json!({

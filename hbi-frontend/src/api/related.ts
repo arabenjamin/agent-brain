@@ -2,11 +2,13 @@
  * How entities relate today (`clients/related.rs`, HBI plan Phase 16): through
  * the notes that mention both. Ranked by strength (shared notes over the
  * geometric mean of each one's mentions, both shrunk by 3) so a hub mentioned
- * everywhere doesn't top every list; every pair drills to its notes.
+ * everywhere doesn't top every list; every pair drills to its notes. Typed
+ * relationships come from the epistemics plugin and are merged in here (none
+ * when it is off).
  */
 import { useQuery } from "@tanstack/react-query";
 import { apiJson, query } from "./client";
-import type { Relation } from "./relations";
+import { EPISTEMICS, orWhenOff, type Relation } from "./relations";
 
 export interface RelatedEntity {
   id: string;
@@ -71,12 +73,24 @@ export function useRelated(id: string, topic?: string, limit = 15) {
 export function usePair(a: string | null, b: string | null, topic?: string) {
   return useQuery({
     queryKey: ["entity", "pair", a ?? "", b ?? "", topic ?? ""],
-    queryFn: () => apiJson<PairResponse>(`/api/entities/pair${query({ a: a ?? "", b: b ?? "", topic })}`),
+    queryFn: async (): Promise<PairResponse> => {
+      const [pair, rel] = await Promise.all([
+        apiJson<Omit<PairResponse, "relations">>(`/api/entities/pair${query({ a: a ?? "", b: b ?? "", topic })}`),
+        orWhenOff(apiJson<{ relations: Relation[] }>(`${EPISTEMICS}/relations/between${query({ a: a ?? "", b: b ?? "" })}`), { relations: [] }),
+      ]);
+      return { ...pair, relations: rel.relations };
+    },
     enabled: !!a && !!b,
     staleTime: 60_000,
   });
 }
 
-export function fetchNeighbourhood(id: string, topic?: string) {
-  return apiJson<NeighbourhoodResponse>(`/api/entities/${encodeURIComponent(id)}/neighbourhood${query({ topic })}`);
+export async function fetchNeighbourhood(id: string, topic?: string): Promise<NeighbourhoodResponse> {
+  const hood = await apiJson<Omit<NeighbourhoodResponse, "relations">>(`/api/entities/${encodeURIComponent(id)}/neighbourhood${query({ topic })}`);
+  const ids = hood.nodes.map((n) => n.id).join(",");
+  const rel = await orWhenOff(
+    apiJson<{ relations: NeighbourhoodResponse["relations"] }>(`${EPISTEMICS}/relations/among${query({ ids })}`),
+    { relations: [] },
+  );
+  return { ...hood, relations: rel.relations };
 }

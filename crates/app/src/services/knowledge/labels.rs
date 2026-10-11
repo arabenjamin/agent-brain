@@ -100,7 +100,7 @@ impl KnowledgeService {
                     &created_at,
                     age.as_deref(),
                 ),
-                "claim" => crate::services::claims::label_claim(
+                "claim" => super::claim_label::label_claim(
                     "",
                     &row.get::<String>("status").unwrap_or_default(),
                     Some(&row.get::<String>("asserted_by").unwrap_or_default()),

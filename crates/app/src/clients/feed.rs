@@ -128,16 +128,20 @@ pub async fn handle_feed(Extension(state): Extension<Arc<RestState>>) -> impl In
         merges,
         json!({ "view": "feed", "mode": "merges" }),
     );
-    digest(
-        "relations",
-        "relationships to review".into(),
-        count(
-            neo4j,
-            "MATCH ()-[r:RELATES {status: 'proposed'}]->() RETURN count(r) AS c",
-        )
-        .await,
-        json!({ "view": "feed", "mode": "relations" }),
-    );
+    // Typed relationships are the epistemics plugin's: with it off, its
+    // review view is gone, so a card would open nothing.
+    if crate::services::plugins::Plugins::global().is_loaded("epistemics") {
+        digest(
+            "relations",
+            "relationships to review".into(),
+            count(
+                neo4j,
+                "MATCH ()-[r:RELATES {status: 'proposed'}]->() RETURN count(r) AS c",
+            )
+            .await,
+            json!({ "view": "feed", "mode": "relations" }),
+        );
+    }
     digest(
         "entity_types",
         "entity types to check".into(),

@@ -251,6 +251,9 @@ steps:
       source_context: intelligence_agency_watch
       asserted_by: "Intelligence agency watch (news sources as cited)"
       limit: 8
+    # Optional: with the epistemics plugin off there is no `claim` tool, and
+    # the run goes on without claims (nothing after this reads its result).
+    optional: true
     priority: 1
     max_attempts: 2
     provider_hint: ollama

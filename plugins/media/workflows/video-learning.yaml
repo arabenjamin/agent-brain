@@ -135,6 +135,9 @@ steps:
       # 3, not 5: verification capacity is ~80 claims/day and ~16 videos/day
       # arrive; at 5 the unverified backlog grew without bound.
       limit: 3
+    # Optional: with the epistemics plugin off there is no `claim` tool, and
+    # the run goes on without claims (nothing after this reads its result).
+    optional: true
     priority: 1
     max_attempts: 2
     provider_hint: ollama

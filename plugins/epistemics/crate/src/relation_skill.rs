@@ -1,29 +1,27 @@
 //! `extract_relations`: typed relationships from claims, as proposals
-//! (HBI plan Phase 17, `services/relations.rs`). Run by
+//! (HBI plan Phase 17, `relations.rs`). Run by the bundle's
 //! `workflows/relation-extraction.yaml`, whose step pins the model: measured
 //! on held-out claims, the local model got 2 of 8 relations right and the
 //! cloud one 8 of 9 (5 of 9 strictly), and either way the user reviews them.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::repository::Neo4jClient;
-use crate::services::LlmProvider;
-use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use agent_brain_plugin_api::{Llm, Skill, ToolCallResult, ToolDefinition, async_trait};
+
+use crate::db::Db;
 
 const DEFAULT_LIMIT: i64 = 30;
 const MAX_LIMIT: i64 = 60;
 
 pub struct RelationSkill {
-    neo4j: Neo4jClient,
-    llm: Arc<dyn LlmProvider>,
+    neo4j: Db,
+    llm: Arc<dyn Llm>,
 }
 
 impl RelationSkill {
-    pub fn new(neo4j: Neo4jClient, llm: Arc<dyn LlmProvider>) -> Self {
+    pub fn new(neo4j: Db, llm: Arc<dyn Llm>) -> Self {
         Self { neo4j, llm }
     }
 
@@ -32,7 +30,7 @@ impl RelationSkill {
             name: "extract_relations".to_string(),
             description: "Read claims that name two or more entities and propose the typed \
                 relationships they state (works_for, leads, member_of, part_of, located_in, owns, \
-                made_by, allied_with, opposes; relations/*.yaml). Proposals wait for the user's \
+                made_by, allied_with, opposes; the epistemics bundle's relations.yaml). Proposals wait for the user's \
                 review; a relationship the user rejected is never proposed again. Reads up to \
                 `limit` claims not read before, newest first, and reports what it proposed, what it \
                 dropped and why, and how many claims are still waiting. `note_id` re-reads one \
@@ -71,7 +69,7 @@ impl Skill for RelationSkill {
             .unwrap_or(DEFAULT_LIMIT)
             .clamp(1, MAX_LIMIT);
         Some(
-            match crate::services::relations::extract_from_claims(
+            match crate::relations::extract_from_claims(
                 &self.neo4j,
                 self.llm.as_ref(),
                 limit,

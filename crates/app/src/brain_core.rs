@@ -30,9 +30,9 @@ use crate::services::{
     AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill, exec::ExecSkill,
-    http::HttpSkill, knowledge::KnowledgeSkill, mcp_client::McpClientSkill, model::ModelSkill,
-    query::QuerySkill, scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
+    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, exec::ExecSkill, http::HttpSkill,
+    knowledge::KnowledgeSkill, mcp_client::McpClientSkill, model::ModelSkill, query::QuerySkill,
+    scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
     working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
@@ -628,23 +628,6 @@ impl BrainCore {
                 }
             });
             skills.push(Arc::new(crate::skills::dev_docs::DevDocsSkill::new(notes)));
-        }
-
-        // Relations — typed relationships proposed from claims (Phase 17).
-        if let Some(neo4j) = &self.storage.neo4j {
-            skills.push(Arc::new(crate::skills::relations::RelationSkill::new(
-                neo4j.clone(),
-                Arc::clone(&llm),
-            )));
-        }
-
-        // Claims — epistemic status for ingested assertions.
-        if let Some(neo4j) = &self.storage.neo4j {
-            skills.push(Arc::new(ClaimSkill::new(
-                neo4j.clone(),
-                Arc::clone(&llm),
-                self.storage.telemetry.clone(),
-            )));
         }
 
         // Generic Neo4j + DuckDB primitives.

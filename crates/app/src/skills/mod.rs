@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod agent_runner;
 pub mod bundle_tools;
-pub mod claims;
 pub mod dev_docs;
 pub mod exec;
 pub mod http;
@@ -10,7 +9,6 @@ pub mod mcp_client;
 pub mod model;
 pub mod plugin_manager;
 pub mod query;
-pub mod relations;
 pub mod scheduler;
 pub mod search;
 pub mod search_query;

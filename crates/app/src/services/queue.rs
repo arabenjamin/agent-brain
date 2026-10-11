@@ -234,6 +234,15 @@ fn optional_step_failed_note(tool: &str, attempt: u32, max: u32, error: &str) ->
     )
 }
 
+/// The `{{_prev}}` a step receives when the optional step before it was
+/// skipped because its tool is not registered.
+fn optional_step_skipped_note(tool: &str, reason: &str) -> String {
+    format!(
+        "[OPTIONAL STEP SKIPPED — '{tool}' did not run: {reason}. \
+         The chain continued without its result; say this section is unavailable.]"
+    )
+}
+
 /// Default length budget for a distilled handoff, and the threshold under which
 /// distillation is skipped entirely.  Sized so a typical multi-paragraph analysis
 /// survives untouched and only genuinely bulky payloads (raw SERP JSON, git diffs,
@@ -1328,6 +1337,32 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
                 .await;
             return;
         };
+
+        // An optional step whose tool is not registered (its plugin is off)
+        // is skipped at once and the chain carries on. Not a death: retrying
+        // cannot register the tool, and a dead job would leave a reflection
+        // telling the brain to investigate a tool that is off by choice (seen
+        // in Phase 4 pack 6's test run). The job is `cancelled` with the
+        // reason; the next step is told plainly that this one did not run.
+        if !handler.has_tool(&job.tool_name)
+            && job_arg(&job, "__optional")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            drop(handler_guard);
+            let reason = format!(
+                "tool '{}' is not registered (is its plugin off?); optional step skipped",
+                job.tool_name
+            );
+            info!(job_id = %job.id, tool = %job.tool_name, "Optional step's tool is not registered — skipping");
+            // Children first: a parked child of a cancelled parent is reaped.
+            let note = optional_step_skipped_note(&job.tool_name, &reason);
+            self.unpark_and_enqueue_children(&job.id, &note, "").await;
+            if let Err(e) = self.neo4j.set_job_skipped(&job.id, &reason).await {
+                warn!(job_id = %job.id, error = %e, "Failed to mark skipped job");
+            }
+            return;
+        }
 
         let resolved_args = self.resolve_step_args(&job).await;
         let route_ctx = route_context_for(&job);

@@ -1,0 +1,9 @@
+# What the brain's sources assert and what the evidence says about it
+# (CORE_AND_PLUGINS_PLAN Phase 4, pack 6). In-tree and on by default (plan
+# §2.4). Rust code in crate/ (the claim and extract_relations tools, and the
+# typed-relationship routes under /api/plugins/epistemics/); relations.yaml
+# is the relationship vocabulary. Claims are notes, so the core still reads
+# them with this plugin off; nothing new is claimed or verified.
+name: epistemics
+version: 1
+description: "Claims (the claim tool: extract, verify against independent web evidence, list, sources) and typed relationships between entities (extract_relations, the review routes), the claim-verification and relation-extraction workflows, and the platforms and state-media source lists the verifier reads."

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use agent_brain_plugin_api::{
     Activity, Entities, Feed, FeedItem, Graph, Introspection, Knowledge, Llm, Map, PluginContext,
-    Provenance, Telemetry, Value, Workflows, async_trait,
+    Provenance, Search, Telemetry, Value, Workflows, async_trait,
 };
 
 use crate::repository::{Neo4jClient, TelemetryClient};
@@ -39,7 +39,8 @@ impl Host {
             .with_files(Arc::new(|kind: &str| {
                 crate::services::plugins::Plugins::global().files(kind, "yaml")
             }))
-            .with_day_start(Arc::new(crate::services::clock::local_day_start_utc));
+            .with_day_start(Arc::new(crate::services::clock::local_day_start_utc))
+            .with_current_task(Arc::new(crate::services::queue::current_owner_task));
         if let Some(n) = &self.neo4j {
             ctx.graph = Some(Arc::new(HostGraph(n.clone())));
             ctx.workflows = Some(Arc::new(HostWorkflows {
@@ -68,6 +69,9 @@ impl Host {
             .telemetry
             .clone()
             .map(|t| Arc::new(HostTelemetry(t)) as Arc<dyn Telemetry>);
+        ctx.search = Some(Arc::new(HostSearch(
+            crate::skills::search::SearchSkill::new(self.telemetry.clone(), self.neo4j.clone()),
+        )));
         ctx
     }
 }
@@ -184,6 +188,41 @@ impl Llm for HostLlm {
         self.0
             .generate_json(prompt, system, required_keys, max_retries)
             .await
+    }
+
+    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.0.embed(text).await
+    }
+}
+
+/// `search_web` as the claim verifier called it from inside the core.
+struct HostSearch(crate::skills::search::SearchSkill);
+
+#[async_trait]
+impl Search for HostSearch {
+    async fn web(&self, query: &str, count: u8) -> Result<String, String> {
+        use crate::skills::Skill;
+        use agent_brain_protocol::Content;
+        // External evidence only: with the graph-first block on, the judge
+        // read our own note restating a claim and called it corroboration
+        // (2026-09-12..24: 41% → 84% corroborated).
+        let args = serde_json::json!({ "query": query, "count": count, "prior_knowledge": false });
+        let Some(r) = self.0.execute("search_web", Some(args)).await else {
+            return Err("search unavailable".into());
+        };
+        let text = r
+            .content
+            .first()
+            .and_then(|c| match c {
+                Content::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        if r.is_error == Some(true) {
+            Err(text)
+        } else {
+            Ok(text)
+        }
     }
 }
 

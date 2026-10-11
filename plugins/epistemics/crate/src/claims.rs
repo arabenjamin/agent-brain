@@ -24,9 +24,10 @@
 //!   so a claim's standing can't drift away from its evidence.
 //! - **Verification never edits the claim.** `verify_claim` attaches evidence and
 //!   recomputes status; the claim text is immutable. Correcting the record is not
-//!   the same as rewriting it. The one exception is `claim_rewrite` (2026-10),
-//!   which restated claims that leaned on their source so they stand alone,
-//!   meaning held by mechanical checks, the old text kept in `content_v1`.
+//!   the same as rewriting it. The one exception was a one-time backfill
+//!   (`claim_rewrite`, 2026-10-09, removed once every claim was done) that
+//!   restated claims leaning on their source so they stand alone, meaning held
+//!   by mechanical checks, the old text kept in `content_v1`.
 //! - **A disputed claim stays disputed.** Corroboration *and* contradiction does
 //!   not collapse to a verdict. Premature resolution is how a knowledge base
 //!   launders a contested question into a settled one.
@@ -36,9 +37,11 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::repository::Neo4jClient;
-use crate::services::traits::LlmProvider;
-use crate::services::web_result::{is_search_page, registrable_domain};
+use agent_brain_plugin_api::Llm;
+use agent_brain_plugin_api::notes::SourceRef;
+use agent_brain_plugin_api::web::{is_search_page, registrable_domain};
+
+use crate::db::{Db, query};
 
 /// What the evidence currently says about a claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,66 +417,6 @@ pub(crate) const STANDALONE_RULES: &str = "Each claim must stand alone: someone 
      names, written exactly as in the claim, with \"what\" = the word for it \
      (\"company\", \"software\", \"senator\").\n";
 
-/// Render a claim for inclusion in an LLM context window.
-///
-/// This is the piece that makes the whole design work. A `claim` note that
-/// reaches `reason` looking like any other note *is* any other note as far as the
-/// model is concerned — the type would be cosmetic. The label travels with the
-/// text so the model cannot restate the claim without also seeing its standing.
-/// How to read a corroborated claim of this kind.
-///
-/// The distinction that "corroborated" alone destroys: confirming that a group
-/// *demonstrated a technique* is not confirming that the technique *works*.
-/// Reporting can establish the former and says nothing about the latter, yet
-/// both render as "corroborated" without this qualifier.
-pub fn kind_qualifier(kind: &str, status: &str) -> Option<String> {
-    if status != "corroborated" {
-        return None;
-    }
-    match kind {
-        "attribution" => Some("corroborates that it was asserted, not that it is true".to_string()),
-        "mechanism" => Some("corroborates the causal claim itself".to_string()),
-        _ => None,
-    }
-}
-
-/// `age` is a pre-rendered relative age ("11 months ago") supplied by the
-/// caller rather than computed here, so this stays a pure function of its
-/// inputs and its tests stay deterministic. An absolute date alone does not
-/// tell a model whether a figure is current — see `services/clock.rs`.
-pub fn label_claim(
-    content: &str,
-    status: &str,
-    asserted_by: Option<&str>,
-    at: Option<&str>,
-    tier: Option<&str>,
-    kind: Option<&str>,
-    age: Option<&str>,
-) -> String {
-    let mut parts = vec![format!("CLAIM · {status}")];
-    if let Some(k) = kind.filter(|k| !k.is_empty()) {
-        parts.push(k.to_string());
-        if let Some(q) = kind_qualifier(k, status) {
-            parts.push(q);
-        }
-    }
-    // The tier is what separates "two wire services agree" from "five aligned
-    // outlets repeat one origin" — both of which read as plain "corroborated".
-    if let Some(t) = tier.filter(|t| !t.is_empty() && *t != "none") {
-        parts.push(t.to_string());
-    }
-    if let Some(by) = asserted_by.filter(|s| !s.is_empty()) {
-        parts.push(format!("asserted by {by}"));
-    }
-    if let Some(at) = at.filter(|s| !s.is_empty()) {
-        parts.push(at.chars().take(10).collect());
-    }
-    if let Some(age) = age.filter(|s| !s.is_empty()) {
-        parts.push(age.to_string());
-    }
-    format!("[{}]\n{content}", parts.join(" · "))
-}
-
 /// Extract checkable propositions from a piece of source text.
 ///
 /// Deliberately narrow: only assertions of fact that could in principle be
@@ -481,7 +424,7 @@ pub fn label_claim(
 /// as ordinary note content — labelling those as unverifiable claims would make
 /// the status field meaningless through sheer volume.
 pub async fn extract_claims(
-    llm: &dyn LlmProvider,
+    llm: &dyn Llm,
     text: &str,
     max_claims: usize,
     source_title: Option<&str>,
@@ -583,7 +526,7 @@ pub struct DroppedClaim {
 /// Ask once for a version of `c` that stands alone. `None` when the answer
 /// still doesn't, or lost a number or name the original had.
 pub(crate) async fn repair_claim(
-    llm: &dyn LlmProvider,
+    llm: &dyn Llm,
     source: &str,
     c: &ExtractedClaim,
     problems: &[String],
@@ -631,19 +574,20 @@ pub const REWRITE_SYSTEM: &str = "You make extracted claims understandable on th
 
 /// Persist an extracted claim and link it to the note it was asserted in.
 pub async fn store_claim(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     claim: &ExtractedClaim,
     source_note_id: Option<&str>,
     source_context: Option<&str>,
-    asserted_at: Option<&str>,
     embedding: Option<Vec<f32>>,
     source: &SourceRef,
+    produced_by_task: Option<String>,
 ) -> Result<String> {
     let id = Uuid::new_v4().to_string();
+    // A claim is dated when it is extracted (no caller ever passed a date).
     let now = chrono::Utc::now().to_rfc3339();
-    let asserted_at = asserted_at.unwrap_or(&now);
+    let asserted_at = now.as_str();
 
-    let mut q = neo4rs::query(
+    let mut q = query(
         "CREATE (n:Note {id: $id, content: $content, note_type: 'claim', \
          claim_status: 'unverified', asserted_by: $asserted_by, asserted_at: datetime($asserted_at), \
          claim_kind: $claim_kind, about: $about, \
@@ -656,13 +600,7 @@ pub async fn store_claim(
          embedding: $embedding})",
     )
     .param("id", id.clone())
-    .param(
-        "produced_by_task",
-        match crate::services::queue::current_owner_task() {
-            Some(t) => neo4rs::BoltType::from(t),
-            None => neo4rs::BoltType::Null(neo4rs::BoltNull),
-        },
-    )
+    .param("produced_by_task", produced_by_task)
     .param("content", claim.claim.as_str())
     .param("asserted_by", claim.asserted_by.clone().unwrap_or_default())
     .param(
@@ -691,7 +629,7 @@ pub async fn store_claim(
     if let Some(src) = source_note_id {
         let _ = neo4j
             .run(
-                neo4rs::query(
+                query(
                     "MATCH (c:Note {id: $cid}), (s:Note {id: $sid}) \
                      MERGE (c)-[:ASSERTED_IN]->(s)",
                 )
@@ -702,48 +640,6 @@ pub async fn store_claim(
     }
 
     Ok(id)
-}
-
-/// What a claim's source note says about itself: the article or video it
-/// records, so a reader can see where the claim came from.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct SourceRef {
-    pub title: Option<String>,
-    pub url: Option<String>,
-    /// The site or channel (`site` in an article summary, `channel` in a video's).
-    pub outlet: Option<String>,
-}
-
-/// Read a source note's title, URL and outlet. Article and video records carry
-/// a summary JSON object with `title` / `url` / `site` or `channel`; anything
-/// else (a watch report, a news brief) falls back to its first line, as a
-/// heading of any level, cut to 120 characters, and to a URL only when that
-/// line holds one: a URL from the body could be any of the report's links.
-pub fn source_reference(content: &str) -> SourceRef {
-    let summary = crate::services::llm::first_json_object(content, &["title"]);
-    let field = |k: &str| {
-        summary
-            .as_ref()
-            .and_then(|v| v.get(k))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-    };
-    let heading = content
-        .lines()
-        .map(|l| l.trim().trim_start_matches('#').trim())
-        .find(|l| !l.is_empty());
-    let heading_url = heading.and_then(|h| {
-        h.split_whitespace()
-            .find(|w| w.starts_with("http://") || w.starts_with("https://"))
-            .map(String::from)
-    });
-    SourceRef {
-        title: field("title").or_else(|| heading.map(|h| h.chars().take(120).collect())),
-        url: field("url").or(heading_url),
-        outlet: field("site").or_else(|| field("channel")),
-    }
 }
 
 /// Institutional/primary-source suffixes, identified mechanically.
@@ -783,14 +679,14 @@ pub fn is_primary_source(domain: &str) -> bool {
 /// fell outside them and a well-sourced claim about a Congressional hearing was
 /// labelled "unclassified sources only" — a mislabel worse than no label.
 pub async fn classify_domains(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     domains: &[String],
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
     if domains.is_empty() {
         return (vec![], vec![], vec![]);
     }
     let listed: Vec<String> = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             // Role-tagged lists (platforms, state media) are not "established".
             "MATCH (s:SourceList) WHERE s.role IS NULL \
              UNWIND s.domains AS d RETURN collect(DISTINCT d) AS listed",
@@ -850,10 +746,10 @@ pub fn tier_label(tier: &str, state_media: &[String]) -> String {
 ///
 /// Status is a *view* of the edges, so this is the single writer. Called after
 /// every verification pass; safe to call at any time.
-pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<ClaimStatus> {
+pub async fn recompute_status(neo4j: &Db, claim_id: &str) -> Result<ClaimStatus> {
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (c:Note {id: $id}) \
                  OPTIONAL MATCH (c)-[cor:CORROBORATED_BY]->() \
                  WITH c, count(cor) AS corroborating \
@@ -880,7 +776,7 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
     // recorded on the supporting edges.
     let domains: Vec<String> = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (c:Note {id: $id})-[r:CORROBORATED_BY]->() \
                  UNWIND COALESCE(r.domains, []) AS d \
                  RETURN collect(DISTINCT d) AS domains",
@@ -908,7 +804,7 @@ pub async fn recompute_status(neo4j: &Neo4jClient, claim_id: &str) -> Result<Cla
 
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "MATCH (c:Note {id: $id}) \
                  SET c.claim_status = $status, c.verified_at = datetime($now), \
                      c.corroborating_count = $cor, c.contradicting_count = $con, \
@@ -1042,6 +938,7 @@ pub fn evidence_links(evidence: &str) -> Vec<String> {
 }
 
 /// Distinct registrable domains of the search results' own links.
+#[cfg(test)] // a test convenience over the production path
 pub fn evidence_domains(evidence: &str) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for link in evidence_links(evidence) {
@@ -1052,19 +949,6 @@ pub fn evidence_domains(evidence: &str) -> Vec<String> {
         }
     }
     seen
-}
-
-/// Whether the judge's cited `source` is one of the search results.
-///
-/// A "supports" verdict must point at external evidence the search actually
-/// returned. Accepts a URL or domain whose registrable domain is among the
-/// result links, or an outlet name matching a result domain's name label
-/// ("Reuters" → `reuters.com`). Rejects anything else — a note id, "the
-/// knowledge graph", or an empty source — because that is the shape
-/// self-corroboration took (2026-09-12..24).
-pub fn source_is_in_results(source: Option<&str>, evidence: &str) -> bool {
-    let cited: Vec<String> = source.map(|s| vec![s.to_string()]).unwrap_or_default();
-    !resolve_cited_links(&cited, evidence).is_empty()
 }
 
 /// Map the judge's cited sources onto the result links they name.
@@ -1155,9 +1039,9 @@ impl DomainRoles {
 
 /// Load the role-tagged SourceLists. Fails open to empty lists: a missing list
 /// means no platform is excluded, which is how verification behaved before.
-pub async fn load_domain_roles(neo4j: &Neo4jClient) -> DomainRoles {
+pub async fn load_domain_roles(neo4j: &Db) -> DomainRoles {
     let rows = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (s:SourceList) WHERE s.role IN ['platform','state_media'] \
              UNWIND s.domains AS d \
              RETURN s.role AS role, collect(DISTINCT d) AS domains",
@@ -1198,6 +1082,7 @@ pub fn is_self_referential(domain: &str, claim: &str, asserted_by: Option<&str>)
 
 /// Whether the results the judge relied on are independent enough to support
 /// a claim, with no headline information. See [`check_independence_titled`].
+#[cfg(test)] // a test convenience over the production path
 pub fn check_independence(
     supporting_links: &[String],
     claim: &str,
@@ -1305,7 +1190,7 @@ pub fn check_independence_titled(
     let mut first_by_story: std::collections::HashMap<String, usize> = Default::default();
     for link in supporting_links {
         let (Some(domain), Some(key)) = (
-            crate::services::web_result::registrable_domain(link),
+            registrable_domain(link),
             titles.get(link).and_then(|t| story_key(t)),
         ) else {
             continue;
@@ -1372,7 +1257,7 @@ pub struct EvidenceVerdict {
 /// supplied evidence counts. A model asked "is this true?" will happily answer
 /// from its priors, which would make the corroboration edges fiction.
 pub async fn assess_evidence(
-    llm: &dyn LlmProvider,
+    llm: &dyn Llm,
     claim: &str,
     evidence: &str,
 ) -> Result<EvidenceVerdict> {
@@ -1435,7 +1320,7 @@ pub async fn assess_evidence(
 
 /// Attach an evidence note to a claim with the given verdict.
 pub async fn attach_evidence(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     claim_id: &str,
     evidence_note_id: &str,
     verdict: &str,
@@ -1462,7 +1347,7 @@ pub async fn attach_evidence(
     );
     neo4j
         .run(
-            neo4rs::query(&cypher)
+            query(&cypher)
                 .param("cid", claim_id)
                 .param("eid", evidence_note_id)
                 .param("source", sources.first().map(String::as_str).unwrap_or(""))
@@ -1480,10 +1365,10 @@ pub async fn attach_evidence(
 /// even when the attempt dies partway (search failure, assessment error, the job
 /// itself dying). A claim that blocks the sweep is worse than one retried a cycle
 /// early — see [`unverified_claims`].
-pub async fn mark_verify_attempt(neo4j: &Neo4jClient, claim_id: &str) -> Result<()> {
+pub async fn mark_verify_attempt(neo4j: &Db, claim_id: &str) -> Result<()> {
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "MATCH (c:Note {id: $id, note_type: 'claim'}) \
                  SET c.last_verify_attempt_at = datetime($now)",
             )
@@ -1515,10 +1400,10 @@ pub async fn mark_verify_attempt(neo4j: &Neo4jClient, claim_id: &str) -> Result<
 /// week's 584 new claims had been attempted — the sweep was working through
 /// August while the claims anyone might ask about went unchecked. A claim about
 /// current events is worth checking while it is current.
-pub async fn unverified_claims(neo4j: &Neo4jClient, limit: usize) -> Result<Vec<(String, String)>> {
+pub async fn unverified_claims(neo4j: &Db, limit: usize) -> Result<Vec<(String, String)>> {
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (c:Note {note_type: 'claim'}) \
                  WHERE COALESCE(c.claim_status, 'unverified') = 'unverified' \
                  RETURN c.id AS id, c.content AS content \
@@ -1548,9 +1433,9 @@ pub async fn unverified_claims(neo4j: &Neo4jClient, limit: usize) -> Result<Vec<
 /// nothing independently corroborates is exactly what an information-operation
 /// looks like from the inside, and it is also what a niche-but-accurate source
 /// looks like. The brain reports the asymmetry; a human judges it.
-pub async fn source_claim_profile(neo4j: &Neo4jClient) -> Result<serde_json::Value> {
+pub async fn source_claim_profile(neo4j: &Db) -> Result<serde_json::Value> {
     let rows = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (c:Note {note_type: 'claim'}) \
              WHERE c.asserted_by IS NOT NULL AND c.asserted_by <> '' \
              RETURN c.asserted_by AS source, count(*) AS claims, \
@@ -1804,65 +1689,6 @@ mod tests {
     }
 
     #[test]
-    fn source_reference_reads_article_and_video_summaries() {
-        let article = "# Article: read article: https://citizenlab.ca/the-secrets-of-a-us-spyware-king/\n\n\
-            ## ARTICLE SUMMARY\n{\n  \"key_concepts\": [\"Paragon Solutions spyware\"],\n  \
-            \"site\": \"The Citizen Lab\",\n  \"title\": \"The Secrets of a US Spyware King - The Citizen Lab\",\n  \
-            \"url\": \"https://citizenlab.ca/the-secrets-of-a-us-spyware-king/\"\n}\n\n## NEW vs KNOWN ANALYSIS\n…";
-        assert_eq!(
-            source_reference(article),
-            SourceRef {
-                title: Some("The Secrets of a US Spyware King - The Citizen Lab".into()),
-                url: Some("https://citizenlab.ca/the-secrets-of-a-us-spyware-king/".into()),
-                outlet: Some("The Citizen Lab".into()),
-            }
-        );
-        let video = "# Video learning: watch video: https://www.youtube.com/watch?v=tPhQ4gAylek\n\n\
-            ## VIDEO SUMMARY\n{\"channel\": \"Louis Rossmann\", \"title\": \"Crack your video editing software: seriously.\", \
-            \"url\": \"https://www.youtube.com/watch?v=tPhQ4gAylek\"}";
-        let v = source_reference(video);
-        assert_eq!(
-            v.title.as_deref(),
-            Some("Crack your video editing software: seriously.")
-        );
-        assert_eq!(v.outlet.as_deref(), Some("Louis Rossmann"));
-    }
-
-    #[test]
-    fn source_reference_falls_back_to_the_heading_and_never_guesses_a_url() {
-        let report = "# Off-grid networking watch — 2026-08-12\n\n## REPORT\n* MeshCore https://meshcore.co.uk is faster";
-        assert_eq!(
-            source_reference(report),
-            SourceRef {
-                title: Some("Off-grid networking watch — 2026-08-12".into()),
-                url: None,
-                outlet: None
-            }
-        );
-        // A truncated summary still yields the heading's URL.
-        let cut = "# Video learning: watch video: https://youtu.be/x\n\n## VIDEO SUMMARY\n{\"title\": \"Cut of";
-        assert_eq!(
-            source_reference(cut).url.as_deref(),
-            Some("https://youtu.be/x")
-        );
-        // A brief that opens with a second-level heading, and one with none.
-        let brief =
-            "## EXECUTIVE SUMMARY for 2026-10-05  \n- Detroit officials https://example.com/x";
-        assert_eq!(
-            source_reference(brief),
-            SourceRef {
-                title: Some("EXECUTIVE SUMMARY for 2026-10-05".into()),
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            source_reference(&"x".repeat(300)).title.map(|t| t.len()),
-            Some(120)
-        );
-        assert_eq!(source_reference("  \n\n"), SourceRef::default());
-    }
-
-    #[test]
     fn evidence_domains_are_deduplicated_by_registrable_name() {
         let ev = r#"[{"link":"https://www.reuters.com/a"},{"link":"https://reuters.com/b"},{"link":"https://apnews.com/c"}]"#;
         let d = evidence_domains(ev);
@@ -1885,18 +1711,6 @@ mod tests {
     fn non_array_evidence_yields_no_domains() {
         let ev = "WHAT WE ALREADY KNOW\n- note: https://reuters.com/a https://apnews.com/b";
         assert!(evidence_domains(ev).is_empty());
-    }
-
-    #[test]
-    fn a_support_citing_a_graph_note_is_not_in_the_results() {
-        let ev = r#"[{"link":"https://www.reuters.com/a"},{"link":"https://apnews.com/b"}]"#;
-        assert!(!source_is_in_results(Some("note 0020786f"), ev));
-        assert!(!source_is_in_results(Some("the knowledge graph"), ev));
-        assert!(!source_is_in_results(None, ev));
-        assert!(!source_is_in_results(Some("https://bbc.com/z"), ev));
-        assert!(source_is_in_results(Some("https://reuters.com/a"), ev));
-        assert!(source_is_in_results(Some("apnews.com"), ev));
-        assert!(source_is_in_results(Some("Reuters"), ev));
     }
 
     #[test]
@@ -2199,52 +2013,6 @@ mod tests {
     }
 
     #[test]
-    fn an_attribution_claim_says_what_corroboration_actually_established() {
-        // The failure this exists for: "corroborated" next to a claim about
-        // psionic summoning reads as endorsement of efficacy, when all that was
-        // corroborated is that a group said they did it.
-        let out = label_claim(
-            "A group demonstrated psionic summoning.",
-            "corroborated",
-            Some("NewsNation"),
-            Some("2026-08-10"),
-            Some("unclassified sources only"),
-            Some("attribution"),
-            None,
-        );
-        assert!(
-            out.contains("corroborates that it was asserted, not that it is true"),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn an_event_claim_needs_no_qualifier() {
-        // "Congress held hearings" corroborated means the hearings happened.
-        assert!(kind_qualifier("event", "corroborated").is_none());
-        let out = label_claim(
-            "Congress held hearings.",
-            "corroborated",
-            None,
-            None,
-            Some("primary sources"),
-            Some("event"),
-            None,
-        );
-        assert!(!out.contains("not that it is true"), "{out}");
-        assert!(out.contains("event"), "{out}");
-    }
-
-    #[test]
-    fn qualifiers_only_apply_to_corroborated_claims() {
-        // An unverified attribution has nothing to qualify, and adding the
-        // phrase would imply a verification that never happened.
-        assert!(kind_qualifier("attribution", "unverified").is_none());
-        assert!(kind_qualifier("attribution", "refuted").is_none());
-        assert!(kind_qualifier("mechanism", "corroborated").is_some());
-    }
-
-    #[test]
     fn institutional_domains_are_recognised_as_primary() {
         // The observed mislabel: congress.gov corroborating a claim about a
         // Congressional hearing was tagged "unclassified", because the curated
@@ -2276,28 +2044,6 @@ mod tests {
     }
 
     #[test]
-    fn tier_appears_in_the_label_so_the_distinction_is_visible() {
-        // "corroborated" alone cannot distinguish two wire services agreeing
-        // from five aligned outlets repeating one origin.
-        let out = label_claim(
-            "Skywatchers demonstrated psionic summoning.",
-            "corroborated",
-            Some("NewsNation"),
-            Some("2026-08-10"),
-            Some("unclassified sources only"),
-            None,
-            None,
-        );
-        assert!(out.starts_with("[CLAIM · corroborated · unclassified sources only · asserted by NewsNation · 2026-08-10]"), "{out}");
-    }
-
-    #[test]
-    fn a_none_tier_is_omitted_rather_than_rendered() {
-        let out = label_claim("x", "unverified", None, None, Some("none"), None, None);
-        assert_eq!(out, "[CLAIM · unverified]\nx");
-    }
-
-    #[test]
     fn status_is_derived_from_evidence_counts() {
         assert_eq!(ClaimStatus::from_evidence(0, 0), ClaimStatus::Unverified);
         assert_eq!(ClaimStatus::from_evidence(3, 0), ClaimStatus::Corroborated);
@@ -2312,46 +2058,6 @@ mod tests {
         assert_eq!(ClaimStatus::from_evidence(1, 1), ClaimStatus::Disputed);
         assert_eq!(ClaimStatus::from_evidence(9, 1), ClaimStatus::Disputed);
         assert_eq!(ClaimStatus::from_evidence(1, 9), ClaimStatus::Disputed);
-    }
-
-    #[test]
-    fn label_carries_status_and_attribution_into_context() {
-        let out = label_claim(
-            "The DoD uses TFRs to create controlled UAP zones.",
-            "unverified",
-            Some("NewsNation"),
-            Some("2026-08-10T16:00:00Z"),
-            None,
-            None,
-            None,
-        );
-        assert!(out.starts_with("[CLAIM · unverified · asserted by NewsNation · 2026-08-10]\n"));
-        assert!(out.contains("The DoD uses TFRs"));
-    }
-
-    #[test]
-    fn label_degrades_gracefully_without_attribution() {
-        let out = label_claim(
-            "Something was asserted.",
-            "disputed",
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(out, "[CLAIM · disputed]\nSomething was asserted.");
-        // An empty attribution must not render as "asserted by ".
-        let out = label_claim(
-            "x",
-            "unverified",
-            Some(""),
-            Some(""),
-            Some(""),
-            Some(""),
-            Some(""),
-        );
-        assert_eq!(out, "[CLAIM · unverified]\nx");
     }
 
     #[test]

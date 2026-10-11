@@ -87,6 +87,7 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`
 - `alias-judge`: no tools; ranks entity merge candidates on idle time (`ALIAS_JUDGE_MODEL`)
 - `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`; the architecture view at `/api/plugins/developer/architecture`
+- `epistemics`: `claim` (extract, verify against independent web evidence, list, sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
 - `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
 - `personal`: no tools; the owner's own workflows, agents and topics, from a private repo mounted at `/home/agent/plugins-private` (`PLUGINS_EXTRA_DIRS`); absent elsewhere
 
@@ -165,7 +166,6 @@ MCP_API_KEY=secret docker compose up -d --build
 serve            Run as MCP server (default)
 init-db          Initialize Neo4j schema
 repair-notes     One-off note repair migration
-rewrite-claims   Restate stored claims so each stands alone (--dry-run first)
 eval-retrieval   Score retrieval against a golden set
 todo             Manage todos over HTTP
 ```

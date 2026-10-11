@@ -3,21 +3,23 @@
 //! One tool (`claim`) with four actions, following the codebase's merged-action
 //! pattern (`manage_job`, `reason`, `context`, `resource`).
 //!
-//! Verification reuses `SearchSkill` rather than re-implementing search: the
-//! engine failover ladder, the usage ledger, and the source-list restriction all
-//! apply to evidence gathering exactly as they do everywhere else.
+//! Verification uses the core's search (the host's `search` capability, which
+//! is `search_web`) rather than re-implementing it: the engine failover ladder,
+//! the usage ledger, and the source-list restriction all apply to evidence
+//! gathering exactly as they do everywhere else.
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::repository::{Neo4jClient, TelemetryClient};
-use crate::services::claims;
-use crate::services::traits::LlmProvider;
-use crate::skills::Skill;
-use crate::skills::search::SearchSkill;
-use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition};
+use agent_brain_plugin_api::notes::source_reference;
+use agent_brain_plugin_api::web::strip_fallback_banner;
+use agent_brain_plugin_api::{
+    Llm, PluginContext, Search, Skill, ToolCallResult, ToolDefinition, async_trait,
+};
+
+use crate::claims;
+use crate::db::{Db, query};
 
 /// How many search results are gathered as candidate evidence per claim.
 /// 8, not 6: echo pages are dropped before judging, and corroboration now
@@ -28,19 +30,20 @@ const EVIDENCE_RESULTS: u8 = 8;
 const DEFAULT_VERIFY_BATCH: usize = 5;
 
 pub struct ClaimSkill {
-    neo4j: Neo4jClient,
-    llm: Arc<dyn LlmProvider>,
-    search: SearchSkill,
+    neo4j: Db,
+    llm: Arc<dyn Llm>,
+    search: Option<Arc<dyn Search>>,
+    ctx: PluginContext,
 }
 
 impl ClaimSkill {
-    pub fn new(
-        neo4j: Neo4jClient,
-        llm: Arc<dyn LlmProvider>,
-        telemetry: Option<TelemetryClient>,
-    ) -> Self {
-        let search = SearchSkill::new(telemetry, Some(neo4j.clone()));
-        Self { neo4j, llm, search }
+    pub fn new(neo4j: Db, llm: Arc<dyn Llm>, ctx: PluginContext) -> Self {
+        Self {
+            neo4j,
+            llm,
+            search: ctx.search.clone(),
+            ctx,
+        }
     }
 
     fn claim_def() -> ToolDefinition {
@@ -121,12 +124,12 @@ impl ClaimSkill {
         // What the source is (title, URL, outlet), stored on every claim so a
         // reader sees where it came from without following ASSERTED_IN. The text
         // usually carries it; otherwise the source note does.
-        let mut source = claims::source_reference(text);
+        let mut source = source_reference(text);
         if source.title.is_none()
             && let Some(id) = source_note_id
             && let Some(content) = self.note_content(id).await
         {
-            source = claims::source_reference(&content);
+            source = source_reference(&content);
         }
 
         let extraction =
@@ -169,9 +172,9 @@ impl ClaimSkill {
                 &c,
                 source_note_id,
                 source_context,
-                None,
                 embedding,
                 &source,
+                self.ctx.current_task(),
             )
             .await
             {
@@ -205,9 +208,7 @@ impl ClaimSkill {
     /// A note's text, for reading what source it records.
     async fn note_content(&self, id: &str) -> Option<String> {
         self.neo4j
-            .execute(
-                neo4rs::query("MATCH (n:Note {id: $id}) RETURN n.content AS c").param("id", id),
-            )
+            .execute(query("MATCH (n:Note {id: $id}) RETURN n.content AS c").param("id", id))
             .await
             .ok()?
             .first()
@@ -218,8 +219,7 @@ impl ClaimSkill {
     async fn claim_asserted_by(&self, claim_id: &str) -> Option<String> {
         self.neo4j
             .execute(
-                neo4rs::query("MATCH (c:Note {id: $id}) RETURN c.asserted_by AS by")
-                    .param("id", claim_id),
+                query("MATCH (c:Note {id: $id}) RETURN c.asserted_by AS by").param("id", claim_id),
             )
             .await
             .ok()?
@@ -240,49 +240,18 @@ impl ClaimSkill {
     /// happen.
     async fn verify_one(&self, claim_id: &str, claim_text: &str) -> Value {
         // 1. Search for independent coverage of the claim.
-        let search_result = self
-            .search
-            .execute(
-                "search_web",
-                // External evidence only. With the graph-first block on, the
-                // judge read our own note restating the claim and called it
-                // corroboration (2026-09-12..24: 41% → 84% corroborated).
-                Some(json!({
-                    "query": claim_text,
-                    "count": EVIDENCE_RESULTS,
-                    "prior_knowledge": false
-                })),
-            )
-            .await;
-
-        let raw_evidence = match search_result {
-            Some(r) if r.is_error != Some(true) => r
-                .content
-                .first()
-                .and_then(|c| match c {
-                    Content::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default(),
-            Some(r) => {
-                let err = r
-                    .content
-                    .first()
-                    .and_then(|c| match c {
-                        Content::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+        let Some(search) = &self.search else {
+            return json!({ "claim_id": claim_id, "claim": claim_text, "error": "search unavailable" });
+        };
+        let raw_evidence = match search.web(claim_text, EVIDENCE_RESULTS).await {
+            Ok(text) => text,
+            Err(err) => {
                 return json!({ "claim_id": claim_id, "claim": claim_text, "error": format!("evidence search failed: {err}") });
-            }
-            None => {
-                return json!({ "claim_id": claim_id, "claim": claim_text, "error": "search unavailable" });
             }
         };
 
         // A SearXNG answer leads with a fallback banner; the results follow it.
-        let (searxng_fallback, results_text) =
-            crate::services::web_result::strip_fallback_banner(&raw_evidence);
+        let (searxng_fallback, results_text) = strip_fallback_banner(&raw_evidence);
 
         // Search pages that echo the claim back are the query, not evidence.
         let (evidence_text, echoes_dropped) = claims::drop_echo_results(results_text, claim_text);
@@ -439,7 +408,7 @@ impl ClaimSkill {
             match self
                 .neo4j
                 .execute(
-                    neo4rs::query(
+                    query(
                         "MATCH (c:Note {id: $id, note_type: 'claim'}) RETURN c.content AS content",
                     )
                     .param("id", id),
@@ -510,7 +479,7 @@ impl ClaimSkill {
              ORDER BY c.created_at DESC LIMIT $limit"
         };
 
-        let mut q = neo4rs::query(cypher).param("limit", limit);
+        let mut q = query(cypher).param("limit", limit);
         if let Some(s) = status {
             q = q.param("status", s);
         }

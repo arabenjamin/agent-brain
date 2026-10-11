@@ -71,21 +71,6 @@ async fn main() -> Result<()> {
         Some(Command::ResolveEntities { dry_run, unmerge }) => {
             run_resolve_entities(&config, dry_run, unmerge.as_deref()).await
         }
-        Some(Command::RewriteClaims {
-            dry_run,
-            sample,
-            limit_sources,
-            source_ids,
-            report,
-        }) => {
-            let opts = agent_brain::services::claim_rewrite::Options {
-                dry_run,
-                sample,
-                limit_sources,
-                source_ids,
-            };
-            run_rewrite_claims(&config, opts, report.as_deref()).await
-        }
         Some(Command::RestoreSnapshot { path, dry_run }) => {
             run_restore_snapshot(&config, &path, dry_run).await
         }
@@ -417,16 +402,6 @@ async fn run_init_db(config: &Config) -> Result<()> {
         Err(e) => warn!(error = %e, "Topic sync failed (non-fatal)"),
     }
 
-    // Relationships: the merge list's "related" answers become `related_to`
-    // relationships the user set (services/relations.rs).
-    match agent_brain::services::relations::fold_related_entity(&client).await {
-        Ok(n) => info!(
-            count = n,
-            "Folded RELATED_ENTITY answers into related_to relationships"
-        ),
-        Err(e) => warn!(error = %e, "Relationship fold failed (non-fatal)"),
-    }
-
     let plugins = agent_brain::services::plugins::Plugins::global();
     match workflow_seeder::seed_workflows(&client, &plugins).await {
         Ok(n) => info!(count = n, "Seeded workflows from the plugin bundles"),
@@ -439,41 +414,6 @@ async fn run_init_db(config: &Config) -> Result<()> {
         warn!(error = %e, "Entity resolution failed (non-fatal)");
     }
 
-    Ok(())
-}
-
-async fn run_rewrite_claims(
-    config: &Config,
-    opts: agent_brain::services::claim_rewrite::Options,
-    report_path: Option<&str>,
-) -> Result<()> {
-    use agent_brain::services::claim_rewrite::run;
-    use std::sync::Arc;
-
-    let client = connect_neo4j(config).await?;
-    let llm_config = build_llm_config(config);
-    info!(model = %llm_config.model, dry_run = opts.dry_run, "Claim rewrite starting");
-    let shared = Arc::new(tokio::sync::RwLock::new(Some(llm_config)));
-    let llm = agent_brain::services::shared_llm::SharedLlm::new(shared);
-    let snapshot_dir = std::env::var("KNOWLEDGE_SNAPSHOT_DIR")
-        .ok()
-        .map(PathBuf::from);
-    let report = run(&client, llm.as_ref(), &opts, snapshot_dir.as_deref()).await?;
-    let md = report.render_markdown();
-    match report_path {
-        Some(p) => {
-            std::fs::write(p, &md)?;
-            info!(path = %p, "Claim rewrite report written");
-        }
-        None => println!("{md}"),
-    }
-    info!(
-        sources = report.sources,
-        calls_failed = report.calls_failed,
-        counts = ?report.counts(),
-        snapshot = ?report.snapshot,
-        "Claim rewrite finished"
-    );
     Ok(())
 }
 

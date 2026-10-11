@@ -10,7 +10,6 @@ Commands:
   init-db          Initialize the Neo4j database schema
   repair-notes     One-off repair of notes that stored a query envelope instead of content
   resolve-entities Fold entities that are one real thing (curated aliases + spelling), reversibly
-  rewrite-claims   Restate stored claims so each stands alone, checked mechanically (--dry-run first)
   eval-retrieval   Score retrieval quality against a golden set (read-only)
   todo             Manage todo items over HTTP (requires a running server)
 ```
@@ -64,18 +63,6 @@ cargo run -- resolve-entities --dry-run
 cargo run -- resolve-entities                 # apply now (pre_entity_merge snapshot first)
 cargo run -- resolve-entities --unmerge trump # undo one merge: the alias becomes its own entity again
 ```
-
-## Claim rewrite
-
-```bash
-# Inside the container (it needs the brain's env and the cloud model):
-docker compose exec -T agent-brain sh -c 'cd /home/agent/agent-brain && agent-brain rewrite-claims --dry-run --sample 50 --report /tmp/claims-dry-run.md'
-agent-brain rewrite-claims --dry-run --source-id <note id>   # one source's claims
-agent-brain rewrite-claims --limit-sources 100               # apply, 100 sources (pre_claim_rewrite snapshot first)
-agent-brain rewrite-claims --report /tmp/claims-run.md       # apply all; resumes where a stopped run left off
-```
-
-A rewrite replaces a claim only if it names what it is about and lost no number or name; otherwise the claim keeps its text and is marked `ambiguous` with the reason. The original text stays in `content_v1`. See `subsystem-rules.md` § Epistemics.
 
 ## Retrieval evaluation
 

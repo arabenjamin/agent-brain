@@ -233,6 +233,27 @@ impl Neo4jClient {
         self.count_updated(q).await
     }
 
+    /// Mark a running job as not run, by design: an optional chain step whose
+    /// tool is not registered (its plugin is off). `cancelled` with the
+    /// reason in `error`, so it is neither a failure nor a dead job.
+    ///
+    /// Guarded on `status = 'running'`; returns `true` if the job was marked.
+    pub async fn set_job_skipped(&self, id: &str, reason: &str) -> Result<bool, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let q = query(
+            "MATCH (j:AgentJob {id: $id}) WHERE j.status = 'running' \
+             SET j.status = 'cancelled', \
+                 j.completed_at = datetime($now), \
+                 j.updated_at = datetime($now), \
+                 j.error = $reason \
+             RETURN count(j) AS n",
+        )
+        .param("id", id)
+        .param("now", now)
+        .param("reason", reason);
+        self.count_updated(q).await
+    }
+
     /// Re-queue a failed job for automatic retry (attempt_count already incremented).
     /// Sets status back to 'queued' so the coordinator picks it up again.
     ///

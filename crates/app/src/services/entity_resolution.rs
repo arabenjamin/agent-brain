@@ -1399,10 +1399,9 @@ pub async fn decide(neo4j: &Neo4jClient, a: &str, b: &str, verdict: &str) -> Res
     {
         anyhow::bail!("no entity with id '{a}' or '{b}'");
     }
-    if verdict == "related" {
-        // "Related, not the same" is also a relationship the user set.
-        crate::services::relations::fold_related_entity(neo4j).await?;
-    }
+    // "Related, not the same" is also a relationship the user set: the
+    // epistemics plugin folds `RELATED_ENTITY` into `related_to` when it
+    // starts and before it reads relationships.
     Ok(())
 }
 

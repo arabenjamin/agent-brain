@@ -2925,10 +2925,14 @@ mod keyed_engine_tests {
             5,
         );
         let text = serde_json::to_string(&out).unwrap();
-        assert_eq!(
-            crate::services::claims::evidence_domains(&text),
-            vec!["a.com".to_string(), "b.org".to_string()]
-        );
+        // What the claim verifier reads (epistemics' `evidence_domains`).
+        let items: Vec<Value> = serde_json::from_str(&text).unwrap();
+        let domains: Vec<String> = items
+            .iter()
+            .filter_map(|i| i["link"].as_str())
+            .filter_map(crate::services::web_result::registrable_domain)
+            .collect();
+        assert_eq!(domains, vec!["a.com".to_string(), "b.org".to_string()]);
     }
 
     /// Each vendor signals a spent allowance differently; all must demote.

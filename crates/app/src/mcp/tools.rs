@@ -103,6 +103,13 @@ impl ToolHandler {
         self
     }
 
+    /// Whether some skill offers `name`.
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.skills
+            .iter()
+            .any(|s| s.tools().iter().any(|t| t.name == name))
+    }
+
     /// Execute a tool by name with the given arguments.
     pub async fn execute(&self, name: &str, arguments: Option<Value>) -> ToolCallResult {
         debug!(tool = %name, "Executing tool");
