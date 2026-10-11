@@ -1,4 +1,5 @@
-//! Seeds `(:Workflow)` nodes from `workflows/*.yaml` (`WORKFLOWS_DIR`).
+//! Seeds `(:Workflow)` nodes from the `workflows/*.yaml` of every loaded
+//! plugin bundle (`services/plugins.rs`), recording the bundle on the node.
 //!
 //! A file owns the workflow named after it (`managed_by = "yaml"`): its
 //! definition is force-synced on every startup. A runtime-owned workflow of the
@@ -200,30 +201,41 @@ pub fn load_file(path: &Path, topic_names: &[String]) -> Result<(WorkflowDef, bo
             is_default: file.default,
             topic,
             kind,
+            plugin: None,
         },
         file.enabled.unwrap_or(true),
     ))
 }
 
-/// Seed every `*.yaml` in `dir`. A bad file is logged and skipped. Returns the
+/// Seed every workflow file of the loaded bundles. A bad file is logged and
+/// skipped; so is a name a bundle earlier in load order (core first) already
+/// declared. Fails only when the core bundle has no `workflows/`. Returns the
 /// number seeded.
-pub async fn seed_workflows_from_dir(neo4j: &Neo4jClient, dir: &Path) -> anyhow::Result<usize> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| anyhow::anyhow!("Cannot read workflows directory {}: {}", dir.display(), e))?;
+pub async fn seed_workflows(
+    neo4j: &Neo4jClient,
+    plugins: &crate::services::plugins::Plugins,
+) -> anyhow::Result<usize> {
+    let core = plugins.core_dir("workflows");
+    if !core.is_dir() {
+        anyhow::bail!("the core bundle has no workflows directory ({})", core.display());
+    }
     let topic_names = declared_topics();
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut seeded = 0usize;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-            continue;
-        }
-        let (def, enabled) = match load_file(&path, &topic_names) {
+    for (plugin, path) in plugins.files("workflows", "yaml") {
+        let (mut def, enabled) = match load_file(&path, &topic_names) {
             Ok(d) => d,
             Err(e) => {
                 warn!(path = %path.display(), error = %e, "seed_workflows: file skipped");
                 continue;
             }
         };
+        if let Some(first) = seen.get(&def.name) {
+            warn!(name = %def.name, %plugin, first = %first, "seed_workflows: name already declared by an earlier plugin — file skipped");
+            continue;
+        }
+        seen.insert(def.name.clone(), plugin.clone());
+        def.plugin = Some(plugin);
         match neo4j.sync_yaml_workflow(&def, enabled).await {
             Ok(YamlSyncOutcome::Created) => info!(name = %def.name, "Seeded Workflow (yaml-owned)"),
             Ok(YamlSyncOutcome::Updated) => {}
@@ -246,12 +258,12 @@ mod tests {
     use super::*;
 
     fn workflows_dir() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workflows")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/workflows")
     }
 
     fn topic_names() -> Vec<String> {
         crate::services::topics::Topics::load_dir(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../topics"),
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/topics"),
         )
         .defs
         .iter()

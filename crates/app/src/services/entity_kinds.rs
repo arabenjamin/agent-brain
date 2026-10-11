@@ -118,7 +118,7 @@ impl KindTable {
         })
     }
 
-    /// `kinds.yaml` beside the alias seed (`ENTITY_ALIASES_DIR`).
+    /// `kinds.yaml` beside the alias seed (the core bundle's `entities/`).
     pub fn load() -> Result<Self> {
         Self::load_from(&crate::services::entity_resolution::aliases_dir())
     }
@@ -702,7 +702,7 @@ mod tests {
     fn table() -> KindTable {
         KindTable::load_from(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../entities"
+            "/../../plugins/core/entities"
         )))
         .expect("the shipped kinds.yaml parses")
     }
@@ -788,7 +788,7 @@ mod tests {
         // kinds.yaml shares entities/ with the alias seed.
         let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../entities/kinds.yaml"
+            "/../../plugins/core/entities/kinds.yaml"
         ))
         .unwrap();
         let r = crate::services::entity_resolution::Rules::from_yaml(&text).unwrap();

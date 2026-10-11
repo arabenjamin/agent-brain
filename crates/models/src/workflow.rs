@@ -51,6 +51,14 @@ pub struct Workflow {
     /// One of [`WORKFLOW_KINDS`].
     #[serde(default)]
     pub kind: Option<String>,
+    /// The plugin bundle a yaml-owned workflow was seeded from.
+    #[serde(default)]
+    pub plugin: Option<String>,
+    /// Why it cannot run now (a tool not registered, an MCP server missing or
+    /// disabled, its plugin not enabled), set at startup by the plugin loader.
+    /// Dispatch refuses it and its timer skips it; `None` = runnable.
+    #[serde(default)]
+    pub unavailable: Option<String>,
 }
 
 /// One declared input of a workflow.

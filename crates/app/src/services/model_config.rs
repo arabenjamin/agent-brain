@@ -462,7 +462,7 @@ mod tests {
         use crate::services::context_builder::ContextProfile;
         let c = real_catalog();
         let known = |name: &str| c.models.iter().any(|(k, m)| k == name || m.model == name);
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contexts");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
         let mut missing = Vec::new();
         for entry in std::fs::read_dir(&dir).expect("contexts dir") {
             let path = entry.unwrap().path();

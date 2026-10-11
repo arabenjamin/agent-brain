@@ -73,7 +73,7 @@ pub enum Command {
 
     /// Fold entities that are one real thing into one node.
     ///
-    /// Applies the curated seed (`entities/*.yaml`, ENTITY_ALIASES_DIR) and
+    /// Applies the curated seed (the core bundle's `entities/*.yaml`) and
     /// merges entities whose names differ only by case, punctuation, spacing
     /// or a leading title. A snapshot is taken before any merge; every merge
     /// leaves an EntityAlias and can be undone. `init-db` runs this on every

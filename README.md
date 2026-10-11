@@ -20,6 +20,7 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 - **Executes** — durable priority job queue with per-provider concurrency
 - **Extends** — runtime tool definition via stored procedure pipelines
 - **Integrates** — OpenAPI spec ingestion, credential injection, HTTP execution
+- **Specialises** — plugin bundles under `plugins/` (`core` always; others via `PLUGINS_ENABLED`) carry workflows, agent profiles, source lists and MCP servers; `GET /api/plugins` shows what loaded and why not
 
 ## Prerequisites
 
@@ -176,6 +177,7 @@ todo             Manage todos over HTTP
 | `MCP_HTTP_BIND` | `127.0.0.1:3000` | HTTP bind |
 | `MCP_API_KEY` | — | HTTP auth |
 | `SANDBOX_URL` | — | Code-execution sandbox endpoint. Unset ⇒ `execute_code` is not registered |
+| `PLUGINS_DIR` / `PLUGINS_ENABLED` | `plugins` / *(core only)* | Where the seed bundles live, and which load besides `core` (see `project-docs/env.md`) |
 | `TZ` | — (⇒ UTC) | Wall-clock timezone (e.g. `America/Detroit`). What the brain **says** about time is local; what it **stores** stays UTC. Unset means its "today" is UTC's, which is a different day for part of every day outside UTC |
 
 ## Development

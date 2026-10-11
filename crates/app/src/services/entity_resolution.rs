@@ -15,7 +15,7 @@
 //!   bare surname (`senator johnson`) is not folded: there are several
 //!   Johnsons, so that pair is a proposal.
 //! - **Aliases.** `(:EntityAlias {name, key})-[:ALIAS_OF]->(:Entity)` comes
-//!   from the curated seed (`entities/*.yaml`, `ENTITY_ALIASES_DIR`) and from
+//!   from the curated seed (the core bundle's `entities/*.yaml`) and from
 //!   every merge. A case-sensitive alias (`us`) resolves only when the note's
 //!   text has it in capitals (`US`, `U.S.`), so the pronoun stays out.
 //! - **Mentions keep the surface.** `MENTIONS.surface` is the text as written,
@@ -170,7 +170,7 @@ impl Rules {
         Self::from_files(files)
     }
 
-    /// The process-wide rules, read once from `ENTITY_ALIASES_DIR` (default `entities`).
+    /// The process-wide rules, read once from the core bundle's `entities/`.
     pub fn global() -> &'static Rules {
         static RULES: OnceLock<Rules> = OnceLock::new();
         RULES.get_or_init(|| Rules::load_dir(&aliases_dir()))
@@ -247,10 +247,9 @@ impl Rules {
     }
 }
 
+/// The core bundle's `entities/` (read from core only: `services/plugins.rs`).
 pub fn aliases_dir() -> std::path::PathBuf {
-    std::env::var("ENTITY_ALIASES_DIR")
-        .unwrap_or_else(|_| "entities".into())
-        .into()
+    crate::services::plugins::Plugins::global().core_dir("entities")
 }
 
 /// Lowercased, curly quotes straightened, whitespace collapsed. This is what
@@ -1682,7 +1681,7 @@ entities:
     fn shipped_demonyms() -> Rules {
         let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../entities/demonyms.yaml"
+            "/../../plugins/core/entities/demonyms.yaml"
         ))
         .unwrap();
         Rules::from_yaml(&text).expect("the shipped demonyms.yaml parses")

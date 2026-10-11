@@ -163,7 +163,6 @@ services:
       # which keeps its context small. Revert either to `general` to go back.
       - CHAT_DEFAULT_PROFILE=${CHAT_DEFAULT_PROFILE:-GeneralDefault-Orchrestator}
       - MCP_TOOL_PROFILE=${MCP_TOOL_PROFILE:-GeneralDefault-Orchrestator}
-      - CONTEXTS_DIR=/home/agent/agent-brain/contexts  # Use volume-mounted contexts so profile changes take effect without rebuild
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
@@ -220,16 +219,11 @@ services:
       - LOG_FORMAT=json
       - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
       - CODEBASE_DIR=/home/agent/agent-brain
-      - WORKFLOWS_DIR=/home/agent/agent-brain/workflows
-      - SCHEMAS_DIR=/home/agent/agent-brain/schemas              # envelope validation for workflows (services/validation.rs)
-      - SOURCES_DIR=/home/agent/agent-brain/sources
-      - RELIEFWEB_APPNAME=${RELIEFWEB_APPNAME:-}                     # ReliefWeb's pre-approved appname (not a secret)
-      - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
-      - MCP_SERVERS_DIR=/home/agent/agent-brain/mcp-servers      # external MCP servers the brain may call (aidevboard, worklittle, exa, tavily)
-      - ENTITY_ALIASES_DIR=/home/agent/agent-brain/entities       # entity resolution seed: curated aliases, titles, type spellings (services/entity_resolution.rs)
-      - TOPICS_DIR=/home/agent/agent-brain/topics                 # the domains notes are classified into by the local model (services/topics.rs)
-      - RELATIONS_DIR=/home/agent/agent-brain/relations           # the closed vocabulary of relationship types between entities (services/relations.rs)
-      - ARCHITECTURE_DIR=/home/agent/agent-brain/architecture     # components.yaml (health probes) + layout.yaml (architecture view)
+      # Seed bundles (services/plugins.rs): workflows, profiles, sources, media sources,
+      # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
+      # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
+      - PLUGINS_DIR=/home/agent/agent-brain/plugins
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-}
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
       # 1, paired with the 6h interval in workflows/media-watch.yaml — see the

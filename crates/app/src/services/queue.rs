@@ -2744,7 +2744,7 @@ mod tests {
             .expect("workspace root");
 
         let mut checked = 0;
-        for dir in ["workflows"] {
+        for dir in ["plugins/core/workflows"] {
             let path = root.join(dir);
             let entries = std::fs::read_dir(&path).unwrap_or_else(|e| panic!("{dir}: {e}"));
             for entry in entries.flatten() {

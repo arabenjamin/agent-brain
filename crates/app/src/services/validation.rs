@@ -472,7 +472,7 @@ mod tests {
     /// committed schema.
     #[test]
     fn all_committed_schemas_compile() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas");
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../plugins/core/schemas");
         let loaded = load_schema_dir(Path::new(dir));
         assert!(
             !loaded.is_empty(),
@@ -597,7 +597,7 @@ mod tests {
     fn committed_schemas() -> HashMap<String, Value> {
         load_schema_dir(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../schemas"
+            "/../../plugins/core/schemas"
         )))
     }
 

@@ -403,11 +403,9 @@ async fn run_init_db(config: &Config) -> Result<()> {
     client.init_schema().await?;
     info!("Database schema initialized successfully");
 
-    let workflows_dir =
-        PathBuf::from(std::env::var("WORKFLOWS_DIR").unwrap_or_else(|_| "workflows".into()));
     // Topics first: a workflow's `topic` is checked against them, and the
-    // graph's set includes topics created in the HBI. From topics/*.yaml
-    // (TOPICS_DIR); notes are classified later, by the idle-time assigner in
+    // graph's set includes topics created in the HBI. From the core bundle's
+    // topics/*.yaml; notes are classified later, by the idle-time assigner in
     // `serve`.
     let topics = agent_brain::services::topics::Topics::global();
     match agent_brain::services::topics::sync(&client, &topics).await {
@@ -429,13 +427,10 @@ async fn run_init_db(config: &Config) -> Result<()> {
         Err(e) => warn!(error = %e, "Relationship fold failed (non-fatal)"),
     }
 
-    if workflows_dir.exists() {
-        match workflow_seeder::seed_workflows_from_dir(&client, &workflows_dir).await {
-            Ok(n) => info!(count = n, "Seeded workflows from workflows/"),
-            Err(e) => warn!(error = %e, "Failed to seed workflows (non-fatal)"),
-        }
-    } else {
-        info!(path = %workflows_dir.display(), "workflows/ directory not found — skipping workflow seeding");
+    let plugins = agent_brain::services::plugins::Plugins::global();
+    match workflow_seeder::seed_workflows(&client, &plugins).await {
+        Ok(n) => info!(count = n, "Seeded workflows from the plugin bundles"),
+        Err(e) => warn!(error = %e, "Failed to seed workflows (non-fatal)"),
     }
 
     // Entity resolution: seed aliases, keys, and the automatic merges (after a

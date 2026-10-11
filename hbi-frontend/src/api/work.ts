@@ -164,6 +164,10 @@ export interface WorkSchedule {
   topic?: string | null;
   /** monitor · brief · learning · maintenance · dataset. */
   kind?: string | null;
+  /** The plugin bundle a yaml-owned workflow was seeded from. */
+  plugin?: string | null;
+  /** Why it cannot run (set at startup by the plugin loader); null = runnable. */
+  unavailable?: string | null;
   /** Tool name per step as the runner reads it ("" for a step it cannot run). */
   step_tools: string[];
   /** Steps stored in the old `tool`/`args` shape, which run as an empty tool and fail. */

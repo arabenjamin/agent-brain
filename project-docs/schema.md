@@ -164,7 +164,7 @@ Claim notes (`note_type: 'claim'`, `services/claims.rs`) also carry:
 
 #### `Topic`
 
-A domain the brain tracks. `topics/*.yaml` (`TOPICS_DIR`) seeds them, synced by `init-db`, and the HBI can create, edit and delete them (`POST /api/topics`, `PUT|DELETE /api/topics/{name}`, `POST /api/topics/{name}/reset`). An edited topic is `managed_by: 'runtime'`, and the sync leaves it alone. A YAML-owned topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The workflows that watch a topic are the ones whose `Workflow.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
+A domain the brain tracks. The core bundle's `topics/*.yaml` seeds them, synced by `init-db`, and the HBI can create, edit and delete them (`POST /api/topics`, `PUT|DELETE /api/topics/{name}`, `POST /api/topics/{name}/reset`). An edited topic is `managed_by: 'runtime'`, and the sync leaves it alone. A YAML-owned topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The workflows that watch a topic are the ones whose `Workflow.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -329,7 +329,7 @@ Background job records executed by `QueueService`. Supports chaining, retry, and
 
 #### `Workflow`
 
-A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `SchedulerChain` on 2026-10-10). Runs on its schedule when it has one, and by name with inputs whenever something asks (`manage_workflow action=run`, `create_task workflow=…`, REST, the media and gap pipelines, the perception scan). Each run is a `:Task` with `workflow` set. Seeded from `workflows/*.yaml` (`WORKFLOWS_DIR`) by `services/workflow_seeder.rs`. Template variables in steps: `{{task_id}}`, `{{goal}}`, `{{date}}` / `{{now}}` / `{{weekday}}` (local wall clock), `{{inputs.<name>}}`, `{{_prev}}`, `{{steps.<id>}}`. Rule: `dev_docs get workflows/model`.
+A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `SchedulerChain` on 2026-10-10). Runs on its schedule when it has one, and by name with inputs whenever something asks (`manage_workflow action=run`, `create_task workflow=…`, REST, the media and gap pipelines, the perception scan). Each run is a `:Task` with `workflow` set. Seeded from each loaded plugin bundle's `workflows/*.yaml` by `services/workflow_seeder.rs`. Template variables in steps: `{{task_id}}`, `{{goal}}`, `{{date}}` / `{{now}}` / `{{weekday}}` (local wall clock), `{{inputs.<name>}}`, `{{_prev}}`, `{{steps.<id>}}`. Rule: `dev_docs get workflows/model`.
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -349,6 +349,8 @@ A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `
 | `paused_reason` | String? | Why it is disabled, when that was deliberate |
 | `topic` | String? | The `topics/*.yaml` topic it works on; absent = spans topics |
 | `kind` | String? | `monitor` · `brief` · `learning` · `maintenance` · `dataset` (`WORKFLOW_KINDS`); required in a file that has a schedule |
+| `plugin` | String? | The plugin bundle a yaml-owned workflow was seeded from (`core`, …); null for one created at runtime |
+| `unavailable` | String? | Why it cannot run now: a tool not registered, an MCP server missing or disabled, its plugin not enabled. Set or cleared at every startup by `services/plugins.rs`; dispatch and Run now refuse it, its timer skips it, the Feed counts it |
 
 #### `Todo` (an item)
 

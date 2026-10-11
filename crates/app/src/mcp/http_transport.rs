@@ -368,6 +368,10 @@ impl HttpTransport {
                 get(crate::clients::system::handle_registry),
             )
             .route(
+                "/api/plugins",
+                get(crate::clients::system::handle_plugins),
+            )
+            .route(
                 "/api/architecture",
                 get(crate::clients::architecture::handle_architecture),
             )

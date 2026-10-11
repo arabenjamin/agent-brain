@@ -71,7 +71,7 @@ function Section({ tab, d }: { tab: Exclude<Tab, "tools">; d: Registry }) {
     );
   }
   if (tab === "workflows") {
-    return d.workflows.length === 0 ? <EmptyState title="No workflows" checked="No (:Workflow) nodes; they are seeded from workflows/*.yaml." /> : (
+    return d.workflows.length === 0 ? <EmptyState title="No workflows" checked="No (:Workflow) nodes; they are seeded from each plugin bundle's workflows/*.yaml." /> : (
       <table className="reg-table">
         <thead><tr><th>Workflow</th><th>Runs</th><th>Inputs</th><th>Steps</th><th>What it does</th></tr></thead>
         <tbody>

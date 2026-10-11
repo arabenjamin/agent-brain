@@ -1,5 +1,5 @@
 # The services the brain depends on. GET /api/system/health probes each one
-# (clients/system.rs, ARCHITECTURE_DIR). Phase 6's architecture view draws
+# (clients/system.rs). Phase 6's architecture view draws
 # from this file too, so a new service gets one entry here, not a code change.
 #
 # probe:

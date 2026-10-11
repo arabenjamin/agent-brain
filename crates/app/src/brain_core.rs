@@ -102,7 +102,7 @@ fn agent_runner_enabled() -> bool {
 pub struct StorageConfig {
     pub neo4j: Option<Neo4jClient>,
     pub telemetry: Option<TelemetryClient>,
-    /// Directory for context profile YAML files.
+    /// The core bundle's `contexts/` (profiles are written here).
     pub contexts_dir: PathBuf,
     /// Directory for knowledge graph snapshots.
     pub snapshot_dir: PathBuf,
@@ -113,9 +113,7 @@ impl Default for StorageConfig {
         Self {
             neo4j: None,
             telemetry: None,
-            contexts_dir: std::env::var("CONTEXTS_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("./contexts")),
+            contexts_dir: crate::services::plugins::Plugins::global().core_dir("contexts"),
             snapshot_dir: std::env::var("KNOWLEDGE_SNAPSHOT_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("./snapshots")),
@@ -437,11 +435,19 @@ impl BrainCore {
 
         // Create ContextBuilderService and load profiles (must be before scheduler).
         let context_builder_arc: Option<Arc<ContextBuilderService>> = {
-            let svc = Arc::new(ContextBuilderService::new(
-                self.storage.neo4j.clone(),
-                self.storage.contexts_dir.clone(),
-                Arc::clone(&self.llm_config),
-            ));
+            let plugin_contexts: Vec<(String, PathBuf)> = crate::services::plugins::Plugins::global()
+                .dirs("contexts")
+                .into_iter()
+                .filter(|(p, _)| p != crate::services::plugins::CORE)
+                .collect();
+            let svc = Arc::new(
+                ContextBuilderService::new(
+                    self.storage.neo4j.clone(),
+                    self.storage.contexts_dir.clone(),
+                    Arc::clone(&self.llm_config),
+                )
+                .with_plugin_dirs(plugin_contexts),
+            );
             let n = svc.load_profiles().await.unwrap_or(0);
             info!(count = n, "Loaded context profiles");
             *self.context_builder_svc.write().await = Some(Arc::clone(&svc));
@@ -558,15 +564,23 @@ impl BrainCore {
         let live_tools_arc: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
         let tool_schemas_arc: Arc<RwLock<std::collections::HashMap<String, serde_json::Value>>> =
             Arc::new(RwLock::new(std::collections::HashMap::new()));
-        // Object-envelope JSON Schemas from the `schemas/` seed dir (SCHEMAS_DIR,
-        // default ./schemas). Loaded once; a missing dir or bad file degrades to
-        // no envelope validation (the per-step arg gate still runs). See
-        // services/validation.rs + project-docs/VALIDATION_AND_APPLY_PLAN.md.
-        let schemas_dir = std::env::var("SCHEMAS_DIR").unwrap_or_else(|_| "./schemas".to_string());
-        let envelope_schemas_arc: Arc<std::collections::HashMap<String, serde_json::Value>> =
-            Arc::new(crate::services::validation::load_schema_dir(
-                std::path::Path::new(&schemas_dir),
-            ));
+        // Object-envelope JSON Schemas from every loaded bundle's `schemas/`
+        // (core first; a later bundle cannot replace one). Loaded once; a
+        // missing dir or bad file degrades to no envelope validation (the
+        // per-step arg gate still runs). See services/validation.rs.
+        let envelope_schemas_arc: Arc<std::collections::HashMap<String, serde_json::Value>> = {
+            let mut all = std::collections::HashMap::new();
+            for (plugin, dir) in crate::services::plugins::Plugins::global().dirs("schemas") {
+                for (name, schema) in crate::services::validation::load_schema_dir(&dir) {
+                    if all.contains_key(&name) {
+                        warn!(%plugin, schema = %name, "schema already declared by an earlier bundle — skipped");
+                        continue;
+                    }
+                    all.insert(name, schema);
+                }
+            }
+            Arc::new(all)
+        };
 
         let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
 
@@ -756,6 +770,22 @@ impl BrainCore {
             tool_schemas.insert(t.name.clone(), t.input_schema.clone());
         }
         drop(registry);
+        // A workflow naming a tool, MCP server or plugin that is not here is
+        // marked unavailable: refused at dispatch, skipped by its timer,
+        // counted in the Feed. Never run broken, never silently dropped.
+        if let Some(ref neo4j) = self.storage.neo4j {
+            match crate::services::plugins::mark_unavailable_workflows(
+                neo4j,
+                &live_tool_names,
+                &crate::services::plugins::Plugins::global(),
+            )
+            .await
+            {
+                Ok(0) => {}
+                Ok(n) => warn!(count = n, "Workflows that cannot run (see GET /api/plugins)"),
+                Err(e) => warn!(error = %e, "Could not check workflow availability"),
+            }
+        }
         *live_tools_arc.write().await = live_tool_names;
         *tool_schemas_arc.write().await = tool_schemas;
 
@@ -1012,57 +1042,28 @@ impl BrainCore {
             }
         }
 
-        // ── Seed SourceLists from sources/*.yaml ──────────────────────────
-        // ON CREATE only — the graph owns each list after first creation, so
-        // runtime edits via neo4j_query persist across restarts. A missing
-        // directory is non-fatal: search_web runs unrestricted when a
-        // source_list name does not resolve.
-        let sources_dir =
-            PathBuf::from(std::env::var("SOURCES_DIR").unwrap_or_else(|_| "sources".into()));
-        let n = crate::services::source_seeder::seed_sources_from_dir(neo4j, &sources_dir).await;
-        debug!(created = n, "Seeded SourceLists from sources/");
+        // ── Plugin bundles (services/plugins.rs) ──────────────────────────
+        // The core bundle must load: without it there are no workflows,
+        // profiles or schemas, and a brain that starts anyway runs blind.
+        let plugins = crate::services::plugins::Plugins::global();
+        if let Err(reason) = plugins.core_loaded() {
+            error!(
+                dir = %plugins.dir.display(),
+                %reason,
+                "The core plugin bundle did not load — check the volume mount or PLUGINS_DIR. Refusing to start."
+            );
+            std::process::exit(1);
+        }
+        // Source lists, media sources, MCP servers: ON CREATE only, so the
+        // graph owns each after first creation and runtime edits persist.
+        let n = crate::services::plugins::seed_on_create(neo4j, &plugins).await;
+        debug!(created = n, "Seeded source lists, media sources and MCP servers");
 
-        // ── Seed external MCP servers from mcp-servers/*.yaml ─────────────────
-        // ON CREATE only — graph-owned after first creation (like SourceLists).
-        // A missing directory is non-fatal: the MCP-client tools just have fewer
-        // servers to offer. Secrets stay in env (only the env var name is stored).
-        let mcp_servers_dir = PathBuf::from(
-            std::env::var("MCP_SERVERS_DIR").unwrap_or_else(|_| "mcp-servers".into()),
-        );
-        let mcpn =
-            crate::services::mcp_server_seeder::seed_mcp_servers_from_dir(neo4j, &mcp_servers_dir)
-                .await;
-        debug!(created = mcpn, "Seeded McpServers from mcp-servers/");
-
-        // ── Seed MediaSource watchlist from sources-media/*.yaml ───────────
-        // ON CREATE only — graph-owned after first creation (same as SourceList).
-        // A missing directory is non-fatal.
-        let sources_media_dir = PathBuf::from(
-            std::env::var("SOURCES_MEDIA_DIR").unwrap_or_else(|_| "sources-media".into()),
-        );
-        let mn = crate::services::media_source_seeder::seed_media_sources_from_dir(
-            neo4j,
-            &sources_media_dir,
-        )
-        .await;
-        debug!(created = mn, "Seeded MediaSources from sources-media/");
-
-        // ── Seed workflows ────────────────────────────────────────────────
-        // workflows/*.yaml is the source of truth for yaml-owned workflows. A
-        // missing or unreadable directory is a deployment error (broken mount,
-        // wrong WORKFLOWS_DIR): fail hard rather than start a brain whose
-        // workflow definitions silently stop propagating.
-        let workflows_dir =
-            PathBuf::from(std::env::var("WORKFLOWS_DIR").unwrap_or_else(|_| "workflows".into()));
-        match crate::services::workflow_seeder::seed_workflows_from_dir(neo4j, &workflows_dir).await
-        {
-            Ok(n) => info!(count = n, "Seeded workflows from workflows/"),
+        // Workflows: each file owns its yaml-managed workflow.
+        match crate::services::workflow_seeder::seed_workflows(neo4j, &plugins).await {
+            Ok(n) => info!(count = n, "Seeded workflows from the plugin bundles"),
             Err(e) => {
-                error!(
-                    dir = %workflows_dir.display(),
-                    error = %e,
-                    "Cannot read the workflows directory — check the volume mount or WORKFLOWS_DIR. Refusing to start."
-                );
+                error!(error = %e, "Cannot seed workflows. Refusing to start.");
                 std::process::exit(1);
             }
         }

@@ -421,7 +421,8 @@ impl SchedulerService {
     }
 
     /// Run a workflow now with `inputs`, whatever its `next_run_at`, even when
-    /// it is disabled (a manual run is a one-off). A scheduled workflow's
+    /// it is disabled (a manual run is a one-off), but never when it is
+    /// unavailable (its steps would fail). A scheduled workflow's
     /// `next_run_at` advances like a timed run. Returns the run Task id.
     pub async fn run_workflow_now(
         &self,
@@ -434,6 +435,9 @@ impl SchedulerService {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("No workflow with id {id}"))?;
+        if let Some(why) = wf.unavailable.as_deref() {
+            return Err(format!("Workflow '{}' cannot run: {why}.", wf.name));
+        }
         let missing = wf.missing_inputs(inputs);
         if !missing.is_empty() {
             return Err(format!(

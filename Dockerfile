@@ -76,8 +76,9 @@ RUN useradd -m -u 1000 agent
 # Copy binary from builder
 COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 
-# Copy context profiles (YAML files for ContextBuilderService)
-COPY --chown=agent:agent contexts /home/agent/contexts/
+# Seed bundles (services/plugins.rs). Compose points PLUGINS_DIR at the
+# bind-mounted repo instead; this copy is the default (./plugins from WORKDIR).
+COPY --chown=agent:agent plugins /home/agent/plugins/
 
 # Copy entrypoint script
 COPY --chown=agent:agent entrypoint.sh /usr/local/bin/entrypoint.sh

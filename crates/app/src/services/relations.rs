@@ -1,7 +1,7 @@
 //! Typed relationships between entities (HBI plan §10.5, Phase 17).
 //!
 //! `(:Entity)-[:RELATES {type, method, status, evidence, …}]->(:Entity)`:
-//! - **A closed vocabulary.** `relations/*.yaml` (`RELATIONS_DIR`) lists the
+//! - **A closed vocabulary.** the core bundle's `relations/*.yaml` lists the
 //!   types, each with a definition and the entity types allowed at each end.
 //!   The user picks from it and the extractor may use nothing else.
 //! - **The user's edges are final.** `method: 'manual'`, `status: 'active'`.
@@ -115,10 +115,9 @@ impl Vocabulary {
     }
 }
 
+/// The core bundle's `relations/` (read from core only: `services/plugins.rs`).
 pub fn relations_dir() -> PathBuf {
-    std::env::var("RELATIONS_DIR")
-        .unwrap_or_else(|_| "relations".into())
-        .into()
+    crate::services::plugins::Plugins::global().core_dir("relations")
 }
 
 /// The stored direction: symmetric types go from the lower id.
@@ -622,7 +621,7 @@ mod tests {
     use super::*;
 
     fn vocab() -> Vocabulary {
-        Vocabulary::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../relations"))
+        Vocabulary::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/relations"))
     }
 
     fn ents() -> Vec<Mentioned> {

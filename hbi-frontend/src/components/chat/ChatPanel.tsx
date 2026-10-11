@@ -120,7 +120,7 @@ function truncate(s: string, n: number): string {
 // plus the Task goal or the date, is what actually tells them apart.
 //
 // This list is exactly the set of session ids that workflows create.
-// Keep it in sync with `grep -rhoE 'session_id: *"[^"]+"' workflows/`,
+// Keep it in sync with `grep -rhoE 'session_id: *"[^"]+"' plugins/*/workflows/`,
 // and do NOT add speculative prefixes: a human session that happens to start
 // with one gets its real identity — the user's opening message — replaced by a
 // generic run label. `eval-*` and `verify-*` are hand-made test chats and were

@@ -10,7 +10,7 @@ Usage: python3 -I scripts/gen_demonyms.py DIR, where DIR holds
 - contact.txt: the WIKIMEDIA_CONTACT value (Wikimedia asks for one);
 - placelinks.tsv, names.tsv, aliases.tsv: cypher-shell `--format plain`
   exports of the queries in the plan's Phase 20 outcome.
-It writes DIR/demonyms.yaml; review the diff before copying it to entities/.
+It writes DIR/demonyms.yaml; review the diff before copying it to plugins/core/entities/.
 """
 import csv, json, re, sys, urllib.parse, urllib.request
 from collections import defaultdict

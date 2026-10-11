@@ -249,7 +249,7 @@ function DomainsTile() {
   return (
     <Card title="Domains" actions={<a className="home-dim" href={hrefTo("knowledge", { view: "map" })}>map →</a>}>
       {list.length === 0 ? (
-        <EmptyState title="No topics declared" checked="topics/*.yaml defines none (TOPICS_DIR)." />
+        <EmptyState title="No topics declared" checked="plugins/core/topics/*.yaml defines none." />
       ) : (
         <ul className="home-list home-domains">
           {list.map((t) => (

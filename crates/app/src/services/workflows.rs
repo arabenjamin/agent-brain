@@ -18,7 +18,7 @@ pub struct StartedRun {
 }
 
 /// Resolve `name` (or the default workflow when `None`) and refuse a run it
-/// cannot do: unknown, disabled, or missing a required input. `Err` says why
+/// cannot do: unknown, disabled, unavailable, or missing a required input. `Err` says why
 /// and names what does exist.
 pub async fn resolve(
     neo4j: &Neo4jClient,
@@ -61,6 +61,9 @@ pub async fn resolve(
                 .map(|r| format!(" ({r})"))
                 .unwrap_or_default()
         ));
+    }
+    if let Some(why) = wf.unavailable.as_deref() {
+        return Err(format!("Workflow '{}' cannot run: {why}.", wf.name));
     }
     let missing = wf.missing_inputs(inputs);
     if !missing.is_empty() {
@@ -370,6 +373,7 @@ pub async fn save(
             .unwrap_or(false),
         topic,
         kind,
+        plugin: None,
     };
     let enabled = cand.get("enabled").and_then(Value::as_bool).unwrap_or(true);
 

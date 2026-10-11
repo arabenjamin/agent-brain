@@ -1,6 +1,6 @@
 # Entity resolution seed — one real thing, one :Entity node.
 #
-# Read by `services/entity_resolution.rs` (ENTITY_ALIASES_DIR, every *.yaml in
+# Read by `services/entity_resolution.rs` (the core bundle's entities/, every *.yaml in
 # the dir). Applied on every start by `agent-brain init-db`, after a snapshot:
 # an existing entity named like an alias here is merged into its canonical
 # entity, and new mentions resolve through the alias from then on. Every merge

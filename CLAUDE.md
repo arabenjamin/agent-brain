@@ -37,7 +37,7 @@ More: `project-docs/cli.md`. Endpoints: `POST/GET/DELETE /mcp`, `GET /health`, `
 ## Deployment facts
 
 - **The brain runs in Docker.** Test Rust changes by rebuilding the image; never install deps on the host; external CLI tools (yt-dlp, ffmpeg) go in the Dockerfile.
-- **The brain has no `env_file`** — every key must be passed through in `docker-compose.yml`, or it never reaches the process. A new seed dir needs its compose env var too.
+- **The brain has no `env_file`** — every key must be passed through in `docker-compose.yml`, or it never reaches the process. Seed dirs live in plugin bundles.
 - Env reference: **`project-docs/env.md`**. Compose sets the values that matter (`LOCAL_LLM_BACKEND=llamacpp`, `CHAT_DEFAULT_PROFILE`/`MCP_TOOL_PROFILE=GeneralDefault-Orchrestator`, `CLOUD_TIER=2`, `TZ`); code defaults are often stale.
 - The GPU is an 8 GB RTX 3060 Ti on driver 535 / CUDA 12.2. The llama.cpp sidecar is built from source for it (Gemma-4-E4B, `-c 32768 -np 2` ⇒ 16384 tokens/request). Embeddings (bge-m3) always stay on host Ollama.
 - `.githooks/post-commit` runs `docker compose up -d --build` (`git config core.hooksPath .githooks`).
@@ -57,18 +57,18 @@ crates/app/src/
                     agent_runner, context_builder, *_seeder, validation, cypher_guard, graph_schema
   skills/           one file per skill (`list_capabilities` for live counts)
   mcp/              server.rs, tools.rs, transport.rs, http_transport.rs (+ openai_compat.rs)
-YAML seed dirs:     workflows/ contexts/ sources/ sources-media/ mcp-servers/ schemas/ models.yaml
+Seed bundles:       plugins/core/ (workflows/ contexts/ sources/ schemas/ topics/ …); models.yaml
 ```
 
 ## Rules that apply to most changes
 
 - **Skill registration:** push the skill once onto `skills` in `BrainCore::build_skills`; registry and handler share its `Arc`. Dispatch is first-match, so `DynamicSkill` stays last and a tool name belongs to the first skill that claims it.
-- **No hardcoded data in Rust.** Declarative data (domains, seeds, chains, schedules, profiles, models) lives in YAML seed dirs and the graph.
+- **No hardcoded data in Rust.** Declarative data (domains, seeds, chains, schedules, profiles, models) lives in plugin bundles and the graph.
 - **Timestamps:** every temporal graph property is a native UTC `DATETIME`. Cypher compares a datetime to a string as null and silently drops the row. Read `project-docs/schema.md` § Timestamps before writing date Cypher. Stored is UTC; anything said to a person is local (`services/clock.rs`).
 - **Structured LLM output:** use `LlmProvider::generate_json`, and parse with `first_json_object`, never first-`{`-to-last-`}`.
 - **Host Ollama defaults to a 4096-token context** and truncates silently; every host-Ollama config sets `num_ctx`.
 - **Workflow steps:** `provider_hint` is a step top-level field (omitting it means cloud, not local); a `reason` step past position 1 takes `context: "{{_prev}}"` (or `{{steps.<id>}}`); a run's subject is `{{inputs.<name>}}`, not `{{goal}}`; steps run verbatim, checked only if `checks` opts in.
-- **A `runtime`-owned workflow silently shadows its YAML file.** Check `managed_by` before assuming the file is what runs. Pause with a targeted Cypher `SET enabled=false`, not `upsert`.
+- **A `runtime`-owned workflow silently shadows its YAML file.** Check `managed_by` before assuming the file is what runs. Pause with `manage_workflow` upsert `{name, enabled: false}`.
 - **Privacy before budget:** work is `private` unless marked `data_class: public`, and private work only reaches `no_log` providers. Paid providers need a spend cap and `ROUTING_PAID_FOR`.
 - **Failures must be visible.** A truncated result is marked, a count must be drillable to its rows, and an empty answer names what does exist. A tool error and a quality miss (`isError: false`) are different things; check the tool's actual output before blaming the model.
 - **A local small-model prompt is a size budget** (keep it near 2-3k chars, terse imperatives). Local E4B handles one-shot synthesis; investigative loops need cloud. Measure the answer against a cloud twin before pinning an agent local.

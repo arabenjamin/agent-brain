@@ -27,12 +27,10 @@ use tracing::warn;
 
 use crate::repository::Neo4jClient;
 
-// ── architecture/ (ARCHITECTURE_DIR) ─────────────────────────────────────────
+// ── architecture/ (the core bundle's) ────────────────────────────────────────
 
 pub fn architecture_dir() -> PathBuf {
-    std::env::var("ARCHITECTURE_DIR")
-        .unwrap_or_else(|_| "architecture".into())
-        .into()
+    crate::services::plugins::Plugins::global().core_dir("architecture")
 }
 
 pub(crate) fn load_yaml<T: for<'de> Deserialize<'de> + Default>(file: &str) -> T {
@@ -1028,7 +1026,7 @@ groups:
     fn shipped_layout() -> Layout {
         let p = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../architecture/layout.yaml"
+            "/../../plugins/core/architecture/layout.yaml"
         );
         serde_yaml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
     }
@@ -1140,7 +1138,7 @@ groups:
     fn load_components_for_test() -> HashSet<String> {
         let p = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../architecture/components.yaml"
+            "/../../plugins/core/architecture/components.yaml"
         );
         let f: ComponentsFile = serde_yaml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
         f.components.into_iter().map(|c| c.name).collect()

@@ -169,27 +169,16 @@ pub async fn handle_feed(Extension(state): Extension<Arc<RestState>>) -> impl In
         .await,
         json!({ "view": "history", "mode": "jobs", "job_status": "failed,dead,dead_letter" }),
     );
-    // A workflow step whose tool isn't registered (or an old `tool`/`args`
-    // step, which runs as an empty tool name) fails every run.
-    let registered: Vec<String> = match state.tool_registry.as_ref() {
-        Some(r) => r.read().await.list().into_iter().map(|t| t.name).collect(),
-        None => Vec::new(),
-    };
-    let broken = match neo4j.list_workflows(false).await {
-        Ok(list) => Ok(list
-            .iter()
-            .filter(|s| {
-                let (tools, legacy) = super::work::step_tools(&s.steps);
-                legacy > 0
-                    || (!registered.is_empty()
-                        && tools.iter().any(|t| !registered.iter().any(|r| r == t)))
-            })
-            .count() as i64),
-        Err(e) => Err(e.to_string()),
-    };
+    // Workflows the plugin loader marked unavailable at startup: a tool not
+    // registered, an MCP server missing or disabled, a plugin not enabled.
+    let broken = count(
+        neo4j,
+        "MATCH (w:Workflow) WHERE w.unavailable IS NOT NULL RETURN count(w) AS c",
+    )
+    .await;
     digest(
         "broken_workflows",
-        "workflows with steps that can't run".into(),
+        "workflows that can't run".into(),
         broken,
         json!({ "view": "scheduled" }),
     );

@@ -1,7 +1,7 @@
 //! Topics: the domains the brain works on or keeps track of, and which notes
 //! belong to each (`HBI_REDESIGN_PLAN.md` §3).
 //!
-//! - **Declared, not discovered.** `topics/*.yaml` (`TOPICS_DIR`) names each
+//! - **Declared, not discovered.** the core bundle's `topics/*.yaml` names each
 //!   topic and describes it; `init-db` syncs them to `(:Topic)` nodes.
 //!   "Domain" already means a web hostname in SourceLists and claims, hence Topic.
 //! - **The local model assigns them.** Each note is classified against the
@@ -367,10 +367,9 @@ fn cell() -> &'static RwLock<Arc<Topics>> {
     T.get_or_init(|| RwLock::new(Arc::new(Topics::load_dir(&topics_dir()))))
 }
 
+/// The core bundle's `topics/` (read from core only: `services/plugins.rs`).
 pub fn topics_dir() -> PathBuf {
-    std::env::var("TOPICS_DIR")
-        .unwrap_or_else(|_| "topics".into())
-        .into()
+    crate::services::plugins::Plugins::global().core_dir("topics")
 }
 
 /// FNV-1a: a version hash that is stable across Rust releases (unlike `DefaultHasher`).
@@ -1371,7 +1370,7 @@ mod tests {
 
     #[test]
     fn the_shipped_topics_load() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../topics");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/topics");
         let t = Topics::load_dir(&dir);
         assert!(t.defs.len() >= 5, "topics/*.yaml should load");
         assert!(

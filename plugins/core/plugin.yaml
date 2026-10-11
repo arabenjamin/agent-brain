@@ -1,0 +1,6 @@
+# The core bundle: what every brain ships with. It loads through the same
+# loader as any other plugin (services/plugins.rs); it is always enabled.
+name: core
+version: 1
+description: "Workflows, agent profiles, source lists, media sources, MCP servers, schemas, topics, entity seeds and relation types the brain ships with."
+requires: {}

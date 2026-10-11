@@ -184,6 +184,7 @@ function ScheduleRow({ s, now, openId, by, mix, topicLabels }: {
       {by !== "kind" && s.kind && <span className="wk-dim"> · {s.kind}</span>}
       {flag && <span className={`tone-text-${flag.tone}`} title="From the notes its runs wrote in the last 30 days"> · {flag.text}</span>}
       {s.legacy_steps > 0 && <span className="tone-text-red"> · {s.legacy_steps} broken steps</span>}
+      {s.unavailable && <span className="tone-text-red" title={s.unavailable}> · can't run</span>}
     </Row>
   );
 }

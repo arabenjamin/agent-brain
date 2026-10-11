@@ -57,7 +57,7 @@ export default function HealthView() {
       <div className="sys-grid">
         <Card title="Services" actions={<span className="wk-dim">{d.components.length} declared in architecture/components.yaml</span>}>
           {d.components.length === 0 ? (
-            <EmptyState tone="yellow" title="No components declared" checked="architecture/components.yaml was not found or is empty (ARCHITECTURE_DIR), so nothing was probed." />
+            <EmptyState tone="yellow" title="No components declared" checked="plugins/core/architecture/components.yaml was not found or is empty, so nothing was probed." />
           ) : (
             <ul className="sys-comps">
               {d.components.map((c) => (

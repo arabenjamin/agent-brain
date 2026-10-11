@@ -1,6 +1,6 @@
 # Core and plugins plan
 
-Status: **Phase 2c part 1 (rule dev notes rewritten for workflows) done 2026-10-10; part 2 (a week of runs compared) due from 2026-10-17. Phase 2b (workflows) done 2026-10-10: chains and schedules are one `:Workflow` model, live graph migrated, verified live. Phase 2a (named step outputs + step defaults) done 2026-10-10: deployed and verified live on daily-news (32 steps → 18, every step completed, claims linked to the stored brief). Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
+Status: **Phase 3a (bundle loader) done 2026-10-10: every seed dir is in `plugins/core/`, one loader, workflows marked unavailable when what they name is missing; verified live. Phase 2c part 1 (rule dev notes rewritten for workflows) done 2026-10-10; part 2 (a week of runs compared) due from 2026-10-17. Phase 2b (workflows) done 2026-10-10: chains and schedules are one `:Workflow` model, live graph migrated, verified live. Phase 2a (named step outputs + step defaults) done 2026-10-10: deployed and verified live on daily-news (32 steps → 18, every step completed, claims linked to the stored brief). Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
 
 ## 1. Why
 
@@ -248,6 +248,16 @@ The core ships as a bundle too (`plugins/core/`), so there is one loader. The fi
 
 **Exit:** loader + `plugin-api` in place; core runs plugin-less; the `core` bundle loads every seed the old seeders did; profiles are graph-authoritative; disabling a plugin removes its tools, workflows and prompt sections with no warnings left behind; a fresh empty graph seeds clean.
 
+**Sequence (2026-10-10).** Phase 3 is four slices, each deployable alone:
+- **3a bundle loader (YAML).** Every seed dir moves to `plugins/core/` with a `plugin.yaml`; one loader finds the enabled bundles and hands each kind's files to its reader. The source, MCP-server and media-source seeders fold into it; the ten `*_DIR` env vars become `PLUGINS_DIR` + `PLUGINS_ENABLED`. Availability: a workflow whose step names a tool not in the registry, an MCP server that is missing or disabled, or whose plugin is not enabled is marked `unavailable` (the reason, on the node), refused by dispatch and the timer, and counted by the Feed's existing "workflows with steps that can't run" digest. `GET /api/plugins` lists each bundle, its status and what it contributed.
+- **3b profiles in the graph.** `:ContextProfile` becomes the authority (seeded from bundles, `managed_by`), the UI writes the graph, prompts become sections with `requires:`, the tool catalogue is generated, allowlists are intersected with the registry and the dropped names reported.
+- **3c `plugin-api` crate.** The `Plugin` trait and `PluginContext`; in-process plugin tools register before `DynamicSkill`; a tool name claimed twice refuses startup; the core test suite runs with no plugins enabled.
+- **3d declarative tools and `manage_plugin`.** `DynamicTool` and the Rust-literal built-ins in `seed_built_ins` become bundle `tools:` entries; `manage_plugin` writes runtime bundles.
+
+**3a result (2026-10-10).** Built as designed. `services/plugins.rs` (manifest, `requires`, load order, `GET /api/plugins`, ON-CREATE seeding, availability) replaced `source_seeder`, `media_source_seeder` and `mcp_server_seeder`; ten `*_DIR` env vars became `PLUGINS_DIR` + `PLUGINS_ENABLED` (plus a dead `RELIEFWEB_APPNAME`). `Workflow` gains `plugin` and `unavailable`; the Feed's broken-workflow digest now counts the stored reason instead of recomputing it. Verified live: core loads 33 workflows, 18 profiles, 3 schemas; a throwaway `probe` bundle loaded, its workflow ran by name, and after a restart without it the workflow was refused with "plugin 'probe' is not enabled" (probe removed). The first start flagged one real case: `self-test-dead-tools`, a runtime-owned schedule from April in the old `tool`/`args` shape naming the removed `list_notes`, already disabled. Rule: `dev_docs get plugins/loader`.
+
+**3a decisions.** Directory names stay as they are (`contexts/`, `sources-media/`): renaming to `agents/` is churn the code does not need. `architecture/` (components, layout, tombstones) is read from the core bundle only: it describes the core. Rule notes that cite `workflows/*.yaml` stay correct, read as bundle-relative.
+
 ## 8. Phase 4 — extraction, one pack at a time
 
 Order: smallest blast radius first. Each pack: move it, compile against `plugin-api` only, run with it disabled, run `eval-retrieval`, delete what is left behind, re-measure.
@@ -278,6 +288,8 @@ Entities, topics, the Feed (items, todos, dispatch), search, HTTP, MCP client, N
 | 2026-10-10 | baseline | 95.6K | 17.4K | — | 19.4K | CLAUDE.md 7.7 KB (points into 1.18 MB of docs) | 104 |
 | 2026-10-10 | Phase 0 | 87.7K (code 71.1K) | 16.6K | — | 19.3K | CLAUDE.md 7.7 KB (docs −2 stale registries) | 62 |
 | 2026-10-10 | Phase 1 | 88.3K (code 71.7K) | 16.7K | — | 19.3K | CLAUDE.md 7.6 KB; project-docs 1.19 MB → 142 KB | 63 |
+| 2026-10-10 | Phase 2 | 88.1K (code 71.4K) | 16.7K | — | 18.8K | CLAUDE.md 7.6 KB | 61 |
+| 2026-10-10 | Phase 3a | 88.6K (code 71.8K) | 16.8K | — | 18.8K | CLAUDE.md 7.6 KB | 61 |
 
 ## 10. Open questions
 

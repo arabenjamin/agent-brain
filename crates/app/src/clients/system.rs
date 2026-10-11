@@ -1,7 +1,7 @@
 //! System: the brain as a machine, for the HBI's System workspace.
 //!
 //! - `GET /api/system/health` — one call. Every dependency in
-//!   `architecture/components.yaml` (`ARCHITECTURE_DIR`) probed in parallel,
+//!   the core bundle's `architecture/components.yaml` probed in parallel,
 //!   plus the scheduler, the queue, the GPU lease, provider budgets and the
 //!   running version, and `issues`: what is wrong, worst first. A component
 //!   whose URL env var is unset is "not configured", never "down".
@@ -406,6 +406,63 @@ pub async fn handle_health(Extension(state): Extension<Arc<RestState>>) -> impl 
     .into_response()
 }
 
+/// GET /api/plugins — every bundle in `PLUGINS_DIR`: whether it loaded and
+/// why not, what it ships (files per seed kind, workflows seeded from it),
+/// and every workflow that cannot run, with the reason.
+pub async fn handle_plugins(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
+    use crate::services::plugins::{CORE_ONLY_KINDS, MERGED_KINDS, Plugins};
+    let plugins = Plugins::global();
+    let workflows = match state.neo4j.as_ref() {
+        Some(n) => n.list_workflows(false).await.map_err(|e| e.to_string()),
+        None => Err("Neo4j not available".into()),
+    };
+    let bundles: Vec<Value> = plugins
+        .bundles
+        .iter()
+        .map(|b| {
+            let mut v = serde_json::to_value(b).unwrap_or(Value::Null);
+            let files: serde_json::Map<String, Value> = MERGED_KINDS
+                .iter()
+                .chain(CORE_ONLY_KINDS)
+                .filter_map(|k| {
+                    let n = std::fs::read_dir(b.root.join(k)).ok()?.flatten().count();
+                    Some((k.to_string(), json!(n)))
+                })
+                .collect();
+            v["files"] = Value::Object(files);
+            if let Ok(wfs) = &workflows {
+                v["workflows"] = json!(
+                    wfs.iter()
+                        .filter(|w| w.plugin.as_deref() == Some(b.name.as_str()))
+                        .map(|w| w.name.as_str())
+                        .collect::<Vec<_>>()
+                );
+            }
+            v
+        })
+        .collect();
+    let (unavailable, error) = match &workflows {
+        Ok(wfs) => (
+            wfs.iter()
+                .filter_map(|w| {
+                    w.unavailable.as_ref().map(|r| {
+                        json!({ "id": w.id, "name": w.name, "plugin": w.plugin, "reason": r })
+                    })
+                })
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(e) => (Vec::new(), Some(e.clone())),
+    };
+    Json(json!({
+        "dir": plugins.dir,
+        "bundles": bundles,
+        "unavailable_workflows": unavailable,
+        "error": error,
+    }))
+    .into_response()
+}
+
 pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
     let Some(neo4j) = state.neo4j.as_ref() else {
         return unavailable("Neo4j not available");
@@ -669,7 +726,7 @@ mod tests {
     #[test]
     fn the_shipped_component_list_parses() {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../architecture/components.yaml");
+            .join("../../plugins/core/architecture/components.yaml");
         let f: crate::services::architecture::ComponentsFile =
             serde_yaml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
         assert!(f.components.iter().any(|c| c.name == "neo4j" && c.required));

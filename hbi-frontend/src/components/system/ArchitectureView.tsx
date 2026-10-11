@@ -72,7 +72,7 @@ export default function ArchitectureView() {
       <ChangeBanner d={d} onHistory={() => setTab("history")} />
       {!d.layout_loaded && (
         <EmptyState tone="yellow" title="No layout"
-          checked="architecture/layout.yaml was not found (ARCHITECTURE_DIR), so every item is unplaced." />
+          checked="plugins/core/architecture/layout.yaml was not found, so every item is unplaced." />
       )}
       {(d.unplaced.length > 0 || d.stale.length > 0) && <LayoutGaps d={d} />}
 

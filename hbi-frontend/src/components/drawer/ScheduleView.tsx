@@ -124,7 +124,14 @@ export default function ScheduleView({ id }: { id: string }) {
           <h3 className="dw-title">{s.name}</h3>
           {s.description && <div className="dw-note">{s.description}</div>}
           {result && <div className={result.ok ? "tone-text-green" : "tone-text-red"}>{result.text}</div>}
-          {s.managed_by === "yaml" && <YamlNotice name={s.name} />}
+          {s.unavailable && (
+            <EmptyState
+              tone="red"
+              title="This workflow cannot run"
+              checked={`${s.unavailable}. Checked at every start against the registered tools, MCP servers and enabled plugins; runs are refused until it clears.`}
+            />
+          )}
+          {s.managed_by === "yaml" && <YamlNotice name={s.name} plugin={s.plugin} />}
           {s.legacy_steps > 0 && (
             <EmptyState
               tone="red"
@@ -287,11 +294,11 @@ function TopicSection({ s }: { s: WorkSchedule }) {
   );
 }
 
-function YamlNotice({ name }: { name: string }) {
+function YamlNotice({ name, plugin }: { name: string; plugin?: string | null }) {
   return (
     <EmptyState
       tone="yellow"
-      title={`Defined in workflows/${name}.yaml`}
+      title={`Defined in plugins/${plugin ?? "core"}/workflows/${name}.yaml`}
       checked="On every restart the file's definition (steps, description, schedule, inputs) replaces what is stored, so edits to those here last only until then. Turning it on or off, and Run now, are kept."
     />
   );

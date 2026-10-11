@@ -148,7 +148,11 @@ fn is_read_cypher(query: &str) -> bool {
 
 pub struct ContextBuilderService {
     neo4j: Option<Neo4jClient>,
+    /// The core bundle's `contexts/`: profiles load from it first, UI saves
+    /// write to it, and `boot.yaml` / `init.yaml` run from it.
     pub contexts_dir: PathBuf,
+    /// Other loaded bundles' `contexts/`, read after the core's (`plugins.rs`).
+    plugin_dirs: Vec<(String, PathBuf)>,
     profiles: Arc<RwLock<HashMap<String, ContextProfile>>>,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
@@ -180,13 +184,21 @@ impl ContextBuilderService {
         Self {
             neo4j,
             contexts_dir,
+            plugin_dirs: Vec::new(),
             profiles: Arc::new(RwLock::new(HashMap::new())),
             llm_config,
         }
     }
 
-    /// Read all `*.yaml` files from `contexts_dir` (excluding boot.yaml and init.yaml).
-    /// Returns the number of profiles loaded.
+    /// Also load the profiles in these bundles' `contexts/`, after the core's.
+    pub fn with_plugin_dirs(mut self, dirs: Vec<(String, PathBuf)>) -> Self {
+        self.plugin_dirs = dirs;
+        self
+    }
+
+    /// Read all `*.yaml` files from `contexts_dir` (excluding boot.yaml and
+    /// init.yaml), then each plugin's `contexts/`. A plugin profile whose name
+    /// an earlier bundle already declared is skipped. Returns the number loaded.
     pub async fn load_profiles(&self) -> anyhow::Result<usize> {
         let dir = &self.contexts_dir;
         if !dir.exists() {
@@ -216,10 +228,19 @@ impl ContextBuilderService {
             .collect();
         paths.sort();
 
+        let core_files = paths.len();
+        for (_, d) in &self.plugin_dirs {
+            let mut more: Vec<std::path::PathBuf> = std::fs::read_dir(d)
+                .map(|e| e.flatten().map(|e| e.path()).collect())
+                .unwrap_or_default();
+            more.sort();
+            paths.extend(more);
+        }
+
         let mut count = 0usize;
         let mut seen: std::collections::HashMap<String, std::path::PathBuf> =
             std::collections::HashMap::new();
-        for path in paths {
+        for (i, path) in paths.into_iter().enumerate() {
             if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
                 continue;
             }
@@ -231,6 +252,17 @@ impl ContextBuilderService {
             match std::fs::read_to_string(&path) {
                 Ok(text) => match serde_yaml::from_str::<ContextProfile>(&text) {
                     Ok(profile) => {
+                        if i >= core_files
+                            && let Some(first) = seen.get(&profile.name)
+                        {
+                            warn!(
+                                name = %profile.name,
+                                first = %first.display(),
+                                skipped = %path.display(),
+                                "A plugin declares a profile an earlier bundle already has — skipped"
+                            );
+                            continue;
+                        }
                         if let Some(prev) = seen.insert(profile.name.clone(), path.clone()) {
                             warn!(
                                 name = %profile.name,
@@ -681,7 +713,7 @@ mod tests {
     /// otherwise invisible until a persona silently goes missing.
     #[test]
     fn all_shipped_context_profiles_parse() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contexts");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
         let mut count = 0;
         for entry in std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
@@ -714,7 +746,7 @@ mod tests {
     #[test]
     fn the_paid_deep_diver_is_explicit_only() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contexts/deep-diver-hard.yaml");
+            .join("../../plugins/core/contexts/deep-diver-hard.yaml");
         let text = std::fs::read_to_string(path).unwrap();
         let profile: ContextProfile = serde_yaml::from_str(&text).unwrap();
         assert!(profile.spawnable && profile.explicit_only);
@@ -726,7 +758,7 @@ mod tests {
     #[test]
     fn schedule_author_is_spawnable() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contexts/schedule-author.yaml");
+            .join("../../plugins/core/contexts/schedule-author.yaml");
         let text = std::fs::read_to_string(path).unwrap();
         let profile: ContextProfile = serde_yaml::from_str(&text).unwrap();
         assert!(profile.spawnable, "schedule-author must be spawnable");

@@ -38,6 +38,8 @@ fn row_to_workflow(row: &neo4rs::Row) -> Result<Workflow, RepositoryError> {
         paused_reason: node.get("paused_reason").ok(),
         topic: node.get("topic").ok(),
         kind: node.get("kind").ok(),
+        plugin: node.get("plugin").ok(),
+        unavailable: node.get("unavailable").ok(),
     })
 }
 
@@ -56,6 +58,8 @@ pub struct WorkflowDef {
     pub is_default: bool,
     pub topic: Option<String>,
     pub kind: Option<String>,
+    /// The bundle a seed file came from; `None` for one created at runtime.
+    pub plugin: Option<String>,
 }
 
 /// A partial update; `None` leaves a field unchanged, `Some(None)` clears it.
@@ -155,6 +159,7 @@ impl Neo4jClient {
             .execute(query(
                 "MATCH (w:Workflow {enabled: true}) \
                  WHERE w.interval_seconds IS NOT NULL AND w.next_run_at <= datetime() \
+                   AND w.unavailable IS NULL \
                  RETURN w ORDER BY w.next_run_at ASC",
             ))
             .await?;
@@ -177,7 +182,7 @@ impl Neo4jClient {
              SET w.description = $description, w.interval_seconds = $interval, \
                  w.inputs = $inputs, w.checks = $checks, \
                  w.evaluation_rubric = $rubric, w.is_default = $is_default, \
-                 w.topic = $topic, w.kind = $kind, \
+                 w.topic = $topic, w.kind = $kind, w.plugin = $plugin, \
                  w.next_run_at = CASE WHEN $interval IS NULL THEN null ELSE datetime($now) END \
              RETURN w",
         )
@@ -194,7 +199,8 @@ impl Neo4jClient {
         .param("rubric", opt_str(def.evaluation_rubric.as_deref()))
         .param("is_default", def.is_default)
         .param("topic", opt_str(def.topic.as_deref()))
-        .param("kind", opt_str(def.kind.as_deref()));
+        .param("kind", opt_str(def.kind.as_deref()))
+        .param("plugin", opt_str(def.plugin.as_deref()));
         let rows = self.execute(q).await?;
         let wf = rows
             .first()
@@ -235,7 +241,7 @@ impl Neo4jClient {
                      w.interval_seconds = $interval, \
                      w.inputs = $inputs, w.checks = $checks, w.evaluation_rubric = $rubric, \
                      w.is_default = $is_default, w.topic = $topic, w.kind = $kind, \
-                     w.managed_by = 'yaml', w.updated_at = datetime($now)",
+                     w.plugin = $plugin, w.managed_by = 'yaml', w.updated_at = datetime($now)",
             )
             .param("id", existing.id.as_str())
             .param("steps", def.steps.as_str())
@@ -247,6 +253,7 @@ impl Neo4jClient {
             .param("is_default", def.is_default)
             .param("topic", opt_str(def.topic.as_deref()))
             .param("kind", opt_str(def.kind.as_deref()))
+            .param("plugin", opt_str(def.plugin.as_deref()))
             .param("now", now),
         )
         .await?;
@@ -254,6 +261,26 @@ impl Neo4jClient {
             self.clear_other_defaults(&existing.id).await?;
         }
         Ok(YamlSyncOutcome::Updated)
+    }
+
+    /// Record why a workflow cannot run (`None` = it can). Returns the reason
+    /// it had before, so a caller can tell a change from a repeat.
+    pub async fn set_workflow_unavailable(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<Option<String>, RepositoryError> {
+        let rows = self
+            .execute(
+                query(
+                    "MATCH (w:Workflow {id: $id}) WITH w, w.unavailable AS before \
+                     SET w.unavailable = $reason RETURN before",
+                )
+                .param("id", id)
+                .param("reason", opt_str(reason)),
+            )
+            .await?;
+        Ok(rows.first().and_then(|r| r.get::<String>("before").ok()))
     }
 
     async fn clear_other_defaults(&self, id: &str) -> Result<(), RepositoryError> {
