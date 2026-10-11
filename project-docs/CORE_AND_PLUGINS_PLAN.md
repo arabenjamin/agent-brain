@@ -1,6 +1,6 @@
 # Core and plugins plan
 
-Status: **Phase 2b (workflows) done 2026-10-10: chains and schedules are one `:Workflow` model, live graph migrated, verified live; 2c (stale rule notes, a week of runs compared) next. Phase 2a (named step outputs + step defaults) done 2026-10-10: deployed and verified live on daily-news (32 steps → 18, every step completed, claims linked to the stored brief). Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
+Status: **Phase 2c part 1 (rule dev notes rewritten for workflows) done 2026-10-10; part 2 (a week of runs compared) due from 2026-10-17. Phase 2b (workflows) done 2026-10-10: chains and schedules are one `:Workflow` model, live graph migrated, verified live. Phase 2a (named step outputs + step defaults) done 2026-10-10: deployed and verified live on daily-news (32 steps → 18, every step completed, claims linked to the stored brief). Phase 1 (docs into the graph) done 2026-10-10: deployed and verified live (650 notes seeded and embedded in ~2 min, search/get/write round trip, cleanup run, retrieval eval unchanged 0.880 / 0.800). Phase 0 done and deployed 2026-10-10 (`bb402f3`; cleanup script run, 43 tombstones, retrieval eval unchanged at recall@10 0.880 / MRR 0.800); Phases 1–6 planned.** Decided in discussion with the owner; the decisions are in §2 and are not to be re-opened without him.
 
 ## 1. Why
 
@@ -179,7 +179,7 @@ Agents (`run_agent` + a profile) are a third way, where the model chooses the st
 - Two fixes found live: a run got a second `update_task` when its workflow closes itself before a cleanup step (now only appended when no step closes the run's own task); an unknown workflow name now lists the enabled ones.
 - Behaviour to know: `diagnose` keeps its confidence guardrail, so every diagnosis run stops as blocked for review, as dead-job tasks already did. Repeated-tool-failure tasks, which went to the retired `meta-learn` chain, now land there too.
 
-**Phase 2c (next).** 24 `rule` dev notes still describe chains and schedules (ownership, externalized chains, evaluator loop, curiosity engine, media, HBI); rewrite them against `workflows/model`. Then compare a week of runs before and after per workflow (same tool sequence, same success rate), the plan's exit test.
+**Phase 2c.** Part 1 done 2026-10-10: the 25 `rule` dev notes that still described chains and schedules (ownership, externalized chains, evaluator and critic, curiosity engine, media, HBI, self-improvement loop, architecture) are rewritten against `workflows/model`, keeping their ids and their former-doc `source` (a `dev_docs write` that replaces a note now keeps its source, so a cited former doc stays searchable by name). History notes are left as written: they record what was true then. Part 2, from 2026-10-17: compare a week of runs before and after per workflow (same tool sequence, same success rate), the plan's exit test.
 
 **The model.** Three separate things:
 

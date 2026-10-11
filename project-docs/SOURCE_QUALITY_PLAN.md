@@ -33,7 +33,7 @@ vetted list produces claims that get checked and mostly hold up.
 
 ### "Established knowledge" written from unrestricted search
 
-The curiosity engine (`workflows/fill-knowledge-gap.yaml`, `chains/learn.yaml`)
+The curiosity engine (`workflows/fill-knowledge-gap.yaml`, and `chains/learn.yaml` until it was retired in Phase 2b)
 wrote **~800 `semantic` notes** in 30 days — the type that means *the brain
 established this* — from searches with no source list. **28% cite no URL.**
 Retrieval does not label `semantic` notes, so nothing downstream can tell them
@@ -44,7 +44,7 @@ from vetted knowledge.
 - `daily-news.yaml` — 7 searches, `engine: exa`, no list (Detroit/Michigan
   queries included, though `michigan-news` exists).
 - `off-grid-networking-monitor.yaml` — 3 searches, no list exists for the beat.
-- `fill-knowledge-gap.yaml`, `learn.yaml` — `{{goal_topic}}`, any topic.
+- `fill-knowledge-gap.yaml` — `{{inputs.topic}}`, any topic (`learn.yaml` is retired).
 - `discover-media-sources.yaml` — unrestricted by design (discovery).
 - `weekly-news.yaml` — restricted, but by inline `site:` lists, not SourceLists.
 

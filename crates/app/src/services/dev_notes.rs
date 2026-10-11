@@ -189,6 +189,13 @@ impl DevNotes {
         if n.date.is_empty() {
             n.date = crate::services::clock::today();
         }
+        // A rewrite keeps where the note came from: the former doc name in
+        // `source` is what a cited `HBI_REDESIGN_PLAN.md §9` is searched by.
+        if let Some(old) = self.get(&n.id).await?
+            && !old.source.is_empty()
+        {
+            n.source = old.source;
+        }
         self.upsert(&n, true).await?;
         if let Some(v) = self.embed(&n).await {
             self.set_embedding(&n.id, v).await?;
