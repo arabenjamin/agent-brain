@@ -16,37 +16,53 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::repository::{MediaRecord, Neo4jClient, TelemetryClient};
-use crate::services::MediaService;
-use crate::services::media::{Medium, is_unextractable, same_site};
-use crate::services::traits::{KnowledgeStore, LlmProvider};
-use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
+use crate::service::{MediaService, Medium, is_unextractable, same_site};
+use crate::store::{MediaRecord, Store};
+use agent_brain_plugin_api::{
+    Knowledge, Llm, PluginContext, Skill, Telemetry, ToolCallResult, ToolDefinition, Workflows,
+    parse_args,
+};
 
 pub struct MediaSkill {
     svc: Arc<MediaService>,
-    llm: Arc<dyn LlmProvider>,
-    neo4j: Neo4jClient,
+    llm: Arc<dyn Llm>,
+    store: Store,
     /// Used only by the `store: true` path (direct calls); chains store via
     /// their own `store_note` step.
-    knowledge: Option<Arc<dyn KnowledgeStore>>,
-    telemetry: Option<TelemetryClient>,
+    knowledge: Option<Arc<dyn Knowledge>>,
+    telemetry: Option<Arc<dyn Telemetry>>,
+    workflows: Option<Arc<dyn Workflows>>,
+    ctx: PluginContext,
 }
 
 impl MediaSkill {
-    pub fn new(
-        svc: Arc<MediaService>,
-        llm: Arc<dyn LlmProvider>,
-        neo4j: Neo4jClient,
-        knowledge: Option<Arc<dyn KnowledgeStore>>,
-        telemetry: Option<TelemetryClient>,
-    ) -> Self {
-        Self {
+    /// `None` when the host gave no graph or LLM: the pack cannot work.
+    pub fn new(svc: Arc<MediaService>, ctx: &PluginContext) -> Option<Self> {
+        Some(Self {
             svc,
-            llm,
-            neo4j,
-            knowledge,
-            telemetry,
+            llm: ctx.llm.clone()?,
+            store: Store::new(ctx.graph.clone()?),
+            knowledge: ctx.knowledge.clone(),
+            telemetry: ctx.telemetry.clone(),
+            workflows: ctx.workflows.clone(),
+            ctx: ctx.clone(),
+        })
+    }
+
+    /// Start a workflow run through the host; `Err` says why not.
+    async fn start_run(
+        &self,
+        workflow: &str,
+        inputs: &serde_json::Map<String, Value>,
+        goal: &str,
+        context: &str,
+    ) -> Result<String, String> {
+        match &self.workflows {
+            Some(w) => {
+                w.start_run(workflow, inputs, Some(goal), Some(context))
+                    .await
+            }
+            None => Err("the host gave no workflow runner".into()),
         }
     }
 
@@ -188,8 +204,7 @@ impl MediaSkill {
             Ok(t) => t,
             Err(e) => {
                 if let Some(ref t) = self.telemetry {
-                    let _ =
-                        t.log_knowledge_gap(&url, Some("ingest_media"), "transcript_unavailable");
+                    t.log_gap(&url, Some("ingest_media"), "transcript_unavailable");
                 }
                 return ToolCallResult::error(format!("Could not fetch transcript: {e}"));
             }
@@ -204,7 +219,7 @@ impl MediaSkill {
         }
 
         // Dedup: skip the expensive summarize if already ingested.
-        if !input.force.unwrap_or(false) && self.neo4j.media_exists(&meta.id).await.unwrap_or(false)
+        if !input.force.unwrap_or(false) && self.store.media_exists(&meta.id).await.unwrap_or(false)
         {
             return ToolCallResult::success_json(json!({
                 "already_ingested": true,
@@ -236,15 +251,15 @@ impl MediaSkill {
             transcript_source: source.clone(),
             source_media_name: input.source_media_name.clone().unwrap_or_default(),
         };
-        if let Err(e) = self.neo4j.upsert_media(&record).await {
+        if let Err(e) = self.store.upsert_media(&record).await {
             warn!(error = %e, "ingest_media: failed to upsert :Media node");
         }
         match input.source_media_name.as_deref().filter(|s| !s.is_empty()) {
             Some(sm) => {
-                let _ = self.neo4j.link_media_from_source(&meta.id, sm).await;
+                let _ = self.store.link_media_from_source(&meta.id, sm).await;
             }
             None => {
-                if let Err(e) = self.neo4j.link_media_by_channel(&meta.id).await {
+                if let Err(e) = self.store.link_media_by_channel(&meta.id).await {
                     warn!(error = %e, "ingest_media: failed to link :Media to its source");
                 }
             }
@@ -278,13 +293,10 @@ impl MediaSkill {
                 meta.title, meta.channel, meta.published_at, meta.url, summary, concept_lines
             );
             let sc = input.source_context.as_deref().unwrap_or("video_learning");
-            match ks
-                .store_note(&content, Some("semantic"), Some(sc), None, None)
-                .await
-            {
-                Ok((note_id, _)) => {
+            match ks.store_note(&content, "semantic", Some(sc)).await {
+                Ok(note_id) => {
                     let _ = self
-                        .neo4j
+                        .store
                         .link_note_summarizes_media(&note_id, &meta.id)
                         .await;
                     out["note_id"] = json!(note_id);
@@ -306,7 +318,7 @@ impl MediaSkill {
             .unwrap_or_else(|| input.url.trim().to_string());
         let id = MediaService::article_id(&url);
 
-        if !input.force.unwrap_or(false) && self.neo4j.media_exists(&id).await.unwrap_or(false) {
+        if !input.force.unwrap_or(false) && self.store.media_exists(&id).await.unwrap_or(false) {
             return ToolCallResult::success_json(json!({
                 "already_ingested": true,
                 "article_id": id,
@@ -318,7 +330,7 @@ impl MediaSkill {
         // The feed that surfaced it, by site: an article's link and its feed
         // share a host (www.bellingcat.com/feed/ → www.bellingcat.com/news/…).
         let source_name = self
-            .neo4j
+            .store
             .list_media_sources(false)
             .await
             .unwrap_or_default()
@@ -344,13 +356,12 @@ impl MediaSkill {
                         transcript_source: "unextractable".to_string(),
                         source_media_name: source_name.clone().unwrap_or_default(),
                     };
-                    if let Err(e) = self.neo4j.upsert_media(&record).await {
+                    if let Err(e) = self.store.upsert_media(&record).await {
                         warn!(error = %e, "ingest_article: failed to record unextractable page");
                     }
                 }
                 if let Some(ref t) = self.telemetry {
-                    let _ =
-                        t.log_knowledge_gap(&url, Some("ingest_article"), "article_unavailable");
+                    t.log_gap(&url, Some("ingest_article"), "article_unavailable");
                 }
                 return ToolCallResult::error(format!("Could not read article: {msg}"));
             }
@@ -376,11 +387,11 @@ impl MediaSkill {
             transcript_source: "article".to_string(),
             source_media_name: source_name.clone().unwrap_or_default(),
         };
-        if let Err(e) = self.neo4j.upsert_media(&record).await {
+        if let Err(e) = self.store.upsert_media(&record).await {
             warn!(error = %e, "ingest_article: failed to upsert :Media node");
         }
         if let Some(ref sm) = source_name {
-            let _ = self.neo4j.link_media_from_source(&meta.id, sm).await;
+            let _ = self.store.link_media_from_source(&meta.id, sm).await;
         }
 
         ToolCallResult::success_json(json!({
@@ -403,7 +414,7 @@ impl MediaSkill {
                 "message": "Media watch disabled (set MEDIA_WATCH_ENABLED=true to enable)."
             }));
         }
-        let sources = match self.neo4j.list_media_sources(true).await {
+        let sources = match self.store.list_media_sources(true).await {
             Ok(s) => s,
             Err(e) => return ToolCallResult::error(format!("Could not list media sources: {e}")),
         };
@@ -442,7 +453,7 @@ impl MediaSkill {
                     format!("watch video: {}", item.url)
                 };
                 if self
-                    .neo4j
+                    .store
                     .media_exists(&item.video_id)
                     .await
                     .unwrap_or(false)
@@ -450,7 +461,7 @@ impl MediaSkill {
                     continue;
                 }
                 if self
-                    .neo4j
+                    .store
                     .open_task_exists_for_goal(&goal)
                     .await
                     .unwrap_or(false)
@@ -509,7 +520,7 @@ impl MediaSkill {
                                 transcript_source: "skipped_too_long".to_string(),
                                 source_media_name: ms.name.clone(),
                             };
-                            if let Err(e) = self.neo4j.upsert_media(&record).await {
+                            if let Err(e) = self.store.upsert_media(&record).await {
                                 warn!(error = %e,
                                     "poll_media_sources: failed to record skipped :Media node");
                             }
@@ -519,7 +530,7 @@ impl MediaSkill {
                             continue;
                         }
                         Ok(_) => {} // within cap — fall through to create the Task
-                        Err(e) if crate::services::media::is_not_yet_available(&e.to_string()) => {
+                        Err(e) if crate::service::is_not_yet_available(&e.to_string()) => {
                             // A scheduled premiere / upcoming live event: yt-dlp
                             // refuses it outright, so a task would fail 3× and
                             // dead-letter (2 such on 2026-09-28 / 10-01). Like a
@@ -550,16 +561,7 @@ impl MediaSkill {
                     .as_object()
                     .cloned()
                     .unwrap_or_default();
-                match crate::services::workflows::start_run(
-                    &self.neo4j,
-                    Some(workflow),
-                    &inputs,
-                    Some(&goal),
-                    Some(&ctx),
-                    None,
-                )
-                .await
-                {
+                match self.start_run(workflow, &inputs, &goal, &ctx).await {
                     Ok(_) => {
                         created += 1;
                         per_source += 1;
@@ -605,7 +607,7 @@ impl MediaSkill {
 
         // Existing sources → dedup set (names + refs, lowercased).
         let existing = self
-            .neo4j
+            .store
             .list_media_sources(false)
             .await
             .unwrap_or_default();
@@ -733,7 +735,7 @@ impl MediaSkill {
             let name = unique_slug(display_name, &taken);
             let description = truncate(reason, 200);
             match self
-                .neo4j
+                .store
                 .upsert_media_source_runtime(&name, kind, &ref_val, &description, false)
                 .await
             {
@@ -773,7 +775,7 @@ impl MediaSkill {
         };
         let action = input.action.as_deref().unwrap_or("list");
         match action {
-            "list" => match self.neo4j.list_media_sources(false).await {
+            "list" => match self.store.list_media_sources(false).await {
                 Ok(sources) => {
                     let arr: Vec<Value> = sources
                         .iter()
@@ -796,7 +798,7 @@ impl MediaSkill {
                 let Some(name) = input.name.as_deref() else {
                     return ToolCallResult::error("delete requires 'name'");
                 };
-                match self.neo4j.delete_media_source(name).await {
+                match self.store.delete_media_source(name).await {
                     Ok(()) => ToolCallResult::success_json(json!({"deleted": name})),
                     Err(e) => ToolCallResult::error(format!("delete failed: {e}")),
                 }
@@ -812,7 +814,7 @@ impl MediaSkill {
                 let description = input.description.as_deref().unwrap_or_default();
                 let active = input.active.unwrap_or(true);
                 match self
-                    .neo4j
+                    .store
                     .upsert_media_source_runtime(name, kind, reference, description, active)
                     .await
                 {
@@ -845,9 +847,9 @@ impl MediaSkill {
         // A daily ceiling across every source: 214 gap chains in the week to
         // 2026-10-01, ~30/day, each a full search+reason run.
         let daily_max = gap_tasks_daily_max();
-        let day_start = crate::services::clock::local_day_start_utc().to_rfc3339();
+        let day_start = self.ctx.local_day_start_utc().to_rfc3339();
         let mut today = self
-            .neo4j
+            .store
             .count_tasks_with_goal_prefix_since("fill knowledge gap:", &day_start)
             .await
             .unwrap_or(0);
@@ -860,7 +862,7 @@ impl MediaSkill {
             let concept = truncate(concept, 160);
             let goal = format!("fill knowledge gap: {concept}");
             if self
-                .neo4j
+                .store
                 .open_task_exists_for_goal(&goal)
                 .await
                 .unwrap_or(false)
@@ -871,15 +873,14 @@ impl MediaSkill {
                 .as_object()
                 .cloned()
                 .unwrap_or_default();
-            match crate::services::workflows::start_run(
-                &self.neo4j,
-                Some("fill-knowledge-gap"),
-                &inputs,
-                Some(&goal),
-                Some("Auto-generated from a video-learning FOLLOW UP concept."),
-                None,
-            )
-            .await
+            match self
+                .start_run(
+                    "fill-knowledge-gap",
+                    &inputs,
+                    &goal,
+                    "Auto-generated from a video-learning FOLLOW UP concept.",
+                )
+                .await
             {
                 Ok(_) => {
                     created += 1;

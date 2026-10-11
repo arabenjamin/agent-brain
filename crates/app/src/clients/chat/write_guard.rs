@@ -9,12 +9,12 @@ use super::*;
 /// the literal sense but say nothing about the *world*, and the failure this
 /// guards against is a note about an external technology written from prior
 /// alone. Graph reads count because "what do we already know" is a legitimate
-/// grounding for a `semantic` note that consolidates stored knowledge.
+/// grounding for a `semantic` note that consolidates stored knowledge. Plugins
+/// add theirs through `Plugin::retrieval_tools` (media: `ingest_media`).
 pub(super) const RETRIEVAL_TOOLS: &[&str] = &[
     "search_web",
     "search_notes",
     "neo4j_query",
-    "ingest_media",
     "http_request",
     "get_search_usage",
     "execute_code",
@@ -148,7 +148,10 @@ impl TurnWriteGuard {
     /// Mark retrieval as having happened. Called *after* dispatch so a tool
     /// cannot ground the very call that invoked it.
     pub(super) fn observe(&mut self, tool: &str, success: bool) {
-        if success && RETRIEVAL_TOOLS.contains(&tool) {
+        if success
+            && (RETRIEVAL_TOOLS.contains(&tool)
+                || crate::services::plugins::plugin_retrieval_tools().contains(&tool))
+        {
             self.retrieval_ran = true;
         }
     }

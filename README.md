@@ -85,6 +85,10 @@ also names tools that were removed and what replaced them. A guide by group:
 ### Plugins
 `manage_plugin` (drafts a bundle into `PLUGINS_RUNTIME_DIR`; it loads only once you add it to `PLUGINS_ENABLED`). Declared tools (a bundle's `tools/*.yaml`, read-only Cypher) such as `list_tasks`
 
+Plugin tools (each from its bundle in `plugins/`, on by default in compose):
+- `media`: `ingest_media`, `ingest_article`, `poll_media_sources`, `manage_media_source`, `discover_media_sources`, `spawn_gap_tasks`
+- `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
+
 ### HTTP / API / MCP
 `http_request`, `define_api_context`, `ingest_api`, `mcp_list_tools` (no `server` lists the servers), `mcp_call`
 

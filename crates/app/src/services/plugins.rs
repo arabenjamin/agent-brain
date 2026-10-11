@@ -377,7 +377,44 @@ fn core_only_warnings(root: &Path, name: &str) -> Vec<String> {
 /// The plugin crates compiled into this binary. Each is instantiated only
 /// when its bundle loaded.
 pub fn compiled() -> Vec<Arc<dyn Plugin>> {
-    vec![Arc::new(agent_brain_plugin_osint_data::OsintData)]
+    vec![
+        Arc::new(agent_brain_plugin_osint_data::OsintData),
+        Arc::new(agent_brain_plugin_media::Media),
+    ]
+}
+
+/// A plugin whose tools were accepted, with its context, for `start`.
+pub type Accepted = (Arc<dyn Plugin>, PluginContext);
+
+fn retrieval_cell() -> &'static RwLock<Vec<&'static str>> {
+    static C: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
+    C.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Tools the accepted plugins say count as retrieval (the chat write guard).
+pub fn plugin_retrieval_tools() -> Vec<&'static str> {
+    retrieval_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Run every accepted plugin's `start` hook (schema, seeds). A failure is
+/// logged and recorded on the plugin's code status; its tools stay.
+pub async fn start_plugins(accepted: &[Accepted]) {
+    for (plugin, ctx) in accepted {
+        if let Err(e) = plugin.start(ctx).await {
+            let error = format!("start failed: {e}");
+            tracing::error!(plugin = %plugin.name(), "{error}");
+            if let Some(st) = code_cell()
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(plugin.name())
+            {
+                st.error = Some(error);
+            }
+        }
+    }
 }
 
 /// What a bundle's Rust code contributed, or why it contributed nothing.
@@ -428,7 +465,10 @@ pub fn plugin_skills(
     compiled: &[Arc<dyn Plugin>],
     taken: &[String],
     env: agent_brain_plugin_api::EnvFn,
-) -> Vec<Arc<dyn agent_brain_plugin_api::Skill>> {
+    host: &crate::services::plugin_host::Host,
+) -> (Vec<Arc<dyn agent_brain_plugin_api::Skill>>, Vec<Accepted>) {
+    let mut accepted: Vec<Accepted> = Vec::new();
+    let mut retrieval: Vec<&'static str> = Vec::new();
     let mut claimed: Vec<String> = taken.to_vec();
     let mut status: HashMap<String, CodeStatus> = HashMap::new();
     let mut out: Vec<Arc<dyn agent_brain_plugin_api::Skill>> = Vec::new();
@@ -448,7 +488,7 @@ pub fn plugin_skills(
             }
             continue;
         };
-        let ctx = PluginContext::new(&b.name, Arc::clone(&env));
+        let ctx = host.context(&b.name, Arc::clone(&env));
         let skills = plugin.tools(&ctx);
         let names: Vec<String> = skills
             .iter()
@@ -489,12 +529,15 @@ pub fn plugin_skills(
             },
         );
         out.extend(skills);
+        retrieval.extend(plugin.retrieval_tools());
+        accepted.push((Arc::clone(plugin), ctx));
     }
     *code_cell().write().unwrap_or_else(|e| e.into_inner()) = status;
-    out
+    *retrieval_cell().write().unwrap_or_else(|e| e.into_inner()) = retrieval;
+    (out, accepted)
 }
 
-// ── ON-CREATE seeds: source lists, media sources, MCP servers ──────────────
+// ── ON-CREATE seeds: source lists, MCP servers, API contexts ───────────────
 //
 // The graph owns each of these after first creation, so runtime edits
 // survive restarts. Each node records the plugin that seeded it.
@@ -554,28 +597,6 @@ pub(crate) struct ApiContextFile {
     env_props: std::collections::BTreeMap<String, String>,
 }
 
-/// A group of watched sources (`sources-media/*.yaml`).
-#[derive(Debug, Deserialize)]
-struct MediaSourceGroupFile {
-    name: String,
-    #[serde(default)]
-    description: String,
-    sources: Vec<MediaSourceEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MediaSourceEntry {
-    #[serde(default)]
-    name: Option<String>,
-    kind: String,
-    #[serde(rename = "ref")]
-    reference: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default = "yes")]
-    active: bool,
-}
-
 fn parse<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Option<T> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -593,9 +614,18 @@ fn parse<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Option<T> {
     }
 }
 
-/// Check one ON-CREATE seed file (`sources`, `sources-media`, `mcp-servers`,
-/// `apis`) as its seeder would parse it. `Err` says what is wrong.
+/// Check one ON-CREATE seed file (`sources`, `mcp-servers`, `apis`) as its
+/// seeder would parse it; a kind a compiled plugin owns (`sources-media`)
+/// goes to that plugin. `Err` says what is wrong.
 pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
+    // A kind a compiled plugin owns (`Plugin::seed_kinds`) is checked by it.
+    if let Some(p) = compiled()
+        .into_iter()
+        .find(|p| p.seed_kinds().contains(&kind))
+    {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+        return p.check_seed(kind, &text);
+    }
     fn strict<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
         serde_yaml::from_str(&text).map_err(|e| format!("YAML: {e}"))
@@ -605,12 +635,6 @@ pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
             let l: SourceListFile = strict(path)?;
             if l.domains.is_empty() {
                 return Err("a source list needs at least one domain".into());
-            }
-        }
-        "sources-media" => {
-            let g: MediaSourceGroupFile = strict(path)?;
-            if g.sources.is_empty() {
-                return Err("a media source group needs at least one source".into());
             }
         }
         "mcp-servers" => {
@@ -637,8 +661,8 @@ pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Seed source lists, media sources, MCP servers and API contexts from every
-/// loaded bundle. Returns how many nodes were created.
+/// Seed source lists, MCP servers and API contexts from every loaded bundle
+/// (`sources-media/` is the media plugin's: `Plugin::start`). Returns how many nodes were created.
 pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
     let mut created = 0usize;
     for (plugin, path) in plugins.files("sources", "yaml") {
@@ -686,33 +710,6 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
                 }
             }
             Err(e) => warn!(name = %s.name, error = %e, "seed mcp-servers: failed"),
-        }
-    }
-    for (plugin, path) in plugins.files("sources-media", "yaml") {
-        let Some(g) = parse::<MediaSourceGroupFile>(&path, "seed sources-media") else {
-            continue;
-        };
-        for s in &g.sources {
-            let name = s
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("{}-{}", g.name, s.reference));
-            let description = s
-                .description
-                .clone()
-                .unwrap_or_else(|| g.description.clone());
-            match neo4j
-                .seed_media_source_if_absent(&name, &s.kind, &s.reference, &description, s.active)
-                .await
-            {
-                Ok(true) => {
-                    stamp(neo4j, "MediaSource", &name, &plugin).await;
-                    info!(%name, kind = %s.kind, %plugin, "Seeded MediaSource (graph-owned from now on)");
-                    created += 1;
-                }
-                Ok(false) => {}
-                Err(e) => warn!(%name, error = %e, "seed sources-media: failed"),
-            }
         }
     }
     for (plugin, path) in plugins.files("apis", "yaml") {
@@ -1084,11 +1081,12 @@ mod tests {
             Arc::new(Fake("twice", vec!["good_tool"])),
             Arc::new(Fake("idle", vec!["idle_tool"])),
         ];
-        let skills = plugin_skills(
+        let (skills, _) = plugin_skills(
             &p,
             &compiled,
             &["search_web".into()],
             Arc::new(|_: &str| None),
+            &crate::services::plugin_host::Host::default(),
         );
         let names: Vec<String> = skills
             .iter()

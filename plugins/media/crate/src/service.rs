@@ -25,7 +25,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::{debug, warn};
 
-use crate::services::traits::LlmProvider;
+use agent_brain_plugin_api::Llm as LlmProvider;
 
 /// A recent item discovered from a channel/playlist/podcast feed.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -109,7 +109,7 @@ pub struct MediaService {
     /// Transcript window size (chars) for the map pass.
     window_chars: usize,
     /// Whisper backend for caption-less media; `None` disables the fallback.
-    transcriber: Option<Arc<dyn crate::services::transcribe::Transcriber>>,
+    transcriber: Option<Arc<dyn crate::transcribe::Transcriber>>,
     /// Scratch dir for yt-dlp subtitle/audio downloads (cleaned per call).
     media_dir: std::path::PathBuf,
     http: reqwest::Client,
@@ -127,7 +127,7 @@ impl MediaService {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10800),
             window_chars: 6000,
-            transcriber: crate::services::transcribe::from_env(),
+            transcriber: crate::transcribe::from_env(),
             media_dir: std::env::var("MEDIA_DIR")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::env::temp_dir()),
@@ -214,7 +214,7 @@ impl MediaService {
     fn require_transcriber(
         &self,
         what: &str,
-    ) -> anyhow::Result<&Arc<dyn crate::services::transcribe::Transcriber>> {
+    ) -> anyhow::Result<&Arc<dyn crate::transcribe::Transcriber>> {
         self.transcriber.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "{what} requires Whisper transcription, which is disabled \

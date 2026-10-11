@@ -1,0 +1,6 @@
+# Watch and read: videos, podcasts and articles become summaries with key
+# concepts; a watchlist of channels and feeds drives the learning workflows.
+# Rust code in crate/ (six tools); owns the sources-media/ seed kind.
+name: media
+version: 1
+description: "Media learning: ingest_media / ingest_article (yt-dlp captions or Whisper, summarised in-tool), the :MediaSource watchlist (manage_media_source, poll_media_sources, discover_media_sources), spawn_gap_tasks, and the video-learning, article-learning, media-watch and discover-media-sources workflows."

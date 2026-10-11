@@ -52,11 +52,6 @@ impl Neo4jClient {
             "CREATE CONSTRAINT note_id IF NOT EXISTS FOR (n:Note) REQUIRE n.id IS UNIQUE",
             "CREATE CONSTRAINT task_id IF NOT EXISTS FOR (t:Task) REQUIRE t.id IS UNIQUE",
             "CREATE CONSTRAINT dev_note_id IF NOT EXISTS FOR (d:DevNote) REQUIRE d.id IS UNIQUE",
-            // Media-learning: the watchlist name and the video/episode dedup key.
-            "CREATE CONSTRAINT media_source_name IF NOT EXISTS FOR (m:MediaSource) REQUIRE m.name IS UNIQUE",
-            // :Media.id is the platform video/episode id — the dedup key checked before every
-            // ingest and used to filter already-seen items out of list_channel_videos.
-            "CREATE CONSTRAINT media_id IF NOT EXISTS FOR (m:Media) REQUIRE m.id IS UNIQUE",
             // Note: ModelSpec nodes removed — model registry now lives in DuckDB model_registry table
         ];
 
@@ -95,13 +90,7 @@ impl Neo4jClient {
             // AgentNotification index
             "CREATE INDEX agent_notification_read IF NOT EXISTS FOR (n:AgentNotification) ON (n.read)",
             "CREATE INDEX agent_notification_created IF NOT EXISTS FOR (n:AgentNotification) ON (n.created_at)",
-            // Media-learning indexes.
-            // poll_media_sources scans active watchlist entries every tick.
-            "CREATE INDEX media_source_active IF NOT EXISTS FOR (m:MediaSource) ON (m.active)",
-            // Per-channel listing / "what have we ingested from this channel".
-            "CREATE INDEX media_channel_idx IF NOT EXISTS FOR (m:Media) ON (m.channel_id)",
-            // Recency queries for the watch loop and reporting.
-            "CREATE INDEX media_ingested_idx IF NOT EXISTS FOR (m:Media) ON (m.ingested_at)",
+            // Media constraints and indexes: the media plugin's `start`.
             // ingest_api: "what endpoints does this API expose" lookups.
             "CREATE INDEX api_endpoint_api IF NOT EXISTS FOR (e:ApiEndpoint) ON (e.api_name)",
             // Note: model_spec_provider index removed — model registry lives in DuckDB

@@ -27,15 +27,13 @@ use crate::mcp::tools::{ToolHandler, ToolRegistry};
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::queue::QueueService;
 use crate::services::{
-    AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, MediaService, SharedLlm,
-    SnapshotService,
+    AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService,
 };
 use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
     codebase::CodebaseSkill, exec::ExecSkill, http::HttpSkill, knowledge::KnowledgeSkill,
-    mcp_client::McpClientSkill, media::MediaSkill, model::ModelSkill, query::QuerySkill,
-    scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
-    working_memory::WorkingMemorySkill,
+    mcp_client::McpClientSkill, model::ModelSkill, query::QuerySkill, scheduler::SchedulerSkill,
+    search::SearchSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -660,18 +658,6 @@ impl BrainCore {
             skills.push(Arc::new(exec_skill));
         }
 
-        // Video/podcast ingestion + watchlist (yt-dlp captions, map-reduce
-        // summarization inside the tool).
-        if let Some(neo4j) = &self.storage.neo4j {
-            skills.push(Arc::new(MediaSkill::new(
-                Arc::new(MediaService::from_env()),
-                Arc::clone(&llm),
-                neo4j.clone(),
-                knowledge.clone(),
-                self.storage.telemetry.clone(),
-            )));
-        }
-
         skills.push(Arc::new(CodebaseSkill::new(
             self.codebase.codebase_dir.clone(),
             self.codebase.workspace_dir.clone(),
@@ -733,20 +719,29 @@ impl BrainCore {
 
         // In-process plugins whose bundles loaded (services/plugins.rs). They
         // come after every core skill and before the declared tools; a plugin that
-        // would take a name already registered is refused whole.
-        {
+        // would take a name already registered is refused whole. Each gets the
+        // host's services through its context (services/plugin_host.rs).
+        let accepted_plugins = {
             let taken: Vec<String> = skills
                 .iter()
                 .flat_map(|s| s.tools().into_iter().map(|t| t.name))
                 .collect();
-            let plugin_skills = crate::services::plugins::plugin_skills(
+            let host = crate::services::plugin_host::Host {
+                neo4j: self.storage.neo4j.clone(),
+                knowledge: knowledge.clone(),
+                llm: Some(Arc::clone(&llm)),
+                telemetry: self.storage.telemetry.clone(),
+            };
+            let (plugin_skills, accepted) = crate::services::plugins::plugin_skills(
                 &crate::services::plugins::Plugins::global(),
                 &crate::services::plugins::compiled(),
                 &taken,
                 Arc::new(|k: &str| std::env::var(k).ok()),
+                &host,
             );
             skills.extend(plugin_skills);
-        }
+            accepted
+        };
 
         // Declared tools last (skills/bundle_tools.rs): one can never shadow a built-in.
         {
@@ -790,6 +785,9 @@ impl BrainCore {
             tool_schemas.insert(t.name.clone(), t.input_schema.clone());
         }
         drop(registry);
+        // Plugins' start hooks (their schema, their seeds), now that their
+        // tools are registered.
+        crate::services::plugins::start_plugins(&accepted_plugins).await;
         // A workflow naming a tool, MCP server or plugin that is not here is
         // marked unavailable: refused at dispatch, skipped by its timer,
         // counted in the Feed. Never run broken, never silently dropped.

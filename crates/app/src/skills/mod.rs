@@ -8,7 +8,6 @@ pub mod exec;
 pub mod http;
 pub mod knowledge;
 pub mod mcp_client;
-pub mod media;
 pub mod model;
 pub mod plugin_manager;
 pub mod query;
