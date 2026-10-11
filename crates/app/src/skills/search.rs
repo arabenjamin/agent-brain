@@ -73,6 +73,51 @@ fn classify_search_error(error_text: &str) -> &'static str {
     }
 }
 
+/// `search_web`'s `engine` property, from the loaded engine files: their
+/// names as the `enum`, and the ladder the call will actually walk
+/// (`SEARCH_ENGINE_ORDER`, else the files' `rank` order). Hand-written, the
+/// list and the order went stale whenever an engine or the order changed.
+/// No files loaded (a test outside the repo root): no `enum`, since an empty
+/// one would reject every value.
+fn engine_property() -> Value {
+    let engines = search_engines::engines();
+    let configured: Vec<String> = std::env::var("SEARCH_ENGINE_ORDER")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let ladder = if configured.is_empty() {
+        search_engines::default_order(engines)
+    } else {
+        configured
+    };
+    let named_only: Vec<&str> = engines
+        .iter()
+        .map(|e| e.name.as_str())
+        .filter(|n| !ladder.iter().any(|l| l == n))
+        .collect();
+    let mut description = format!(
+        "Preferred engine, tried first. Omit to use the ladder ({}); engines without a key \
+         are skipped, and the rest are still used as fallbacks.",
+        ladder.join(" → ")
+    );
+    if !named_only.is_empty() {
+        description.push_str(&format!(
+            " Only when named here: {}.",
+            named_only.join(", ")
+        ));
+    }
+    if engines.iter().any(|e| e.name == "google_news") {
+        description.push_str(" 'google_news' is SerpApi's Google News engine (news only).");
+    }
+    let mut prop = json!({ "type": "string", "description": description });
+    if !engines.is_empty() {
+        prop["enum"] = json!(engines.iter().map(|e| e.name.as_str()).collect::<Vec<_>>());
+    }
+    prop
+}
+
 /// Build the ordered engine ladder. Pure so the ordering rules are testable
 /// without a telemetry database or a live environment.
 ///
@@ -206,15 +251,7 @@ impl SearchSkill {
                         "type": "string",
                         "description": "The search query"
                     },
-                    "engine": {
-                        "type": "string",
-                        "description": "Preferred engine, tried first. Omit to use the configured \
-                                        ladder (default: exa → tavily → serper → serpapi → google → searxng → brave; currents and webz only when named here; \
-                                        engines without a key are skipped). \
-                                        Remaining engines are still used as fallbacks. \
-                                        'google_news' is SerpApi's Google News engine (news only).",
-                        "enum": ["searxng", "tavily", "exa", "serper", "serpapi", "brave", "google", "google_news", "currents", "webz"]
-                    },
+                    "engine": engine_property(),
                     "count": {
                         "type": "integer",
                         "description": "Number of results to return (default: 5, max: 20)"
@@ -1175,6 +1212,17 @@ mod tests {
 
     fn order_with_default(c: &str, r: Option<&str>, e: &[String]) -> Vec<String> {
         order_engines(c, &test_default(), r, e)
+    }
+
+    /// Without engine files (this test runs outside the repo root) the property
+    /// stays valid: no `enum`, which would otherwise reject every value.
+    #[test]
+    fn engine_property_never_emits_an_empty_enum() {
+        let p = engine_property();
+        assert_eq!(p["type"], "string");
+        if let Some(e) = p.get("enum") {
+            assert!(!e.as_array().unwrap().is_empty());
+        }
     }
 
     fn v(items: &[&str]) -> Vec<String> {

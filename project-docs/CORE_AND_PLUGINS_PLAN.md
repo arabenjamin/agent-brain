@@ -445,6 +445,10 @@ Rule: `dev_docs get plugins/api`.
   - **Not done:** converting hand-mapped rows (`row.get::<String>("x").unwrap_or_default()`, ~290 lines) to `row.to::<Value>()` would change `""`/`0` defaults to `null` in responses the HBI's types read; not worth the UI risk for its size.
   - **Size: −0.3K** (code 60.3K → 60.0K). Rule: dev note "REST handler plumbing".
 - **6e — generated tool schemas** from typed argument structs instead of hand-written JSON.
+
+  **6e result (2026-10-11): measured, and not adopted.** The ceiling was small to begin with: 63 hand-written schemas, 1,251 lines, much of it the description text the model reads, which generation would move into doc comments, not delete. Measured on `search_web` (schemars 0.8 from the typed `SearchInput`, same descriptions): the generated schema is **21% larger** (1,821 vs 1,510 bytes) and adds `$schema`, `title`, `format: uint8`, `minimum`, and `anyOf: [$ref, null]` with a `definitions` block for every optional enum. Schema bytes ride on every tool-carrying model call (the local model's prompt is a measured budget), and `$ref`/`anyOf` are what Gemini and small local models handle worst; making the output acceptable would take a post-processor, more code rather than less. The struct doc comments are also written for developers (incident history), a different audience from the model-facing text.
+  - **What 6e did change:** the one place a schema duplicated data. `search_web`'s `engine` `enum` and the ladder in its description were hand-written lists that 6c had just made data; they now come from the loaded engine files and `SEARCH_ENGINE_ORDER` (`engine_property`). Verified live: a workflow step with `engine: "bogus"` is rejected by the write-boundary validator naming the ten engines from the YAML, and nothing is saved. Every other schema `enum` was checked: they are each tool's own vocabularies (actions, statuses), which belong in the schema. (`store_note`'s note types and the workflow lint's `VALID_NOTE_TYPES` differ on purpose: the lint also accepts system-written types.)
+  - **Size: ±0** (code 60.0K). `eval-retrieval` unchanged.
 - **6f — split `app` into core crates** under the per-crate budget (6K soft / 8K hard), last, so it moves code that has already shrunk.
 - **6g — second extraction round**: the WebSocket tools and the sandboxes to plugins, then a survey of what else neither retrieves, stores nor reasons (snapshots, `gpu_lease`, dev notes, self-model …), measured before anything moves.
 
@@ -465,6 +469,7 @@ Rule: `dev_docs get plugins/api`.
 | 2026-10-11 | Phase 6b | 75.1K (code 60.6K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6c | 74.7K (code 60.3K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6d | 74.4K (code 60.0K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
+| 2026-10-11 | Phase 6e | 74.5K (code 60.0K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 
 ## 10. Open questions
 
