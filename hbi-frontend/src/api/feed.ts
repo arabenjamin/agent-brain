@@ -7,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiJson, apiRequest } from "./client";
 import { queryClient } from "./queries";
-import { goTo } from "../nav";
+import { openAsk } from "../lib/ask";
 import type { Todo } from "../components/todos/model";
 import type { AgentNotification } from "./notifications";
 
@@ -76,9 +76,9 @@ export async function ensureThread(item: Todo): Promise<string> {
   return sid;
 }
 
-/** Open a conversation in Chat (`#/chat?session=<id>`). */
+/** Open a conversation in the Ask modal, over the current page. */
 export function openSession(sid: string) {
-  goTo("chat", { session: sid });
+  openAsk(sid);
 }
 
 export async function markRead(id: string): Promise<void> {

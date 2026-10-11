@@ -1,9 +1,10 @@
 /**
- * Ctrl-K commands: every workspace view and settings section, plus the
+ * Ctrl-K commands: every workspace view and settings section, Ask, plus the
  * query itself as a note id (open it) or a phrase (search notes for it).
  */
 import { lookupId } from "../../api/search";
 import { asEntityId } from "../../lib/ids";
+import { openAsk } from "../../lib/ask";
 import { goTo } from "../../nav";
 import { SETTINGS, WORKSPACES } from "../../workspaces";
 import { openEntity } from "../drawer/entities";
@@ -32,6 +33,8 @@ export function staticCommands(): Command[] {
     }
   }
   out.push(
+    // Chat is the Ask modal now (Ctrl-J), not a workspace.
+    { id: "ask", label: "🧠 Ask the brain (Ctrl-J)", group: "Go to", keywords: "chat conversation talk sessions ask agent", run: () => openAsk() },
     { id: "new:todo", label: "+ New todo", group: "Create", keywords: "add task reminder", run: () => goTo("work", { view: "todos", todo: "new" }) },
     { id: "new:workflow", label: "+ New workflow", group: "Create", keywords: "add recurring cron schedule scheduled", run: () => goTo("work", { view: "scheduled", schedule: "new" }) },
   );

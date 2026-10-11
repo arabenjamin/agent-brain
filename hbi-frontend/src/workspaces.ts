@@ -1,5 +1,7 @@
 /**
- * The five workspaces and the views inside them (HBI_REDESIGN_PLAN.md §2).
+ * The workspaces and the views inside them (HBI_REDESIGN_PLAN.md §2). Chat
+ * is not one: it is the Ask modal over any of them (Ctrl-J, `lib/ask.ts`;
+ * CORE_AND_PLUGINS_PLAN Phase 5), and old `#/chat` links open it.
  *
  * Until each workspace is rebuilt, its views are the old panels, so nothing
  * becomes unreachable mid-migration. The old one-tab-per-panel URLs
@@ -8,7 +10,7 @@
  */
 import type { Route } from "./router";
 
-export type WorkspaceId = "home" | "chat" | "work" | "knowledge" | "system" | "settings";
+export type WorkspaceId = "home" | "work" | "knowledge" | "system" | "settings";
 
 export interface View {
   id: string;
@@ -31,7 +33,6 @@ export interface Workspace {
 
 export const WORKSPACES: Workspace[] = [
   { id: "home", icon: "⌂", label: "Home", keywords: "dashboard overview status" },
-  { id: "chat", icon: "🧠", label: "Chat", keywords: "conversation talk sessions" },
   {
     id: "work",
     icon: "📋",
@@ -131,6 +132,11 @@ export type Resolved =
  * view inside a workspace shows its first view without a redirect.
  */
 export function resolveRoute(route: Route): Resolved {
+  // The Chat workspace became the Ask modal: `#/chat?session=<id>` (the
+  // Feed, a notification, a bookmark) opens it over Home on that session.
+  if (route.path === "chat") {
+    return { kind: "redirect", path: DEFAULT_WORKSPACE, params: { session: null, ask: route.params.session || "1" } };
+  }
   const legacy = LEGACY_PATHS[route.path];
   if (legacy) {
     return { kind: "redirect", path: legacy.path, params: legacy.view ? { view: legacy.view } : {} };

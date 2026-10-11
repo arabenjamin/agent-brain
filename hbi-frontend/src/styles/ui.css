@@ -768,3 +768,66 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .rel-typed { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .rel-typed .item-actions { margin-left: auto; }
 .rel-review-quote { font-size: 11px; margin-top: 2px; }
+
+/* ── Ask: the chat as a modal over any workspace (CORE_AND_PLUGINS_PLAN Phase 5) ──
+   Above the page, below the Ctrl-K palette (300). While it is open the entity
+   drawer (a dock source, a cited note) sits above it on the right, so a
+   source can be read beside the conversation. */
+.ask-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.ask-modal {
+  width: min(1200px, calc(100vw - 48px));
+  height: calc(100vh - 48px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ask-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.ask-title { font-weight: 600; }
+.ask-hint { color: var(--text-muted); font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.ask-close:hover { color: var(--text); }
+.ask-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.ask-body > .panel { flex: 1; min-height: 0; }
+.app.ask-open .ui-drawer,
+.app.ask-open .ui-drawer.wide {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(var(--drawer-width), 100vw);
+  min-width: 0;
+  z-index: 250;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
+}
+.app.ask-open .ui-drawer.wide { width: min(var(--drawer-width-wide), 100vw); }
+@media (max-width: 700px) {
+  .ask-modal { width: 100vw; height: 100vh; border-radius: 0; border: none; }
+  .ask-hint { display: none; }
+}

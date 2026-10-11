@@ -58,8 +58,15 @@ describe("resolveRoute", () => {
     expect(resolveRoute({ path: "", params: {} })).toEqual({ kind: "redirect", path: "home", params: {} });
   });
 
-  it("keeps knowledge, chat, home and settings as they are", () => {
-    for (const path of ["knowledge", "chat", "home", "settings"]) {
+  it("sends old chat links to the Ask modal over Home, on their session", () => {
+    expect(resolveRoute({ path: "chat", params: { session: "jobsearch-2026-10-11" } }))
+      .toEqual({ kind: "redirect", path: "home", params: { session: null, ask: "jobsearch-2026-10-11" } });
+    expect(resolveRoute({ path: "chat", params: {} }))
+      .toEqual({ kind: "redirect", path: "home", params: { session: null, ask: "1" } });
+  });
+
+  it("keeps knowledge, home and settings as they are", () => {
+    for (const path of ["knowledge", "home", "settings"]) {
       expect(resolveRoute({ path, params: {} }).kind).toBe("show");
     }
   });

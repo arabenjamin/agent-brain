@@ -429,7 +429,7 @@ export default function ChatPanel({
   session,
 }: {
   visible?: boolean;
-  /** A conversation to open (`#/chat?session=<id>`): the Feed, an item's thread, Home. */
+  /** A conversation to open (`ask=<id>`): the Feed, an item's thread, Home. */
   session?: string;
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -603,9 +603,17 @@ export default function ChatPanel({
     }
   }, [sessionId, msgs]);
 
-  // A conversation named in the URL (`#/chat?session=<id>`) opens once, and
-  // History reloads so a session a schedule just created is listed too.
   const openedFromUrl = useRef<string | null>(null);
+  // The Ask modal opening: the input takes the keyboard. Closing forgets
+  // which conversation the URL opened, so opening the same thread again
+  // (after moving to another one) switches back to it.
+  useEffect(() => {
+    if (visible) inputRef.current?.focus();
+    else openedFromUrl.current = null;
+  }, [visible]);
+
+  // A conversation named in the URL (`ask=<id>`, `lib/ask.ts`) opens once, and
+  // History reloads so a session a schedule just created is listed too.
   useEffect(() => {
     if (!visible || !session || openedFromUrl.current === session) return;
     openedFromUrl.current = session;

@@ -401,6 +401,10 @@ Rule: `dev_docs get plugins/api`.
 
 **Phase 5 — chat as a modal** (independent of the others; can run any time). Ctrl-K stays navigation. **Ctrl-J opens an Ask modal** with an agent picker (default the front-door profile), the session list, and the context dock. The Chat workspace and `ChatPanel` go. Old `#/chat…` links and `notify_user`'s `related_session_id` (e.g. a resumable `jobsearch-{{date}}` session) open the modal on that session; nothing that links to chat today may dead-end.
 
+**Phase 5 result (2026-10-11).** Built as specified. `components/chat/AskModal.tsx` hosts the unchanged `ChatPanel` (its agent picker, session list and context dock). The modal's state is an `ask` param on whatever route is showing (`lib/ask.ts`): `ask=1` opens it, `ask=<session id>` opens that conversation. So `openSession` (the Feed, an item's thread, Home) opens it over the current page, Back closes it, and old `#/chat?session=<id>` links redirect to `#/home?ask=<id>`. Ctrl-J toggles it; the sidebar's **Ask** button and a Ctrl-K command open it (mouse, phone). It stays mounted while closed, and while it is open the entity drawer and the palette stack above it.
+- **Verified in headless Chrome.** It opens over the Feed; an old chat link lands in it on its conversation; a note drawer opens above it. Ctrl-J opens it with the cursor in the input, Esc and Ctrl-J close it, and Ctrl-K's palette opens over it. A question sent and closed at once finished streaming while closed and was there on reopening (test session deleted). `tsc`, eslint (one warning, already on `dev`) and 101 vitest tests pass.
+- **Found on the way and fixed: Home's "Next up" card had been broken since Phase 2b.** The HBI moved to `/workflows`, but nginx still proxied the gone `/scheduled-tasks`, so the request got the page's HTML ("Unexpected token '<'"). Also fixed: a vitest expectation missing the `demonym` merge reason (HBI Phase 20).
+
 **Phase 6 — consolidation to the second target.** Only after Phase 4 measures what is left. Known candidates: four provider chat loops (`anthropic_`, `ollama_`, `openai_`, `text_loop`) → one OpenAI-wire loop + the Anthropic adapter; the LLM stack (≈7.4K: llm, providers, routing, budget, gate, registry, model config/router, shared_llm); `rest.rs` (2.6K) and per-feature REST clients; search engines as YAML like LLM providers; hand-written tool schemas; splitting `app` into core crates under the per-crate budget.
 
 **Measurements.**
@@ -415,6 +419,7 @@ Rule: `dev_docs get plugins/api`.
 | 2026-10-10 | Phase 3b | 89.5K (code 72.5K) | 17.0K | — | 18.9K | CLAUDE.md 7.6 KB | 61 |
 | 2026-10-10 | Phase 3c | 89.1K (code 72.1K) | 17.0K | 0.8K (osint-data) | 18.9K | CLAUDE.md 7.6 KB | 61 (+1 with osint-data) |
 | 2026-10-11 | Phase 4 | 75.6K (code 61.3K) | 14.3K | 15.4K (6 plugins; epistemics 3.9K) | 18.9K | CLAUDE.md 7.6 KB | 42 (+19 from plugins, +1 osint-data with its keys) |
+| 2026-10-11 | Phase 5 | 75.6K (code 61.3K) | 14.3K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 
 ## 10. Open questions
 

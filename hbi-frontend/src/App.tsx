@@ -6,6 +6,7 @@ import { getMcpClient, onNotification } from "./api/mcp";
 import { invalidateOnJobPush } from "./api/queries";
 import { currentRoute, navigate, useRoute } from "./router";
 import { goTo } from "./nav";
+import { askState, openAsk, toggleAsk } from "./lib/ask";
 import { SETTINGS, WORKSPACES, resolveRoute, type Workspace } from "./workspaces";
 import EntityDrawer from "./components/drawer/EntityDrawer";
 import { Tabs } from "./components/ui";
@@ -16,7 +17,7 @@ const ActiveLane         = lazy(() => import("./components/work/ActiveLane"));
 const ScheduledLane      = lazy(() => import("./components/work/ScheduledLane"));
 const TodosLane          = lazy(() => import("./components/work/TodosLane"));
 const HistoryLane        = lazy(() => import("./components/work/HistoryLane"));
-const ChatPanel          = lazy(() => import("./components/chat/ChatPanel"));
+const AskModal           = lazy(() => import("./components/chat/AskModal"));
 const KnowledgeWorkspace = lazy(() => import("./components/knowledge/KnowledgeWorkspace"));
 const HealthView         = lazy(() => import("./components/system/HealthView"));
 const LogsView           = lazy(() => import("./components/system/LogsView"));
@@ -83,6 +84,11 @@ export default function App() {
         e.preventDefault();
         setPaletteOpen((o) => !o);
       }
+      // Ctrl-J: the Ask modal, over whatever is showing (Phase 5).
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        toggleAsk();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -112,6 +118,7 @@ export default function App() {
   useEffect(() => invalidateOnJobPush(), []);
 
   const ws = workspace?.id;
+  const ask = askState(p);
   // Drill-down filters key their panel, so a new drill remounts it cleanly.
   const historyDrill = { mode: p.mode, taskStatus: p.task_status, jobStatus: p.job_status, since: p.since };
   // The entity the drawer has open, so a lane can highlight its row.
@@ -124,7 +131,7 @@ export default function App() {
   };
 
   return (
-    <div className="app">
+    <div className={`app${ask.open ? " ask-open" : ""}`}>
       <nav className={`sidebar${navCollapsed ? " collapsed" : ""}`}>
         <div className="sidebar-title">
           <span className="sidebar-label">Agent Brain</span>
@@ -147,8 +154,16 @@ export default function App() {
             )}
           </button>
         ))}
+        <button
+          className={`sidebar-btn${ask.open ? " active" : ""}`}
+          onClick={() => openAsk()}
+          title={navCollapsed ? "Ask (Ctrl-J)" : "Ctrl-J"}
+        >
+          <span className="icon">🧠</span>
+          <span className="sidebar-label">Ask</span>
+        </button>
         <div style={{ marginTop: "auto" }}>
-          <div className="sidebar-hint sidebar-label">Ctrl-K to jump anywhere</div>
+          <div className="sidebar-hint sidebar-label">Ctrl-K to jump anywhere · Ctrl-J to ask</div>
           <button
             className={`sidebar-btn${ws === SETTINGS.id ? " active" : ""}`}
             onClick={() => goTo(SETTINGS.id)}
@@ -161,14 +176,6 @@ export default function App() {
       </nav>
 
       <main className="main-content">
-        {/* ChatPanel stays mounted so conversation history survives navigation. */}
-        <div style={ws === "chat"
-          ? { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }
-          : { display: "none" }}>
-          <Suspense fallback={<Fallback />}>
-            <ChatPanel visible={ws === "chat"} session={ws === "chat" ? p.session : undefined} />
-          </Suspense>
-        </div>
         <Suspense fallback={<Fallback />}>
           {ws === "home" && <HomePanel />}
           {ws === "work" && workspace && (
@@ -198,6 +205,12 @@ export default function App() {
       </main>
 
       <EntityDrawer />
+
+      {/* Ask stays mounted so a conversation, and an answer still streaming,
+          survive closing it and moving between workspaces. */}
+      <Suspense fallback={null}>
+        <AskModal open={ask.open} session={ask.session} />
+      </Suspense>
 
       {paletteOpen && (
         <Suspense fallback={null}>

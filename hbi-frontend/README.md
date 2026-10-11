@@ -1,6 +1,6 @@
 # HBI — Human Brain Interface
 
-The web UI for Agent Brain: React 19 + Vite + TypeScript, served by nginx in the `hbi-frontend` compose service (host port 3002), which proxies `/mcp`, `/chat`, `/api`, `/todos`, `/scheduled-tasks` and `/scheduler-config` to the brain.
+The web UI for Agent Brain: React 19 + Vite + TypeScript, served by nginx in the `hbi-frontend` compose service (host port 3002), which proxies `/mcp`, `/chat`, `/api`, `/todos` and `/workflows` to the brain.
 
 The redesign from tabs to workspaces is planned in [`project-docs/HBI_REDESIGN_PLAN.md`](../project-docs/HBI_REDESIGN_PLAN.md). The rules for new code are in `project-docs/subsystem-rules.md` § HBI frontend foundations.
 
@@ -18,7 +18,7 @@ The brain URL and API key live in the browser's localStorage (Settings → Conne
 
 ## Workspaces
 
-`#/home` (dashboard) · `#/chat` · `#/work?view=inbox|active|scheduled|todos|history` · `#/knowledge?view=list|map|graph|timeline&q=&mode=auto|semantic|keyword|id&within=<topic>` · `#/system?view=health|logs|registry|architecture` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect. The nav collapses to an icon rail («), remembered per browser.
+`#/home` (dashboard) · `#/work?view=feed|active|scheduled|todos|history` · `#/knowledge?view=list|map|graph|timeline&q=&mode=auto|semantic|keyword|id&within=<topic>` · `#/system?view=health|logs|registry|architecture` · `#/settings?section=connection|agents|models|scheduler|about`. Ctrl-K jumps to any of them, opens a pasted note id, or searches notes. **Ctrl-J opens Ask**, the chat as a modal over any of them (`&ask=1`, or `&ask=<session id>` for one conversation); old `#/chat?session=` links open it. Old one-tab URLs (`#/tasks`, `#/graph`, …) redirect. The nav collapses to an icon rail («), remembered per browser.
 
 ## Layout
 
@@ -38,7 +38,7 @@ src/
   lib/               time (UTC in, local out), ids, scheduler state, useNow, chatDock (what a chat turn did, from its events)
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
   components/drawer/ entity drawer: note (a claim shows the article or video it was asserted in), entity, topic, task (lineage), job, schedule, todo, proposal
-  components/chat/   Chat: the panel and the context dock under each answer
+  components/chat/   Ask: the modal, the chat panel inside it, and the context dock under each answer
   components/system/ System: Health, Logs, Registry, Architecture (drawn from the developer plugin's /api/plugins/developer/architecture + plugins/developer/layout.yaml)
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Map (topic hubs) / Neighbourhood / Timeline
