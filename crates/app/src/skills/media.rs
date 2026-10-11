@@ -541,13 +541,31 @@ impl MediaSkill {
                     "Auto-discovered from MediaSource '{}' ({}). Title: {}. Published: {}.",
                     ms.name, ms.kind, item.title, item.published_at
                 );
-                match self.neo4j.create_task(&goal, Some(&ctx), None).await {
+                let workflow = if is_article {
+                    "article-learning"
+                } else {
+                    "video-learning"
+                };
+                let inputs = json!({ "url": item.url })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
+                match crate::services::workflows::start_run(
+                    &self.neo4j,
+                    Some(workflow),
+                    &inputs,
+                    Some(&goal),
+                    Some(&ctx),
+                    None,
+                )
+                .await
+                {
                     Ok(_) => {
                         created += 1;
                         per_source += 1;
                         goals.push(goal);
                     }
-                    Err(e) => warn!(error = %e, "poll_media_sources: create_task failed"),
+                    Err(e) => warn!(error = %e, "poll_media_sources: could not start a run"),
                 }
             }
         }
@@ -849,20 +867,25 @@ impl MediaSkill {
             {
                 continue;
             }
-            match self
-                .neo4j
-                .create_task(
-                    &goal,
-                    Some("Auto-generated from a video-learning FOLLOW UP concept."),
-                    None,
-                )
-                .await
+            let inputs = json!({ "topic": concept })
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            match crate::services::workflows::start_run(
+                &self.neo4j,
+                Some("fill-knowledge-gap"),
+                &inputs,
+                Some(&goal),
+                Some("Auto-generated from a video-learning FOLLOW UP concept."),
+                None,
+            )
+            .await
             {
                 Ok(_) => {
                     created += 1;
                     today += 1;
                 }
-                Err(e) => warn!(error = %e, "spawn_gap_tasks: create_task failed"),
+                Err(e) => warn!(error = %e, "spawn_gap_tasks: could not start a run"),
             }
         }
         info!(

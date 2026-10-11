@@ -1,0 +1,51 @@
+name: brain-api-sync
+description: "Snapshots the brain's architecture and records what changed since last week, then keeps the brain's own API documentation current in the knowledge graph as the code changes. The brain publishes no OpenAPI spec, so this build-from-routes ingest IS its self-documentation: ingest_api(codebase_path) over the HTTP-transport source with prune=true, so newly added routes appear and removed routes disappear. Stored as ApiContext 'agent-brain' (source: codebase_generated). LLM extraction runs once per run on unmetered ollama-cloud (weekly, not a fan-out). Step 2 banks a dated record of the endpoint/prune counts so API growth is trackable over time."
+topic: agent-brain
+kind: maintenance
+every: 1w
+steps:
+  # 1. Snapshot the brain's architecture (skills and tools, routes, agents,
+  #    chains, schedules, MCP servers, providers, services) and diff it against
+  #    last week's. Deterministic, no model. The HBI's System > Architecture and
+  #    Home show the diff (services/architecture.rs).
+  - tool_name: snapshot_architecture
+    arguments:
+      trigger: "schedule"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # 2. Bank what changed as a note, so "what changed in the brain this week"
+  #    is answerable from memory too.
+  - tool_name: store_note
+    arguments:
+      content: "Brain architecture snapshot (what changed since last week): {{_prev}}"
+      note_type: episodic
+      source_context: "architecture_snapshot"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # 3. Regenerate the endpoint graph from the Axum route table (build-from-routes).
+  #    prune=true makes it a true mirror: a route removed from the code is deleted
+  #    from the graph, not left stale.
+  - tool_name: ingest_api
+    arguments:
+      codebase_path: "/home/agent/agent-brain/crates/app/src/mcp"
+      name: "agent-brain"
+      description: "agent-brain's own HTTP/MCP + REST API, generated from its Axum route table"
+      prune: true
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama-cloud
+
+  # 4. Bank a dated record of the sync (endpoints_stored / endpoints_pruned) so
+  #    the brain can see how its own surface area changes over time.
+  - tool_name: store_note
+    arguments:
+      content: "Brain API self-sync result: {{_prev}}"
+      note_type: episodic
+      source_context: "brain_api_sync"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

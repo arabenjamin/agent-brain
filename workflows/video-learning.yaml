@@ -1,0 +1,164 @@
+# Why: dev_docs get yaml/chains-video-learning-1
+name: video-learning
+description: "Watch/ingest a video: fetch transcript, map-reduce summarize, compare against existing knowledge, and store a sourced semantic note linked to its :Media node."
+inputs:
+  - name: url
+    description: "The video URL."
+steps:
+  # Why: dev_docs get yaml/chains-video-learning-2
+  - tool_name: ingest_media
+    arguments:
+      # Why: dev_docs get yaml/chains-video-learning-3
+      url: "{{inputs.url}}"
+      source_context: video_learning
+      store: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch transcript + map-reduce summary"
+
+  # 2. Bank the summary so it survives past the reason step below.
+  - tool_name: push_context
+    arguments:
+      session_id: "video-{{task_id}}"
+      content: "## VIDEO SUMMARY\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the summary in working memory"
+
+  # 3. Reassemble the banked summary so it can be passed as `context` (not the
+  #    push confirmation that {{_prev}} now holds).
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble summary for the reason step"
+
+  # 4. Compare the new material against what the brain already knows. context =
+  #    the summary (NEVER restate it inside `question` — scheduled reason RAGs the
+  #    graph off the question and would eat its own output → garbage loop). The
+  #    reason tool's internal RAG surfaces topically-related existing notes.
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains a summary of a video the brain just watched.
+        Compare it against what is already known and write three sections:
+        ## NEW — concepts/claims genuinely new to the brain
+        ## CHANGED — where this updates or contradicts prior understanding
+        ## FOLLOW UP — at most TWO questions worth knowing a year from now,
+        each one line, each answerable with facts a few web searches can settle:
+        what something is, how it works, who makes or decides it, when, or how
+        much. Name the concrete thing (a technology, law, product, organisation,
+        method). Good: "How does CATL's Naxtra sodium-ion cell compare to LFP on
+        energy density and cost per kWh?" Bad: "What are the long-term
+        implications of sodium batteries for society?" It must make sense to
+        someone who has NOT seen this video: never a scene, a remark, a person's
+        reaction, "this practice", or anything needing "(Context: …)". No sports.
+        If nothing qualifies, write "NONE".
+        Ground every point in the CONTEXT. If nothing is new, say so plainly.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    # Why: dev_docs get yaml/chains-video-learning-4
+    provider_hint: ollama
+    # Distilled handoff: this is the one cloud-routed step in the chain, and its
+    # {{_prev}} is the full reassembled transcript summary. Safe to compress here
+    # because the *durable* note (step 7) reassembles from working memory again,
+    # so the stored artifact keeps full fidelity — only the prompt shrinks.
+    distill_prev: true
+    distill_max_chars: 3000
+    distill_focus: >-
+      the concepts, claims, and technical specifics the video actually asserts,
+      with names, tools, versions, and figures kept verbatim; drop narration,
+      asides, and sponsor/housekeeping segments
+    description: "New-vs-known comparison"
+
+  # Why: dev_docs get yaml/chains-video-learning-5
+  - tool_name: spawn_gap_tasks
+    arguments:
+      text: "{{_prev}}"
+      max: 2
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Spawn gap tasks from FOLLOW UP concepts"
+
+  # 5. Bank the analysis alongside the summary.
+  - tool_name: push_context
+    arguments:
+      session_id: "video-{{task_id}}"
+      content: "## NEW vs KNOWN ANALYSIS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the analysis in working memory"
+
+  # 6. Reassemble summary + analysis into one blob for the stored note.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble summary + analysis for storage"
+
+  # 7. Persist the durable semantic note. store_note's async pipeline runs entity
+  #    extraction + similarity linking, so key concepts become :Entity nodes and
+  #    connect to existing knowledge automatically.
+  - tool_name: store_note
+    arguments:
+      content: "# Video learning: {{goal}}\n\n{{_prev}}"
+      # source_record, NOT semantic: this is a record of what one channel said,
+      # not knowledge the brain has established. Typing it 'semantic' put it in
+      # the context window indistinguishable from a verified fact, which is why
+      # `reason` synthesised credulously from single-source video content.
+      note_type: source_record
+      source_context: video_learning
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the sourced summary note"
+
+  # Why: dev_docs get yaml/chains-video-learning-6
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_note_id: "{{_prev.id}}"
+      source_context: video_learning
+      # 3, not 5: verification capacity is ~80 claims/day and ~16 videos/day
+      # arrive; at 5 the unverified backlog grew without bound.
+      limit: 3
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract checkable claims from the video"
+
+  # 8. Mark the video Task done.
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Complete the task"
+
+  # 9. Clean up the scratch working-memory session.
+  #    priority 1, not 0 — the queue is a max-heap, so 0 is the lowest priority
+  #    and starves under a fed queue. See the full note on the equivalent step
+  #    in workflows/fill-knowledge-gap.yaml.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

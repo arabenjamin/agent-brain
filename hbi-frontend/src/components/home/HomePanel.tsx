@@ -196,9 +196,10 @@ function NextUpTile() {
   const now = useNow();
 
   if (!schedules.data) {
-    return <Card title="Next up"><Pending what="schedules" error={schedules.error} onRetry={() => schedules.refetch()} /></Card>;
+    return <Card title="Next up"><Pending what="workflows" error={schedules.error} onRetry={() => schedules.refetch()} /></Card>;
   }
-  const all = schedules.data;
+  // Only scheduled workflows have a next run; the rest run when started by name.
+  const all = schedules.data.filter((s) => s.interval_seconds != null);
   const enabled = all.filter((s) => s.enabled);
   const upcoming = [...enabled].sort(
     (a, b) => (parseTime(a.next_run_at)?.getTime() ?? Infinity) - (parseTime(b.next_run_at)?.getTime() ?? Infinity),
@@ -212,7 +213,7 @@ function NextUpTile() {
       actions={<a className="home-dim" href={hrefTo("work", { view: "scheduled" })}>{enabled.length} enabled · {all.length - enabled.length} off</a>}
     >
       {enabled.length === 0 ? (
-        <EmptyState title="No schedule is enabled" checked={`${all.length} schedules exist; all are turned off.`} />
+        <EmptyState title="No scheduled workflow is on" checked={`${all.length} scheduled workflows exist; all are turned off.`} />
       ) : (
         <ul className="home-list home-schedule">
           {upcoming.slice(0, 7).map((s: ScheduledTask) => {

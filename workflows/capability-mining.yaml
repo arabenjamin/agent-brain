@@ -1,0 +1,95 @@
+# Why: dev_docs get yaml/schedules-capability-mining-1
+name: capability-mining
+description: "Weekly self-improvement scan. Aggregates repeatedly-failing/blocked Tasks by capability (goal prefix) plus a sample of their failure context, then reasons over that REAL signal to propose ScheduledTask, dynamic-tool, or skill-gap candidates. Result is stored as a capability_mining reflection note."
+topic: agent-brain
+kind: maintenance
+every: 1w
+steps:
+  # Why: dev_docs get yaml/schedules-capability-mining-2
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (t:Task) WHERE t.status IN ['failed','blocked'] WITH split(t.goal, ':')[0] AS capability, t ORDER BY t.updated_at DESC WITH capability, count(*) AS failures, collect(DISTINCT t.status) AS statuses, collect(substring(coalesce(t.context,''), 0, 600))[0..3] AS sample_context WHERE failures >= 2 RETURN capability, failures, statuses, sample_context ORDER BY failures DESC LIMIT 20"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT lists this agent's own capabilities that have FAILED or
+        BLOCKED repeatedly, ranked by failure count. Each carries samples of the
+        most recent failure context. A line beginning "[FAILURE]" is the actual
+        error that killed the run (which chain step died and its last error);
+        an evaluator or adversarial critique may also appear. Read these — they
+        say WHY the capability keeps failing.
+
+        A capability that keeps failing is a concrete signal of a missing tool,
+        a missing ScheduledTask, or a skill gap — NOT a reason to restate generic
+        best practices. Base every candidate ONLY on the CONTEXT, quoting the
+        "[FAILURE]" error or critique that justifies it; do not invent gaps the
+        data does not show, and do not propose things the brain already has
+        (durable job queue, knowledge graph, RAG, retry logic, evaluator and
+        adversarial loops all already exist). This is a Rust codebase — never
+        propose Python-specific libraries (e.g. Pydantic); prefer Rust crates
+        or concrete changes to existing tools/chains.
+
+        Return ONLY a JSON array, at most 5 items, most impactful first:
+        [{"type":"scheduled_task|dynamic_tool|skill|fix","name":"...","failing_capability":"<verbatim capability from CONTEXT>","rationale":"why this repeatedly fails, citing the context","proposal":"the concrete thing to build or change"}]
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: store_note
+    arguments:
+      content: |
+        ## Capability Mining Results ({{date}})
+
+        Grounded in repeatedly-failing/blocked tasks (see failure counts in the reasoning below).
+
+        {{_prev}}
+      note_type: reflection
+      source_context: capability_mining
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: run_agent
+    arguments:
+      agent: deep-diver
+      max_rounds: 14
+      # A grounded proposal must have opened the code it talks about.
+      verify:
+        require_tools: [read_codebase_file]
+        cited_paths_exist: true
+      task: |
+        Below are capability-gap candidates mined from this agent's own
+        repeatedly-failing tasks. Take the FIRST candidate only and ground it
+        in agent-brain's Rust code:
+          1. Find the exact files and functions involved (search_codebase with
+             identifiers from the failure text, file_pattern ".rs"; then
+             read_codebase_file at the hit).
+          2. Say what is wrong there, citing file:line.
+          3. Write the change as Rust. Compile-check any part that can stand
+             alone with execute_code(language:"rust"); for the rest, show the
+             diff against the lines you read.
+        Use the ANSWER / RUST / IN AGENT-BRAIN / NEXT format. If the candidate
+        names nothing you can find in the code, say so with the searches you ran.
+
+        {{_prev}}
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama-cloud
+
+  - tool_name: store_note
+    arguments:
+      content: |
+        ## Capability mining — grounded proposal ({{date}})
+
+        {{_prev}}
+      note_type: reflection
+      source_context: capability_mining_grounded
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

@@ -1,6 +1,6 @@
 //! `extract_relations`: typed relationships from claims, as proposals
 //! (HBI plan Phase 17, `services/relations.rs`). Run by
-//! `schedules/relation-extraction.yaml`, whose step pins the model: measured
+//! `workflows/relation-extraction.yaml`, whose step pins the model: measured
 //! on held-out claims, the local model got 2 of 8 relations right and the
 //! cloud one 8 of 9 (5 of 9 strictly), and either way the user reviews them.
 

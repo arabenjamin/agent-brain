@@ -2274,7 +2274,7 @@ struct SearchInput {
     )]
     engine: Option<String>,
     /// Accepts both integer and string values (e.g. `10` or `"10"`) so that
-    /// ScheduledTask step definitions stored with quoted counts still work.
+    /// Workflow step definitions stored with quoted counts still work.
     #[serde(default, deserialize_with = "deserialize_optional_count")]
     count: Option<u8>,
     /// `day` / `week` / `month` / `year`: only results from that window, mapped

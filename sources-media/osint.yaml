@@ -2,7 +2,7 @@
 #
 # Seeded ON CREATE only; graph-owned after (edit via `manage_media_source`).
 # Each new feed item becomes a "read article: <url>" Task routed to
-# chains/article-learning.yaml, capped per poll by MEDIA_WATCH_MAX_PER_SOURCE.
+# workflows/article-learning.yaml, capped per poll by MEDIA_WATCH_MAX_PER_SOURCE.
 #
 # Each feed was checked live on 2026-10-06 and its newest article extracted
 # cleanly. Left out on purpose: Oryx (feed's newest post is Dec 2024 — its

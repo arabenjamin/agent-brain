@@ -171,12 +171,13 @@ export interface Activity {
   errors: string[];
 }
 
+/** A workflow as `GET /workflows` lists it; `interval_seconds` null = runs by name only. */
 export interface ScheduledTask {
   id: string;
   name: string;
   description?: string;
   enabled: boolean;
-  interval_seconds: number;
+  interval_seconds: number | null;
   last_run_at: string | null;
   next_run_at: string | null;
   managed_by?: string;
@@ -280,7 +281,7 @@ export function useSchedules(pollMs = 60_000) {
   return useQuery({
     queryKey: keys.schedules,
     queryFn: async () =>
-      (await apiJson<{ scheduled_tasks?: ScheduledTask[] }>("/scheduled-tasks")).scheduled_tasks ?? [],
+      (await apiJson<{ workflows?: ScheduledTask[] }>("/workflows")).workflows ?? [],
     refetchInterval: pollMs,
   });
 }

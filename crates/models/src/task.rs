@@ -26,6 +26,12 @@ pub struct Task {
     /// Measurable criteria that define "done" — used by the evaluator step to grade output.
     #[serde(default)]
     pub success_criteria: Option<String>,
+    /// The workflow this task is a run of; `None` runs the default workflow.
+    #[serde(default)]
+    pub workflow: Option<String>,
+    /// The run's inputs, a JSON object.
+    #[serde(default)]
+    pub inputs: Option<serde_json::Map<String, serde_json::Value>>,
     /// Current status.
     pub status: TaskStatus,
     /// When the task was created.

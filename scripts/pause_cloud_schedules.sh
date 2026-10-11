@@ -12,8 +12,8 @@
 # a thinner analysis is stored as `source_record` or `semantic` and read back
 # later as if nothing had happened. Nothing errors, so nothing tells you.
 #
-# The schedules touched here are exactly those whose stored steps carry a cloud
-# step, plus the three that spawn Tasks routing to a cloud step in `chains/`.
+# The workflows touched here are exactly the scheduled ones whose stored steps
+# carry a cloud step, plus the three that start runs of a workflow with one.
 # Everything else already ran entirely on the local model and is unaffected by
 # an outage, so pausing it would cost availability and buy nothing.
 #
@@ -32,9 +32,9 @@
 # Safe to run against a live brain:
 #   - Touches `enabled`, `paused_reason`, `paused_at` and nothing else. Steps,
 #     description, interval, and next_run_at are left exactly as they are.
-#   - Survives a restart. `sync_yaml_scheduled_task` force-syncs steps,
-#     description, and interval from `schedules/*.yaml`, but never `enabled` —
-#     so a yaml-owned schedule stays paused across a rebuild.
+#   - Survives a restart. The workflow seeder force-syncs the definition from
+#     `workflows/*.yaml`, but never `enabled` — so a paused workflow stays
+#     paused across a rebuild.
 #   - `resume` only re-enables what THIS script paused (it matches on
 #     `paused_reason`), so a schedule disabled for some other reason — a broken
 #     definition, a superseded experiment — is not swept back on by accident.
@@ -50,24 +50,25 @@ BRAIN_URL="${BRAIN_URL:-http://localhost:3001}"
 SID="${BRAIN_SID:-$(uuidgen 2>/dev/null || echo pause-cloud-schedules)}"
 MARKER="cloud-paused:"
 
-# Matched on name prefix. Derive this list from the GRAPH, not from schedules/ —
-# runtime-owned schedules have no file, and they are the ones most likely to be
-# cloud-routed by omission. `status` prints the current membership; to re-derive:
+# Matched on exact workflow name. Derive this list from the GRAPH, not from
+# workflows/ — runtime-owned workflows have no file, and they are the ones most
+# likely to be cloud-routed by omission. `status` prints the current membership;
+# to re-derive:
 #
-#   MATCH (s:ScheduledTask) WHERE s.enabled RETURN s.name, s.steps
+#   MATCH (s:Workflow) WHERE s.enabled AND s.interval_seconds IS NOT NULL RETURN s.name, s.steps
 #   -- then flag any step whose provider_hint is not exactly "ollama"
 #
 TARGETS=(
   # --- own a cloud step ---
-  "Daily news aggregation"              # schedules/daily-news.yaml
-  "Off-Grid Networking Monitor"         # schedules/off-grid-networking-monitor.yaml
-  "Bi-weekly SLM benchmark watch"       # schedules/slm-benchmark-watch.yaml
-  "Monthly tech dependency synthesis"   # schedules/tech-dependency-synthesis.yaml
-  "Weekly hardware tripwire"            # schedules/hardware-tripwire.yaml
-  # --- spawn Tasks that route to a cloud step ---
-  "Daily news analysis"                 # -> 'fill knowledge gap:'  chains/fill-knowledge-gap.yaml
-  "Media watch"                         # -> 'watch video:'         chains/video-learning.yaml
-  "Brain exercise"                      # -> research goals         chains/learn.yaml
+  "daily-news"
+  "off-grid-networking-monitor"
+  "slm-benchmark-watch"
+  "tech-dependency-synthesis"
+  "hardware-tripwire"
+  # --- start runs of a workflow with a cloud step ---
+  "news-analysis"                       # -> fill-knowledge-gap
+  "media-watch"                         # -> video-learning
+  "brain-exercise"                      # -> fill-knowledge-gap
 )
 
 cypher() {
@@ -104,29 +105,29 @@ PY
 where=""
 for t in "${TARGETS[@]}"; do
   [ -n "$where" ] && where="$where OR "
-  where="$where s.name STARTS WITH \"$t\""
+  where="$where s.name = \"$t\""
 done
 
 case "${1:-status}" in
   pause)
     reason="${2:-cloud provider unavailable}"
-    echo "Pausing cloud-dependent schedules — $reason"
-    cypher "MATCH (s:ScheduledTask) WHERE ($where) AND s.enabled
+    echo "Pausing cloud-dependent workflows — $reason"
+    cypher "MATCH (s:Workflow) WHERE ($where) AND s.enabled
             SET s.enabled = false,
                 s.paused_reason = \"$MARKER $reason\",
                 s.paused_at = datetime()
             RETURN s.name AS name, s.enabled AS en, s.paused_reason AS why"
     ;;
   resume)
-    echo "Resuming schedules paused by this script"
-    cypher "MATCH (s:ScheduledTask)
+    echo "Resuming workflows paused by this script"
+    cypher "MATCH (s:Workflow)
             WHERE s.enabled = false AND s.paused_reason STARTS WITH \"$MARKER\"
             SET s.enabled = true, s.paused_reason = null, s.paused_at = null
             RETURN s.name AS name, s.enabled AS en"
     ;;
   status)
-    echo "Cloud-dependent schedules:"
-    cypher "MATCH (s:ScheduledTask) WHERE $where
+    echo "Cloud-dependent workflows:"
+    cypher "MATCH (s:Workflow) WHERE $where
             RETURN s.name AS name, s.enabled AS en, s.paused_reason AS why
             ORDER BY s.name"
     ;;

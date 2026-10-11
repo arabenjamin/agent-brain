@@ -118,6 +118,8 @@ High-level goals tracked by the autonomous scheduler.
 | `id` | String | UUID |
 | `goal` | String | Human-readable goal statement |
 | `context` | String? | Optional extra context |
+| `workflow` | String? | The `:Workflow` this task is a run of, by name; absent = the default workflow. Indexed (`task_workflow`). Runs created before 2026-10-10 were backfilled from their goal prefix or run-record context |
+| `inputs_json` | String? | The run's inputs, a JSON object; steps read them as `{{inputs.<name>}}` |
 | `status` | String | `created` \| `in_progress` \| `completed` \| `failed` \| `blocked` |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
@@ -162,7 +164,7 @@ Claim notes (`note_type: 'claim'`, `services/claims.rs`) also carry:
 
 #### `Topic`
 
-A domain the brain tracks. `topics/*.yaml` (`TOPICS_DIR`) seeds them, synced by `init-db`, and the HBI can create, edit and delete them (`POST /api/topics`, `PUT|DELETE /api/topics/{name}`, `POST /api/topics/{name}/reset`). An edited topic is `managed_by: 'runtime'`, and the sync leaves it alone. A YAML-owned topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The schedules that watch a topic are the ones whose `ScheduledTask.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
+A domain the brain tracks. `topics/*.yaml` (`TOPICS_DIR`) seeds them, synced by `init-db`, and the HBI can create, edit and delete them (`POST /api/topics`, `PUT|DELETE /api/topics/{name}`, `POST /api/topics/{name}/reset`). An edited topic is `managed_by: 'runtime'`, and the sync leaves it alone. A YAML-owned topic removed from YAML is deleted with its edges. The local model classifies notes against the descriptions. The workflows that watch a topic are the ones whose `Workflow.topic` names it (until 2026-10-09 a `schedules:` list in the topic file; `init-db` removes the old property).
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -325,25 +327,28 @@ Background job records executed by `QueueService`. Supports chaining, retry, and
 | `started_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `completed_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
-#### `ScheduledTask`
+#### `Workflow`
 
-Recurring job definitions managed by `SchedulerSkill`. The scheduler dispatches due tasks on each tick.
+A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `SchedulerChain` on 2026-10-10). Runs on its schedule when it has one, and by name with inputs whenever something asks (`manage_workflow action=run`, `create_task workflow=…`, REST, the media and gap pipelines, the perception scan). Each run is a `:Task` with `workflow` set. Seeded from `workflows/*.yaml` (`WORKFLOWS_DIR`) by `services/workflow_seeder.rs`. Template variables in steps: `{{task_id}}`, `{{goal}}`, `{{date}}` / `{{now}}` / `{{weekday}}` (local wall clock), `{{inputs.<name>}}`, `{{_prev}}`, `{{steps.<id>}}`. Rule: `dev_docs get workflows/model`.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `id` | String | UUID, unique |
-| `name` | String | Unique human-readable name; used as the spawned `Task.goal` |
-| `description` | String? | Optional display description |
-| `enabled` | Boolean | Whether the scheduler will dispatch this task |
-| `interval_seconds` | Integer | Recurrence period in seconds (e.g. 86400 = daily) |
-| `steps` | String | JSON-encoded `Vec<ChainStep>` — the job chain to enqueue |
-| `last_run_at` | DateTime | Native Neo4j `DATETIME`, UTC — timestamp of last successful dispatch |
-| `next_run_at` | DateTime | Native Neo4j `DATETIME`, UTC — next due time |
-| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
-| `updated_at` | DateTime | Native Neo4j `DATETIME`, UTC |
-| `managed_by` | String | `yaml` (force-synced from `schedules/*.yaml`) or `runtime` (graph-owned) |
-| `topic` | String? | The `topics/*.yaml` topic it works on; absent = spans topics. Checked against the declared topics on every write path |
-| `kind` | String? | `monitor` · `brief` · `learning` · `maintenance` · `dataset` (`SCHEDULE_KINDS`) |
+| `id` | String | UUID, unique (a migrated ScheduledTask kept its id) |
+| `name` | String | Unique slug, the file stem; what callers run it by |
+| `description` | String? | What it does |
+| `enabled` | Boolean | A disabled workflow neither fires on its schedule nor runs by name (Run now still works) |
+| `interval_seconds` | Integer? | Schedule period; null = runs only by name |
+| `steps` | String | JSON-encoded `Vec<ChainStep>` (file `defaults:` and `data_class` already applied) |
+| `inputs` | String | JSON array of `{name, description?, required}`; a run missing a required one is refused when created |
+| `checks` | String[] | Opt-in: `evaluator` (score the result, re-queue below threshold), `critic` (adversarial review before it starts) |
+| `evaluation_rubric` | String? | What the evaluator scores against; the run's `success_criteria` otherwise |
+| `is_default` | Boolean | The one workflow a task with no `workflow` runs (free-text goals) |
+| `last_run_at` / `next_run_at` | DateTime? | Native `DATETIME`, UTC; `next_run_at` null without a schedule |
+| `created_at` / `updated_at` | DateTime | Native `DATETIME`, UTC |
+| `managed_by` | String | `yaml` (force-synced from `workflows/<name>.yaml` on startup; `enabled` is set only at creation) or `runtime` (graph-owned, the seeder never touches it) |
+| `paused_reason` | String? | Why it is disabled, when that was deliberate |
+| `topic` | String? | The `topics/*.yaml` topic it works on; absent = spans topics |
+| `kind` | String? | `monitor` · `brief` · `learning` · `maintenance` · `dataset` (`WORKFLOW_KINDS`); required in a file that has a schedule |
 
 #### `Todo` (an item)
 
@@ -368,7 +373,7 @@ The one record for work that wants doing, the user's or an agent's (HBI plan §9
 | `approved_dispatch` | Integer? | The run number the user approved. Single-use: an agent that asks first runs only when it equals `dispatch_count + 1` |
 | `closed_reason` | String? | `became a schedule` when a schedule drafted from it was turned on |
 
-Edges: `(:Todo)-[:SPAWNED {run}]->(:Task)` for each agent run (and "Hand to the brain"); `(:Todo)-[:BECAME]->(:ScheduledTask)` for a schedule drafted from it.
+Edges: `(:Todo)-[:SPAWNED {run}]->(:Task)` for each agent run (and "Hand to the brain"); `(:Todo)-[:BECAME]->(:Workflow)` for a workflow drafted from it.
 | `created_at` / `updated_at` | DateTime | Native `DATETIME`, UTC |
 
 #### `AgentNotification`
@@ -395,22 +400,6 @@ HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; a
 | `auth_env_var` | String? | Env var name that holds the secret value |
 | `default_headers` | String? | JSON object of default request headers |
 | `description` | String? | Human-readable summary |
-
-#### `SchedulerChain`
-
-Stored job-chain templates matched by the scheduler's `goal_to_steps()` query. Seeded from `chains/*.yaml` by `init-db` (and auto-seeded on first scheduler tick if none exist). Supports `{{task_id}}`, `{{goal}}`, `{{goal_topic}}`, `{{date}}`, `{{now}}`, `{{weekday}}`, `{{file_slug}}` template substitutions in step arguments. The three time vars are **local** wall-clock (`services/clock.rs`), not UTC — stored node timestamps remain UTC.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `name` | String | Unique chain name; MERGE key |
-| `pattern` | String | Primary CONTAINS keyword matched against task goal |
-| `patterns` | String? | JSON array of additional OR-matched keywords |
-| `priority` | Integer | Lower = matched first; default chain uses 9999 |
-| `steps` | String | JSON-encoded `Vec<ChainStep>` template |
-| `description` | String? | What this chain does |
-| `no_evaluator` | Boolean | If true, skip evaluator step even when task has `success_criteria` |
-| `no_adversarial` | Boolean | If true, skip adversarial pre-flight even when task has `success_criteria` |
-| `evaluation_rubric` | String? | Overrides `Task.success_criteria` as the evaluator goal text |
 
 #### `DevNote`
 
@@ -469,8 +458,8 @@ A tombstone for a tool the brain no longer has (`services/self_model.rs`). Writt
 
 | Name | Node | Property | Type |
 |------|------|----------|------|
-| `scheduled_task_id` | `ScheduledTask` | `id` | UNIQUE |
-| `scheduled_task_name` | `ScheduledTask` | `name` | UNIQUE |
+| `workflow_id` | `Workflow` | `id` | UNIQUE |
+| `workflow_name` | `Workflow` | `name` | UNIQUE |
 | `procedure_id` | `Procedure` | `id` | UNIQUE |
 | `working_memory_id` | `WorkingMemory` | `id` | UNIQUE |
 | `entity_name` | `Entity` | `name` | UNIQUE |
@@ -480,7 +469,6 @@ A tombstone for a tool the brain no longer has (`services/self_model.rs`). Writt
 | `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
 | `todo_id` | `Todo` | `id` | UNIQUE |
-| `scheduler_chain_id` | `SchedulerChain` | `id` | UNIQUE |
 | `note_id` | `Note` | `id` | UNIQUE |
 | `task_id` | `Task` | `id` | UNIQUE |
 

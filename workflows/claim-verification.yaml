@@ -1,0 +1,42 @@
+# Why: dev_docs get yaml/schedules-claim-verification-1
+name: claim-verification
+description: "Works through the unverified claim backlog in batches: searches for independent evidence, records it, and recomputes each claim's status from the evidence found. Never edits the claim itself."
+# topic: none — spans topics on purpose
+kind: maintenance
+every: 6h  # every 6h
+
+steps:
+  # 1. Verify a batch. Small by design — six hourly batches of 8 clears ~32
+  #    claims a day, which comfortably outpaces ingest without dominating the
+  #    search ladder's budget.
+  - tool_name: claim
+    arguments:
+      action: verify
+      # 20 per 6h ≈ 80/day, above video intake (3 claims × ~16 videos/day).
+      # At 8 the backlog grew by ~50 claims a day (2026-10-01 review).
+      limit: 20
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # 2. Report what the sweep found, so a run that verified nothing is visible
+  #    rather than silent.
+  - tool_name: push_context
+    arguments:
+      session_id: "claims-{{date}}"
+      content: "## CLAIM VERIFICATION SWEEP\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # 3. Per-source breakdown. Not a trust score and not a filter — a source whose
+  #    claims nothing independently corroborates is a pattern worth a human
+  #    looking at, and it reads the same whether the cause is fabrication or
+  #    simply being early to a story nobody else has covered yet.
+  - tool_name: claim
+    arguments:
+      action: sources
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

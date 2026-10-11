@@ -169,13 +169,13 @@ pub async fn handle_feed(Extension(state): Extension<Arc<RestState>>) -> impl In
         .await,
         json!({ "view": "history", "mode": "jobs", "job_status": "failed,dead,dead_letter" }),
     );
-    // A schedule step whose tool isn't registered (or an old `tool`/`args`
+    // A workflow step whose tool isn't registered (or an old `tool`/`args`
     // step, which runs as an empty tool name) fails every run.
     let registered: Vec<String> = match state.tool_registry.as_ref() {
         Some(r) => r.read().await.list().into_iter().map(|t| t.name).collect(),
         None => Vec::new(),
     };
-    let broken = match neo4j.list_scheduled_tasks(false).await {
+    let broken = match neo4j.list_workflows(false).await {
         Ok(list) => Ok(list
             .iter()
             .filter(|s| {
@@ -188,8 +188,8 @@ pub async fn handle_feed(Extension(state): Extension<Arc<RestState>>) -> impl In
         Err(e) => Err(e.to_string()),
     };
     digest(
-        "broken_schedules",
-        "schedules with steps that can't run".into(),
+        "broken_workflows",
+        "workflows with steps that can't run".into(),
         broken,
         json!({ "view": "scheduled" }),
     );

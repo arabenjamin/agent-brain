@@ -1206,26 +1206,28 @@ impl CodebaseSkill {
             extract_text(&log)
         ));
 
-        // Section 5: Graph-stored dynamic capabilities (SchedulerChains, DynamicTools, Procedures)
+        // Section 5: Graph-stored dynamic capabilities (workflows, DynamicTools, Procedures)
         if let Some(neo4j) = &self.neo4j {
             use neo4rs::query;
 
             let mut dyn_lines: Vec<String> = Vec::new();
 
-            // SchedulerChain nodes — the brain's learned/configured task automation
-            match neo4j
-                .execute(query(
-                    "MATCH (c:SchedulerChain) RETURN c.pattern AS pattern, c.description AS description, c.priority AS priority ORDER BY c.priority DESC, c.pattern",
-                ))
-                .await
-            {
+            // Workflow nodes — the brain's configured job chains
+            match neo4j.list_workflows(false).await {
                 Ok(rows) if !rows.is_empty() => {
-                    dyn_lines.push("### SchedulerChains (graph-stored task automation)".into());
-                    for row in &rows {
-                        let pattern = row.get::<String>("pattern").unwrap_or_default();
-                        let desc = row.get::<String>("description").unwrap_or_default();
-                        let prio = row.get::<i64>("priority").unwrap_or(1);
-                        dyn_lines.push(format!("- [{prio}] {pattern}: {desc}"));
+                    dyn_lines.push("### Workflows (graph-stored job chains)".into());
+                    for w in &rows {
+                        let when = w
+                            .interval_seconds
+                            .map(|s| {
+                                format!(
+                                    "every {}",
+                                    crate::services::workflow_seeder::format_every(s)
+                                )
+                            })
+                            .unwrap_or_else(|| "by name".into());
+                        let desc = w.description.as_deref().unwrap_or("");
+                        dyn_lines.push(format!("- {} ({when}): {desc}", w.name));
                     }
                 }
                 _ => {}

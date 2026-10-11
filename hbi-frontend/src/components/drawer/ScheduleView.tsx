@@ -1,8 +1,9 @@
 /**
- * A schedule: when it runs, what it runs, how its recent runs went, and the
- * controls — run now, enable/disable, edit, delete. `id = "new"` creates one.
+ * A workflow: when it runs (its schedule, or by name), its inputs, what it
+ * runs, how its recent runs went, and the controls — run now (with inputs),
+ * enable/disable, edit, delete. `id = "new"` creates one.
  */
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import {
   deleteSchedule,
   invalidateWork,
@@ -49,13 +50,14 @@ export default function ScheduleView({ id }: { id: string }) {
   const [editing, setEditing] = useState(isNew);
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [inputs, setInputs] = useState<Record<string, string>>({});
   const now = useNow();
 
   if (isNew || editing) {
-    const existing = !isNew && q.data ? forEditor(q.data.schedule) : null;
+    const existing = !isNew && q.data ? forEditor(q.data.workflow) : null;
     return (
-      <Drawer title={isNew ? "New schedule" : "Edit schedule"} onClose={isNew ? closeEntity : () => setEditing(false)} wide>
-        {!isNew && q.data?.schedule.managed_by === "yaml" && <YamlNotice />}
+      <Drawer title={isNew ? "New workflow" : "Edit workflow"} onClose={isNew ? closeEntity : () => setEditing(false)} wide>
+        {!isNew && q.data?.workflow.managed_by === "yaml" && <YamlNotice name={q.data.workflow.name} />}
         <ScheduledTaskForm
           embedded
           existing={existing}
@@ -72,7 +74,7 @@ export default function ScheduleView({ id }: { id: string }) {
   }
 
   const d = q.data;
-  const s = d?.schedule;
+  const s = d?.workflow;
 
   const act = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
@@ -88,15 +90,18 @@ export default function ScheduleView({ id }: { id: string }) {
     }
   };
 
-  const overdue = s && s.enabled && (parseTime(s.next_run_at)?.getTime() ?? Infinity) < now;
+  const scheduled = !!s && s.interval_seconds != null && s.next_run_at != null;
+  const overdue = s && s.enabled && scheduled && (parseTime(s.next_run_at ?? "")?.getTime() ?? Infinity) < now;
+  const missing = s ? s.inputs.filter((i) => i.required && !(inputs[i.name] ?? "").trim()).map((i) => i.name) : [];
   const steps: Step[] = Array.isArray(s?.steps) ? (s.steps as Step[]) : [];
 
   const actions = s && (
     <>
-      <button type="button" className="btn" disabled={!!busy}
-        title={s.enabled ? "Dispatch one run now" : "Dispatch one run now, although it is turned off"}
+      <button type="button" className="btn" disabled={!!busy || missing.length > 0}
+        title={missing.length > 0 ? `Fill in ${missing.join(", ")} under Inputs first`
+          : s.enabled ? "Dispatch one run now" : "Dispatch one run now, although it is turned off"}
         onClick={() => act("Run now", async () => {
-          const r = await runScheduleNow(s.id);
+          const r = await runScheduleNow(s.id, inputs);
           openEntity("task", r.task_id);
         })}>
         Run now
@@ -110,16 +115,16 @@ export default function ScheduleView({ id }: { id: string }) {
   );
 
   return (
-    <Drawer title={<><span>Schedule</span>{s && <Pill tone={s.enabled ? "green" : "muted"}>{s.enabled ? "on" : "off"}</Pill>}</>}
+    <Drawer title={<><span>Workflow</span>{s && <Pill tone={s.enabled ? "green" : "muted"}>{s.enabled ? "on" : "off"}</Pill>}</>}
       actions={actions} onClose={closeEntity} wide>
       {!d || !s ? (
-        <LoadState what="schedule" id={id} error={q.error} onRetry={() => q.refetch()} />
+        <LoadState what="workflow" id={id} error={q.error} onRetry={() => q.refetch()} />
       ) : (
         <>
           <h3 className="dw-title">{s.name}</h3>
           {s.description && <div className="dw-note">{s.description}</div>}
           {result && <div className={result.ok ? "tone-text-green" : "tone-text-red"}>{result.text}</div>}
-          {s.managed_by === "yaml" && <YamlNotice />}
+          {s.managed_by === "yaml" && <YamlNotice name={s.name} />}
           {s.legacy_steps > 0 && (
             <EmptyState
               tone="red"
@@ -130,20 +135,38 @@ export default function ScheduleView({ id }: { id: string }) {
 
           <Section title="When">
             <div className="dw-grid">
-              <span>Cadence</span><span>{fmtEvery(s.interval_seconds)}</span>
-              <span>Next run</span>
-              <span>
-                {s.enabled ? <>{formatLocal(s.next_run_at)} {overdue && <span className="tone-text-yellow">(due — runs at the next scheduler tick)</span>}</> : "— (turned off)"}
-              </span>
+              <span>Cadence</span><span>{scheduled ? fmtEvery(s.interval_seconds) : "no schedule: runs when started by name"}</span>
+              {scheduled && <>
+                <span>Next run</span>
+                <span>
+                  {s.enabled ? <>{formatLocal(s.next_run_at ?? "")} {overdue && <span className="tone-text-yellow">(due — runs at the next scheduler tick)</span>}</> : "— (turned off)"}
+                </span>
+              </>}
+              {s.checks.length > 0 && <><span>Checks</span><span>{s.checks.join(", ")}</span></>}
+              {s.is_default && <><span>Default</span><span>free-text tasks run this workflow</span></>}
               <span>Last run</span><span>{s.last_run_at ? `${formatLocal(s.last_run_at)} (${relTime(s.last_run_at)})` : "never"}</span>
             </div>
           </Section>
+
+          {s.inputs.length > 0 && (
+            <Section title="Inputs" aside="for Run now">
+              <div className="dw-grid">
+                {s.inputs.map((i) => (
+                  <Fragment key={i.name}>
+                    <span title={i.description ?? undefined}>{i.name}{i.required ? " *" : ""}</span>
+                    <input className="ui-input" value={inputs[i.name] ?? ""} placeholder={i.description ?? ""}
+                      onChange={(e) => setInputs({ ...inputs, [i.name]: e.target.value })} />
+                  </Fragment>
+                ))}
+              </div>
+            </Section>
+          )}
 
           <TopicSection s={s} />
 
           <Section title="Runs" aside={d.runs_total > d.runs_shown ? `latest ${d.runs_shown} of ${d.runs_total}` : `${d.runs_total}`}>
             {d.runs.length === 0 ? (
-              <EmptyState title="No runs recorded" checked="No run-record task names this schedule." />
+              <EmptyState title="No runs recorded" checked="No task names this workflow as the one it ran." />
             ) : (
               <ul className="dw-list">
                 {d.runs.map((r) => (
@@ -151,6 +174,7 @@ export default function ScheduleView({ id }: { id: string }) {
                     <StatusPill status={r.status} />
                     <EntityLink kind="task" id={r.task_id}>{formatLocal(r.created_at)}</EntityLink>
                     <span className="dw-dim">{relTime(r.created_at)}</span>
+                    {r.goal && r.goal !== s.name && <span className="dw-dim">{r.goal}</span>}
                   </li>
                 ))}
               </ul>
@@ -180,13 +204,13 @@ export default function ScheduleView({ id }: { id: string }) {
             <button type="button" className="btn danger" disabled={!!busy}
               onClick={() => {
                 const warn = s.managed_by === "yaml"
-                  ? `\n\nIt is defined in a schedules/*.yaml file, so the next restart will create it again. Remove the file to delete it for good.`
+                  ? `\n\nIt is defined in workflows/${s.name}.yaml, so the next restart will create it again. Remove the file to delete it for good.`
                   : "";
                 if (window.confirm(`Delete “${s.name}”?${warn}`)) {
                   act("Delete", async () => { await deleteSchedule(s.id); closeEntity(); });
                 }
               }}>
-              Delete schedule
+              Delete workflow
             </button>
           </Section>
           <div className="dw-dim"><code>{s.id}</code> · managed by {s.managed_by ?? "unknown"}</div>
@@ -201,7 +225,7 @@ function TopicSection({ s }: { s: WorkSchedule }) {
   const mix = useScheduleTopicMix();
   const topics = useTopics().data?.topics ?? [];
   const labels = Object.fromEntries(topics.map((t) => [t.name, t.label]));
-  const m: TopicMix | undefined = mix.data?.schedules.find((x) => x.id === s.id);
+  const m: TopicMix | undefined = mix.data?.workflows.find((x) => x.id === s.id);
   const flag = mixFlag(m, labels);
   const assessed = m ? m.topics.reduce((a, t) => a + t.notes, 0) + m.fits_none : 0;
   return (
@@ -263,12 +287,12 @@ function TopicSection({ s }: { s: WorkSchedule }) {
   );
 }
 
-function YamlNotice() {
+function YamlNotice({ name }: { name: string }) {
   return (
     <EmptyState
       tone="yellow"
-      title="Defined in a schedules/*.yaml file"
-      checked="On every restart the file's steps, description and interval replace what is stored, so edits to those here last only until then. Turning it on or off, and Run now, are kept."
+      title={`Defined in workflows/${name}.yaml`}
+      checked="On every restart the file's definition (steps, description, schedule, inputs) replaces what is stored, so edits to those here last only until then. Turning it on or off, and Run now, are kept."
     />
   );
 }

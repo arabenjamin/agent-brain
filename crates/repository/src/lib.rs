@@ -2,21 +2,21 @@ mod agent_job;
 mod client;
 mod error;
 mod media;
-mod scheduled_task;
 mod task;
 mod temporal;
 mod todo;
+mod workflow;
 
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 
-pub use agent_brain_models::ScheduledTask;
+pub use agent_brain_models::{WORKFLOW_KINDS, Workflow, WorkflowInput};
 pub use client::Neo4jClient;
 pub use error::{RepositoryError, Result};
 pub use media::{MediaRecord, MediaSourceRecord};
-pub use scheduled_task::YamlSyncOutcome;
 pub use temporal::node_ts;
 pub use todo::{TODO_ORIGINS, TODO_STATUSES, Todo, TodoItemPatch};
+pub use workflow::{WorkflowDef, WorkflowPatch, YamlSyncOutcome};
 
 #[cfg(feature = "telemetry")]
 pub use telemetry::TelemetryClient;

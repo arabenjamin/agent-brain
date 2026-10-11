@@ -1,5 +1,5 @@
 /**
- * Schedule and chain editing: data shapes and the step-draft round trip.
+ * Workflow editing: data shapes and the step-draft round trip.
  * Split out of the former 1900-line ScheduledTasksPanel (HBI Phase 2).
  */
 
@@ -10,52 +10,21 @@ export interface ScheduledTask {
   name: string;
   description?: string;
   enabled: boolean;
-  interval_seconds: number;
+  /** null = no schedule; the workflow runs only when started by name. */
+  interval_seconds: number | null;
   steps: string; // JSON string of ChainStep[]
   last_run_at?: string;
-  next_run_at: string;
+  next_run_at?: string | null;
   created_at: string;
   updated_at: string;
   topic?: string | null;
   kind?: string | null;
 }
 
-export interface SchedulerChain {
-  id: string;
-  name: string;
-  pattern: string;
-  patterns: string[];
-  priority: number;
-  description: string;
-  no_evaluator: boolean;
-  evaluation_rubric?: string | null;
-  step_count: number;
-  steps: string; // JSON string
-  updated_at?: string;
-}
-
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
 export function stUrl(path = "") {
-  return `/scheduled-tasks${path}`;
-}
-
-export function fmtInterval(secs: number): string {
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.round(secs / 60)}m`;
-  if (secs < 86400) return `${(secs / 3600).toFixed(1)}h`;
-  return `${(secs / 86400).toFixed(1)}d`;
-}
-
-export function fmtDatetime(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  return `/workflows${path}`;
 }
 
 // ─── Step builder types ───────────────────────────────────────────────────────
@@ -127,7 +96,7 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   {
     group: "Agent Jobs",
     tools: [
-      "enqueue_jobs", "manage_job", "manage_chain", "dead_letter",
+      "enqueue_jobs", "manage_job", "dead_letter",
     ],
   },
   {
@@ -148,7 +117,7 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   },
   {
     group: "Scheduler",
-    tools: ["manage_scheduled_task", "scheduler_control"],
+    tools: ["manage_workflow", "scheduler_control"],
   },
   {
     group: "Dynamic tools",

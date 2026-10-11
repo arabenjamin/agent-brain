@@ -1,0 +1,58 @@
+name: health-monitor
+description: "Periodic brain health check — reviews scheduler state, queue depth, and failure trends."
+topic: agent-brain
+kind: maintenance
+every: 12h
+steps:
+  # Why: dev_docs get yaml/schedules-health-monitor-1
+  - tool_name: neo4j_query
+    arguments:
+      cypher: >-
+        MATCH (j:AgentJob) WHERE j.created_at >= datetime() - duration('P1D')
+        WITH j.status AS k, count(*) AS c
+        RETURN 'jobs_24h' AS metric, k AS key, c AS value
+        UNION ALL
+        MATCH (t:Task) WHERE t.updated_at >= datetime() - duration('P1D') AND t.status IN ['completed', 'failed']
+        WITH t.status AS k, count(*) AS c
+        RETURN 'tasks_finished_24h' AS metric, k AS key, c AS value
+        UNION ALL
+        MATCH (t:Task) WHERE t.updated_at >= datetime() - duration('P7D') AND t.status IN ['completed', 'failed']
+        WITH t.status AS k, count(*) AS c
+        RETURN 'tasks_finished_7d' AS metric, k AS key, c AS value
+        UNION ALL
+        MATCH (t:Task) WHERE t.status IN ['created', 'in_progress', 'blocked']
+        WITH t.status AS k, count(*) AS c
+        RETURN 'tasks_open_now' AS metric, k AS key, c AS value
+        UNION ALL
+        MATCH (t:Task {status: 'failed'}) WHERE t.updated_at >= datetime() - duration('P1D')
+        RETURN 'failed_task_24h' AS metric,
+               left(t.goal, 100) + ' :: ' + coalesce(left(split(coalesce(t.context, ''), '[FAILURE]')[1], 200), 'no reason recorded') AS key,
+               1 AS value
+        UNION ALL
+        MATCH (j:AgentJob {status: 'dead_letter'}) WHERE j.updated_at >= datetime() - duration('P1D')
+        RETURN 'dead_job_24h' AS metric, j.tool_name + ' :: ' + left(coalesce(j.error, ''), 200) AS key, 1 AS value
+      limit: 200
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # The reason step stores the analysis as an inference note. context carries
+  # the live data so the RAG path is bypassed — without it, reason retrieves
+  # previous health notes and critiques them instead of the fresh metrics.
+  - tool_name: reason
+    arguments:
+      question: >-
+        The CONTEXT is a table of brain health metrics. Each row's metric names its
+        window: *_24h is the last 24 hours, *_7d the last 7 days, *_now the current
+        state. There are NO all-time totals. Judge health from the last 24 hours
+        against the 7-day rate (a 7-day count divided by 7 is the daily baseline).
+        List each failed_task_24h and dead_job_24h with its reason, group them by
+        cause, and say whether each looks transient (network, upstream outage) or
+        a defect that will recur. If there are no failures in the last 24 hours,
+        say the brain is healthy. Do not call a count "high" without comparing it
+        to the baseline.
+      context: "{{_prev}}"
+      store_inference: true
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama

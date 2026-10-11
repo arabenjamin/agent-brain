@@ -1,0 +1,52 @@
+# Why: dev_docs get yaml/schedules-brain-exercise-1
+enabled: false
+name: brain-exercise
+description: "Weekly self-directed exercise — analyses entity mentions to find a topic the brain encounters often but knows little about, then creates a research Task with success criteria so the evaluator loop grades the outcome."
+# topic: none — spans topics on purpose
+kind: learning
+every: 1w
+steps:
+  # Why: dev_docs get yaml/schedules-brain-exercise-2
+  - tool_name: neo4j_query
+    arguments:
+      # Channel and watchlist names are excluded: every watched video mentions
+      # its channel, so "newsnation" and "c-span" topped the ranking and the
+      # exercise set out to "research NewsNation" (2026-09-30). URL entities and
+      # the "gap synthesis" heading are boilerplate, not topics.
+      cypher: "MATCH (e:Entity)<-[:MENTIONS]-(n:Note) WITH e, count(n) AS mentions, sum(CASE WHEN n.note_type = 'semantic' THEN 1 ELSE 0 END) AS semantic_notes WHERE mentions >= 2 AND coalesce(e.entity_type, '') <> 'url' AND NOT e.name IN ['gap synthesis', 'youtube'] AND NOT EXISTS { MATCH (m:Media) WHERE toLower(m.channel) = e.name } AND NOT EXISTS { MATCH (s:MediaSource) WHERE s.name = e.name } RETURN e.name AS entity, e.entity_type AS type, mentions, semantic_notes ORDER BY mentions DESC, semantic_notes ASC LIMIT 30"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: reason
+    arguments:
+      question: |
+        Today is {{date}}. The CONTEXT lists entities from your knowledge graph with
+        how often they are mentioned and how many semantic (studied) notes exist
+        about them. A high mention count with few semantic notes means you keep
+        encountering the topic without really understanding it.
+
+        Pick exactly ONE topic from the CONTEXT that would most improve your
+        usefulness if you understood it better. Base your choice ONLY on the CONTEXT.
+
+        Your answer must be a single sentence of at most 25 words, starting with
+        the word "Research", naming the topic and what specifically to find out.
+        Example: "Research vector embeddings: how dimensionality affects retrieval
+        quality in hybrid search." No other text in the answer field.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: create_task
+    arguments:
+      goal: "{{_prev}}"
+      workflow: fill-knowledge-gap
+      inputs:
+        topic: "{{_prev}}"
+      context: "Self-directed brain exercise ({{date}}). Topic chosen by analysing entity mentions vs. studied knowledge in the graph. This task exists to exercise and measure the brain's research loop."
+      success_criteria: "At least one semantic note is stored that explicitly names the chosen topic and contains concrete, verifiable facts answering the research goal — not meta-commentary or restated questions."
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

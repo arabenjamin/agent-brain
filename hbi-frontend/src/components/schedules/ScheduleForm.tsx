@@ -8,7 +8,7 @@ import { jsonToStepDrafts, makeDefaultStep, stepDraftsToJson, stUrl, type Schedu
 import StepCard from "./StepCard";
 import { useMergedToolGroups } from "./useToolGroups";
 
-// ─── ScheduledTaskForm ────────────────────────────────────────────────────────
+// ─── WorkflowForm ────────────────────────────────────────────────────────
 
 export default function ScheduledTaskForm({
   existing,
@@ -29,8 +29,10 @@ export default function ScheduledTaskForm({
   const [topic, setTopic] = useState(existing?.topic ?? "");
   const [kind, setKind] = useState(existing?.kind ?? "");
   const topics = useTopics().data?.topics ?? [];
-  const [intervalUnit, setIntervalUnit] = useState<"seconds" | "minutes" | "hours" | "days">("days");
+  const [intervalUnit, setIntervalUnit] = useState<"minutes" | "hours" | "days" | "weeks">("days");
   const [intervalValue, setIntervalValue] = useState<number>(1);
+  // A workflow with no schedule runs only when started by name.
+  const [scheduled, setScheduled] = useState(existing ? existing.interval_seconds != null : true);
   const toolGroups = useMergedToolGroups();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,13 +50,16 @@ export default function ScheduledTaskForm({
     return [makeDefaultStep()];
   });
 
+  const setFromSeconds = (secs: number) => {
+    if (secs % 604800 === 0) { setIntervalUnit("weeks"); setIntervalValue(secs / 604800); }
+    else if (secs % 86400 === 0) { setIntervalUnit("days"); setIntervalValue(secs / 86400); }
+    else if (secs % 3600 === 0) { setIntervalUnit("hours"); setIntervalValue(secs / 3600); }
+    else { setIntervalUnit("minutes"); setIntervalValue(Math.max(1, Math.round(secs / 60))); }
+  };
+
   // Sync interval_seconds ↔ unit/value
   useEffect(() => {
-    const secs = existing?.interval_seconds ?? 86400;
-    if (secs % 86400 === 0) { setIntervalUnit("days"); setIntervalValue(secs / 86400); }
-    else if (secs % 3600 === 0) { setIntervalUnit("hours"); setIntervalValue(secs / 3600); }
-    else if (secs % 60 === 0) { setIntervalUnit("minutes"); setIntervalValue(secs / 60); }
-    else { setIntervalUnit("seconds"); setIntervalValue(secs); }
+    setFromSeconds(existing?.interval_seconds ?? 86400);
   }, [existing?.interval_seconds]);
 
   // Sync raw JSON when toggling to raw view
@@ -67,10 +72,8 @@ export default function ScheduledTaskForm({
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  const computedIntervalSeconds = () => {
-    const multipliers = { seconds: 1, minutes: 60, hours: 3600, days: 86400 };
-    return Math.max(1, Math.round(intervalValue * multipliers[intervalUnit]));
-  };
+  /** The period as the brain reads it: `30m`, `6h`, `1d`, `2w`. */
+  const every = () => `${Math.max(1, Math.round(intervalValue))}${{ minutes: "m", hours: "h", days: "d", weeks: "w" }[intervalUnit]}`;
 
   const applyRawJson = () => {
     const parsed = jsonToStepDrafts(rawJson);
@@ -118,11 +121,11 @@ export default function ScheduledTaskForm({
   // form only says what is wanted and which tools exist. The agent sees
   // nothing else, so the task is self-contained.
   const buildAssistTask = (prompt: string) =>
-    `Draft a scheduled-task step chain for this request:\n"${prompt}"\n\n` +
+    `Draft a scheduled workflow for this request:\n"${prompt}"\n\n` +
     `Tools available to a scheduled step: ${toolGroups.flatMap((g) => g.tools).join(", ")}`;
 
-  // schedule-author answers with {name, interval_seconds, steps}; an older or
-  // other agent may answer with the bare steps array.
+  // schedule-author answers with {name, every, steps}; an older or other agent
+  // may answer with the bare steps array.
   const applyAssist = (body: string): string | null => {
     let stepsText: string | null = null;
     const obj = extractJson(body, "object");
@@ -132,12 +135,10 @@ export default function ScheduledTaskForm({
         if (Array.isArray(o?.steps)) {
           stepsText = JSON.stringify(o.steps);
           if (!name.trim() && typeof o.name === "string") setName(o.name);
-          if (!existing && typeof o.interval_seconds === "number" && o.interval_seconds > 0) {
-            const secs = o.interval_seconds;
-            if (secs % 86400 === 0) { setIntervalUnit("days"); setIntervalValue(secs / 86400); }
-            else if (secs % 3600 === 0) { setIntervalUnit("hours"); setIntervalValue(secs / 3600); }
-            else if (secs % 60 === 0) { setIntervalUnit("minutes"); setIntervalValue(secs / 60); }
-            else { setIntervalUnit("seconds"); setIntervalValue(secs); }
+          const m = typeof o.every === "string" ? /^(\d+)([mhdw])$/.exec(o.every.trim()) : null;
+          if (!existing && m) {
+            setScheduled(true);
+            setFromSeconds(Number(m[1]) * { m: 60, h: 3600, d: 86400, w: 604800 }[m[2] as "m" | "h" | "d" | "w"]);
           }
         }
       } catch { /* not the object form; try the array below */ }
@@ -166,7 +167,7 @@ export default function ScheduledTaskForm({
       name: name.trim(),
       description: description.trim() || null,
       enabled,
-      interval_seconds: computedIntervalSeconds(),
+      every: scheduled ? every() : null,
       steps: stepsJson,
       topic: topic || null,
       kind: kind || null,
@@ -179,8 +180,8 @@ export default function ScheduledTaskForm({
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as { error?: string }).error ?? `${res.status}`);
-      const saved = data as { id?: string; scheduled_task?: { id?: string } };
-      onSaved(existing?.id ?? saved.id ?? saved.scheduled_task?.id ?? null);
+      const saved = data as { id?: string };
+      onSaved(existing?.id ?? saved.id ?? null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -215,7 +216,7 @@ export default function ScheduledTaskForm({
       <div style={embedded ? embeddedStyle : cardStyle}>
         {!embedded && (
           <h3 style={{ margin: 0, fontSize: "1rem" }}>
-            {existing ? `Edit: ${existing.name}` : "New Scheduled Task"}
+            {existing ? `Edit: ${existing.name}` : "New workflow"}
           </h3>
         )}
 
@@ -227,7 +228,9 @@ export default function ScheduledTaskForm({
               style={inputStyle}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Daily news briefing"
+              placeholder="e.g. daily-news"
+              pattern="[a-z0-9][a-z0-9\-]*"
+              title="Lowercase letters, digits and dashes: the name it is run by"
               required
             />
           </label>
@@ -238,13 +241,17 @@ export default function ScheduledTaskForm({
               style={{ ...inputStyle, resize: "vertical", minHeight: "56px" }}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this task does…"
+              placeholder="What this workflow does…"
             />
           </label>
 
-          {/* Interval */}
+          {/* Schedule */}
           <div style={labelStyle}>
-            <span>Interval *</span>
+            <label style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+              <input type="checkbox" checked={scheduled} onChange={(e) => setScheduled(e.target.checked)} />
+              <span>Runs on a schedule</span>
+            </label>
+            {scheduled ? (
             <div style={{ display: "flex", gap: "8px" }}>
               <input
                 type="number"
@@ -258,15 +265,18 @@ export default function ScheduledTaskForm({
                 value={intervalUnit}
                 onChange={(e) => setIntervalUnit(e.target.value as typeof intervalUnit)}
               >
-                <option value="seconds">seconds</option>
                 <option value="minutes">minutes</option>
                 <option value="hours">hours</option>
                 <option value="days">days</option>
+                <option value="weeks">weeks</option>
               </select>
               <span style={{ fontSize: "0.8rem", opacity: 0.6, alignSelf: "center", whiteSpace: "nowrap" }}>
-                = {computedIntervalSeconds()}s
+                every {every()}
               </span>
             </div>
+            ) : (
+              <span style={{ fontSize: "0.8rem", opacity: 0.6 }}>Runs only when started by name.</span>
+            )}
           </div>
 
           {/* Enabled */}

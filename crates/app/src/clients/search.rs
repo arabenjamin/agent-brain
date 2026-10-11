@@ -278,7 +278,7 @@ async fn lookup_id(neo4j: &Neo4jClient, id: &str) -> Option<Value> {
                    UNION MATCH (n:Entity {id: $id}) RETURN 'entity' AS kind, n.name AS label \
                    UNION MATCH (n:Task {id: $id}) RETURN 'task' AS kind, n.goal AS label \
                    UNION MATCH (n:AgentJob {id: $id}) RETURN 'job' AS kind, n.tool_name AS label \
-                   UNION MATCH (n:ScheduledTask {id: $id}) RETURN 'schedule' AS kind, n.name AS label \
+                   UNION MATCH (n:Workflow {id: $id}) RETURN 'schedule' AS kind, n.name AS label \
                    UNION MATCH (n:Todo {id: $id}) RETURN 'todo' AS kind, n.title AS label \
                  } RETURN kind, label LIMIT 1",
             )
@@ -489,7 +489,7 @@ async fn lookup_prefix(neo4j: &Neo4jClient, prefix: &str) -> Option<Value> {
                    MATCH (n:Note) WHERE n.id STARTS WITH $p RETURN 'note' AS kind, n.id AS id, left(n.content, 120) AS label LIMIT 2 \
                    UNION MATCH (n:Entity) WHERE n.id STARTS WITH $p RETURN 'entity' AS kind, n.id AS id, n.name AS label LIMIT 2 \
                    UNION MATCH (n:Task) WHERE n.id STARTS WITH $p RETURN 'task' AS kind, n.id AS id, n.goal AS label LIMIT 2 \
-                   UNION MATCH (n:ScheduledTask) WHERE n.id STARTS WITH $p RETURN 'schedule' AS kind, n.id AS id, n.name AS label LIMIT 2 \
+                   UNION MATCH (n:Workflow) WHERE n.id STARTS WITH $p RETURN 'schedule' AS kind, n.id AS id, n.name AS label LIMIT 2 \
                    UNION MATCH (n:Todo) WHERE n.id STARTS WITH $p RETURN 'todo' AS kind, n.id AS id, n.title AS label LIMIT 2 \
                  } RETURN kind, id, label LIMIT 2",
             )

@@ -1,0 +1,85 @@
+name: news-analysis
+description: "Reads the most recent news notes, extracts durable knowledge from them, stores a synthesis, and creates a follow-up research task for the scheduler to dispatch."
+# topic: none — spans topics on purpose
+kind: learning
+every: 1d
+
+steps:
+  # Step 1: Retrieve the most recent news notes
+  - tool_name: search_notes
+    arguments:
+      note_type: news
+      limit: 5
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  # Step 2: Reason over the news — extract lasting insights and identify a research thread
+  - tool_name: reason
+    arguments:
+      question: |
+        You are the agent brain's reasoning module. You have just retrieved recent news briefs.
+        Your job is to think beyond today's headlines and extract durable knowledge.
+
+        Produce a structured analysis with these sections:
+
+        ## Key Insights
+        3-5 bullet points of patterns or facts that will still matter in 6 months.
+        Focus on structural shifts, not one-day events.
+
+        ## Connections to Prior Knowledge
+        How do these stories connect to things the brain already knows?
+        What context makes them more or less significant?
+
+        ## Open Questions
+        2-3 questions the brain does NOT know the answer to, each answerable
+        with facts a few web searches can settle (what, how it works, who,
+        when, how much) and naming the concrete law, agency, product, or event.
+        Not essay prompts: never "What are the long-term implications of…" or
+        "How might X affect Y…".
+
+        ## Priority Research Topic
+        The one Open Question above most worth answering now, copied as a
+        single question.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+
+  # Step 3: Store the analysis as durable semantic knowledge
+  - tool_name: store_note
+    arguments:
+      content: "{{_prev}}"
+      note_type: semantic
+      source_context: news_analysis
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # Step 4: Extract just the research topic
+  - tool_name: reason
+    arguments:
+      question: |
+        From this news analysis, find the "Priority Research Topic" section.
+        Output it as a single line: <the priority research topic>
+
+        Output nothing else — no prefix, no explanation, no punctuation around it.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  # Step 5: Run fill-knowledge-gap on it
+  - tool_name: create_task
+    arguments:
+      goal: "fill knowledge gap: {{_prev}}"
+      workflow: fill-knowledge-gap
+      inputs:
+        topic: "{{_prev}}"
+      context: "Auto-generated from daily news analysis. Research this topic and store findings as semantic knowledge."
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

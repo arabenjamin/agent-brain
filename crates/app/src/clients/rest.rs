@@ -1,28 +1,15 @@
-//! REST API adapter — todo, scheduled-task, and scheduler-config endpoints.
-//!
-//! This module extracts the REST resource routes from the HTTP transport so that
-//! they are testable and configurable independently of MCP session management.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! let rest = RestAdapter::new()
-//!     .with_neo4j(neo4j_arc)
-//!     .with_scheduler(scheduler_handle);
-//!
-//! // Merge into an Axum router:
-//! let router = Router::new().merge(rest.into_router());
-//! ```
+//! REST handlers — todos, workflows, scheduler config and the rest of `/api/*`.
+//! Routes are declared in `mcp/http_transport.rs`; [`RestAdapter`] builds the
+//! shared [`RestState`] they read through Axum's `Extension`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
 };
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -63,7 +50,7 @@ pub struct RestState {
 
 /// Builder for the REST adapter.
 ///
-/// Attach resources and call [`into_router`] to get the Axum router.
+/// Attach resources and call `build_state` for the handlers' shared state.
 #[derive(Default)]
 pub struct RestAdapter {
     neo4j: Option<Arc<Neo4jClient>>,
@@ -173,54 +160,6 @@ impl RestAdapter {
             log_buffer: self.log_buffer,
             tool_registry: self.tool_registry,
         })
-    }
-
-    /// Return a `Router<()>` containing all REST routes.
-    ///
-    /// Handlers extract [`Arc<RestState>`] via Axum's `Extension` mechanism.
-    /// The caller must add the Extension to the parent router:
-    /// ```ignore
-    /// router.layer(axum::Extension(rest_state))
-    /// ```
-    pub fn routes() -> Router {
-        Router::new()
-            // --- logs ---
-            .route("/api/logs", get(handle_get_logs))
-            // --- todos ---
-            .route("/todos", get(handle_list_todos).post(handle_create_todo))
-            .route(
-                "/todos/{id}",
-                get(handle_get_todo)
-                    .put(handle_update_todo)
-                    .delete(handle_delete_todo),
-            )
-            // --- scheduled tasks ---
-            .route(
-                "/scheduled-tasks",
-                get(handle_list_scheduled_tasks).post(handle_create_scheduled_task),
-            )
-            .route(
-                "/scheduled-tasks/{id}",
-                get(handle_get_scheduled_task)
-                    .put(handle_update_scheduled_task)
-                    .delete(handle_delete_scheduled_task),
-            )
-            // --- scheduler config ---
-            .route(
-                "/scheduler-config",
-                get(handle_get_scheduler_config).put(handle_put_scheduler_config),
-            )
-    }
-
-    /// Convenience: build both state and routes and return the complete router
-    /// with the Extension already injected.
-    ///
-    /// Only call this when you want a fully self-contained `Router<()>` — e.g.
-    /// for testing.  In production, use [`build_state`] + [`routes`] separately
-    /// so the Extension can be applied after merging.
-    pub fn into_router(self) -> Router {
-        let state = self.build_state();
-        Self::routes().layer(Extension(state))
     }
 }
 
@@ -564,280 +503,154 @@ pub async fn handle_delete_todo(
 }
 
 // ============================================================================
-// ScheduledTask handlers
+// Workflow handlers (the HBI editor; the chat agent uses `manage_workflow`)
 // ============================================================================
 
-/// GET /scheduled-tasks[?enabled_only=true]
-pub async fn handle_list_scheduled_tasks(
+/// GET /workflows[?enabled_only=true]
+pub async fn handle_list_workflows(
     Extension(state): Extension<Arc<RestState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Scheduled task storage not available");
+        return unavailable("Workflow storage not available");
     };
-
-    let enabled_only = params
-        .get("enabled_only")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-
-    match neo4j.list_scheduled_tasks(enabled_only).await {
-        Ok(tasks) => Json(serde_json::json!({"scheduled_tasks": tasks})).into_response(),
+    let enabled_only = params.get("enabled_only").is_some_and(|v| v == "true");
+    match neo4j.list_workflows(enabled_only).await {
+        Ok(w) => Json(serde_json::json!({ "workflows": w })).into_response(),
         Err(e) => internal(e),
     }
 }
 
-/// The HBI saves schedules here, not through `manage_scheduled_task`, so the
-/// same hard checks run here: each step's tool exists and its arguments fit
-/// the tool's own `input_schema`, each pinned model is in the catalog, and the
-/// declared topic and kind are valid. `Err` is the 400 text.
-async fn check_schedule_body(
+/// The same hard checks `manage_workflow` applies: each step's tool exists
+/// and its arguments fit the tool's own `input_schema`, pinned models are in
+/// the catalog, references resolve, and topic and kind are valid.
+async fn save_workflow(
     state: &RestState,
+    neo4j: &crate::repository::Neo4jClient,
+    id: Option<&str>,
+    create_only: bool,
     body: &Value,
-    steps_json: Option<&str>,
-) -> Result<(), String> {
-    if let Some(steps) = steps_json {
-        let steps: Vec<Value> = serde_json::from_str(steps).map_err(|e| format!("steps: {e}"))?;
-        let mut hard = Vec::new();
-        if let Some(reg) = state.tool_registry.as_ref() {
+) -> Result<crate::services::workflows::Saved, crate::services::workflows::SaveError> {
+    let (live, schemas) = match state.tool_registry.as_ref() {
+        Some(reg) => {
             let defs = reg.read().await.list();
             let live: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
             let schemas: HashMap<String, Value> =
                 defs.into_iter().map(|d| (d.name, d.input_schema)).collect();
-            hard.extend(crate::services::validation::validate_step_array(
-                &steps, &live, &schemas,
-            ));
+            (live, schemas)
         }
-        if let Some(tel) = state.telemetry.as_ref() {
-            let catalog = crate::services::model_router::catalog_models(tel);
-            hard.extend(crate::services::validation::validate_step_models(
-                &steps, &catalog,
-            ));
-        }
-        if crate::services::validation::has_hard(&hard) {
-            return Err(crate::services::validation::render_hard(&hard));
-        }
-    }
-    crate::services::schedule_seeder::check_labels(
-        body.get("topic").and_then(Value::as_str),
-        body.get("kind").and_then(Value::as_str),
-        &crate::services::schedule_seeder::declared_topics(),
-    )
-    .map(|_| ())
-}
-
-/// Write `topic` / `kind` from a create or update body. A key that is absent
-/// keeps the stored value; null or "" clears it. Already checked.
-async fn apply_schedule_labels(
-    neo4j: &crate::repository::Neo4jClient,
-    task: &mut crate::repository::ScheduledTask,
-    body: &Value,
-) -> Result<(), String> {
-    if body.get("topic").is_none() && body.get("kind").is_none() {
-        return Ok(());
-    }
-    let pick = |k: &str, current: &Option<String>| match body.get(k) {
-        None => current.clone(),
-        Some(v) => v
-            .as_str()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from),
+        None => (Vec::new(), HashMap::new()),
     };
-    let topic = pick("topic", &task.topic);
-    let kind = pick("kind", &task.kind);
-    neo4j
-        .set_scheduled_task_labels((&task.id, true), topic.as_deref(), kind.as_deref(), false)
-        .await
-        .map_err(|e| e.to_string())?;
-    task.topic = topic;
-    task.kind = kind;
-    Ok(())
+    let catalog = state
+        .telemetry
+        .as_ref()
+        .map(crate::services::model_router::catalog_models)
+        .unwrap_or_default();
+    let checks = crate::services::workflows::SaveChecks {
+        live_tools: &live,
+        tool_schemas: &schemas,
+        catalog: &catalog,
+        envelope: None,
+    };
+    crate::services::workflows::save(neo4j, id, create_only, body, &checks).await
 }
 
-/// POST /scheduled-tasks
-pub async fn handle_create_scheduled_task(
+fn save_error(e: crate::services::workflows::SaveError) -> axum::response::Response {
+    use crate::services::workflows::SaveError;
+    match e {
+        SaveError::Invalid(_) => bad_request(e.to_string()),
+        SaveError::NotFound(_) => not_found(),
+        SaveError::Storage(m) => internal(m),
+    }
+}
+
+/// POST /workflows — create; a name that exists is refused (PUT edits).
+pub async fn handle_create_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Scheduled task storage not available");
+        return unavailable("Workflow storage not available");
     };
-
-    let Some(name) = body["name"].as_str() else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "name is required"})),
-        )
-            .into_response();
-    };
-    let name = name.to_string();
-
-    let Some(interval_seconds) = body["interval_seconds"].as_i64().filter(|&v| v >= 60) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "interval_seconds (>=60) is required"})),
-        )
-            .into_response();
-    };
-
-    // steps may be a JSON string or a JSON array
-    let steps = if let Some(s) = body["steps"].as_str() {
-        s.to_string()
-    } else if body["steps"].is_array() {
-        match serde_json::to_string(&body["steps"]) {
-            Ok(s) => s,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "steps serialization failed"})),
-                )
-                    .into_response();
+    match save_workflow(&state, neo4j, None, true, &body).await {
+        Ok(saved) => {
+            // Drafted from an item ("make it a workflow"): link it back.
+            if let Some(item) = body
+                .get("from_item")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                && let Err(e) =
+                    crate::services::items::link_became(neo4j, item, &saved.workflow.id).await
+            {
+                return internal(format!(
+                    "created, but not linked to the item it came from: {e}"
+                ));
             }
+            let status = if saved.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (status, Json(serde_json::json!(saved.workflow))).into_response()
         }
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "steps is required (array or JSON string)"})),
-        )
-            .into_response();
-    };
-
-    if let Err(e) = check_schedule_body(&state, &body, Some(&steps)).await {
-        return bad_request(format!("Schedule rejected — nothing was saved: {e}"));
-    }
-
-    let description = body["description"].as_str();
-    let enabled = body["enabled"].as_bool().unwrap_or(true);
-    let next_run_at = body["next_run_at"]
-        .as_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-
-    match neo4j
-        .create_scheduled_task(
-            &name,
-            description,
-            enabled,
-            interval_seconds,
-            &steps,
-            &next_run_at,
-            // API-created tasks are runtime-owned: the YAML seeder never touches them.
-            body["managed_by"].as_str().unwrap_or("runtime"),
-        )
-        .await
-    {
-        Ok(mut task) => match apply_schedule_labels(neo4j, &mut task, &body).await {
-            Ok(()) => {
-                // Drafted from an item ("make it a schedule"): link it back.
-                if let Some(item) = body
-                    .get("from_item")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    && let Err(e) = crate::services::items::link_became(neo4j, item, &task.id).await
-                {
-                    return internal(format!(
-                        "created, but not linked to the item it came from: {e}"
-                    ));
-                }
-                (StatusCode::CREATED, Json(serde_json::json!(task))).into_response()
-            }
-            Err(e) => internal(format!("saved, but topic/kind were not: {e}")),
-        },
-        Err(e) => internal(e),
+        Err(e) => save_error(e),
     }
 }
 
-/// GET /scheduled-tasks/:id
-pub async fn handle_get_scheduled_task(
+/// GET /workflows/:id
+pub async fn handle_get_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Scheduled task storage not available");
+        return unavailable("Workflow storage not available");
     };
-
-    match neo4j.get_scheduled_task(&id).await {
-        Ok(Some(task)) => Json(serde_json::json!(task)).into_response(),
+    match neo4j.get_workflow(&id).await {
+        Ok(Some(wf)) => Json(serde_json::json!(wf)).into_response(),
         Ok(None) => not_found(),
         Err(e) => internal(e),
     }
 }
 
-/// PUT /scheduled-tasks/:id
-pub async fn handle_update_scheduled_task(
+/// PUT /workflows/:id — keys the body leaves out keep their values.
+pub async fn handle_update_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Scheduled task storage not available");
+        return unavailable("Workflow storage not available");
     };
-
-    let name = body["name"].as_str();
-    let enabled = body["enabled"].as_bool();
-    let interval_seconds = body["interval_seconds"].as_i64();
-    let next_run_at = body["next_run_at"].as_str();
-
-    let description: Option<Option<&str>> = if body.get("description").is_some() {
-        Some(body["description"].as_str())
-    } else {
-        None
-    };
-
-    let steps_string: Option<String> = if body["steps"].is_array() {
-        serde_json::to_string(&body["steps"]).ok()
-    } else {
-        body["steps"].as_str().map(|s| s.to_string())
-    };
-    if let Err(e) = check_schedule_body(&state, &body, steps_string.as_deref()).await {
-        return bad_request(format!("Schedule rejected — nothing was saved: {e}"));
-    }
-
-    match neo4j
-        .update_scheduled_task(
-            &id,
-            name,
-            description,
-            enabled,
-            interval_seconds,
-            steps_string.as_deref(),
-            next_run_at,
-            body["managed_by"].as_str(),
-        )
-        .await
-    {
-        Ok(Some(mut task)) => match apply_schedule_labels(neo4j, &mut task, &body).await {
-            Ok(()) => {
-                // Turned on: an item it was drafted from is done ("became a schedule").
-                let closed = if enabled == Some(true) {
-                    crate::services::items::close_items_that_became(neo4j, &task.id).await
-                } else {
-                    Vec::new()
-                };
-                let mut v = serde_json::json!(task);
-                if !closed.is_empty() {
-                    v["closed_items"] = serde_json::json!(closed);
-                }
-                Json(v).into_response()
+    match save_workflow(&state, neo4j, Some(&id), false, &body).await {
+        Ok(saved) => {
+            // Turned on: an item it was drafted from is done ("became a workflow").
+            let closed = if body.get("enabled").and_then(Value::as_bool) == Some(true) {
+                crate::services::items::close_items_that_became(neo4j, &saved.workflow.id).await
+            } else {
+                Vec::new()
+            };
+            let mut v = serde_json::json!(saved.workflow);
+            if !closed.is_empty() {
+                v["closed_items"] = serde_json::json!(closed);
             }
-            Err(e) => internal(format!("saved, but topic/kind were not: {e}")),
-        },
-        Ok(None) => not_found(),
-        Err(e) => internal(e),
+            if !saved.warnings.is_empty() {
+                v["warnings"] = serde_json::json!(saved.warnings);
+            }
+            Json(v).into_response()
+        }
+        Err(e) => save_error(e),
     }
 }
 
-/// DELETE /scheduled-tasks/:id
-pub async fn handle_delete_scheduled_task(
+/// DELETE /workflows/:id
+pub async fn handle_delete_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Scheduled task storage not available");
+        return unavailable("Workflow storage not available");
     };
-
-    match neo4j.delete_scheduled_task(&id).await {
+    match neo4j.delete_workflow(&id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => not_found(),
         Err(e) => internal(e),
@@ -1261,56 +1074,6 @@ pub async fn handle_get_scheduler_status(
         return unavailable("Scheduler not yet initialised");
     };
     Json(svc.status().await).into_response()
-}
-
-/// GET /api/scheduler/chains — list all SchedulerChain nodes.
-pub async fn handle_list_scheduler_chains(
-    Extension(state): Extension<Arc<RestState>>,
-) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
-
-    let cypher = "MATCH (c:SchedulerChain) \
-                  RETURN c.id AS id, c.name AS name, c.pattern AS pattern, \
-                         coalesce(c.patterns, []) AS patterns, \
-                         c.priority AS priority, c.description AS description, \
-                         c.no_evaluator AS no_evaluator, \
-                         c.evaluation_rubric AS evaluation_rubric, \
-                         c.steps AS steps, toString(c.updated_at) AS updated_at \
-                  ORDER BY c.priority ASC, c.name ASC";
-
-    match neo4j.execute(neo4rs::query(cypher)).await {
-        Ok(rows) => {
-            let chains: Vec<Value> = rows
-                .iter()
-                .map(|row| {
-                    let steps_json = row.get::<String>("steps").unwrap_or_default();
-                    let step_count = serde_json::from_str::<Value>(&steps_json)
-                        .ok()
-                        .and_then(|v| v.as_array().map(|a| a.len()))
-                        .unwrap_or(0);
-                    let patterns: Vec<String> =
-                        row.get::<Vec<String>>("patterns").unwrap_or_default();
-                    json!({
-                        "id":                row.get::<String>("id").unwrap_or_default(),
-                        "name":              row.get::<String>("name").unwrap_or_default(),
-                        "pattern":           row.get::<String>("pattern").unwrap_or_default(),
-                        "patterns":          patterns,
-                        "priority":          row.get::<i64>("priority").unwrap_or(100),
-                        "description":       row.get::<String>("description").unwrap_or_default(),
-                        "no_evaluator":      row.get::<bool>("no_evaluator").unwrap_or(false),
-                        "evaluation_rubric": row.get::<String>("evaluation_rubric").ok(),
-                        "step_count":        step_count,
-                        "steps":             steps_json,
-                        "updated_at":        row.get::<String>("updated_at").ok(),
-                    })
-                })
-                .collect();
-            Json(json!({ "count": chains.len(), "chains": chains })).into_response()
-        }
-        Err(e) => internal(format!("Failed to list chains: {e}")),
-    }
 }
 
 /// GET /api/contexts — list all loaded context profiles.
@@ -2368,7 +2131,7 @@ pub async fn handle_get_activity(
         ),
         (
             "schedule_runs",
-            "MATCH (s:ScheduledTask) WHERE s.last_run_at >= datetime($since) \
+            "MATCH (w:Workflow) WHERE w.last_run_at >= datetime($since) \
              RETURN 'all' AS k, count(*) AS c",
         ),
     ];

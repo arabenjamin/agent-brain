@@ -1,7 +1,7 @@
 //! Reading native Neo4j temporal values back into the `String` model fields.
 //!
 //! Every timestamp in the graph is a native `DATETIME` (see the migration note
-//! in `CLAUDE.md`), but the model structs — `Task`, `AgentJob`, `ScheduledTask`,
+//! in `CLAUDE.md`), but the model structs — `Task`, `AgentJob`, `Workflow`,
 //! `Todo` — expose them as ISO-8601 `String`, which is what the REST and MCP
 //! payloads have always carried. Reads that project explicit columns can bridge
 //! that with `toString(prop)` in Cypher; reads that pull a whole node

@@ -1,10 +1,9 @@
-//! Work lineage for the HBI's Work workspace: where a task, job, schedule or
+//! Work lineage for the HBI's Work workspace: where a task, job, workflow or
 //! todo came from, what it ran, and what it produced.
 //!
 //! Nothing stores this chain as edges, so it is reconstructed from what is
 //! recorded:
-//! - a schedule run is a Task whose `context` names the ScheduledTask
-//!   ([`run_record_context`](crate::services::scheduler::run_record_context));
+//! - a workflow run is a Task whose `workflow` names the workflow;
 //! - every job of a task-owned chain carries `__owner_task_id` in its args;
 //! - chain steps are linked by `parent_job_id`;
 //! - a job's notes are the ids its result reports, kept only if a `:Note`
@@ -22,13 +21,12 @@ use serde_json::{Value, json};
 
 use super::rest::{RestState, bad_request, internal, not_found, unavailable};
 use crate::repository::{Neo4jClient, node_ts};
-use crate::services::scheduler::{parse_run_record, run_record_marker};
 
 /// Result text shown inline in a chain; the job view returns more.
 const RESULT_PREVIEW_CHARS: usize = 1_500;
 const RESULT_FULL_CHARS: usize = 20_000;
 const NOTE_PREVIEW_CHARS: usize = 240;
-const SCHEDULE_RUNS_SHOWN: i64 = 20;
+const WORKFLOW_RUNS_SHOWN: i64 = 20;
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────────────
 
@@ -101,7 +99,7 @@ pub(crate) fn chain_order(jobs: &[(String, Option<String>)]) -> Vec<usize> {
     order
 }
 
-/// Step tool names from a ScheduledTask's stored `steps` JSON, as the runner
+/// Step tool names from a workflow's stored `steps` JSON, as the runner
 /// sees them: `ChainStep` reads `tool_name` only. A step stored in the old
 /// `tool`/`args` shape runs as an empty tool name and fails ("Unknown tool"),
 /// so it is counted in the second value rather than shown under the name it
@@ -374,7 +372,7 @@ pub async fn handle_task_lineage(
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(p:Task) \
                  OPTIONAL MATCH (td:Todo)-[:SPAWNED]->(t) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, t.context AS context, \
-                        t.success_criteria AS success_criteria, \
+                        t.success_criteria AS success_criteria, t.workflow AS workflow, \
                         toString(t.created_at) AS created_at, toString(t.updated_at) AS updated_at, \
                         p.id AS parent_id, p.goal AS parent_goal, p.status AS parent_status, \
                         td.id AS todo_id, td.title AS todo_title",
@@ -394,20 +392,20 @@ pub async fn handle_task_lineage(
     let context = s("context");
     let created_at = s("created_at");
 
-    // Where it came from: a schedule run, a todo, or a parent task.
+    // Where it came from: a todo, a parent task, or the workflow it ran.
     let mut origin = Value::Null;
-    if let Some(sid) = context.as_deref().and_then(parse_run_record) {
-        let name = neo4j
-            .get_scheduled_task(sid)
-            .await
-            .ok()
-            .flatten()
-            .map(|st| st.name);
-        origin = json!({ "kind": "schedule", "id": sid, "name": name, "exists": name.is_some() });
-    } else if let Some(tid) = s("todo_id") {
+    if let Some(tid) = s("todo_id") {
         origin = json!({ "kind": "todo", "id": tid, "title": s("todo_title") });
     } else if let Some(pid) = s("parent_id") {
         origin = json!({ "kind": "task", "id": pid, "goal": s("parent_goal"), "status": s("parent_status") });
+    } else if let Some(name) = s("workflow") {
+        let id = neo4j
+            .get_workflow_by_name(&name)
+            .await
+            .ok()
+            .flatten()
+            .map(|w| w.id);
+        origin = json!({ "kind": "workflow", "id": id, "name": name, "exists": id.is_some() });
     }
 
     let subtasks: Vec<Value> = neo4j
@@ -534,96 +532,99 @@ pub async fn handle_job_detail(
     Json(json!({ "job": job, "owner_task": owner, "chain": chain })).into_response()
 }
 
-// ── Schedules ────────────────────────────────────────────────────────────────
+// ── Workflows ────────────────────────────────────────────────────────────────
 
-/// Run-record tasks grouped by the ScheduledTask they ran, newest first.
-async fn runs_by_schedule(neo4j: &Neo4jClient) -> Result<HashMap<String, Vec<Value>>, String> {
+/// Per workflow name: its run count and latest run.
+async fn runs_by_workflow(neo4j: &Neo4jClient) -> Result<HashMap<String, (i64, Value)>, String> {
     let rows = neo4j
         .execute(neo4rs::query(
-            "MATCH (t:Task) WHERE t.context STARTS WITH 'Run of ScheduledTask ' \
-             RETURN t.id AS id, t.status AS status, t.context AS context, \
-                    toString(t.created_at) AS created_at, toString(t.updated_at) AS updated_at \
-             ORDER BY t.created_at DESC",
+            "MATCH (t:Task) WHERE t.workflow IS NOT NULL \
+             WITH t ORDER BY t.created_at DESC \
+             WITH t.workflow AS w, count(t) AS n, head(collect(t)) AS last \
+             RETURN w, n, last.id AS id, last.status AS status, \
+                    toString(last.created_at) AS created_at, toString(last.updated_at) AS updated_at",
         ))
         .await
         .map_err(|e| e.to_string())?;
-    let mut out: HashMap<String, Vec<Value>> = HashMap::new();
-    for r in &rows {
-        let ctx = r.get::<String>("context").unwrap_or_default();
-        if let Some(sid) = parse_run_record(&ctx) {
-            out.entry(sid.to_string()).or_default().push(json!({
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let last = json!({
                 "task_id": r.get::<String>("id").ok(),
                 "status": r.get::<String>("status").ok(),
                 "created_at": r.get::<String>("created_at").ok(),
                 "updated_at": r.get::<String>("updated_at").ok(),
-            }));
-        }
-    }
-    Ok(out)
+            });
+            Some((
+                r.get::<String>("w").ok()?,
+                (r.get::<i64>("n").unwrap_or(0), last),
+            ))
+        })
+        .collect())
 }
 
-fn schedule_json(st: &crate::repository::ScheduledTask) -> Value {
-    let mut v = serde_json::to_value(st).unwrap_or(Value::Null);
-    let (tools, legacy) = step_tools(&st.steps);
+fn workflow_json(wf: &crate::repository::Workflow) -> Value {
+    let mut v = serde_json::to_value(wf).unwrap_or(Value::Null);
+    let (tools, legacy) = step_tools(&wf.steps);
     v["step_tools"] = json!(tools);
     v["legacy_steps"] = json!(legacy);
     v
 }
 
-/// GET /api/work/schedules — every schedule with its last run's outcome.
-pub async fn handle_list_schedules(
+/// GET /api/work/workflows — every workflow with its latest run.
+pub async fn handle_list_workflows(
     Extension(state): Extension<Arc<RestState>>,
 ) -> impl IntoResponse {
     let Some(neo4j) = state.neo4j.as_ref() else {
         return unavailable("Neo4j not available");
     };
-    let schedules = match neo4j.list_scheduled_tasks(false).await {
+    let workflows = match neo4j.list_workflows(false).await {
         Ok(s) => s,
         Err(e) => return internal(e),
     };
-    let (runs, runs_error) = match runs_by_schedule(neo4j).await {
+    let (runs, runs_error) = match runs_by_workflow(neo4j).await {
         Ok(r) => (r, None),
         Err(e) => (HashMap::new(), Some(e)),
     };
-    let list: Vec<Value> = schedules
+    let list: Vec<Value> = workflows
         .iter()
-        .map(|st| {
-            let mine = runs.get(&st.id);
-            let mut v = schedule_json(st);
-            v["last_run"] = mine.and_then(|r| r.first().cloned()).unwrap_or(Value::Null);
-            v["runs_recorded"] = json!(mine.map_or(0, Vec::len));
+        .map(|wf| {
+            let mine = runs.get(&wf.name);
+            let mut v = workflow_json(wf);
+            v["last_run"] = mine.map(|(_, l)| l.clone()).unwrap_or(Value::Null);
+            v["runs_recorded"] = json!(mine.map_or(0, |(n, _)| *n));
             v
         })
         .collect();
-    Json(json!({ "count": list.len(), "schedules": list, "runs_error": runs_error }))
+    Json(json!({ "count": list.len(), "workflows": list, "runs_error": runs_error }))
         .into_response()
 }
 
-/// GET /api/work/schedules/{id} — one schedule, its steps and recent runs.
-pub async fn handle_schedule_detail(
+/// GET /api/work/workflows/{id} — one workflow, its steps and recent runs.
+pub async fn handle_workflow_detail(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(neo4j) = state.neo4j.as_ref() else {
         return unavailable("Neo4j not available");
     };
-    let st = match neo4j.get_scheduled_task(&id).await {
-        Ok(Some(st)) => st,
+    let wf = match neo4j.get_workflow(&id).await {
+        Ok(Some(wf)) => wf,
         Ok(None) => return not_found(),
         Err(e) => return internal(e),
     };
     let rows = neo4j
         .execute(
             neo4rs::query(
-                "MATCH (t:Task) WHERE t.context CONTAINS $marker \
+                "MATCH (t:Task {workflow: $name}) \
                  WITH t ORDER BY t.created_at DESC \
                  WITH collect(t) AS rs \
                  RETURN size(rs) AS total, \
-                        [t IN rs[0..$n] | {task_id: t.id, status: t.status, \
+                        [t IN rs[0..$n] | {task_id: t.id, status: t.status, goal: t.goal, \
                           created_at: toString(t.created_at), updated_at: toString(t.updated_at)}] AS runs",
             )
-            .param("marker", run_record_marker(&id))
-            .param("n", SCHEDULE_RUNS_SHOWN),
+            .param("name", wf.name.as_str())
+            .param("n", WORKFLOW_RUNS_SHOWN),
         )
         .await;
     let (total, runs) = match rows {
@@ -635,24 +636,24 @@ pub async fn handle_schedule_detail(
                 .into_iter()
                 .map(|m| {
                     let g = |k: &str| m.get::<String>(k).ok();
-                    json!({ "task_id": g("task_id"), "status": g("status"), "created_at": g("created_at"), "updated_at": g("updated_at") })
+                    json!({ "task_id": g("task_id"), "status": g("status"), "goal": g("goal"), "created_at": g("created_at"), "updated_at": g("updated_at") })
                 })
                 .collect::<Vec<_>>(),
         ),
         Err(e) => return internal(e),
     };
-    let steps: Value = serde_json::from_str(&st.steps).unwrap_or(Value::Null);
-    let mut v = schedule_json(&st);
-    v["steps"] = steps;
-    Json(json!({ "schedule": v, "runs": runs, "runs_total": total, "runs_shown": runs.len() }))
+    let mut v = workflow_json(&wf);
+    v["steps"] = serde_json::from_str(&wf.steps).unwrap_or(Value::Null);
+    Json(json!({ "workflow": v, "runs": runs, "runs_total": total, "runs_shown": runs.len() }))
         .into_response()
 }
 
-/// POST /api/work/schedules/{id}/run — dispatch one run now. Returns the
-/// run-record task id, which the UI opens.
-pub async fn handle_run_schedule_now(
+/// POST /api/work/workflows/{id}/run — run it now, with `{"inputs": {…}}` when
+/// it declares inputs. Returns the run Task id, which the UI opens.
+pub async fn handle_run_workflow_now(
     Extension(state): Extension<Arc<RestState>>,
     Path(id): Path<String>,
+    body: Option<Json<Value>>,
 ) -> impl IntoResponse {
     let Some(ref handle) = state.scheduler else {
         return unavailable("Scheduler not available");
@@ -661,9 +662,13 @@ pub async fn handle_run_schedule_now(
     let Some(ref svc) = *guard else {
         return unavailable("Scheduler not yet initialised");
     };
-    match svc.run_scheduled_task_now(&id).await {
+    let inputs = body
+        .and_then(|Json(b)| b.get("inputs").and_then(Value::as_object).cloned())
+        .unwrap_or_default();
+    match svc.run_workflow_now(&id, &inputs).await {
         Ok(task_id) => Json(json!({ "task_id": task_id })).into_response(),
-        Err(e) if e.starts_with("No ScheduledTask") => not_found(),
+        Err(e) if e.starts_with("No workflow") => not_found(),
+        Err(e) if e.contains("needs input") => bad_request(e),
         Err(e) => internal(e),
     }
 }
@@ -848,7 +853,7 @@ pub(crate) fn step_source_contexts(steps_json: &str) -> Vec<String> {
 /// counted once, by the first route that reaches it.
 const ROUTES: [&str; 4] = ["run_stamp", "job_result", "source_context", "claim_of"];
 
-/// GET /api/work/schedules/topic-mix?days=N — per schedule, the main topics
+/// GET /api/work/workflows/topic-mix?days=N — per workflow, the main topics
 /// of the notes it produced in the last N days (default 30). A note is traced
 /// to a schedule by, in order:
 /// - `run_stamp`: its `produced_by_task` is one of the schedule's run records
@@ -863,7 +868,7 @@ const ROUTES: [&str; 4] = ["run_stamp", "job_result", "source_context", "claim_o
 /// parent is classified.
 ///
 /// `routes` gives the count per route, so every number drills to how it was found.
-pub async fn handle_schedule_topic_mix(
+pub async fn handle_workflow_topic_mix(
     Extension(state): Extension<Arc<RestState>>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -876,18 +881,22 @@ pub async fn handle_schedule_topic_mix(
         .filter(|d| (1..=90).contains(d))
         .unwrap_or(30);
     let since = format!("P{days}D");
-    let schedules = match neo4j.list_scheduled_tasks(false).await {
+    let schedules = match neo4j.list_workflows(false).await {
         Ok(s) => s,
         Err(e) => return internal(e),
     };
+    let id_of: HashMap<&str, &str> = schedules
+        .iter()
+        .map(|w| (w.name.as_str(), w.id.as_str()))
+        .collect();
 
-    // 1. Runs in the window, by schedule.
+    // 1. Runs in the window, by workflow id.
     let run_rows = match neo4j
         .execute(
             neo4rs::query(
-                "MATCH (t:Task) WHERE t.context STARTS WITH 'Run of ScheduledTask ' \
+                "MATCH (t:Task) WHERE t.workflow IS NOT NULL \
                    AND t.created_at >= datetime() - duration($since) \
-                 RETURN t.id AS id, t.context AS context",
+                 RETURN t.id AS id, t.workflow AS workflow",
             )
             .param("since", since.as_str()),
         )
@@ -899,8 +908,8 @@ pub async fn handle_schedule_topic_mix(
     let mut schedule_of: HashMap<String, String> = HashMap::new();
     let mut runs: HashMap<String, usize> = HashMap::new();
     for r in &run_rows {
-        let ctx = r.get::<String>("context").unwrap_or_default();
-        if let (Ok(id), Some(sid)) = (r.get::<String>("id"), parse_run_record(&ctx)) {
+        let wf = r.get::<String>("workflow").unwrap_or_default();
+        if let (Ok(id), Some(sid)) = (r.get::<String>("id"), id_of.get(wf.as_str())) {
             *runs.entry(sid.to_string()).or_default() += 1;
             schedule_of.insert(id, sid.to_string());
         }
@@ -1122,7 +1131,7 @@ pub async fn handle_schedule_topic_mix(
             })
         })
         .collect();
-    Json(json!({ "days": days, "schedules": out })).into_response()
+    Json(json!({ "days": days, "workflows": out })).into_response()
 }
 
 #[cfg(test)]

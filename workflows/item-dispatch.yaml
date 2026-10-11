@@ -1,0 +1,13 @@
+# Why: dev_docs get yaml/schedules-item-dispatch-1
+name: item-dispatch
+description: "Hourly: offers every due item assigned to an agent a run (read-only agents start, the rest wait for approval in the Feed), and hands failed runs back for a retry or for review."
+kind: maintenance
+# topic: none — spans topics on purpose
+every: 1h
+steps:
+  - tool_name: dispatch_due_todos
+    arguments: {}
+    provider_hint: ollama
+    priority: 1
+    max_attempts: 1
+    description: "Start or ask about every due agent item"

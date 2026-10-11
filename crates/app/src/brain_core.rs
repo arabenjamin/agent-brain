@@ -1047,28 +1047,21 @@ impl BrainCore {
         .await;
         debug!(created = mn, "Seeded MediaSources from sources-media/");
 
-        // ── Seed built-in ScheduledTasks ──────────────────────────────────
-        // schedules/*.yaml is the single source of truth for yaml-owned task
-        // definitions. A missing or unreadable directory is a deployment error
-        // (broken mount, wrong SCHEDULES_DIR) — fail hard rather than start a
-        // brain whose schedule definitions silently stop propagating.
-        let schedules_dir =
-            PathBuf::from(std::env::var("SCHEDULES_DIR").unwrap_or_else(|_| "schedules".into()));
-        if !schedules_dir.exists() {
-            error!(
-                dir = %schedules_dir.display(),
-                "Schedules directory not found — check the volume mount or SCHEDULES_DIR. Refusing to start."
-            );
-            std::process::exit(1);
-        }
-        match crate::services::schedule_seeder::seed_schedules_from_dir(neo4j, &schedules_dir).await
+        // ── Seed workflows ────────────────────────────────────────────────
+        // workflows/*.yaml is the source of truth for yaml-owned workflows. A
+        // missing or unreadable directory is a deployment error (broken mount,
+        // wrong WORKFLOWS_DIR): fail hard rather than start a brain whose
+        // workflow definitions silently stop propagating.
+        let workflows_dir =
+            PathBuf::from(std::env::var("WORKFLOWS_DIR").unwrap_or_else(|_| "workflows".into()));
+        match crate::services::workflow_seeder::seed_workflows_from_dir(neo4j, &workflows_dir).await
         {
-            Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
+            Ok(n) => info!(count = n, "Seeded workflows from workflows/"),
             Err(e) => {
                 error!(
-                    dir = %schedules_dir.display(),
+                    dir = %workflows_dir.display(),
                     error = %e,
-                    "Failed to read schedules directory. Refusing to start."
+                    "Cannot read the workflows directory — check the volume mount or WORKFLOWS_DIR. Refusing to start."
                 );
                 std::process::exit(1);
             }

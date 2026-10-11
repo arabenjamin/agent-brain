@@ -93,7 +93,7 @@ services:
       # tool-calling prompt (see CLAUDE.md, "An empty completion is retried").
       # The chat loops retry that; a background job does not, so an empty
       # completion there is persisted as the step's output. It held this slot
-      # for its `vision` capability, but nothing in chains/ or schedules/
+      # for its `vision` capability, but nothing in workflows/
       # declares `required_capabilities: ["vision"]` — grep before changing
       # this back. It stays in models.yaml as the free tier's only vision
       # model, so a future vision step still resolves to it; it is just no
@@ -220,9 +220,8 @@ services:
       - LOG_FORMAT=json
       - KNOWLEDGE_SNAPSHOT_DIR=/home/agent/snapshots
       - CODEBASE_DIR=/home/agent/agent-brain
-      - CHAINS_DIR=/home/agent/agent-brain/chains
-      - SCHEMAS_DIR=/home/agent/agent-brain/schemas              # envelope validation for schedules/chains (services/validation.rs)
-      - SCHEDULES_DIR=/home/agent/agent-brain/schedules
+      - WORKFLOWS_DIR=/home/agent/agent-brain/workflows
+      - SCHEMAS_DIR=/home/agent/agent-brain/schemas              # envelope validation for workflows (services/validation.rs)
       - SOURCES_DIR=/home/agent/agent-brain/sources
       - RELIEFWEB_APPNAME=${RELIEFWEB_APPNAME:-}                     # ReliefWeb's pre-approved appname (not a secret)
       - SOURCES_MEDIA_DIR=/home/agent/agent-brain/sources-media  # MediaSource watchlist (bind-mounted)
@@ -233,7 +232,7 @@ services:
       - ARCHITECTURE_DIR=/home/agent/agent-brain/architecture     # components.yaml (health probes) + layout.yaml (architecture view)
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
-      # 1, paired with the 6h interval in schedules/media-watch.yaml — see the
+      # 1, paired with the 6h interval in workflows/media-watch.yaml — see the
       # note there. Halves the burst (30 videos at once -> 15) while keeping the
       # daily cap at 60. Lowered from 2 on 2026-09-01.
       - MEDIA_WATCH_MAX_PER_SOURCE=1                             # first-poll stampede guard: max new videos/source/poll

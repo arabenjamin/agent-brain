@@ -70,7 +70,7 @@ also names tools that were removed and what replaced them. A guide by group:
 `enqueue_jobs`, `manage_job`, `dead_letter`
 
 ### Scheduler
-`scheduler_control` (`action: tick` runs one now), `manage_chain`, `manage_scheduled_task`
+`scheduler_control` (`action: tick` runs one now), `manage_workflow` (list, get, run by name with inputs, upsert, delete, audit)
 
 ### Working Memory
 `push_context`, `notify_user`

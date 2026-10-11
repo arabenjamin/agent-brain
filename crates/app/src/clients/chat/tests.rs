@@ -486,7 +486,7 @@ mod fallback_ladder_tests {
         ));
         for write in [
             "store_note",
-            "manage_scheduled_task",
+            "manage_workflow",
             "ingest_api",
             "run_agent",
             "claim",

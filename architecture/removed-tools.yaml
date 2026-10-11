@@ -53,3 +53,7 @@ tools:
   # Folded into another tool
   - { name: run_scheduler_tick, commit: 1aed101, reason: "folded", replaced_by: "scheduler_control (action: tick)" }
   - { name: mcp_list_servers, commit: 1aed101, reason: "folded", replaced_by: "mcp_list_tools (no server)" }
+
+  # Phase 2b, 2026-10-10 — chains and schedules merged into workflows
+  - { name: manage_chain, commit: 1d4c822, reason: "chains merged into workflows; a goal no longer picks its steps by regex", replaced_by: manage_workflow }
+  - { name: manage_scheduled_task, commit: 1d4c822, reason: "schedules merged into workflows", replaced_by: manage_workflow }

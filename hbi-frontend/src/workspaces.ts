@@ -36,11 +36,11 @@ export const WORKSPACES: Workspace[] = [
     id: "work",
     icon: "📋",
     label: "Work",
-    keywords: "feed inbox items tasks jobs queue todos scheduled schedules proposals history running",
+    keywords: "feed inbox items tasks jobs queue todos scheduled schedules workflows proposals history running",
     views: [
       { id: "feed", label: "Feed" },
       { id: "active", label: "Active" },
-      { id: "scheduled", label: "Scheduled" },
+      { id: "scheduled", label: "Workflows" },
       { id: "todos", label: "Todos" },
       { id: "history", label: "History" },
     ],
@@ -63,7 +63,7 @@ export const WORKSPACES: Workspace[] = [
     id: "system",
     icon: "🖥",
     label: "System",
-    keywords: "health status services logs architecture tools skills registry agents chains mcp providers",
+    keywords: "health status services logs architecture tools skills registry agents workflows mcp providers",
     views: [
       { id: "health", label: "Health" },
       { id: "logs", label: "Logs" },

@@ -694,7 +694,7 @@ pub async fn delete(neo4j: &Neo4jClient, name: &str) -> Result<Result<Deleted, S
     }
     let schedules: Vec<String> = neo4j
         .execute(
-            neo4rs::query("MATCH (s:ScheduledTask {topic: $name}) RETURN s.name AS n ORDER BY n")
+            neo4rs::query("MATCH (s:Workflow {topic: $name}) RETURN s.name AS n ORDER BY n")
                 .param("name", name),
         )
         .await?

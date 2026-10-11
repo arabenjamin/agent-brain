@@ -106,15 +106,15 @@ describe("palette commands", () => {
 
   it("covers every workspace view and settings section", () => {
     const ids = all.map((c) => c.id);
-    for (const id of ["go:work/scheduled", "go:work/feed", "go:knowledge/graph", "go:system/logs", "settings:scheduler", "settings:agents", "new:todo", "new:schedule"]) {
+    for (const id of ["go:work/scheduled", "go:work/feed", "go:knowledge/graph", "go:system/logs", "settings:scheduler", "settings:agents", "new:todo", "new:workflow"]) {
       expect(ids).toContain(id);
     }
   });
 
   it("ranks a label prefix above a keyword-only match", () => {
-    const r = matchCommands(all, "sched");
-    expect(r[0].label).toContain("Scheduled");
-    expect(r.map((c) => c.id)).toContain("settings:scheduler");
+    const r = matchCommands(all, "work");
+    expect(r[0].label).toContain("Work");
+    expect(matchCommands(all, "sched").map((c) => c.id)).toContain("settings:scheduler");
   });
 
   it("requires every typed word", () => {
@@ -128,7 +128,7 @@ describe("palette commands", () => {
   });
 
   it("puts real matches before 'search notes', and a pasted id first", () => {
-    expect(paletteResults(all, "sched")[0].id).toBe("go:work/scheduled");
+    expect(paletteResults(all, "workflows")[0].id).toBe("go:work/scheduled");
     expect(paletteResults(all, "sched").at(-1)?.id).toBe("search:sched");
     expect(paletteResults(all, "867f7a9d-3b11-4158-ba12-b6f167c0f49a")[0].id).toMatch(/^open:/);
     // Nothing else matches: the search is the only (and first) result.

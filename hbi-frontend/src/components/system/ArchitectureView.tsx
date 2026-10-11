@@ -64,8 +64,7 @@ export default function ArchitectureView() {
         <Stat label="Routes" value={c.routes} title="HTTP routes, read from the router source"
           onClick={() => { setTab("diagram"); setSel(allRoutes(d)); }} />
         <Stat label="Agents" value={c.agents} href={hrefTo("system", { view: "registry" })} />
-        <Stat label="Chains" value={c.chains} href={hrefTo("system", { view: "registry" })} />
-        <Stat label="Schedules" value={c.schedules} href={hrefTo("work", { view: "scheduled" })} />
+        <Stat label="Workflows" value={c.workflows} href={hrefTo("work", { view: "scheduled" })} />
         <Stat label="Providers" value={c.providers} />
         <Stat label="Services" value={c.components} href={hrefTo("system", { view: "health" })} />
       </div>
@@ -315,7 +314,7 @@ function NodeDetail({ d, node, status, onClose }: {
   const link =
     node.kind === "skill" ? { href: hrefTo("system", { view: "registry" }), text: "tools in Registry →" }
     : node.kind === "component" ? { href: hrefTo("system", { view: "health" }), text: "Health →" }
-    : node.id === "collection:schedules" ? { href: hrefTo("work", { view: "scheduled" }), text: "Scheduled →" }
+    : node.id === "collection:workflows" ? { href: hrefTo("work", { view: "scheduled" }), text: "Workflows →" }
     : node.kind === "collection" || node.kind === "mcp" || node.kind === "provider" ? { href: hrefTo("system", { view: "registry" }), text: "Registry →" }
     : null;
   return (

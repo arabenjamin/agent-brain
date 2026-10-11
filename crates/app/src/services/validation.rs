@@ -123,7 +123,7 @@ pub fn validate_step_arguments(
 }
 
 /// Load every `*.json` JSON Schema from `dir`, keyed by file stem
-/// (`scheduled_task.json` → `"scheduled_task"`). Unreadable or unparseable files
+/// (`workflow.json` → `"workflow"`). Unreadable or unparseable files
 /// are logged and skipped — a broken schema file must never wedge startup. The
 /// schemas are not compiled here; each is compiled at use in
 /// [`validate_against_schema`], which fails open on a bad schema. A missing dir
@@ -173,7 +173,7 @@ pub fn load_schema_dir(dir: &Path) -> HashMap<String, Value> {
 /// returning every HARD violation across steps: a missing/blank `tool_name`, an
 /// unregistered tool (only when `live_tools` is non-empty), and each step's
 /// `arguments` against the tool's own `input_schema`. Shared by the scheduler's
-/// `manage_scheduled_task`/`manage_chain` write path and its `audit` action so a
+/// `manage_workflow` write path and its `audit` action so a
 /// stored (e.g. YAML-seeded) task is checked by exactly the same rules as a new one.
 /// Fields a step carries beside `arguments` (`services/queue.rs::ChainStep`).
 /// Keep in step with that struct; it is Deserialize-only, so it cannot list
@@ -316,6 +316,36 @@ fn step_ref_violations(steps: &[Value]) -> Vec<Violation> {
                 ));
             } else {
                 seen.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// Every `{{inputs.<name>}}` a step uses must be a declared input of its
+/// workflow; an undeclared one would never be supplied and resolve to nothing.
+pub fn validate_input_refs(steps: &[Value], declared: &[String]) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let tool = step.get("tool_name").and_then(Value::as_str).unwrap_or("");
+        let text = step.to_string();
+        for name in text
+            .split("{{inputs.")
+            .skip(1)
+            .filter_map(|r| r.find("}}").map(|e| r[..e].trim().to_string()))
+        {
+            if !declared.contains(&name) {
+                out.push(Violation::hard(
+                    format!("steps[{i}] (`{tool}`)"),
+                    format!(
+                        "`{{{{inputs.{name}}}}}` is not a declared input (declared: {})",
+                        if declared.is_empty() {
+                            "none".to_string()
+                        } else {
+                            declared.join(", ")
+                        }
+                    ),
+                ));
             }
         }
     }
@@ -572,35 +602,36 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_task_envelope_rejects_empty_steps_and_bad_managed_by() {
-        let schema = committed_schemas().remove("scheduled_task").unwrap();
-        let bad = json!({
-            "name": "x", "interval_seconds": 86400, "steps": [],
-            "managed_by": "somebody"
-        });
-        let v = validate_against_schema("scheduled_task", &schema, &bad);
-        let msg = render_hard(&v);
-        assert!(
-            has_hard(&v),
-            "empty steps + bad managed_by must reject: {msg}"
-        );
+    fn workflow_envelope_rejects_empty_steps_bad_names_and_bad_periods() {
+        let schema = committed_schemas().remove("workflow").unwrap();
+        for bad in [
+            json!({"name": "x", "steps": [], "managed_by": "somebody"}),
+            json!({"name": "Daily News", "steps": [{"tool_name": "a"}]}),
+            json!({"name": "x", "every": "daily", "steps": [{"tool_name": "a"}]}),
+            json!({"name": "x", "checks": ["adversarial"], "steps": [{"tool_name": "a"}]}),
+        ] {
+            let v = validate_against_schema("workflow", &schema, &bad);
+            assert!(has_hard(&v), "must reject: {bad}");
+        }
     }
 
     #[test]
-    fn scheduled_task_envelope_accepts_a_valid_object() {
-        let schema = committed_schemas().remove("scheduled_task").unwrap();
+    fn workflow_envelope_accepts_a_valid_object() {
+        let schema = committed_schemas().remove("workflow").unwrap();
         let good = json!({
             "action": "upsert",
-            "name": "AI Dev Board Job Search",
-            "interval_seconds": 86400,
+            "name": "ai-dev-board-job-search",
+            "every": "1d",
+            "inputs": [{"name": "topic"}],
+            "checks": ["evaluator"],
             "managed_by": "runtime",
-            "steps": [ { "tool_name": "http_request", "provider_hint": "ollama",
+            "steps": [ { "id": "fetch", "tool_name": "http_request", "provider_hint": "ollama",
                          "arguments": { "method": "GET", "url": "https://x" } } ]
         });
-        let v = validate_against_schema("scheduled_task", &schema, &good);
+        let v = validate_against_schema("workflow", &schema, &good);
         assert!(
             !has_hard(&v),
-            "valid schedule must pass: {}",
+            "valid workflow must pass: {}",
             render_hard(&v)
         );
     }
@@ -610,7 +641,7 @@ mod tests {
         // `{{_prev}}` etc. stay strings; a string field accepts them.
         let args = json!({
             "method": "GET",
-            "url": "https://example.com/{{goal_topic}}",
+            "url": "https://example.com/{{inputs.topic}}",
             "query_params": { "q": "{{date}}" }
         });
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
@@ -630,5 +661,14 @@ mod tests {
         assert!(v[0].render().contains("steps.later"));
         assert!(v[0].render().contains("earlier step ids: news"));
         assert!(v[1].render().contains("used twice"));
+    }
+
+    #[test]
+    fn input_refs_must_be_declared() {
+        let steps =
+            vec![json!({"tool_name": "a", "arguments": {"q": "{{inputs.topic}} {{inputs.url}}"}})];
+        let v = validate_input_refs(&steps, &["topic".to_string()]);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].render().contains("inputs.url"));
     }
 }

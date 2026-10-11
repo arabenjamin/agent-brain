@@ -29,7 +29,7 @@ pub(crate) const WRITE_TOOLS: &[&str] = &[
     "write_workspace_file",
     "notify_user",
     "claim",
-    "manage_scheduled_task",
+    "manage_workflow",
 ];
 
 /// Appended to a `store_note` result when the guard downgraded its type, so the

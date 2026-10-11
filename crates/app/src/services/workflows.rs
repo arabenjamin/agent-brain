@@ -1,0 +1,488 @@
+//! Starting and rendering workflow runs (CORE_AND_PLUGINS_PLAN Phase 2).
+//!
+//! A run is a `:Task` with `workflow` and `inputs_json`. Anything that wants
+//! work done (a tool, REST, media polling, gap detection, the perception scan)
+//! calls [`start_run`] with a workflow name and inputs; the scheduler's next
+//! tick dispatches it. A schedule firing is dispatched at once by the scheduler.
+
+use serde_json::{Map, Value};
+
+use crate::repository::{Neo4jClient, Workflow};
+use crate::services::queue::{ChainStep, substitute_template_vars};
+
+/// A run that was created.
+#[derive(Debug, Clone)]
+pub struct StartedRun {
+    pub task_id: String,
+    pub workflow: String,
+}
+
+/// Resolve `name` (or the default workflow when `None`) and refuse a run it
+/// cannot do: unknown, disabled, or missing a required input. `Err` says why
+/// and names what does exist.
+pub async fn resolve(
+    neo4j: &Neo4jClient,
+    name: Option<&str>,
+    inputs: &Map<String, Value>,
+) -> Result<Workflow, String> {
+    let wf = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => match neo4j
+            .get_workflow_by_name(n)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(wf) => wf,
+            None => {
+                let names: Vec<String> = neo4j
+                    .list_workflows(true)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|w| w.name)
+                    .collect();
+                return Err(format!(
+                    "No workflow named '{n}'. Enabled workflows: {}.",
+                    names.join(", ")
+                ));
+            }
+        },
+        None => neo4j
+            .get_default_workflow()
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("No default workflow is set (a workflow file with `default: true`).")?,
+    };
+    if !wf.enabled {
+        return Err(format!(
+            "Workflow '{}' is disabled{}.",
+            wf.name,
+            wf.paused_reason
+                .as_deref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ));
+    }
+    let missing = wf.missing_inputs(inputs);
+    if !missing.is_empty() {
+        let declared: Vec<&str> = wf.inputs.iter().map(|i| i.name.as_str()).collect();
+        return Err(format!(
+            "Workflow '{}' needs input {} (declares: {}).",
+            wf.name,
+            missing.join(", "),
+            declared.join(", ")
+        ));
+    }
+    Ok(wf)
+}
+
+/// Create a run for the next scheduler tick. `goal` is what a person reads in
+/// the task list; it defaults to the workflow name and its inputs.
+pub async fn start_run(
+    neo4j: &Neo4jClient,
+    name: Option<&str>,
+    inputs: &Map<String, Value>,
+    goal: Option<&str>,
+    context: Option<&str>,
+    success_criteria: Option<&str>,
+) -> Result<StartedRun, String> {
+    let wf = resolve(neo4j, name, inputs).await?;
+    let goal = match goal.map(str::trim).filter(|g| !g.is_empty()) {
+        Some(g) => g.to_string(),
+        None => default_goal(&wf.name, inputs),
+    };
+    let inputs_v = Value::Object(inputs.clone());
+    let task_id = neo4j
+        .create_run(
+            &goal,
+            context,
+            success_criteria,
+            Some(&wf.name),
+            Some(&inputs_v),
+            "created",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(StartedRun {
+        task_id,
+        workflow: wf.name,
+    })
+}
+
+/// A workflow name: lowercase letters, digits and dashes, starting with a letter or digit.
+pub fn is_slug(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// `name: value, …` — the goal of a run nobody described.
+pub fn default_goal(name: &str, inputs: &Map<String, Value>) -> String {
+    let vals: Vec<String> = inputs.values().map(input_text).collect();
+    if vals.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}: {}", vals.join(", "))
+    }
+}
+
+fn input_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The steps of one run, template variables filled: `{{task_id}}`, `{{goal}}`,
+/// `{{date}}` / `{{now}}` / `{{weekday}}` (local), and `{{inputs.<name>}}`.
+/// `{{_prev}}` and `{{steps.<id>}}` are left for the queue.
+pub fn render_steps(
+    wf: &Workflow,
+    task_id: &str,
+    goal: &str,
+    inputs: &Map<String, Value>,
+) -> Result<Vec<ChainStep>, String> {
+    let raw: Value = serde_json::from_str(&wf.steps)
+        .map_err(|e| format!("Workflow '{}' steps JSON invalid: {e}", wf.name))?;
+    let date = crate::services::clock::today();
+    let now = crate::services::clock::now_stamp();
+    let weekday = crate::services::clock::weekday();
+    let input_vals: Vec<(String, String)> = inputs
+        .iter()
+        .map(|(k, v)| (format!("inputs.{k}"), input_text(v)))
+        .collect();
+    let mut vars: Vec<(&str, &str)> = vec![
+        ("task_id", task_id),
+        ("goal", goal),
+        ("date", &date),
+        ("now", &now),
+        ("weekday", &weekday),
+    ];
+    vars.extend(input_vals.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let substituted = substitute_template_vars(&raw, &vars);
+    serde_json::from_value(substituted)
+        .map_err(|e| format!("Workflow '{}' steps do not parse: {e}", wf.name))
+}
+
+// ── Saving (manage_workflow upsert, REST create/update, the HBI editor) ──
+
+/// What a save is checked against. Empty lists disable that check (fail-open
+/// on our own wiring); the envelope is the `schemas/workflow.json` schema.
+pub struct SaveChecks<'a> {
+    pub live_tools: &'a [String],
+    pub tool_schemas: &'a std::collections::HashMap<String, Value>,
+    pub catalog: &'a [crate::services::model_router::CatalogModel],
+    pub envelope: Option<&'a Value>,
+}
+
+/// Why a save did not happen.
+#[derive(Debug)]
+pub enum SaveError {
+    /// The request is wrong; nothing was saved.
+    Invalid(String),
+    NotFound(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::Invalid(e) => write!(f, "Workflow rejected — nothing was saved: {e}"),
+            SaveError::NotFound(e) | SaveError::Storage(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// A saved workflow, whether it was created, and what the caller should know.
+pub struct Saved {
+    pub workflow: Workflow,
+    pub created: bool,
+    pub warnings: Vec<String>,
+}
+
+/// The fields a save body carries, from a stored workflow: what an edit is
+/// laid over before the whole result is checked.
+pub fn to_body(wf: &Workflow) -> Value {
+    let mut b = serde_json::json!({
+        "name": wf.name,
+        "every": wf.interval_seconds.map(crate::services::workflow_seeder::format_every),
+        "inputs": wf.inputs,
+        "checks": wf.checks,
+        "default": wf.is_default,
+        "enabled": wf.enabled,
+        "steps": serde_json::from_str::<Value>(&wf.steps).unwrap_or(Value::Array(vec![])),
+    });
+    for (k, v) in [
+        ("description", &wf.description),
+        ("evaluation_rubric", &wf.evaluation_rubric),
+        ("paused_reason", &wf.paused_reason),
+        ("topic", &wf.topic),
+        ("kind", &wf.kind),
+        ("managed_by", &wf.managed_by),
+    ] {
+        if let Some(v) = v {
+            b[k] = Value::String(v.clone());
+        }
+    }
+    b
+}
+
+/// Create or update a workflow from a save body. With `id`, that workflow is
+/// edited; without, the one named `name` is, or a new one is created — unless
+/// `create_only`, when an existing name is refused instead of edited. Keys the
+/// body leaves out keep their stored values; the merged whole is checked
+/// (envelope, every step against its tool's schema, pinned models, step and
+/// input references, topic and kind) and REJECTED on any hard error.
+pub async fn save(
+    neo4j: &Neo4jClient,
+    id: Option<&str>,
+    create_only: bool,
+    body: &Value,
+    checks: &SaveChecks<'_>,
+) -> Result<Saved, SaveError> {
+    use crate::services::{validation, workflow_seeder};
+    let storage = |e: crate::repository::RepositoryError| SaveError::Storage(e.to_string());
+
+    let current = match id {
+        Some(id) => Some(
+            neo4j
+                .get_workflow(id)
+                .await
+                .map_err(storage)?
+                .ok_or_else(|| SaveError::NotFound(format!("No workflow with id '{id}'")))?,
+        ),
+        None => match body.get("name").and_then(Value::as_str) {
+            Some(n) => match neo4j.get_workflow_by_name(n).await.map_err(storage)? {
+                Some(_) if create_only => {
+                    return Err(SaveError::Invalid(format!(
+                        "a workflow named '{n}' already exists; pick another name or edit that one"
+                    )));
+                }
+                found => found,
+            },
+            None => return Err(SaveError::Invalid("`name` is required".into())),
+        },
+    };
+
+    // The candidate: the stored workflow with the body laid over it.
+    let mut cand = current
+        .as_ref()
+        .map(to_body)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = body.as_object() {
+        for (k, v) in obj {
+            if !matches!(k.as_str(), "action" | "id" | "from_item" | "data_class") {
+                cand[k] = v.clone();
+            }
+        }
+    }
+    // A REST client may send steps as a JSON string.
+    if let Some(s) = cand.get("steps").and_then(Value::as_str) {
+        cand["steps"] =
+            serde_json::from_str(s).map_err(|e| SaveError::Invalid(format!("steps: {e}")))?;
+    }
+    if let Some(class) = body
+        .get("data_class")
+        .and_then(|v| serde_json::from_value::<crate::services::routing::DataClass>(v.clone()).ok())
+        && let Some(steps) = cand.get_mut("steps").and_then(Value::as_array_mut)
+    {
+        crate::services::routing::stamp_data_class(steps, class);
+    }
+
+    let mut hard = Vec::new();
+    if let Some(schema) = checks.envelope {
+        hard.extend(validation::validate_against_schema(
+            "workflow", schema, &cand,
+        ));
+    }
+    let steps: Vec<Value> = cand["steps"].as_array().cloned().unwrap_or_default();
+    if steps.is_empty() {
+        return Err(SaveError::Invalid(
+            "`steps` must be a non-empty array".into(),
+        ));
+    }
+    let inputs: Vec<agent_brain_models::WorkflowInput> =
+        serde_json::from_value(cand.get("inputs").cloned().unwrap_or(Value::Array(vec![])))
+            .map_err(|e| SaveError::Invalid(format!("inputs: {e}")))?;
+    let declared: Vec<String> = inputs.iter().map(|i| i.name.clone()).collect();
+    hard.extend(validation::validate_step_array(
+        &steps,
+        checks.live_tools,
+        checks.tool_schemas,
+    ));
+    hard.extend(validation::validate_step_models(&steps, checks.catalog));
+    hard.extend(validation::validate_input_refs(&steps, &declared));
+    if validation::has_hard(&hard) {
+        return Err(SaveError::Invalid(validation::render_hard(&hard)));
+    }
+    serde_json::from_value::<Vec<ChainStep>>(Value::Array(steps.clone()))
+        .map_err(|e| SaveError::Invalid(format!("steps: {e}")))?;
+
+    let str_of = |k: &str| {
+        cand.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let name = str_of("name").ok_or_else(|| SaveError::Invalid("`name` is required".into()))?;
+    if !is_slug(&name) {
+        return Err(SaveError::Invalid(format!(
+            "name '{name}' must be a slug: lowercase letters, digits and dashes (it is what the workflow is run by)"
+        )));
+    }
+    let interval_seconds = str_of("every")
+        .map(|e| workflow_seeder::parse_every(&e))
+        .transpose()
+        .map_err(SaveError::Invalid)?;
+    let check_names: Vec<String> =
+        serde_json::from_value(cand.get("checks").cloned().unwrap_or(Value::Array(vec![])))
+            .map_err(|e| SaveError::Invalid(format!("checks: {e}")))?;
+    workflow_seeder::check_checks(&check_names).map_err(SaveError::Invalid)?;
+    let (topic, kind) = workflow_seeder::check_labels(
+        str_of("topic").as_deref(),
+        str_of("kind").as_deref(),
+        &workflow_seeder::declared_topics(),
+    )
+    .map_err(SaveError::Invalid)?;
+    let managed_by = match body.get("managed_by").and_then(Value::as_str) {
+        None => None,
+        Some(m @ ("yaml" | "runtime")) => Some(m.to_string()),
+        Some(other) => {
+            return Err(SaveError::Invalid(format!(
+                "`managed_by` must be 'yaml' or 'runtime', got '{other}'"
+            )));
+        }
+    };
+    let def = crate::repository::WorkflowDef {
+        name: name.clone(),
+        description: str_of("description"),
+        interval_seconds,
+        steps: Value::Array(steps).to_string(),
+        inputs,
+        checks: check_names,
+        evaluation_rubric: str_of("evaluation_rubric"),
+        is_default: cand
+            .get("default")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        topic,
+        kind,
+    };
+    let enabled = cand.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+
+    let mut warnings = Vec::new();
+    let Some(cur) = current else {
+        let wf = neo4j
+            .create_workflow(&def, enabled, managed_by.as_deref().unwrap_or("runtime"))
+            .await
+            .map_err(storage)?;
+        return Ok(Saved {
+            workflow: wf,
+            created: true,
+            warnings,
+        });
+    };
+
+    if cur.managed_by.as_deref() == Some("yaml") && managed_by.as_deref() != Some("runtime") {
+        warnings.push(format!(
+            "This workflow is yaml-managed: its definition is overwritten from \
+             workflows/{}.yaml on the next startup. Edit the file, or pass \
+             managed_by='runtime' to take ownership.",
+            cur.name
+        ));
+    }
+    // A schedule added is first due now; a schedule removed has no next run.
+    let next_run_at = match (
+        body.get("next_run_at").and_then(Value::as_str),
+        interval_seconds,
+    ) {
+        (_, None) => Some(None),
+        (Some(t), Some(_)) => Some(Some(t.to_string())),
+        (None, Some(_)) if cur.next_run_at.is_none() => Some(Some(chrono::Utc::now().to_rfc3339())),
+        (None, Some(_)) => None,
+    };
+    let patch = crate::repository::WorkflowPatch {
+        name: Some(def.name),
+        description: Some(def.description),
+        enabled: Some(enabled),
+        interval_seconds: Some(def.interval_seconds),
+        steps: Some(def.steps),
+        inputs: Some(def.inputs),
+        checks: Some(def.checks),
+        evaluation_rubric: Some(def.evaluation_rubric),
+        is_default: Some(def.is_default),
+        next_run_at,
+        managed_by,
+        paused_reason: Some(str_of("paused_reason")),
+        topic: Some(def.topic),
+        kind: Some(def.kind),
+    };
+    let wf = neo4j
+        .update_workflow(&cur.id, &patch)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| {
+            SaveError::NotFound(format!("Workflow '{name}' vanished during the save"))
+        })?;
+    Ok(Saved {
+        workflow: wf,
+        created: false,
+        warnings,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn wf(steps: Value) -> Workflow {
+        serde_json::from_value(json!({
+            "id": "1", "name": "fill-knowledge-gap", "description": null, "enabled": true,
+            "interval_seconds": null, "steps": steps.to_string(), "last_run_at": null,
+            "next_run_at": null, "created_at": "", "updated_at": "",
+            "inputs": [{"name": "topic"}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn render_fills_inputs_and_builtins_and_leaves_prev() {
+        let w = wf(json!([
+            {"tool_name": "search_web", "arguments": {"query": "{{inputs.topic}}"}},
+            {"tool_name": "store_note", "arguments": {"content": "{{goal}} {{task_id}}\n{{_prev}}"}}
+        ]));
+        let inputs = json!({"topic": "say \"x\""});
+        let steps = render_steps(
+            &w,
+            "t1",
+            "fill knowledge gap: x",
+            inputs.as_object().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(steps[0].arguments.as_ref().unwrap()["query"], "say \"x\"");
+        assert_eq!(
+            steps[1].arguments.as_ref().unwrap()["content"],
+            "fill knowledge gap: x t1\n{{_prev}}"
+        );
+    }
+
+    #[test]
+    fn names_are_slugs() {
+        assert!(is_slug("daily-news") && is_slug("2fa-check"));
+        assert!(!is_slug("Daily news") && !is_slug("-x") && !is_slug("") && !is_slug("a_b"));
+    }
+
+    #[test]
+    fn default_goal_names_the_workflow_and_its_inputs() {
+        let i = json!({"url": "https://x"});
+        assert_eq!(
+            default_goal("video-learning", i.as_object().unwrap()),
+            "video-learning: https://x"
+        );
+        assert_eq!(default_goal("consolidate", &Map::new()), "consolidate");
+    }
+}

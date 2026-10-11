@@ -103,7 +103,7 @@ function OneTopic({ name }: { name: string }) {
               onClick={() => act(async () => { await resetTopic(t.name); return "Back to its YAML definition."; })}>Reset to YAML</button>
           )}
           <button type="button" className="btn-ghost" disabled={busy}
-            title={d.schedules.length ? "Schedules declare it: give them another topic first" : "Its notes are classified again among the other topics"}
+            title={d.schedules.length ? "Workflows declare it: give them another topic first" : "Its notes are classified again among the other topics"}
             onClick={() => {
               if (!window.confirm(`Delete the topic "${t.label}"? Its ${t.notes.toLocaleString()} notes are classified again among the other topics.`)) return;
               act(async () => { await deleteTopic(t.name); closeEntity(); return "Deleted."; });

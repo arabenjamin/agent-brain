@@ -3,7 +3,6 @@ pub mod agent_runner;
 pub mod alias_judge;
 pub mod architecture;
 pub mod budget;
-pub mod chain_seeder;
 pub mod claim_rewrite;
 pub mod claims;
 pub mod clock;
@@ -33,7 +32,6 @@ pub mod relations;
 pub mod repair;
 pub mod retrieval_eval;
 pub mod routing;
-pub mod schedule_seeder;
 pub mod scheduler;
 pub mod self_model;
 pub mod shared_llm;
@@ -47,6 +45,8 @@ pub mod validation;
 pub mod web_result;
 pub mod wiki;
 pub mod wiki_background;
+pub mod workflow_seeder;
+pub mod workflows;
 
 pub use agent_runner::{
     AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,

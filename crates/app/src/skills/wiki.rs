@@ -1,6 +1,6 @@
 //! `link_entities`: Wikidata/Wikipedia reference links for entities, as
 //! proposals (HBI plan Phase 18, `services/wiki.rs`). Run hourly by
-//! `schedules/entity-linking.yaml`, whose step pins the cloud model, and once
+//! `workflows/entity-linking.yaml`, whose step pins the cloud model, and once
 //! per entity when the user presses "Look up" in its drawer.
 //!
 //! `wiki_background`: Wikipedia as the first step of researching a question

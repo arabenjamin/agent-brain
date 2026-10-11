@@ -18,7 +18,7 @@
 //!   come from `architecture/removed-tools.yaml` (CORE_AND_PLUGINS_PLAN.md §4).
 //!
 //! Chains and schedules are deliberately NOT duplicated here — they already
-//! live in the graph as `(:SchedulerChain)` and `(:ScheduledTask)` nodes.
+//! live in the graph as `(:Workflow)` nodes.
 //!
 //! Sync is a full refresh: current entries are MERGEd, entries that no longer
 //! exist in their source are deleted (DETACH, so stale ALLOWS edges go too) —

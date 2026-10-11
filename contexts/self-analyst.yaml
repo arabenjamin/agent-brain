@@ -39,13 +39,13 @@ system_prompt: |
     context_window — the models you can actually run), `model_usage`
     (model_name, tool_name, success, duration_ms, tokens_in, tokens_out,
     created_at — what you actually ran), `interactions`, `knowledge_gaps`.
-  - neo4j_query (read-only by default) → (:SchedulerChain) your routing chains,
-    (:ScheduledTask) your cron work, (:ContextProfile)-[:ALLOWS]->(:ToolDef)
+  - neo4j_query (read-only by default) → (:Workflow) your job chains (scheduled
+    ones have interval_seconds), (:ContextProfile)-[:ALLOWS]->(:ToolDef)
     your own personas and tool allowlists, (:Task), (:Note), (:Entity),
     (:AgentJob), (:MediaSource), (:Media).
   - analyze_own_structure / search_codebase / read_codebase_file
     → your Rust source. Skills in crates/app/src/skills/, services in
-    crates/app/src/services/, declarative config in chains/, schedules/,
+    crates/app/src/services/, declarative config in workflows/,
     contexts/, sources/, sources-media/.
   - get_git_log → how you got here. get_llm_budget → live quota; model_usage
     (duckdb_query) → cloud consumption over time.
@@ -58,11 +58,11 @@ system_prompt: |
     services/model_selector.rs does capability filtering and cheapest-first
     selection. All background jobs are pinned to local Ollama already.
   - Memory hygiene: consolidate_memories, prune_old_notes, spaced repetition,
-    perception_scan, chains/fill-knowledge-gap.yaml.
+    perception_scan, workflows/fill-knowledge-gap.yaml.
   - Resilience: the evaluator loop (reflect_on_work scoring, requeue on fail)
     and the adversarial pre-flight critic (adversarial_plan_review).
-  - Learning: chains/learn.yaml, chains/meta-learn.yaml, the Media Learning
-    pipeline, and dead-job meta-learning in services/queue.rs.
+  - Learning: workflows/fill-knowledge-gap.yaml, deep-dive.yaml, the Media
+    Learning pipeline, and dead-job meta-learning in services/queue.rs.
 
   MODEL QUESTIONS: when asked which models to adopt or how to cut cost, audit
   YOUR catalog first via duckdb_query on model_registry, and your real spend via
@@ -83,15 +83,13 @@ pre_load_query: |-
   WITH collect('- ' + m.name + ' [' + coalesce(m.provider, '?') + '] cost_in=' + toString(coalesce(m.cost_per_1k_input, 0.0)) + '/1k ctx=' + toString(coalesce(m.context_window, 0))) AS ms
   RETURN '## YOUR MODEL CATALOG (' + toString(size(ms)) + ') — the ONLY models you can actually run. Never recommend a model absent from this list without stating plainly that you do not have it.' + reduce(a = '', x IN ms | a + '\n' + x) AS content
   UNION ALL
-  MATCH (c:SchedulerChain)
-  WITH c ORDER BY c.name
-  WITH collect(c.name) AS cs
-  MATCH (s:ScheduledTask) WHERE s.enabled
-  WITH cs, s ORDER BY s.name
-  WITH cs, collect(split(s.name, ':')[0]) AS ss
+  MATCH (w:Workflow)
+  WITH w ORDER BY w.name
+  WITH collect(CASE WHEN w.interval_seconds IS NULL THEN w.name END) AS cs,
+       collect(CASE WHEN w.interval_seconds IS NOT NULL AND w.enabled THEN w.name END) AS ss
   RETURN '## YOUR AUTONOMY INVENTORY — already built, do NOT propose creating these.' +
-    '\n- Routing chains (chains/*.yaml, ' + toString(size(cs)) + '): ' + reduce(a = '', x IN cs | a + x + ', ') +
-    '\n- Active schedules (schedules/*.yaml, ' + toString(size(ss)) + '): ' + reduce(a = '', x IN ss | a + x + ', ') AS content
+    '\n- Workflows run by name (workflows/*.yaml, ' + toString(size(cs)) + '): ' + reduce(a = '', x IN cs | a + x + ', ') +
+    '\n- Active scheduled workflows (' + toString(size(ss)) + '): ' + reduce(a = '', x IN ss | a + x + ', ') AS content
   UNION ALL
   MATCH (t:ToolDef)
   WITH t.skill AS skill, count(*) AS n ORDER BY skill

@@ -16,6 +16,7 @@ use agent_brain_models::{Task, TaskStatus};
 /// empty string rather than an error.
 const TASK_COLUMNS: &str = "t.id AS id, t.goal AS goal, t.status AS status, \
      t.context AS context, t.success_criteria AS success_criteria, \
+     t.workflow AS workflow, t.inputs_json AS inputs_json, \
      toString(t.created_at) AS created_at, toString(t.updated_at) AS updated_at";
 
 /// Build a `Task` from a row projected with [`TASK_COLUMNS`].
@@ -26,6 +27,11 @@ fn task_from_row(row: &neo4rs::Row) -> Task {
         goal: row.get("goal").unwrap_or_default(),
         context: row.get("context").unwrap_or(None),
         success_criteria: row.get("success_criteria").unwrap_or(None),
+        workflow: row.get("workflow").unwrap_or(None),
+        inputs: row
+            .get::<Option<String>>("inputs_json")
+            .unwrap_or(None)
+            .and_then(|j| serde_json::from_str(&j).ok()),
         status: match status_str.as_str() {
             "in_progress" => TaskStatus::InProgress,
             "completed" => TaskStatus::Completed,
@@ -46,17 +52,45 @@ impl Neo4jClient {
         context: Option<&str>,
         success_criteria: Option<&str>,
     ) -> Result<String, RepositoryError> {
+        self.create_run(goal, context, success_criteria, None, None, "created")
+            .await
+    }
+
+    /// Create a Task that is one run of `workflow` (by name) with `inputs`.
+    /// `workflow: None` runs the default workflow. `status` is `created` for a
+    /// run the next scheduler tick dispatches, `in_progress` for one the caller
+    /// enqueues itself (a schedule firing).
+    pub async fn create_run(
+        &self,
+        goal: &str,
+        context: Option<&str>,
+        success_criteria: Option<&str>,
+        workflow: Option<&str>,
+        inputs: Option<&serde_json::Value>,
+        status: &str,
+    ) -> Result<String, RepositoryError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let opt = |v: Option<&str>| match v {
+            Some(v) => BoltType::from(v),
+            None => BoltType::Null(BoltNull),
+        };
+        let inputs_json = inputs
+            .filter(|v| v.as_object().is_some_and(|m| !m.is_empty()))
+            .map(|v| v.to_string());
 
         let mut q = query(
-            "CREATE (t:Task {id: $id, goal: $goal, status: 'created', \
+            "CREATE (t:Task {id: $id, goal: $goal, status: $status, \
              created_at: datetime($created_at), updated_at: datetime($updated_at)}) \
-             SET t.context = $context, t.success_criteria = $success_criteria \
+             SET t.context = $context, t.success_criteria = $success_criteria, \
+                 t.workflow = $workflow, t.inputs_json = $inputs_json \
              RETURN t.id",
         )
         .param("id", id.clone())
         .param("goal", goal)
+        .param("status", status)
+        .param("workflow", opt(workflow))
+        .param("inputs_json", opt(inputs_json.as_deref()))
         .param("created_at", now.clone())
         .param("updated_at", now);
 
@@ -315,6 +349,7 @@ impl Neo4jClient {
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, \
                         t.context AS context, t.success_criteria AS success_criteria, \
+                        t.workflow AS workflow, t.inputs_json AS inputs_json, \
                         toString(t.created_at) AS created_at, parent.id AS parent_id \
                  ORDER BY t.created_at DESC LIMIT $limit",
             )
@@ -327,6 +362,7 @@ impl Neo4jClient {
                  OPTIONAL MATCH (t)-[:SUBTASK_OF]->(parent:Task) \
                  RETURN t.id AS id, t.goal AS goal, t.status AS status, \
                         t.context AS context, t.success_criteria AS success_criteria, \
+                        t.workflow AS workflow, t.inputs_json AS inputs_json, \
                         toString(t.created_at) AS created_at, parent.id AS parent_id \
                  ORDER BY t.created_at DESC LIMIT $limit",
             )
@@ -352,6 +388,11 @@ impl Neo4jClient {
                 "status": status_val,
                 "context": context,
                 "success_criteria": success_criteria,
+                "workflow": row.get::<Option<String>>("workflow").unwrap_or(None),
+                "inputs": row
+                    .get::<Option<String>>("inputs_json")
+                    .unwrap_or(None)
+                    .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()),
                 "created_at": created_at,
                 "parent_id": parent_id,
                 "depends_on": deps,

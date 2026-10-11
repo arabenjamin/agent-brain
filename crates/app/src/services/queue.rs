@@ -1838,14 +1838,17 @@ Output the compressed content only — no greeting, no preamble, no offer to hel
             task.context.as_deref().unwrap_or("none"),
         );
 
-        match self
-            .neo4j
-            .create_task(
-                &task.goal,
-                Some(&retry_context),
-                task.success_criteria.as_deref(),
-            )
-            .await
+        // The retry runs the same workflow with the same inputs.
+        match crate::services::workflows::start_run(
+            &self.neo4j,
+            task.workflow.as_deref(),
+            &task.inputs.clone().unwrap_or_default(),
+            Some(&task.goal),
+            Some(&retry_context),
+            task.success_criteria.as_deref(),
+        )
+        .await
+        .map(|run| run.task_id)
         {
             Ok(new_id) => info!(
                 original_task_id = %task_id,
@@ -1910,14 +1913,17 @@ impl QueueService {
             task.context.as_deref().unwrap_or("none"),
         );
 
-        match self
-            .neo4j
-            .create_task(
-                &task.goal,
-                Some(&retry_context),
-                task.success_criteria.as_deref(),
-            )
-            .await
+        // The retry runs the same workflow with the same inputs.
+        match crate::services::workflows::start_run(
+            &self.neo4j,
+            task.workflow.as_deref(),
+            &task.inputs.clone().unwrap_or_default(),
+            Some(&task.goal),
+            Some(&retry_context),
+            task.success_criteria.as_deref(),
+        )
+        .await
+        .map(|run| run.task_id)
         {
             Ok(new_id) => info!(
                 original_task_id = %task_id,
@@ -2219,7 +2225,7 @@ fn is_quota_exhausted_error(error_text: &str) -> bool {
 /// `WorkingMemory` session and reassemble it with
 /// `neo4j_query … RETURN w.content AS content ORDER BY w.turn_index`, because
 /// `{{_prev}}` carries only the previous step's output. Without unwrapping, the
-/// *envelope* is what flows onward — `chains/video-learning.yaml` stored notes
+/// *envelope* is what flows onward — `workflows/video-learning.yaml` stored notes
 /// that began `{"count":2,"rows":[{"content":"## VIDEO SUMMARY\n{…escaped…}"`,
 /// so the brain's durable semantic knowledge was JSON scaffolding with the real
 /// content escaped inside it, then chunked and embedded that way.
@@ -2320,56 +2326,13 @@ fn extract_result_text(result: &ToolCallResult) -> String {
     }
 }
 
-/// The subject of a goal, with any routing prefix (`"fill knowledge gap:"`,
-/// `"watch video:"`, …) stripped — exposed to chains as `{{goal_topic}}`.
-///
-/// Routing prefixes exist to match a chain, not to be searched for. Passing the
-/// raw `{{goal}}` to `search_web` produced queries like *"fill knowledge gap:
-/// Research the specific impact of ALPRs…"*, where the first three words are
-/// noise that no search engine can do anything useful with.
-///
-/// Conservative by construction: it strips only up to the *first* colon, only
-/// when that colon appears early enough to be a prefix rather than punctuation
-/// mid-sentence, and only when something non-empty follows. Anything else is
-/// returned unchanged, so a goal that is an ordinary sentence is never mangled.
-pub fn goal_topic(goal: &str) -> &str {
-    /// A prefix is a short label. Beyond this, a colon is sentence punctuation.
-    const MAX_PREFIX_LEN: usize = 40;
-
-    match goal.find(':') {
-        Some(idx) if idx < MAX_PREFIX_LEN => {
-            let prefix = &goal[..idx];
-            let rest = goal[idx + 1..].trim();
-            // A routing prefix is a bare label ("fill knowledge gap:",
-            // "watch video:"); it never contains a quote. A quote before the
-            // colon means the subject itself is embedded, and the colon is
-            // sentence punctuation — stripping there decapitates the query
-            // (e.g. "Research the concept of 'knowledge gap': how it forms"
-            // has its colon at index 39 and would search "how it forms …").
-            // A URL ("https://…") colon must not be treated as a prefix, and a
-            // trailing colon with nothing after it leaves nothing to search.
-            if rest.is_empty()
-                || rest.starts_with("//")
-                || prefix.contains('\'')
-                || prefix.contains('"')
-            {
-                goal.trim()
-            } else {
-                rest
-            }
-        }
-        _ => goal.trim(),
-    }
-}
-
 /// Recursively replace `{{key}}` placeholders in every string value of a JSON Value tree.
 ///
 /// Operating at the Value level (rather than on serialized JSON text) means replacement
 /// values containing quotes, backslashes, or newlines are inserted safely and can never
 /// corrupt the surrounding JSON structure.  This is the substitution primitive shared by
-/// `substitute_prev` (chain `{{_prev}}` results) and the scheduler's chain/scheduled-task
-/// template expansion (`{{goal}}`, `{{task_id}}`, `{{date}}`, `{{file_slug}}`,
-/// `{{goal_topic}}`).
+/// `substitute_prev` (chain `{{_prev}}` results) and a workflow run's template
+/// expansion (`{{goal}}`, `{{task_id}}`, `{{date}}`, `{{inputs.<name>}}`).
 pub fn substitute_template_vars(
     val: &serde_json::Value,
     vars: &[(&str, &str)],
@@ -2738,60 +2701,6 @@ mod tests {
     }
 
     #[test]
-    fn goal_topic_strips_a_routing_prefix() {
-        assert_eq!(
-            goal_topic("fill knowledge gap: Research the impact of ALPRs on privacy"),
-            "Research the impact of ALPRs on privacy"
-        );
-        assert_eq!(goal_topic("watch video: some talk"), "some talk");
-    }
-
-    #[test]
-    fn goal_topic_leaves_an_ordinary_sentence_alone() {
-        let goal = "Analyze the status of the deal between Iran and Oman";
-        assert_eq!(goal_topic(goal), goal);
-    }
-
-    #[test]
-    fn goal_topic_ignores_a_colon_that_is_sentence_punctuation() {
-        // Past the prefix-length bound, a colon introduces a clause rather than
-        // labelling the goal — stripping there would discard the actual subject.
-        let goal = "Compare the two leading approaches to caching and explain: \
-                    which one wins under write-heavy load";
-        assert_eq!(goal_topic(goal), goal);
-    }
-
-    #[test]
-    fn goal_topic_does_not_decapitate_a_bare_url() {
-        // "https://…" — the scheme colon is at index 5, well inside the prefix
-        // bound, so the naive rule would hand a search engine "//youtu.be/x".
-        let goal = "https://youtu.be/abc123";
-        assert_eq!(goal_topic(goal), goal);
-    }
-
-    #[test]
-    fn goal_topic_keeps_the_goal_when_nothing_follows_the_colon() {
-        assert_eq!(goal_topic("fill knowledge gap:"), "fill knowledge gap:");
-    }
-
-    #[test]
-    fn goal_topic_does_not_decapitate_a_quoted_subject_before_a_colon() {
-        // Regression: this self-generated brain-exercise goal has its colon at
-        // index 39 (inside the prefix bound), so the naive rule stripped the
-        // subject and searched "how it forms, its impact on learning …" — with
-        // "knowledge gap" gone — failing the task four times. A quote in the
-        // candidate prefix marks it as an embedded subject, not a routing label.
-        let goal = "Research the concept of 'knowledge gap': \
-                    how it forms, its impact on learning and problem-solving.";
-        assert_eq!(goal_topic(goal), goal);
-        // A double-quoted subject is guarded the same way.
-        assert_eq!(
-            goal_topic("Investigate the \"dead man's switch\": how it triggers"),
-            "Investigate the \"dead man's switch\": how it triggers"
-        );
-    }
-
-    #[test]
     fn spent_search_quota_is_both_transient_and_alertable() {
         // These two classifiers deliberately overlap: meta-learning is skipped
         // (the brain cannot fix a billing cap) but the operator is still told.
@@ -2835,7 +2744,7 @@ mod tests {
             .expect("workspace root");
 
         let mut checked = 0;
-        for dir in ["chains", "schedules"] {
+        for dir in ["workflows"] {
             let path = root.join(dir);
             let entries = std::fs::read_dir(&path).unwrap_or_else(|e| panic!("{dir}: {e}"));
             for entry in entries.flatten() {

@@ -81,7 +81,7 @@ system_prompt: |
 token_budget: 8000
 pre_load_query: ''
 # PAID. Reached only through a "deep dive (hard):" task you create yourself
-# (chains/deep-dive-hard.yaml); nothing schedules it. On 2026-10-05 it was the
+# (workflows/deep-dive-hard.yaml); nothing schedules it. On 2026-10-05 it was the
 # only model to answer the Reticulum destination-hash question correctly, from
 # RNS's own source, with a test against an independently computed value:
 # 8 gpt-oss runs had all failed. That run cost $2.03 before prompt caching.
@@ -100,7 +100,7 @@ retrieval_exclude:
 spawnable: true
 # Never offered to a model: absent from the delegate roster and from
 # run_agent(agent:"auto"), refused by chat delegate. Only a run_agent step that
-# names it (chains/deep-dive-hard.yaml) can start it.
+# names it (workflows/deep-dive-hard.yaml) can start it.
 explicit_only: true
 # Questions come from open todos and the brain's own notes.
 data_class: private

@@ -460,28 +460,29 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
             .await
             .unwrap_or_default()
     };
-    let chains: Vec<Value> = rows(
-        "MATCH (c:SchedulerChain) RETURN c.id AS id, c.name AS name, c.pattern AS pattern, \
-         c.description AS description, c.steps AS steps, coalesce(c.no_evaluator, false) AS no_evaluator \
-         ORDER BY c.priority, c.name",
-    )
-    .await
-    .iter()
-    .map(|r| {
-        let steps = serde_json::from_str::<Value>(&r.get::<String>("steps").unwrap_or_default())
-            .ok()
-            .and_then(|v| v.as_array().map(Vec::len))
-            .unwrap_or(0);
-        json!({
-            "id": r.get::<String>("id").ok(),
-            "name": r.get::<String>("name").ok(),
-            "pattern": r.get::<String>("pattern").ok(),
-            "description": r.get::<String>("description").ok(),
-            "steps": steps,
-            "no_evaluator": r.get::<bool>("no_evaluator").unwrap_or(false),
+    let workflows: Vec<Value> = neo4j
+        .list_workflows(false)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|w| {
+            let steps = serde_json::from_str::<Value>(&w.steps)
+                .ok()
+                .and_then(|v| v.as_array().map(Vec::len))
+                .unwrap_or(0);
+            json!({
+                "id": w.id,
+                "name": w.name,
+                "description": w.description,
+                "every": w.interval_seconds.map(crate::services::workflow_seeder::format_every),
+                "enabled": w.enabled,
+                "inputs": w.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+                "checks": w.checks,
+                "default": w.is_default,
+                "steps": steps,
+            })
         })
-    })
-    .collect();
+        .collect();
     let mcp_servers: Vec<Value> = rows(
         "MATCH (m:McpServer) RETURN m.name AS name, m.url AS url, m.description AS description, \
          coalesce(m.enabled, true) AS enabled, m.auth_scheme AS auth_scheme, m.auth_env_var AS auth_env_var \
@@ -508,20 +509,13 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
         .iter()
         .map(|r| json!({ "name": r.get::<String>("name").ok(), "description": r.get::<String>("description").ok() }))
         .collect();
-    let schedules = rows(
-        "MATCH (s:ScheduledTask) RETURN count(s) AS total, \
-         sum(CASE WHEN coalesce(s.enabled, true) THEN 1 ELSE 0 END) AS enabled",
-    )
-    .await;
-    let (sched_total, sched_enabled) = schedules
-        .first()
-        .map(|r| {
-            (
-                r.get::<i64>("total").unwrap_or(0),
-                r.get::<i64>("enabled").unwrap_or(0),
-            )
-        })
-        .unwrap_or((0, 0));
+    let scheduled = |w: &&Value| !w["every"].is_null();
+    let sched_total = workflows.iter().filter(scheduled).count();
+    let sched_enabled = workflows
+        .iter()
+        .filter(scheduled)
+        .filter(|w| w["enabled"].as_bool().unwrap_or(true))
+        .count();
 
     Json(json!({
         "counts": {
@@ -529,7 +523,7 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
             "tools": tool_count,
             "dynamic_tools": dynamic_tools.len(),
             "agents": agents.len(),
-            "chains": chains.len(),
+            "workflows": workflows.len(),
             "mcp_servers": mcp_servers.len(),
             "schedules": sched_total,
             "schedules_enabled": sched_enabled,
@@ -537,7 +531,7 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
         "skills": skills,
         "dynamic_tools": dynamic_tools,
         "agents": agents,
-        "chains": chains,
+        "workflows": workflows,
         "mcp_servers": mcp_servers,
         "providers": crate::services::provider_registry::snapshot_json(),
         "routing_policy": crate::services::routing::RoutingPolicy::from_env().describe(),

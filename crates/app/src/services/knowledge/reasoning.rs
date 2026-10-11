@@ -494,8 +494,10 @@ impl KnowledgeService {
 
             let create_q = neo4rs::query(
                 "CREATE (t:Task {id: $id, goal: $goal, context: $ctx, \
+                 workflow: 'fill-knowledge-gap', inputs_json: $inputs, \
                  status: 'created', created_at: datetime($ts), updated_at: datetime($ts)})",
             )
+            .param("inputs", serde_json::json!({ "topic": gap }).to_string())
             .param("id", task_id.as_str())
             .param("goal", goal.as_str())
             .param("ctx", context.as_str())

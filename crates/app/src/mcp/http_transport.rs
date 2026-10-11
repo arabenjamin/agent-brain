@@ -70,7 +70,7 @@ pub struct HttpTransportConfig {
     pub session_manager: Option<Arc<SessionManager>>,
     /// Optional chat service for the `/chat` SSE endpoint.
     pub chat_service: Option<Arc<ChatService>>,
-    /// Optional Neo4j client for the `/todos` and `/scheduled-tasks` REST endpoints.
+    /// Optional Neo4j client for the `/todos` and `/workflows` REST endpoints.
     pub neo4j: Option<Arc<Neo4jClient>>,
     /// Optional scheduler service handle for the `/scheduler-config` REST endpoints.
     /// Pass `server.scheduler_handle()` before calling `run_with_transport`.
@@ -149,7 +149,7 @@ impl HttpTransportConfig {
         self
     }
 
-    /// Attach a [`Neo4jClient`] to enable the `/todos` and `/scheduled-tasks` REST endpoints.
+    /// Attach a [`Neo4jClient`] to enable the `/todos` and `/workflows` REST endpoints.
     pub fn with_neo4j_client(mut self, neo4j: Arc<Neo4jClient>) -> Self {
         self.neo4j = Some(neo4j);
         self
@@ -219,7 +219,7 @@ struct HttpTransportState {
     message_tx: mpsc::Sender<TransportMessage>,
     /// Optional chat service for the `/chat` SSE endpoint.
     chat_service: Option<Arc<ChatService>>,
-    /// Optional Neo4j client for the `/todos` and `/scheduled-tasks` REST endpoints.
+    /// Optional Neo4j client for the `/todos` and `/workflows` REST endpoints.
     neo4j: Option<Arc<Neo4jClient>>,
     /// Optional scheduler handle for the `/scheduler-config` REST endpoints.
     scheduler: Option<Arc<RwLock<Option<Arc<SchedulerService>>>>>,
@@ -329,15 +329,15 @@ impl HttpTransport {
                     .delete(rest_handlers::handle_delete_todo),
             )
             .route(
-                "/scheduled-tasks",
-                get(rest_handlers::handle_list_scheduled_tasks)
-                    .post(rest_handlers::handle_create_scheduled_task),
+                "/workflows",
+                get(rest_handlers::handle_list_workflows)
+                    .post(rest_handlers::handle_create_workflow),
             )
             .route(
-                "/scheduled-tasks/{id}",
-                get(rest_handlers::handle_get_scheduled_task)
-                    .put(rest_handlers::handle_update_scheduled_task)
-                    .delete(rest_handlers::handle_delete_scheduled_task),
+                "/workflows/{id}",
+                get(rest_handlers::handle_get_workflow)
+                    .put(rest_handlers::handle_update_workflow)
+                    .delete(rest_handlers::handle_delete_workflow),
             )
             .route(
                 "/scheduler-config",
@@ -419,8 +419,8 @@ impl HttpTransport {
                 get(crate::clients::work::handle_job_detail),
             )
             .route(
-                "/api/work/schedules",
-                get(crate::clients::work::handle_list_schedules),
+                "/api/work/workflows",
+                get(crate::clients::work::handle_list_workflows),
             )
             .route("/api/feed", get(crate::clients::feed::handle_feed))
             .route(
@@ -436,16 +436,16 @@ impl HttpTransport {
                 axum::routing::post(crate::clients::items::handle_send_back),
             )
             .route(
-                "/api/work/schedules/topic-mix",
-                get(crate::clients::work::handle_schedule_topic_mix),
+                "/api/work/workflows/topic-mix",
+                get(crate::clients::work::handle_workflow_topic_mix),
             )
             .route(
-                "/api/work/schedules/{id}",
-                get(crate::clients::work::handle_schedule_detail),
+                "/api/work/workflows/{id}",
+                get(crate::clients::work::handle_workflow_detail),
             )
             .route(
-                "/api/work/schedules/{id}/run",
-                post(crate::clients::work::handle_run_schedule_now),
+                "/api/work/workflows/{id}/run",
+                post(crate::clients::work::handle_run_workflow_now),
             )
             .route(
                 "/api/work/todos/{id}",
@@ -461,10 +461,6 @@ impl HttpTransport {
             )
             .route("/api/queue/status", get(rest_handlers::handle_queue_status))
             .route("/api/queue/drain", post(rest_handlers::handle_queue_drain))
-            .route(
-                "/api/scheduler/chains",
-                get(rest_handlers::handle_list_scheduler_chains),
-            )
             .route(
                 "/api/contexts",
                 get(rest_handlers::handle_list_context_profiles)

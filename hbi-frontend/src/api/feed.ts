@@ -16,7 +16,7 @@ export interface FeedItem extends Todo {
 }
 
 export interface FeedDigest {
-  kind: "entity_merges" | "failed_tasks" | "dead_jobs" | "broken_schedules" | string;
+  kind: "entity_merges" | "failed_tasks" | "dead_jobs" | "broken_workflows" | string;
   title: string;
   count: number;
   /** Work-view params the card drills to. */

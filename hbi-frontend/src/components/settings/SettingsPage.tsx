@@ -289,7 +289,7 @@ function SchedulerSection() {
     <>
       <h2>Scheduler</h2>
       <p className="settings-lede">
-        The scheduler turns pending tasks into job chains and runs scheduled tasks when they come due. Pausing it
+        The scheduler runs each pending task as its workflow, and fires scheduled workflows when they come due. Pausing it
         stops new dispatch; running jobs finish.
       </p>
       <div className="settings-actions">

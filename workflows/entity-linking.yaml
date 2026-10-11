@@ -1,0 +1,18 @@
+# Why: dev_docs get yaml/schedules-entity-linking-1
+name: entity-linking
+description: "Hourly: looks up to 20 entities named in claims on Wikidata, picks the item their claims describe (or none), and proposes it as the entity's reference link for the user to confirm. A 'no article' answer is checked again after 90 days."
+kind: maintenance
+# Shipped off, then turned on (2026-10-09) once the final prompt was measured
+# on a fresh held-out set: 18 of 20 proposals right, 1 close, 1 wrong.
+enabled: true
+# topic: none — spans topics on purpose
+every: 1h
+steps:
+  - tool_name: link_entities
+    arguments:
+      limit: 20
+    model: gpt-oss:120b-cloud
+    provider_hint: ollama-cloud
+    priority: 3
+    max_attempts: 1
+    description: "Propose reference links for 20 entities"

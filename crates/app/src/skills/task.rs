@@ -30,7 +30,9 @@ impl TaskSkill {
     fn create_task_def() -> ToolDefinition {
         ToolDefinition {
             name: "create_task".to_string(),
-            description: "Create a new high-level task or goal to track execution against."
+            description: "Create a task the scheduler runs on its next tick. Name a `workflow` \
+                (with its `inputs`) to run that one — manage_workflow action=list shows them and \
+                their inputs; with no workflow, the goal runs the default workflow."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -46,6 +48,14 @@ impl TaskSkill {
                     "success_criteria": {
                         "type": "string",
                         "description": "Measurable definition of done — used by the evaluator to grade output (e.g. 'Returns valid JSON with all required fields')"
+                    },
+                    "workflow": {
+                        "type": "string",
+                        "description": "The workflow to run, by name (e.g. fill-knowledge-gap). Omit for the default workflow."
+                    },
+                    "inputs": {
+                        "type": "object",
+                        "description": "The workflow's inputs, e.g. {\"topic\": \"…\"}."
                     }
                 },
                 "required": ["goal"]
@@ -186,22 +196,25 @@ impl TaskSkill {
         }
 
         match neo4j
-            .create_task(
+            .start_run(
+                input.workflow.as_deref(),
+                &input.inputs,
                 &input.goal,
                 effective_context.as_deref(),
                 input.success_criteria.as_deref(),
             )
             .await
         {
-            Ok(id) => {
-                info!(task_id = %id, goal = %input.goal, "Created new task in DB");
+            Ok((task_id, workflow)) => {
+                info!(task_id = %task_id, goal = %input.goal, workflow = %workflow, "Created new task in DB");
                 ToolCallResult::success_json(json!({
-                    "id": id,
+                    "id": task_id,
                     "status": "created",
-                    "message": "Task created successfully in database."
+                    "workflow": workflow,
+                    "message": "Task created; the scheduler dispatches it on its next tick."
                 }))
             }
-            Err(e) => ToolCallResult::error(format!("Failed to create task in DB: {}", e)),
+            Err(e) => ToolCallResult::error(format!("Task not created: {e}")),
         }
     }
 
@@ -428,6 +441,10 @@ struct CreateTaskInput {
     context: Option<String>,
     #[serde(default)]
     success_criteria: Option<String>,
+    #[serde(default)]
+    workflow: Option<String>,
+    #[serde(default)]
+    inputs: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]

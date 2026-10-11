@@ -34,8 +34,8 @@ impl Neo4jClient {
     pub async fn init_schema(&self) -> Result<()> {
         // ... (existing schema init)
         let constraints = [
-            "CREATE CONSTRAINT scheduled_task_id IF NOT EXISTS FOR (s:ScheduledTask) REQUIRE s.id IS UNIQUE",
-            "CREATE CONSTRAINT scheduled_task_name IF NOT EXISTS FOR (s:ScheduledTask) REQUIRE s.name IS UNIQUE",
+            "CREATE CONSTRAINT workflow_id IF NOT EXISTS FOR (w:Workflow) REQUIRE w.id IS UNIQUE",
+            "CREATE CONSTRAINT workflow_name IF NOT EXISTS FOR (w:Workflow) REQUIRE w.name IS UNIQUE",
             "CREATE CONSTRAINT procedure_id IF NOT EXISTS FOR (p:Procedure) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT working_memory_id IF NOT EXISTS FOR (w:WorkingMemory) REQUIRE w.id IS UNIQUE",
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
@@ -48,7 +48,6 @@ impl Neo4jClient {
             "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
-            "CREATE CONSTRAINT scheduler_chain_id IF NOT EXISTS FOR (c:SchedulerChain) REQUIRE c.id IS UNIQUE",
             // Note and Task are the hottest by-id lookups (get_note, per-search access-stat
             // updates, SUMMARIZED_BY linking, update_task_status every scheduler tick).
             // Without these, every `MATCH (n:Note {id: $id})` is a full label scan.
@@ -93,6 +92,7 @@ impl Neo4jClient {
             "CREATE INDEX agent_job_parent IF NOT EXISTS FOR (j:AgentJob) ON (j.parent_job_id)",
             // Task.status is scanned every scheduler tick via list_tasks(status='created').
             "CREATE INDEX task_status IF NOT EXISTS FOR (t:Task) ON (t.status)",
+            "CREATE INDEX task_workflow IF NOT EXISTS FOR (t:Task) ON (t.workflow)",
             "CREATE INDEX todo_status IF NOT EXISTS FOR (t:Todo) ON (t.status)",
             "CREATE INDEX todo_priority IF NOT EXISTS FOR (t:Todo) ON (t.priority)",
             // AgentNotification index

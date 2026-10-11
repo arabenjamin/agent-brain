@@ -33,7 +33,7 @@ vetted list produces claims that get checked and mostly hold up.
 
 ### "Established knowledge" written from unrestricted search
 
-The curiosity engine (`chains/fill-knowledge-gap.yaml`, `chains/learn.yaml`)
+The curiosity engine (`workflows/fill-knowledge-gap.yaml`, `chains/learn.yaml`)
 wrote **~800 `semantic` notes** in 30 days — the type that means *the brain
 established this* — from searches with no source list. **28% cite no URL.**
 Retrieval does not label `semantic` notes, so nothing downstream can tell them
@@ -92,7 +92,7 @@ swamp verification.
    one-line reason, **for the user to review** — the watchlist is user-curated
    and the tags are judgement calls (e.g. C-SPAN = primary, 60 Minutes =
    reporting, Hasan Minhaj = entertainment, Julian Dorey = interview).
-3. Per type, in `chains/video-learning.yaml` / `chains/article-learning.yaml`:
+3. Per type, in `workflows/video-learning.yaml` / `workflows/article-learning.yaml`:
    `reporting`/`primary` keep claim extraction (3/2); `analysis` 1;
    `commentary`/`interview`/`entertainment` 0 — still summarised and stored as
    `source_record`, so nothing is lost, but no claims enter the verification

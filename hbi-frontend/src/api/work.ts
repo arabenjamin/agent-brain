@@ -1,6 +1,6 @@
 /**
  * The Work workspace's data: lists for the lanes, lineage for the drawer,
- * and the actions (`clients/work.rs`, `/todos`, `/scheduled-tasks`,
+ * and the actions (`clients/work.rs`, `/todos`, `/workflows`,
  * `manage_job`). Every mutation invalidates the keys it changes.
  */
 import type { Todo } from "../components/todos/model";
@@ -130,19 +130,33 @@ export interface JobDetail {
 export interface RunRef {
   task_id: string;
   status: string | null;
+  /** The run's goal (a workflow detail's runs carry it). */
+  goal?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
 
+export interface WorkflowInput {
+  name: string;
+  description?: string | null;
+  required: boolean;
+}
+
+/** A workflow (`clients/work.rs`): scheduled when `interval_seconds` is set, else run by name. */
 export interface WorkSchedule {
   id: string;
   name: string;
   description?: string | null;
   enabled: boolean;
-  interval_seconds: number;
+  /** null = no schedule; it runs only when started by name. */
+  interval_seconds: number | null;
   steps: string | unknown[];
+  inputs: WorkflowInput[];
+  checks: string[];
+  /** The workflow a free-text task runs. */
+  is_default: boolean;
   last_run_at?: string | null;
-  next_run_at: string;
+  next_run_at: string | null;
   created_at: string;
   updated_at: string;
   managed_by?: string | null;
@@ -159,7 +173,7 @@ export interface WorkSchedule {
 }
 
 export interface ScheduleDetail {
-  schedule: WorkSchedule;
+  workflow: WorkSchedule;
   runs: RunRef[];
   runs_total: number;
   runs_shown: number;
@@ -193,7 +207,7 @@ export function useJobList(status = "", since = "", limit = 100, pollMs = 5_000)
 export function useWorkSchedules(pollMs = 30_000) {
   return useQuery({
     queryKey: workKeys.schedules,
-    queryFn: () => apiJson<{ schedules: WorkSchedule[]; runs_error: string | null }>("/api/work/schedules"),
+    queryFn: () => apiJson<{ workflows: WorkSchedule[]; runs_error: string | null }>("/api/work/workflows"),
     refetchInterval: pollMs,
   });
 }
@@ -205,7 +219,7 @@ export function useWorkSchedules(pollMs = 30_000) {
 export function useScheduleTopicMix(days = 30) {
   return useQuery({
     queryKey: ["work", "topic-mix", days] as const,
-    queryFn: () => apiJson<{ days: number; schedules: TopicMix[] }>(`/api/work/schedules/topic-mix${query({ days })}`),
+    queryFn: () => apiJson<{ days: number; workflows: TopicMix[] }>(`/api/work/workflows/topic-mix${query({ days })}`),
     staleTime: 5 * 60_000,
     refetchInterval: 10 * 60_000,
   });
@@ -226,7 +240,7 @@ export function useJobDetail(id: string) {
 export function useScheduleDetail(id: string) {
   return useQuery({
     queryKey: workKeys.schedule(id),
-    queryFn: () => apiJson<ScheduleDetail>(`/api/work/schedules/${encodeURIComponent(id)}`),
+    queryFn: () => apiJson<ScheduleDetail>(`/api/work/workflows/${encodeURIComponent(id)}`),
     retry: false,
     refetchInterval: 15_000,
     enabled: id !== "new",
@@ -265,18 +279,18 @@ export function retryJob(id: string, status: string) {
     : after(callToolStrict("manage_job", { action: "retry", job_id: id }));
 }
 
-/** Dispatch one run now; resolves to the run-record task id. */
-export function runScheduleNow(id: string) {
-  return after(apiSend<{ task_id: string }>("POST", `/api/work/schedules/${encodeURIComponent(id)}/run`));
+/** Run a workflow now with its inputs; resolves to the run's task id. */
+export function runScheduleNow(id: string, inputs: Record<string, string> = {}) {
+  return after(apiSend<{ task_id: string }>("POST", `/api/work/workflows/${encodeURIComponent(id)}/run`, { inputs }));
 }
 
-/** Targeted: sets only `enabled`, so a YAML-owned schedule stays YAML-owned. */
+/** Targeted: sets only `enabled`, so a YAML-owned workflow stays YAML-owned. */
 export function setScheduleEnabled(id: string, enabled: boolean) {
-  return after(apiSend("PUT", `/scheduled-tasks/${encodeURIComponent(id)}`, { enabled }));
+  return after(apiSend("PUT", `/workflows/${encodeURIComponent(id)}`, { enabled }));
 }
 
 export function deleteSchedule(id: string) {
-  return after(apiJson(`/scheduled-tasks/${encodeURIComponent(id)}`, { method: "DELETE" }));
+  return after(apiJson(`/workflows/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
 
 export function setTodoStatus(id: string, status: string) {

@@ -20,36 +20,14 @@ use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::models::TaskStatus;
-use crate::repository::{Neo4jClient, ScheduledTask};
+use crate::repository::{Neo4jClient, Workflow};
 use crate::services::LlmConfig;
-use crate::services::chain_seeder;
 use crate::services::context_builder::ContextBuilderService;
 use crate::services::queue::{ChainStep, QueueService};
 
-/// The `context` of the Task that records one run of a ScheduledTask. The
-/// HBI's lineage view finds a schedule's runs by [`run_record_marker`], so
-/// the two must stay in step.
-pub fn run_record_context(name: &str, scheduled_task_id: &str) -> String {
-    format!(
-        "Run of ScheduledTask '{name}' {}",
-        run_record_marker(scheduled_task_id)
-    )
-}
-
-/// The part of a run record's `context` that names its ScheduledTask.
-pub fn run_record_marker(scheduled_task_id: &str) -> String {
-    format!("(id: {scheduled_task_id})")
-}
-
-/// The ScheduledTask id a run record's `context` names, if it is one.
-pub fn parse_run_record(context: &str) -> Option<&str> {
-    if !context.starts_with("Run of ScheduledTask ") {
-        return None;
-    }
-    let start = context.rfind("(id: ")? + "(id: ".len();
-    let end = start + context[start..].find(')')?;
-    let id = &context[start..end];
-    (!id.is_empty()).then_some(id)
+/// The `context` of the Task a firing creates: `trigger` is `schedule` or `run now`.
+pub fn run_context(name: &str, trigger: &str) -> String {
+    format!("Run of workflow '{name}' ({trigger})")
 }
 
 /// Runtime configuration for the scheduler.
@@ -141,8 +119,6 @@ pub struct SchedulerService {
     context_builder: Option<Arc<ContextBuilderService>>,
     /// Live local-Ollama config shared with `SharedLlm`. Mutated when `local_model` is updated.
     local_config: Option<Arc<RwLock<Option<LlmConfig>>>>,
-    /// Guards the one-time auto-seed of SchedulerChain nodes on the first tick.
-    chains_seeded: Arc<AtomicBool>,
 }
 
 impl SchedulerService {
@@ -178,7 +154,6 @@ impl SchedulerService {
             wakeup: Arc::new(Notify::new()),
             context_builder,
             local_config,
-            chains_seeded: Arc::new(AtomicBool::new(false)),
         });
 
         let svc_clone = Arc::clone(&svc);
@@ -290,23 +265,6 @@ impl SchedulerService {
     // =========================================================================
 
     async fn do_tick(&self) -> Result<TickResult, String> {
-        // On the first tick, seed/refresh SchedulerChain nodes from chains/.
-        // seed_chains_from_dir is an idempotent MERGE that force-updates pattern,
-        // steps, priority, and description — running it unconditionally means YAML
-        // chain edits propagate on restart (matching ScheduledTask seeding), instead
-        // of silently requiring a manual `init-db`.
-        if !self.chains_seeded.swap(true, Ordering::Relaxed) {
-            let chains_dir = std::path::PathBuf::from(
-                std::env::var("CHAINS_DIR").unwrap_or_else(|_| "chains".into()),
-            );
-            if chains_dir.exists() {
-                match chain_seeder::seed_chains_from_dir(&self.neo4j, &chains_dir).await {
-                    Ok(n) => info!(count = n, "Seeded/refreshed SchedulerChains on first tick"),
-                    Err(e) => warn!(error = %e, "Chain seeding failed (non-fatal)"),
-                }
-            }
-        }
-
         // Snapshot config — never hold an RwLock guard across .await.
         let (max_tasks, session_id) = {
             let cfg = self.config.read().await;
@@ -320,8 +278,8 @@ impl SchedulerService {
             warn!(error = %e, "Failed to reset stale in_progress tasks");
         }
 
-        // Dispatch any due ScheduledTask nodes before processing one-off tasks.
-        let scheduled_dispatched = self.dispatch_scheduled_tasks().await;
+        // Fire due scheduled workflows before processing created runs.
+        let scheduled_dispatched = self.dispatch_due_workflows().await;
         let mut tasks_dispatched = scheduled_dispatched;
 
         let tasks = self
@@ -342,76 +300,39 @@ impl SchedulerService {
                 continue;
             }
 
-            let mut steps = self
-                .goal_to_steps(&goal, &task_id, success_criteria, task_context)
-                .await;
-
-            // Guardrail: if the first step carries a confidence threshold, estimate
-            // chain confidence.  When below the threshold, replace the chain with a
-            // lightweight diagnosis chain and log the interception.
-            if let Some(threshold) = steps.first().and_then(|s| s.confidence_threshold) {
-                let score = Self::estimate_chain_confidence(&goal, &steps);
-                if score < threshold {
-                    warn!(
-                        task_id = %task_id,
-                        goal = %goal,
-                        confidence = score,
-                        threshold = threshold,
-                        "Guardrail triggered — replacing chain with diagnosis chain"
-                    );
-                    steps = Self::build_diagnosis_chain(&goal, &task_id);
-                } else {
-                    debug!(
-                        task_id = %task_id,
-                        confidence = score,
-                        threshold = threshold,
-                        "Guardrail passed"
-                    );
+            // A run names its workflow; a free-text Task runs the default one.
+            let workflow = task["workflow"].as_str();
+            let inputs = task["inputs"].as_object().cloned().unwrap_or_default();
+            let wf = match crate::services::workflows::resolve(&self.neo4j, workflow, &inputs).await
+            {
+                Ok(wf) => wf,
+                Err(reason) => {
+                    // Fail it visibly rather than leave it `created` forever.
+                    warn!(task_id = %task_id, reason = %reason, "Run refused");
+                    let _ = self.neo4j.fail_task_with_reason(&task_id, &reason).await;
+                    continue;
                 }
-            }
-
-            // Auto-assign a context profile to all steps if context_builder is available.
-            // NOTE: for background jobs this is ANNOTATION ONLY — the coordinator never
-            // reads job.context_profile at execution (it runs each step's one fixed tool,
-            // applies no profile tool-filter, system_prompt, or pre_load_query). Profiles
-            // only take effect on /chat turns and MCP tools/list. Do not build audits that
-            // treat this stamp as a routing decision (see removed perception_scan Trigger 3).
-            if let Some(cb) = &self.context_builder {
-                let profile = cb.auto_assign(&goal).await;
-                for step in &mut steps {
-                    if step.context_profile.is_none() {
-                        step.context_profile = Some(profile.clone());
-                    }
-                }
-            }
-
+            };
             match self
-                .queue
-                .enqueue_chain_owned(&steps, session_id.as_deref(), Some(&task_id))
+                .dispatch_run(
+                    &wf,
+                    &task_id,
+                    &goal,
+                    &inputs,
+                    success_criteria,
+                    task_context,
+                    session_id.as_deref(),
+                )
                 .await
             {
-                Ok(ids) => {
-                    // Mark in_progress immediately to prevent double-dispatch on next tick.
-                    if let Err(e) = self
-                        .neo4j
-                        .update_task_status(&task_id, TaskStatus::InProgress)
-                        .await
-                    {
-                        warn!(task_id = %task_id, error = %e, "Failed to mark task in_progress");
-                    }
+                Ok(jobs) => {
                     tasks_dispatched += 1;
-                    info!(
-                        task_id = %task_id,
-                        jobs = ids.len(),
-                        goal = %goal,
-                        "Scheduler dispatched task chain"
-                    );
-                    // Record this dispatch as an episodic memory so the brain has a
-                    // first-person log of what it decided to work on and when.
+                    info!(task_id = %task_id, workflow = %wf.name, jobs, goal = %goal, "Scheduler dispatched run");
+                    // A first-person log of what it decided to work on and when.
                     let note = format!(
-                        "Scheduler dispatched task (id: {task_id}): {goal}\n\
-                         Chain length: {} jobs",
-                        ids.len()
+                        "Scheduler dispatched task (id: {task_id}) as workflow '{}': {goal}\n\
+                         Chain length: {jobs} jobs",
+                        wf.name
                     );
                     if let Err(e) = self
                         .neo4j
@@ -422,7 +343,7 @@ impl SchedulerService {
                     }
                 }
                 Err(e) => {
-                    warn!(task_id = %task_id, error = %e, "Failed to enqueue task chain");
+                    warn!(task_id = %task_id, error = %e, "Failed to enqueue run");
                 }
             }
         }
@@ -466,104 +387,154 @@ impl SchedulerService {
     }
 
     // -------------------------------------------------------------------------
-    // ScheduledTask dispatch
+    // Workflow dispatch
     // -------------------------------------------------------------------------
 
-    /// Query Neo4j for due `ScheduledTask` nodes, create a run-record `Task` for
-    /// each, enqueue its job chain with an auto-appended `update_task` step, and
-    /// advance `last_run_at` / `next_run_at`.
-    ///
-    /// Returns the number of tasks successfully dispatched.
-    async fn dispatch_scheduled_tasks(&self) -> usize {
-        let due = match self.neo4j.get_due_scheduled_tasks().await {
+    /// Fire every enabled workflow whose schedule is due. Returns how many fired.
+    async fn dispatch_due_workflows(&self) -> usize {
+        let due = match self.neo4j.get_due_workflows().await {
             Ok(v) => v,
             Err(e) => {
-                warn!(error = %e, "Failed to query due ScheduledTasks");
+                warn!(error = %e, "Failed to query due workflows");
                 return 0;
             }
         };
-
-        if due.is_empty() {
-            return 0;
-        }
-
         let session_id = self.config.read().await.session_id.clone();
         let mut dispatched = 0usize;
-
-        for st in &due {
-            if let Err(count) = self
-                .dispatch_one_scheduled_task(st, session_id.as_deref())
+        for wf in &due {
+            match self
+                .fire_workflow(
+                    wf,
+                    &serde_json::Map::new(),
+                    "schedule",
+                    session_id.as_deref(),
+                )
                 .await
             {
-                warn!(
-                    scheduled_task_id = %st.id,
-                    name = %st.name,
-                    error = %count,
-                    "Failed to dispatch ScheduledTask"
-                );
-            } else {
-                dispatched += 1;
+                Ok(_) => dispatched += 1,
+                Err(e) => {
+                    warn!(workflow = %wf.name, error = %e, "Failed to fire scheduled workflow")
+                }
             }
         }
-
         dispatched
     }
 
-    /// Run one `ScheduledTask` now, whatever its `next_run_at` — and even when
-    /// it is disabled, since a manual run is a one-off. Advances `next_run_at`
-    /// exactly like a timed run. Returns the run-record Task id.
-    pub async fn run_scheduled_task_now(&self, id: &str) -> Result<String, String> {
-        let st = self
+    /// Run a workflow now with `inputs`, whatever its `next_run_at`, even when
+    /// it is disabled (a manual run is a one-off). A scheduled workflow's
+    /// `next_run_at` advances like a timed run. Returns the run Task id.
+    pub async fn run_workflow_now(
+        &self,
+        id: &str,
+        inputs: &serde_json::Map<String, Value>,
+    ) -> Result<String, String> {
+        let wf = self
             .neo4j
-            .get_scheduled_task(id)
+            .get_workflow(id)
             .await
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("No ScheduledTask with id {id}"))?;
+            .ok_or_else(|| format!("No workflow with id {id}"))?;
+        let missing = wf.missing_inputs(inputs);
+        if !missing.is_empty() {
+            return Err(format!(
+                "Workflow '{}' needs input {}.",
+                wf.name,
+                missing.join(", ")
+            ));
+        }
         let session_id = self.config.read().await.session_id.clone();
-        self.dispatch_one_scheduled_task(&st, session_id.as_deref())
+        self.fire_workflow(&wf, inputs, "run now", session_id.as_deref())
             .await
     }
 
-    /// Dispatch a single `ScheduledTask`: create Task node, enqueue chain, record run.
-    /// Returns `Ok(task_id)` on success, `Err(reason)` on failure.
-    async fn dispatch_one_scheduled_task(
+    /// One firing: a run Task, the timers advanced, the chain enqueued.
+    async fn fire_workflow(
         &self,
-        st: &ScheduledTask,
+        wf: &Workflow,
+        inputs: &serde_json::Map<String, Value>,
+        trigger: &str,
         session_id: Option<&str>,
     ) -> Result<String, String> {
-        // 1. Create a Task node as a run record.
+        let goal = crate::services::workflows::default_goal(&wf.name, inputs);
+        let inputs_v = Value::Object(inputs.clone());
         let task_id = self
             .neo4j
-            .create_task(&st.name, Some(&run_record_context(&st.name, &st.id)), None)
+            .create_run(
+                &goal,
+                Some(&run_context(&wf.name, trigger)),
+                None,
+                Some(&wf.name),
+                Some(&inputs_v),
+                "created",
+            )
             .await
             .map_err(|e| e.to_string())?;
+        // Advance the timers BEFORE enqueuing so a concurrent tick that reads
+        // the graph in between cannot fire it twice.
+        if let Some(interval) = wf.interval_seconds {
+            let now = Utc::now().to_rfc3339();
+            let next = Neo4jClient::compute_next_run_at(interval);
+            if let Err(e) = self.neo4j.record_workflow_run(&wf.id, &now, &next).await {
+                warn!(workflow = %wf.name, error = %e, "Failed to record workflow run timestamps");
+            }
+        }
+        let jobs = self
+            .dispatch_run(wf, &task_id, &goal, inputs, None, None, session_id)
+            .await?;
+        info!(workflow = %wf.name, task_id = %task_id, jobs, "Scheduled workflow fired");
+        Ok(task_id)
+    }
 
-        // 2. Deserialise steps, substituting template vars at the Value level so quotes or
-        //    newlines in the substituted values can't corrupt the JSON (see
-        //    substitute_template_vars).
-        let date = crate::services::clock::today();
-        let now = crate::services::clock::now_stamp();
-        let weekday = crate::services::clock::weekday();
-        let raw: serde_json::Value = serde_json::from_str(&st.steps)
-            .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
-        let topic = crate::services::queue::goal_topic(&st.name);
-        let substituted = crate::services::queue::substitute_template_vars(
-            &raw,
-            &[
-                ("task_id", &task_id),
-                ("goal", &st.name),
-                ("goal_topic", topic),
-                ("date", &date),
-                ("now", &now),
-                ("weekday", &weekday),
-            ],
-        );
-        let mut steps: Vec<ChainStep> = serde_json::from_value(substituted)
-            .map_err(|e| format!("ScheduledTask '{}' steps JSON invalid: {}", st.name, e))?;
+    /// Enqueue one run of `wf` as a job chain owned by `task_id`, and mark the
+    /// Task in progress. Adds the opted-in checks, the confidence guardrail, a
+    /// context profile, and a closing `update_task`. Returns the job count.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_run(
+        &self,
+        wf: &Workflow,
+        task_id: &str,
+        goal: &str,
+        inputs: &serde_json::Map<String, Value>,
+        success_criteria: Option<&str>,
+        task_context: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<usize, String> {
+        let mut steps = crate::services::workflows::render_steps(wf, task_id, goal, inputs)?;
 
-        // 3. Auto-assign context profile if available.
+        // Opt-in checks; each needs something to check against.
+        let rubric = wf
+            .evaluation_rubric
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(success_criteria);
+        if wf.checks.iter().any(|c| c == "evaluator") {
+            steps = self.maybe_append_evaluator(steps, task_id, rubric);
+        }
+        if wf.checks.iter().any(|c| c == "critic") {
+            steps = Self::maybe_prepend_adversarial(steps, task_id, goal, rubric, task_context);
+        }
+
+        // Guardrail: a first step with a confidence threshold the chain falls
+        // below is replaced by a diagnosis chain.
+        if let Some(threshold) = steps.first().and_then(|s| s.confidence_threshold) {
+            let score = Self::estimate_chain_confidence(goal, &steps);
+            if score < threshold {
+                warn!(
+                    task_id,
+                    goal,
+                    confidence = score,
+                    threshold,
+                    "Guardrail triggered — replacing chain with diagnosis chain"
+                );
+                steps = Self::build_diagnosis_chain(goal, task_id);
+            }
+        }
+
+        // ANNOTATION ONLY for background jobs: the coordinator never reads
+        // job.context_profile (it runs each step's fixed tool). Profiles take
+        // effect on /chat turns and MCP tools/list only.
         if let Some(cb) = &self.context_builder {
-            let profile = cb.auto_assign(&st.name).await;
+            let profile = cb.auto_assign(goal).await;
             for step in &mut steps {
                 if step.context_profile.is_none() {
                     step.context_profile = Some(profile.clone());
@@ -571,56 +542,39 @@ impl SchedulerService {
             }
         }
 
-        // 4. Auto-append update_task so the Task node is marked completed when the chain finishes.
-        // No `note` here: update_task stores any note as an outcome Note, and a fixed
-        // "completed" string per run floods the graph with boilerplate (the Task status
-        // change is already the durable record).
-        steps.push(ChainStep {
-            tool_name: "update_task".to_string(),
-            arguments: Some(json!({
-                "task_id": task_id,
-                "status": "completed"
-            })),
-            priority: Some(1),
-            max_attempts: Some(3),
-            provider_hint: Some("ollama".to_string()),
-            context_profile: None,
-            ..Default::default()
+        // Close the run, unless the workflow closes it itself (some do so
+        // before a final cleanup step). No `note`: a fixed "completed" string
+        // per run floods the graph with boilerplate; the status change is the record.
+        let closes_itself = steps.iter().any(|s| {
+            s.tool_name == "update_task"
+                && s.arguments.as_ref().and_then(|a| a["task_id"].as_str()) == Some(task_id)
         });
-
-        // 5. Advance ScheduledTask timestamps BEFORE enqueuing so a concurrent tick
-        //    that reads the DB between enqueue and timestamp update can't double-dispatch.
-        let now = Utc::now().to_rfc3339();
-        let next = Neo4jClient::compute_next_run_at(st.interval_seconds);
-        if let Err(e) = self
-            .neo4j
-            .record_scheduled_task_run(&st.id, &now, &next)
-            .await
-        {
-            warn!(id = %st.id, error = %e, "Failed to record ScheduledTask run timestamps");
+        if !closes_itself {
+            steps.push(ChainStep {
+                tool_name: "update_task".to_string(),
+                arguments: Some(json!({ "task_id": task_id, "status": "completed" })),
+                priority: Some(1),
+                max_attempts: Some(3),
+                provider_hint: Some("ollama".to_string()),
+                ..Default::default()
+            });
         }
 
-        // 6. Enqueue the chain, tagged with the run Task id so a chain death is
-        //    attributed back to this task and fails it with the real error.
-        self.queue
-            .enqueue_chain_owned(&steps, session_id, Some(&task_id))
+        // Tagged with the run Task id so a chain death fails that Task with the real error.
+        let ids = self
+            .queue
+            .enqueue_chain_owned(&steps, session_id, Some(task_id))
             .await
             .map_err(|e| e.to_string())?;
-
-        // 7. Mark Task in_progress.
-        let _ = self
+        // Mark in_progress at once so the next tick cannot dispatch it again.
+        if let Err(e) = self
             .neo4j
-            .update_task_status(&task_id, TaskStatus::InProgress)
-            .await;
-
-        info!(
-            scheduled_task_id = %st.id,
-            task_id = %task_id,
-            name = %st.name,
-            jobs = steps.len(),
-            "ScheduledTask dispatched"
-        );
-        Ok(task_id)
+            .update_task_status(task_id, TaskStatus::InProgress)
+            .await
+        {
+            warn!(task_id, error = %e, "Failed to mark run in_progress");
+        }
+        Ok(ids.len())
     }
 
     // -------------------------------------------------------------------------
@@ -780,8 +734,19 @@ impl SchedulerService {
     }
 
     /// Create a perception-scan task; true when it was created.
-    async fn create_scan_task(&self, goal: &str, context: &str) -> bool {
-        match self.neo4j.create_task(goal, Some(context), None).await {
+    /// Start a run of `workflow` (the default one when `None`) for a
+    /// perception-scan finding.
+    async fn create_scan_task(&self, workflow: Option<&str>, goal: &str, context: &str) -> bool {
+        match crate::services::workflows::start_run(
+            &self.neo4j,
+            workflow,
+            &serde_json::Map::new(),
+            Some(goal),
+            Some(context),
+            None,
+        )
+        .await
+        {
             Ok(_) => true,
             Err(e) => {
                 warn!(goal, error = %e, "Perception scan failed to create task");
@@ -791,7 +756,7 @@ impl SchedulerService {
     }
 
     /// The same tool failing ≥3 times in 7 days, per its outcome notes, gets a
-    /// meta-learning task.
+    /// diagnosis run.
     async fn trigger_repeated_tool_failures(&self) -> Result<usize, String> {
         let cypher = r#"
         MATCH (n:Note)
@@ -826,7 +791,7 @@ impl SchedulerService {
                 continue;
             }
             let goal = format!(
-                "meta-learn: Analyze repeated failures for '{tool}' — hypothesize root cause, \
+                "Analyze repeated failures for '{tool}' — hypothesize root cause, \
                  propose a concrete test, and integrate findings into permanent knowledge \
                  ({count} failures in 7 days)"
             );
@@ -837,9 +802,12 @@ impl SchedulerService {
                 "cycle": 1
             })
             .to_string();
-            if self.create_scan_task(&goal, &context).await {
+            if self
+                .create_scan_task(Some("diagnose"), &goal, &context)
+                .await
+            {
                 created += 1;
-                info!(tool = %tool, failures = count, "Perception scan created meta-learning task");
+                info!(tool = %tool, failures = count, "Perception scan started a diagnose run");
             }
         }
         Ok(created)
@@ -886,6 +854,7 @@ impl SchedulerService {
         );
         if !self
             .create_scan_task(
+                Some("consolidate"),
                 &goal,
                 "Auto-generated by proactive perception scan (spaced-repetition backlog)",
             )
@@ -933,6 +902,7 @@ impl SchedulerService {
         );
         if !self
             .create_scan_task(
+                Some("consolidate"),
                 &goal,
                 "Auto-generated by proactive perception scan (episodic note volume threshold)",
             )
@@ -998,7 +968,7 @@ impl SchedulerService {
                 "Auto-generated: codebase self-analysis note is more than 7 days old",
             )
         };
-        let created = self.create_scan_task(goal, context).await;
+        let created = self.create_scan_task(Some("codebase"), goal, context).await;
         if created {
             info!(
                 stale = is_stale,
@@ -1046,6 +1016,7 @@ impl SchedulerService {
             );
             if self
                 .create_scan_task(
+                    Some("diagnose"),
                     &goal,
                     "Auto-generated by proactive perception scan (dead job accumulation)",
                 )
@@ -1110,6 +1081,7 @@ impl SchedulerService {
         );
         let created = self
             .create_scan_task(
+                None,
                 &goal,
                 "Auto-generated by proactive perception scan (queue backlog)",
             )
@@ -1145,6 +1117,7 @@ impl SchedulerService {
         }
         let created = self
             .create_scan_task(
+                Some("consolidate"),
                 "Knowledge base is stale: no semantic notes created or accessed \
                  in the last 14 days — review recent episodic notes, run \
                  consolidation, and synthesize fresh semantic knowledge",
@@ -1160,133 +1133,6 @@ impl SchedulerService {
     // =========================================================================
     // Goal → chain-step mapper
     // =========================================================================
-
-    /// Look up a matching `SchedulerChain` node in Neo4j.
-    ///
-    /// Returns `Some((steps, rubric))` if a pattern match is found — `rubric` is the
-    /// optional `evaluation_rubric` property that overrides the task's `success_criteria`
-    /// in the evaluator step.  Returns `None` to fall through to hardcoded heuristics.
-    async fn try_load_chain_from_neo4j(
-        &self,
-        goal: &str,
-        task_id: &str,
-    ) -> Option<(Vec<ChainStep>, Option<String>, bool, bool)> {
-        // Multi-pattern matching: primary pattern, additional patterns list, or empty-string default.
-        let cypher = "MATCH (c:SchedulerChain) \
-                      WHERE (c.pattern <> '' AND toLower($goal) CONTAINS toLower(c.pattern)) \
-                         OR ANY(p IN coalesce(c.patterns, []) WHERE toLower($goal) CONTAINS toLower(p)) \
-                         OR c.pattern = '' \
-                      RETURN c.steps AS steps, \
-                             c.evaluation_rubric AS rubric, \
-                             c.no_evaluator AS no_evaluator, \
-                             c.no_adversarial AS no_adversarial \
-                      ORDER BY c.priority ASC \
-                      LIMIT 1";
-        let rows = self
-            .neo4j
-            .execute(neo4rs::query(cypher).param("goal", goal))
-            .await
-            .ok()?;
-        let first = rows.first()?;
-        let steps_json = first.get::<String>("steps").ok()?;
-        let rubric: Option<String> = first.get("rubric").ok().flatten();
-        let no_evaluator: bool = first.get::<bool>("no_evaluator").unwrap_or(false);
-        let no_adversarial: bool = first.get::<bool>("no_adversarial").unwrap_or(false);
-        // Local, not UTC: a step that writes "the news for {{date}}" or searches
-        // for it means the user's day. See services/clock.rs.
-        let date = crate::services::clock::today();
-        let now = crate::services::clock::now_stamp();
-        let weekday = crate::services::clock::weekday();
-        // Compute file_slug for UI chain template substitution.
-        let file_slug: String = goal
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '-' })
-            .collect::<String>()
-            .split('-')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("-");
-        let file_slug = file_slug.chars().take(50).collect::<String>();
-        // Parse the raw (valid) JSON first, then substitute template vars at the Value
-        // level.  Substituting into the serialized string before parsing would corrupt
-        // the JSON whenever a value like {{goal}} contains a quote, backslash, or newline
-        // (common in LLM-generated goals) — see substitute_template_vars.
-        let raw: serde_json::Value = match serde_json::from_str(&steps_json) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(goal = %goal, error = %e, "SchedulerChain steps are not valid JSON — falling back to heuristics");
-                return None;
-            }
-        };
-        // goal_topic = the goal minus its routing prefix ("fill knowledge gap:"),
-        // for steps that feed the goal to a search engine rather than to an LLM.
-        let topic = crate::services::queue::goal_topic(goal);
-        let substituted = crate::services::queue::substitute_template_vars(
-            &raw,
-            &[
-                ("task_id", task_id),
-                ("goal", goal),
-                ("goal_topic", topic),
-                ("date", &date),
-                ("now", &now),
-                ("weekday", &weekday),
-                ("file_slug", &file_slug),
-            ],
-        );
-        match serde_json::from_value::<Vec<ChainStep>>(substituted) {
-            Ok(steps) => {
-                info!(goal = %goal, steps = steps.len(), "Scheduler: routing via SchedulerChain from Neo4j");
-                Some((steps, rubric, no_evaluator, no_adversarial))
-            }
-            Err(e) => {
-                warn!(goal = %goal, error = %e, "SchedulerChain deserialization failed — falling back to heuristics");
-                None
-            }
-        }
-    }
-
-    async fn goal_to_steps(
-        &self,
-        goal: &str,
-        task_id: &str,
-        success_criteria: Option<&str>,
-        task_context: Option<&str>,
-    ) -> Vec<ChainStep> {
-        // Route via Neo4j-defined SchedulerChain nodes (populated from chains/ YAML or via
-        // manage_chain tool). The default chain (pattern="") catches any unmatched goal.
-        if let Some((steps, rubric, no_evaluator, no_adversarial)) =
-            self.try_load_chain_from_neo4j(goal, task_id).await
-        {
-            if no_evaluator && no_adversarial {
-                return steps;
-            }
-            let effective_rubric = rubric
-                .filter(|s| !s.is_empty())
-                .or_else(|| success_criteria.map(String::from));
-            let steps = if no_evaluator {
-                steps
-            } else {
-                self.maybe_append_evaluator(steps, task_id, effective_rubric.as_deref())
-            };
-            return if no_adversarial {
-                steps
-            } else {
-                Self::maybe_prepend_adversarial(
-                    steps,
-                    task_id,
-                    goal,
-                    effective_rubric.as_deref(),
-                    task_context,
-                )
-            };
-        }
-
-        // No chain matched — gather context and park the task for human review.
-        // Only fires if chains/ was not seeded or the DB is unavailable.
-        warn!(goal = %goal, "goal_to_steps: no SchedulerChain matched, using diagnosis fallback");
-        Self::build_diagnosis_chain(goal, task_id)
-    }
 
     /// If `criteria` is set, append an evaluator step that calls `reflect_on_work`
     /// and triggers a re-queue if the score falls below the threshold.
@@ -1665,35 +1511,6 @@ fn count_tool_failures(contents: impl IntoIterator<Item = String>) -> HashMap<St
         }
     }
     failures
-}
-
-#[cfg(test)]
-mod run_record_tests {
-    use super::*;
-
-    #[test]
-    fn a_run_record_round_trips_to_its_schedule() {
-        let ctx = run_record_context("Daily news (brief)", "3963b8c9-4abf-4002-900a-53e7cdeeb351");
-        assert_eq!(
-            ctx,
-            "Run of ScheduledTask 'Daily news (brief)' (id: 3963b8c9-4abf-4002-900a-53e7cdeeb351)"
-        );
-        assert_eq!(
-            parse_run_record(&ctx),
-            Some("3963b8c9-4abf-4002-900a-53e7cdeeb351")
-        );
-        assert!(ctx.contains(&run_record_marker("3963b8c9-4abf-4002-900a-53e7cdeeb351")));
-    }
-
-    #[test]
-    fn other_contexts_are_not_run_records() {
-        assert_eq!(
-            parse_run_record("Auto-generated from a video-learning FOLLOW UP concept."),
-            None
-        );
-        assert_eq!(parse_run_record("Run of ScheduledTask 'x' (id: )"), None);
-        assert_eq!(parse_run_record(""), None);
-    }
 }
 
 #[cfg(test)]

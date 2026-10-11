@@ -43,11 +43,11 @@ pub async fn handle_entity_wiki(
     }
 }
 
-/// The step that runs lookups: the entity-linking schedule's, so one place
-/// pins the model. Found by its tool, whatever the schedule is called.
+/// The step that runs lookups: the entity-linking workflow's, so one place
+/// pins the model. Found by its tool, whatever the workflow is called.
 async fn link_step(neo4j: &crate::repository::Neo4jClient) -> Option<ChainStep> {
     // Disabled too: the button works while the background schedule is paused.
-    let tasks = neo4j.list_scheduled_tasks(false).await.ok()?;
+    let tasks = neo4j.list_workflows(false).await.ok()?;
     tasks.iter().find_map(|t| {
         serde_json::from_str::<Vec<ChainStep>>(&t.steps)
             .ok()?
@@ -77,7 +77,7 @@ pub async fn handle_entity_wiki_lookup(
     };
     let Some(mut step) = link_step(neo4j).await else {
         return internal(
-            "no schedule runs link_entities (schedules/entity-linking.yaml), so there is no model pinned for lookups",
+            "no schedule runs link_entities (workflows/entity-linking.yaml), so there is no model pinned for lookups",
         );
     };
     match wiki::mark_pending(neo4j, &id).await {

@@ -144,15 +144,25 @@ impl WorkingMemoryStore for Neo4jClient {
 
 #[async_trait::async_trait]
 impl TaskStore for Neo4jClient {
-    async fn create_task(
+    async fn start_run(
         &self,
+        workflow: Option<&str>,
+        inputs: &serde_json::Map<String, serde_json::Value>,
         goal: &str,
         context: Option<&str>,
         success_criteria: Option<&str>,
-    ) -> anyhow::Result<String> {
-        Neo4jClient::create_task(self, goal, context, success_criteria)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+    ) -> anyhow::Result<(String, String)> {
+        crate::services::workflows::start_run(
+            self,
+            workflow,
+            inputs,
+            Some(goal),
+            context,
+            success_criteria,
+        )
+        .await
+        .map(|r| (r.task_id, r.workflow))
+        .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()> {

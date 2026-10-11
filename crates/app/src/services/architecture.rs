@@ -4,7 +4,7 @@
 //! - **Inventory.** Skills and their tools come from `(:ToolDef)`, which is
 //!   re-synced from the tool registry at every start. HTTP routes are parsed
 //!   from the Axum route table in `mcp/http_transport.rs` (compiled in). Also
-//!   agents, chains, schedules, MCP servers, dynamic tools, providers, and the
+//!   agents, workflows, MCP servers, dynamic tools, providers, and the
 //!   services in `components.yaml`.
 //! - **Layout.** `architecture/layout.yaml` is the only hand-written part: the
 //!   groups, the edges between them, and the container topology. Live items
@@ -237,9 +237,7 @@ pub struct Inventory {
     #[serde(default)]
     pub agents: BTreeSet<String>,
     #[serde(default)]
-    pub chains: BTreeSet<String>,
-    #[serde(default)]
-    pub schedules: BTreeSet<String>,
+    pub workflows: BTreeSet<String>,
     #[serde(default)]
     pub mcp_servers: BTreeSet<String>,
     #[serde(default)]
@@ -251,13 +249,12 @@ pub struct Inventory {
 }
 
 /// The categories a diff and the counts are reported in, in display order.
-pub const CATEGORIES: [&str; 10] = [
+pub const CATEGORIES: [&str; 9] = [
     "skills",
     "tools",
     "routes",
     "agents",
-    "chains",
-    "schedules",
+    "workflows",
     "mcp_servers",
     "dynamic_tools",
     "providers",
@@ -271,8 +268,7 @@ impl Inventory {
             "tools" => self.skills.values().flatten().cloned().collect(),
             "routes" => self.routes.clone(),
             "agents" => self.agents.clone(),
-            "chains" => self.chains.clone(),
-            "schedules" => self.schedules.clone(),
+            "workflows" => self.workflows.clone(),
             "mcp_servers" => self.mcp_servers.clone(),
             "dynamic_tools" => self.dynamic_tools.clone(),
             "providers" => self.providers.clone(),
@@ -325,16 +321,7 @@ pub async fn collect(neo4j: &Neo4jClient) -> Result<Inventory> {
         }
     }
     inv.agents = names(neo4j, "MATCH (c:ContextProfile) RETURN c.name AS name").await?;
-    inv.chains = names(
-        neo4j,
-        "MATCH (c:SchedulerChain) RETURN coalesce(c.name, c.id) AS name",
-    )
-    .await?;
-    inv.schedules = names(
-        neo4j,
-        "MATCH (s:ScheduledTask) RETURN coalesce(s.name, s.id) AS name",
-    )
-    .await?;
+    inv.workflows = names(neo4j, "MATCH (w:Workflow) RETURN w.name AS name").await?;
     inv.mcp_servers = names(neo4j, "MATCH (m:McpServer) RETURN m.name AS name").await?;
     inv.dynamic_tools = names(neo4j, "MATCH (d:DynamicTool) RETURN d.name AS name").await?;
     inv.routes = routes().iter().map(Route::key).collect();
@@ -385,7 +372,7 @@ fn preview(names: &[String]) -> String {
     }
 }
 
-/// One line a person can read: `tools: +2 (a, b); schedules: -1 (x)`.
+/// One line a person can read: `tools: +2 (a, b); workflows: -1 (x)`.
 pub fn summarize(d: &Diff) -> String {
     if d.is_empty() {
         return "No changes.".into();
@@ -596,7 +583,7 @@ pub struct Group {
     #[serde(default)]
     pub blurb: String,
     /// Selectors: `skill:Query`, `routes:api/*`, `component:neo4j`,
-    /// `provider:*`, `mcp:*`, `collection:schedules`. A trailing `*` is a
+    /// `provider:*`, `mcp:*`, `collection:workflows`. A trailing `*` is a
     /// prefix match; an exact selector beats a wildcard.
     #[serde(default)]
     pub members: Vec<String>,
@@ -708,7 +695,7 @@ fn node(
 }
 
 /// Every derived node: one per skill, route area, component, provider and MCP
-/// server, plus one per collection (agents, chains, schedules, dynamic tools).
+/// server, plus one per collection (agents, workflows, dynamic tools).
 pub fn build_nodes(inv: &Inventory, providers: &Value, comps: &[Component]) -> Vec<Node> {
     let mut out = Vec::new();
     for (skill, tools) in &inv.skills {
@@ -771,8 +758,7 @@ pub fn build_nodes(inv: &Inventory, providers: &Value, comps: &[Component]) -> V
     }
     for (name, label, set) in [
         ("agents", "Agents", &inv.agents),
-        ("chains", "Chains", &inv.chains),
-        ("schedules", "Schedules", &inv.schedules),
+        ("workflows", "Workflows", &inv.workflows),
         ("dynamic_tools", "Dynamic tools", &inv.dynamic_tools),
     ] {
         out.push(node(
@@ -960,7 +946,7 @@ mod tests { fn t() { Router::new().route("/test-only", get(h)); } }
                 .or_default()
                 .insert(t.to_string());
         }
-        i.schedules = schedules.iter().map(|s| s.to_string()).collect();
+        i.workflows = schedules.iter().map(|s| s.to_string()).collect();
         i
     }
 
@@ -980,11 +966,11 @@ mod tests { fn t() { Router::new().route("/test-only", get(h)); } }
             }
         );
         assert_eq!(d["skills"].added, vec!["git".to_string()]);
-        assert_eq!(d["schedules"].added, vec!["weekly".to_string()]);
+        assert_eq!(d["workflows"].added, vec!["weekly".to_string()]);
         assert!(!d.contains_key("routes"));
         assert_eq!(
             summarize(&d),
-            "skills: +1 (git); tools: +2 (c, d), -1 (b); schedules: +1 (weekly)"
+            "skills: +1 (git); tools: +2 (c, d), -1 (b); workflows: +1 (weekly)"
         );
         assert_eq!(summarize(&diff(&new, &new)), "No changes.");
     }

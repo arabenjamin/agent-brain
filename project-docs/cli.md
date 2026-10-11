@@ -34,7 +34,7 @@ cargo run -- serve --transport http --api-key my-secret-key  # with auth
 ## Database
 
 ```bash
-# Initialize schema (indexes, constraints) and seed chains/schedules
+# Initialize schema (indexes, constraints) and seed workflows, topics, entities
 cargo run -- init-db
 ```
 

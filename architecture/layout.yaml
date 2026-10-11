@@ -1,7 +1,7 @@
 # How the architecture view (GET /api/architecture, services/architecture.rs)
 # arranges what the brain is made of. Only what can't be derived lives here:
 # the groups, the edges between them, and the container topology. The rest
-# (skills and their tools, routes, agents, chains, schedules, providers, MCP
+# (skills and their tools, routes, agents, workflows, providers, MCP
 # servers, the services in components.yaml) is read live.
 #
 # members: selectors over the live nodes, `kind:name`.
@@ -10,7 +10,7 @@
 #   component:<name>          components.yaml
 #   provider:<name>           providers in models.yaml
 #   mcp:<name>                external MCP servers
-#   collection:agents | chains | schedules | dynamic_tools
+#   collection:agents | workflows | dynamic_tools
 # A trailing * is a prefix match; an exact selector wins over a wildcard.
 # A live node no group claims is drawn as "unplaced", and a selector that
 # matches nothing is reported as stale: place a new skill here when it lands.
@@ -43,20 +43,19 @@ groups:
     label: REST API
     column: 1
     blurb: What the HBI reads and writes.
-    members: ["routes:api/*", "routes:todos", "routes:scheduled-tasks", "routes:scheduler-config"]
+    members: ["routes:api/*", "routes:todos", "routes:workflows", "routes:scheduler-config"]
 
   - id: work
     label: Work and autonomy
     column: 2
-    blurb: Tasks, the scheduler and its chains, agents.
+    blurb: Tasks, the scheduler and its workflows, agents.
     members:
       - "skill:Task Manager"
       - "skill:scheduler"
       - "skill:agent"
       - "skill:Agent Runner"
       - "skill:Agent Constructor"
-      - "collection:schedules"
-      - "collection:chains"
+      - "collection:workflows"
       - "collection:agents"
 
   - id: memory

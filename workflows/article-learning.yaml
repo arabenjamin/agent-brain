@@ -1,0 +1,139 @@
+# Why: dev_docs get yaml/chains-article-learning-1
+name: article-learning
+description: "Read/ingest a web article: extract its text, summarize, compare against existing knowledge, and store a sourced note with its claims extracted."
+inputs:
+  - name: url
+    description: "The article URL."
+steps:
+  # Why: dev_docs get yaml/chains-article-learning-2
+  - tool_name: ingest_article
+    arguments:
+      url: "{{inputs.url}}"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch article text + map-reduce summary"
+
+  # 2. Bank the summary so it survives past the reason step.
+  - tool_name: push_context
+    arguments:
+      session_id: "article-{{task_id}}"
+      content: "## ARTICLE SUMMARY\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the summary in working memory"
+
+  # 3. Reassemble the banked summary for the reason step's `context`.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'article-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble summary for the reason step"
+
+  # 4. New-vs-known comparison. context = the summary; NEVER restate it in
+  #    `question` (scheduled reason RAGs off the question → garbage loop).
+  #    Local, like the video chain: per-item, so cloud cost would scale with
+  #    the number of feeds and nothing would bound it.
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT summarizes an article the brain just read from an
+        investigative or open-source-intelligence outlet. Compare it with what
+        is already known and write three sections:
+        ## NEW — findings genuinely new to the brain, each naming who found or
+        asserted it and how (records, imagery, documents, interviews)
+        ## CHANGED — where this updates or contradicts prior understanding
+        ## FOLLOW UP — at most ONE question worth knowing a year from now,
+        answerable with facts a few web searches can settle, naming the
+        concrete thing (an organisation, network, law, system, person). It must
+        make sense to someone who has NOT read this article. No sports.
+        If nothing qualifies, write "NONE".
+        Ground every point in the CONTEXT. If nothing is new, say so plainly.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "New-vs-known comparison"
+
+  # 4b. FOLLOW UP → at most one 'fill knowledge gap:' Task. Pass-through: echoes
+  #     the analysis so {{_prev}} still carries it into the banking step.
+  - tool_name: spawn_gap_tasks
+    arguments:
+      text: "{{_prev}}"
+      max: 1
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Spawn a gap task from the FOLLOW UP question"
+
+  # 5. Bank the analysis alongside the summary.
+  - tool_name: push_context
+    arguments:
+      session_id: "article-{{task_id}}"
+      content: "## NEW vs KNOWN ANALYSIS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the analysis in working memory"
+
+  # 6. Reassemble summary + analysis for the stored note.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'article-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble summary + analysis for storage"
+
+  # 7. source_record, not semantic: a record of what one outlet reported, not
+  #    knowledge the brain established. Retrieval labels it as such.
+  - tool_name: store_note
+    arguments:
+      content: "# Article: {{goal}}\n\n{{_prev}}"
+      note_type: source_record
+      source_context: article_learning
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the sourced summary note"
+
+  # 8. Claims from the stored note, with ASSERTED_IN back to it via {{_prev.id}}.
+  #    2, not the video chain's 3: verification capacity is ~80 claims/day and
+  #    videos already supply ~50; these feeds add up to ~15 articles/day.
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{_prev}}"
+      source_note_id: "{{_prev.id}}"
+      source_context: article_learning
+      limit: 2
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract checkable claims from the article"
+
+  # 9. Mark the Task done.
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Complete the task"
+
+  # 10. Clean up the scratch session. priority 1, not 0 (max-heap; 0 starves).
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'article-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"

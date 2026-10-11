@@ -238,7 +238,7 @@ mod malformed_tool_call_tests {
     /// the prose before it promises the schedule is being set up.
     const REPLY_0342: &str = r#"I am now setting this schedule up.
 
-<tool_call>{"tool":"manage_scheduled_task","args":{"action":"upsert","name":"nia-actor-motivation-monitoring","interval_seconds":86400,"steps":[{"tool_name":"search_web","arguments":{"query":"actors influence, blackmail, bribery","limit":5},"provider_hint":"ollama","max_attempts":3,"description":"Fetch reports."},{"tool_name":"neo4j_query","arguments":{"cypher":"MATCH (a:Actor) RETURN a LIMIT 10","params":{},"readonly":true},"provider_hint":"ollama","max_attempts":3,"description":"Query."},{"tool_name":"reason","arguments":{"prompt":"Synthesize.","context":"{{_prev}}","provider_hint":"ollama","max_attempts":3,"description":"Analyze."},{"tool_name":"store_note","arguments":{"content":"{{_prev}}","source_context":"NIA_Actor_Motivation_Monitor","note_type":"source_record","provider_hint":"ollama","max_attempts":3,"description":"Persist."}}]}}</tool_call>"#;
+<tool_call>{"tool":"manage_workflow","args":{"action":"upsert","name":"nia-actor-motivation-monitoring","every":"1d","steps":[{"tool_name":"search_web","arguments":{"query":"actors influence, blackmail, bribery","limit":5},"provider_hint":"ollama","max_attempts":3,"description":"Fetch reports."},{"tool_name":"neo4j_query","arguments":{"cypher":"MATCH (a:Actor) RETURN a LIMIT 10","params":{},"readonly":true},"provider_hint":"ollama","max_attempts":3,"description":"Query."},{"tool_name":"reason","arguments":{"prompt":"Synthesize.","context":"{{_prev}}","provider_hint":"ollama","max_attempts":3,"description":"Analyze."},{"tool_name":"store_note","arguments":{"content":"{{_prev}}","source_context":"NIA_Actor_Motivation_Monitor","note_type":"source_record","provider_hint":"ollama","max_attempts":3,"description":"Persist."}}]}}</tool_call>"#;
 
     #[test]
     fn the_0342_payload_is_reported_malformed_with_its_tool_name() {
@@ -248,7 +248,7 @@ mod malformed_tool_call_tests {
                 tool,
                 error,
             } => {
-                assert_eq!(tool.as_deref(), Some("manage_scheduled_task"));
+                assert_eq!(tool.as_deref(), Some("manage_workflow"));
                 assert!(error.contains("invalid"), "{error}");
                 assert!(before.contains("setting this schedule up"));
             }
@@ -352,7 +352,7 @@ mod malformed_tool_call_tests {
         let m = &msgs[0];
         assert!(m.contains("setting this schedule up"), "{m}");
         assert!(m.contains("did NOT run"), "{m}");
-        assert!(m.contains("manage_scheduled_task"), "{m}");
+        assert!(m.contains("manage_workflow"), "{m}");
         assert!(!m.contains("<tool_call>"), "raw tag leaked: {m}");
         assert!(
             !seen

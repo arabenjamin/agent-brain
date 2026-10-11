@@ -203,7 +203,7 @@ pub fn for_user(t: &Todo) -> bool {
     }
 }
 
-/// Link a schedule drafted from an item: `(:Todo)-[:BECAME]->(:ScheduledTask)`.
+/// Link a schedule drafted from an item: `(:Todo)-[:BECAME]->(:Workflow)`.
 pub async fn link_became(
     neo4j: &Neo4jClient,
     item_id: &str,
@@ -212,7 +212,7 @@ pub async fn link_became(
     neo4j
         .run(
             neo4rs::query(
-                "MATCH (t:Todo {id: $item}), (s:ScheduledTask {id: $sched}) \
+                "MATCH (t:Todo {id: $item}), (s:Workflow {id: $sched}) \
                  MERGE (t)-[r:BECAME]->(s) SET r.created_at = datetime()",
             )
             .param("item", item_id)
@@ -228,7 +228,7 @@ pub async fn close_items_that_became(neo4j: &Neo4jClient, schedule_id: &str) -> 
     neo4j
         .execute(
             neo4rs::query(
-                "MATCH (t:Todo)-[:BECAME]->(s:ScheduledTask {id: $sched}) WHERE t.status <> 'done' \
+                "MATCH (t:Todo)-[:BECAME]->(s:Workflow {id: $sched}) WHERE t.status <> 'done' \
                  SET t.status = 'done', t.closed_reason = 'became a schedule', t.updated_at = datetime() \
                  RETURN t.id AS id",
             )

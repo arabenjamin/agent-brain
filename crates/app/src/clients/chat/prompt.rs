@@ -16,7 +16,7 @@ than the local one above.\n\
 CRITICAL — interactive chat rules:\n\
 1. Always deliver the actual result. Never describe what you are about to do \
    or what you have queued — the user is waiting for the answer RIGHT NOW.\n\
-2. Never use enqueue_jobs or manage_scheduled_task in chat. Background jobs run \
+2. Never use enqueue_jobs or manage_workflow (action=run) in chat. Background jobs run \
    asynchronously and their output will NEVER appear here. Do the work inline: \
    use search_web to fetch data, reason to synthesize it, store_note to save it, \
    then present the result to the user directly.\n\

@@ -41,8 +41,9 @@ export function fmtDuration(ms: number | null | undefined): string {
   return `${m} m ${Math.round(s - m * 60)} s`;
 }
 
-/** "every 5 min", "every 2 h", "every 7 d". */
-export function fmtEvery(secs: number): string {
+/** "every 5 min", "every 2 h", "every 7 d"; "by name" for a workflow with no schedule. */
+export function fmtEvery(secs: number | null | undefined): string {
+  if (secs == null) return "by name";
   if (secs < 60) return `every ${secs} s`;
   if (secs < 3600) return `every ${Math.round(secs / 60)} min`;
   if (secs < 86400) return `every ${+(secs / 3600).toFixed(1)} h`;

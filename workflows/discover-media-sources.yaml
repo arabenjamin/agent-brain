@@ -1,0 +1,29 @@
+# Why: dev_docs get yaml/schedules-discover-media-sources-1
+name: discover-media-sources
+description: "Weekly: reasons about the brain's own topics, searches for channels/podcasts on them, and stages the best as INACTIVE :MediaSource nodes for human review. Gated by MEDIA_DISCOVERY_ENABLED; capped by MEDIA_DISCOVERY_MAX."
+# topic: none — spans topics on purpose
+kind: learning
+every: 1w  # weekly
+steps:
+  - tool_name: reason
+    arguments:
+      question: "Based on the subjects this knowledge base focuses on, produce a single web-search query (keywords only, no punctuation, no preamble) to find high-quality YouTube channels and podcasts worth following to stay current on those subjects. Output ONLY the query text."
+      store_inference: false
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: search_web
+    arguments:
+      query: "high quality YouTube channels and podcasts to follow about {{_prev}}"
+      count: 15
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+
+  - tool_name: discover_media_sources
+    arguments:
+      text: "{{_prev}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama

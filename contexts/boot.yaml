@@ -13,20 +13,20 @@ steps:
   - type: log
     message: "Agent Brain starting up — running boot protocol"
   # Inventory the recurring work this brain is committed to. A project's
-  # implementation usually lives in ScheduledTasks rather than in notes.
+  # implementation usually lives in workflows rather than in notes.
   - type: tool_call
-    tool: manage_scheduled_task
+    tool: manage_workflow
     args:
       action: list
   - type: log
-    message: "Scheduled task inventory loaded — auditing scheduled task steps"
+    message: "Workflow inventory loaded — auditing workflow steps"
   - type: tool_call
-    tool: manage_scheduled_task
+    tool: manage_workflow
     args:
       action: audit
       disable_broken: true
   - type: log
-    message: "Scheduled task audit complete — boot protocol complete"
+    message: "Workflow audit complete — boot protocol complete"
   - type: conditional
     condition: graph_empty
     then:

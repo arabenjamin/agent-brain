@@ -317,6 +317,8 @@ impl Default for MockTaskStore {
                 id: "task-id-1".into(),
                 goal: "Test goal".into(),
                 context: None,
+                workflow: None,
+                inputs: None,
                 success_criteria: None,
                 status: TaskStatus::Created,
                 created_at: "2026-01-01T00:00:00Z".into(),
@@ -332,14 +334,17 @@ impl Default for MockTaskStore {
 
 #[async_trait]
 impl TaskStore for MockTaskStore {
-    async fn create_task(
+    async fn start_run(
         &self,
+        workflow: Option<&str>,
+        _inputs: &serde_json::Map<String, serde_json::Value>,
         _goal: &str,
         _context: Option<&str>,
         _success_criteria: Option<&str>,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, String)> {
         self.create_result
             .clone()
+            .map(|id| (id, workflow.unwrap_or("default").to_string()))
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 

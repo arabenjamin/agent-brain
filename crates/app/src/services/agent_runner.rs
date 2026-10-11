@@ -243,7 +243,7 @@ pub struct VerifySpec {
     pub rerun_answer_code: bool,
     #[serde(default)]
     pub cited_paths_exist: bool,
-    /// The question the agent was asked (a chain passes `{{goal_topic}}`).
+    /// The question the agent was asked (a workflow passes `{{inputs.question}}`).
     #[serde(default)]
     pub question: String,
     /// If `question` names any of these words (case-insensitive, whole word),

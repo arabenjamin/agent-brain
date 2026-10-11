@@ -1,6 +1,6 @@
 /**
- * When enabled schedules will run inside a window, for the Scheduled lane's
- * timeline. A schedule runs at `next_run_at` and every `interval_seconds`
+ * When enabled scheduled workflows will run inside a window, for the Workflows lane's
+ * timeline. A workflow runs at `next_run_at` and every `interval_seconds`
  * after it. One already past due runs at the next scheduler tick, which is
  * drawn at the window's start and flagged.
  */

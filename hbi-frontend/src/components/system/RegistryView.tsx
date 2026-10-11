@@ -1,6 +1,6 @@
 /**
  * System → Registry: what the brain is made of, read-only. Skills and their
- * tools (with the existing tool explorer), agents (context profiles), chains,
+ * tools (with the existing tool explorer), agents (context profiles), workflows,
  * external MCP servers, providers, and the services it depends on. Edits go
  * through Settings; this is for looking.
  */
@@ -10,7 +10,7 @@ import { hrefTo } from "../../nav";
 import ToolPanel from "../tools/ToolPanel";
 import { EmptyState, Pill, Stat, Tabs } from "../ui";
 
-type Tab = "tools" | "agents" | "chains" | "mcp" | "providers" | "services";
+type Tab = "tools" | "agents" | "workflows" | "mcp" | "providers" | "services";
 
 export default function RegistryView() {
   const r = useRegistry();
@@ -24,9 +24,9 @@ export default function RegistryView() {
           <Stat label="Tools" value={c.tools} title={`${c.skills} skills`} onClick={() => setTab("tools")} />
           <Stat label="Dynamic tools" value={c.dynamic_tools} onClick={() => setTab("tools")} />
           <Stat label="Agents" value={c.agents} onClick={() => setTab("agents")} />
-          <Stat label="Chains" value={c.chains} onClick={() => setTab("chains")} />
+          <Stat label="Workflows" value={c.workflows} onClick={() => setTab("workflows")} />
           <Stat label="MCP servers" value={c.mcp_servers} onClick={() => setTab("mcp")} />
-          <Stat label="Schedules" value={`${c.schedules_enabled}/${c.schedules}`} title="enabled / all" href={hrefTo("work", { view: "scheduled" })} />
+          <Stat label="Scheduled" value={`${c.schedules_enabled}/${c.schedules}`} title="scheduled workflows: on / all" href={hrefTo("work", { view: "scheduled" })} />
         </div>
       )}
       {r.error && <EmptyState tone="red" title="Couldn't load the registry" checked={r.error.message} />}
@@ -34,7 +34,7 @@ export default function RegistryView() {
         tabs={[
           { id: "tools", label: "Tools" },
           { id: "agents", label: "Agents" },
-          { id: "chains", label: "Chains" },
+          { id: "workflows", label: "Workflows" },
           { id: "mcp", label: "MCP servers" },
           { id: "providers", label: "Providers" },
           { id: "services", label: "Services" },
@@ -70,17 +70,23 @@ function Section({ tab, d }: { tab: Exclude<Tab, "tools">; d: Registry }) {
       </table>
     );
   }
-  if (tab === "chains") {
-    return d.chains.length === 0 ? <EmptyState title="No chains" checked="No (:SchedulerChain) nodes; chains are seeded from chains/*.yaml." /> : (
+  if (tab === "workflows") {
+    return d.workflows.length === 0 ? <EmptyState title="No workflows" checked="No (:Workflow) nodes; they are seeded from workflows/*.yaml." /> : (
       <table className="reg-table">
-        <thead><tr><th>Chain</th><th>Matches goals like</th><th>Steps</th><th>What it does</th></tr></thead>
+        <thead><tr><th>Workflow</th><th>Runs</th><th>Inputs</th><th>Steps</th><th>What it does</th></tr></thead>
         <tbody>
-          {d.chains.map((c) => (
-            <tr key={c.id ?? c.name}>
-              <td><strong>{c.name}</strong>{c.no_evaluator && <Pill tone="muted">no evaluator</Pill>}</td>
-              <td className="wk-dim"><code>{c.pattern ?? "—"}</code></td>
-              <td>{c.steps}</td>
-              <td className="reg-desc">{c.description}</td>
+          {d.workflows.map((w) => (
+            <tr key={w.id}>
+              <td>
+                <a href={hrefTo("work", { view: "scheduled", schedule: w.id })}><strong>{w.name}</strong></a>
+                {w.default && <Pill tone="accent">default</Pill>}
+                {!w.enabled && <Pill tone="muted">off</Pill>}
+                {w.checks.map((c) => <Pill key={c} tone="muted">{c}</Pill>)}
+              </td>
+              <td className="wk-dim">{w.every ? `every ${w.every}` : "by name"}</td>
+              <td className="wk-dim">{w.inputs.join(", ") || "—"}</td>
+              <td>{w.steps}</td>
+              <td className="reg-desc">{w.description}</td>
             </tr>
           ))}
         </tbody>

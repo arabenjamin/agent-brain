@@ -1,9 +1,8 @@
 //! Scheduler Skill — controls the autonomous self-improvement loop.
 //!
-//! 3 tools: `scheduler_control` (incl. `action: tick`), `manage_chain`, `manage_scheduled_task`
-//! Scheduler status and chain listing are served by REST: GET /api/scheduler/status,
-//! /api/scheduler/chains. Scheduled-task listing is deliberately NOT REST-only —
-//! see `manage_scheduled_task(action=list)`.
+//! 2 tools: `scheduler_control` (incl. `action: tick`) and `manage_workflow`.
+//! Scheduler status is served by REST (GET /api/scheduler/status). Workflow
+//! listing is deliberately NOT REST-only — see `manage_workflow(action=list)`.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -12,10 +11,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::repository::Neo4jClient;
+use crate::repository::{Neo4jClient, Workflow};
 use crate::services::queue::ChainStep;
 use crate::services::scheduler::SchedulerService;
 use crate::services::validation;
+use crate::services::workflows;
 use crate::skills::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -29,7 +29,7 @@ pub struct SchedulerSkill {
     /// which safely disables schema validation (fail-open on our own wiring).
     tool_schemas: Arc<RwLock<HashMap<String, Value>>>,
     /// Object-envelope JSON Schemas from the `schemas/` seed dir, keyed by file
-    /// stem (`scheduled_task`, `scheduler_chain`). Loaded once at startup. Empty
+    /// stem (`workflow`). Loaded once at startup. Empty
     /// = envelope validation disabled (fail-open); the per-step arg gate still runs.
     envelope_schemas: Arc<HashMap<String, Value>>,
     /// The model catalog a step's `model` is checked against. `None` disables
@@ -74,36 +74,6 @@ impl SchedulerSkill {
         self
     }
 
-    /// Deterministic structural gate shared by `manage_scheduled_task` upsert and
-    /// `manage_chain` define. Validates every step's `arguments` against the
-    /// tool's own registered `input_schema` (the corruption-catcher) and flags an
-    /// unregistered tool. `steps` are the raw JSON step objects as authored.
-    /// Returns `Some(rejection)` — a ready-to-return error message — on any HARD
-    /// violation, else `None`. See `services/validation.rs`.
-    async fn hard_reject_steps(&self, label: &str, steps: &[Value]) -> Option<String> {
-        let live = self.live_tools.read().await;
-        let schemas = self.tool_schemas.read().await;
-        let mut hard = validation::validate_step_array(steps, &live, &schemas);
-        let catalog = self
-            .telemetry
-            .as_ref()
-            .map(crate::services::model_router::catalog_models)
-            .unwrap_or_default();
-        hard.extend(validation::validate_step_models(steps, &catalog));
-        if validation::has_hard(&hard) {
-            Some(format!(
-                "{label} rejected — {} structural error(s); nothing was saved. \
-                 Fix these and retry: {}",
-                hard.iter()
-                    .filter(|v| v.severity == validation::Severity::Hard)
-                    .count(),
-                validation::render_hard(&hard),
-            ))
-        } else {
-            None
-        }
-    }
-
     /// A soft warning for each step whose pinned model the routing policy
     /// would refuse right now for that step's data class. Soft, because a
     /// cooldown or a spend cap passes; the step dies with the same reason if
@@ -143,27 +113,6 @@ impl SchedulerSkill {
                 })
             })
             .collect()
-    }
-
-    /// Validate an object against its envelope schema (`scheduled_task`,
-    /// `scheduler_chain`, …) from the `schemas/` seed dir. No such schema loaded
-    /// ⇒ `None` (envelope layer disabled). Returns a ready-to-return rejection on
-    /// any HARD violation. This is the structural check for the fields *around*
-    /// the steps (name, interval, cadence, enums); the steps themselves are
-    /// covered by [`Self::hard_reject_steps`].
-    fn hard_reject_envelope(&self, label: &str, key: &str, obj: &Value) -> Option<String> {
-        let schema = self.envelope_schemas.get(key)?;
-        let hard = validation::validate_against_schema(key, schema, obj);
-        if validation::has_hard(&hard) {
-            Some(format!(
-                "{label} rejected — {} envelope error(s); nothing was saved. \
-                 Fix these and retry: {}",
-                hard.len(),
-                validation::render_hard(&hard),
-            ))
-        } else {
-            None
-        }
     }
 
     // =========================================================================
@@ -333,168 +282,69 @@ impl SchedulerSkill {
     }
 
     // =========================================================================
-    // SchedulerChain + ScheduledTask tool definitions
+    // manage_workflow definition
     // =========================================================================
 
-    // list_scheduler_chains is served by GET /api/scheduler/chains (REST API)
-    // Listing scheduled tasks is `manage_scheduled_task(action=list)`, NOT just
-    // GET /api/scheduled-tasks. It lived only in REST during the tool-reduction
-    // refactor, which left the chat agent with no way to see its own recurring
-    // work — it answered project-status questions from :Note alone and reported
-    // running schedules as unbuilt plans. REST keeps its endpoint for the UI.
+    // Listing is a tool, not only GET /workflows: when it lived only in REST the
+    // chat agent could not see its own recurring work, answered project-status
+    // questions from :Note alone and reported running schedules as unbuilt plans.
 
-    fn manage_chain_def() -> ToolDefinition {
+    fn manage_workflow_def() -> ToolDefinition {
         ToolDefinition {
-            name: "manage_chain".to_string(),
-            description: "Define or remove a SchedulerChain routing rule in Neo4j. \
-                action=define: store or update a chain — when a task goal matches `pattern` \
-                or any entry in `patterns` (case-insensitive CONTAINS) the scheduler dispatches \
-                `steps` instead of the built-in fallback. Use pattern=\"\" with priority=9999 for a \
-                default chain. Template vars in steps: {{task_id}}, {{goal}}, {{goal_topic}}, {{date}} (local date), \
-                {{now}} (local date+time+zone), {{weekday}}, {{file_slug}}. \
-                action=remove: delete a chain by its `id`."
+            name: "manage_workflow".to_string(),
+            description: "Workflows are the brain's fixed job chains: some run on a schedule \
+                (`every`), all can be run by name with inputs. \
+                action=list: every workflow with its schedule, inputs, last and next run. USE THIS \
+                to answer what the brain does on its own or how a project is going — a project's \
+                implementation usually lives in workflows, not in notes. \
+                action=get: one workflow in full (`name` or `id`). \
+                action=run: start a run of `name` with `inputs` (dispatched on the next scheduler \
+                tick); the run is a Task. \
+                action=upsert: create, or update the workflow named `name`; keys you leave out keep \
+                their values. Steps are ChainStep objects (tool_name, arguments, provider_hint, id, \
+                optional, …). Template vars: {{task_id}}, {{goal}}, {{date}}, {{now}}, {{weekday}}, \
+                {{inputs.<name>}}, {{_prev}} (the step before), {{steps.<id>}} / {{steps.<id>.<path>}} \
+                (an earlier named step). A trailing update_task is added at run time. Ownership: \
+                created here = managed_by 'runtime'; a 'yaml' workflow is overwritten from \
+                workflows/<name>.yaml on startup unless you pass managed_by='runtime'. Upsert \
+                REJECTS a structural error and returns `step_warnings` for steps that run but \
+                discard their inputs — FIX AND RE-UPSERT before reporting it as working: a `reason` \
+                step needs `context` naming an earlier output, and a step that saves the result \
+                must reference it. \
+                action=delete: remove by `id` or `name` (upsert enabled=false to pause instead). \
+                action=audit: check every stored workflow against the live tools; optionally \
+                disable those whose every step names a dead tool."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["define", "remove"],
-                        "description": "define: store/update chain. remove: delete by id."
+                    "action": { "type": "string", "enum": ["list", "get", "run", "upsert", "delete", "audit"] },
+                    "name": { "type": "string", "description": "The workflow's slug (get/run/upsert/delete)." },
+                    "id": { "type": "string", "description": "get/delete by id instead of name." },
+                    "inputs": {
+                        "description": "run: the input values, e.g. {\"topic\": \"…\"}. upsert: the declared inputs, [{\"name\": \"topic\", \"description\": \"…\"}].",
+                        "type": ["object", "array"]
                     },
-                    "name": {
-                        "type": "string",
-                        "description": "Unique chain name used as the MERGE key (defaults to pattern value)."
-                    },
-                    "pattern": {
-                        "type": "string",
-                        "description": "Primary goal substring to match (required for action=define). Use \"\" for a default chain."
-                    },
-                    "patterns": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Additional goal substrings (OR-matched with pattern)."
-                    },
-                    "steps": {
-                        "type": "array",
-                        "description": "ChainStep array (tool_name, arguments, priority?, provider_hint?, etc.). \
-                                        Template vars: {{task_id}}, {{goal}}, {{goal_topic}}, {{date}} (local date), {{now}} (local date+time+zone), {{weekday}}, {{file_slug}}. (required for define)"
-                    },
-                    "priority": {
-                        "type": "integer",
-                        "description": "Check order — lower = first (default 100). Use 9999 for default chain."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Human-readable description of this chain."
-                    },
-                    "no_evaluator": {
-                        "type": "boolean",
-                        "description": "When true, suppress the evaluator step even if task has success_criteria (default false)."
-                    },
-                    "no_adversarial": {
-                        "type": "boolean",
-                        "description": "When true, suppress the adversarial pre-flight step even if task has success_criteria (default false)."
-                    },
-                    "id": {
-                        "type": "string",
-                        "description": "SchedulerChain node id (required for action=remove)."
-                    }
-                },
-                "required": ["action"]
-            }),
-        }
-    }
-
-    fn manage_scheduled_task_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "manage_scheduled_task".to_string(),
-            description: "List, create/update, delete, or audit ScheduledTasks. \
-                action=list: return every scheduled task with its name, description, enabled flag, \
-                interval, last run and next run. USE THIS to answer any question about what the brain \
-                is scheduled to do, what recurring work exists, or the status of an ongoing project — \
-                a project's implementation usually lives in ScheduledTasks, not in notes. \
-                action=upsert: if a task with `name` exists it is updated in-place, otherwise created. \
-                Steps are ChainStep objects (tool_name, arguments, priority?, max_attempts?, provider_hint?). \
-                Template vars: {{task_id}}, {{goal}}, {{goal_topic}}, {{date}} (local date), {{now}} (local date+time+zone), {{weekday}}. Do NOT include update_task — appended automatically. \
-                Ownership: tasks created here are managed_by='runtime' (the seeder never touches them). \
-                Tasks managed_by='yaml' are force-synced from schedules/*.yaml on every startup — \
-                runtime edits to them are overwritten unless you pass managed_by='runtime' to take ownership. \
-                Steps are enqueued VERBATIM at run time — no chain matching, no evaluator, no \
-                validation — so a chain that discards its own inputs runs forever without erroring. \
-                upsert lints for this and returns `step_warnings`; if it does, FIX AND RE-UPSERT \
-                before reporting the schedule as working. Two rules cover most of it: a `reason` step \
-                needs `context: \"{{_prev}}\"` or it ignores the step before it, and any step meant to \
-                save the result must contain `{{_prev}}` in its arguments or it saves a fixed string. \
-                action=delete: permanently remove a task by `id` (use upsert with enabled=false to pause instead). \
-                action=audit: scan all ScheduledTask steps against the live tool registry and return a report \
-                of broken tool names and of `degraded` tasks whose steps run but discard their inputs, \
-                plus optionally disable tasks that reference only dead tools."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "upsert", "delete", "audit"],
-                        "description": "list: show all scheduled tasks and when they last/next run. upsert: create or update. delete: remove by id. audit: validate all task steps."
-                    },
-                    "enabled_only": {
-                        "type": "boolean",
-                        "description": "list only: return only enabled tasks (default false — disabled tasks are usually the interesting ones)."
-                    },
-                    "filter": {
-                        "type": "string",
-                        "description": "list only: case-insensitive substring matched against name and description. Use it when looking for a specific project's schedules — the full list can be truncated before it reaches you."
-                    },
-                    "verbose": {
-                        "type": "boolean",
-                        "description": "list only: include id, description, managed_by and step_count. Default false keeps the list compact enough to survive result truncation; set true only when narrowed by `filter`."
-                    },
-                    "disable_broken": {
-                        "type": "boolean",
-                        "description": "audit only: if true, disable tasks where ALL steps reference dead tools (default false)."
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Task name — upsert key and goal text (required for upsert)."
-                    },
+                    "goal": { "type": "string", "description": "run: what the run is for, as a person reads it in the task list (default: name and inputs)." },
+                    "context": { "type": "string", "description": "run: extra context stored on the run Task." },
+                    "enabled_only": { "type": "boolean", "description": "list: only enabled workflows (default false)." },
+                    "scheduled_only": { "type": "boolean", "description": "list: only workflows with a schedule (default false)." },
+                    "filter": { "type": "string", "description": "list: case-insensitive substring of name or description." },
+                    "verbose": { "type": "boolean", "description": "list: add id, description, ownership, steps, checks. Keep false unless narrowed by `filter`." },
                     "description": { "type": "string" },
-                    "topic": {
-                        "type": ["string", "null"],
-                        "description": "upsert: the topics/*.yaml topic this schedule works on (e.g. ai-ml, michigan), or \"\" / null for one that spans topics. Omit to keep the current value."
-                    },
-                    "kind": {
-                        "type": ["string", "null"],
-                        "enum": ["monitor", "brief", "learning", "maintenance", "dataset", "", null],
-                        "description": "upsert: what sort of work it is — monitor (watches a subject), brief (a report for the user), learning (gathers or digests knowledge), maintenance (the brain's own upkeep), dataset (loads or reviews a dataset). Omit to keep the current value."
-                    },
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Whether to dispatch when due (default true)."
-                    },
-                    "interval_seconds": {
-                        "type": "integer",
-                        "minimum": 60,
-                        "description": "Recurrence period in seconds (required for upsert)."
-                    },
-                    "steps": {
-                        "type": "array",
-                        "description": "Job chain steps (required for upsert)."
-                    },
-                    "next_run_at": {
-                        "type": "string",
-                        "description": "ISO8601 datetime to force next run (omit to use now)."
-                    },
-                    "managed_by": {
-                        "type": "string",
-                        "enum": ["yaml", "runtime"],
-                        "description": "Ownership marker. Omit to keep current (new tasks default to 'runtime'). Set 'runtime' to take ownership of a yaml-seeded task so the seeder stops overwriting it."
-                    },
-                    "id": {
-                        "type": "string",
-                        "description": "ScheduledTask id (required for action=delete)."
-                    }
+                    "every": { "type": ["string", "null"], "description": "upsert: schedule period (30m, 6h, 1d, 1w); null removes the schedule." },
+                    "steps": { "type": "array", "description": "upsert: the job chain." },
+                    "checks": { "type": "array", "items": { "type": "string", "enum": ["evaluator", "critic"] }, "description": "upsert: opt-in checks around a run." },
+                    "evaluation_rubric": { "type": ["string", "null"] },
+                    "default": { "type": "boolean", "description": "upsert: make this the workflow free-text tasks run." },
+                    "enabled": { "type": "boolean" },
+                    "paused_reason": { "type": ["string", "null"], "description": "upsert: why it is disabled, when that is deliberate." },
+                    "topic": { "type": ["string", "null"], "description": "upsert: the topics/*.yaml topic, or \"\"/null for one that spans topics." },
+                    "kind": { "type": ["string", "null"], "enum": ["monitor", "brief", "learning", "maintenance", "dataset", "", null] },
+                    "data_class": { "type": "string", "enum": ["private", "public"], "description": "upsert: stamped onto steps that set none." },
+                    "next_run_at": { "type": "string", "description": "upsert: RFC3339 instant of the next scheduled run." },
+                    "managed_by": { "type": "string", "enum": ["yaml", "runtime"] },
+                    "disable_broken": { "type": "boolean", "description": "audit: disable workflows whose every step names a dead tool." }
                 },
                 "required": ["action"]
             }),
@@ -502,527 +352,247 @@ impl SchedulerSkill {
     }
 
     // =========================================================================
-    // SchedulerChain + ScheduledTask handlers
+    // manage_workflow
     // =========================================================================
 
-    async fn handle_manage_chain(&self, args: Option<Value>) -> ToolCallResult {
-        let args = args.unwrap_or_default();
-        let action = match args["action"].as_str() {
-            Some(a) => a.to_string(),
-            None => return ToolCallResult::error("`action` is required".to_string()),
-        };
-
+    async fn handle_manage_workflow(&self, args: Option<Value>) -> ToolCallResult {
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
-
-        match action.as_str() {
-            "define" => {
-                let pattern = match args["pattern"].as_str() {
-                    Some(p) => p.to_string(),
-                    None => {
-                        return ToolCallResult::error(
-                            "`pattern` required for action=define".to_string(),
-                        );
-                    }
-                };
-                if args["steps"].as_array().is_none() {
-                    return ToolCallResult::error(
-                        "`steps` array required for action=define".to_string(),
-                    );
-                }
-                let steps_json = match serde_json::to_string(&args["steps"]) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return ToolCallResult::error(format!("Failed to serialize steps: {e}"));
-                    }
-                };
-                // Same deterministic structural gate as `manage_scheduled_task`
-                // upsert: a chain's steps are enqueued verbatim too, so a
-                // wrong-typed arg or an unregistered tool fails every match. Reject
-                // before storing. (`manage_chain` did no validation at all before.)
-                if let Err(e) = serde_json::from_str::<Vec<ChainStep>>(&steps_json) {
-                    return ToolCallResult::error(format!("steps JSON invalid: {e}"));
-                }
-                if let Some(err) = self.hard_reject_envelope("Chain", "scheduler_chain", &args) {
-                    return ToolCallResult::error(err);
-                }
-                let steps_arr = args["steps"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-                if let Some(err) = self.hard_reject_steps("Chain", steps_arr).await {
-                    return ToolCallResult::error(err);
-                }
-                let priority = args["priority"].as_i64().unwrap_or(100);
-                let description = args["description"].as_str().unwrap_or("").to_string();
-                let name = args["name"].as_str().unwrap_or(&pattern).to_string();
-                let patterns: Vec<String> = args["patterns"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let no_evaluator = args["no_evaluator"].as_bool().unwrap_or(false);
-                let no_adversarial = args["no_adversarial"].as_bool().unwrap_or(false);
-                let id = uuid::Uuid::new_v4().to_string();
-
-                let cypher = "MERGE (c:SchedulerChain {name: $name}) \
-                              ON CREATE SET c.id = $id, c.created_at = datetime() \
-                              SET c.pattern       = $pattern, \
-                                  c.patterns      = $patterns, \
-                                  c.steps         = $steps, \
-                                  c.priority      = $priority, \
-                                  c.description   = $description, \
-                                  c.no_evaluator  = $no_evaluator, \
-                                  c.no_adversarial = $no_adversarial, \
-                                  c.updated_at    = datetime()";
-
-                if let Err(e) = neo4j
-                    .run(
-                        neo4rs::query(cypher)
-                            .param("name", name.as_str())
-                            .param("pattern", pattern.clone())
-                            .param("patterns", patterns)
-                            .param("id", id)
-                            .param("steps", steps_json)
-                            .param("priority", priority)
-                            .param("description", description.as_str())
-                            .param("no_evaluator", no_evaluator)
-                            .param("no_adversarial", no_adversarial),
-                    )
-                    .await
-                {
-                    return ToolCallResult::error(format!("Failed to store SchedulerChain: {e}"));
-                }
-
-                ToolCallResult::success_json(json!({
-                    "stored": true,
-                    "name": name,
-                    "pattern": pattern,
-                    "priority": priority,
-                    "no_evaluator": no_evaluator,
-                    "no_adversarial": no_adversarial,
-                    "step_count": args["steps"].as_array().map(|a| a.len()).unwrap_or(0),
-                }))
-            }
-            "remove" => {
-                let id = match args["id"].as_str() {
-                    Some(v) => v.to_string(),
-                    None => {
-                        return ToolCallResult::error(
-                            "`id` required for action=remove".to_string(),
-                        );
-                    }
-                };
-                let cypher =
-                    "MATCH (c:SchedulerChain {id: $id}) DELETE c RETURN count(c) AS deleted";
-                match neo4j
-                    .execute(neo4rs::query(cypher).param("id", id.clone()))
-                    .await
-                {
-                    Ok(rows) => {
-                        let deleted = rows
-                            .first()
-                            .and_then(|r| r.get::<i64>("deleted").ok())
-                            .unwrap_or(0);
-                        if deleted > 0 {
-                            ToolCallResult::success_json(json!({ "deleted": true, "id": id }))
-                        } else {
-                            ToolCallResult::error(format!("No SchedulerChain found with id '{id}'"))
-                        }
-                    }
-                    Err(e) => ToolCallResult::error(format!("Failed to remove chain: {e}")),
-                }
-            }
-            other => {
-                ToolCallResult::error(format!("Unknown action `{other}`. Use define or remove."))
-            }
-        }
-    }
-
-    async fn handle_manage_scheduled_task(&self, args: Option<Value>) -> ToolCallResult {
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-
         let args = args.unwrap_or_default();
-        let action = match args["action"].as_str() {
-            Some(a) => a.to_string(),
-            None => return ToolCallResult::error("`action` is required".to_string()),
-        };
-
-        match action.as_str() {
-            // Listing was originally left to `GET /api/scheduled-tasks`, which the
-            // chat agent cannot call. The result: asked "where are we on project X",
-            // the brain searched :Note, found only the design discussion, and
-            // reported live recurring work as an unbuilt plan. A project's actual
-            // implementation lives in ScheduledTasks, so listing them must be a tool.
-            "list" => {
-                let enabled_only = args["enabled_only"].as_bool().unwrap_or(false);
-                let filter = args["filter"].as_str().map(|s| s.to_lowercase());
-                let verbose = args["verbose"].as_bool().unwrap_or(false);
-                let all = match neo4j.list_scheduled_tasks(enabled_only).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return ToolCallResult::error(format!(
-                            "Failed to list scheduled tasks: {e}"
-                        ));
-                    }
-                };
-                let total = all.len();
-                let names: Vec<String> = all.iter().map(|t| t.name.clone()).collect();
-                let tasks: Vec<_> = match filter {
-                    Some(ref f) => all
-                        .into_iter()
-                        .filter(|t| {
-                            t.name.to_lowercase().contains(f)
-                                || t.description
-                                    .as_deref()
-                                    .is_some_and(|d| d.to_lowercase().contains(f))
-                        })
-                        .collect(),
-                    None => all,
-                };
-                // The payload is kept deliberately lean. Chat truncates tool
-                // results to as little as 2000 chars, and the repository orders
-                // by next_run_at ASC — so long-cadence schedules (exactly the
-                // strategic, project-level ones) sort last and are the first to
-                // be cut. A verbose row here means those get silently dropped.
-                let rows: Vec<Value> = tasks
-                    .iter()
-                    .map(|t| {
-                        let mut row = json!({
-                            "name":           t.name,
-                            "enabled":        t.enabled,
-                            "every":          humanize_interval(t.interval_seconds),
-                            // Date only: the time-of-day of a weekly job is noise
-                            // next to whether it ran at all.
-                            "last_run":       t.last_run_at.as_deref()
-                                                  .map(|d| &d[..10.min(d.len())]),
-                            "next_run":       &t.next_run_at[..10.min(t.next_run_at.len())],
-                        });
-                        // Emitted only when set, and only for a disabled task,
-                        // so an ordinary listing is byte-identical. "Disabled"
-                        // on its own invites the reader to guess why — and a
-                        // deliberate pause read as a breakage gets "fixed" by
-                        // re-enabling exactly the thing someone turned off.
-                        if !t.enabled
-                            && let Some(ref why) = t.paused_reason
-                        {
-                            row["paused_reason"] = json!(why);
-                        }
-                        if verbose {
-                            row["id"] = json!(t.id);
-                            row["description"] = json!(t.description);
-                            row["managed_by"] = json!(t.managed_by);
-                            row["interval_seconds"] = json!(t.interval_seconds);
-                            row["step_count"] = json!(
-                                serde_json::from_str::<Vec<Value>>(&t.steps)
-                                    .map(|s| s.len())
-                                    .unwrap_or(0)
-                            );
-                        }
-                        row
-                    })
-                    .collect();
-                // A filter that matches nothing is the single most misleading
-                // result this tool can return: asked about the "Niche
-                // Intelligence Agency", the model filtered on that phrase, got
-                // an empty list, and reported three live schedules as
-                // nonexistent — they are filed under their internal name
-                // ("hardware tripwire", "SLM benchmark watch"). So an empty
-                // filtered result always carries every name back with it. The
-                // model cannot conclude "none exist" while looking at the list.
-                if filter.is_some() && rows.is_empty() && total > 0 {
-                    return ToolCallResult::success_json(json!({
-                        "count":           0,
-                        "total_scheduled": total,
-                        "filter":          filter,
-                        "warning": format!(
-                            "No scheduled task NAME or DESCRIPTION matched that filter. \
-                             This does NOT mean none exist — {total} scheduled tasks are \
-                             active. A project is usually filed under an internal/technical \
-                             name rather than the name the user calls it. Every name is \
-                             listed below: re-run with a filter drawn from these, or with \
-                             no filter at all."
-                        ),
-                        "all_scheduled_task_names": names,
-                    }));
+        let s = |k: &str| args[k].as_str().map(str::trim).filter(|v| !v.is_empty());
+        match s("action").unwrap_or("") {
+            "list" => self.list_workflows(neo4j, &args).await,
+            "get" => match self.find(neo4j, s("id"), s("name")).await {
+                Ok(wf) => {
+                    let mut body = workflows::to_body(&wf);
+                    body["id"] = json!(wf.id);
+                    body["last_run_at"] = json!(wf.last_run_at);
+                    body["next_run_at"] = json!(wf.next_run_at);
+                    ToolCallResult::success_json(body)
                 }
-                let enabled_count = tasks.iter().filter(|t| t.enabled).count();
-                ToolCallResult::success_json(json!({
-                    "count":           rows.len(),
-                    "total_scheduled": total,
-                    "enabled_count":   enabled_count,
-                    "disabled_count":  rows.len() - enabled_count,
-                    "filter":          filter,
-                    "scheduled_tasks": rows,
-                }))
-            }
-            "upsert" => {
-                let name = match args["name"].as_str() {
-                    Some(v) => v.to_string(),
-                    None => {
-                        return ToolCallResult::error(
-                            "`name` required for action=upsert".to_string(),
-                        );
-                    }
+                Err(e) => ToolCallResult::error(e),
+            },
+            "run" => {
+                let Some(name) = s("name") else {
+                    return ToolCallResult::error("`name` is required for action=run".to_string());
                 };
-                let interval_seconds = match args["interval_seconds"].as_i64() {
-                    Some(v) if v >= 60 => v,
-                    _ => {
-                        return ToolCallResult::error(
-                            "`interval_seconds` (>=60) required for action=upsert".to_string(),
-                        );
-                    }
-                };
-                let steps_json = match serde_json::to_string(&args["steps"]) {
-                    Ok(s) if args["steps"].is_array() => s,
-                    _ => {
-                        return ToolCallResult::error(
-                            "`steps` must be an array for action=upsert".to_string(),
-                        );
-                    }
-                };
-                // Shape validation only — this proves the JSON is a legal chain,
-                // not that the chain does anything. `lint_chain_steps` below
-                // covers the difference.
-                let parsed_steps = match serde_json::from_str::<Vec<ChainStep>>(&steps_json) {
-                    Ok(s) => s,
-                    Err(e) => return ToolCallResult::error(format!("steps JSON invalid: {e}")),
-                };
-
-                // ── Deterministic structural validation (HARD reject) ──────────
-                // Validate each step's arguments against the tool it calls, using
-                // the tool's own registered `input_schema`. This catches
-                // wrong-typed args (e.g. `query_params` as a string, `timeout_ms`
-                // as a string) that the ChainStep shape-check passes because
-                // `arguments` is a free JSON value, and that otherwise fail
-                // silently at run time forever — the class that killed the AI Dev
-                // Board Job Search schedule. Unlike the semantic lint below, a hard
-                // violation is REJECTED and nothing is saved. See
-                // `services/validation.rs` + `project-docs/VALIDATION_AND_APPLY_PLAN.md`.
-                if let Some(err) = self.hard_reject_envelope("Schedule", "scheduled_task", &args) {
-                    return ToolCallResult::error(err);
-                }
-                let steps_arr = args["steps"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-                if let Some(err) = self.hard_reject_steps("Schedule", steps_arr).await {
-                    return ToolCallResult::error(err);
-                }
-
-                let mut step_warnings =
-                    lint_chain_steps(&parsed_steps, &self.live_tools.read().await.clone());
-                step_warnings.extend(self.pinned_model_warnings(&parsed_steps));
-
-                // Declared topic and kind: checked now, written after the save.
-                // An absent key keeps what the schedule has.
-                let label_arg = |k: &str| -> Option<Option<String>> {
-                    match args.get(k) {
-                        None => None,
-                        Some(Value::String(s)) => Some(Some(s.clone())),
-                        Some(_) => Some(None),
-                    }
-                };
-                let (topic_arg, kind_arg) = (label_arg("topic"), label_arg("kind"));
-                if let Err(e) = crate::services::schedule_seeder::check_labels(
-                    topic_arg.clone().flatten().as_deref(),
-                    kind_arg.clone().flatten().as_deref(),
-                    &crate::services::schedule_seeder::declared_topics(),
-                ) {
-                    return ToolCallResult::error(format!(
-                        "Schedule rejected — {e}; nothing was saved."
-                    ));
-                }
-
-                let description = args["description"].as_str();
-                let enabled = args["enabled"].as_bool().unwrap_or(true);
-                let managed_by = match args["managed_by"].as_str() {
-                    Some("yaml") => Some("yaml"),
-                    Some("runtime") => Some("runtime"),
-                    Some(other) => {
-                        return ToolCallResult::error(format!(
-                            "`managed_by` must be 'yaml' or 'runtime', got '{other}'"
-                        ));
-                    }
-                    None => None,
-                };
-
-                let existing = neo4j
-                    .execute(
-                        neo4rs::query(
-                            "MATCH (s:ScheduledTask {name: $name}) \
-                             RETURN s.id AS id, s.managed_by AS managed_by",
-                        )
-                        .param("name", name.as_str()),
-                    )
-                    .await
-                    .ok()
-                    .and_then(|rows| rows.into_iter().next())
-                    .map(|row| {
-                        (
-                            row.get::<String>("id").unwrap_or_default(),
-                            row.get::<String>("managed_by").ok(),
-                        )
-                    });
-
-                let mut yaml_owned_warning: Option<String> = None;
-                let result = if let Some((id, current_managed_by)) = existing {
-                    if current_managed_by.as_deref() == Some("yaml")
-                        && managed_by.is_none_or(|m| m == "yaml")
-                    {
-                        yaml_owned_warning = Some(
-                            "This task is yaml-managed: steps, description, and interval \
-                             will be overwritten from schedules/*.yaml on the next startup. \
-                             Pass managed_by='runtime' to take runtime ownership, or edit \
-                             the YAML file instead."
-                                .to_string(),
-                        );
-                    }
-                    neo4j
-                        .update_scheduled_task(
-                            &id,
-                            Some(&name),
-                            Some(description),
-                            Some(enabled),
-                            Some(interval_seconds),
-                            Some(&steps_json),
-                            args["next_run_at"].as_str(),
-                            managed_by,
-                        )
-                        .await
-                        .map(|opt| opt.map(|t| (t, false)))
-                        .map_err(|e| e.to_string())
-                } else {
-                    let next_run_at = args["next_run_at"]
-                        .as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-                    neo4j
-                        .create_scheduled_task(
-                            &name,
-                            description,
-                            enabled,
-                            interval_seconds,
-                            &steps_json,
-                            &next_run_at,
-                            managed_by.unwrap_or("runtime"),
-                        )
-                        .await
-                        .map(|t| Some((t, true)))
-                        .map_err(|e| e.to_string())
-                };
-
-                let result = match result {
-                    Ok(Some((mut task, created))) if topic_arg.is_some() || kind_arg.is_some() => {
-                        let blank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
-                        let topic = match topic_arg {
-                            Some(v) => blank(v),
-                            None => task.topic.clone(),
-                        };
-                        let kind = match kind_arg {
-                            Some(v) => blank(v),
-                            None => task.kind.clone(),
-                        };
-                        match neo4j
-                            .set_scheduled_task_labels(
-                                (&task.id, true),
-                                topic.as_deref(),
-                                kind.as_deref(),
-                                false,
-                            )
-                            .await
-                        {
-                            Ok(_) => {
-                                task.topic = topic;
-                                task.kind = kind;
-                                Ok(Some((task, created)))
-                            }
-                            Err(e) => Err(format!("saved, but topic/kind were not: {e}")),
-                        }
-                    }
-                    other => other,
-                };
-
-                match result {
-                    Ok(Some((task, created))) => {
-                        let mut response = json!({
-                            "created": created,
-                            "updated": !created,
-                            "task": task,
-                        });
-                        if let Some(w) = yaml_owned_warning {
-                            response["warning"] = json!(w);
-                        }
-                        // Loud, and phrased as unfinished work. The task IS
-                        // saved — silently, these read as "done" and get
-                        // reported to the user as a working schedule.
-                        if !step_warnings.is_empty() {
-                            response["step_warnings"] = json!(step_warnings);
-                            response["needs_fix"] = json!(true);
-                            response["action_required"] = json!(
-                                "This schedule is SAVED BUT LIKELY BROKEN. Nothing validates a \
-                                 schedule at run time — its steps are enqueued verbatim — so these \
-                                 defects will not surface as errors, they will surface as a job \
-                                 that runs forever and produces nothing. Re-upsert with the fixes \
-                                 before telling the user it is set up, and tell them what you \
-                                 corrected."
-                            );
-                        }
-                        ToolCallResult::success_json(response)
-                    }
-                    Ok(None) => ToolCallResult::error("Task not found after update".to_string()),
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to upsert scheduled task: {e}"))
-                    }
+                let inputs = args["inputs"].as_object().cloned().unwrap_or_default();
+                match workflows::start_run(
+                    neo4j,
+                    Some(name),
+                    &inputs,
+                    s("goal"),
+                    s("context"),
+                    None,
+                )
+                .await
+                {
+                    Ok(run) => ToolCallResult::success_json(json!({
+                        "task_id": run.task_id,
+                        "workflow": run.workflow,
+                        "status": "created",
+                        "note": "Dispatched on the next scheduler tick; follow it by its task_id."
+                    })),
+                    Err(e) => ToolCallResult::error(e),
                 }
             }
+            "upsert" => self.upsert_workflow(neo4j, &args).await,
             "delete" => {
-                let id = match args["id"].as_str() {
-                    Some(v) => v.to_string(),
-                    None => {
-                        return ToolCallResult::error(
-                            "`id` required for action=delete".to_string(),
-                        );
-                    }
+                let wf = match self.find(neo4j, s("id"), s("name")).await {
+                    Ok(wf) => wf,
+                    Err(e) => return ToolCallResult::error(e),
                 };
-                match neo4j.delete_scheduled_task(&id).await {
-                    Ok(true) => ToolCallResult::success_json(json!({ "deleted": true, "id": id })),
-                    Ok(false) => {
-                        ToolCallResult::error(format!("No ScheduledTask found with id '{id}'"))
-                    }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to delete scheduled task: {e}"))
-                    }
+                match neo4j.delete_workflow(&wf.id).await {
+                    Ok(_) => ToolCallResult::success_json(
+                        json!({ "deleted": true, "name": wf.name, "id": wf.id }),
+                    ),
+                    Err(e) => ToolCallResult::error(format!("Failed to delete workflow: {e}")),
                 }
             }
-            "audit" => self.handle_audit_scheduled_tasks(&args).await,
+            "audit" => self.audit_workflows(neo4j, &args).await,
             other => ToolCallResult::error(format!(
-                "Unknown action `{other}`. Use upsert, delete, or audit."
+                "Unknown action '{other}': use list, get, run, upsert, delete or audit."
             )),
         }
     }
 
-    async fn handle_audit_scheduled_tasks(&self, args: &Value) -> ToolCallResult {
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-
-        // Fetch all ScheduledTask nodes.
-        let rows = match neo4j
-            .execute(neo4rs::query(
-                "MATCH (s:ScheduledTask) RETURN s.id AS id, s.name AS name, \
-                 s.enabled AS enabled, s.steps AS steps",
-            ))
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return ToolCallResult::error(format!("Failed to fetch scheduled tasks: {e}"));
+    /// A workflow by id or name; `Err` lists the names that do exist.
+    async fn find(
+        &self,
+        neo4j: &Neo4jClient,
+        id: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<Workflow, String> {
+        let found = match (id, name) {
+            (Some(id), _) => neo4j.get_workflow(id).await,
+            (None, Some(n)) => neo4j.get_workflow_by_name(n).await,
+            (None, None) => return Err("`name` or `id` is required".to_string()),
+        }
+        .map_err(|e| e.to_string())?;
+        match found {
+            Some(wf) => Ok(wf),
+            None => {
+                let names: Vec<String> = neo4j
+                    .list_workflows(false)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|w| w.name)
+                    .collect();
+                Err(format!(
+                    "No workflow '{}'. Workflows: {}",
+                    id.or(name).unwrap_or(""),
+                    names.join(", ")
+                ))
             }
-        };
+        }
+    }
 
-        let live_tools = self.live_tools.read().await;
-        let tool_schemas = self.tool_schemas.read().await;
+    // Listing is a tool, not REST-only: asked "where are we on project X", the
+    // brain searched :Note, found the design discussion, and reported live
+    // recurring work as an unbuilt plan. The payload is lean because chat may
+    // cut a tool result to 2000 chars.
+    async fn list_workflows(&self, neo4j: &Neo4jClient, args: &Value) -> ToolCallResult {
+        let enabled_only = args["enabled_only"].as_bool().unwrap_or(false);
+        let scheduled_only = args["scheduled_only"].as_bool().unwrap_or(false);
+        let filter = args["filter"].as_str().map(|s| s.to_lowercase());
+        let verbose = args["verbose"].as_bool().unwrap_or(false);
+        let all = match neo4j.list_workflows(enabled_only).await {
+            Ok(t) => t,
+            Err(e) => return ToolCallResult::error(format!("Failed to list workflows: {e}")),
+        };
+        let total = all.len();
+        let names: Vec<String> = all.iter().map(|t| t.name.clone()).collect();
+        let shown: Vec<_> = all
+            .into_iter()
+            .filter(|t| !scheduled_only || t.interval_seconds.is_some())
+            .filter(|t| match filter {
+                Some(ref f) => {
+                    t.name.to_lowercase().contains(f)
+                        || t.description
+                            .as_deref()
+                            .is_some_and(|d| d.to_lowercase().contains(f))
+                }
+                None => true,
+            })
+            .collect();
+        let day = |d: &Option<String>| d.as_deref().map(|d| d[..10.min(d.len())].to_string());
+        let rows: Vec<Value> = shown
+            .iter()
+            .map(|t| {
+                let mut row = json!({
+                    "name": t.name,
+                    "enabled": t.enabled,
+                    "every": t.interval_seconds.map(humanize_interval).unwrap_or_else(|| "by name".into()),
+                    "last_run": day(&t.last_run_at),
+                });
+                if t.interval_seconds.is_some() {
+                    row["next_run"] = json!(day(&t.next_run_at));
+                }
+                if !t.inputs.is_empty() {
+                    row["inputs"] = json!(t.inputs.iter().map(|i| i.name.as_str()).collect::<Vec<_>>());
+                }
+                if t.is_default {
+                    row["default"] = json!(true);
+                }
+                // "Disabled" alone invites a guess at why; a deliberate pause
+                // read as a breakage gets "fixed" by re-enabling it.
+                if !t.enabled && let Some(ref why) = t.paused_reason {
+                    row["paused_reason"] = json!(why);
+                }
+                if verbose {
+                    row["id"] = json!(t.id);
+                    row["description"] = json!(t.description);
+                    row["managed_by"] = json!(t.managed_by);
+                    row["checks"] = json!(t.checks);
+                    row["topic"] = json!(t.topic);
+                    row["kind"] = json!(t.kind);
+                    row["step_count"] = json!(
+                        serde_json::from_str::<Vec<Value>>(&t.steps).map(|s| s.len()).unwrap_or(0)
+                    );
+                }
+                row
+            })
+            .collect();
+        // An empty filtered result reported as "none exist" is the most
+        // misleading answer this tool can give (a project is filed under its
+        // internal name), so it always carries every name back.
+        if filter.is_some() && rows.is_empty() && total > 0 {
+            return ToolCallResult::success_json(json!({
+                "count": 0,
+                "total": total,
+                "filter": filter,
+                "warning": format!(
+                    "No workflow NAME or DESCRIPTION matched that filter. This does NOT mean none \
+                     exist — there are {total}. A project is usually filed under an internal name. \
+                     Every name is below: re-run with a filter drawn from these, or none."
+                ),
+                "all_workflow_names": names,
+            }));
+        }
+        let enabled = shown.iter().filter(|t| t.enabled).count();
+        ToolCallResult::success_json(json!({
+            "count": rows.len(),
+            "total": total,
+            "enabled_count": enabled,
+            "disabled_count": rows.len() - enabled,
+            "filter": filter,
+            "workflows": rows,
+        }))
+    }
+
+    async fn upsert_workflow(&self, neo4j: &Neo4jClient, args: &Value) -> ToolCallResult {
+        let live = self.live_tools.read().await.clone();
+        let schemas = self.tool_schemas.read().await.clone();
+        let catalog = self
+            .telemetry
+            .as_ref()
+            .map(crate::services::model_router::catalog_models)
+            .unwrap_or_default();
+        let checks = workflows::SaveChecks {
+            live_tools: &live,
+            tool_schemas: &schemas,
+            catalog: &catalog,
+            envelope: self.envelope_schemas.get("workflow"),
+        };
+        let saved = match workflows::save(neo4j, None, false, args, &checks).await {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(e.to_string()),
+        };
+        let steps: Vec<ChainStep> = serde_json::from_str(&saved.workflow.steps).unwrap_or_default();
+        let mut step_warnings = lint_chain_steps(&steps, &live);
+        step_warnings.extend(self.pinned_model_warnings(&steps));
+        let mut response = json!({
+            "created": saved.created,
+            "updated": !saved.created,
+            "workflow": workflows::to_body(&saved.workflow),
+            "id": saved.workflow.id,
+        });
+        if !saved.warnings.is_empty() {
+            response["warning"] = json!(saved.warnings.join(" "));
+        }
+        // Loud, and phrased as unfinished work: the workflow IS saved, and
+        // silently these read as "done" and get reported as working.
+        if !step_warnings.is_empty() {
+            response["step_warnings"] = json!(step_warnings);
+            response["needs_fix"] = json!(true);
+            response["action_required"] = json!(
+                "This workflow is SAVED BUT LIKELY BROKEN. These defects will not surface as \
+                 errors; they surface as runs that produce nothing. Re-upsert with the fixes \
+                 before telling the user it is set up, and tell them what you corrected."
+            );
+        }
+        ToolCallResult::success_json(response)
+    }
+
+    async fn audit_workflows(&self, neo4j: &Neo4jClient, args: &Value) -> ToolCallResult {
+        let all = match neo4j.list_workflows(false).await {
+            Ok(w) => w,
+            Err(e) => return ToolCallResult::error(format!("Failed to fetch workflows: {e}")),
+        };
+        let live_tools = self.live_tools.read().await.clone();
+        let tool_schemas = self.tool_schemas.read().await.clone();
         let catalog = self
             .telemetry
             .as_ref()
@@ -1030,110 +600,68 @@ impl SchedulerSkill {
             .unwrap_or_default();
         let disable_broken = args["disable_broken"].as_bool().unwrap_or(false);
 
-        let mut healthy: Vec<Value> = Vec::new();
-        // Every tool name resolves, but the chain discards its own inputs —
-        // the failure mode that produces no error and no output, forever.
-        let mut degraded: Vec<Value> = Vec::new();
-        let mut broken: Vec<Value> = Vec::new();
-        let mut disabled_ids: Vec<String> = Vec::new();
-
-        for row in rows {
-            let id: String = row.get("id").unwrap_or_default();
-            let name: String = row.get("name").unwrap_or_default();
-            let enabled: bool = row.get("enabled").unwrap_or(true);
-            let steps_json: String = row.get("steps").unwrap_or_default();
-
-            let steps: Vec<Value> = match serde_json::from_str(&steps_json) {
-                Ok(v) => v,
-                Err(_) => {
-                    broken.push(json!({
-                        "id": id, "name": name,
-                        "issue": "steps JSON could not be parsed",
-                    }));
-                    continue;
-                }
+        let (mut healthy, mut degraded, mut broken, mut disabled) =
+            (vec![], vec![], vec![], vec![]);
+        for wf in all {
+            let Ok(steps) = serde_json::from_str::<Vec<Value>>(&wf.steps) else {
+                broken.push(json!({ "name": wf.name, "issue": "steps JSON could not be parsed" }));
+                continue;
             };
-
             let dead: Vec<String> = steps
                 .iter()
-                .filter_map(|s| s["tool_name"].as_str().map(|t| t.to_string()))
+                .filter_map(|s| s["tool_name"].as_str().map(String::from))
                 .filter(|t| !live_tools.is_empty() && !live_tools.contains(t))
                 .collect();
-
-            // Structural gate over the STORED steps — the same per-step
-            // arg-vs-`input_schema` check the write path applies to a new upsert,
-            // now run over every task already in the graph (including YAML-seeded
-            // ones that never went through `manage_scheduled_task`). `&[]` for
-            // live_tools so it does not re-report what `dead` already covers.
+            // The same structural checks a save applies, over what is stored
+            // (including yaml-seeded workflows that never went through a save).
+            let declared: Vec<String> = wf.inputs.iter().map(|i| i.name.clone()).collect();
             let structural: Vec<String> =
                 validation::validate_step_array(&steps, &[], &tool_schemas)
                     .iter()
                     .chain(validation::validate_step_models(&steps, &catalog).iter())
+                    .chain(validation::validate_input_refs(&steps, &declared).iter())
                     .map(validation::Violation::render)
                     .collect();
-
-            // A live tool name only means the step will run. Whether it does
-            // anything is a separate question — `live_tools` is passed empty
-            // here so the lint does not re-report what `dead_tools` covers.
-            let lint = serde_json::from_str::<Vec<ChainStep>>(&steps_json)
+            let lint = serde_json::from_value::<Vec<ChainStep>>(Value::Array(steps.clone()))
                 .map(|cs| lint_chain_steps(&cs, &[]))
                 .unwrap_or_default();
-
             if dead.is_empty() && structural.is_empty() {
                 if lint.is_empty() {
-                    healthy.push(json!({ "id": id, "name": name, "step_count": steps.len() }));
+                    healthy.push(json!({ "name": wf.name, "step_count": steps.len() }));
                 } else {
-                    degraded.push(json!({
-                        "id": id,
-                        "name": name,
-                        "enabled": enabled,
-                        "step_count": steps.len(),
-                        "warnings": lint,
-                    }));
+                    degraded
+                        .push(json!({ "name": wf.name, "enabled": wf.enabled, "warnings": lint }));
                 }
-            } else {
-                // "all dead" governs auto-disable and stays about dead tools only;
-                // a structural arg error is a real defect but not grounds to
-                // silently disable a human-committed schedule on an audit.
-                let all_dead = !dead.is_empty() && dead.len() == steps.len();
-                broken.push(json!({
-                    "id": id,
-                    "name": name,
-                    "enabled": enabled,
-                    "dead_tools": dead,
-                    "structural_errors": structural,
-                    "all_steps_dead": all_dead,
-                    "warnings": lint,
-                }));
-
-                if disable_broken && all_dead && enabled {
-                    // Disable rather than delete so the user can inspect and fix.
-                    let _ = neo4j
-                        .run(
-                            neo4rs::query(
-                                "MATCH (s:ScheduledTask {id: $id}) SET s.enabled = false",
-                            )
-                            .param("id", id.clone()),
-                        )
-                        .await;
-                    disabled_ids.push(id);
+                continue;
+            }
+            // Auto-disable only when every step names a dead tool: a structural
+            // error is a real defect but not grounds to switch off a committed workflow.
+            let all_dead = !dead.is_empty() && dead.len() == steps.len();
+            broken.push(json!({
+                "name": wf.name, "enabled": wf.enabled, "dead_tools": dead,
+                "structural_errors": structural, "all_steps_dead": all_dead, "warnings": lint,
+            }));
+            if disable_broken && all_dead && wf.enabled {
+                let patch = crate::repository::WorkflowPatch {
+                    enabled: Some(false),
+                    paused_reason: Some(Some("audit: every step names a dead tool".into())),
+                    ..Default::default()
+                };
+                if neo4j.update_workflow(&wf.id, &patch).await.is_ok() {
+                    disabled.push(wf.name);
                 }
             }
         }
-
-        let live_tool_count = live_tools.len();
-        drop(live_tools);
-
         ToolCallResult::success_json(json!({
-            "live_tool_count": live_tool_count,
+            "live_tool_count": live_tools.len(),
             "healthy_count": healthy.len(),
             "degraded_count": degraded.len(),
             "broken_count": broken.len(),
-            "disabled_count": disabled_ids.len(),
+            "disabled_count": disabled.len(),
             "healthy": healthy,
             "degraded": degraded,
             "broken": broken,
-            "disabled_ids": disabled_ids,
+            "disabled": disabled,
         }))
     }
 }
@@ -1192,19 +720,20 @@ const VALID_NOTE_TYPES: &[&str] = &[
 ];
 
 /// True when a step's arguments reference the previous step's output in any
-/// form — `{{_prev}}`, a dotted `{{_prev.id}}` path, or the `{{result…}}` alias.
+/// form — `{{_prev}}`, a dotted `{{_prev.id}}` path, the `{{result…}}` alias,
+/// or a named step's `{{steps.<id>}}`.
 fn references_prev(args: Option<&Value>) -> bool {
     args.is_some_and(|v| {
         let s = v.to_string();
-        s.contains("{{_prev") || s.contains("{{result")
+        s.contains("{{_prev") || s.contains("{{result") || s.contains("{{steps.")
     })
 }
 
 /// Lint a chain for steps that are structurally valid but discard their own
 /// inputs. Returns human-readable warnings, most severe first; empty means clean.
 ///
-/// This exists because `dispatch_one_scheduled_task` enqueues `steps` verbatim —
-/// no `goal_to_steps()`, no adversarial pre-flight, no evaluator. Deserializing
+/// This exists because a workflow's steps are enqueued verbatim — no checks
+/// unless the workflow opts in. Deserializing
 /// as `Vec<ChainStep>` proves the shape is legal and nothing more, so a chain
 /// authored from chat could be accepted, dispatched, and run weekly while doing
 /// nothing at all. `Off-Grid Networking Monitor` (created 2026-08-12) did
@@ -1428,8 +957,7 @@ impl Skill for SchedulerSkill {
     fn tools(&self) -> Vec<ToolDefinition> {
         let mut tools = vec![Self::scheduler_control_def()];
         if self.neo4j.is_some() {
-            tools.push(Self::manage_chain_def());
-            tools.push(Self::manage_scheduled_task_def());
+            tools.push(Self::manage_workflow_def());
         }
         tools
     }
@@ -1437,8 +965,7 @@ impl Skill for SchedulerSkill {
     async fn execute(&self, tool_name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
         let result = match tool_name {
             "scheduler_control" => self.handle_scheduler_control(arguments).await,
-            "manage_chain" => self.handle_manage_chain(arguments).await,
-            "manage_scheduled_task" => self.handle_manage_scheduled_task(arguments).await,
+            "manage_workflow" => self.handle_manage_workflow(arguments).await,
             _ => return None,
         };
         Some(result)
@@ -1735,7 +1262,7 @@ mod tests {
         }
     }
 
-    /// The definition that overwrote `schedules/hardware-tripwire.yaml` from a
+    /// The definition that overwrote `workflows/hardware-tripwire.yaml` from a
     /// chat session on 2026-08-25, reduced to its routing. Not one step named a
     /// `provider_hint`, so all six ran on the cloud model — including two
     /// `search_web` calls and a `store_note`, none of which needs an LLM of any

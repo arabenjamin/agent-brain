@@ -1,9 +1,9 @@
 pub mod agent_job;
 pub mod provenance;
-pub mod scheduled_task;
 pub mod task;
+pub mod workflow;
 
 pub use agent_job::{AgentJob, AgentJobStatus, PrioritizedJob};
 pub use provenance::ProvenanceFlag;
-pub use scheduled_task::{SCHEDULE_KINDS, ScheduledTask};
 pub use task::{Task, TaskStatus};
+pub use workflow::{WORKFLOW_KINDS, Workflow, WorkflowInput};

@@ -57,7 +57,7 @@ crates/app/src/
                     agent_runner, context_builder, *_seeder, validation, cypher_guard, graph_schema
   skills/           one file per skill (`list_capabilities` for live counts)
   mcp/              server.rs, tools.rs, transport.rs, http_transport.rs (+ openai_compat.rs)
-YAML seed dirs:     chains/ schedules/ contexts/ sources/ sources-media/ mcp-servers/ schemas/ models.yaml
+YAML seed dirs:     workflows/ contexts/ sources/ sources-media/ mcp-servers/ schemas/ models.yaml
 ```
 
 ## Rules that apply to most changes
@@ -67,8 +67,8 @@ YAML seed dirs:     chains/ schedules/ contexts/ sources/ sources-media/ mcp-ser
 - **Timestamps:** every temporal graph property is a native UTC `DATETIME`. Cypher compares a datetime to a string as null and silently drops the row. Read `project-docs/schema.md` § Timestamps before writing date Cypher. Stored is UTC; anything said to a person is local (`services/clock.rs`).
 - **Structured LLM output:** use `LlmProvider::generate_json`, and parse with `first_json_object`, never first-`{`-to-last-`}`.
 - **Host Ollama defaults to a 4096-token context** and truncates silently; every host-Ollama config sets `num_ctx`.
-- **Chain/schedule steps:** `provider_hint` is a step top-level field (omitting it means cloud, not local); a `reason` step past position 1 takes `context: "{{_prev}}"`; search steps use `{{goal_topic}}`, not `{{goal}}`; a ScheduledTask's steps run verbatim with no evaluator, critic or retrieval.
-- **A `runtime`-owned ScheduledTask silently shadows its YAML file.** Check `managed_by` before assuming the file is what runs. Pause with a targeted Cypher `SET enabled=false`, not `upsert`.
+- **Workflow steps:** `provider_hint` is a step top-level field (omitting it means cloud, not local); a `reason` step past position 1 takes `context: "{{_prev}}"` (or `{{steps.<id>}}`); a run's subject is `{{inputs.<name>}}`, not `{{goal}}`; steps run verbatim, checked only if `checks` opts in.
+- **A `runtime`-owned workflow silently shadows its YAML file.** Check `managed_by` before assuming the file is what runs. Pause with a targeted Cypher `SET enabled=false`, not `upsert`.
 - **Privacy before budget:** work is `private` unless marked `data_class: public`, and private work only reaches `no_log` providers. Paid providers need a spend cap and `ROUTING_PAID_FOR`.
 - **Failures must be visible.** A truncated result is marked, a count must be drillable to its rows, and an empty answer names what does exist. A tool error and a quality miss (`isError: false`) are different things; check the tool's actual output before blaming the model.
 - **A local small-model prompt is a size budget** (keep it near 2-3k chars, terse imperatives). Local E4B handles one-shot synthesis; investigative loops need cloud. Measure the answer against a cloud twin before pinning an agent local.

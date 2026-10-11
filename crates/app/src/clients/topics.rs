@@ -68,7 +68,7 @@ pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> impl In
         .execute(neo4rs::query(
             "MATCH (t:Topic) \
              RETURN t.name AS name, t.label AS label, t.description AS description, \
-                    COLLECT { MATCH (s:ScheduledTask) WHERE s.topic = t.name RETURN s.name } AS schedules, t.source_lists AS source_lists, \
+                    COLLECT { MATCH (s:Workflow) WHERE s.topic = t.name RETURN s.name } AS schedules, t.source_lists AS source_lists, \
                     COUNT { (:Note)-[:IN_TOPIC]->(t) } AS notes, \
                     COUNT { (:Note)-[r:IN_TOPIC]->(t) WHERE r.rank = 1 } AS main, \
                     COUNT { (n:Note)-[:IN_TOPIC]->(t) WHERE n.created_at >= datetime() - duration('P7D') } AS week \
@@ -413,11 +413,11 @@ pub async fn handle_topic(
         })
         .collect();
 
-    // The schedules that declare this topic (`topic:` on the schedule).
+    // The workflows that declare this topic (`topic:` on the workflow).
     let schedules: Vec<Value> = neo4j
         .execute(
             neo4rs::query(
-                "MATCH (s:ScheduledTask {topic: $name}) \
+                "MATCH (s:Workflow {topic: $name}) \
                  RETURN s.name AS name, s.id AS id, coalesce(s.enabled, true) AS enabled, s.kind AS kind \
                  ORDER BY s.name",
             )

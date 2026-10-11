@@ -1,9 +1,9 @@
 /**
  * "Make it a schedule" (HBI plan Phase 13): `schedule-author` drafts a
- * ScheduledTask from the item, read-only; it is created DISABLED, linked
- * `(:Todo)-[:BECAME]->(:ScheduledTask)`, and opened in the schedule drawer for
+ * scheduled workflow from the item, read-only; it is created DISABLED, linked
+ * `(:Todo)-[:BECAME]->(:Workflow)`, and opened in the workflow drawer for
  * review. Turning it on closes the item as "became a schedule". An item never
- * recurs itself; recurring work is a schedule.
+ * recurs itself; recurring work is a scheduled workflow.
  */
 import { useState } from "react";
 import { apiRequest } from "../../api/client";
@@ -14,6 +14,13 @@ import { useProfiles } from "../../api/queries";
 import { useMergedToolGroups } from "../schedules/useToolGroups";
 import ModelPicker from "../ui/ModelPicker";
 import type { Todo } from "../todos/model";
+
+type Draft = { name?: string; every?: string; steps?: unknown[] };
+
+/** A workflow name is a slug: lowercase letters, digits and dashes. */
+function slug(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "drafted-workflow";
+}
 
 export default function MakeSchedule({ item }: { item: Todo }) {
   const toolGroups = useMergedToolGroups();
@@ -28,7 +35,7 @@ export default function MakeSchedule({ item }: { item: Todo }) {
   /** One draft from schedule-author; `fix` names what a previous draft got wrong. */
   const draft = async (fix?: { previous: string; errors: string }) => {
     let task =
-      `Draft a scheduled task that does this regularly:\n"${prompt}"\n\n` +
+      `Draft a scheduled workflow that does this regularly:\n"${prompt}"\n\n` +
       `Tools available to a scheduled step: ${toolGroups.flatMap((g) => g.tools).join(", ")}`;
     if (fix) {
       task += `\n\nYour previous draft was rejected when saved:\n${fix.errors}\n\nThe draft was:\n${fix.previous}\n\nReturn the corrected object.`;
@@ -36,19 +43,19 @@ export default function MakeSchedule({ item }: { item: Todo }) {
     const run = await runAssist("schedule-author", task, model);
     const text = extractJson(answerBody(run.answer), "object");
     if (!text) throw new Error(`No schedule in schedule-author's reply:\n${answerBody(run.answer).slice(0, 400)}`);
-    const d = JSON.parse(text) as { name?: string; interval_seconds?: number; steps?: unknown[] };
+    const d = JSON.parse(text) as Draft;
     if (!Array.isArray(d.steps) || d.steps.length === 0) throw new Error("The draft has no steps");
     return { d, text };
   };
 
-  const save = async (d: { name?: string; interval_seconds?: number; steps?: unknown[] }) => {
-    const res = await apiRequest("/scheduled-tasks", {
+  const save = async (d: Draft) => {
+    const res = await apiRequest("/workflows", {
       method: "POST",
       body: JSON.stringify({
-        name: d.name?.trim() || item.title,
+        name: slug(d.name?.trim() || item.title),
         description: `Drafted from the item “${item.title}”. Review the steps, then turn it on; that closes the item.`,
         enabled: false,
-        interval_seconds: typeof d.interval_seconds === "number" && d.interval_seconds >= 60 ? d.interval_seconds : 86400,
+        every: typeof d.every === "string" && /^\d+[mhdw]$/.test(d.every.trim()) ? d.every.trim() : "1d",
         steps: d.steps,
         from_item: item.id,
       }),

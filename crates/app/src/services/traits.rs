@@ -324,12 +324,16 @@ pub trait KnowledgeStore: Send + Sync {
 /// Methods on `Neo4jClient` (task repository) used by `TaskSkill`.
 #[async_trait]
 pub trait TaskStore: Send + Sync {
-    async fn create_task(
+    /// Create a run of `workflow` (the default workflow when `None`) with
+    /// `inputs`. Returns `(task_id, workflow name)`; `Err` says why it was refused.
+    async fn start_run(
         &self,
+        workflow: Option<&str>,
+        inputs: &serde_json::Map<String, serde_json::Value>,
         goal: &str,
         context: Option<&str>,
         success_criteria: Option<&str>,
-    ) -> anyhow::Result<String>;
+    ) -> anyhow::Result<(String, String)>;
 
     async fn update_task_status(&self, id: &str, status: TaskStatus) -> anyhow::Result<()>;
 

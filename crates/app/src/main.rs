@@ -396,26 +396,16 @@ async fn run_eval_retrieval(
 }
 
 async fn run_init_db(config: &Config) -> Result<()> {
-    use agent_brain::services::{chain_seeder, schedule_seeder};
+    use agent_brain::services::workflow_seeder;
 
     let client = connect_neo4j(config).await?;
     info!("Initializing database schema...");
     client.init_schema().await?;
     info!("Database schema initialized successfully");
 
-    let chains_dir = PathBuf::from(std::env::var("CHAINS_DIR").unwrap_or_else(|_| "chains".into()));
-    if chains_dir.exists() {
-        match chain_seeder::seed_chains_from_dir(&client, &chains_dir).await {
-            Ok(n) => info!(count = n, "Seeded SchedulerChains from chains/"),
-            Err(e) => warn!(error = %e, "Failed to seed chains (non-fatal)"),
-        }
-    } else {
-        info!(path = %chains_dir.display(), "chains/ directory not found — skipping chain seeding");
-    }
-
-    let schedules_dir =
-        PathBuf::from(std::env::var("SCHEDULES_DIR").unwrap_or_else(|_| "schedules".into()));
-    // Topics first: a schedule's `topic` is checked against them, and the
+    let workflows_dir =
+        PathBuf::from(std::env::var("WORKFLOWS_DIR").unwrap_or_else(|_| "workflows".into()));
+    // Topics first: a workflow's `topic` is checked against them, and the
     // graph's set includes topics created in the HBI. From topics/*.yaml
     // (TOPICS_DIR); notes are classified later, by the idle-time assigner in
     // `serve`.
@@ -439,13 +429,13 @@ async fn run_init_db(config: &Config) -> Result<()> {
         Err(e) => warn!(error = %e, "Relationship fold failed (non-fatal)"),
     }
 
-    if schedules_dir.exists() {
-        match schedule_seeder::seed_schedules_from_dir(&client, &schedules_dir).await {
-            Ok(n) => info!(count = n, "Seeded ScheduledTasks from schedules/"),
-            Err(e) => warn!(error = %e, "Failed to seed schedules (non-fatal)"),
+    if workflows_dir.exists() {
+        match workflow_seeder::seed_workflows_from_dir(&client, &workflows_dir).await {
+            Ok(n) => info!(count = n, "Seeded workflows from workflows/"),
+            Err(e) => warn!(error = %e, "Failed to seed workflows (non-fatal)"),
         }
     } else {
-        info!(path = %schedules_dir.display(), "schedules/ directory not found — skipping schedule seeding");
+        info!(path = %workflows_dir.display(), "workflows/ directory not found — skipping workflow seeding");
     }
 
     // Entity resolution: seed aliases, keys, and the automatic merges (after a

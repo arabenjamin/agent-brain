@@ -47,7 +47,10 @@ export interface Registry {
     name: string; description: string; tool_count: number; model_preference: string | null;
     provider_hint: string | null; spawnable: boolean; specialty: string | null; data_class: string | null;
   }[];
-  chains: { id: string; name: string; pattern: string | null; description: string | null; steps: number; no_evaluator: boolean }[];
+  workflows: {
+    id: string; name: string; description: string | null; every: string | null; enabled: boolean;
+    inputs: string[]; checks: string[]; default: boolean; steps: number;
+  }[];
   mcp_servers: {
     name: string; endpoint: string | null; description: string | null; enabled: boolean;
     auth_scheme: string | null; auth_configured: boolean | null; auth_env_var: string | null;
@@ -193,8 +196,8 @@ export function useArchitecture() {
 
 /** Display names for the diff and count categories. */
 export const ARCH_CATEGORY: Record<string, string> = {
-  skills: "skills", tools: "tools", routes: "routes", agents: "agents", chains: "chains",
-  schedules: "schedules", mcp_servers: "MCP servers", dynamic_tools: "dynamic tools",
+  skills: "skills", tools: "tools", routes: "routes", agents: "agents", workflows: "workflows",
+  mcp_servers: "MCP servers", dynamic_tools: "dynamic tools",
   providers: "providers", components: "services",
 };
 
