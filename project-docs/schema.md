@@ -352,6 +352,18 @@ A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `
 | `plugin` | String? | The plugin bundle a yaml-owned workflow was seeded from (`core`, …); null for one created at runtime |
 | `unavailable` | String? | Why it cannot run now: a tool not registered, an MCP server missing or disabled, its plugin not enabled. Set or cleared at every startup by `services/plugins.rs`; dispatch and Run now refuse it, its timer skips it, the Feed counts it |
 
+#### `ContextProfile` (an agent)
+
+An agent profile: its tool allowlist, prompt, model preference, data class. The graph is the authority (CORE_AND_PLUGINS_PLAN Phase 3b, `services/profiles.rs`): seeded from each loaded bundle's `contexts/*.yaml`, edited in the HBI through `/api/contexts`. Rule: `dev_docs get profiles/graph`.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | String | Unique; what chat, `run_agent` and `delegate` name it by |
+| `definition` | String | The whole profile as JSON (`system_prompt`, `sections`, `tools`, `model_preference`, `data_class`, `spawnable`, `explicit_only`, …) |
+| `managed_by` | String | `yaml` (rewritten from its file on every start) or `runtime` (saved in the HBI; the seeder leaves it alone until `POST /api/contexts/{name}/reset`) |
+| `plugin` / `source` | String | The bundle and file it is seeded from |
+| `description`, `model_preference`, `provider_hint`, `spawnable`, `specialty`, `allows_all`, `synced_at` | various | Mirrored by the self-model sync for queries; `(:ContextProfile)-[:ALLOWS]->(:ToolDef)` mirrors the allowlist |
+
 #### `Todo` (an item)
 
 The one record for work that wants doing, the user's or an agent's (HBI plan §9.2). REST `/todos`, the `manage_todo` tool, `notify_user` with `needs: "action"` and the proposal writer all write it through `services/items.rs`.

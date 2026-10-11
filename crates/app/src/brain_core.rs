@@ -435,11 +435,12 @@ impl BrainCore {
 
         // Create ContextBuilderService and load profiles (must be before scheduler).
         let context_builder_arc: Option<Arc<ContextBuilderService>> = {
-            let plugin_contexts: Vec<(String, PathBuf)> = crate::services::plugins::Plugins::global()
-                .dirs("contexts")
-                .into_iter()
-                .filter(|(p, _)| p != crate::services::plugins::CORE)
-                .collect();
+            let plugin_contexts: Vec<(String, PathBuf)> =
+                crate::services::plugins::Plugins::global()
+                    .dirs("contexts")
+                    .into_iter()
+                    .filter(|(p, _)| p != crate::services::plugins::CORE)
+                    .collect();
             let svc = Arc::new(
                 ContextBuilderService::new(
                     self.storage.neo4j.clone(),
@@ -761,8 +762,10 @@ impl BrainCore {
         // made the audit reject the brain-api-sync schedule's valid call.
         let mut tool_schemas = std::collections::HashMap::new();
         let mut live_tool_names = Vec::new();
+        let mut tool_index: Vec<(String, String)> = Vec::new();
         for t in registry.list() {
             live_tool_names.push(t.name.clone());
+            tool_index.push((t.name.clone(), t.description.clone()));
             if tool_schemas.contains_key(&t.name) {
                 warn!(tool = %t.name, "Duplicate tool name in registry — only the first definition dispatches; later ones are shadowed");
                 continue;
@@ -782,11 +785,18 @@ impl BrainCore {
             .await
             {
                 Ok(0) => {}
-                Ok(n) => warn!(count = n, "Workflows that cannot run (see GET /api/plugins)"),
+                Ok(n) => warn!(
+                    count = n,
+                    "Workflows that cannot run (see GET /api/plugins)"
+                ),
                 Err(e) => warn!(error = %e, "Could not check workflow availability"),
             }
         }
         *live_tools_arc.write().await = live_tool_names;
+        // Profiles render their sections and tool catalogue against this.
+        if let Some(ref cb) = context_builder_arc {
+            cb.set_registry(tool_index).await;
+        }
         *tool_schemas_arc.write().await = tool_schemas;
 
         // ── Handler (tools/call) ──────────────────────────────────────────
@@ -825,6 +835,16 @@ impl BrainCore {
             .await
             {
                 warn!(error = %e, "Self-model sync failed (continuing without it)");
+            }
+            // After the sync, which writes the :RemovedTool tombstones.
+            if let Some(ref cb) = context_builder_arc {
+                let n = cb.audit_profiles().await;
+                if n > 0 {
+                    warn!(
+                        count = n,
+                        "Profiles name tools that do not exist (GET /api/contexts)"
+                    );
+                }
             }
 
             // Record which commit this process is actually running. Same
@@ -1057,7 +1077,10 @@ impl BrainCore {
         // Source lists, media sources, MCP servers: ON CREATE only, so the
         // graph owns each after first creation and runtime edits persist.
         let n = crate::services::plugins::seed_on_create(neo4j, &plugins).await;
-        debug!(created = n, "Seeded source lists, media sources and MCP servers");
+        debug!(
+            created = n,
+            "Seeded source lists, media sources and MCP servers"
+        );
 
         // Workflows: each file owns its yaml-managed workflow.
         match crate::services::workflow_seeder::seed_workflows(neo4j, &plugins).await {

@@ -445,9 +445,9 @@ pub async fn handle_plugins(Extension(state): Extension<Arc<RestState>>) -> impl
         Ok(wfs) => (
             wfs.iter()
                 .filter_map(|w| {
-                    w.unavailable.as_ref().map(|r| {
-                        json!({ "id": w.id, "name": w.name, "plugin": w.plugin, "reason": r })
-                    })
+                    w.unavailable.as_ref().map(
+                        |r| json!({ "id": w.id, "name": w.name, "plugin": w.plugin, "reason": r }),
+                    )
                 })
                 .collect::<Vec<_>>(),
             None,

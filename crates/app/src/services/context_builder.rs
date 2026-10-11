@@ -1,8 +1,10 @@
 //! Context profile loader and bundle builder.
 //!
-//! Loads YAML context profiles from a directory, auto-assigns profiles to goals
-//! via keyword matching, and builds `ContextBundle` objects that include a
-//! filtered tool list plus any pre-loaded notes.
+//! Profiles live in the graph (`services/profiles.rs`), seeded from the
+//! plugin bundles' `contexts/`; with no Neo4j they are read from the files.
+//! This service caches them, auto-assigns profiles to goals via keyword
+//! matching, and builds `ContextBundle`s: the rendered prompt (sections whose
+//! tools are available, the generated tool catalogue) plus pre-loaded notes.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -15,6 +17,7 @@ use tracing::{debug, info, warn};
 use crate::mcp::tools::ToolHandler;
 use crate::repository::Neo4jClient;
 use crate::services::llm::{LlmClient, LlmConfig};
+use crate::services::profiles::{BundleProfiles, Extensions, ProfileAudit, ProfileMeta};
 
 // ============================================================================
 // Types
@@ -72,6 +75,10 @@ pub struct ContextProfile {
     /// override is a deliberate, reviewable act.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub side_effects: Option<String>,
+    /// Prompt parts after `system_prompt`, each kept only when the tools it
+    /// `requires` are available (`services/profiles.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<crate::services::profiles::PromptSection>,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].
@@ -154,6 +161,14 @@ pub struct ContextBuilderService {
     /// Other loaded bundles' `contexts/`, read after the core's (`plugins.rs`).
     plugin_dirs: Vec<(String, PathBuf)>,
     profiles: Arc<RwLock<HashMap<String, ContextProfile>>>,
+    /// Ownership and origin per profile (from the graph).
+    meta: Arc<RwLock<HashMap<String, ProfileMeta>>>,
+    /// Sections other bundles add to a profile (`extends:` files), by target.
+    extensions: Arc<RwLock<Extensions>>,
+    /// The registry's tools with their descriptions, once it is built.
+    registry: Arc<RwLock<Vec<(String, String)>>>,
+    /// What each profile names that does not exist (`audit_profiles`).
+    audits: Arc<RwLock<HashMap<String, ProfileAudit>>>,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
 }
 
@@ -186,6 +201,10 @@ impl ContextBuilderService {
             contexts_dir,
             plugin_dirs: Vec::new(),
             profiles: Arc::new(RwLock::new(HashMap::new())),
+            meta: Arc::new(RwLock::new(HashMap::new())),
+            extensions: Arc::new(RwLock::new(HashMap::new())),
+            registry: Arc::new(RwLock::new(Vec::new())),
+            audits: Arc::new(RwLock::new(HashMap::new())),
             llm_config,
         }
     }
@@ -196,97 +215,150 @@ impl ContextBuilderService {
         self
     }
 
-    /// Read all `*.yaml` files from `contexts_dir` (excluding boot.yaml and
-    /// init.yaml), then each plugin's `contexts/`. A plugin profile whose name
-    /// an earlier bundle already declared is skipped. Returns the number loaded.
+    /// Load the profiles: seed the graph from the bundles' `contexts/` and
+    /// read it back (with no Neo4j, read the files). Returns how many loaded.
     pub async fn load_profiles(&self) -> anyhow::Result<usize> {
-        let dir = &self.contexts_dir;
-        if !dir.exists() {
-            warn!(path = %dir.display(), "contexts_dir does not exist — skipping profile load");
-            return Ok(0);
-        }
-
-        let mut map = self.profiles.write().await;
-        map.clear();
-
-        // SORTED, because `map.insert` is last-write-wins and `read_dir` returns
-        // filesystem order — which is arbitrary and can differ between two
-        // machines, or between two boots of the same one.
-        //
-        // Two files can legitimately declare the same profile `name`: the UI's
-        // save path writes `<profile.name>.yaml`, so editing a profile whose
-        // file was named differently (`general-default-orchestrator.yaml` for
-        // `GeneralDefault-Orchrestator`) silently creates a SECOND definition
-        // rather than updating the first. On 2026-09-12 that left the front
-        // door's model a coin flip per restart — one file pinned it to a local
-        // 4B model, the other to gemini-2.5-flash, and nothing said so.
-        // Sorting makes the winner deterministic; the warning below makes the
-        // collision visible, which is the half that actually gets it fixed.
-        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        paths.sort();
-
-        let core_files = paths.len();
-        for (_, d) in &self.plugin_dirs {
-            let mut more: Vec<std::path::PathBuf> = std::fs::read_dir(d)
-                .map(|e| e.flatten().map(|e| e.path()).collect())
-                .unwrap_or_default();
-            more.sort();
-            paths.extend(more);
-        }
-
-        let mut count = 0usize;
-        let mut seen: std::collections::HashMap<String, std::path::PathBuf> =
-            std::collections::HashMap::new();
-        for (i, path) in paths.into_iter().enumerate() {
-            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-                continue;
+        let bundles = BundleProfiles::read(&self.contexts_dir, &self.plugin_dirs);
+        *self.extensions.write().await = bundles.sections_by_target();
+        let mut profiles = HashMap::new();
+        let mut meta = HashMap::new();
+        match &self.neo4j {
+            Some(neo4j) => {
+                let n = crate::services::profiles::seed(neo4j, &bundles).await?;
+                debug!(written = n, "Seeded profiles from the plugin bundles");
+                for (p, m) in crate::services::profiles::load(neo4j).await? {
+                    meta.insert(p.name.clone(), m);
+                    profiles.insert(p.name.clone(), p);
+                }
             }
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            // boot.yaml and init.yaml are protocol files, not profiles.
-            if stem == "boot" || stem == "init" {
-                continue;
-            }
-            match std::fs::read_to_string(&path) {
-                Ok(text) => match serde_yaml::from_str::<ContextProfile>(&text) {
-                    Ok(profile) => {
-                        if i >= core_files
-                            && let Some(first) = seen.get(&profile.name)
-                        {
-                            warn!(
-                                name = %profile.name,
-                                first = %first.display(),
-                                skipped = %path.display(),
-                                "A plugin declares a profile an earlier bundle already has — skipped"
-                            );
-                            continue;
-                        }
-                        if let Some(prev) = seen.insert(profile.name.clone(), path.clone()) {
-                            warn!(
-                                name = %profile.name,
-                                overridden = %prev.display(),
-                                winner = %path.display(),
-                                "DUPLICATE context profile name — two files define it and the \
-                                 later one wins. Delete one; a UI edit writes \
-                                 <profile.name>.yaml and will not update a differently-named file."
-                            );
-                        }
-                        debug!(name = %profile.name, "Loaded context profile");
-                        map.insert(profile.name.clone(), profile);
-                        count += 1;
-                    }
-                    Err(e) => {
-                        warn!(path = %path.display(), error = %e, "Failed to parse context profile")
-                    }
-                },
-                Err(e) => {
-                    warn!(path = %path.display(), error = %e, "Failed to read context profile")
+            None => {
+                for (plugin, path, p) in bundles.profiles {
+                    meta.insert(
+                        p.name.clone(),
+                        ProfileMeta {
+                            managed_by: Some("yaml".into()),
+                            plugin: Some(plugin),
+                            source: Some(path.display().to_string()),
+                        },
+                    );
+                    profiles.insert(p.name.clone(), p);
                 }
             }
         }
+        let count = profiles.len();
+        *self.profiles.write().await = profiles;
+        *self.meta.write().await = meta;
         Ok(count)
+    }
+
+    /// Give the service the finished registry (name, description), so
+    /// prompts render against the tools that exist.
+    pub async fn set_registry(&self, tools: Vec<(String, String)>) {
+        *self.registry.write().await = tools;
+    }
+
+    /// Check every profile against the registry and the `:RemovedTool`
+    /// tombstones; log what each names that does not exist. Returns how many
+    /// profiles have findings.
+    pub async fn audit_profiles(&self) -> usize {
+        let registry: Vec<String> = self
+            .registry
+            .read()
+            .await
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        let mut removed: HashMap<String, Option<String>> = HashMap::new();
+        if let Some(neo4j) = &self.neo4j
+            && let Ok(rows) = neo4j
+                .execute(neo4rs::query(
+                    "MATCH (r:RemovedTool) RETURN r.name AS name, r.replaced_by AS by",
+                ))
+                .await
+        {
+            for r in rows {
+                if let Ok(n) = r.get::<String>("name") {
+                    removed.insert(n, r.get::<String>("by").ok().filter(|s| !s.is_empty()));
+                }
+            }
+        }
+        let ext = self.extensions.read().await.clone();
+        let mut audits = HashMap::new();
+        for p in self.list_profiles().await {
+            let a = crate::services::profiles::audit(
+                &p,
+                &registry,
+                &removed,
+                ext.get(&p.name).map(Vec::as_slice).unwrap_or(&[]),
+            );
+            if a != ProfileAudit::default() {
+                warn!(
+                    profile = %p.name,
+                    missing_tools = %a.missing_tools.join(", "),
+                    stale_mentions = %a.stale_mentions.join(", "),
+                    "Profile names tools that do not exist"
+                );
+                audits.insert(p.name.clone(), a);
+            }
+        }
+        let n = audits.len();
+        *self.audits.write().await = audits;
+        n
+    }
+
+    /// The prompt `name` runs with now (sections filtered, catalogue
+    /// generated), without the base prompt or pre-loaded notes.
+    pub async fn rendered_prompt(&self, name: &str) -> Option<String> {
+        let profile = self.get_profile(name).await?;
+        let ext = self
+            .extensions
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        Some(crate::services::profiles::render(
+            &profile,
+            &self.registry.read().await,
+            &ext,
+        ))
+    }
+
+    /// Ownership, origin, extensions and audit findings for one profile.
+    pub async fn profile_info(&self, name: &str) -> serde_json::Value {
+        let meta = self
+            .meta
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let audit = self
+            .audits
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let ext: Vec<serde_json::Value> = self
+            .extensions
+            .read()
+            .await
+            .get(name)
+            .map(|v| {
+                v.iter()
+                    .map(|(plugin, s)| serde_json::json!({"plugin": plugin, "section": s.name, "requires": s.requires}))
+                    .collect()
+            })
+            .unwrap_or_default();
+        serde_json::json!({
+            "managed_by": meta.managed_by,
+            "plugin": meta.plugin,
+            "source": meta.source,
+            "extensions": ext,
+            "missing_tools": audit.missing_tools,
+            "stale_mentions": audit.stale_mentions,
+        })
     }
 
     /// Return a cloned profile by name.
@@ -313,53 +385,117 @@ impl ContextBuilderService {
             .collect()
     }
 
-    /// Write a profile to `contexts_dir/{name}.yaml` and update the in-memory map.
-    pub async fn save_profile(&self, profile: ContextProfile) -> anyhow::Result<()> {
-        let mut profile = profile;
-        // A save that omits `data_class` (a UI form that predates the field)
-        // keeps the stored class. Otherwise editing a public profile's model
-        // would silently make it private and change where its turns may go.
-        if profile.data_class.is_none()
-            && let Some(existing) = self.profiles.read().await.get(&profile.name)
-        {
-            profile.data_class = existing.data_class;
-        }
-        // Same for `fallback_models`: a form that does not know the field must
-        // not erase the profile's ladder.
-        if profile.fallback_models.is_empty()
-            && let Some(existing) = self.profiles.read().await.get(&profile.name)
-        {
-            profile.fallback_models = existing.fallback_models.clone();
-        }
-        if profile.name == "boot" || profile.name == "init" {
-            anyhow::bail!("Cannot overwrite reserved protocol files (boot/init)");
-        }
-        if profile.name.is_empty() {
+    /// Save a profile from a form or API body. The body is laid over the
+    /// stored profile, so a field the form does not send keeps its value
+    /// (`explicit_only`, `sections`, `data_class`, …). In the graph the
+    /// profile becomes runtime-owned: the seeder leaves it alone until
+    /// [`Self::reset_profile`] hands it back to its file. With no Neo4j it is
+    /// written to the core bundle's `contexts/`.
+    pub async fn save_profile(&self, body: &serde_json::Value) -> anyhow::Result<ContextProfile> {
+        let name = body
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        if name.is_empty() {
             anyhow::bail!("Profile name must not be empty");
         }
-        let path = self.contexts_dir.join(format!("{}.yaml", profile.name));
-        let text = serde_yaml::to_string(&profile)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize profile: {}", e))?;
-        std::fs::write(&path, text)?;
-        let mut map = self.profiles.write().await;
-        map.insert(profile.name.clone(), profile);
-        Ok(())
+        if name == "boot" || name == "init" {
+            anyhow::bail!("Cannot overwrite reserved protocol files (boot/init)");
+        }
+        let stored = self.get_profile(&name).await;
+        let profile = crate::services::profiles::overlay(stored.as_ref(), body)?;
+        match &self.neo4j {
+            Some(neo4j) => {
+                let meta = self
+                    .meta
+                    .read()
+                    .await
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                crate::services::profiles::write(
+                    neo4j,
+                    &profile,
+                    "runtime",
+                    meta.plugin.as_deref(),
+                    meta.source.as_deref(),
+                )
+                .await?;
+                self.meta.write().await.insert(
+                    name.clone(),
+                    ProfileMeta {
+                        managed_by: Some("runtime".into()),
+                        ..meta
+                    },
+                );
+            }
+            None => {
+                let path = self.contexts_dir.join(format!("{name}.yaml"));
+                std::fs::write(&path, serde_yaml::to_string(&profile)?)?;
+            }
+        }
+        self.profiles.write().await.insert(name, profile.clone());
+        Ok(profile)
     }
 
-    /// Delete `contexts_dir/{name}.yaml` and remove from the in-memory map.
-    /// Returns `false` if the profile was not found.
+    /// Hand a runtime-owned profile back to its file: rewrite it from the
+    /// bundle and mark it yaml-owned again.
+    pub async fn reset_profile(&self, name: &str) -> anyhow::Result<ContextProfile> {
+        let Some(neo4j) = &self.neo4j else {
+            anyhow::bail!("profiles are files when there is no graph; nothing to reset");
+        };
+        let bundles = BundleProfiles::read(&self.contexts_dir, &self.plugin_dirs);
+        let Some((plugin, path, profile)) = bundles
+            .profiles
+            .into_iter()
+            .find(|(_, _, p)| p.name == name)
+        else {
+            anyhow::bail!("no loaded bundle declares a profile named '{name}'");
+        };
+        let src = crate::services::profiles::source_of(&path);
+        crate::services::profiles::write(neo4j, &profile, "yaml", Some(&plugin), Some(&src))
+            .await?;
+        self.load_profiles().await?;
+        Ok(profile)
+    }
+
+    /// Delete a profile. A yaml-owned one is refused: the next start would
+    /// seed it again from its file, which is what to edit or remove.
+    /// Returns `false` if there was no such profile.
     pub async fn delete_profile(&self, name: &str) -> anyhow::Result<bool> {
         if name == "general" || name == default_profile_name().as_str() {
             anyhow::bail!("Cannot delete the default '{name}' profile");
         }
-        let path = self.contexts_dir.join(format!("{name}.yaml"));
-        let existed = path.exists();
-        if existed {
-            std::fs::remove_file(&path)?;
+        if self.get_profile(name).await.is_none() {
+            return Ok(false);
         }
-        let mut map = self.profiles.write().await;
-        let was_in_memory = map.remove(name).is_some();
-        Ok(existed || was_in_memory)
+        let meta = self
+            .meta
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        if meta.managed_by.as_deref() == Some("yaml") {
+            anyhow::bail!(
+                "'{name}' is defined in {}; deleting it here would come back on restart. Remove the file (or its plugin) instead.",
+                meta.source.as_deref().unwrap_or("a plugin bundle")
+            );
+        }
+        match &self.neo4j {
+            Some(neo4j) => crate::services::profiles::delete(neo4j, name).await?,
+            None => {
+                let path = self.contexts_dir.join(format!("{name}.yaml"));
+                if path.exists() {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+        self.profiles.write().await.remove(name);
+        self.meta.write().await.remove(name);
+        Ok(true)
     }
 
     /// Build a [`ContextBundle`] for the named profile, optionally fetching pre-load notes.
@@ -404,6 +540,19 @@ impl ContextBuilderService {
                 ),
             }
         }
+
+        // The prompt a turn runs with: system_prompt plus the sections (its
+        // own and other bundles') whose tools this deployment has.
+        let mut profile = profile;
+        let ext = self
+            .extensions
+            .read()
+            .await
+            .get(&profile.name)
+            .cloned()
+            .unwrap_or_default();
+        profile.system_prompt =
+            crate::services::profiles::render(&profile, &self.registry.read().await, &ext);
 
         Ok(ContextBundle {
             profile,
@@ -713,7 +862,8 @@ mod tests {
     /// otherwise invisible until a persona silently goes missing.
     #[test]
     fn all_shipped_context_profiles_parse() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
         let mut count = 0;
         for entry in std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))

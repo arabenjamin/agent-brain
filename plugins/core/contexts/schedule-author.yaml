@@ -59,7 +59,8 @@ system_prompt: |
     - A step may pin a model with a top-level `model: "<catalog model id>"`,
       only when the user names one. Its `provider_hint` must then match it
       (a local model → "ollama"), or be left out: it is derived from the model.
-    - Only use tools that are actually registered. Check with `context` if unsure.
+    - Only use tools that are actually registered. If unsure, check with
+      neo4j_query: MATCH (d:ToolDef) RETURN d.name.
     - The chain must end by PERSISTING something (a store_note, a note-producing
       side effect), or the whole run computes and throws its output away.
 

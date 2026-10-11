@@ -180,9 +180,8 @@ impl Plugins {
     pub fn global() -> Arc<Plugins> {
         static P: OnceLock<Arc<Plugins>> = OnceLock::new();
         P.get_or_init(|| {
-            let dir = PathBuf::from(
-                std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "plugins".into()),
-            );
+            let dir =
+                PathBuf::from(std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "plugins".into()));
             let enabled: Vec<String> = std::env::var("PLUGINS_ENABLED")
                 .unwrap_or_default()
                 .split(',')
@@ -215,7 +214,12 @@ impl Plugins {
 
     /// Whether the core bundle loaded. Without it the brain must not start.
     pub fn core_loaded(&self) -> Result<(), String> {
-        match self.bundles.iter().find(|b| b.name == CORE).map(|b| &b.status) {
+        match self
+            .bundles
+            .iter()
+            .find(|b| b.name == CORE)
+            .map(|b| &b.status)
+        {
             Some(Status::Loaded) => Ok(()),
             Some(Status::Skipped(r)) => Err(r.clone()),
             _ => Err(format!("no core bundle in {}", self.dir.display())),
@@ -309,7 +313,9 @@ fn core_only_warnings(root: &Path, name: &str) -> Vec<String> {
     CORE_ONLY_KINDS
         .iter()
         .filter(|k| root.join(k).is_dir())
-        .map(|k| format!("{k}/ is read from the core bundle only; this plugin's {k}/ is not loaded"))
+        .map(|k| {
+            format!("{k}/ is read from the core bundle only; this plugin's {k}/ is not loaded")
+        })
         .collect()
 }
 
@@ -449,7 +455,10 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("{}-{}", g.name, s.reference));
-            let description = s.description.clone().unwrap_or_else(|| g.description.clone());
+            let description = s
+                .description
+                .clone()
+                .unwrap_or_else(|| g.description.clone());
             match neo4j
                 .seed_media_source_if_absent(&name, &s.kind, &s.reference, &description, s.active)
                 .await
@@ -558,9 +567,13 @@ pub async fn mark_unavailable_workflows(
         if reason == wf.unavailable {
             continue;
         }
-        neo4j.set_workflow_unavailable(&wf.id, reason.as_deref()).await?;
+        neo4j
+            .set_workflow_unavailable(&wf.id, reason.as_deref())
+            .await?;
         match reason {
-            Some(r) => warn!(workflow = %wf.name, reason = %r, "Workflow cannot run — marked unavailable"),
+            Some(r) => {
+                warn!(workflow = %wf.name, reason = %r, "Workflow cannot run — marked unavailable")
+            }
             None => info!(workflow = %wf.name, "Workflow can run again — unavailable mark cleared"),
         }
     }
@@ -577,7 +590,12 @@ mod tests {
     }
 
     fn status(p: &Plugins, name: &str) -> Status {
-        p.bundles.iter().find(|b| b.name == name).unwrap().status.clone()
+        p.bundles
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap()
+            .status
+            .clone()
     }
 
     #[test]
@@ -596,10 +614,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         bundle(d, "core", "name: core\n");
-        bundle(d, "needs-key", "name: needs-key\nrequires: { env: [SOME_KEY] }\n");
+        bundle(
+            d,
+            "needs-key",
+            "name: needs-key\nrequires: { env: [SOME_KEY] }\n",
+        );
         bundle(d, "late", "name: late\nrequires: { plugins: [base] }\n");
         bundle(d, "base", "name: base\n");
-        bundle(d, "orphan", "name: orphan\nrequires: { plugins: [missing] }\n");
+        bundle(
+            d,
+            "orphan",
+            "name: orphan\nrequires: { plugins: [missing] }\n",
+        );
         bundle(d, "misnamed", "name: other\n");
         bundle(d, "idle", "name: idle\n");
         let enabled: Vec<String> = ["needs-key", "late", "base", "orphan", "misnamed"]
@@ -607,11 +633,20 @@ mod tests {
             .to_vec();
         let p = Plugins::load(d, &enabled, &|_| None);
         assert_eq!(status(&p, "core"), Status::Loaded);
-        assert_eq!(status(&p, "late"), Status::Loaded, "a requirement listed later still loads first");
+        assert_eq!(
+            status(&p, "late"),
+            Status::Loaded,
+            "a requirement listed later still loads first"
+        );
         assert_eq!(status(&p, "base"), Status::Loaded);
-        assert_eq!(status(&p, "needs-key"), Status::Skipped("needs env SOME_KEY".into()));
+        assert_eq!(
+            status(&p, "needs-key"),
+            Status::Skipped("needs env SOME_KEY".into())
+        );
         assert!(matches!(status(&p, "orphan"), Status::Skipped(r) if r.contains("'missing'")));
-        assert!(matches!(status(&p, "misnamed"), Status::Skipped(r) if r.contains("folder is 'misnamed'")));
+        assert!(
+            matches!(status(&p, "misnamed"), Status::Skipped(r) if r.contains("folder is 'misnamed'"))
+        );
         assert_eq!(status(&p, "idle"), Status::NotEnabled);
 
         let with_key = Plugins::load(d, &enabled, &|k| (k == "SOME_KEY").then(|| "x".into()));
@@ -641,7 +676,11 @@ mod tests {
         assert!(extra.warnings[0].starts_with("topics/"));
     }
 
-    fn wf(steps: serde_json::Value, managed_by: &str, plugin: Option<&str>) -> crate::repository::Workflow {
+    fn wf(
+        steps: serde_json::Value,
+        managed_by: &str,
+        plugin: Option<&str>,
+    ) -> crate::repository::Workflow {
         serde_json::from_value(serde_json::json!({
             "id": "1", "name": "w", "description": null, "enabled": true,
             "interval_seconds": null, "steps": steps.to_string(), "last_run_at": null,
@@ -654,11 +693,17 @@ mod tests {
     #[test]
     fn a_workflow_is_unavailable_for_every_missing_thing_it_names() {
         use serde_json::json;
-        let live: Vec<String> = ["search_web", "mcp_call", "store_note"].map(String::from).to_vec();
+        let live: Vec<String> = ["search_web", "mcp_call", "store_note"]
+            .map(String::from)
+            .to_vec();
         let mcp: std::collections::HashMap<String, bool> =
             [("exa".to_string(), true), ("off".to_string(), false)].into();
         let loaded = |p: &str| p == "core";
-        let ok = wf(json!([{"tool_name": "search_web"}, {"tool_name": "mcp_call", "arguments": {"server": "exa"}}]), "yaml", Some("core"));
+        let ok = wf(
+            json!([{"tool_name": "search_web"}, {"tool_name": "mcp_call", "arguments": {"server": "exa"}}]),
+            "yaml",
+            Some("core"),
+        );
         assert_eq!(unavailable_reason(&ok, &live, &mcp, &loaded), None);
 
         let bad = wf(
@@ -680,7 +725,11 @@ mod tests {
              a step names no tool (`tool_name`)"
         );
         // A runtime-owned copy is judged by what it calls, not by its plugin.
-        let taken = wf(json!([{"tool_name": "store_note"}]), "runtime", Some("media"));
+        let taken = wf(
+            json!([{"tool_name": "store_note"}]),
+            "runtime",
+            Some("media"),
+        );
         assert_eq!(unavailable_reason(&taken, &live, &mcp, &loaded), None);
     }
 

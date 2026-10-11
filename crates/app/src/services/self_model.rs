@@ -279,7 +279,7 @@ pub async fn sync_self_model(
                 .param("names", tool_names.clone()),
         )
         .await?;
-    let removed = annotate_removed_tools(neo4j, &tool_names).await;
+    annotate_removed_tools(neo4j, &tool_names).await;
 
     // ── ContextProfile + ALLOWS edges ────────────────────────────────────
     let profile_names: Vec<String> = profiles.iter().map(|p| p.name.clone()).collect();
@@ -316,25 +316,8 @@ pub async fn sync_self_model(
                     .param("name", p.name.as_str()),
             )
             .await?;
-        // An allowlist entry with no registered tool would be dropped by the
-        // MATCH below without a word. Say so, with the replacement if known.
-        let missing: Vec<String> = p
-            .tools
-            .iter()
-            .filter(|t| !tool_names.contains(t))
-            .map(|t| match removed.get(t) {
-                Some(Some(by)) => format!("{t} (removed; use {by})"),
-                Some(None) => format!("{t} (removed)"),
-                None => t.clone(),
-            })
-            .collect();
-        if !missing.is_empty() {
-            warn!(
-                profile = %p.name,
-                missing = %missing.join(", "),
-                "context profile allowlist names tools that are not registered — dropped"
-            );
-        }
+        // An allowlist entry with no registered tool is reported, with its
+        // replacement, by `ContextBuilderService::audit_profiles`.
         if !p.tools.is_empty() {
             neo4j
                 .run(

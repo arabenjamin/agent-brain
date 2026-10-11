@@ -217,7 +217,10 @@ pub async fn seed_workflows(
 ) -> anyhow::Result<usize> {
     let core = plugins.core_dir("workflows");
     if !core.is_dir() {
-        anyhow::bail!("the core bundle has no workflows directory ({})", core.display());
+        anyhow::bail!(
+            "the core bundle has no workflows directory ({})",
+            core.display()
+        );
     }
     let topic_names = declared_topics();
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();

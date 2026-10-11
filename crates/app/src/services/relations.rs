@@ -621,7 +621,9 @@ mod tests {
     use super::*;
 
     fn vocab() -> Vocabulary {
-        Vocabulary::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/relations"))
+        Vocabulary::load_dir(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/relations"),
+        )
     }
 
     fn ents() -> Vec<Mentioned> {

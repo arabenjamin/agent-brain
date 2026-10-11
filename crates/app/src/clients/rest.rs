@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 
 use crate::repository::{Neo4jClient, TelemetryClient, node_ts};
 use crate::services::LlmConfig;
-use crate::services::context_builder::{ContextBuilderService, ContextProfile};
+use crate::services::context_builder::ContextBuilderService;
 use crate::services::scheduler::SchedulerService;
 use crate::services::traits::WorkingMemoryStore;
 
@@ -1111,6 +1111,17 @@ pub async fn handle_list_context_profiles(
             })
         })
         .collect();
+    // Who owns each profile, where it is defined, and what it names that
+    // does not exist (services/profiles.rs).
+    let mut items = items;
+    for item in &mut items {
+        let name = item["name"].as_str().unwrap_or_default().to_string();
+        if let (Some(obj), Value::Object(info)) =
+            (item.as_object_mut(), cb.profile_info(&name).await)
+        {
+            obj.extend(info);
+        }
+    }
 
     // What a chat that names no profile runs under: the deployment's front
     // door (CHAT_DEFAULT_PROFILE), or — when none is set — a profile picked
@@ -1142,31 +1153,28 @@ pub async fn handle_get_context_profile(
     };
 
     match cb.get_profile(&name).await {
-        Some(p) => Json(json!({
-            "name":             p.name,
-            "description":      p.description,
-            "tools":            p.tools,
-            "system_prompt":    p.system_prompt,
-            "token_budget":     p.token_budget,
-            "pre_load_query":   p.pre_load_query,
-            "model_preference": p.model_preference,
-            "provider_hint":    p.provider_hint,
-            // Returned so an edit form can send them back: `save_profile` keeps
-            // a stored data_class when a save omits it, but has no such guard
-            // for spawnable/specialty.
-            "spawnable":        p.spawnable,
-            "specialty":        p.specialty,
-            "data_class":       p.data_class,
-        }))
-        .into_response(),
+        Some(p) => {
+            // The whole stored profile, so an edit form can send back what it
+            // does not edit; plus ownership, origin and audit findings.
+            let mut v = serde_json::to_value(&p).unwrap_or(Value::Null);
+            if let (Some(obj), Value::Object(info)) =
+                (v.as_object_mut(), cb.profile_info(&name).await)
+            {
+                obj.extend(info);
+            }
+            v["rendered_prompt"] = json!(cb.rendered_prompt(&name).await);
+            Json(v).into_response()
+        }
         None => not_found(),
     }
 }
 
-/// POST /api/contexts — create or update a context profile (upsert by name).
+/// POST /api/contexts, PUT /api/contexts/:name — create or update a profile.
+/// The body is laid over the stored profile (fields it omits keep their
+/// value) and the profile becomes runtime-owned (services/profiles.rs).
 pub async fn handle_upsert_context_profile(
     Extension(state): Extension<Arc<RestState>>,
-    Json(profile): Json<ContextProfile>,
+    Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let Some(ref handle) = state.context_builder else {
         return unavailable("Context builder not available");
@@ -1175,9 +1183,31 @@ pub async fn handle_upsert_context_profile(
     let Some(ref cb) = *guard else {
         return unavailable("Context builder not yet initialised");
     };
-    match cb.save_profile(profile).await {
-        Ok(()) => Json(json!({ "success": true })).into_response(),
-        Err(e) => internal(format!("Failed to save profile: {e}")),
+    match cb.save_profile(&body).await {
+        Ok(p) => Json(json!({ "success": true, "name": p.name, "managed_by": "runtime" }))
+            .into_response(),
+        Err(e) => bad_request(format!("Failed to save profile: {e}")),
+    }
+}
+
+/// POST /api/contexts/:name/reset — hand a runtime-owned profile back to its
+/// bundle file (rewritten from it now, yaml-owned again).
+pub async fn handle_reset_context_profile(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref handle) = state.context_builder else {
+        return unavailable("Context builder not available");
+    };
+    let guard = handle.read().await;
+    let Some(ref cb) = *guard else {
+        return unavailable("Context builder not yet initialised");
+    };
+    match cb.reset_profile(&name).await {
+        Ok(p) => {
+            Json(json!({ "reset": true, "name": p.name, "managed_by": "yaml" })).into_response()
+        }
+        Err(e) => bad_request(e),
     }
 }
 
@@ -1196,7 +1226,7 @@ pub async fn handle_delete_context_profile(
     match cb.delete_profile(&name).await {
         Ok(true) => Json(json!({ "deleted": true, "name": name })).into_response(),
         Ok(false) => not_found(),
-        Err(e) => internal(format!("Failed to delete profile: {e}")),
+        Err(e) => bad_request(format!("Failed to delete profile: {e}")),
     }
 }
 

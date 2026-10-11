@@ -26,6 +26,17 @@ interface AgentDetail {
   provider_hint?: string;
 }
 
+/** Ownership, origin and audit findings `GET /api/contexts/:name` adds. */
+interface ProfileInfo {
+  managed_by?: string | null;
+  plugin?: string | null;
+  source?: string | null;
+  sections?: { name: string; requires?: string[]; generate?: string }[];
+  extensions?: { plugin: string; section: string; requires?: string[] }[];
+  missing_tools?: string[];
+  stale_mentions?: string[];
+}
+
 interface SkillGroup {
   name: string;
   tools: string[];
@@ -117,6 +128,7 @@ export default function ContextProfileModal({
   const [deleting, setDeleting] = useState<string | null>(null);
   const [fetchingEdit, setFetchingEdit] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<ProfileInfo | null>(null);
 
   // Reset to list mode when modal opens/closes
   useEffect(() => {
@@ -156,6 +168,7 @@ export default function ContextProfileModal({
 
   const startCreate = useCallback(() => {
     setForm(EMPTY_FORM);
+    setInfo(null);
     setError(null);
     setMode("create");
   }, []);
@@ -165,7 +178,8 @@ export default function ContextProfileModal({
     setError(null);
     try {
       const res = await apiRequest(`/api/contexts/${name}`);
-      const data = (await res.json()) as AgentDetail;
+      const data = (await res.json()) as AgentDetail & ProfileInfo;
+      setInfo(data);
       setForm({
         name: data.name ?? name,
         description: data.description ?? "",
@@ -192,13 +206,14 @@ export default function ContextProfileModal({
     setSaving(true);
     setError(null);
     try {
-      const payload: AgentDetail = {
+      // The server lays this over the stored profile, so a field left OUT
+      // keeps its stored value; a cleared field is sent as null to clear it.
+      const payload = {
         ...form,
         name: form.name.trim(),
-        // omit empty optional strings so they serialize as null in YAML
-        pre_load_query: form.pre_load_query?.trim() || undefined,
-        model_preference: form.model_preference?.trim() || undefined,
-        provider_hint: form.provider_hint?.trim() || undefined,
+        pre_load_query: form.pre_load_query?.trim() || null,
+        model_preference: form.model_preference?.trim() || null,
+        provider_hint: form.provider_hint?.trim() || null,
       };
       const res = await apiRequest(`/api/contexts`, { method: "POST", body: JSON.stringify(payload) });
       if (!res.ok) {
@@ -220,11 +235,15 @@ export default function ContextProfileModal({
       setDeleting(name);
       setError(null);
       try {
-        await apiRequest(`/api/contexts/${name}`, { method: "DELETE" });
+        const res = await apiRequest(`/api/contexts/${name}`, { method: "DELETE" });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+        }
         if (activeProfile === name) onProfileChange("general");
         onProfilesChanged();
-      } catch {
-        setError(`Failed to delete "${name}"`);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : `Failed to delete "${name}"`);
       } finally {
         setDeleting(null);
       }
@@ -286,6 +305,18 @@ export default function ContextProfileModal({
             onToggleAll={toggleAllTools}
             onSave={handleSave}
             onBack={() => setMode("list")}
+            info={mode === "edit" ? info : null}
+            onReset={async () => {
+              setError(null);
+              const res = await apiRequest(`/api/contexts/${form.name}/reset`, { method: "POST" });
+              if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                setError((body as { error?: string }).error ?? `HTTP ${res.status}`);
+                return;
+              }
+              onProfilesChanged();
+              await startEdit(form.name);
+            }}
           />
         )}
     </>
@@ -515,6 +546,8 @@ function EditPane({
   onToggleAll,
   onSave,
   onBack,
+  info,
+  onReset,
 }: {
   mode: "edit" | "create";
   form: AgentDetail;
@@ -528,6 +561,8 @@ function EditPane({
   onToggleAll: () => void;
   onSave: () => void;
   onBack: () => void;
+  info: ProfileInfo | null;
+  onReset: () => void;
 }) {
   const title = mode === "create" ? "New Agent" : `Edit · ${form.name}`;
 
@@ -613,6 +648,8 @@ function EditPane({
             {error}
           </div>
         )}
+
+        {info && <ProfileNotice info={info} onReset={onReset} />}
 
         <AgentAssist
           title="Ask an agent to draft this profile"
@@ -761,6 +798,50 @@ function EditPane({
 }
 
 // ── Select field ─────────────────────────────────────────────────────────────
+
+/** Where the profile is defined, what saving does to it, and what it names
+ *  that does not exist (services/profiles.rs). */
+function ProfileNotice({ info, onReset }: { info: ProfileInfo; onReset: () => void }) {
+  const box = (color: string) => ({
+    fontSize: 11, padding: "6px 10px", borderRadius: 5, lineHeight: 1.5,
+    background: `${color}1a`, color,
+  });
+  const sections = info.sections ?? [];
+  const ext = info.extensions ?? [];
+  const missing = info.missing_tools ?? [];
+  const stale = info.stale_mentions ?? [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {info.managed_by === "yaml" && (
+        <div style={box("#facc15")}>
+          Defined in {info.source ?? "a plugin bundle"}. Saving here takes it over: the file stops applying until you reset it.
+        </div>
+      )}
+      {info.managed_by === "runtime" && info.source && (
+        <div style={box("#60a5fa")}>
+          Edited here, so {info.source} no longer applies.{" "}
+          <button type="button" onClick={onReset} style={{ background: "none", border: "none", color: "inherit", textDecoration: "underline", cursor: "pointer", padding: 0, font: "inherit" }}>
+            Reset to the file
+          </button>
+        </div>
+      )}
+      {(sections.length > 0 || ext.length > 0) && (
+        <div style={box("#a78bfa")}>
+          The prompt also has {sections.length > 0 && <>sections {sections.map((x) => x.name).join(", ")}</>}
+          {sections.length > 0 && ext.length > 0 && " and "}
+          {ext.length > 0 && <>sections from plugins ({ext.map((x) => `${x.section} from ${x.plugin}`).join(", ")})</>}
+          {" "}after the System Prompt below; a save keeps them.
+        </div>
+      )}
+      {(missing.length > 0 || stale.length > 0) && (
+        <div style={box("#f87171")}>
+          {missing.length > 0 && <>Tools it lists that do not exist: {missing.join(", ")}. </>}
+          {stale.length > 0 && <>Its prompt names removed tools: {stale.join(", ")}.</>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SelectField({
   label,

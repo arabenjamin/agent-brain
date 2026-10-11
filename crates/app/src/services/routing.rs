@@ -860,7 +860,8 @@ mod tests {
     #[test]
     fn the_checked_in_profiles_keep_their_decided_data_class() {
         use crate::services::context_builder::ContextProfile;
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
         for (file, want) in [
             ("GeneralDefault-Orchrestator.yaml", DataClass::Private),
             ("researcher.yaml", DataClass::Private),

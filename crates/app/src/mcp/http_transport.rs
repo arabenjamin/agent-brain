@@ -367,10 +367,7 @@ impl HttpTransport {
                 "/api/system/registry",
                 get(crate::clients::system::handle_registry),
             )
-            .route(
-                "/api/plugins",
-                get(crate::clients::system::handle_plugins),
-            )
+            .route("/api/plugins", get(crate::clients::system::handle_plugins))
             .route(
                 "/api/architecture",
                 get(crate::clients::architecture::handle_architecture),
@@ -475,6 +472,10 @@ impl HttpTransport {
                 get(rest_handlers::handle_get_context_profile)
                     .put(rest_handlers::handle_upsert_context_profile)
                     .delete(rest_handlers::handle_delete_context_profile),
+            )
+            .route(
+                "/api/contexts/{name}/reset",
+                post(rest_handlers::handle_reset_context_profile),
             )
             .route(
                 "/api/http-contexts",
