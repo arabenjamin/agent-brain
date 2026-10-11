@@ -415,16 +415,36 @@ impl ProviderTurn for OpenAiTurn {
     }
 
     fn trim_history(&mut self) {
-        // Keep system message [0] + user message [1] + the last
-        // MAX_HISTORY_MESSAGES: schemas are resent every round, and combined
-        // context grows until the server 500s.
-        if self.messages.len() > MAX_HISTORY_MESSAGES + 2 {
-            let keep_from = self.messages.len() - MAX_HISTORY_MESSAGES;
-            let tail: Vec<Value> = self.messages.drain(keep_from..).collect();
-            self.messages.truncate(2);
-            self.messages.extend(tail);
-        }
+        trim_messages(&mut self.messages, MAX_HISTORY_MESSAGES);
     }
+}
+
+/// Keep the system message [0], the user message [1] and about the last
+/// `max` messages: schemas are resent every round, and combined context grows
+/// until the server 500s.
+///
+/// The cut never lands inside a round. A `tool` result must follow the
+/// assistant message that called it, so when the cut would start on a tool
+/// result it moves back to that round's assistant message, and the tail may
+/// run longer than `max`. Cutting blindly broke every round with more than
+/// `max - 1` parallel calls: on 2026-10-11 a code-analyst round of 11 searches
+/// kept 10 orphaned results, Mistral refused the order (`400 Unexpected role
+/// 'tool' after role 'user'`), and two sub-agent runs that had read 30 files
+/// each ended with no answer.
+fn trim_messages(messages: &mut Vec<Value>, max: usize) {
+    if messages.len() <= max + 2 {
+        return;
+    }
+    let mut keep_from = messages.len() - max;
+    while keep_from > 2 && messages[keep_from]["role"] == "tool" {
+        keep_from -= 1;
+    }
+    if keep_from <= 2 {
+        return; // the whole tail is one round: nothing can go
+    }
+    let tail: Vec<Value> = messages.drain(keep_from..).collect();
+    messages.truncate(2);
+    messages.extend(tail);
 }
 
 impl ChatService {
@@ -458,6 +478,72 @@ impl ChatService {
 mod tests {
     use super::*;
     use crate::chat::test_support::{chat_service, sse, test_request};
+
+    fn round(calls: usize) -> Vec<Value> {
+        let mut m = vec![json!({"role": "assistant", "content": null,
+            "tool_calls": (0..calls).map(|i| json!({"id": format!("c{i}")})).collect::<Vec<_>>()})];
+        m.extend((0..calls).map(|i| json!({"role": "tool", "tool_call_id": format!("c{i}")})));
+        m
+    }
+
+    fn roles(m: &[Value]) -> Vec<&str> {
+        m.iter().map(|v| v["role"].as_str().unwrap_or("")).collect()
+    }
+
+    /// Every tool result must follow the assistant message that called it.
+    fn assert_well_ordered(m: &[Value]) {
+        for (i, v) in m.iter().enumerate() {
+            if v["role"] == "tool" {
+                let prev = m[..i].iter().rev().find(|p| p["role"] != "tool").unwrap();
+                assert_eq!(
+                    prev["role"],
+                    "assistant",
+                    "orphaned tool result at {i}: {:?}",
+                    roles(m)
+                );
+            }
+        }
+    }
+
+    fn start() -> Vec<Value> {
+        vec![json!({"role": "system"}), json!({"role": "user"})]
+    }
+
+    #[test]
+    fn a_wide_round_is_never_cut_from_its_call() {
+        // The 2026-10-11 case: one round of 11 parallel calls.
+        let mut m = start();
+        m.extend(round(11));
+        trim_messages(&mut m, MAX_HISTORY_MESSAGES);
+        assert_eq!(m.len(), 14, "a single round cannot be trimmed");
+        assert_well_ordered(&m);
+    }
+
+    #[test]
+    fn trimming_drops_whole_earlier_rounds() {
+        let mut m = start();
+        m.extend(round(3));
+        m.extend(round(11));
+        trim_messages(&mut m, MAX_HISTORY_MESSAGES);
+        assert_eq!(roles(&m)[..3], ["system", "user", "assistant"]);
+        assert_eq!(
+            m.len(),
+            2 + 12,
+            "the earlier round goes, the wide one stays whole"
+        );
+        assert_well_ordered(&m);
+    }
+
+    #[test]
+    fn narrow_rounds_trim_to_the_budget() {
+        let mut m = start();
+        for _ in 0..6 {
+            m.extend(round(1));
+        }
+        trim_messages(&mut m, MAX_HISTORY_MESSAGES);
+        assert_eq!(m.len(), 2 + MAX_HISTORY_MESSAGES);
+        assert_well_ordered(&m);
+    }
 
     fn gemini(server: &wiremock::MockServer) -> LlmConfig {
         LlmConfig {
