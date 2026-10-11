@@ -1316,13 +1316,13 @@ mod tests {
             &[
                 inv("analyze_own_structure", true),
                 inv("analyze_own_structure", true),
-                inv("manage_dynamic_tool", true),
+                inv("manage_plugin", true),
                 inv("http_request", false),
             ],
         );
         assert!(out.contains("ACTUALLY RAN"));
         assert!(out.contains("analyze_own_structure ✓×2"), "got: {out}");
-        assert!(out.contains("manage_dynamic_tool ✓×1"), "got: {out}");
+        assert!(out.contains("manage_plugin ✓×1"), "got: {out}");
         assert!(out.contains("http_request ✗×1"), "got: {out}");
     }
 

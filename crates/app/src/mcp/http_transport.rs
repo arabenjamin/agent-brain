@@ -600,10 +600,6 @@ impl HttpTransport {
                 put(crate::clients::topics::handle_hide_entity)
                     .delete(crate::clients::topics::handle_unhide_entity),
             )
-            .route(
-                "/api/tools/dynamic",
-                get(rest_handlers::handle_list_dynamic_tools),
-            )
             .route("/api/logs", get(rest_handlers::handle_get_logs))
             .route("/api/skills", get(rest_handlers::handle_list_skills))
             .route("/api/tools", get(rest_handlers::handle_list_all_tools))

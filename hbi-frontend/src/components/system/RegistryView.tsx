@@ -22,7 +22,7 @@ export default function RegistryView() {
       {c && (
         <div className="ui-stats reg-counts">
           <Stat label="Tools" value={c.tools} title={`${c.skills} skills`} onClick={() => setTab("tools")} />
-          <Stat label="Dynamic tools" value={c.dynamic_tools} onClick={() => setTab("tools")} />
+          <Stat label="Declared tools" value={c.declared_tools} onClick={() => setTab("tools")} />
           <Stat label="Agents" value={c.agents} onClick={() => setTab("agents")} />
           <Stat label="Workflows" value={c.workflows} onClick={() => setTab("workflows")} />
           <Stat label="MCP servers" value={c.mcp_servers} onClick={() => setTab("mcp")} />

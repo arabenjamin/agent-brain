@@ -34,7 +34,7 @@ steps:
         or concrete changes to existing tools/chains.
 
         Return ONLY a JSON array, at most 5 items, most impactful first:
-        [{"type":"scheduled_task|dynamic_tool|skill|fix","name":"...","failing_capability":"<verbatim capability from CONTEXT>","rationale":"why this repeatedly fails, citing the context","proposal":"the concrete thing to build or change"}]
+        [{"type":"workflow|plugin|skill|fix","name":"...","failing_capability":"<verbatim capability from CONTEXT>","rationale":"why this repeatedly fails, citing the context","proposal":"the concrete thing to build or change"}]
       context: "{{_prev}}"
       store_inference: false
     priority: 1

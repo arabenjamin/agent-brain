@@ -1374,7 +1374,6 @@ pub async fn handle_gpu_lease(Json(body): Json<Value>) -> impl IntoResponse {
     }
 }
 
-/// GET /api/tools/dynamic — list all runtime-defined DynamicTool nodes.
 /// GET /api/jobs?status=<filter>&limit=<n>
 ///
 /// Returns agent jobs from Neo4j. The frontend uses this instead of an MCP
@@ -1454,37 +1453,6 @@ pub async fn handle_list_jobs(
             Json(json!({ "count": jobs.len(), "jobs": jobs })).into_response()
         }
         Err(e) => internal(format!("Failed to list jobs: {e}")),
-    }
-}
-
-pub async fn handle_list_dynamic_tools(
-    Extension(state): Extension<Arc<RestState>>,
-) -> impl IntoResponse {
-    let Some(ref neo4j) = state.neo4j else {
-        return unavailable("Neo4j not available");
-    };
-
-    let cypher = "MATCH (d:DynamicTool) \
-                  RETURN d.id AS id, d.name AS name, d.description AS description, \
-                         toString(d.created_at) AS created_at \
-                  ORDER BY d.created_at DESC";
-
-    match neo4j.execute(neo4rs::query(cypher)).await {
-        Ok(rows) => {
-            let tools: Vec<Value> = rows
-                .iter()
-                .map(|row| {
-                    json!({
-                        "id":          row.get::<String>("id").unwrap_or_default(),
-                        "name":        row.get::<String>("name").unwrap_or_default(),
-                        "description": row.get::<String>("description").unwrap_or_default(),
-                        "created_at":  row.get::<String>("created_at").unwrap_or_default(),
-                    })
-                })
-                .collect();
-            Json(json!({ "count": tools.len(), "tools": tools })).into_response()
-        }
-        Err(e) => internal(format!("Failed to list dynamic tools: {e}")),
     }
 }
 

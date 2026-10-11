@@ -238,8 +238,9 @@ pub struct Inventory {
     pub workflows: BTreeSet<String>,
     #[serde(default)]
     pub mcp_servers: BTreeSet<String>,
+    /// Tools declared in bundles' `tools/` (replaced `dynamic_tools` in 3d).
     #[serde(default)]
-    pub dynamic_tools: BTreeSet<String>,
+    pub declared_tools: BTreeSet<String>,
     #[serde(default)]
     pub providers: BTreeSet<String>,
     #[serde(default)]
@@ -254,7 +255,7 @@ pub const CATEGORIES: [&str; 9] = [
     "agents",
     "workflows",
     "mcp_servers",
-    "dynamic_tools",
+    "declared_tools",
     "providers",
     "components",
 ];
@@ -268,7 +269,7 @@ impl Inventory {
             "agents" => self.agents.clone(),
             "workflows" => self.workflows.clone(),
             "mcp_servers" => self.mcp_servers.clone(),
-            "dynamic_tools" => self.dynamic_tools.clone(),
+            "declared_tools" => self.declared_tools.clone(),
             "providers" => self.providers.clone(),
             "components" => self.components.clone(),
             _ => BTreeSet::new(),
@@ -321,7 +322,10 @@ pub async fn collect(neo4j: &Neo4jClient) -> Result<Inventory> {
     inv.agents = names(neo4j, "MATCH (c:ContextProfile) RETURN c.name AS name").await?;
     inv.workflows = names(neo4j, "MATCH (w:Workflow) RETURN w.name AS name").await?;
     inv.mcp_servers = names(neo4j, "MATCH (m:McpServer) RETURN m.name AS name").await?;
-    inv.dynamic_tools = names(neo4j, "MATCH (d:DynamicTool) RETURN d.name AS name").await?;
+    inv.declared_tools = crate::services::plugins::declared_status()
+        .into_values()
+        .flat_map(|c| c.tools)
+        .collect();
     inv.routes = routes().iter().map(Route::key).collect();
     inv.providers = provider_names(&crate::services::provider_registry::snapshot_json());
     inv.components = components().iter().map(|c| c.name.clone()).collect();
@@ -757,7 +761,7 @@ pub fn build_nodes(inv: &Inventory, providers: &Value, comps: &[Component]) -> V
     for (name, label, set) in [
         ("agents", "Agents", &inv.agents),
         ("workflows", "Workflows", &inv.workflows),
-        ("dynamic_tools", "Dynamic tools", &inv.dynamic_tools),
+        ("declared_tools", "Declared tools", &inv.declared_tools),
     ] {
         out.push(node(
             "collection",

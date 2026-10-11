@@ -62,7 +62,7 @@ Plugins:            plugins/<name>/ (plugin.yaml, seeds, crate/ on crates/plugin
 
 ## Rules that apply to most changes
 
-- **Skill registration:** push the skill once onto `skills` in `BrainCore::build_skills`; registry and handler share its `Arc`. Dispatch is first-match, so `DynamicSkill` stays last and a tool name belongs to the first skill that claims it.
+- **Skill registration:** push the skill once onto `skills` in `BrainCore::build_skills`; registry and handler share its `Arc`. Dispatch is first-match, so declared tools stay last and a tool name belongs to the first skill that claims it.
 - **No hardcoded data in Rust.** Declarative data (domains, seeds, chains, schedules, profiles, models) lives in plugin bundles and the graph.
 - **Timestamps:** every temporal graph property is a native UTC `DATETIME`. Cypher compares a datetime to a string as null and silently drops the row. Read `project-docs/schema.md` § Timestamps before writing date Cypher. Stored is UTC; anything said to a person is local (`services/clock.rs`).
 - **Structured LLM output:** use `LlmProvider::generate_json`, and parse with `first_json_object`, never first-`{`-to-last-`}`.

@@ -82,8 +82,8 @@ also names tools that were removed and what replaced them. A guide by group:
 ### Query
 `neo4j_query`, `duckdb_query`, `describe_graph`, `list_capabilities`
 
-### Dynamic Tools
-`manage_dynamic_tool`
+### Plugins
+`manage_plugin` (drafts a bundle into `PLUGINS_RUNTIME_DIR`; it loads only once you add it to `PLUGINS_ENABLED`). Declared tools (a bundle's `tools/*.yaml`, read-only Cypher) such as `list_tasks`
 
 ### HTTP / API / MCP
 `http_request`, `define_api_context`, `ingest_api`, `mcp_list_tools` (no `server` lists the servers), `mcp_call`

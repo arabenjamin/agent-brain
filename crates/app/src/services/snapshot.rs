@@ -1,7 +1,7 @@
 //! SnapshotService — compressed knowledge graph backup and restore.
 //!
 //! Snapshots are gzip-compressed JSON files (`*.json.gz`) containing all
-//! Note, Task, Entity, and Procedure nodes plus their inter-relationships.
+//! Note, Task and Entity nodes plus their inter-relationships.
 //! Embeddings are excluded — use `backfill_endpoint_embeddings` after restore.
 
 use std::io::{Read, Write};
@@ -83,15 +83,6 @@ pub struct EntityAliasRecord {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ProcedureRecord {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub steps_json: String,
-    pub created_at: String,
-}
-
-#[derive(Serialize, Deserialize)]
 pub struct RelationshipRecord {
     pub rel_type: String,
     pub from_id: String,
@@ -108,7 +99,6 @@ pub struct KnowledgeSnapshot {
     pub entities: Vec<EntityRecord>,
     #[serde(default)]
     pub entity_aliases: Vec<EntityAliasRecord>,
-    pub procedures: Vec<ProcedureRecord>,
     pub relationships: Vec<RelationshipRecord>,
 }
 
@@ -122,7 +112,6 @@ pub struct SnapshotMeta {
     pub note_count: usize,
     pub task_count: usize,
     pub entity_count: usize,
-    pub procedure_count: usize,
     pub relationship_count: usize,
     pub size_bytes: u64,
 }
@@ -133,7 +122,6 @@ pub struct RestoreStats {
     pub notes_restored: usize,
     pub tasks_restored: usize,
     pub entities_restored: usize,
-    pub procedures_restored: usize,
     pub relationships_restored: usize,
     pub dry_run: bool,
 }
@@ -214,12 +202,11 @@ impl SnapshotService {
         let file_path = self.snapshot_dir.join(&file_name);
 
         // Fetch all node types in parallel.
-        let (notes_res, tasks_res, entities_res, aliases_res, procedures_res, rels_res) = tokio::join!(
+        let (notes_res, tasks_res, entities_res, aliases_res, rels_res) = tokio::join!(
             self.fetch_notes(),
             self.fetch_tasks(),
             self.fetch_entities(),
             self.fetch_entity_aliases(),
-            self.fetch_procedures(),
             self.fetch_relationships(),
         );
 
@@ -227,7 +214,6 @@ impl SnapshotService {
         let tasks = tasks_res.context("Failed to fetch tasks")?;
         let entities = entities_res.context("Failed to fetch entities")?;
         let entity_aliases = aliases_res.context("Failed to fetch entity aliases")?;
-        let procedures = procedures_res.context("Failed to fetch procedures")?;
         let relationships = rels_res.context("Failed to fetch relationships")?;
 
         let snapshot = KnowledgeSnapshot {
@@ -237,7 +223,6 @@ impl SnapshotService {
             tasks,
             entities,
             entity_aliases,
-            procedures,
             relationships,
         };
 
@@ -263,7 +248,6 @@ impl SnapshotService {
             note_count: snapshot.notes.len(),
             task_count: snapshot.tasks.len(),
             entity_count: snapshot.entities.len(),
-            procedure_count: snapshot.procedures.len(),
             relationship_count: snapshot.relationships.len(),
             size_bytes,
         };
@@ -273,7 +257,6 @@ impl SnapshotService {
             notes = meta.note_count,
             tasks = meta.task_count,
             entities = meta.entity_count,
-            procedures = meta.procedure_count,
             relationships = meta.relationship_count,
             size_bytes,
             "Knowledge snapshot taken"
@@ -375,7 +358,6 @@ impl SnapshotService {
                 notes_restored: snapshot.notes.len(),
                 tasks_restored: snapshot.tasks.len(),
                 entities_restored: snapshot.entities.len(),
-                procedures_restored: snapshot.procedures.len(),
                 relationships_restored: snapshot.relationships.len(),
                 dry_run: true,
             });
@@ -386,14 +368,12 @@ impl SnapshotService {
         let tasks_restored = self.restore_tasks(&snapshot.tasks).await?;
         let entities_restored = self.restore_entities(&snapshot.entities).await?;
         self.restore_entity_aliases(&snapshot.entity_aliases).await;
-        let procedures_restored = self.restore_procedures(&snapshot.procedures).await?;
         let relationships_restored = self.restore_relationships(&snapshot.relationships).await?;
 
         info!(
             notes_restored,
             tasks_restored,
             entities_restored,
-            procedures_restored,
             relationships_restored,
             "Knowledge snapshot restored"
         );
@@ -402,7 +382,6 @@ impl SnapshotService {
             notes_restored,
             tasks_restored,
             entities_restored,
-            procedures_restored,
             relationships_restored,
             dry_run: false,
         })
@@ -524,35 +503,11 @@ impl SnapshotService {
             .collect())
     }
 
-    async fn fetch_procedures(&self) -> Result<Vec<ProcedureRecord>> {
-        let q = neo4rs::query(
-            "MATCH (p:Procedure) RETURN \
-             p.id AS id, p.name AS name, p.description AS description, \
-             p.steps AS steps_json, toString(p.created_at) AS created_at",
-        );
-        let rows = self.neo4j.execute(q).await?;
-        let mut procedures = Vec::new();
-        for row in rows {
-            let id: String = row.get("id").unwrap_or_default();
-            if id.is_empty() {
-                continue;
-            }
-            procedures.push(ProcedureRecord {
-                id,
-                name: row.get("name").unwrap_or_default(),
-                description: row.get("description").unwrap_or_default(),
-                steps_json: row.get("steps_json").unwrap_or_else(|_| "[]".to_string()),
-                created_at: row.get("created_at").unwrap_or_default(),
-            });
-        }
-        Ok(procedures)
-    }
-
     async fn fetch_relationships(&self) -> Result<Vec<RelationshipRecord>> {
         let q = neo4rs::query(
             "MATCH (a)-[r]->(b) \
-             WHERE (a:Note OR a:Task OR a:Entity OR a:Procedure) \
-               AND (b:Note OR b:Task OR b:Entity OR b:Procedure) \
+             WHERE (a:Note OR a:Task OR a:Entity) \
+               AND (b:Note OR b:Task OR b:Entity) \
                AND a.id IS NOT NULL AND b.id IS NOT NULL \
              RETURN type(r) AS rel_type, a.id AS from_id, b.id AS to_id, properties(r) AS props",
         );
@@ -680,25 +635,6 @@ impl SnapshotService {
                 warn!(alias = %a.name, error = %e, "restore: entity alias skipped");
             }
         }
-    }
-
-    async fn restore_procedures(&self, procedures: &[ProcedureRecord]) -> Result<usize> {
-        let mut count = 0;
-        for proc in procedures {
-            let q = neo4rs::query(
-                "MERGE (p:Procedure {id: $id}) \
-                 ON CREATE SET p.name = $name, p.description = $description, p.steps = $steps_json",
-            )
-            .param("id", proc.id.clone())
-            .param("name", proc.name.clone())
-            .param("description", proc.description.clone())
-            .param("steps_json", proc.steps_json.clone());
-
-            if self.neo4j.run(q).await.is_ok() {
-                count += 1;
-            }
-        }
-        Ok(count)
     }
 
     async fn restore_relationships(&self, rels: &[RelationshipRecord]) -> Result<usize> {

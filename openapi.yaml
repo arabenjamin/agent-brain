@@ -557,19 +557,6 @@ paths:
                 type: array
                 items:
                   type: object
-  /api/tools/dynamic:
-    get:
-      summary: List dynamic tools
-      operationId: listDynamicTools
-      responses:
-        '200':
-          description: Tools
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
   /api/logs:
     get:
       summary: Get logs

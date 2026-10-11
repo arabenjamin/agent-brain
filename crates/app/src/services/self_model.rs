@@ -224,11 +224,17 @@ pub async fn sync_self_model(
 
     // ── ToolDef ──────────────────────────────────────────────────────────
     // Which plugin registered each tool (none = the core).
-    let plugin_of: std::collections::HashMap<String, String> =
+    let mut plugin_of: std::collections::HashMap<String, String> =
         crate::services::plugins::code_status()
             .into_iter()
             .flat_map(|(plugin, c)| c.tools.into_iter().map(move |t| (t, plugin.clone())))
             .collect();
+    // Declared tools from a plugin other than the core (a core tool that
+    // vanishes was removed, and is tombstoned).
+    let declared = crate::services::plugins::declared_status();
+    plugin_of.extend(crate::skills::bundle_tools::BundleToolSkill::plugin_tools(
+        &declared,
+    ));
     let mut tool_names: Vec<String> = Vec::new();
     for (skill_name, tools) in skills_with_tools {
         for t in tools {

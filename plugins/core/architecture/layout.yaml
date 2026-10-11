@@ -10,7 +10,7 @@
 #   component:<name>          components.yaml
 #   provider:<name>           providers in models.yaml
 #   mcp:<name>                external MCP servers
-#   collection:agents | workflows | dynamic_tools
+#   collection:agents | workflows | declared_tools
 # A trailing * is a prefix match; an exact selector wins over a wildcard.
 # A live node no group claims is drawn as "unplaced", and a selector that
 # matches nothing is reported as stale: place a new skill here when it lands.
@@ -93,7 +93,7 @@ groups:
       - "skill:Code Execution"
       - "skill:Model Management"
       - "skill:Dynamic Tools"
-      - "collection:dynamic_tools"
+      - "collection:declared_tools"
 
   - id: providers
     label: LLM providers

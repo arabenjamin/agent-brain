@@ -243,14 +243,14 @@ pub async fn close_items_that_became(neo4j: &Neo4jClient, schedule_id: &str) -> 
 
 /// Tools that act outside the knowledge graph: an HTTP call that can POST, a
 /// call into another MCP server (aidevboard's `apply_to_job` submits a real
-/// application), a file written to disk, a proposal, a new dynamic tool. An
+/// application), a file written to disk, a proposal, a drafted plugin bundle. An
 /// agent holding any of them asks before an item runs.
 pub const EXTERNAL_EFFECT_TOOLS: &[&str] = &[
     "http_request",
     "mcp_call",
     "write_workspace_file",
     "write_proposal",
-    "manage_dynamic_tool",
+    "manage_plugin",
 ];
 
 /// Whether an agent's item runs on its own or waits for the user.

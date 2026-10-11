@@ -36,7 +36,6 @@ impl Neo4jClient {
         let constraints = [
             "CREATE CONSTRAINT workflow_id IF NOT EXISTS FOR (w:Workflow) REQUIRE w.id IS UNIQUE",
             "CREATE CONSTRAINT workflow_name IF NOT EXISTS FOR (w:Workflow) REQUIRE w.name IS UNIQUE",
-            "CREATE CONSTRAINT procedure_id IF NOT EXISTS FOR (p:Procedure) REQUIRE p.id IS UNIQUE",
             "CREATE CONSTRAINT working_memory_id IF NOT EXISTS FOR (w:WorkingMemory) REQUIRE w.id IS UNIQUE",
             "CREATE CONSTRAINT entity_name IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE",
             // Entity resolution: an alias name means one entity (services/entity_resolution.rs).
@@ -45,7 +44,6 @@ impl Neo4jClient {
             "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
             // Architecture snapshots (services/architecture.rs): weekly, with their diff.
             "CREATE CONSTRAINT arch_snapshot_id IF NOT EXISTS FOR (a:ArchSnapshot) REQUIRE a.id IS UNIQUE",
-            "CREATE CONSTRAINT dynamic_tool_name IF NOT EXISTS FOR (d:DynamicTool) REQUIRE d.name IS UNIQUE",
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",
             // Note and Task are the hottest by-id lookups (get_note, per-search access-stat
@@ -83,7 +81,6 @@ impl Neo4jClient {
             "CREATE INDEX entity_alias_key_idx IF NOT EXISTS FOR (a:EntityAlias) ON (a.key)",
             "CREATE INDEX arch_snapshot_taken_idx IF NOT EXISTS FOR (a:ArchSnapshot) ON (a.taken_at)",
             // Dynamic tool creation timestamp index
-            "CREATE INDEX dynamic_tool_idx IF NOT EXISTS FOR (d:DynamicTool) ON (d.created_at)",
             // Agent job indexes
             "CREATE INDEX agent_job_status IF NOT EXISTS FOR (j:AgentJob) ON (j.status)",
             "CREATE INDEX agent_job_priority IF NOT EXISTS FOR (j:AgentJob) ON (j.priority)",

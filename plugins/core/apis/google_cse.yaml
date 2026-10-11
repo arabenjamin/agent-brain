@@ -1,0 +1,9 @@
+name: google_cse
+description: Google Custom Search Engine
+base_url: https://www.googleapis.com/customsearch/v1
+auth_scheme: query_param
+auth_param: key
+auth_env_var: GOOGLE_API_KEY
+# Set from the environment at every start (not a secret, but per deployment).
+env_props:
+  google_cx: GOOGLE_CX

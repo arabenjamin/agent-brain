@@ -224,6 +224,8 @@ services:
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
       - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data}
+      # Bundles the brain drafts (manage_plugin). Inert until PLUGINS_ENABLED names one.
+      - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
       # 1, paired with the 6h interval in workflows/media-watch.yaml — see the

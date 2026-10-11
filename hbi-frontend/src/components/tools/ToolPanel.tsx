@@ -71,15 +71,15 @@ const SKILL_META: Record<string, SkillMeta> = {
     color: "var(--accent)",
     desc:  "Per-session scratchpad for multi-step tasks. Roles: observation/plan/result/error. LLM summarise to long-term.",
   },
-  dynamic: {
+  "declared tools": {
     icon:  "⚡",
     color: "var(--yellow)",
-    desc:  "Define new MCP tools at runtime backed by stored procedures. Hot-registered without restart.",
+    desc:  "Read-only Cypher tools declared in a plugin bundle's tools/*.yaml.",
   },
-  procedure: {
-    icon:  "📜",
+  plugins: {
+    icon:  "🧩",
     color: "var(--accent)",
-    desc:  "Named multi-step workflow storage with template substitution and per-step on_failure handling.",
+    desc:  "Brain-written plugin bundles: drafted and validated here, loaded only after you enable them.",
   },
   search: {
     icon:  "🔍",

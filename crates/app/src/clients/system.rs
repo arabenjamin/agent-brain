@@ -567,11 +567,20 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
         })
     })
     .collect();
-    let dynamic_tools: Vec<Value> = rows("MATCH (d:DynamicTool) RETURN d.name AS name, d.description AS description ORDER BY d.name")
-        .await
-        .iter()
-        .map(|r| json!({ "name": r.get::<String>("name").ok(), "description": r.get::<String>("description").ok() }))
-        .collect();
+    // Tools declared in a bundle's tools/ (skills/bundle_tools.rs), with the
+    // bundle each came from.
+    let declared_tools: Vec<Value> = {
+        let mut v: Vec<Value> = crate::services::plugins::declared_status()
+            .into_iter()
+            .flat_map(|(plugin, c)| {
+                c.tools
+                    .into_iter()
+                    .map(move |t| json!({ "name": t, "plugin": plugin }))
+            })
+            .collect();
+        v.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        v
+    };
     let scheduled = |w: &&Value| !w["every"].is_null();
     let sched_total = workflows.iter().filter(scheduled).count();
     let sched_enabled = workflows
@@ -584,7 +593,7 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
         "counts": {
             "skills": skills.len(),
             "tools": tool_count,
-            "dynamic_tools": dynamic_tools.len(),
+            "declared_tools": declared_tools.len(),
             "agents": agents.len(),
             "workflows": workflows.len(),
             "mcp_servers": mcp_servers.len(),
@@ -592,7 +601,7 @@ pub async fn handle_registry(Extension(state): Extension<Arc<RestState>>) -> imp
             "schedules_enabled": sched_enabled,
         },
         "skills": skills,
-        "dynamic_tools": dynamic_tools,
+        "declared_tools": declared_tools,
         "agents": agents,
         "workflows": workflows,
         "mcp_servers": mcp_servers,

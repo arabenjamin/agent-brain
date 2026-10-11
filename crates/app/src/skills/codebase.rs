@@ -1206,10 +1206,8 @@ impl CodebaseSkill {
             extract_text(&log)
         ));
 
-        // Section 5: Graph-stored dynamic capabilities (workflows, DynamicTools, Procedures)
+        // Section 5: declarative capabilities (workflows, declared tools)
         if let Some(neo4j) = &self.neo4j {
-            use neo4rs::query;
-
             let mut dyn_lines: Vec<String> = Vec::new();
 
             // Workflow nodes — the brain's configured job chains
@@ -1233,40 +1231,18 @@ impl CodebaseSkill {
                 _ => {}
             }
 
-            // DynamicTool nodes — runtime-defined MCP tools
-            match neo4j
-                .execute(query(
-                    "MATCH (t:DynamicTool) RETURN t.name AS name, t.description AS description ORDER BY t.name",
-                ))
-                .await
-            {
-                Ok(rows) if !rows.is_empty() => {
-                    dyn_lines.push("\n### DynamicTools (runtime-defined MCP tools)".into());
-                    for row in &rows {
-                        let name = row.get::<String>("name").unwrap_or_default();
-                        let desc = row.get::<String>("description").unwrap_or_default();
-                        dyn_lines.push(format!("- {name}: {desc}"));
-                    }
+            // Declared tools — a bundle's tools/*.yaml (skills/bundle_tools.rs)
+            let mut declared: Vec<(String, String)> = crate::services::plugins::declared_status()
+                .into_iter()
+                .flat_map(|(p, c)| c.tools.into_iter().map(move |t| (t, p.clone())))
+                .collect();
+            declared.sort();
+            if !declared.is_empty() {
+                dyn_lines
+                    .push("\n### Declared tools (bundle tools/*.yaml, read-only Cypher)".into());
+                for (name, plugin) in &declared {
+                    dyn_lines.push(format!("- {name} (plugin {plugin})"));
                 }
-                _ => {}
-            }
-
-            // Procedure nodes — named multi-step workflows
-            match neo4j
-                .execute(query(
-                    "MATCH (p:Procedure) RETURN p.name AS name, p.description AS description ORDER BY p.name",
-                ))
-                .await
-            {
-                Ok(rows) if !rows.is_empty() => {
-                    dyn_lines.push("\n### Procedures (named multi-step workflows)".into());
-                    for row in &rows {
-                        let name = row.get::<String>("name").unwrap_or_default();
-                        let desc = row.get::<String>("description").unwrap_or_default();
-                        dyn_lines.push(format!("- {name}: {desc}"));
-                    }
-                }
-                _ => {}
             }
 
             if !dyn_lines.is_empty() {

@@ -24,6 +24,12 @@ use crate::repository::Neo4jClient;
 /// The bundle every brain loads.
 pub const CORE: &str = "core";
 
+/// Where `manage_plugin` writes brain-authored bundles (`PLUGINS_RUNTIME_DIR`,
+/// default `plugins-runtime`). They load only when `PLUGINS_ENABLED` names them.
+pub fn runtime_dir() -> PathBuf {
+    PathBuf::from(std::env::var("PLUGINS_RUNTIME_DIR").unwrap_or_else(|_| "plugins-runtime".into()))
+}
+
 /// Seed dirs read from every enabled bundle.
 pub const MERGED_KINDS: &[&str] = &[
     "workflows",
@@ -32,6 +38,8 @@ pub const MERGED_KINDS: &[&str] = &[
     "sources-media",
     "mcp-servers",
     "schemas",
+    "tools",
+    "apis",
 ];
 
 /// Seed dirs read from the core bundle only, for now: each builds one global
@@ -49,6 +57,9 @@ pub struct Manifest {
     pub description: String,
     #[serde(default)]
     pub requires: Requires,
+    /// `brain` for a bundle `manage_plugin` wrote (`PLUGINS_RUNTIME_DIR`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
 }
 
 fn one() -> u32 {
@@ -85,11 +96,16 @@ pub struct Bundle {
     pub status: Status,
     /// Things worth knowing about a loaded bundle (a core-only kind it ships).
     pub warnings: Vec<String>,
+    /// In `PLUGINS_RUNTIME_DIR`: written by the brain, not shipped in git.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub runtime: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Plugins {
     pub dir: PathBuf,
+    /// Where brain-written bundles live (`manage_plugin`).
+    pub runtime_dir: Option<PathBuf>,
     pub bundles: Vec<Bundle>,
 }
 
@@ -97,6 +113,30 @@ impl Plugins {
     /// The bundles under `dir`, `core` first, then `enabled` in order, then
     /// any others present (as `NotEnabled`). `env` answers `requires.env`.
     pub fn load(dir: &Path, enabled: &[String], env: &dyn Fn(&str) -> Option<String>) -> Self {
+        Self::load_from(dir, None, enabled, env)
+    }
+
+    /// As [`Self::load`], also finding bundles in `runtime` (brain-written).
+    /// A name in both is the shipped one. A runtime bundle loads only when
+    /// `enabled` names it, like any other.
+    pub fn load_from(
+        dir: &Path,
+        runtime: Option<&Path>,
+        enabled: &[String],
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Self {
+        let root_of = |name: &str| -> (PathBuf, bool) {
+            let shipped = dir.join(name);
+            match runtime {
+                Some(r)
+                    if !shipped.join("plugin.yaml").is_file()
+                        && r.join(name).join("plugin.yaml").is_file() =>
+                {
+                    (r.join(name), true)
+                }
+                _ => (shipped, false),
+            }
+        };
         let mut wanted: Vec<String> = vec![CORE.to_string()];
         for n in enabled {
             let n = n.trim();
@@ -108,7 +148,7 @@ impl Plugins {
         // A plugin may require one listed after it, so resolve to a fixpoint.
         let mut pending: Vec<(String, Result<Manifest, String>)> = wanted
             .iter()
-            .map(|n| (n.clone(), read_manifest(&dir.join(n), n)))
+            .map(|n| (n.clone(), read_manifest(&root_of(n).0, n)))
             .collect();
         loop {
             let before = pending.len();
@@ -116,14 +156,16 @@ impl Plugins {
             for (name, m) in pending {
                 match check(&name, &m, &bundles, env) {
                     Check::Ready => bundles.push(Bundle {
-                        root: dir.join(&name),
-                        warnings: core_only_warnings(&dir.join(&name), &name),
+                        root: root_of(&name).0,
+                        warnings: core_only_warnings(&root_of(&name).0, &name),
+                        runtime: root_of(&name).1,
                         manifest: m.ok(),
                         name,
                         status: Status::Loaded,
                     }),
                     Check::Fail(reason) => bundles.push(Bundle {
-                        root: dir.join(&name),
+                        root: root_of(&name).0,
+                        runtime: root_of(&name).1,
                         manifest: m.ok(),
                         name,
                         status: Status::Skipped(reason),
@@ -142,7 +184,8 @@ impl Plugins {
                         Check::Ready => unreachable!("a ready bundle is never left pending"),
                     };
                     bundles.push(Bundle {
-                        root: dir.join(&name),
+                        root: root_of(&name).0,
+                        runtime: root_of(&name).1,
                         manifest: m.ok(),
                         name,
                         status: Status::Skipped(reason),
@@ -155,26 +198,31 @@ impl Plugins {
         }
         // Keep the requested order for everything that resolved.
         bundles.sort_by_key(|b| wanted.iter().position(|w| *w == b.name));
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            let mut others: Vec<String> = entries
-                .flatten()
-                .filter(|e| e.path().join("plugin.yaml").is_file())
-                .filter_map(|e| e.file_name().to_str().map(String::from))
-                .filter(|n| !wanted.contains(n))
-                .collect();
-            others.sort();
-            for name in others {
-                bundles.push(Bundle {
-                    root: dir.join(&name),
-                    manifest: read_manifest(&dir.join(&name), &name).ok(),
-                    name,
-                    status: Status::NotEnabled,
-                    warnings: vec![],
-                });
-            }
+        let mut others: Vec<String> = [Some(dir), runtime]
+            .into_iter()
+            .flatten()
+            .filter_map(|d| std::fs::read_dir(d).ok())
+            .flat_map(|e| e.flatten())
+            .filter(|e| e.path().join("plugin.yaml").is_file())
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .filter(|n| !wanted.contains(n))
+            .collect();
+        others.sort();
+        others.dedup();
+        for name in others {
+            let (root, runtime) = root_of(&name);
+            bundles.push(Bundle {
+                manifest: read_manifest(&root, &name).ok(),
+                root,
+                runtime,
+                name,
+                status: Status::NotEnabled,
+                warnings: vec![],
+            });
         }
         Self {
             dir: dir.to_path_buf(),
+            runtime_dir: runtime.map(Path::to_path_buf),
             bundles,
         }
     }
@@ -191,7 +239,9 @@ impl Plugins {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let p = Plugins::load(&dir, &enabled, &|k| std::env::var(k).ok());
+            let p = Plugins::load_from(&dir, Some(&runtime_dir()), &enabled, &|k| {
+                std::env::var(k).ok()
+            });
             for b in &p.bundles {
                 match &b.status {
                     Status::Loaded => info!(plugin = %b.name, "Plugin loaded"),
@@ -295,7 +345,7 @@ fn check(
     Check::Ready
 }
 
-fn read_manifest(root: &Path, name: &str) -> Result<Manifest, String> {
+pub(crate) fn read_manifest(root: &Path, name: &str) -> Result<Manifest, String> {
     let path = root.join("plugin.yaml");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -340,6 +390,24 @@ pub struct CodeStatus {
 fn code_cell() -> &'static RwLock<HashMap<String, CodeStatus>> {
     static C: OnceLock<RwLock<HashMap<String, CodeStatus>>> = OnceLock::new();
     C.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn declared_cell() -> &'static RwLock<HashMap<String, CodeStatus>> {
+    static C: OnceLock<RwLock<HashMap<String, CodeStatus>>> = OnceLock::new();
+    C.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Record what each bundle's `tools/` contributed (skills/bundle_tools.rs).
+pub fn set_declared_status(status: HashMap<String, CodeStatus>) {
+    *declared_cell().write().unwrap_or_else(|e| e.into_inner()) = status;
+}
+
+/// What each bundle's `tools/` contributed, or why not.
+pub fn declared_status() -> HashMap<String, CodeStatus> {
+    declared_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// The code status recorded at startup, by plugin (for `GET /api/plugins`).
@@ -463,6 +531,29 @@ fn yes() -> bool {
     true
 }
 
+/// An API the brain calls (`apis/*.yaml` → `(:ApiContext)`): where it is and
+/// how it authenticates. The secret stays in env; only its variable's name
+/// is stored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApiContextFile {
+    name: String,
+    #[serde(default)]
+    description: String,
+    base_url: String,
+    #[serde(default = "none_scheme")]
+    auth_scheme: String,
+    #[serde(default)]
+    auth_param: Option<String>,
+    #[serde(default)]
+    auth_env_var: Option<String>,
+    #[serde(default)]
+    default_headers: std::collections::BTreeMap<String, String>,
+    /// Node property → env var, set from the environment at every start.
+    #[serde(default)]
+    env_props: std::collections::BTreeMap<String, String>,
+}
+
 /// A group of watched sources (`sources-media/*.yaml`).
 #[derive(Debug, Deserialize)]
 struct MediaSourceGroupFile {
@@ -502,8 +593,52 @@ fn parse<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Option<T> {
     }
 }
 
-/// Seed source lists, media sources and MCP servers from every loaded
-/// bundle. Returns how many nodes were created.
+/// Check one ON-CREATE seed file (`sources`, `sources-media`, `mcp-servers`,
+/// `apis`) as its seeder would parse it. `Err` says what is wrong.
+pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
+    fn strict<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+        serde_yaml::from_str(&text).map_err(|e| format!("YAML: {e}"))
+    }
+    match kind {
+        "sources" => {
+            let l: SourceListFile = strict(path)?;
+            if l.domains.is_empty() {
+                return Err("a source list needs at least one domain".into());
+            }
+        }
+        "sources-media" => {
+            let g: MediaSourceGroupFile = strict(path)?;
+            if g.sources.is_empty() {
+                return Err("a media source group needs at least one source".into());
+            }
+        }
+        "mcp-servers" => {
+            let s: McpServerFile = strict(path)?;
+            if !s.url.starts_with("http://") && !s.url.starts_with("https://") {
+                return Err(format!("url '{}' must be http(s)", s.url));
+            }
+        }
+        "apis" => {
+            let a: ApiContextFile = strict(path)?;
+            if !a.base_url.starts_with("http://") && !a.base_url.starts_with("https://") {
+                return Err(format!("base_url '{}' must be http(s)", a.base_url));
+            }
+            if let Some(k) = a
+                .env_props
+                .keys()
+                .find(|k| !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            {
+                return Err(format!("env_props key '{k}' must be an identifier"));
+            }
+        }
+        other => return Err(format!("'{other}' is not an ON-CREATE seed kind")),
+    }
+    Ok(())
+}
+
+/// Seed source lists, media sources, MCP servers and API contexts from every
+/// loaded bundle. Returns how many nodes were created.
 pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
     let mut created = 0usize;
     for (plugin, path) in plugins.files("sources", "yaml") {
@@ -577,6 +712,58 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
                 }
                 Ok(false) => {}
                 Err(e) => warn!(%name, error = %e, "seed sources-media: failed"),
+            }
+        }
+    }
+    for (plugin, path) in plugins.files("apis", "yaml") {
+        let Some(a) = parse::<ApiContextFile>(&path, "seed apis") else {
+            continue;
+        };
+        let headers = if a.default_headers.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&a.default_headers).unwrap_or_default()
+        };
+        let q = neo4rs::query(
+            "MERGE (c:ApiContext {name: $name}) \
+             ON CREATE SET c.base_url = $base_url, c.auth_scheme = $auth_scheme, \
+                           c.auth_param = $auth_param, c.auth_env_var = $auth_env_var, \
+                           c.description = $description, c.default_headers = $headers, \
+                           c.plugin = $plugin, c.__new = true \
+             WITH c, coalesce(c.__new, false) AS new REMOVE c.__new RETURN new",
+        )
+        .param("name", a.name.as_str())
+        .param("base_url", a.base_url.as_str())
+        .param("auth_scheme", a.auth_scheme.as_str())
+        .param("auth_param", a.auth_param.clone().unwrap_or_default())
+        .param("auth_env_var", a.auth_env_var.clone().unwrap_or_default())
+        .param("description", a.description.as_str())
+        .param("headers", headers)
+        .param("plugin", plugin.as_str());
+        match neo4j.execute(q).await {
+            Ok(rows) => {
+                if rows.first().and_then(|r| r.get::<bool>("new").ok()) == Some(true) {
+                    info!(name = %a.name, %plugin, "Seeded ApiContext (graph-owned from now on)");
+                    created += 1;
+                }
+            }
+            Err(e) => warn!(name = %a.name, error = %e, "seed apis: failed"),
+        }
+        for (prop, var) in &a.env_props {
+            let Some(v) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) else {
+                continue;
+            };
+            if !prop.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                warn!(name = %a.name, %prop, "seed apis: env_props key must be an identifier");
+                continue;
+            }
+            let q = neo4rs::query(&format!(
+                "MATCH (c:ApiContext {{name: $name}}) SET c.{prop} = $v"
+            ))
+            .param("name", a.name.as_str())
+            .param("v", v);
+            if let Err(e) = neo4j.run(q).await {
+                warn!(name = %a.name, %prop, error = %e, "seed apis: env property not set");
             }
         }
     }

@@ -193,7 +193,7 @@ What the brain was made of at one moment (`services/architecture.rs`), taken by 
 | `taken_at` | DateTime | Native `DATETIME`, UTC |
 | `trigger` | String | `schedule` \| `manual` \| `first` |
 | `version` | String | The commit the brain was running (`BrainVersion.sha`), or empty |
-| `inventory` | String (JSON) | Sorted name sets: `skills` (skill → tools), `routes`, `agents`, `chains`, `schedules`, `mcp_servers`, `dynamic_tools`, `providers`, `components` |
+| `inventory` | String (JSON) | Sorted name sets: `skills` (skill → tools), `routes`, `agents`, `chains`, `schedules`, `mcp_servers`, `declared_tools`, `providers`, `components` |
 | `counts` | String (JSON) | Category → count |
 | `diff` | String (JSON) | Category → `{added, removed}` against `previous_id`; only categories that changed |
 | `summary` | String | The diff in one line, written by code, not a model |
@@ -267,18 +267,6 @@ Another name for an entity: curated in `entities/*.yaml`, or left behind by a me
 | `entity_created_at` | DateTime? | The merged-away entity's `created_at` |
 | `merged_at` | DateTime? | Native `DATETIME`, UTC |
 
-#### `Procedure`
-
-Named multi-step workflows stored as JSON step arrays and executed by `ProcedureSkill`.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `id` | String | UUID |
-| `name` | String | Unique name |
-| `description` | String? | Human-readable summary |
-| `steps` | String | JSON array of procedure steps |
-| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
-
 #### `WorkingMemory`
 
 Session-scoped scratchpad entries. Each HTTP session or stdio invocation has its own session_id.
@@ -290,18 +278,6 @@ Session-scoped scratchpad entries. Each HTTP session or stdio invocation has its
 | `content` | String | Entry body |
 | `role` | String | `user` \| `assistant` \| `system` |
 | `turn_index` | Integer | Ordering within the session |
-| `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
-
-#### `DynamicTool`
-
-Runtime-defined MCP tools created and dispatched by `DynamicSkill`.
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `id` | String | UUID |
-| `name` | String | Unique tool name (registered at runtime) |
-| `description` | String | Shown in `tools/list` |
-| `input_schema` | String | JSON schema for tool arguments |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 
 #### `AgentJob`
@@ -464,7 +440,6 @@ A tombstone for a tool the brain no longer has (`services/self_model.rs`). Writt
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |
 | `SUBTASK_OF` | `(Task)→(Task)` | — | Sub-task of a parent task |
 | `DEPENDS_ON` | `(Task)→(Task)` | — | Task ordering dependency |
-| `USES` | `(DynamicTool)→(Procedure)` | — | Dynamic tool backed by a named procedure |
 
 ---
 
@@ -474,13 +449,11 @@ A tombstone for a tool the brain no longer has (`services/self_model.rs`). Writt
 |------|------|----------|------|
 | `workflow_id` | `Workflow` | `id` | UNIQUE |
 | `workflow_name` | `Workflow` | `name` | UNIQUE |
-| `procedure_id` | `Procedure` | `id` | UNIQUE |
 | `working_memory_id` | `WorkingMemory` | `id` | UNIQUE |
 | `entity_name` | `Entity` | `name` | UNIQUE |
 | `entity_alias_name` | `EntityAlias` | `name` | UNIQUE |
 | `topic_name` | `Topic` | `name` | UNIQUE |
 | `arch_snapshot_id` | `ArchSnapshot` | `id` | UNIQUE |
-| `dynamic_tool_name` | `DynamicTool` | `name` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
 | `todo_id` | `Todo` | `id` | UNIQUE |
 | `note_id` | `Note` | `id` | UNIQUE |
@@ -501,7 +474,6 @@ A tombstone for a tool the brain no longer has (`services/self_model.rs`). Writt
 | `entity_id_idx` | `Entity` | `id` | RANGE | HBI drawer, merges and candidates look entities up by id |
 | `entity_alias_key_idx` | `EntityAlias` | `key` | RANGE | Write-time resolution by normalised key |
 | `arch_snapshot_taken_idx` | `ArchSnapshot` | `taken_at` | RANGE | Newest snapshot, history |
-| `dynamic_tool_idx` | `DynamicTool` | `created_at` | RANGE | Recency ordering |
 | `agent_job_status` | `AgentJob` | `status` | RANGE | Queue coordinator polling |
 | `agent_job_priority` | `AgentJob` | `priority` | RANGE | Priority-ordered dispatch |
 | `agent_job_created` | `AgentJob` | `created_at` | RANGE | FIFO ordering within priority |

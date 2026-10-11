@@ -1,0 +1,6 @@
+name: serpapi
+description: SerpApi search engine
+base_url: https://serpapi.com
+auth_scheme: query_param
+auth_param: api_key
+auth_env_var: SERPAPI_KEY

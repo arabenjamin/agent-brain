@@ -1,0 +1,39 @@
+# Ordering and totals both exist to prevent one specific failure: asked
+# "where did we leave off", the brain called this tool, got 20
+# recently-completed rows, and reported a "clean slate" while 210 tasks sat
+# failed. Newest-first hid the open work; no totals meant the window looked
+# like the whole picture.
+name: list_tasks
+kind: cypher
+description: >-
+  List tasks, OPEN WORK FIRST (created/in_progress/blocked, then failed, then
+  completed), including parent_id for sub-tasks. Every row also carries
+  whole-graph status totals (total_tasks, status_failed, …). This is a 20-row
+  WINDOW, not the full set — judge overall state from the totals, never from
+  the rows. For other filtering use neo4j_query directly.
+input_schema:
+  type: object
+  properties: {}
+cypher: |-
+  MATCH (t:Task)
+  WITH count(t) AS total_tasks,
+       sum(CASE WHEN t.status = 'created'     THEN 1 ELSE 0 END) AS status_created,
+       sum(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS status_in_progress,
+       sum(CASE WHEN t.status = 'blocked'     THEN 1 ELSE 0 END) AS status_blocked,
+       sum(CASE WHEN t.status = 'failed'      THEN 1 ELSE 0 END) AS status_failed,
+       sum(CASE WHEN t.status = 'completed'   THEN 1 ELSE 0 END) AS status_completed
+  MATCH (t2:Task)
+  OPTIONAL MATCH (t2)-[:SUBTASK_OF]->(parent:Task)
+  WITH total_tasks, status_created, status_in_progress, status_blocked,
+       status_failed, status_completed, t2, parent
+  ORDER BY CASE
+             WHEN t2.status IN ['created', 'in_progress', 'blocked'] THEN 0
+             WHEN t2.status = 'failed' THEN 1
+             ELSE 2 END,
+           t2.created_at DESC
+  LIMIT 20
+  RETURN t2.id AS id, t2.goal AS goal, t2.status AS status,
+         t2.context AS context, toString(t2.created_at) AS created_at,
+         parent.id AS parent_id,
+         total_tasks, status_created, status_in_progress,
+         status_blocked, status_failed, status_completed

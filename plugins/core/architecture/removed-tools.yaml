@@ -25,7 +25,7 @@ tools:
   - { name: resource, commit: 1aed101, reason: "never called; its use was sharing WebSocket connections" }
   - { name: store_procedure, commit: 1aed101, reason: "procedural memory never called" }
   - { name: search_procedures, commit: 1aed101, reason: "never called" }
-  - { name: execute_procedure, commit: 1aed101, reason: "8 calls, none since 2026-09-07; dynamic tools still run procedures", replaced_by: manage_dynamic_tool }
+  - { name: execute_procedure, commit: 1aed101, reason: "8 calls, none since 2026-09-07; procedures went with dynamic tools in Phase 3d", replaced_by: manage_plugin }
   - { name: record_outcome, commit: 1aed101, reason: "never called" }
   - { name: use_model, commit: 1aed101, reason: "never called; models come from models.yaml and profiles" }
   - { name: reload_models, commit: 1aed101, reason: "never called; restart reloads models.yaml" }
@@ -57,3 +57,6 @@ tools:
   # Phase 2b, 2026-10-10 — chains and schedules merged into workflows
   - { name: manage_chain, commit: 1d4c822, reason: "chains merged into workflows; a goal no longer picks its steps by regex", replaced_by: manage_workflow }
   - { name: manage_scheduled_task, commit: 1d4c822, reason: "schedules merged into workflows", replaced_by: manage_workflow }
+
+  # Phase 3d, 2026-10-10 — dynamic tools become declared tools in bundles
+  - { name: manage_dynamic_tool, commit: 1749e97, reason: "8 calls ever (none since 2026-09-26), none left a tool; tools are declared in a bundle's tools/", replaced_by: manage_plugin }

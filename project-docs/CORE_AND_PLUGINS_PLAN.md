@@ -229,7 +229,7 @@ The core ships as a bundle too (`plugins/core/`), so there is one loader. The fi
 
 **Rules.**
 - A plugin tool may not shadow a core tool or another plugin's tool; the loader refuses loudly at startup.
-- Plugin tools register before `DynamicSkill`, which stays last.
+- Plugin tools register before the declared tools (a bundle's `tools/`), which stay last.
 - In-tree plugins compile into the binary and are enabled at runtime. Cargo features only if build size ever matters.
 - **The proof of the boundary: the brain starts and passes the core test suite with no plugins enabled.**
 
@@ -265,6 +265,22 @@ The core ships as a bundle too (`plugins/core/`), so there is one loader. The fi
 - **`PluginContext` grows with its consumers.** It starts with `env` (and the plugin's name), which is all ACLED uses. The plan's list (graph, knowledge, LLM, HTTP, notify) is added pack by pack in Phase 4, each capability over the existing core service, when the pack that needs it moves. Building them now would ship five unused interfaces, which Phase 0 would delete.
 - In-tree plugin crates compile into the binary (`services/plugins.rs` lists them) and are instantiated only when their bundle loaded: `requires.env` keeps `osint-data` off until ACLED's credentials are set, as the old `from_env` check did, but now visibly. Their tools register before `DynamicSkill`. **A plugin tool whose name is already taken refuses the plugin, not the brain**: the plugin's tools are left out, the reason is logged at ERROR and shown by `GET /api/plugins`. A bundle with a `crate/` that this binary did not compile is reported.
 - `cargo test --lib -p agent-brain` is the core suite, run with no plugin enabled; each plugin crate carries its own tests.
+
+**3d design (2026-10-10; owner chose bundle Cypher tools and building `manage_plugin` now).**
+- Measured: the graph's only `DynamicTool` is the core's own `list_tasks` (one Cypher step, 240 uses); `manage_dynamic_tool` was called 8 times ever (2026-09-07, 09-26) and left nothing behind; 7 of 8 `:Procedure` nodes are orphans from February and March.
+- **A `tools/` seed kind:** `{name, description, kind: cypher, input_schema, cypher, limit?}`. It runs through `neo4j_query`'s own read path (read-only, schema guard, LIMIT injection, `{count, rows}`), so `list_tasks` (now `plugins/core/tools/list_tasks.yaml`) answers exactly as before. Arguments become Cypher parameters; every declared property is required or has a default. Tools are read from the loaded bundles at start (like profile extensions); one whose name is taken is refused with the reason. Only `cypher` exists: a kind arrives with its first tool.
+- **Deleted:** `DynamicSkill`, `manage_dynamic_tool` (tombstone → `manage_plugin`), the procedure executor, `seed_built_ins`, and the live `:DynamicTool` / `:Procedure` nodes (backed up first). The five `:ApiContext` seeds hardcoded in Rust become an `apis/` seed kind (ON CREATE, like sources).
+- **`manage_plugin` (list, get, write, delete)** writes brain-authored bundles to `PLUGINS_RUNTIME_DIR` (`plugins-runtime/` in the repo, so they show in `git status`). Every file is checked by the parser that loads it (workflow steps against the live tools and their schemas, tools against the Cypher guard), and nothing is written unless all pass. **A runtime bundle never loads by itself:** it waits for the owner to add it to `PLUGINS_ENABLED`, and each write puts a review item in the Feed. A plugin can add prompt sections to the front-door profile, so a bundle the brain was talked into writing must not take effect without a person. It cannot touch a bundle it did not write.
+
+**3d result (2026-10-11).** Built as designed (`skills/bundle_tools.rs`, `skills/plugin_manager.rs`). Deleted `DynamicSkill`, the procedure executor, `manage_dynamic_tool` (tombstoned; `execute_procedure`'s tombstone now points at `manage_plugin`), `/api/tools/dynamic`, snapshot procedures and the `DynamicTool`/`Procedure` constraints; `seed_built_ins` became `seed_bundles`. `scripts/phase3d_cleanup.cypher` removed the 9 nodes (backup in `backups/`). Verified live:
+- `list_tasks` from `plugins/core/tools/` returns the same `{count, rows}` with the same 12 columns.
+- The five ApiContexts are unchanged.
+- The registry shows `list_tasks` as a core declared tool.
+- One bad `manage_plugin` write was refused with all four problems listed: a core-only kind, a writing query, a taken tool name, an unknown step tool. A shipped name was refused.
+- A valid bundle (a declared tool plus a workflow calling it) was written with a Feed item and stayed unloaded. Added to `PLUGINS_ENABLED`, it loaded and its tool answered. Deleted and restarted without it, the tool was gone with no tombstone and its workflow was marked unavailable (probe removed).
+- The profile lint flagged `toolsmith`, which was still about dynamic tools; it is rewritten around `manage_plugin`.
+
+Rules: `dev_docs get plugins/declared-tools`, `dev_docs get plugins/manage-plugin`.
 
 **3a decisions.** Directory names stay as they are (`contexts/`, `sources-media/`): renaming to `agents/` is churn the code does not need. `architecture/` (components, layout, tombstones) is read from the core bundle only: it describes the core. Rule notes that cite `workflows/*.yaml` stay correct, read as bundle-relative.
 

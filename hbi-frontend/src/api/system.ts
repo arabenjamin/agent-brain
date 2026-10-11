@@ -42,7 +42,8 @@ export interface SystemHealth {
 export interface Registry {
   counts: Record<string, number>;
   skills: { name: string; tools: { name: string; description: string }[] }[];
-  dynamic_tools: { name: string; description: string | null }[];
+  /** Tools declared in a bundle's tools/ (skills/bundle_tools.rs), with their bundle. */
+  declared_tools: { name: string; plugin: string }[];
   agents: {
     name: string; description: string; tool_count: number; model_preference: string | null;
     provider_hint: string | null; spawnable: boolean; specialty: string | null; data_class: string | null;
@@ -197,7 +198,7 @@ export function useArchitecture() {
 /** Display names for the diff and count categories. */
 export const ARCH_CATEGORY: Record<string, string> = {
   skills: "skills", tools: "tools", routes: "routes", agents: "agents", workflows: "workflows",
-  mcp_servers: "MCP servers", dynamic_tools: "dynamic tools",
+  mcp_servers: "MCP servers", declared_tools: "declared tools",
   providers: "providers", components: "services",
 };
 

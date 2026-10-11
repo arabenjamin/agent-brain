@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -32,9 +32,9 @@ use crate::services::{
 };
 use crate::skills::{
     Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
-    codebase::CodebaseSkill, dynamic::DynamicSkill, exec::ExecSkill, http::HttpSkill,
-    knowledge::KnowledgeSkill, mcp_client::McpClientSkill, media::MediaSkill, model::ModelSkill,
-    query::QuerySkill, scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
+    codebase::CodebaseSkill, exec::ExecSkill, http::HttpSkill, knowledge::KnowledgeSkill,
+    mcp_client::McpClientSkill, media::MediaSkill, model::ModelSkill, query::QuerySkill,
+    scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
     working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
@@ -389,24 +389,11 @@ impl BrainCore {
     /// Idempotent — calling it again clears and re-registers all skills, which
     /// is useful after a `use_model` hot-swap.
     pub async fn build_skills(&self) {
-        // Seed built-in Neo4j nodes FIRST so DynamicSkill::load_from_neo4j picks them up.
+        // Seed the graph from the plugin bundles first: workflows, sources,
+        // MCP servers and API contexts the skills below read.
         if let Some(ref neo4j) = self.storage.neo4j {
-            Self::seed_built_ins(neo4j).await;
+            Self::seed_bundles(neo4j).await;
         }
-
-        // Build DynamicSkill (before taking locks) so we can share the Arc.
-        // Both the registry clone and the handler original share the same tools_map.
-        let dynamic_skill = if let Some(neo4j) = &self.storage.neo4j {
-            let d = DynamicSkill::new(
-                neo4j.clone(),
-                self.tool_handler.clone(),
-                Arc::clone(&self.tool_registry),
-            );
-            d.load_from_neo4j().await;
-            Some(d)
-        } else {
-            None
-        };
 
         // Create (or reuse) QueueService when Neo4j is available.
         let queue_arc: Option<Arc<QueueService>> = if let Some(neo4j) = &self.storage.neo4j {
@@ -655,10 +642,11 @@ impl BrainCore {
         }
 
         // Generic Neo4j + DuckDB primitives.
-        skills.push(Arc::new(QuerySkill::new(
+        let query_skill = Arc::new(QuerySkill::new(
             self.storage.neo4j.clone(),
             self.storage.telemetry.clone(),
-        )));
+        ));
+        skills.push(query_skill.clone());
         // http_request + ApiContext management.
         skills.push(Arc::new(HttpSkill::new(
             self.storage.neo4j.clone(),
@@ -712,6 +700,17 @@ impl BrainCore {
                     .with_telemetry(self.storage.telemetry.clone()),
             ));
         }
+        // Brain-drafted plugin bundles (PLUGINS_RUNTIME_DIR), checked like a save.
+        if let Some(neo4j) = &self.storage.neo4j {
+            skills.push(Arc::new(
+                crate::skills::plugin_manager::PluginManagerSkill::new(
+                    neo4j.clone(),
+                    Arc::clone(&live_tools_arc),
+                    Arc::clone(&tool_schemas_arc),
+                    self.storage.telemetry.clone(),
+                ),
+            ));
+        }
         // The user's items (todos), readable and writable by the brain.
         if let Some(neo4j) = &self.storage.neo4j {
             skills.push(Arc::new(crate::skills::todo::TodoSkill::new(
@@ -733,7 +732,7 @@ impl BrainCore {
         }
 
         // In-process plugins whose bundles loaded (services/plugins.rs). They
-        // come after every core skill and before DynamicSkill; a plugin that
+        // come after every core skill and before the declared tools; a plugin that
         // would take a name already registered is refused whole.
         {
             let taken: Vec<String> = skills
@@ -749,9 +748,19 @@ impl BrainCore {
             skills.extend(plugin_skills);
         }
 
-        // Runtime-defined tools last: a DynamicTool can never shadow a built-in.
-        if let Some(d) = dynamic_skill {
-            skills.push(Arc::new(d));
+        // Declared tools last (skills/bundle_tools.rs): one can never shadow a built-in.
+        {
+            let taken: Vec<String> = skills
+                .iter()
+                .flat_map(|s| s.tools().into_iter().map(|t| t.name))
+                .collect();
+            let (declared, status) = crate::skills::bundle_tools::BundleToolSkill::load(
+                &crate::services::plugins::Plugins::global(),
+                &taken,
+                query_skill,
+            );
+            crate::services::plugins::set_declared_status(status);
+            skills.push(Arc::new(declared));
         }
 
         // ── Registry (tools/list) ─────────────────────────────────────────
@@ -764,7 +773,7 @@ impl BrainCore {
 
         // Snapshot each tool's `input_schema`, keyed by name, for the scheduler's
         // step validation (services/validation.rs). FIRST definition wins,
-        // because dispatch is first-match too: a DynamicTool reusing a
+        // because dispatch is first-match too: a later tool reusing a
         // built-in's name never runs, but a last-wins map validated steps
         // against ITS schema — a 09-07 dynamic `ingest_api` (spec_url required)
         // made the audit reject the brain-api-sync schedule's valid call.
@@ -877,199 +886,10 @@ impl BrainCore {
     // Startup seeding
     // ========================================================================
 
-    /// Seed all built-in Neo4j nodes idempotently at every startup.
-    ///
-    /// Called at the top of [`build_skills`] — before
-    /// `DynamicSkill::load_from_neo4j()` — so every seeded `DynamicTool` is
-    /// available in the tool registry on the very first boot.
-    ///
-    /// All writes use `MERGE … ON CREATE SET` so user-edited nodes survive
-    /// restarts.
-    pub async fn seed_built_ins(neo4j: &Neo4jClient) {
-        let ts = chrono::Utc::now().to_rfc3339();
-
-        // ── ApiContext nodes ──────────────────────────────────────────────
-        // GitHub — always update so the standard headers stay current.
-        let default_hdrs =
-            r#"{"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}"#;
-        let cypher = "MERGE (c:ApiContext {name: 'github'}) \
-                      SET c.base_url        = 'https://api.github.com', \
-                          c.auth_scheme     = 'bearer', \
-                          c.auth_param      = 'Authorization', \
-                          c.auth_env_var    = 'GITHUB_TOKEN', \
-                          c.default_headers = $hdrs, \
-                          c.description     = 'GitHub REST API v3'";
-        if let Err(e) = neo4j
-            .run(neo4rs::query(cypher).param("hdrs", default_hdrs))
-            .await
-        {
-            warn!(error = %e, "Failed to seed github ApiContext (non-fatal)");
-        }
-
-        // Search engines — ON CREATE only so user overrides survive.
-        for (name, base_url, scheme, param, env_var, desc) in [
-            (
-                "serpapi",
-                "https://serpapi.com",
-                "query_param",
-                "api_key",
-                "SERPAPI_KEY",
-                "SerpApi search engine",
-            ),
-            (
-                "brave",
-                "https://api.search.brave.com",
-                "header",
-                "X-Subscription-Token",
-                "BRAVE_API_KEY",
-                "Brave Search API",
-            ),
-            (
-                "google_cse",
-                "https://www.googleapis.com/customsearch/v1",
-                "query_param",
-                "key",
-                "GOOGLE_API_KEY",
-                "Google Custom Search Engine",
-            ),
-            (
-                "apitube",
-                "https://api.apitube.io/v1",
-                "header",
-                "X-API-Key",
-                "APITUBE_API_KEY",
-                "ApiTube news API — structured, dated news articles (results[]: title, href, published_at, source.domain, description)",
-            ),
-        ] {
-            let q = "MERGE (c:ApiContext {name: $name}) \
-                     ON CREATE SET c.base_url     = $base_url, \
-                                   c.auth_scheme  = $scheme, \
-                                   c.auth_param   = $param, \
-                                   c.auth_env_var = $env_var, \
-                                   c.description  = $desc";
-            if let Err(e) = neo4j
-                .run(
-                    neo4rs::query(q)
-                        .param("name", name)
-                        .param("base_url", base_url)
-                        .param("scheme", scheme)
-                        .param("param", param)
-                        .param("env_var", env_var)
-                        .param("desc", desc),
-                )
-                .await
-            {
-                warn!(name = name, error = %e, "Failed to seed search ApiContext (non-fatal)");
-            }
-        }
-        if let Ok(cx) = std::env::var("GOOGLE_CX") {
-            let _ = neo4j
-                .run(
-                    neo4rs::query(
-                        "MATCH (c:ApiContext {name: 'google_cse'}) SET c.google_cx = $cx",
-                    )
-                    .param("cx", cx),
-                )
-                .await;
-        }
-
-        // ── Procedure + DynamicTool pairs ─────────────────────────────────
-        // Retired built-ins (list_sessions, get_job_result, search_procedures,
-        // list_notes) are removed from the graph by scripts/phase0_cleanup.cypher.
-        let tools: &[(&str, &str, &str, &str, &str)] = &[(
-            "list_tasks",
-            "List tasks, OPEN WORK FIRST (created/in_progress/blocked, then failed, then \
-                 completed), including parent_id for sub-tasks. Every row also carries \
-                 whole-graph status totals (total_tasks, status_failed, …). This is a 20-row \
-                 WINDOW, not the full set — judge overall state from the totals, never from \
-                 the rows. For other filtering use neo4j_query directly.",
-            r#"{"type":"object","properties":{}}"#,
-            // Ordering and totals both exist to prevent one specific failure:
-            // asked "where did we leave off", the brain called this tool, got
-            // 20 recently-completed rows, and reported a "clean slate" while
-            // 210 tasks sat failed. Newest-first hid the open work; no totals
-            // meant the window looked like the whole picture.
-            "MATCH (t:Task) \
-                 WITH count(t) AS total_tasks, \
-                      sum(CASE WHEN t.status = 'created'     THEN 1 ELSE 0 END) AS status_created, \
-                      sum(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS status_in_progress, \
-                      sum(CASE WHEN t.status = 'blocked'     THEN 1 ELSE 0 END) AS status_blocked, \
-                      sum(CASE WHEN t.status = 'failed'      THEN 1 ELSE 0 END) AS status_failed, \
-                      sum(CASE WHEN t.status = 'completed'   THEN 1 ELSE 0 END) AS status_completed \
-                 MATCH (t2:Task) \
-                 OPTIONAL MATCH (t2)-[:SUBTASK_OF]->(parent:Task) \
-                 WITH total_tasks, status_created, status_in_progress, status_blocked, \
-                      status_failed, status_completed, t2, parent \
-                 ORDER BY CASE \
-                            WHEN t2.status IN ['created', 'in_progress', 'blocked'] THEN 0 \
-                            WHEN t2.status = 'failed' THEN 1 \
-                            ELSE 2 END, \
-                          t2.created_at DESC \
-                 LIMIT 20 \
-                 RETURN t2.id AS id, t2.goal AS goal, t2.status AS status, \
-                        t2.context AS context, toString(t2.created_at) AS created_at, \
-                        parent.id AS parent_id, \
-                        total_tasks, status_created, status_in_progress, \
-                        status_blocked, status_failed, status_completed",
-            "List tasks with open work first, plus whole-graph status totals",
-        )];
-
-        for (name, description, schema, query, purpose) in tools {
-            let steps = serde_json::to_string(&json!([{
-                "tool":    "neo4j_query",
-                "args":    { "cypher": query },
-                "purpose": purpose,
-            }]))
-            .unwrap();
-
-            let q1 = "MERGE (p:Procedure {name: $name}) \
-                      ON CREATE SET p.id = $id, p.created_at = datetime($ts) \
-                      SET p.description = $description, p.steps = $steps";
-            if let Err(e) = neo4j
-                .run(
-                    neo4rs::query(q1)
-                        .param("name", *name)
-                        .param("id", uuid::Uuid::new_v4().to_string())
-                        .param("ts", ts.as_str())
-                        .param("description", *description)
-                        .param("steps", steps),
-                )
-                .await
-            {
-                warn!(name = *name, error = %e, "seed_built_ins: failed to upsert Procedure");
-                continue;
-            }
-
-            let q2 = "MERGE (d:DynamicTool {name: $name}) \
-                      ON CREATE SET d.id = $id, d.created_at = datetime($ts) \
-                      SET d.description = $description, d.input_schema = $schema";
-            if let Err(e) = neo4j
-                .run(
-                    neo4rs::query(q2)
-                        .param("name", *name)
-                        .param("id", uuid::Uuid::new_v4().to_string())
-                        .param("ts", ts.as_str())
-                        .param("description", *description)
-                        .param("schema", *schema),
-                )
-                .await
-            {
-                warn!(name = *name, error = %e, "seed_built_ins: failed to upsert DynamicTool");
-                continue;
-            }
-
-            let q3 = "MATCH (d:DynamicTool {name: $name}), (p:Procedure {name: $name}) \
-                      MERGE (d)-[:USES]->(p)";
-            if let Err(e) = neo4j.run(neo4rs::query(q3).param("name", *name)).await {
-                warn!(name = *name, error = %e, "seed_built_ins: failed to create [:USES] edge");
-            } else {
-                debug!(
-                    name = *name,
-                    "seed_built_ins: upserted DynamicTool+Procedure pair"
-                );
-            }
-        }
-
+    /// Seed the graph from the plugin bundles (`services/plugins.rs`):
+    /// source lists, media sources, MCP servers and API contexts (ON CREATE),
+    /// then workflows. Refuses to start without the core bundle.
+    pub async fn seed_bundles(neo4j: &Neo4jClient) {
         // ── Plugin bundles (services/plugins.rs) ──────────────────────────
         // The core bundle must load: without it there are no workflows,
         // profiles or schemas, and a brain that starts anyway runs blind.

@@ -35,6 +35,24 @@ pub struct QuerySkill {
 /// that as `RETURN can only be used at the end of the query`, pointing at the
 /// RETURN rather than the duplicated clause, so the caller sees a syntax error
 /// in Cypher it wrote correctly and has no way to reach the real cause.
+/// The first write keyword in `cypher`, if any. A keyword counts as a whole
+/// word: exact, or followed by a non-word character (`CREATE(` is a write;
+/// `created_at` is not).
+pub(crate) fn write_keyword(cypher: &str) -> Option<&'static str> {
+    let upper = cypher.to_uppercase();
+    [
+        "CREATE", "MERGE", "SET", "DELETE", "REMOVE", "DETACH", "DROP",
+    ]
+    .into_iter()
+    .find(|kw| {
+        upper.split_whitespace().any(|w| {
+            w == *kw
+                || (w.starts_with(kw)
+                    && w[kw.len()..].starts_with(|c: char| !c.is_alphanumeric() && c != '_'))
+        })
+    })
+}
+
 fn needs_limit_injection(cypher: &str) -> bool {
     let mut returns = false;
     let mut limits = false;
@@ -830,26 +848,12 @@ impl QuerySkill {
 
         // Safety guard for read-only mode — checked before the DB call so it
         // fires even when Neo4j is unavailable (fail-fast on bad input).
-        if input.readonly {
-            let upper = input.cypher.to_uppercase();
-            for kw in &[
-                "CREATE", "MERGE", "SET", "DELETE", "REMOVE", "DETACH", "DROP",
-            ] {
-                // Match the keyword as a whole word: exact equality or followed by a
-                // non-word char (e.g. "CREATE(" is still a write op). This prevents
-                // false positives on identifiers like "created_at" or "CREATED_AT,".
-                if upper.split_whitespace().any(|w| {
-                    w == *kw
-                        || (w.starts_with(kw)
-                            && w[kw.len()..]
-                                .starts_with(|c: char| !c.is_alphanumeric() && c != '_'))
-                }) {
-                    return ToolCallResult::error(format!(
-                        "Write keyword '{}' rejected in readonly mode. Pass readonly=false to allow writes.",
-                        kw
-                    ));
-                }
-            }
+        if input.readonly
+            && let Some(kw) = write_keyword(&input.cypher)
+        {
+            return ToolCallResult::error(format!(
+                "Write keyword '{kw}' rejected in readonly mode. Pass readonly=false to allow writes."
+            ));
         }
 
         let Some(ref neo4j) = self.neo4j else {

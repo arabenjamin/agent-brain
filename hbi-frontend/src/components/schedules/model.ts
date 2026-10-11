@@ -120,8 +120,8 @@ export const TOOL_GROUPS: { group: string; tools: string[] }[] = [
     tools: ["manage_workflow", "scheduler_control"],
   },
   {
-    group: "Dynamic tools",
-    tools: ["manage_dynamic_tool"],
+    group: "Plugins",
+    tools: ["manage_plugin"],
   },
   {
     group: "Query",
