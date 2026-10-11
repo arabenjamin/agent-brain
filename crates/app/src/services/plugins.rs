@@ -380,6 +380,8 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
     vec![
         Arc::new(agent_brain_plugin_osint_data::OsintData),
         Arc::new(agent_brain_plugin_media::Media),
+        Arc::new(agent_brain_plugin_alias_judge::AliasJudge),
+        Arc::new(agent_brain_plugin_reference::Reference),
     ]
 }
 
@@ -389,6 +391,35 @@ pub type Accepted = (Arc<dyn Plugin>, PluginContext);
 fn retrieval_cell() -> &'static RwLock<Vec<&'static str>> {
     static C: OnceLock<RwLock<Vec<&'static str>>> = OnceLock::new();
     C.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+fn router_cell() -> &'static RwLock<HashMap<String, agent_brain_plugin_api::axum::Router>> {
+    static C: OnceLock<RwLock<HashMap<String, agent_brain_plugin_api::axum::Router>>> =
+        OnceLock::new();
+    C.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// An accepted plugin's HTTP routes (`Plugin::routes`), served by the host
+/// under `/api/plugins/<name>/`. `None` = not loaded, or no routes.
+pub fn plugin_router(name: &str) -> Option<agent_brain_plugin_api::axum::Router> {
+    router_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .cloned()
+}
+
+static BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let plugins start background loops (`PluginContext::background_allowed`).
+/// Only the deployed brain (the HTTP server) sets it, before the brain is
+/// built: a stdio session alongside it must not run them too.
+pub fn set_background_allowed(allowed: bool) {
+    BACKGROUND.store(allowed, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn background_allowed() -> bool {
+    BACKGROUND.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Tools the accepted plugins say count as retrieval (the chat write guard).
@@ -469,6 +500,7 @@ pub fn plugin_skills(
 ) -> (Vec<Arc<dyn agent_brain_plugin_api::Skill>>, Vec<Accepted>) {
     let mut accepted: Vec<Accepted> = Vec::new();
     let mut retrieval: Vec<&'static str> = Vec::new();
+    let mut routers: HashMap<String, agent_brain_plugin_api::axum::Router> = HashMap::new();
     let mut claimed: Vec<String> = taken.to_vec();
     let mut status: HashMap<String, CodeStatus> = HashMap::new();
     let mut out: Vec<Arc<dyn agent_brain_plugin_api::Skill>> = Vec::new();
@@ -488,7 +520,7 @@ pub fn plugin_skills(
             }
             continue;
         };
-        let ctx = host.context(&b.name, Arc::clone(&env));
+        let ctx = host.context(&b.name, &b.root, Arc::clone(&env));
         let skills = plugin.tools(&ctx);
         let names: Vec<String> = skills
             .iter()
@@ -530,10 +562,14 @@ pub fn plugin_skills(
         );
         out.extend(skills);
         retrieval.extend(plugin.retrieval_tools());
+        if let Some(r) = plugin.routes(&ctx) {
+            routers.insert(b.name.clone(), r);
+        }
         accepted.push((Arc::clone(plugin), ctx));
     }
     *code_cell().write().unwrap_or_else(|e| e.into_inner()) = status;
     *retrieval_cell().write().unwrap_or_else(|e| e.into_inner()) = retrieval;
+    *router_cell().write().unwrap_or_else(|e| e.into_inner()) = routers;
     (out, accepted)
 }
 

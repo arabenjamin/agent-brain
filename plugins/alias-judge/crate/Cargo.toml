@@ -1,0 +1,15 @@
+[package]
+name = "agent-brain-plugin-alias-judge"
+version.workspace = true
+edition.workspace = true
+
+# A plugin crate depends on agent-brain-plugin-api and external crates only
+# (scripts/check_plugin_deps.sh).
+[dependencies]
+agent-brain-plugin-api = { path = "../../../crates/plugin-api" }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,8 @@
+# What an entity is, from public references: Wikidata/Wikipedia reference
+# links (proposals the person confirms), fine kinds from kinds.yaml, and
+# Wikipedia background for research. Rust code in crate/ (two tools and the
+# routes under /api/plugins/reference/). Needs WIKIMEDIA_CONTACT to look
+# anything up; without it the tools and routes say so.
+name: reference
+version: 1
+description: "Reference links (link_entities, the entity-linking workflow), entity kinds from Wikidata classes (kinds.yaml, type questions), and Wikipedia background (wiki_background), with their HBI routes."

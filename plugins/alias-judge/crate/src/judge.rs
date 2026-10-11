@@ -15,15 +15,21 @@
 //!   verdict from another prompt version or model is judged again.
 //! - **Runs** on idle time, one pair at a time, with a short `keep_alive` so
 //!   the model leaves the GPU right after a batch.
+//! - **Sorting** by the stored verdict (`rank`) is the core's
+//!   (`entity_resolution`): with this plugin off, candidates are unranked.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use agent_brain_plugin_api::graph::query;
+use agent_brain_plugin_api::{Graph, PluginContext};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::repository::Neo4jClient;
+/// Host Ollama when `OLLAMA_LOCAL_URL` is unset (the core's default).
+const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 /// Bumped whenever the question, the criteria or their order change, so old
 /// verdicts are redone. `v2` was sent with alphabetical keys by mistake.
@@ -147,21 +153,6 @@ pub fn parse_answer(resp: &Value) -> Result<Verdict> {
     })
 }
 
-/// A "same" below this probability only leans same: on the 28 held-out pairs
-/// both of its wrong "same" answers were under 0.6.
-pub const CONFIDENT_SAME: f64 = 0.7;
-
-/// Where a candidate sorts: confident-same first, then leaning-same and not
-/// yet judged, then related, then different.
-pub fn rank(verdict: Option<&str>, p_same: f64) -> u8 {
-    match verdict {
-        Some("same") if p_same >= CONFIDENT_SAME => 0,
-        Some("same") | None => 1,
-        Some("related") => 2,
-        _ => 3,
-    }
-}
-
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -182,10 +173,10 @@ fn http() -> &'static reqwest::Client {
 }
 
 /// The texts the judge reads: notes that mention both, then each alone.
-async fn state(neo4j: &Neo4jClient, from: &str, into: &str) -> Result<State> {
-    let rows = neo4j
+async fn state(graph: &Arc<dyn Graph>, from: &str, into: &str) -> Result<State> {
+    let rows = graph
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) \
                  RETURN a.name AS an, b.name AS bn, \
                    [(a)<-[:MENTIONS]-(n:Note)-[:MENTIONS]->(b) | n.content][..$k] AS both, \
@@ -215,11 +206,10 @@ async fn state(neo4j: &Neo4jClient, from: &str, into: &str) -> Result<State> {
 }
 
 /// Judge one candidate pair and store the verdict.
-pub async fn judge(neo4j: &Neo4jClient, from: &str, into: &str) -> Result<Verdict> {
+pub async fn judge(graph: &Arc<dyn Graph>, from: &str, into: &str) -> Result<Verdict> {
     let model = model().context("the alias judge is off (ALIAS_JUDGE_MODEL=off)")?;
-    let base = std::env::var("OLLAMA_LOCAL_URL")
-        .unwrap_or_else(|_| crate::services::llm::DEFAULT_OLLAMA_URL.to_string());
-    let body = request(&model, &state(neo4j, from, into).await?);
+    let base = std::env::var("OLLAMA_LOCAL_URL").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
+    let body = request(&model, &state(graph, from, into).await?);
     let resp = http()
         .post(format!("{}/v1/systemone", base.trim_end_matches('/')))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -236,9 +226,9 @@ pub async fn judge(neo4j: &Neo4jClient, from: &str, into: &str) -> Result<Verdic
         );
     }
     let v = parse_answer(&serde_json::from_str(&text).context("alias judge: not JSON")?)?;
-    neo4j
+    graph
         .run(
-            neo4rs::query(
+            query(
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) \
                  MERGE (a)-[v:ALIAS_VERDICT]->(b) \
                  SET v.verdict = $verdict, v.p_same = $ps, v.p_related = $pr, v.p_different = $pd, \
@@ -258,7 +248,15 @@ pub async fn judge(neo4j: &Neo4jClient, from: &str, into: &str) -> Result<Verdic
 }
 
 /// The idle-time judge: candidates with no current verdict, a few per pass.
-pub fn spawn(neo4j: Neo4jClient) {
+pub fn spawn(ctx: &PluginContext) {
+    if !ctx.background_allowed() {
+        return;
+    }
+    let (Some(graph), Some(entities)) = (ctx.graph.clone(), ctx.entities.clone()) else {
+        warn!("alias judge: the host gave no graph or entities; not started");
+        return;
+    };
+    let ctx = ctx.clone();
     let Some(model) = model() else {
         info!("Alias judge disabled (ALIAS_JUDGE_MODEL=off)");
         return;
@@ -268,16 +266,10 @@ pub fn spawn(neo4j: Neo4jClient) {
         const IDLE_POLL: Duration = Duration::from_secs(120);
         loop {
             tokio::time::sleep(IDLE_POLL).await;
-            if crate::services::topics::busy(&neo4j).await {
+            if ctx.busy().await {
                 continue;
             }
-            let cands = match crate::services::entity_resolution::candidates(
-                &neo4j,
-                None,
-                usize::MAX,
-            )
-            .await
-            {
+            let cands = match entities.merge_candidates(None, usize::MAX).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(error = %e, "alias judge: could not list candidates");
@@ -301,10 +293,10 @@ pub fn spawn(neo4j: Neo4jClient) {
                 .collect();
             let mut done = 0;
             for (a, b) in waiting.iter().take(BATCH) {
-                if crate::services::topics::busy(&neo4j).await {
+                if ctx.busy().await {
                     break;
                 }
-                match judge(&neo4j, a, b).await {
+                match judge(&graph, a, b).await {
                     Ok(_) => done += 1,
                     Err(e) => {
                         // Usually the model is missing or Ollama is down: wait a pass.
@@ -346,21 +338,6 @@ mod tests {
         assert!(e.contains("model not found"), "{e}");
         let r = json!({"answers": {"same": {"choice": "maybe", "probabilities": {}}}});
         assert!(parse_answer(&r).unwrap_err().to_string().contains("maybe"));
-    }
-
-    #[test]
-    fn confident_same_sorts_first_and_different_last() {
-        let mut v = vec![
-            (Some("different"), 0.0),
-            (None, 0.0),
-            (Some("same"), 0.95),
-            (Some("related"), 0.1),
-            (Some("same"), 0.55),
-        ];
-        v.sort_by_key(|(x, p)| rank(*x, *p));
-        assert_eq!(v[0], (Some("same"), 0.95));
-        assert_eq!(rank(Some("same"), 0.55), rank(None, 0.0));
-        assert_eq!(v[4], (Some("different"), 0.0));
     }
 
     #[test]

@@ -146,10 +146,10 @@ services:
       - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-false}
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       # Merge candidates get a verdict from this host-Ollama classifier on idle
-      # time (services/alias_judge.rs); "off" turns it off. Needs `ollama pull nimble`.
+      # time (plugins/alias-judge/crate/src/judge.rs); "off" turns it off. Needs `ollama pull nimble`.
       - ALIAS_JUDGE_MODEL=${ALIAS_JUDGE_MODEL:-nimble}
       # Wikimedia asks automated clients for a contact in the user agent; entity
-      # linking (services/wiki.rs) refuses to look anything up without one. Set in .env.
+      # linking (plugins/reference/crate/src/wiki.rs) refuses to look anything up without one. Set in .env.
       - WIKIMEDIA_CONTACT=${WIKIMEDIA_CONTACT-}
       # Keep local models resident between chain steps. Steps run serially with
       # gaps, so at Ollama's 5m default the background model and bge-m3 are
@@ -223,7 +223,7 @@ services:
       # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge}
       # Bundles the brain drafts (manage_plugin). Inert until PLUGINS_ENABLED names one.
       - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image

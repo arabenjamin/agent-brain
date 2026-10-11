@@ -1,32 +1,40 @@
 //! `link_entities`: Wikidata/Wikipedia reference links for entities, as
-//! proposals (HBI plan Phase 18, `services/wiki.rs`). Run hourly by
+//! proposals (HBI plan Phase 18, `wiki.rs`). Run hourly by
 //! `workflows/entity-linking.yaml`, whose step pins the cloud model, and once
 //! per entity when the user presses "Look up" in its drawer.
 //!
 //! `wiki_background`: Wikipedia as the first step of researching a question
-//! (Phase 21, `services/wiki_background.rs`), used by the knowledge-gap chain.
+//! (Phase 21, `background.rs`), used by the knowledge-gap chain.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
+use agent_brain_plugin_api::{
+    Knowledge, Llm as LlmProvider, Skill, ToolCallResult, ToolDefinition, async_trait,
+};
 use serde_json::{Value, json};
 
-use crate::repository::Neo4jClient;
-use crate::services::LlmProvider;
-use crate::skills::Skill;
-use agent_brain_protocol::{ToolCallResult, ToolDefinition};
+use crate::db::Db;
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 40;
 
 pub struct WikiSkill {
-    neo4j: Neo4jClient,
+    neo4j: Db,
     llm: Arc<dyn LlmProvider>,
+    knowledge: Option<Arc<dyn Knowledge>>,
 }
 
 impl WikiSkill {
-    pub fn new(neo4j: Neo4jClient, llm: Arc<dyn LlmProvider>) -> Self {
-        Self { neo4j, llm }
+    pub fn new(
+        neo4j: Db,
+        llm: Arc<dyn LlmProvider>,
+        knowledge: Option<Arc<dyn Knowledge>>,
+    ) -> Self {
+        Self {
+            neo4j,
+            llm,
+            knowledge,
+        }
     }
 
     fn def() -> ToolDefinition {
@@ -84,8 +92,7 @@ impl WikiSkill {
     }
 
     async fn background(&self, args: Value) -> ToolCallResult {
-        use crate::services::traits::WorkingMemoryStore;
-        use crate::services::wiki_background as wb;
+        use crate::background as wb;
         let Some(q) = args["question"]
             .as_str()
             .map(str::trim)
@@ -93,7 +100,7 @@ impl WikiSkill {
         else {
             return ToolCallResult::error("`question` is required");
         };
-        if crate::services::wiki::contact().is_none() {
+        if crate::wiki::contact().is_none() {
             return ToolCallResult::error(
                 "WIKIMEDIA_CONTACT is not set: Wikimedia asks automated clients for a contact",
             );
@@ -105,18 +112,12 @@ impl WikiSkill {
         };
         let mut banked = false;
         if let Some(sid) = args["session_id"].as_str().filter(|s| !s.trim().is_empty()) {
-            match self
-                .neo4j
-                .push_entry(
-                    &uuid::Uuid::new_v4().to_string(),
-                    sid,
-                    &text,
-                    "observation",
-                    &chrono::Utc::now().to_rfc3339(),
-                )
-                .await
-            {
-                Ok(_) => banked = true,
+            let pushed = match &self.knowledge {
+                Some(k) => k.push_session_entry(sid, &text, "observation").await,
+                None => Err(anyhow::anyhow!("the host gave no working memory")),
+            };
+            match pushed {
+                Ok(()) => banked = true,
                 Err(e) => {
                     return ToolCallResult::error(format!(
                         "Wikipedia background found, but not pushed to {sid}: {e}"
@@ -153,7 +154,7 @@ impl Skill for WikiSkill {
         let entity_id = args["entity_id"].as_str().filter(|s| !s.trim().is_empty());
         let on_demand = args["on_demand"].as_bool().unwrap_or(false);
         Some(
-            match crate::services::wiki::link_entities(
+            match crate::wiki::link_entities(
                 &self.neo4j,
                 self.llm.as_ref(),
                 limit,

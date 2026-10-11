@@ -19,7 +19,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, Sse},
-    routing::{delete, get, post, put},
+    routing::{any, delete, get, post, put},
 };
 use futures_util::stream::{Stream, StreamExt};
 use serde_json::Value;
@@ -368,6 +368,8 @@ impl HttpTransport {
                 get(crate::clients::system::handle_registry),
             )
             .route("/api/plugins", get(crate::clients::system::handle_plugins))
+            // Each loaded plugin's own routes (`Plugin::routes`), under its name.
+            .route("/api/plugins/{plugin}/{*rest}", any(plugin_route))
             .route(
                 "/api/architecture",
                 get(crate::clients::architecture::handle_architecture),
@@ -549,43 +551,6 @@ impl HttpTransport {
             .route(
                 "/api/relations/proposed",
                 get(crate::clients::related::handle_proposed_relations),
-            )
-            .route(
-                "/api/entities/{id}/wiki",
-                get(crate::clients::wiki::handle_entity_wiki),
-            )
-            .route(
-                "/api/entities/{id}/wiki/lookup",
-                post(crate::clients::wiki::handle_entity_wiki_lookup),
-            )
-            .route(
-                "/api/entities/{id}/wiki/decide",
-                post(crate::clients::wiki::handle_entity_wiki_decide),
-            )
-            .route(
-                "/api/entities/{id}/wiki/url",
-                post(crate::clients::wiki::handle_entity_wiki_url),
-            )
-            .route(
-                "/api/entities/types",
-                get(crate::clients::wiki::handle_entity_types),
-            )
-            .route(
-                "/api/entities/{id}/type",
-                put(crate::clients::wiki::handle_set_entity_type)
-                    .delete(crate::clients::wiki::handle_unlock_entity_type),
-            )
-            .route(
-                "/api/entities/{id}/type/answer",
-                post(crate::clients::wiki::handle_answer_entity_type),
-            )
-            .route(
-                "/api/wiki/describe",
-                post(crate::clients::wiki::handle_wiki_describe),
-            )
-            .route(
-                "/api/wiki/coverage",
-                get(crate::clients::wiki::handle_wiki_coverage),
             )
             .route(
                 "/api/entities/{id}/related",
@@ -1210,6 +1175,46 @@ impl IntoResponse for McpHttpError {
         };
 
         (status, Json(error)).into_response()
+    }
+}
+
+/// `/api/plugins/{plugin}/{*rest}`: hand the request to that plugin's router
+/// with the path made relative (`/rest`, query kept). 404 when the plugin is
+/// not loaded or has no routes.
+async fn plugin_route(
+    axum::extract::Path((plugin, rest)): axum::extract::Path<(String, String)>,
+    req: Request<Body>,
+) -> Response {
+    use tower::ServiceExt;
+    let Some(router) = crate::services::plugins::plugin_router(&plugin) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("plugin '{plugin}' is not loaded or has no routes")
+            })),
+        )
+            .into_response();
+    };
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    // A fresh request, not the old one with its URI swapped: axum keeps this
+    // route's path parameters (`plugin`, `rest`) in the extensions, and the
+    // plugin's own `Path` extractor would see them too.
+    let (parts, body) = req.into_parts();
+    let Ok(uri) = format!("/{rest}{query}").parse::<axum::http::Uri>() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let mut inner = Request::new(body);
+    *inner.method_mut() = parts.method;
+    *inner.uri_mut() = uri;
+    *inner.version_mut() = parts.version;
+    *inner.headers_mut() = parts.headers;
+    match router.oneshot(inner).await {
+        Ok(r) => r.into_response(),
+        Err(e) => match e {},
     }
 }
 

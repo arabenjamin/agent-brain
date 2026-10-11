@@ -1,0 +1,6 @@
+# Ranks entity merge candidates with a local classifier (nimble on host
+# Ollama's /v1/systemone). Rust code in crate/; no tools, an idle-time loop.
+# ALIAS_JUDGE_MODEL=off stops it without disabling the plugin.
+name: alias-judge
+version: 1
+description: "Alias verdicts: judges each entity merge candidate (same / related / different, with probabilities) on idle time, so the merge review sorts the likely ones first. The person still decides every merge."

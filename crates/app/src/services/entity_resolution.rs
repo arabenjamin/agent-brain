@@ -1191,6 +1191,22 @@ pub fn find_candidates(entities: &[CandEntity], rules: &Rules) -> Vec<Candidate>
     out
 }
 
+/// A stored alias verdict's "same" below this probability only leans same:
+/// on the 28 held-out pairs both of the judge's wrong "same" answers were
+/// under 0.6. (The judge itself is the `alias-judge` plugin.)
+pub const CONFIDENT_SAME: f64 = 0.7;
+
+/// Where a candidate sorts by its stored `ALIAS_VERDICT`: confident-same
+/// first, then leaning-same and not yet judged, then related, then different.
+pub fn rank(verdict: Option<&str>, p_same: f64) -> u8 {
+    match verdict {
+        Some("same") if p_same >= CONFIDENT_SAME => 0,
+        Some("same") | None => 1,
+        Some("related") => 2,
+        _ => 3,
+    }
+}
+
 /// GET /api/entities/candidates — proposals, ranked by shared notes, then
 /// by how often the rarer of the two is mentioned. Pairs a person already
 /// answered (`NOT_SAME`, `RELATED_ENTITY`) are left out. `entity` narrows to
@@ -1332,7 +1348,7 @@ pub async fn candidates(neo4j: &Neo4jClient, entity: Option<&str>, limit: usize)
             .filter(|o| o.from_id == c.from_id && o.into_id != c.into_id)
             .count();
         out.push((
-            crate::services::alias_judge::rank(
+            rank(
                 judge["verdict"].as_str(),
                 judge["p_same"].as_f64().unwrap_or(0.0),
             ),
@@ -1772,5 +1788,20 @@ entities:
             !c.iter().any(|x| x.from_id == "4" && x.reason == "acronym"),
             "people are not acronyms"
         );
+    }
+
+    #[test]
+    fn confident_same_sorts_first_and_different_last() {
+        let mut v = [
+            (Some("different"), 0.0),
+            (None, 0.0),
+            (Some("same"), 0.95),
+            (Some("related"), 0.1),
+            (Some("same"), 0.55),
+        ];
+        v.sort_by_key(|(x, p)| rank(*x, *p));
+        assert_eq!(v[0], (Some("same"), 0.95));
+        assert_eq!(rank(Some("same"), 0.55), rank(None, 0.0));
+        assert_eq!(v[4], (Some("different"), 0.0));
     }
 }

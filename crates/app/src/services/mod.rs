@@ -1,5 +1,4 @@
 pub mod agent_runner;
-pub mod alias_judge;
 pub mod architecture;
 pub mod budget;
 pub mod claim_rewrite;
@@ -8,7 +7,6 @@ pub mod clock;
 pub mod context_builder;
 pub mod cypher_guard;
 pub mod dev_notes;
-pub mod entity_kinds;
 pub mod entity_resolution;
 pub mod gpu_lease;
 pub mod graph_schema;
@@ -39,8 +37,6 @@ pub mod topics;
 pub mod traits;
 pub mod validation;
 pub mod web_result;
-pub mod wiki;
-pub mod wiki_background;
 pub mod workflow_seeder;
 pub mod workflows;
 

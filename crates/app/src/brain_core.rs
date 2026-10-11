@@ -623,11 +623,6 @@ impl BrainCore {
                 neo4j.clone(),
                 Arc::clone(&llm),
             )));
-            // Reference links — Wikidata items for entities (Phase 18).
-            skills.push(Arc::new(crate::skills::wiki::WikiSkill::new(
-                neo4j.clone(),
-                Arc::clone(&llm),
-            )));
         }
 
         // Claims — epistemic status for ingested assertions.
@@ -731,6 +726,7 @@ impl BrainCore {
                 knowledge: knowledge.clone(),
                 llm: Some(Arc::clone(&llm)),
                 telemetry: self.storage.telemetry.clone(),
+                queue: queue_arc.clone(),
             };
             let (plugin_skills, accepted) = crate::services::plugins::plugin_skills(
                 &crate::services::plugins::Plugins::global(),

@@ -4,7 +4,7 @@
 //!   (location, organisation, …); `kind` is the fine one (country,
 //!   municipality, news outlet, …), derived from the entity's reference link.
 //! - **Derived, not judged.** A linked Wikidata item's instance-of classes are
-//!   walked up subclass-of to the roots in `entities/kinds.yaml`; the root
+//!   walked up subclass-of to the roots in the bundle's `kinds.yaml`; the root
 //!   reached in the fewest hops wins, and a `fallback` kind only when nothing
 //!   specific is reachable. Measured on 228 linked entities (§12.1): matching
 //!   in list order made YouTube an event and every U.S. state a country.
@@ -23,10 +23,27 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::repository::Neo4jClient;
-use crate::services::wiki;
+use crate::db::{Db, query};
+use crate::wiki;
 
 const FILE: &str = "kinds.yaml";
+
+/// FNV-1a: a version hash that is stable across Rust releases (unlike
+/// `DefaultHasher`).
+struct Fnv(u64);
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+impl Fnv {
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= *b as u64;
+            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
 /// Linked items derived per refresh (all 228 of today's fit in one).
 const DERIVE_BATCH: i64 = 400;
 
@@ -63,7 +80,7 @@ pub struct Kind {
     pub fallback: bool,
 }
 
-/// `entities/kinds.yaml`, parsed.
+/// The bundle's `kinds.yaml`, parsed.
 #[derive(Debug)]
 pub struct KindTable {
     pub max_hops: usize,
@@ -98,7 +115,7 @@ impl KindTable {
                 roots.entry(r.clone()).or_insert(i);
             }
         }
-        let mut h = crate::services::topics::Fnv::default();
+        let mut h = Fnv::default();
         h.write(text.as_bytes());
         Ok(Self {
             max_hops: f.max_hops,
@@ -118,9 +135,9 @@ impl KindTable {
         })
     }
 
-    /// `kinds.yaml` beside the alias seed (the core bundle's `entities/`).
+    /// `kinds.yaml` at the root of this plugin's bundle.
     pub fn load() -> Result<Self> {
-        Self::load_from(&crate::services::entity_resolution::aliases_dir())
+        Self::load_from(&crate::bundle_root())
     }
 
     pub fn load_from(dir: &Path) -> Result<Self> {
@@ -227,9 +244,9 @@ pub struct Refreshed {
     pub incomplete: bool,
 }
 
-async fn class_cache(neo4j: &Neo4jClient) -> Result<HashMap<String, Vec<String>>> {
+async fn class_cache(neo4j: &Db) -> Result<HashMap<String, Vec<String>>> {
     Ok(neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (c:WikiClass) RETURN c.qid AS qid, coalesce(c.parents, []) AS parents",
         ))
         .await?
@@ -243,20 +260,20 @@ async fn class_cache(neo4j: &Neo4jClient) -> Result<HashMap<String, Vec<String>>
         .collect())
 }
 
-async fn store_classes(neo4j: &Neo4jClient, classes: &[wiki::ClassInfo]) -> Result<()> {
-    let rows: Vec<neo4rs::BoltType> = classes
+async fn store_classes(neo4j: &Db, classes: &[wiki::ClassInfo]) -> Result<()> {
+    let rows: Vec<Value> = classes
         .iter()
         .map(|c| {
-            let mut m: HashMap<String, neo4rs::BoltType> = HashMap::new();
+            let mut m = serde_json::Map::new();
             m.insert("qid".into(), c.qid.clone().into());
             m.insert("label".into(), c.label.clone().into());
             m.insert("parents".into(), c.parents.clone().into());
-            m.into()
+            Value::Object(m)
         })
         .collect();
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "UNWIND $rows AS r MERGE (c:WikiClass {qid: r.qid}) \
                  SET c.label = r.label, c.parents = r.parents, c.fetched_at = datetime()",
             )
@@ -268,11 +285,7 @@ async fn store_classes(neo4j: &Neo4jClient, classes: &[wiki::ClassInfo]) -> Resu
 
 /// Derive kinds for linked items (`entity` = only that entity's), spending at
 /// most `budget` Wikimedia requests, then apply them to entities.
-pub async fn refresh(
-    neo4j: &Neo4jClient,
-    entity: Option<&str>,
-    budget: usize,
-) -> Result<Refreshed> {
+pub async fn refresh(neo4j: &Db, entity: Option<&str>, budget: usize) -> Result<Refreshed> {
     let table = KindTable::load()?;
     let mut out = Refreshed::default();
     let mut budget = budget;
@@ -282,7 +295,7 @@ pub async fn refresh(
     // 1. Items stored before Phase 19 have no class ids.
     let old: Vec<String> = neo4j
         .execute(
-            neo4rs::query(&format!(
+            query(&format!(
                 "{linked} AND w.class_qids IS NULL RETURN DISTINCT w.qid AS qid LIMIT $n"
             ))
             .param("id", entity.map(String::from))
@@ -300,18 +313,18 @@ pub async fn refresh(
         budget -= 1;
         match wiki::class_qids_of(chunk).await {
             Ok(found) => {
-                let rows: Vec<neo4rs::BoltType> = chunk
+                let rows: Vec<Value> = chunk
                     .iter()
                     .map(|q| {
-                        let mut m: HashMap<String, neo4rs::BoltType> = HashMap::new();
+                        let mut m = serde_json::Map::new();
                         m.insert("qid".into(), q.clone().into());
                         m.insert("c".into(), found.get(q).cloned().unwrap_or_default().into());
-                        m.into()
+                        Value::Object(m)
                     })
                     .collect();
                 neo4j
                     .run(
-                        neo4rs::query("UNWIND $rows AS r MATCH (w:WikiItem {qid: r.qid}) SET w.class_qids = r.c")
+                        query("UNWIND $rows AS r MATCH (w:WikiItem {qid: r.qid}) SET w.class_qids = r.c")
                             .param("rows", rows),
                     )
                     .await?;
@@ -327,7 +340,7 @@ pub async fn refresh(
     // 2. Items whose kind is missing or from an older kinds.yaml.
     let items: Vec<(String, Vec<String>)> = neo4j
         .execute(
-            neo4rs::query(&format!(
+            query(&format!(
                 "{linked} AND w.class_qids IS NOT NULL AND coalesce(w.kind_version, '') <> $v \
                  RETURN DISTINCT w.qid AS qid, w.class_qids AS c LIMIT $n"
             ))
@@ -386,7 +399,7 @@ pub async fn refresh(
     }
 
     // 4. Walk and stamp. An incomplete walk waits for the next run.
-    let mut rows: Vec<neo4rs::BoltType> = Vec::new();
+    let mut rows: Vec<Value> = Vec::new();
     for (qid, classes) in &items {
         let (kind, ktype, refused) = match table.walk(classes, &parents) {
             Walk::Incomplete => {
@@ -401,27 +414,18 @@ pub async fn refresh(
             Walk::Refused => (None, None, true),
             Walk::Unmapped => (None, None, false),
         };
-        let mut m: HashMap<String, neo4rs::BoltType> = HashMap::new();
+        let mut m = serde_json::Map::new();
         m.insert("qid".into(), qid.clone().into());
-        m.insert(
-            "kind".into(),
-            kind.map(Into::into)
-                .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
-        );
-        m.insert(
-            "ktype".into(),
-            ktype
-                .map(Into::into)
-                .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
-        );
+        m.insert("kind".into(), kind.map(Into::into).unwrap_or(Value::Null));
+        m.insert("ktype".into(), ktype.map(Into::into).unwrap_or(Value::Null));
         m.insert("refused".into(), refused.into());
-        rows.push(m.into());
+        rows.push(Value::Object(m));
     }
     out.items_derived = rows.len();
     if !rows.is_empty() {
         neo4j
             .run(
-                neo4rs::query(
+                query(
                     "UNWIND $rows AS r MATCH (w:WikiItem {qid: r.qid}) \
                      SET w.kind = r.kind, w.kind_type = r.ktype, w.wikimedia_page = r.refused, \
                          w.kind_version = $v",
@@ -442,7 +446,7 @@ pub async fn refresh(
 
 /// Refresh one entity after the user changed its link. Never fails the
 /// caller: the hourly run catches up.
-pub async fn refresh_entity(neo4j: &Neo4jClient, entity: &str) {
+pub async fn refresh_entity(neo4j: &Db, entity: &str) {
     if let Err(e) = refresh(neo4j, Some(entity), ENTITY_BUDGET).await {
         warn!(entity, error = %e, "kinds: refresh after a reference change failed");
     }
@@ -450,16 +454,12 @@ pub async fn refresh_entity(neo4j: &Neo4jClient, entity: &str) {
 
 /// Apply derived kinds to entities. Returns (links refused, entities with a
 /// reference kind, questions open).
-async fn apply(
-    neo4j: &Neo4jClient,
-    entity: Option<&str>,
-    version: &str,
-) -> Result<(i64, i64, i64)> {
+async fn apply(neo4j: &Db, entity: Option<&str>, version: &str) -> Result<(i64, i64, i64)> {
     // A proposed link to a Wikimedia page is withdrawn. A confirmed one is the
     // user's and stays.
     let refused = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity)-[l:REFERS_TO {status: 'proposed'}]->(w:WikiItem {wikimedia_page: true}) \
                  WHERE $id IS NULL OR e.id = $id \
                  SET l.status = 'rejected', l.decided_at = datetime(), \
@@ -481,7 +481,7 @@ async fn apply(
     // the type (or kept it against this item) or it is a curated seed.
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity)-[l:REFERS_TO]->(w:WikiItem) \
                  WHERE l.status IN ['confirmed', 'proposed'] AND w.kind_version = $v \
                    AND ($id IS NULL OR e.id = $id) \
@@ -505,7 +505,7 @@ async fn apply(
     // A link that went away takes its kind and its question with it.
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity) WHERE ($id IS NULL OR e.id = $id) \
                    AND (e.kind_source = 'reference' OR e.type_question_qid IS NOT NULL) \
                    AND NOT EXISTS { MATCH (e)-[x:REFERS_TO]->() WHERE x.status IN ['proposed', 'confirmed'] } \
@@ -519,7 +519,7 @@ async fn apply(
         .await?;
 
     let counts = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (e:Entity) RETURN sum(CASE WHEN e.kind_source = 'reference' THEN 1 ELSE 0 END) AS k, \
                     sum(CASE WHEN e.type_question_qid IS NOT NULL THEN 1 ELSE 0 END) AS q",
         ))
@@ -539,12 +539,7 @@ pub type Outcome = Result<std::result::Result<(), String>>;
 
 /// Set an entity's type (and optionally its kind) by hand. Final: votes and
 /// links never change it until the user unlocks it.
-pub async fn set_type(
-    neo4j: &Neo4jClient,
-    entity: &str,
-    entity_type: &str,
-    kind: Option<&str>,
-) -> Outcome {
+pub async fn set_type(neo4j: &Db, entity: &str, entity_type: &str, kind: Option<&str>) -> Outcome {
     let table = KindTable::load()?;
     let t = entity_type.trim().to_lowercase();
     if !table.entity_types.contains(&t) {
@@ -564,7 +559,7 @@ pub async fn set_type(
     }
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity {id: $id}) \
                  SET e.entity_type = $t, e.type_source = 'manual', e.type_question_qid = null, \
                      e.kind = CASE WHEN $k IS NULL THEN null ELSE $k END, \
@@ -586,7 +581,7 @@ pub async fn set_type(
 }
 
 /// Answer a type question: `keep` the filed type, or take the `reference`'s.
-pub async fn answer(neo4j: &Neo4jClient, entity: &str, answer: &str) -> Outcome {
+pub async fn answer(neo4j: &Db, entity: &str, answer: &str) -> Outcome {
     let table = KindTable::load()?;
     let cypher = match answer {
         "keep" => {
@@ -609,9 +604,7 @@ pub async fn answer(neo4j: &Neo4jClient, entity: &str, answer: &str) -> Outcome 
             )));
         }
     };
-    let rows = neo4j
-        .execute(neo4rs::query(cypher).param("id", entity))
-        .await?;
+    let rows = neo4j.execute(query(cypher).param("id", entity)).await?;
     if rows.is_empty() {
         return Ok(Err("this entity has no open type question".into()));
     }
@@ -621,11 +614,11 @@ pub async fn answer(neo4j: &Neo4jClient, entity: &str, answer: &str) -> Outcome 
 
 /// "Let the brain decide": drop the user's type and kind, re-run the vote
 /// over its mentions, and re-apply the link's kind. Curated seeds stay.
-pub async fn unlock(neo4j: &Neo4jClient, entity: &str) -> Outcome {
+pub async fn unlock(neo4j: &Db, entity: &str) -> Outcome {
     let table = KindTable::load()?;
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity {id: $id}) WHERE coalesce(e.type_source, '') <> 'seed' \
                  REMOVE e.type_source, e.type_kept_qids \
                  SET e.kind = CASE WHEN e.kind_source = 'manual' THEN null ELSE e.kind END, \
@@ -651,11 +644,11 @@ pub async fn unlock(neo4j: &Neo4jClient, entity: &str) -> Outcome {
 
 /// GET /api/entities/types — open questions (`questions`) and the vocabulary
 /// the HBI offers (`entity_types`, `kinds`).
-pub async fn questions(neo4j: &Neo4jClient, limit: i64) -> Result<Value> {
+pub async fn questions(neo4j: &Db, limit: i64) -> Result<Value> {
     let table = KindTable::load()?;
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity) WHERE e.type_question_qid IS NOT NULL \
                  MATCH (w:WikiItem {qid: e.type_question_qid}) \
                  OPTIONAL MATCH (e)-[l:REFERS_TO]->(w) \
@@ -669,7 +662,7 @@ pub async fn questions(neo4j: &Neo4jClient, limit: i64) -> Result<Value> {
         )
         .await?;
     let total = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (e:Entity) WHERE e.type_question_qid IS NOT NULL RETURN count(e) AS c",
         ))
         .await?
@@ -700,11 +693,8 @@ mod tests {
     use super::*;
 
     fn table() -> KindTable {
-        KindTable::load_from(Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/core/entities"
-        )))
-        .expect("the shipped kinds.yaml parses")
+        KindTable::load_from(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")))
+            .expect("the shipped kinds.yaml parses")
     }
 
     fn graph(edges: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
@@ -781,21 +771,5 @@ mod tests {
         let a = KindTable::from_yaml("kinds: []").unwrap();
         let b = KindTable::from_yaml("kinds: []\nmax_hops: 3").unwrap();
         assert_ne!(a.version, b.version);
-    }
-
-    #[test]
-    fn the_alias_loader_reads_kinds_yaml_as_empty() {
-        // kinds.yaml shares entities/ with the alias seed.
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../plugins/core/entities/kinds.yaml"
-        ))
-        .unwrap();
-        let r = crate::services::entity_resolution::Rules::from_yaml(&text).unwrap();
-        assert_eq!(
-            r.entity_type("country"),
-            "country",
-            "kinds.yaml must not add type folds"
-        );
     }
 }

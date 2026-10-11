@@ -1,11 +1,11 @@
 /**
- * What an entity is (`services/entity_kinds.rs`, HBI plan Phase 19): the
+ * What an entity is (the `reference` plugin's `kinds.rs`, HBI plan Phase 19): the
  * coarse type, the fine kind from its reference link, and the questions the
  * brain asks when the two disagree. A type set by hand is final until it is
  * unlocked.
  */
 import { useQuery } from "@tanstack/react-query";
-import { apiJson, apiSend, query } from "./client";
+import { apiJson, apiSend, pluginApi, query } from "./client";
 import { refreshFeed } from "./feed";
 import { queryClient } from "./queries";
 
@@ -31,12 +31,15 @@ export interface EntityTypes {
   kinds: { name: string; entity_type: string }[];
 }
 
+/** The reference plugin's routes. */
+const REFERENCE = pluginApi("reference");
+
 export const typesKey = ["entity-types"] as const;
 
 export function useEntityTypes(limit = 100) {
   return useQuery({
     queryKey: [...typesKey, limit],
-    queryFn: () => apiJson<EntityTypes>(`/api/entities/types${query({ limit })}`),
+    queryFn: () => apiJson<EntityTypes>(`${REFERENCE}/entities/types${query({ limit })}`),
     staleTime: 60_000,
   });
 }
@@ -51,7 +54,7 @@ export async function refreshTypes(id?: string): Promise<void> {
   ]);
 }
 
-const base = (id: string) => `/api/entities/${encodeURIComponent(id)}/type`;
+const base = (id: string) => `${REFERENCE}/entities/${encodeURIComponent(id)}/type`;
 
 export async function setEntityType(id: string, entityType: string, kind?: string) {
   await apiSend("PUT", base(id), { entity_type: entityType, kind: kind?.trim() || null });

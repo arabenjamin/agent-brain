@@ -1,5 +1,5 @@
 # What kind of thing an entity is (HBI plan Phase 19, §12.2;
-# services/entity_kinds.rs).
+# plugins/reference/crate/src/kinds.rs).
 #
 # `entity_type` stays the coarse class the extractor gives. `kind` is the fine
 # one, derived from the entity's reference link: the Wikidata item's

@@ -324,6 +324,34 @@ Entities, topics, the Feed (items, todos, dispatch), search, HTTP, MCP client, N
 
 Rule: `dev_docs get plugins/api` (host capabilities, `start`, owned seed kinds, retrieval tools).
 
+**Pack 3, `reference`: design (2026-10-11; owner chose plugin routes nested under the plugin, the alias judge as its own plugin, and the HBI left in place).** Measured: `services/wiki.rs` (1,362 lines), `entity_kinds.rs` (801), `wiki_background.rs` (573), `skills/wiki.rs` (170), `clients/wiki.rs` (253, ten REST routes) and `alias_judge.rs` (391). Data: 501 entities checked against Wikidata, 357 `REFERS_TO` links, 275 entities with a `kind` (274 from references, 1 by hand); `link_entities` ran in 93 turns (the `entity-linking` workflow), `wiki_background` in 51. Unlike media, core code *calls into* this pack: `entity_resolution` ranks merge candidates with `alias_judge::rank`, `main.rs` spawns the judge, and the HBI's entity drawer, merge review, relation review and related-entities views call the wiki routes.
+- **Routes.** `Plugin::routes(ctx) -> Option<axum::Router>` (plugin-api re-exports `axum`). The host serves every accepted plugin's router under `/api/plugins/<name>/…` through one dispatch route, so a plugin cannot collide with a core route, its routes vanish with it (404 "plugin not loaded"), and the API-key layer covers them. The ten routes become `/api/plugins/reference/entities/{id}/wiki…`, `/entities/types`, `/entities/{id}/type…`, `/wiki/describe`, `/wiki/coverage`.
+- **New host capabilities** (only what these two use): `entities` (the merge-candidate list and the demonym words from the core's entity rules), `busy()` (foreground work is running: idle loops back off), `llm.model_name()` (the step-pinned model, for provenance), `workflows.enqueue_tool_step(tool, args)` (the on-demand lookup reuses the `entity-linking` step and its pinned model), `knowledge.push_session_entry` (`wiki_background` banks into a session), and `ctx.root()` (the bundle's folder: `kinds.yaml` moves from the core's `entities/` into `plugins/reference/`).
+- **A neo4rs-shaped shim in plugin-api** (`query(..).param(..)`, `execute`, `run`, `row.get::<T>`) over the JSON graph, so the ~37 typed query sites port line for line; packs 4 and 6 reuse it.
+- **`alias-judge`, its own plugin:** the idle-time loop moves to its `start`; `rank` (ordering stored verdicts) stays in core `entity_resolution`, so with the plugin off candidates are simply unranked.
+- **`reference`:** the two tools, the routes, entity kinds, and the `entity-linking` workflow. Core keeps reading what is stored (`kind`, `REFERS_TO`, the snapshot's manual kinds) and finds nothing new when it is off.
+- **HBI:** URLs updated; a 404 from a plugin route renders as "reference lookups are off" rather than an error. The frontend split stays open (§10).
+
+**Pack 3 result (2026-10-11).** Built as designed, with three differences:
+- **The HBI uses `pluginApi(name)`.** Wiki hints in core review lists fall back to none on a 404. The drawer's reference and type sections show the brain's own message ("plugin 'reference' is not loaded").
+- **Background loops are gated.** `ctx.background_allowed()` gates them because the judge used to start only under the HTTP transport.
+- **The dispatch route forwards a fresh request.** Found live: the outer route's path parameters, left in the request extensions, made the plugin's `Path` extractor fail with a 500.
+
+Results:
+- `app` lost six files (3,550 lines) and ten routes. `kinds.yaml` moved to the bundle root. One obsolete test that checked `kinds.yaml` against the alias seed was dropped. Clippy's last warning (in the judge's test) went with the move.
+- Tests: 826 core, 17 reference, 3 alias-judge and 36 media; `check_plugin_deps.sh` passes for four plugins.
+
+Verified live:
+- All three plugins load. The judge started (`nimble`).
+- With the old routes captured first, the new `entities/{id}/wiki`, `wiki/coverage` and `wiki/describe` answer byte-identically. `entities/types` now answers where the old binary was already failing on the moved file.
+- An on-demand lookup went route → `enqueue_tool_step` → a job on the step's pinned `gpt-oss:120b-cloud` → `link_entities` → stored (`none`, 7 candidates).
+- Later lookups were refused by the routing policy: the Ollama Cloud account limit was reached until 11:51 UTC. That is the existing quota behaviour; the proposal path waits for quota.
+- A manual type set and unlock round-tripped; the test entity was restored.
+- With `reference` and `alias-judge` off: the tools were gone with no tombstones, `entity-linking` was unavailable, the routes answered 404 with the reason, the judge did not start, and no profile warned. Back on, all available.
+- `eval-retrieval` 0.880 / 0.800, unchanged.
+
+Rule: `dev_docs get plugins/api`.
+
 ## 9. Phases 5–6, and measurements
 
 **Phase 5 — chat as a modal** (independent of the others; can run any time). Ctrl-K stays navigation. **Ctrl-J opens an Ask modal** with an agent picker (default the front-door profile), the session list, and the context dock. The Chat workspace and `ChatPanel` go. Old `#/chat…` links and `notify_user`'s `related_session_id` (e.g. a resumable `jobsearch-{{date}}` session) open the modal on that session; nothing that links to chat today may dead-end.

@@ -26,6 +26,14 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A plugin's routes (`Plugin::routes`), served under its name. They answer
+ * 404 "plugin '<name>' is not loaded" while the plugin is off.
+ */
+export function pluginApi(name: string): string {
+  return `/api/plugins/${name}`;
+}
+
 /** Absolute-or-proxied URL for a brain path such as `/api/notes`. */
 export function apiUrl(path: string): string {
   return `${getBrainUrl()}${path}`;

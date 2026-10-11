@@ -20,6 +20,8 @@ agent-brain-plugin-api = { path = "../plugin-api" }
 # In-tree plugin crates, compiled in and enabled at runtime (services/plugins.rs).
 agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate" }
 agent-brain-plugin-media = { path = "../../plugins/media/crate" }
+agent-brain-plugin-alias-judge = { path = "../../plugins/alias-judge/crate" }
+agent-brain-plugin-reference = { path = "../../plugins/reference/crate" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -66,6 +68,7 @@ serde_yaml = { workspace = true }
 # HTTP transport — Axum-based MCP server (optional — enable with 'http-transport' feature)
 axum = { version = "0.8", features = ["http2"], optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 async-stream = { version = "0.3", optional = true }
 async-trait = "0.1"
@@ -77,7 +80,7 @@ flate2 = "1"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 
 [features]
-http-transport = ["dep:axum", "dep:tower-http",
+http-transport = ["dep:axum", "dep:tower-http", "dep:tower",
                   "dep:tokio-stream", "dep:async-stream"]
 telemetry      = ["agent-brain-repository/telemetry"]
 default        = ["http-transport", "telemetry"]

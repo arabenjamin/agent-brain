@@ -19,8 +19,8 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::services::LlmProvider;
-use crate::services::wiki;
+use crate::wiki;
+use agent_brain_plugin_api::Llm as LlmProvider;
 
 const MAX_SUBJECTS: usize = 3;
 const LEAD_CHARS: usize = 1200;

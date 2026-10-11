@@ -24,8 +24,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::repository::Neo4jClient;
-use crate::services::LlmProvider;
+use crate::db::{Db, Row, query};
+use agent_brain_plugin_api::Llm as LlmProvider;
 
 /// Bumped when the pick prompt changes; recorded on each lookup.
 pub const PROMPT_VERSION: &str = "v4";
@@ -523,14 +523,14 @@ pub fn wiki_title_from(url: &str) -> Option<String> {
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
-async fn store_items(neo4j: &Neo4jClient, items: &[Item]) -> Result<()> {
+async fn store_items(neo4j: &Db, items: &[Item]) -> Result<()> {
     if items.is_empty() {
         return Ok(());
     }
-    let rows: Vec<neo4rs::BoltType> = items
+    let rows: Vec<Value> = items
         .iter()
         .map(|i| {
-            let mut m: HashMap<String, neo4rs::BoltType> = HashMap::new();
+            let mut m = serde_json::Map::new();
             m.insert("qid".into(), i.qid.clone().into());
             m.insert("label".into(), i.label.clone().into());
             m.insert("description".into(), i.description.clone().into());
@@ -539,17 +539,14 @@ async fn store_items(neo4j: &Neo4jClient, items: &[Item]) -> Result<()> {
             m.insert("aliases".into(), i.aliases.clone().into());
             m.insert(
                 "wiki_title".into(),
-                i.wiki_title
-                    .clone()
-                    .map(Into::into)
-                    .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
+                i.wiki_title.clone().map(Into::into).unwrap_or(Value::Null),
             );
-            m.into()
+            Value::Object(m)
         })
         .collect();
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "UNWIND $rows AS r MERGE (w:WikiItem {qid: r.qid}) \
                  SET w.label = r.label, w.description = r.description, w.kinds = r.kinds, \
                      w.class_qids = r.class_qids, w.aliases = r.aliases, w.wiki_title = r.wiki_title, \
@@ -578,7 +575,7 @@ pub struct Looked {
 
 /// Look one entity up and store what was found.
 pub async fn link_one(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     llm: &dyn LlmProvider,
     id: &str,
     on_demand: bool,
@@ -586,7 +583,7 @@ pub async fn link_one(
 ) -> Result<Looked> {
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity {id: $id}) \
                  RETURN e.name AS name, coalesce(e.entity_type, 'unknown') AS t, \
                    EXISTS { (:Note {note_type: 'claim'})-[:MENTIONS]->(e) } AS public, \
@@ -693,7 +690,7 @@ pub async fn link_one(
     // A new lookup replaces an earlier proposal; confirmed and rejected links stay.
     neo4j
         .run(
-            neo4rs::query(
+            crate::db::query(
                 "MATCH (e:Entity {id: $id}) \
                  OPTIONAL MATCH (e)-[old:REFERS_TO {status: 'proposed'}]->() DELETE old \
                  WITH DISTINCT e \
@@ -733,7 +730,7 @@ pub async fn link_one(
 /// public entities waiting, review queues first, then by how many claims
 /// mention them.
 pub async fn link_entities(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     llm: &dyn LlmProvider,
     limit: i64,
     entity_id: Option<&str>,
@@ -744,28 +741,24 @@ pub async fn link_entities(
             "WIKIMEDIA_CONTACT is not set: Wikimedia asks automated clients for a contact, so no lookups run until it is"
         );
     }
-    let model = crate::services::queue::SELECTED_LLM
-        .try_with(|v| v.as_ref().map(|c| c.model.clone()))
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| llm.model_name().to_string());
+    let model = llm.model_name();
     let ids: Vec<String> = match entity_id {
         Some(id) => vec![id.to_string()],
         None => {
-            let review: Vec<String> =
-                crate::services::entity_resolution::candidates(neo4j, None, usize::MAX)
-                    .await
-                    .ok()
-                    .and_then(|v| v["candidates"].as_array().cloned())
-                    .unwrap_or_default()
-                    .iter()
-                    .flat_map(|c| [c["from"]["id"].as_str(), c["into"]["id"].as_str()])
-                    .flatten()
-                    .map(String::from)
-                    .collect();
+            let review: Vec<String> = neo4j
+                .merge_candidates(None, usize::MAX)
+                .await
+                .ok()
+                .and_then(|v| v["candidates"].as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|c| [c["from"]["id"].as_str(), c["into"]["id"].as_str()])
+                .flatten()
+                .map(String::from)
+                .collect();
             neo4j
                 .execute(
-                    neo4rs::query(&format!(
+                    query(&format!(
                         "{WAITING} \
                          WITH e, COUNT {{ (:Note {{note_type: 'claim'}})-[:MENTIONS]->(e) }} AS m, \
                               (e.id IN $review OR EXISTS {{ (e)-[:RELATES {{status: 'proposed'}}]-() }}) AS in_review \
@@ -802,7 +795,7 @@ pub async fn link_entities(
                 if entity_id.is_some() {
                     let _ = neo4j
                         .run(
-                            neo4rs::query("MATCH (e:Entity {id: $id}) REMOVE e.wiki_pending_at")
+                            query("MATCH (e:Entity {id: $id}) REMOVE e.wiki_pending_at")
                                 .param("id", id.as_str()),
                         )
                         .await;
@@ -812,13 +805,7 @@ pub async fn link_entities(
     }
     // Kinds for what is linked now (Phase 19), unless Wikimedia is throttling us.
     let kinds = if throttled.is_none() {
-        match crate::services::entity_kinds::refresh(
-            neo4j,
-            None,
-            crate::services::entity_kinds::BACKGROUND_BUDGET,
-        )
-        .await
-        {
+        match crate::kinds::refresh(neo4j, None, crate::kinds::BACKGROUND_BUDGET).await {
             Ok(k) => json!(k),
             Err(e) => json!({ "error": e.to_string() }),
         }
@@ -858,13 +845,13 @@ const WAITING: &str = "MATCH (e:Entity) \
             OR (e.wiki_result = 'none' AND e.wiki_checked_at < datetime() - duration({days: $days})))";
 
 fn demonyms() -> Vec<String> {
-    crate::services::entity_resolution::Rules::global().demonym_words()
+    crate::demonym_words()
 }
 
-async fn waiting_count(neo4j: &Neo4jClient) -> Result<i64> {
+async fn waiting_count(neo4j: &Db) -> Result<i64> {
     Ok(neo4j
         .execute(
-            neo4rs::query(&format!("{WAITING} RETURN count(e) AS c"))
+            query(&format!("{WAITING} RETURN count(e) AS c"))
                 .param("demonyms", demonyms())
                 .param("days", RECHECK_NONE_DAYS),
         )
@@ -881,10 +868,10 @@ pub type Outcome<T> = Result<std::result::Result<T, String>>;
 
 /// Make `qid` the entity's confirmed reference. Any other confirmed or
 /// proposed link becomes rejected, so the entity has one reference.
-async fn confirm(neo4j: &Neo4jClient, entity: &str, qid: &str, method: &str) -> Result<()> {
+async fn confirm(neo4j: &Db, entity: &str, qid: &str, method: &str) -> Result<()> {
     neo4j
         .run(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity {id: $e}), (w:WikiItem {qid: $q}) \
                  OPTIONAL MATCH (e)-[o:REFERS_TO]->(other:WikiItem) \
                    WHERE other.qid <> $q AND o.status IN ['proposed', 'confirmed'] \
@@ -904,10 +891,10 @@ async fn confirm(neo4j: &Neo4jClient, entity: &str, qid: &str, method: &str) -> 
 }
 
 /// Confirm or reject the item linked (or offered) to an entity.
-pub async fn decide(neo4j: &Neo4jClient, entity: &str, qid: &str, decision: &str) -> Outcome<()> {
+pub async fn decide(neo4j: &Db, entity: &str, qid: &str, decision: &str) -> Outcome<()> {
     let known = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity {id: $e}), (w:WikiItem {qid: $q}) \
                  RETURN EXISTS { (e)-[:REFERS_TO]->(w) } OR w.qid IN coalesce(e.wiki_candidates, []) AS ok",
             )
@@ -931,7 +918,7 @@ pub async fn decide(neo4j: &Neo4jClient, entity: &str, qid: &str, decision: &str
         "reject" => {
             neo4j
                 .run(
-                    neo4rs::query(
+                    query(
                         "MATCH (e:Entity {id: $e}), (w:WikiItem {qid: $q}) \
                          MERGE (e)-[l:REFERS_TO]->(w) \
                          ON CREATE SET l.method = 'manual', l.at = datetime() \
@@ -951,12 +938,12 @@ pub async fn decide(neo4j: &Neo4jClient, entity: &str, qid: &str, decision: &str
             )));
         }
     }
-    crate::services::entity_kinds::refresh_entity(neo4j, entity).await;
+    crate::kinds::refresh_entity(neo4j, entity).await;
     Ok(Ok(()))
 }
 
 /// Link an entity to the item behind a Wikipedia or Wikidata URL (or a `Q` id).
-pub async fn set_url(neo4j: &Neo4jClient, entity: &str, url: &str) -> Outcome<Item> {
+pub async fn set_url(neo4j: &Db, entity: &str, url: &str) -> Outcome<Item> {
     let qid = if let Some(q) = qid_from(url) {
         q
     } else if let Some(title) = wiki_title_from(url) {
@@ -998,25 +985,23 @@ pub async fn set_url(neo4j: &Neo4jClient, entity: &str, url: &str) -> Outcome<It
         )));
     }
     let exists = neo4j
-        .execute(neo4rs::query("MATCH (e:Entity {id: $e}) RETURN e.id AS id").param("e", entity))
+        .execute(query("MATCH (e:Entity {id: $e}) RETURN e.id AS id").param("e", entity))
         .await?;
     if exists.is_empty() {
         return Ok(Err("no such entity".into()));
     }
     store_items(neo4j, std::slice::from_ref(&item)).await?;
     confirm(neo4j, entity, &qid, "manual").await?;
-    crate::services::entity_kinds::refresh_entity(neo4j, entity).await;
+    crate::kinds::refresh_entity(neo4j, entity).await;
     Ok(Ok(item))
 }
 
 /// Mark an on-demand lookup as waiting, so the drawer can say so.
-pub async fn mark_pending(neo4j: &Neo4jClient, entity: &str) -> Result<bool> {
+pub async fn mark_pending(neo4j: &Db, entity: &str) -> Result<bool> {
     Ok(!neo4j
         .execute(
-            neo4rs::query(
-                "MATCH (e:Entity {id: $e}) SET e.wiki_pending_at = datetime() RETURN e.id AS id",
-            )
-            .param("e", entity),
+            query("MATCH (e:Entity {id: $e}) SET e.wiki_pending_at = datetime() RETURN e.id AS id")
+                .param("e", entity),
         )
         .await?
         .is_empty())
@@ -1024,7 +1009,7 @@ pub async fn mark_pending(neo4j: &Neo4jClient, entity: &str) -> Result<bool> {
 
 // ─── Reading ──────────────────────────────────────────────────────────────────
 
-fn item_json(r: &neo4rs::Row, prefix: &str) -> Option<Value> {
+fn item_json(r: &Row, prefix: &str) -> Option<Value> {
     let g = |k: &str| r.get::<String>(&format!("{prefix}{k}")).ok();
     let qid = g("qid")?;
     let title = g("wiki_title");
@@ -1042,10 +1027,10 @@ fn item_json(r: &neo4rs::Row, prefix: &str) -> Option<Value> {
 
 /// GET /api/entities/{id}/wiki — the entity's reference link, the candidates
 /// the lookup saw, what the user rejected, and the article's first paragraph.
-pub async fn entity_reference(neo4j: &Neo4jClient, id: &str) -> Result<Option<Value>> {
+pub async fn entity_reference(neo4j: &Db, id: &str) -> Result<Option<Value>> {
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (e:Entity {id: $id}) \
                  OPTIONAL MATCH (e)-[l:REFERS_TO]->(w:WikiItem) WHERE l.status IN ['confirmed', 'proposed'] \
                  WITH e, l, w ORDER BY CASE l.status WHEN 'confirmed' THEN 0 ELSE 1 END LIMIT 1 \
@@ -1086,7 +1071,7 @@ pub async fn entity_reference(neo4j: &Neo4jClient, id: &str) -> Result<Option<Va
                 summary = s.clone();
                 let _ = neo4j
                     .run(
-                        neo4rs::query("MATCH (w:WikiItem {qid: $q}) SET w.summary = $s, w.summary_at = datetime()")
+                        query("MATCH (w:WikiItem {qid: $q}) SET w.summary = $s, w.summary_at = datetime()")
                             .param("q", qid)
                             .param("s", s.unwrap_or_default()),
                     )
@@ -1102,7 +1087,7 @@ pub async fn entity_reference(neo4j: &Neo4jClient, id: &str) -> Result<Option<Va
         .map(String::from);
     let cands = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "UNWIND range(0, size($ids) - 1) AS i \
                  MATCH (w:WikiItem {qid: $ids[i]}) \
                  RETURN w.qid AS qid, w.label AS label, w.description AS description, w.kinds AS kinds, \
@@ -1113,7 +1098,7 @@ pub async fn entity_reference(neo4j: &Neo4jClient, id: &str) -> Result<Option<Va
         .await?;
     let rejected_rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "MATCH (:Entity {id: $id})-[x:REFERS_TO {status: 'rejected'}]->(w:WikiItem) \
                  RETURN w.qid AS qid, w.label AS label ORDER BY x.decided_at DESC",
             )
@@ -1149,10 +1134,10 @@ pub async fn entity_reference(neo4j: &Neo4jClient, id: &str) -> Result<Option<Va
 
 /// POST /api/wiki/describe — the one-line description beside each entity name
 /// in review lists. Only entities with a proposed or confirmed link appear.
-pub async fn describe(neo4j: &Neo4jClient, ids: &[String]) -> Result<Value> {
+pub async fn describe(neo4j: &Db, ids: &[String]) -> Result<Value> {
     let rows = neo4j
         .execute(
-            neo4rs::query(
+            query(
                 "UNWIND $ids AS id MATCH (e:Entity {id: id})-[l:REFERS_TO]->(w:WikiItem) \
                  WHERE l.status IN ['confirmed', 'proposed'] \
                  RETURN e.id AS id, w.label AS label, w.description AS description, l.status AS status",
@@ -1179,7 +1164,7 @@ pub async fn describe(neo4j: &Neo4jClient, ids: &[String]) -> Result<Value> {
 /// GET /api/wiki/coverage?bucket=&limit= — how many public entities are
 /// linked, have no article, or are waiting, and (with `bucket`) which ones.
 pub async fn coverage(
-    neo4j: &Neo4jClient,
+    neo4j: &Db,
     bucket: Option<&str>,
     limit: i64,
 ) -> Result<std::result::Result<Value, String>> {
@@ -1194,7 +1179,7 @@ pub async fn coverage(
            ELSE 'none' END AS bucket";
     let counts = neo4j
         .execute(
-            neo4rs::query(&format!("{BUCKET} RETURN bucket, count(*) AS c"))
+            query(&format!("{BUCKET} RETURN bucket, count(*) AS c"))
                 .param("demonyms", demonyms())
                 .param("days", RECHECK_NONE_DAYS),
         )
@@ -1212,7 +1197,7 @@ pub async fn coverage(
         }
     }
     let on_demand = neo4j
-        .execute(neo4rs::query(
+        .execute(query(
             "MATCH (e:Entity)-[l:REFERS_TO]->() WHERE l.status IN ['confirmed', 'proposed'] \
                AND NOT EXISTS { (:Note {note_type: 'claim'})-[:MENTIONS]->(e) } RETURN count(DISTINCT e) AS c",
         ))
@@ -1234,7 +1219,7 @@ pub async fn coverage(
         }
         let rows = neo4j
             .execute(
-                neo4rs::query(&format!(
+                query(&format!(
                     "{BUCKET} WHERE bucket = $b \
                      WITH e, COUNT {{ (:Note {{note_type: 'claim'}})-[:MENTIONS]->(e) }} AS m \
                      OPTIONAL MATCH (e)-[l:REFERS_TO]->(w:WikiItem) WHERE l.status IN ['confirmed', 'proposed'] \

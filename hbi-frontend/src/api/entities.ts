@@ -23,7 +23,7 @@ export interface MergeCandidate {
   shared_notes: number;
   /** Other names the same `from` could also be. */
   rivals: number;
-  /** The local alias judge's opinion (`services/alias_judge.rs`); null until judged. */
+  /** The local alias judge's opinion (`plugins/alias-judge/crate/src/judge.rs`); null until judged. */
   judge: AliasVerdict | null;
 }
 

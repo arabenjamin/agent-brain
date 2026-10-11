@@ -672,6 +672,11 @@ async fn run_serve(
     // Topic assignment: the local model classifies notes against topics/*.yaml
     // while the brain is idle (services/topics.rs). The HTTP server is the
     // deployed brain; a stdio session alongside it must not classify too.
+    // Plugins' idle-time loops follow the same rule (the alias judge).
+    agent_brain::services::plugins::set_background_allowed(matches!(
+        transport_type,
+        TransportType::Http
+    ));
     if matches!(transport_type, TransportType::Http) {
         let local = Arc::new(tokio::sync::RwLock::new(Some(
             agent_brain::services::llm::build_local_llm_config(),
@@ -686,9 +691,6 @@ async fn run_serve(
             client.clone(),
             agent_brain::services::shared_llm::SharedLlm::new(local),
         );
-        // Merge candidates get a local classifier's verdict on idle time
-        // (services/alias_judge.rs); the person still decides each one.
-        agent_brain::services::alias_judge::spawn(client.clone());
     }
 
     let active_model = match config.llm.provider {

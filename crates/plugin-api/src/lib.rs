@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use async_trait::async_trait;
+/// The HTTP framework a plugin's routes are written in (the host's version).
+pub use axum;
 pub use chrono::{DateTime, Utc};
 pub use serde_json::{Map, Value};
 
@@ -59,6 +61,13 @@ pub trait Plugin: Send + Sync {
     fn retrieval_tools(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// HTTP routes, served under `/api/plugins/<name>/` (behind the host's
+    /// API key). Paths here are relative: `/wiki/coverage` is reached at
+    /// `/api/plugins/<name>/wiki/coverage`. Gone when the plugin is off.
+    fn routes(&self, _ctx: &PluginContext) -> Option<axum::Router> {
+        None
+    }
 }
 
 /// How the host answers an environment lookup.
@@ -74,6 +83,94 @@ pub type EnvFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 #[async_trait]
 pub trait Graph: Send + Sync {
     async fn query(&self, cypher: &str, params: Value) -> anyhow::Result<Vec<Value>>;
+
+    /// [`graph::Query`] form: the rows as [`graph::Row`]s.
+    async fn execute(&self, q: graph::Query) -> anyhow::Result<Vec<graph::Row>> {
+        let (cypher, params) = q.into_parts();
+        Ok(self
+            .query(&cypher, params)
+            .await?
+            .into_iter()
+            .map(graph::Row)
+            .collect())
+    }
+
+    /// [`graph::Query`] form, rows discarded.
+    async fn run(&self, q: graph::Query) -> anyhow::Result<()> {
+        let (cypher, params) = q.into_parts();
+        self.query(&cypher, params).await.map(|_| ())
+    }
+}
+
+/// A neo4rs-shaped way to write graph calls, so code ported from the core
+/// changes little: `query("…").param("k", v)`, `graph.execute(q)`,
+/// `row.get::<String>("k")`.
+pub mod graph {
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+    use serde_json::{Map, Value};
+
+    /// A Cypher query with its parameters.
+    #[derive(Debug, Clone)]
+    pub struct Query {
+        cypher: String,
+        params: Map<String, Value>,
+    }
+
+    pub fn query(cypher: &str) -> Query {
+        Query {
+            cypher: cypher.to_string(),
+            params: Map::new(),
+        }
+    }
+
+    impl Query {
+        /// Bind `$key`. `None` binds null.
+        pub fn param<T: Serialize>(mut self, key: &str, value: T) -> Self {
+            self.params.insert(
+                key.to_string(),
+                serde_json::to_value(value).unwrap_or(Value::Null),
+            );
+            self
+        }
+
+        pub fn into_parts(self) -> (String, Value) {
+            (self.cypher, Value::Object(self.params))
+        }
+    }
+
+    /// One result row, keyed by the query's `AS` aliases.
+    #[derive(Debug, Clone)]
+    pub struct Row(pub Value);
+
+    impl Row {
+        /// The column as `T`; `Err` when absent, null or another type.
+        pub fn get<T: DeserializeOwned>(&self, key: &str) -> anyhow::Result<T> {
+            match self.0.get(key) {
+                None | Some(Value::Null) => anyhow::bail!("column `{key}` is absent or null"),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| anyhow::anyhow!("column `{key}`: {e}")),
+            }
+        }
+    }
+}
+
+/// The core's entities: what plugins that enrich them need.
+#[async_trait]
+pub trait Entities: Send + Sync {
+    /// The merge candidates awaiting review (`{candidates: [{from, into,
+    /// judge, …}]}`), optionally only those involving `entity`.
+    async fn merge_candidates(&self, entity: Option<&str>, limit: usize) -> anyhow::Result<Value>;
+
+    /// Demonym words from the core's entity rules ("American", "Iranian").
+    fn demonym_words(&self) -> Vec<String>;
+}
+
+/// Whether the brain is doing foreground work (a job running or queued, a
+/// chat turn): idle-time loops back off while it is.
+#[async_trait]
+pub trait Activity: Send + Sync {
+    async fn busy(&self) -> bool;
 }
 
 /// Long-term memory.
@@ -86,11 +183,24 @@ pub trait Knowledge: Send + Sync {
         note_type: &str,
         source_context: Option<&str>,
     ) -> anyhow::Result<String>;
+
+    /// Add an entry to a working-memory session (what a chat or agent is
+    /// working with right now).
+    async fn push_session_entry(
+        &self,
+        session_id: &str,
+        text: &str,
+        role: &str,
+    ) -> anyhow::Result<()>;
 }
 
 /// Text generation through the host's routed provider.
 #[async_trait]
 pub trait Llm: Send + Sync {
+    /// The model a call made now would use: the workflow step's pinned
+    /// model inside a job, else the provider's. For provenance.
+    fn model_name(&self) -> String;
+
     async fn generate(&self, prompt: &str, system: Option<&str>) -> anyhow::Result<String>;
 
     /// Generate and parse JSON, re-prompting with the parse error up to
@@ -116,6 +226,17 @@ pub trait Workflows: Send + Sync {
         goal: Option<&str>,
         context: Option<&str>,
     ) -> Result<String, String>;
+
+    /// Enqueue one job running `tool` exactly as the workflow step that
+    /// calls it is configured (its pinned model, provider and retries),
+    /// with these `arguments`. Returns the job id. `Err` when no workflow
+    /// has such a step.
+    async fn enqueue_tool_step(
+        &self,
+        tool: &str,
+        arguments: Value,
+        description: &str,
+    ) -> Result<String, String>;
 }
 
 /// Telemetry the host keeps.
@@ -138,7 +259,11 @@ pub struct PluginContext {
     pub llm: Option<Arc<dyn Llm>>,
     pub workflows: Option<Arc<dyn Workflows>>,
     pub telemetry: Option<Arc<dyn Telemetry>>,
+    pub entities: Option<Arc<dyn Entities>>,
+    pub activity: Option<Arc<dyn Activity>>,
     files: Option<FilesFn>,
+    root: Option<PathBuf>,
+    background: bool,
     day_start: Option<Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>>,
 }
 
@@ -152,8 +277,46 @@ impl PluginContext {
             llm: None,
             workflows: None,
             telemetry: None,
+            entities: None,
+            activity: None,
             files: None,
+            root: None,
+            background: false,
             day_start: None,
+        }
+    }
+
+    /// The host side: whether this process runs background loops.
+    pub fn with_background(mut self, allowed: bool) -> Self {
+        self.background = allowed;
+        self
+    }
+
+    /// Whether this process is the deployed brain, which runs idle-time
+    /// loops. A stdio session alongside it is not: a plugin's background
+    /// loop starts only when this is true.
+    pub fn background_allowed(&self) -> bool {
+        self.background
+    }
+
+    /// The host side: the bundle's folder.
+    pub fn with_root(mut self, root: PathBuf) -> Self {
+        self.root = Some(root);
+        self
+    }
+
+    /// The bundle's folder (`plugins/<name>/`), for files the plugin reads
+    /// from its own bundle only.
+    pub fn root(&self) -> Option<&std::path::Path> {
+        self.root.as_deref()
+    }
+
+    /// Whether foreground work is running (false when the host gave no
+    /// activity signal).
+    pub async fn busy(&self) -> bool {
+        match &self.activity {
+            Some(a) => a.busy().await,
+            None => false,
         }
     }
 
