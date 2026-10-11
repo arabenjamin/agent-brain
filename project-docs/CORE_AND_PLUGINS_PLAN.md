@@ -429,6 +429,13 @@ Rule: `dev_docs get plugins/api`.
   - **Not done:** `LlmClient`'s three-way embedding-provider fallback could pin to host Ollama unconditionally, but no live config reaches the other branches; left. Rule: dev note "One way to build an LlmConfig".
   - **Size: −0.5K** (code 61.1K → 60.6K).
 - **6c — search engines as YAML**, declared like LLM providers instead of Rust per engine.
+
+  **6c result (2026-10-11).** Measured first (30 days of `search_usage`): Exa carries the load (831 searches), SearXNG did until 10-06 (2,027), google_news 142; SerpApi, Tavily, Serper and Brave a handful each, Currents and Webz once (explicit-only since they were measured out of the ladder), Google CSE never. Every engine is kept.
+  - **Ten engines, ten YAML files** (`plugins/core/search-engines/`, a new merged seed kind, so a plugin can ship an engine and `manage_plugin` checks one): endpoint, method, auth, `key_env`, parameter names, fixed/news parameters, result path + field mapping, snippet cap, spent-quota signals, `limits`, `quota_group`, and `rank` (the default ladder; no rank = explicit only, which is now how Currents, Webz and google_news are declared). **One executor** (`skills/search_engines.rs::run`) replaces ten request/response functions and five normalisers. What is logic stays Rust as named hooks the file picks: `syntax`, `dialect` (date formats; the Currents and Webz builders), `shape` (Google News clusters; SearXNG's window and `unresponsive_engines` report).
+  - **Found on the way and fixed:** compose passes `BRAVE_API_KEY=${BRAVE_API_KEY:-}`, an *empty* value, which the old check counted as configured, so keyless Brave stayed in the ladder and failed a rung (8 errors in 30 days); empty now counts as unset. SerpApi returned 10 results when asked for 3; every engine is capped now. Brave's results were off-shape (`url`/`description`); all map to `{title, link, snippet, date}`.
+  - **Dropped as duplicates:** the per-engine `ApiContext` key lookup (a Cypher query per engine per search; the three engine contexts named the same env vars as the fallback, and `google_cse`'s `google_cx` was still a placeholder), and the knowledge-gap rows SerpApi and SearXNG wrote on errors and empty answers (nothing read them; `search_usage` records every attempt with its error kind and count).
+  - **Verified live:** one explicit search per engine, old binary then new, same query: Exa, Tavily, Serper, google_news identical results and shape; SerpApi now 3 of 3; SearXNG answered; Brave dropped (Exa answered); Currents 0 (its known AND-every-keyword behaviour) and fell through; Webz 2 results with its balance logged. Unit tests (19 for the engines, including that every bundled file parses and the ladder order is unchanged) and clippy clean; `eval-retrieval` unchanged 0.880 / 0.800.
+  - **Size: −0.3K** (code 60.6K → 60.3K); `search.rs` 2,978 → 1,438 lines, `search_engines.rs` 1,166 with tests, plus 10 YAML files.
 - **6d — REST clients**: `rest.rs` (1.9K) and the per-feature clients share their plumbing.
 - **6e — generated tool schemas** from typed argument structs instead of hand-written JSON.
 - **6f — split `app` into core crates** under the per-crate budget (6K soft / 8K hard), last, so it moves code that has already shrunk.
@@ -449,6 +456,7 @@ Rule: `dev_docs get plugins/api`.
 | 2026-10-11 | Phase 5 | 75.6K (code 61.3K) | 14.3K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6a | 75.6K (code 61.1K) | 14.5K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 | 2026-10-11 | Phase 6b | 75.1K (code 60.6K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
+| 2026-10-11 | Phase 6c | 74.7K (code 60.3K) | 14.4K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 
 ## 10. Open questions
 

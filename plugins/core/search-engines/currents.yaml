@@ -1,0 +1,24 @@
+# Currents (news): 250 requests a day free. Out of the default ladder after
+# measuring on real queries (2026-10-06): it ANDs every keyword, so the
+# brain's queries came back empty. Explicit `engine: currents` only. One
+# include and one exclude domain; a date range needs both ends and at most 7
+# days on the free plan (a longer window skips it, a window up to 8 days is
+# clamped to its newest 7).
+name: currents
+key_env: CURRENTS_API_KEY
+limits: { max_window_days: 8, max_sites: 1, max_exclude_sites: 1, filetype: false }
+request:
+  method: get
+  url: https://api.currentsapi.services/v1/search
+  auth: { header: Authorization, prefix: "Bearer " }
+  count: { param: page_size, max: 20 }
+  fixed: { language: en }
+  dialect: currents
+  timeout_secs: 30
+response:
+  items: news
+  link: url
+  snippet: [description]
+  date: published
+  spent_status: [429]
+  spent_words: [limit]

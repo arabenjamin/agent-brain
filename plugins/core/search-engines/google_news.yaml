@@ -1,0 +1,19 @@
+# SerpApi's Google News engine: curated news with a source name and a date.
+# Same SerpApi account as `serpapi`. Not in the default ladder: callers opt in
+# with `engine: google_news` (the daily news brief does). Google News ranks by
+# relevance, so the window goes in the query as `when:`; without it a "today"
+# query returned stories from March (2026-10-02). It ignores `num` and answers
+# a full page of clustered stories, flattened and capped locally.
+name: google_news
+key_env: SERPAPI_KEY
+quota_group: serpapi
+request:
+  method: get
+  url: https://serpapi.com/search.json
+  auth: { query: api_key }
+  query: { param: q, syntax: google_news }
+  fixed: { engine: google_news, gl: us, hl: en }
+response:
+  shape: google_news
+  items: news_results
+  error_field: error

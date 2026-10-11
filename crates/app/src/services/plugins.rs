@@ -54,6 +54,7 @@ pub const MERGED_KINDS: &[&str] = &[
     "tools",
     "apis",
     "topics",
+    "search-engines",
 ];
 
 /// Seed dirs read from the core bundle only, for now: each builds one global
@@ -691,7 +692,7 @@ fn parse<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Option<T> {
     }
 }
 
-/// Check one ON-CREATE seed file (`sources`, `mcp-servers`, `apis`) as its
+/// Check one seed file (`sources`, `mcp-servers`, `apis`, `search-engines`) as its
 /// seeder would parse it; a kind a compiled plugin owns (`sources-media`)
 /// goes to that plugin. `Err` says what is wrong.
 pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
@@ -732,6 +733,10 @@ pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
             {
                 return Err(format!("env_props key '{k}' must be an identifier"));
             }
+        }
+        "search-engines" => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+            crate::skills::search_engines::parse(&text)?;
         }
         other => return Err(format!("'{other}' is not an ON-CREATE seed kind")),
     }

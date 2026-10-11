@@ -17,429 +17,14 @@ use tracing::{info, warn};
 use crate::repository::{Neo4jClient, TelemetryClient};
 use crate::services::web_result::{SEARXNG_FALLBACK_BANNER, is_search_page};
 use crate::skills::Skill;
+use crate::skills::search_engines;
 use crate::skills::search_query::{QuerySpec, Recency};
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
-use chrono::NaiveDate;
-
-/// Failover order when `SEARCH_ENGINE_ORDER` is unset.
-///
-/// SearXNG is the LAST resort before Brave, not the lead (2026-10-06). It is
-/// unmetered, but with the mainstream engines CAPTCHA-blocked its answers come
-/// from Naver, Seznam and Zapmeta: weaker relevance, undated, foreign-index
-/// pages, and with a `recency` window only Naver answers at all (a "Fed rate
-/// decision, past day" search returned Nigerian and Indian central-bank
-/// stories). Because it always returns *something*, leading with it meant the
-/// keyed engines were never reached — 720 SearXNG searches against 0 Tavily or
-/// Serper in a week. When it does answer, `search_web` says so in a banner
-/// (`SEARXNG_FALLBACK_BANNER`). Brave stays behind it: card on file, no spend
-/// cap, so it is only for when SearXNG is down too.
-///
-/// Among the keyed engines, the ones whose free allowance REFILLS monthly with
-/// no card on file come first (Exa, then Tavily — overage is impossible by
-/// construction; Exa leads because it surfaced the primary source — the bill,
-/// the PR, the paper — on 4 of 5 probe queries where Tavily returned blog
-/// posts about it, 2026-09-26), then Serper's one-time 2,500, then SerpApi (whose quota the
-/// news brief's `google_news` needs), then Google CSE (closed to new customers,
-/// ends 2027-01-01) and Brave (card on file, no spend cap). An engine without a
-/// key is dropped from the ladder, so listing one costs nothing.
-///
-/// Currents and Webz are NOT in the ladder; they run only when a caller names
-/// them (`engine: "currents"` / `"webz"`). Measured 2026-10-06 on the brain's
-/// own schedule queries, 7-day news searches: Currents ANDs every keyword and
-/// returned 0 results for all four long queries; Webz returned QAnon-style,
-/// partisan and off-topic pages (a Michigan politics query got Bangladesh and
-/// Nigeria) — not one result from any SourceList — and, being non-empty,
-/// stopped the ladder before Exa/Tavily. Leading news searches with them was
-/// reverted the same day.
-const DEFAULT_ENGINE_ORDER: &[&str] = &[
-    "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave",
-];
-
-/// Currents' free plan rejects a date range over 7 days ("Max range is 7
-/// days", 2026-10-06); a window is clamped to the newest 7 days when it is at
-/// most this long (a "week" recency from midnight is 7 days and a few hours),
-/// and the engine is skipped for anything longer.
-const CURRENTS_MAX_WINDOW_DAYS: i64 = 8;
-/// Results per call on Currents' free plan.
-const CURRENTS_MAX_RESULTS: u8 = 20;
-/// Webz search holds 30 days of history here. A window up to this long (a
-/// "month" recency is 31 days) is clamped to those 30; longer is skipped.
-const WEBZ_MAX_WINDOW_DAYS: i64 = 31;
-const WEBZ_HISTORY_DAYS: i64 = 30;
-/// Characters of Webz's full article `text` kept per result.
-const WEBZ_SNIPPET_CHARS: usize = 700;
-/// Results per Webz call. The self-serve plan bills prepaid credit per result
-/// (~$0.01 each, measured 2026-10-06: `cost: 0.02` for 2), so it stays small.
-const WEBZ_MAX_RESULTS: u8 = 5;
-
-/// Characters of page text Exa returns per result as a highlight. Exa bills
-/// contents per result, so this is a snippet, not the page.
-const EXA_HIGHLIGHT_CHARS: u32 = 400;
-
-/// Characters of Tavily's `content` kept per result. Tavily returns up to three
-/// page chunks (~1,500 chars measured 2026-09-26) — 3-10x the other engines —
-/// so a 10-result answer would put ~15K chars into a tool loop's context.
-const TAVILY_SNIPPET_CHARS: usize = 500;
-
-/// Trim to `max` chars on a char boundary, marking the cut.
-fn clip_snippet(v: &Value, max: usize) -> Value {
-    match v.as_str() {
-        Some(t) if t.chars().count() > max => Value::String(format!(
-            "{}…",
-            t.chars().take(max).collect::<String>().trim_end()
-        )),
-        _ => v.clone(),
-    }
-}
-
-/// Base URL used when neither the `searxng` ApiContext nor `SEARXNG_URL` is set.
-/// Matches the compose service name so the default deployment works unconfigured.
-const DEFAULT_SEARXNG_URL: &str = "http://searxng:8080";
-
-/// SearXNG fans out to upstream engines in series; the default reqwest timeout
-/// is generous enough to stall a chain behind one slow upstream.
-const SEARXNG_TIMEOUT_SECS: u64 = 20;
 
 /// How long a quota-exhausted engine stays demoted to the back of the ladder.
 /// Sized for daily-reset quotas (Google CSE); a monthly cap simply stays demoted
 /// because it keeps re-recording the error on each retry.
 const QUOTA_COOLDOWN_HOURS: i64 = 6;
-
-/// Extract `(engine, reason)` pairs from a SearXNG response's
-/// `unresponsive_engines` field.
-///
-/// The field is an array of arrays — `[["naver", "access denied"], …]` — and
-/// entries carry either one or two elements depending on version and failure
-/// kind. Anything unparseable is skipped rather than guessed at: this feeds a
-/// diagnostic log line, and a wrong reason is worse than a missing one.
-fn parse_unresponsive_engines(json: &Value) -> Vec<(String, String)> {
-    json.get("unresponsive_engines")
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|e| {
-                    let parts = e.as_array()?;
-                    let name = parts.first()?.as_str()?.to_string();
-                    let reason = parts
-                        .get(1)
-                        .and_then(Value::as_str)
-                        .unwrap_or("unspecified")
-                        .to_string();
-                    Some((name, reason))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Normalize one SerpApi `google_news` story into the `{title, link, snippet,
-/// source, date}` shape the rest of the ladder emits. Returns `None` unless the
-/// story has both a title and a link — a group header with neither is not a
-/// citable result.
-fn normalize_news_item(item: &Value) -> Option<Value> {
-    let title = item.get("title").and_then(Value::as_str)?;
-    let link = item.get("link").and_then(Value::as_str)?;
-    Some(json!({
-        "title":   title,
-        "link":    link,
-        "snippet": item.get("snippet").and_then(Value::as_str).unwrap_or(""),
-        "source":  item.get("source").and_then(|s| s.get("name")).and_then(Value::as_str),
-        "date":    item.get("date").and_then(Value::as_str),
-    }))
-}
-
-/// Flatten a SerpApi `google_news` `news_results` array into a normalized list.
-///
-/// Google News clusters some results: an entry may be a flat story, or carry a
-/// `highlight` featured story and/or a `stories` sub-array (a topic cluster).
-/// All are unrolled so a clustered topic contributes several headlines rather
-/// than one opaque group, then the list is capped at `count`.
-/// Map one engine's result list onto the ladder's common shape:
-/// `{title, link, snippet, date}` — `link` is what `evidence_domains`, the
-/// source-list post-filter and the numbered source marker all read.
-fn normalized(title: &Value, link: &Value, snippet: Value, date: &Value) -> Option<Value> {
-    let link = link.as_str().filter(|l| !l.is_empty())?;
-    let mut out = json!({ "title": title, "link": link, "snippet": snippet });
-    if !date.is_null() {
-        out["date"] = date.clone();
-    }
-    Some(out)
-}
-
-fn take_results<'a>(json: &'a Value, key: &str, count: u8) -> impl Iterator<Item = &'a Value> {
-    json.get(key)
-        .and_then(|r| r.as_array())
-        .map(|a| a.as_slice())
-        .unwrap_or(&[])
-        .iter()
-        .take(count as usize)
-}
-
-fn normalize_tavily(json: &Value, count: u8) -> Vec<Value> {
-    take_results(json, "results", count)
-        .filter_map(|r| {
-            normalized(
-                &r["title"],
-                &r["url"],
-                clip_snippet(&r["content"], TAVILY_SNIPPET_CHARS),
-                &r["published_date"],
-            )
-        })
-        .collect()
-}
-
-fn normalize_exa(json: &Value, count: u8) -> Vec<Value> {
-    take_results(json, "results", count)
-        .filter_map(|r| {
-            let snippet = r["highlights"]
-                .as_array()
-                .map(|h| {
-                    h.iter()
-                        .filter_map(|x| x.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" … ")
-                })
-                .filter(|s| !s.is_empty())
-                .map(Value::String)
-                .unwrap_or_else(|| r["text"].clone());
-            normalized(&r["title"], &r["url"], snippet, &r["publishedDate"])
-        })
-        .collect()
-}
-
-fn normalize_serper(json: &Value, count: u8) -> Vec<Value> {
-    let key = if json["news"].is_array() {
-        "news"
-    } else {
-        "organic"
-    };
-    take_results(json, key, count)
-        .filter_map(|r| normalized(&r["title"], &r["link"], r["snippet"].clone(), &r["date"]))
-        .collect()
-}
-
-fn normalize_currents(json: &Value, count: u8) -> Vec<Value> {
-    take_results(json, "news", count)
-        .filter_map(|r| {
-            normalized(
-                &r["title"],
-                &r["url"],
-                r["description"].clone(),
-                &r["published"],
-            )
-        })
-        .collect()
-}
-
-fn normalize_webz(json: &Value, count: u8) -> Vec<Value> {
-    take_results(json, "posts", count)
-        .filter_map(|r| {
-            normalized(
-                &r["title"],
-                &r["url"],
-                clip_snippet(&r["text"], WEBZ_SNIPPET_CHARS),
-                &r["published"],
-            )
-        })
-        .collect()
-}
-
-/// Remove a credential from text that will be logged or returned. Webz
-/// echoes the token in its 401 body ("Unknown API token <token>").
-fn redact(text: &str, secret: &str) -> String {
-    if secret.len() < 6 {
-        return text.to_string();
-    }
-    text.replace(secret, "<redacted>")
-}
-
-/// Why an engine cannot serve this query, if it cannot. Checked before the
-/// call, so a skip costs no quota and is not recorded as a failure.
-fn engine_unsupported(engine: &str, spec: &QuerySpec, today: NaiveDate) -> Option<String> {
-    let window_days = spec.since(today).map(|s| (today - s).num_days());
-    match engine {
-        "currents" => {
-            if spec.sites.len() > 1 {
-                Some("restricts to one domain only".into())
-            } else if spec.exclude_sites.len() > 1 {
-                Some("excludes one domain only".into())
-            } else if spec.filetype.is_some() {
-                Some("no filetype filter".into())
-            } else if window_days.is_some_and(|d| d > CURRENTS_MAX_WINDOW_DAYS) {
-                Some(format!(
-                    "free plan searches at most {CURRENTS_MAX_WINDOW_DAYS} days"
-                ))
-            } else {
-                None
-            }
-        }
-        "webz" => {
-            if spec.filetype.is_some() {
-                Some("no filetype filter".into())
-            } else if window_days.is_some_and(|d| d > WEBZ_MAX_WINDOW_DAYS) {
-                Some(format!("Lite searches at most {WEBZ_MAX_WINDOW_DAYS} days"))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Currents query parameters. A window longer than 7 days (never more than
-/// `CURRENTS_MAX_WINDOW_DAYS` here — `engine_unsupported` skips longer) is
-/// clamped to its newest 7 days, because the free plan rejects more.
-fn currents_params(
-    spec: &QuerySpec,
-    count: u8,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Vec<(String, String)> {
-    let mut keywords = vec![spec.free_text_for_engines()];
-    keywords.extend(spec.exclude_words.iter().map(|w| format!("-{w}")));
-    keywords.extend(spec.exclude_phrases.iter().map(|p| format!("-\"{p}\"")));
-    keywords.retain(|k| !k.trim().is_empty());
-    let mut p: Vec<(String, String)> = vec![
-        ("keywords".into(), keywords.join(" ")),
-        ("language".into(), "en".into()),
-        (
-            "page_size".into(),
-            count.min(CURRENTS_MAX_RESULTS).to_string(),
-        ),
-    ];
-    if let Some(d) = spec.sites.first() {
-        p.push(("domain".into(), d.clone()));
-    }
-    if let Some(d) = spec.exclude_sites.first() {
-        p.push(("domain_not".into(), d.clone()));
-    }
-    if let Some(since) = spec.since(now.date_naive()) {
-        let end = spec
-            .before
-            .and_then(|b| b.and_hms_opt(0, 0, 0))
-            .map(|b| b.and_utc())
-            .filter(|b| *b < now)
-            .unwrap_or(now);
-        let earliest = end - chrono::Duration::days(7) + chrono::Duration::minutes(1);
-        let start = since
-            .and_hms_opt(0, 0, 0)
-            .map(|s| s.and_utc())
-            .unwrap_or(earliest)
-            .max(earliest);
-        let fmt = "%Y-%m-%dT%H:%M:%SZ";
-        p.push(("start_date".into(), start.format(fmt).to_string()));
-        p.push(("end_date".into(), end.format(fmt).to_string()));
-    }
-    p
-}
-
-/// Webz Lite query parameters (without the token).
-fn webz_params(spec: &QuerySpec, today: NaiveDate) -> Vec<(String, String)> {
-    let mut q = vec![spec.free_text_for_engines()];
-    q.extend(spec.exclude_words.iter().map(|w| format!("-{w}")));
-    q.extend(spec.exclude_phrases.iter().map(|p| format!("-\"{p}\"")));
-    match spec.sites.len() {
-        0 => {}
-        1 => q.push(format!("site:{}", spec.sites[0])),
-        _ => q.push(format!(
-            "({})",
-            spec.sites
-                .iter()
-                .take(15)
-                .map(|s| format!("site:{s}"))
-                .collect::<Vec<_>>()
-                .join(" OR ")
-        )),
-    }
-    q.extend(spec.exclude_sites.iter().map(|s| format!("-site:{s}")));
-    q.push("language:english".into());
-    let epoch_ms = |d: NaiveDate| {
-        d.and_hms_opt(0, 0, 0)
-            .map(|t| t.and_utc().timestamp_millis())
-    };
-    if let Some(ms) = spec.before.and_then(epoch_ms) {
-        q.push(format!("published:<{ms}"));
-    }
-    q.retain(|k| !k.trim().is_empty());
-    let mut p: Vec<(String, String)> = vec![("q".into(), q.join(" "))];
-    if let Some(ms) = spec
-        .since(today)
-        .map(|s| s.max(today - chrono::Duration::days(WEBZ_HISTORY_DAYS)))
-        .and_then(epoch_ms)
-    {
-        p.push(("ts".into(), ms.to_string()));
-    }
-    p
-}
-
-fn flatten_google_news(news_results: &[Value], count: usize) -> Vec<Value> {
-    let mut out: Vec<Value> = Vec::new();
-    for entry in news_results {
-        if out.len() >= count {
-            break;
-        }
-        if let Some(n) = normalize_news_item(entry) {
-            out.push(n);
-        }
-        if out.len() < count
-            && let Some(h) = entry.get("highlight")
-            && let Some(n) = normalize_news_item(h)
-        {
-            out.push(n);
-        }
-        if let Some(stories) = entry.get("stories").and_then(Value::as_array) {
-            for s in stories {
-                if out.len() >= count {
-                    break;
-                }
-                if let Some(n) = normalize_news_item(s) {
-                    out.push(n);
-                }
-            }
-        }
-    }
-    out.truncate(count);
-    out
-}
-
-/// Render engine failures for a log line: `naver (access denied), wikipedia (…)`.
-/// Map SearXNG results onto the ladder's shape, keeping `publishedDate` as
-/// `date` and dropping a dated result outside `[since, before]`. Undated
-/// results are kept — the fallback banner says the window was not enforced on
-/// them. Pure so the date rule is testable without a live SearXNG.
-fn searxng_items(
-    json: &Value,
-    count: u8,
-    since: Option<NaiveDate>,
-    before: Option<NaiveDate>,
-) -> Vec<Value> {
-    let empty = vec![];
-    json.get("results")
-        .and_then(|r| r.as_array())
-        .unwrap_or(&empty)
-        .iter()
-        .filter(|item| {
-            let Some(d) = item
-                .get("publishedDate")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.get(..10))
-                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-            else {
-                return true;
-            };
-            since.is_none_or(|s| d >= s) && before.is_none_or(|b| d < b)
-        })
-        .take(count as usize)
-        .map(|item| {
-            json!({
-                "title":   item.get("title"),
-                "link":    item.get("url"),
-                "snippet": item.get("content"),
-                "date":    item.get("publishedDate"),
-            })
-        })
-        .collect()
-}
 
 /// The warning that leads a SearXNG answer. Ends without a blank line; the
 /// caller adds one, which `strip_fallback_banner` splits on.
@@ -457,14 +42,6 @@ fn searxng_banner(why: &str, recency_requested: bool) -> String {
         );
     }
     b
-}
-
-fn format_unresponsive(failures: &[(String, String)]) -> String {
-    failures
-        .iter()
-        .map(|(engine, reason)| format!("{engine} ({reason})"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Classify an engine failure for the usage ledger.
@@ -499,17 +76,22 @@ fn classify_search_error(error_text: &str) -> &'static str {
 /// Build the ordered engine ladder. Pure so the ordering rules are testable
 /// without a telemetry database or a live environment.
 ///
-/// `configured` is the raw `SEARCH_ENGINE_ORDER` value (empty = use the
-/// default), `requested` is the caller's preferred engine, and `exhausted`
-/// lists engines that recently reported a spent quota.
-fn order_engines(configured: &str, requested: Option<&str>, exhausted: &[String]) -> Vec<String> {
+/// `configured` is the raw `SEARCH_ENGINE_ORDER` value (empty = `default`, the
+/// engines' declared `rank` order), `requested` is the caller's preferred
+/// engine, and `exhausted` lists engines that recently reported a spent quota.
+fn order_engines(
+    configured: &str,
+    default: &[String],
+    requested: Option<&str>,
+    exhausted: &[String],
+) -> Vec<String> {
     let mut ladder: Vec<String> = configured
         .split(',')
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
     if ladder.is_empty() {
-        ladder = DEFAULT_ENGINE_ORDER.iter().map(|s| s.to_string()).collect();
+        ladder = default.to_vec();
     }
 
     // A requested engine goes to the head but never truncates the ladder:
@@ -594,52 +176,6 @@ impl SearchSkill {
     // =========================================================================
     // Credential resolution
     // =========================================================================
-
-    /// Load the API key for a named ApiContext.
-    /// Queries Neo4j for `auth_env_var`, then resolves from environment.
-    /// Falls back to `fallback_env_var` when no context is found or the env
-    /// var named by the context is unset.
-    async fn resolve_key(&self, context_name: &str, fallback_env_var: &str) -> Option<String> {
-        // Try ApiContext first
-        if let Some(ref neo4j) = self.neo4j {
-            let cypher = "MATCH (c:ApiContext {name: $name}) \
-                          RETURN c.auth_env_var AS auth_env_var LIMIT 1";
-            if let Ok(rows) = neo4j
-                .execute(neo4rs::query(cypher).param("name", context_name))
-                .await
-                && let Some(env_var) = rows
-                    .first()
-                    .and_then(|r| r.get::<String>("auth_env_var").ok())
-                && let Ok(val) = std::env::var(&env_var)
-            {
-                return Some(val);
-            }
-        }
-        // Direct env var fallback
-        std::env::var(fallback_env_var).ok()
-    }
-
-    /// Load a non-auth config value from ApiContext (e.g. Google CX).
-    async fn resolve_context_field(
-        &self,
-        context_name: &str,
-        field: &str,
-        fallback_env_var: &str,
-    ) -> Option<String> {
-        if let Some(ref neo4j) = self.neo4j {
-            let cypher =
-                format!("MATCH (c:ApiContext {{name: $name}}) RETURN c.{field} AS val LIMIT 1");
-            if let Ok(rows) = neo4j
-                .execute(neo4rs::query(&cypher).param("name", context_name))
-                .await
-                && let Some(val) = rows.first().and_then(|r| r.get::<String>("val").ok())
-                && !val.is_empty()
-            {
-                return Some(val);
-            }
-        }
-        std::env::var(fallback_env_var).ok()
-    }
 
     // ========================================================================
     // Tool Definitions
@@ -780,8 +316,8 @@ impl SearchSkill {
     /// Ordered list of engines to try, most-preferred first.
     ///
     /// Base order comes from `SEARCH_ENGINE_ORDER` (comma-separated), defaulting
-    /// to `DEFAULT_ENGINE_ORDER` — self-hosted SearXNG leads because it is the
-    /// only entry with no quota to exhaust.
+    /// to the engines' declared `rank` (`search-engines/*.yaml`; the rationale
+    /// is in the dev note "Web Search: engine failover ladder").
     ///
     /// An explicitly requested `engine` is promoted to the head but does **not**
     /// truncate the ladder: callers asking for a specific engine still want an
@@ -793,7 +329,7 @@ impl SearchSkill {
     /// searches of the daily news chain until it does.
     async fn engine_ladder(&self, requested: Option<&str>) -> Vec<String> {
         let configured = std::env::var("SEARCH_ENGINE_ORDER").unwrap_or_default();
-        let mut exhausted = self
+        let exhausted = self
             .telemetry
             .as_ref()
             .and_then(|t| {
@@ -801,20 +337,18 @@ impl SearchSkill {
                     .ok()
             })
             .unwrap_or_default();
-        // `serpapi` (Google organic) and `google_news` are two engines on ONE
-        // SerpApi account, so they share the monthly quota. A quota error is
-        // recorded against whichever was called, but exhausting the account
-        // exhausts both — demote the sibling too, or the ladder keeps hammering
-        // a spent account through the other engine name.
-        let has_serpapi = exhausted.iter().any(|e| e == "serpapi");
-        let has_news = exhausted.iter().any(|e| e == "google_news");
-        if has_serpapi && !has_news {
-            exhausted.push("google_news".to_string());
-        }
-        if has_news && !has_serpapi {
-            exhausted.push("serpapi".to_string());
-        }
-        let ladder = order_engines(&configured, requested, &exhausted);
+        // Engines on one account (`quota_group`: serpapi and google_news) share
+        // its quota. A quota error is recorded against whichever was called,
+        // but exhausting the account exhausts both, so the siblings are demoted
+        // too, or the ladder keeps hammering a spent account under another name.
+        let engines = search_engines::engines();
+        let exhausted = search_engines::quota_siblings(engines, &exhausted);
+        let ladder = order_engines(
+            &configured,
+            &search_engines::default_order(engines),
+            requested,
+            &exhausted,
+        );
 
         // Drop engines with no credentials configured. A missing key produces
         // `not_configured` on every call — the 2026-09-08 GDELT session put
@@ -822,45 +356,13 @@ impl SearchSkill {
         // wasted its first rung (and log line) before falling through to
         // SearXNG, helping exhaust the 8-round tool budget twice. Unlike a spent
         // quota this never recovers at runtime, so remove rather than demote.
-        let mut keep = Vec::new();
-        for engine in &ladder {
-            if self.is_engine_configured(engine).await {
-                keep.push(engine.clone());
-            }
-        }
+        // An engine no file declares is kept: its call reports "unsupported".
+        let keep: Vec<String> = ladder
+            .iter()
+            .filter(|e| search_engines::get(e).is_none_or(search_engines::configured))
+            .cloned()
+            .collect();
         retain_configured(ladder, &keep)
-    }
-
-    /// Whether an engine has the credentials it needs to answer. `searxng` needs
-    /// none (self-hosted, default URL); the paid engines each need a key (via
-    /// their `ApiContext` or env var), and `google` additionally needs a CX.
-    /// `serpapi` and `google_news` share one SerpApi account, so one key covers
-    /// both. An unknown engine name is assumed configured — we don't second-guess
-    /// something the ladder was explicitly told to try.
-    async fn is_engine_configured(&self, engine: &str) -> bool {
-        match engine {
-            "searxng" => true,
-            "google" => {
-                self.resolve_key("google_cse", "GOOGLE_API_KEY")
-                    .await
-                    .is_some()
-                    && self
-                        .resolve_context_field("google_cse", "google_cx", "GOOGLE_CX")
-                        .await
-                        .is_some()
-            }
-            "serpapi" | "google_news" => self.resolve_key("serpapi", "SERPAPI_KEY").await.is_some(),
-            "brave" => self.resolve_key("brave", "BRAVE_API_KEY").await.is_some(),
-            "tavily" => self.resolve_key("tavily", "TAVILY_API_KEY").await.is_some(),
-            "exa" => self.resolve_key("exa", "EXA_API_KEY").await.is_some(),
-            "serper" => self.resolve_key("serper", "SERPER_API_KEY").await.is_some(),
-            "currents" => self
-                .resolve_key("currents", "CURRENTS_API_KEY")
-                .await
-                .is_some(),
-            "webz" => self.resolve_key("webz", "WEBZIO_API_KEY").await.is_some(),
-            _ => true,
-        }
     }
 
     /// Write one row to the search usage ledger. Never fails the search.
@@ -1301,24 +803,19 @@ impl SearchSkill {
 
         let today = chrono::Utc::now().date_naive();
         for engine in &ladder {
-            if let Some(why) = engine_unsupported(engine, &spec, today) {
+            let declared = search_engines::get(engine);
+            if let Some(why) = declared.and_then(|e| search_engines::unsupported(e, &spec, today)) {
                 info!(engine = %engine, reason = %why, "Search engine skipped — cannot serve this query");
                 passed_over.push(format!("{engine} (skipped: {why})"));
                 continue;
             }
             let started = Instant::now();
-            let attempt = match engine.as_str() {
-                "currents" => self.search_currents(&spec, count).await,
-                "webz" => self.search_webz(&spec, count).await,
-                "searxng" => self.search_searxng(&spec, count).await,
-                "serpapi" => self.search_serpapi(&spec, count).await,
-                "google_news" => self.search_serpapi_news(&spec, count).await,
-                "brave" => self.search_brave(&spec, count).await,
-                "google" => self.search_google(&spec, count).await,
-                "tavily" => self.search_tavily(&spec, count).await,
-                "exa" => self.search_exa(&spec, count).await,
-                "serper" => self.search_serper(&spec, count).await,
-                other => ToolCallResult::error(format!("Unsupported search engine: {other}")),
+            let attempt = match declared {
+                Some(e) => match search_engines::run(&self.client, e, &spec, count).await {
+                    Ok(items) => ToolCallResult::success_json(items),
+                    Err(text) => ToolCallResult::error(text),
+                },
+                None => ToolCallResult::error(format!("Unsupported search engine: {engine}")),
             };
             let duration_ms = started.elapsed().as_millis() as i64;
 
@@ -1502,738 +999,6 @@ impl SearchSkill {
             Err(e) => ToolCallResult::error(format!("Failed to read search usage: {e}")),
         }
     }
-
-    /// Self-hosted SearXNG metasearch — the default engine.
-    ///
-    /// No API key and no quota: it aggregates 70+ upstream engines and runs as a
-    /// compose sidecar. Requires `formats: [json]` in the SearXNG `settings.yml`
-    /// (the shipped default only enables `html`, which answers 403).
-    ///
-    /// Results are normalised to the `title`/`link`/`snippet` shape that SerpApi
-    /// and Google CSE already emit, so downstream `reason` steps see one schema
-    /// regardless of which rung of the ladder answered.
-    async fn search_searxng(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        // SearXNG fans out to Google, Bing, DuckDuckGo…: they all read `site:`,
-        // quotes and `-`, but not `after:`, so dates go in `time_range`.
-        let query = spec.google_syntax(false);
-        let mut params: Vec<(&str, String)> = vec![
-            ("q", query.clone()),
-            ("format", "json".into()),
-            ("language", "en".into()),
-            ("safesearch", "0".into()),
-        ];
-        // No `time_range`: SearXNG drops every backend that cannot filter by
-        // date, which left Naver alone for general queries and 2 results for
-        // news (vs 54, 45 dated, without it). The window is enforced below
-        // from each result's own `publishedDate` instead.
-        if spec.news {
-            params.push(("categories", "news".into()));
-        }
-        let base_url = self
-            .resolve_context_field("searxng", "base_url", "SEARXNG_URL")
-            .await
-            .unwrap_or_else(|| DEFAULT_SEARXNG_URL.to_string());
-        let endpoint = format!("{}/search", base_url.trim_end_matches('/'));
-
-        let response = self
-            .client
-            .get(&endpoint)
-            .query(&params)
-            .timeout(std::time::Duration::from_secs(SEARXNG_TIMEOUT_SECS))
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!(
-                        "SearXNG failed: {} - {}",
-                        status,
-                        text.chars().take(300).collect::<String>()
-                    ));
-                }
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        let today = chrono::Utc::now().date_naive();
-                        let results = searxng_items(&json, count, spec.since(today), spec.before);
-
-                        // SearXNG reports per-upstream failures in
-                        // `unresponsive_engines` and still answers 200. Nothing
-                        // read that field, which is the entire reason two
-                        // multi-day outages were invisible: on 2026-08-18 every
-                        // upstream lost DNS, and on 2026-08-31 all four default
-                        // engines were bot-blocked (CAPTCHA / too many
-                        // requests). Both produced a well-formed empty result
-                        // set — indistinguishable, from here, from a genuinely
-                        // obscure query. It is the *reasons* that tell them
-                        // apart, so they are logged verbatim.
-                        let unresponsive = parse_unresponsive_engines(&json);
-                        if !unresponsive.is_empty() {
-                            let detail = format_unresponsive(&unresponsive);
-                            if results.is_empty() {
-                                warn!(
-                                    query = %query,
-                                    failed_engines = %detail,
-                                    "SearXNG returned no results AND every upstream engine failed \
-                                     — this is an outage, not an empty query. Run \
-                                     scripts/searxng_engine_health.py"
-                                );
-                            } else {
-                                warn!(
-                                    query = %query,
-                                    failed_engines = %detail,
-                                    returned = results.len(),
-                                    "SearXNG answered with some upstream engines down — results \
-                                     are degraded"
-                                );
-                            }
-                        }
-
-                        // An empty result set is a real answer, not an engine
-                        // failure — but it is also the shape a misconfigured
-                        // SearXNG returns when every upstream engine is blocked,
-                        // so it is worth a knowledge-gap marker.
-                        if results.is_empty()
-                            && let Some(ref t) = self.telemetry
-                        {
-                            let _ = t.log_knowledge_gap(
-                                &query,
-                                Some("search_web:searxng"),
-                                "missing_info",
-                            );
-                        }
-                        ToolCallResult::success_json(results)
-                    }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse SearXNG response: {e}"))
-                    }
-                }
-            }
-            Err(e) => ToolCallResult::error(format!("Request failed: {e}")),
-        }
-    }
-
-    async fn search_serpapi(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let query = spec.google_syntax(true);
-        let query = query.as_str();
-        let api_key = match self.resolve_key("serpapi", "SERPAPI_KEY").await {
-            Some(k) => k,
-            None => {
-                if let Some(ref t) = self.telemetry {
-                    let _ = t.log_knowledge_gap(
-                        query,
-                        Some("search_web:serpapi"),
-                        "missing_tool_config",
-                    );
-                }
-                return ToolCallResult::error(
-                    "SerpApi key not configured (set SERPAPI_KEY or define serpapi ApiContext)"
-                        .to_string(),
-                );
-            }
-        };
-
-        let response = self
-            .client
-            .get("https://serpapi.com/search.json")
-            .query(&[
-                ("api_key", api_key.as_str()),
-                ("q", query),
-                ("num", &count.to_string()),
-                ("engine", "google"),
-            ])
-            .query(
-                &spec
-                    .google_tbs()
-                    .map(|t| vec![("tbs", t)])
-                    .unwrap_or_default(),
-            )
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if let Some(ref t) = self.telemetry {
-                        let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "api_error");
-                    }
-                    return ToolCallResult::error(format!("SerpApi failed: {} - {}", status, text));
-                }
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        // SerpApi signals quota/rate/service problems as HTTP 200
-                        // with an `error` field and NO organic_results. Without
-                        // this check the empty result was recorded as a SUCCESSFUL
-                        // serpapi call with 0 results, and the ladder fell through
-                        // to SearXNG silently — so a real SerpApi outage looked
-                        // like "success" in the logs and ledger. Surface the raw
-                        // message: the ladder's classify_search_error buckets it
-                        // (quota → cooldown), WARNs, and falls through visibly.
-                        if let Some(err) = json.get("error").and_then(Value::as_str) {
-                            if let Some(ref t) = self.telemetry {
-                                let _ = t.log_knowledge_gap(
-                                    query,
-                                    Some("search_web:serpapi"),
-                                    classify_search_error(err),
-                                );
-                            }
-                            return ToolCallResult::error(format!("SerpApi error: {err}"));
-                        }
-                        let results = json
-                            .get("organic_results")
-                            .unwrap_or(&json!([]))
-                            .as_array()
-                            .unwrap_or(&vec![])
-                            .iter()
-                            .map(|item| {
-                                json!({
-                                    "title":   item.get("title"),
-                                    "link":    item.get("link"),
-                                    "snippet": item.get("snippet"),
-                                })
-                            })
-                            .collect::<Vec<_>>();
-                        if results.is_empty()
-                            && let Some(ref t) = self.telemetry
-                        {
-                            let _ = t.log_knowledge_gap(
-                                query,
-                                Some("search_web:serpapi"),
-                                "missing_info",
-                            );
-                        }
-                        ToolCallResult::success_json(results)
-                    }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse SerpApi response: {}", e))
-                    }
-                }
-            }
-            Err(e) => {
-                if let Some(ref t) = self.telemetry {
-                    let _ = t.log_knowledge_gap(query, Some("search_web:serpapi"), "network_error");
-                }
-                ToolCallResult::error(format!("Request failed: {}", e))
-            }
-        }
-    }
-
-    /// SerpApi's Google News engine — richer, freshly-dated news stories.
-    ///
-    /// Shares the SerpApi account (and its monthly quota) with `search_serpapi`,
-    /// but `engine=google_news` returns curated news results carrying a source
-    /// name and publication date rather than generic organic web results. It is
-    /// deliberately NOT in the default ladder: callers opt in with
-    /// `engine: "google_news"` (the daily news brief does), which promotes it to
-    /// the head and still falls back through SearXNG when the quota is spent.
-    ///
-    /// Google News ignores `num`; it returns a full page, so the result set is
-    /// flattened and capped locally via `flatten_google_news`.
-    async fn search_serpapi_news(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        // Google News ranks by relevance; without `when:` a "today" query
-        // returned stories from March (2026-10-02, 0 of 8 current).
-        let mut query = spec.google_syntax(false);
-        if let Some(when) = spec.google_news_when() {
-            query.push(' ');
-            query.push_str(&when);
-        }
-        let query = query.as_str();
-        let api_key = match self.resolve_key("serpapi", "SERPAPI_KEY").await {
-            Some(k) => k,
-            None => {
-                if let Some(ref t) = self.telemetry {
-                    let _ = t.log_knowledge_gap(
-                        query,
-                        Some("search_web:google_news"),
-                        "missing_tool_config",
-                    );
-                }
-                return ToolCallResult::error(
-                    "SerpApi key not configured (set SERPAPI_KEY or define serpapi ApiContext)"
-                        .to_string(),
-                );
-            }
-        };
-
-        let response = self
-            .client
-            .get("https://serpapi.com/search.json")
-            .query(&[
-                ("api_key", api_key.as_str()),
-                ("q", query),
-                ("engine", "google_news"),
-                ("gl", "us"),
-                ("hl", "en"),
-            ])
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if let Some(ref t) = self.telemetry {
-                        let _ =
-                            t.log_knowledge_gap(query, Some("search_web:google_news"), "api_error");
-                    }
-                    return ToolCallResult::error(format!(
-                        "SerpApi Google News failed: {} - {}",
-                        status, text
-                    ));
-                }
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        // See search_serpapi: a 200 + `error` body is a real
-                        // failure (quota/rate/service), not an empty result.
-                        // Surface it so the ladder classifies and falls through
-                        // visibly instead of recording a phantom success.
-                        if let Some(err) = json.get("error").and_then(Value::as_str) {
-                            if let Some(ref t) = self.telemetry {
-                                let _ = t.log_knowledge_gap(
-                                    query,
-                                    Some("search_web:google_news"),
-                                    classify_search_error(err),
-                                );
-                            }
-                            return ToolCallResult::error(format!(
-                                "SerpApi Google News error: {err}"
-                            ));
-                        }
-                        let empty = vec![];
-                        let news = json
-                            .get("news_results")
-                            .and_then(Value::as_array)
-                            .unwrap_or(&empty);
-                        let results = flatten_google_news(news, count as usize);
-                        if results.is_empty()
-                            && let Some(ref t) = self.telemetry
-                        {
-                            let _ = t.log_knowledge_gap(
-                                query,
-                                Some("search_web:google_news"),
-                                "missing_info",
-                            );
-                        }
-                        ToolCallResult::success_json(results)
-                    }
-                    Err(e) => ToolCallResult::error(format!(
-                        "Failed to parse SerpApi Google News response: {}",
-                        e
-                    )),
-                }
-            }
-            Err(e) => {
-                if let Some(ref t) = self.telemetry {
-                    let _ =
-                        t.log_knowledge_gap(query, Some("search_web:google_news"), "network_error");
-                }
-                ToolCallResult::error(format!("Request failed: {}", e))
-            }
-        }
-    }
-
-    async fn search_brave(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let query = spec.google_syntax(false);
-        let query = query.as_str();
-        let api_key =
-            match self.resolve_key("brave", "BRAVE_API_KEY").await {
-                Some(k) => k,
-                None => return ToolCallResult::error(
-                    "Brave API key not configured (set BRAVE_API_KEY or define brave ApiContext)"
-                        .to_string(),
-                ),
-            };
-
-        let response = self
-            .client
-            .get("https://api.search.brave.com/res/v1/web/search")
-            .header("X-Subscription-Token", &api_key)
-            .query(&[("q", query), ("count", &count.to_string())])
-            .query(
-                &spec
-                    .brave_freshness()
-                    .map(|f| vec![("freshness", f)])
-                    .unwrap_or_default(),
-            )
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!(
-                        "Brave Search failed: {} - {}",
-                        status, text
-                    ));
-                }
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        let empty = json!([]);
-                        let results = json
-                            .get("web")
-                            .and_then(|w| w.get("results"))
-                            .unwrap_or(&empty);
-                        let simplified: Vec<Value> = results
-                            .as_array()
-                            .unwrap_or(&vec![])
-                            .iter()
-                            .take(count as usize)
-                            .map(|r| {
-                                json!({
-                                    "title":       r.get("title"),
-                                    "url":         r.get("url"),
-                                    "description": r.get("description"),
-                                    "age":         r.get("age"),
-                                })
-                            })
-                            .collect();
-                        ToolCallResult::success_json(simplified)
-                    }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse Brave response: {}", e))
-                    }
-                }
-            }
-            Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
-        }
-    }
-
-    /// POST a JSON search request and return the parsed body, or a tool error
-    /// whose text the ladder classifies. A spent allowance is reported with the
-    /// word "quota" so `classify_search_error` demotes the engine: the status
-    /// codes differ per vendor (Exa 402, Tavily 432/433, Serper 400/403 with
-    /// "Not enough credits") and none of them is a 429.
-    async fn post_search(
-        &self,
-        engine: &str,
-        url: &str,
-        auth: (&str, String),
-        body: Value,
-    ) -> Result<Value, ToolCallResult> {
-        let resp = self
-            .client
-            .post(url)
-            .header(auth.0, auth.1)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ToolCallResult::error(format!("Request failed: {e}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            let spent = matches!(status.as_u16(), 402 | 432 | 433)
-                || text.to_lowercase().contains("credits");
-            let prefix = if spent { "quota exhausted — " } else { "" };
-            return Err(ToolCallResult::error(format!(
-                "{engine} search failed: {prefix}HTTP {status} - {text}"
-            )));
-        }
-        resp.json::<Value>()
-            .await
-            .map_err(|e| ToolCallResult::error(format!("Failed to parse {engine} response: {e}")))
-    }
-
-    /// Tavily: 1,000 searches/month free, refills, no card. `Authorization: Bearer`.
-    async fn search_tavily(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let Some(key) = self.resolve_key("tavily", "TAVILY_API_KEY").await else {
-            return ToolCallResult::error(
-                "Tavily API key not configured (set TAVILY_API_KEY)".to_string(),
-            );
-        };
-        // Tavily reads no operators: domains, dates and news go in parameters.
-        let mut body = json!({
-            "query": spec.plain_text(true),
-            "max_results": count,
-            "search_depth": "basic",
-            "include_published_date": true,
-        });
-        if spec.news {
-            body["topic"] = json!("news");
-        }
-        if spec.has_phrases() {
-            body["exact_match"] = json!(true);
-        }
-        if !spec.sites.is_empty() {
-            body["include_domains"] = json!(spec.sites);
-        }
-        if !spec.exclude_sites.is_empty() {
-            body["exclude_domains"] = json!(spec.exclude_sites);
-        }
-        match (spec.recency, spec.tavily_dates()) {
-            (Some(r), (_, None)) => body["time_range"] = json!(r.word()),
-            (_, (start, end)) => {
-                if let Some(s) = start {
-                    body["start_date"] = json!(s);
-                }
-                if let Some(e) = end {
-                    body["end_date"] = json!(e);
-                }
-            }
-        }
-        match self
-            .post_search(
-                "Tavily",
-                "https://api.tavily.com/search",
-                ("Authorization", format!("Bearer {key}")),
-                body,
-            )
-            .await
-        {
-            Ok(json) => ToolCallResult::success_json(normalize_tavily(&json, count)),
-            Err(e) => e,
-        }
-    }
-
-    /// Exa: $10 of credit/month free, refills, no card. Asks for a short
-    /// highlight per result — without `contents` Exa returns no snippet at all.
-    async fn search_exa(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let Some(key) = self.resolve_key("exa", "EXA_API_KEY").await else {
-            return ToolCallResult::error(
-                "Exa API key not configured (set EXA_API_KEY)".to_string(),
-            );
-        };
-        // Exa is a neural ranker and reads no operators — `site:` there was the
-        // word "site". Domains, dates, news and a short exact phrase are API
-        // parameters. News + a one-day window returned CNBC, Al Jazeera,
-        // France24, Politico dated that day (2026-10-02).
-        let mut body = json!({
-            "query": spec.plain_text(false),
-            "numResults": count,
-            "type": "auto",
-            "contents": { "highlights": { "maxCharacters": EXA_HIGHLIGHT_CHARS } },
-        });
-        if spec.news {
-            body["category"] = json!("news");
-        }
-        if !spec.sites.is_empty() {
-            body["includeDomains"] = json!(spec.sites);
-        }
-        if !spec.exclude_sites.is_empty() {
-            body["excludeDomains"] = json!(spec.exclude_sites);
-        }
-        let (start, end) = spec.exa_dates();
-        if let Some(s) = start {
-            body["startPublishedDate"] = json!(s);
-        }
-        if let Some(e) = end {
-            body["endPublishedDate"] = json!(e);
-        }
-        if let Some(t) = spec.exa_include_text() {
-            body["includeText"] = json!([t]);
-        }
-        if let Some(t) = spec.exa_exclude_text() {
-            body["excludeText"] = json!([t]);
-        }
-        match self
-            .post_search("Exa", "https://api.exa.ai/search", ("x-api-key", key), body)
-            .await
-        {
-            Ok(json) => ToolCallResult::success_json(normalize_exa(&json, count)),
-            Err(e) => e,
-        }
-    }
-
-    /// Serper: Google results, 2,500 free queries ONCE (no refill), no card.
-    async fn search_serper(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let Some(key) = self.resolve_key("serper", "SERPER_API_KEY").await else {
-            return ToolCallResult::error(
-                "Serper API key not configured (set SERPER_API_KEY)".to_string(),
-            );
-        };
-        let mut body = json!({ "q": spec.google_syntax(true), "num": count });
-        if let Some(tbs) = spec.google_tbs() {
-            body["tbs"] = json!(tbs);
-        }
-        // Serper's /news endpoint returns `news` instead of `organic`.
-        let endpoint = if spec.news {
-            "https://google.serper.dev/news"
-        } else {
-            "https://google.serper.dev/search"
-        };
-        match self
-            .post_search("Serper", endpoint, ("X-API-KEY", key), body)
-            .await
-        {
-            Ok(json) => ToolCallResult::success_json(normalize_serper(&json, count)),
-            Err(e) => e,
-        }
-    }
-
-    /// Currents (news). GET with a Bearer key; keywords take quoted phrases,
-    /// OR and -exclusion; one include and one exclude domain; a date range
-    /// needs both ends and at most 7 days on the free plan.
-    async fn search_currents(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let Some(key) = self.resolve_key("currents", "CURRENTS_API_KEY").await else {
-            return ToolCallResult::error("Currents API key not configured (set CURRENTS_API_KEY)");
-        };
-        let now = chrono::Utc::now();
-        let params = currents_params(spec, count, now);
-        let resp = match self
-            .client
-            .get("https://api.currentsapi.services/v1/search")
-            .bearer_auth(&key)
-            .query(&params)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return ToolCallResult::error(format!("Request failed: {e}")),
-        };
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            let spent = status.as_u16() == 429 || text.to_lowercase().contains("limit");
-            let prefix = if spent { "quota exhausted — " } else { "" };
-            return ToolCallResult::error(format!(
-                "Currents search failed: {prefix}HTTP {status} - {}",
-                redact(&text, &key).chars().take(400).collect::<String>()
-            ));
-        }
-        match serde_json::from_str::<Value>(&text) {
-            Ok(json) => ToolCallResult::success_json(normalize_currents(&json, count)),
-            Err(e) => ToolCallResult::error(format!("Failed to parse Currents response: {e}")),
-        }
-    }
-
-    /// Webz news search (full text). The key is a self-serve News API key, so
-    /// the endpoint is `/api/news` — `newsApiLite` answers it "Unknown API
-    /// token", and `/api/nbd_search` also covers blogs and forums (2026-10-06).
-    /// `includeSyndicated=false` asks Webz to drop syndicated copies. GET
-    /// with `token`; Lucene-style query with `site:`/`-site:`,
-    /// `language:english`, `published:<ms`; the window start goes in `ts`
-    /// (epoch ms). Each answer reports the prepaid `balance`, which is logged;
-    /// an empty balance reads as quota exhausted. Error bodies echo the token,
-    /// so every error text is redacted.
-    async fn search_webz(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let Some(key) = self.resolve_key("webz", "WEBZIO_API_KEY").await else {
-            return ToolCallResult::error("Webz API key not configured (set WEBZIO_API_KEY)");
-        };
-        let mut params = webz_params(spec, chrono::Utc::now().date_naive());
-        params.push(("token".into(), key.clone()));
-        params.push(("size".into(), count.min(WEBZ_MAX_RESULTS).to_string()));
-        params.push(("includeSyndicated".into(), "false".into()));
-        let resp = match self
-            .client
-            .get("https://api.webz.io/api/news")
-            .query(&params)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return ToolCallResult::error(format!(
-                    "Request failed: {}",
-                    redact(&e.to_string(), &key)
-                ));
-            }
-        };
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            let lower = text.to_lowercase();
-            let spent = matches!(status.as_u16(), 402 | 429)
-                || ["limit", "quota", "balance", "credit"]
-                    .iter()
-                    .any(|w| lower.contains(w));
-            let prefix = if spent { "quota exhausted — " } else { "" };
-            return ToolCallResult::error(format!(
-                "Webz search failed: {prefix}HTTP {status} - {}",
-                redact(&text, &key).chars().take(400).collect::<String>()
-            ));
-        }
-        match serde_json::from_str::<Value>(&text) {
-            Ok(json) => {
-                let balance = json["balance"].as_f64();
-                info!(balance = ?balance, cost = ?json["cost"].as_f64(), "Webz search");
-                if balance.is_some_and(|b| b < 0.5) {
-                    warn!(balance = ?balance, "Webz prepaid balance is nearly spent");
-                }
-                ToolCallResult::success_json(normalize_webz(&json, count))
-            }
-            Err(e) => ToolCallResult::error(format!("Failed to parse Webz response: {e}")),
-        }
-    }
-
-    async fn search_google(&self, spec: &QuerySpec, count: u8) -> ToolCallResult {
-        let query = spec.google_syntax(true);
-        let query = query.as_str();
-        let api_key = match self.resolve_key("google_cse", "GOOGLE_API_KEY").await {
-            Some(k) => k,
-            None => return ToolCallResult::error(
-                "Google API key not configured (set GOOGLE_API_KEY or define google_cse ApiContext)".to_string()
-            ),
-        };
-        // Google CX is stored as a custom field on the context, not auth
-        let cx = match self.resolve_context_field("google_cse", "google_cx", "GOOGLE_CX").await {
-            Some(c) => c,
-            None => return ToolCallResult::error(
-                "Google CX not configured (set GOOGLE_CX or add google_cx field to google_cse ApiContext)".to_string()
-            ),
-        };
-
-        let response = self
-            .client
-            .get("https://www.googleapis.com/customsearch/v1")
-            .query(&[
-                ("key", api_key.as_str()),
-                ("cx", cx.as_str()),
-                ("q", query),
-                ("num", &count.to_string()),
-            ])
-            .query(
-                &spec
-                    .cse_date_restrict()
-                    .map(|d| vec![("dateRestrict", d)])
-                    .unwrap_or_default(),
-            )
-            .send()
-            .await;
-
-        match response {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    return ToolCallResult::error(format!(
-                        "Google Search failed: {} - {}",
-                        status, text
-                    ));
-                }
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        let items = json
-                            .get("items")
-                            .unwrap_or(&json!([]))
-                            .as_array()
-                            .unwrap_or(&vec![])
-                            .iter()
-                            .map(|item| {
-                                json!({
-                                    "title":   item.get("title"),
-                                    "link":    item.get("link"),
-                                    "snippet": item.get("snippet"),
-                                })
-                            })
-                            .collect::<Vec<_>>();
-                        ToolCallResult::success_json(items)
-                    }
-                    Err(e) => {
-                        ToolCallResult::error(format!("Failed to parse Google response: {}", e))
-                    }
-                }
-            }
-            Err(e) => ToolCallResult::error(format!("Request failed: {}", e)),
-        }
-    }
 }
 
 #[async_trait]
@@ -2400,6 +1165,18 @@ mod tests {
         assert!(SearchSkill::result_text(&out).contains("all engines failed"));
     }
 
+    /// The bundled engines' rank order (`search_engines` tests check the files
+    /// still give it).
+    fn test_default() -> Vec<String> {
+        v(&[
+            "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave",
+        ])
+    }
+
+    fn order_with_default(c: &str, r: Option<&str>, e: &[String]) -> Vec<String> {
+        order_engines(c, &test_default(), r, e)
+    }
+
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
     }
@@ -2407,7 +1184,7 @@ mod tests {
     #[test]
     fn default_ladder_puts_searxng_last_before_the_uncapped_engine() {
         assert_eq!(
-            order_engines("", None, &[]),
+            order_with_default("", None, &[]),
             v(&[
                 "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave"
             ])
@@ -2415,137 +1192,11 @@ mod tests {
     }
 
     #[test]
-    fn engines_that_cannot_serve_a_query_say_why() {
-        let today = NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
-        let mut spec = QuerySpec::parse("Sudan El Fasher");
-        assert!(engine_unsupported("currents", &spec, today).is_none());
-        spec.recency = Some(Recency::Week);
-        assert!(
-            engine_unsupported("currents", &spec, today).is_none(),
-            "a week fits"
-        );
-        spec.recency = Some(Recency::Month);
-        assert!(
-            engine_unsupported("currents", &spec, today)
-                .unwrap()
-                .contains("days")
-        );
-        assert!(engine_unsupported("webz", &spec, today).is_none());
-        spec.recency = Some(Recency::Year);
-        assert!(engine_unsupported("webz", &spec, today).is_some());
-        let multi = QuerySpec::parse("x site:bbc.co.uk site:reuters.com");
-        assert!(
-            engine_unsupported("currents", &multi, today)
-                .unwrap()
-                .contains("one domain")
-        );
-        assert!(engine_unsupported("webz", &multi, today).is_none());
-        assert!(engine_unsupported("exa", &multi, today).is_none());
-    }
-
-    #[test]
-    fn currents_dates_are_clamped_to_seven_days_and_domains_mapped() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-10-06T18:30:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let mut spec =
-            QuerySpec::parse(r#""El Fasher" -sports site:bbc.co.uk -site:dailymail.com"#);
-        spec.recency = Some(Recency::Week);
-        let p = currents_params(&spec, 50, now);
-        let get = |k: &str| p.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
-        assert_eq!(get("keywords"), Some(r#""El Fasher" -sports"#));
-        assert_eq!(get("domain"), Some("bbc.co.uk"));
-        assert_eq!(get("domain_not"), Some("dailymail.com"));
-        assert_eq!(get("page_size"), Some("20"), "free-plan cap");
-        assert_eq!(get("end_date"), Some("2026-10-06T18:30:00Z"));
-        assert_eq!(
-            get("start_date"),
-            Some("2026-09-29T18:31:00Z"),
-            "7 days minus a minute"
-        );
-        let plain = currents_params(&QuerySpec::parse("Sudan"), 5, now);
-        assert!(
-            plain.iter().all(|(k, _)| k != "start_date"),
-            "no window, no dates"
-        );
-    }
-
-    #[test]
-    fn webz_queries_carry_sites_language_and_the_window() {
-        let today = NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
-        let mut spec =
-            QuerySpec::parse(r#""El Fasher" site:bbc.co.uk site:reuters.com -site:dailymail.com"#);
-        spec.recency = Some(Recency::Week);
-        let p = webz_params(&spec, today);
-        let q = &p.iter().find(|(k, _)| k == "q").unwrap().1;
-        assert!(q.starts_with(r#""El Fasher""#));
-        assert!(q.contains("(site:bbc.co.uk OR site:reuters.com)"));
-        assert!(q.contains("-site:dailymail.com") && q.contains("language:english"));
-        let ts = &p.iter().find(|(k, _)| k == "ts").unwrap().1;
-        assert_eq!(ts, "1790640000000", "2026-09-29T00:00Z in ms");
-        spec.recency = Some(Recency::Month);
-        let p = webz_params(&spec, today);
-        let ts = &p.iter().find(|(k, _)| k == "ts").unwrap().1;
-        assert_eq!(
-            ts, "1788652800000",
-            "a month is clamped to Webz's 30 days: 2026-09-06T00:00Z"
-        );
-        assert!(
-            p.iter().all(|(k, _)| k != "token"),
-            "the token is added at call time only"
-        );
-    }
-
-    #[test]
-    fn news_engine_results_normalise() {
-        let c = json!({"status": "ok", "news": [
-            {"title": "T", "url": "https://a.com/x", "description": "D", "published": "2026-10-06 11:02:31 +0000"},
-            {"title": "no url"}]});
-        let out = normalize_currents(&c, 10);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["snippet"], "D");
-        assert_eq!(out[0]["date"], "2026-10-06 11:02:31 +0000");
-        let w = json!({"posts": [{"title": "W", "url": "https://b.com/y", "published": "2026-10-05T10:00:00.000+03:00",
-                                  "text": "x".repeat(2000), "thread": {"site": "b.com"}}], "moreResultsAvailable": 0});
-        let out = normalize_webz(&w, 10);
-        assert_eq!(out[0]["link"], "https://b.com/y");
-        assert!(out[0]["snippet"].as_str().unwrap().chars().count() <= WEBZ_SNIPPET_CHARS + 1);
-    }
-
-    #[test]
-    fn credentials_are_redacted_from_error_text() {
-        assert_eq!(
-            redact("Unknown API token abcdef123456", "abcdef123456"),
-            "Unknown API token <redacted>"
-        );
-        assert_eq!(
-            redact("short", "abc"),
-            "short",
-            "too short to be a key; left alone"
-        );
-    }
-
-    #[test]
     fn spent_keyed_engines_fall_behind_searxng_but_brave_stays_last() {
-        let ladder = order_engines("", None, &v(&["exa", "tavily"]));
+        let ladder = order_with_default("", None, &v(&["exa", "tavily"]));
         let pos = |e: &str| ladder.iter().position(|x| x == e).unwrap();
         assert!(pos("serper") < pos("searxng"));
         assert!(pos("searxng") < pos("brave"));
-    }
-
-    #[test]
-    fn searxng_dates_enforce_the_window_and_keep_undated_results() {
-        let json = json!({"results": [
-            {"url": "https://a.com/new", "title": "new", "content": "", "publishedDate": "2026-10-05T18:05:55"},
-            {"url": "https://b.com/old", "title": "old", "content": "", "publishedDate": "2026-03-01T00:00:00"},
-            {"url": "https://c.com/undated", "title": "undated", "content": ""},
-        ]});
-        let since = NaiveDate::from_ymd_opt(2026, 9, 29);
-        let got = searxng_items(&json, 10, since, None);
-        let links: Vec<&str> = got.iter().map(|r| r["link"].as_str().unwrap()).collect();
-        assert_eq!(links, vec!["https://a.com/new", "https://c.com/undated"]);
-        assert_eq!(got[0]["date"], "2026-10-05T18:05:55");
-        assert_eq!(searxng_items(&json, 10, None, None).len(), 3);
     }
 
     #[test]
@@ -2566,7 +1217,7 @@ mod tests {
     fn unconfigured_engines_are_dropped_from_the_ladder() {
         // Only searxng + serpapi have keys: google and brave leave the ladder
         // entirely rather than wasting a rung on `not_configured` each call.
-        let ladder = order_engines("", None, &[]);
+        let ladder = order_with_default("", None, &[]);
         assert_eq!(
             retain_configured(ladder, &v(&["searxng", "serpapi"])),
             v(&["serpapi", "searxng"])
@@ -2577,7 +1228,7 @@ mod tests {
     fn retain_configured_never_empties_the_ladder() {
         // Nothing configured — keep the original so the caller still gets a real
         // per-engine error instead of silently searching nothing.
-        let ladder = order_engines("", None, &[]);
+        let ladder = order_with_default("", None, &[]);
         assert_eq!(retain_configured(ladder.clone(), &[]), ladder);
     }
 
@@ -2593,29 +1244,29 @@ mod tests {
     #[test]
     fn configured_order_overrides_the_default() {
         assert_eq!(
-            order_engines("google, serpapi ,searxng", None, &[]),
+            order_with_default("google, serpapi ,searxng", None, &[]),
             v(&["google", "serpapi", "searxng"])
         );
     }
 
     #[test]
     fn blank_configuration_falls_back_to_the_default() {
-        assert_eq!(order_engines("  , ,", None, &[]), v(DEFAULT_ENGINE_ORDER));
+        assert_eq!(order_with_default("  , ,", None, &[]), test_default());
     }
 
     #[test]
     fn requested_engine_is_promoted_without_dropping_the_rest() {
         // The whole point of the ladder: asking for serpapi must not mean
         // "fail if serpapi is down".
-        let ladder = order_engines("", Some("serpapi"), &[]);
+        let ladder = order_with_default("", Some("serpapi"), &[]);
         assert_eq!(ladder[0], "serpapi");
-        assert_eq!(ladder.len(), DEFAULT_ENGINE_ORDER.len());
+        assert_eq!(ladder.len(), test_default().len());
         assert!(ladder.contains(&"searxng".to_string()));
     }
 
     #[test]
     fn requested_engine_is_matched_case_insensitively() {
-        let ladder = order_engines("", Some("  SerpApi "), &[]);
+        let ladder = order_with_default("", Some("  SerpApi "), &[]);
         assert_eq!(ladder[0], "serpapi");
         // Promotion must not leave a duplicate behind.
         assert_eq!(ladder.iter().filter(|e| *e == "serpapi").count(), 1);
@@ -2623,24 +1274,24 @@ mod tests {
 
     #[test]
     fn exhausted_engines_are_demoted_not_removed() {
-        let ladder = order_engines("", None, &v(&["searxng"]));
+        let ladder = order_with_default("", None, &v(&["searxng"]));
         assert_eq!(*ladder.last().unwrap(), "searxng");
-        assert_eq!(ladder.len(), DEFAULT_ENGINE_ORDER.len());
+        assert_eq!(ladder.len(), test_default().len());
     }
 
     #[test]
     fn exhaustion_outranks_an_explicit_request() {
         // Observed 2026-08-10: SerpApi's free tier was spent, so an explicit
         // engine:"serpapi" step should still be served by a live engine first.
-        let ladder = order_engines("", Some("serpapi"), &v(&["serpapi"]));
+        let ladder = order_with_default("", Some("serpapi"), &v(&["serpapi"]));
         assert_eq!(ladder[0], "exa");
         assert_eq!(*ladder.last().unwrap(), "serpapi");
     }
 
     #[test]
     fn all_engines_exhausted_preserves_order_rather_than_emptying() {
-        let ladder = order_engines("", None, &v(DEFAULT_ENGINE_ORDER));
-        assert_eq!(ladder, v(DEFAULT_ENGINE_ORDER));
+        let ladder = order_with_default("", None, &test_default());
+        assert_eq!(ladder, test_default());
     }
 
     #[test]
@@ -2722,7 +1373,7 @@ mod tests {
         // The two engines share one SerpApi account, so exhausting either must
         // move both to the back of the ladder (the sibling expansion happens in
         // engine_ladder; order_engines then demotes both).
-        let ladder = order_engines(
+        let ladder = order_with_default(
             "searxng,google,serpapi,brave",
             Some("google_news"),
             &v(&["serpapi", "google_news"]),
@@ -2741,199 +1392,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod google_news_tests {
-    use super::*;
-
-    #[test]
-    fn flattens_a_flat_story() {
-        let news = vec![json!({
-            "title": "Headline",
-            "link": "https://example.com/a",
-            "snippet": "body",
-            "source": {"name": "Example News"},
-            "date": "09/04/2026, 07:00 AM, +0000 UTC"
-        })];
-        let out = flatten_google_news(&news, 5);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["link"], "https://example.com/a");
-        assert_eq!(out[0]["source"], "Example News");
-        assert_eq!(out[0]["snippet"], "body");
-    }
-
-    #[test]
-    fn unrolls_highlight_and_topic_clusters() {
-        // A single news_results entry with no top-level story of its own, but a
-        // highlight plus a stories cluster, must contribute several headlines.
-        let news = vec![json!({
-            "highlight": {"title": "Featured", "link": "https://example.com/h"},
-            "stories": [
-                {"title": "Story 1", "link": "https://example.com/1"},
-                {"title": "Story 2", "link": "https://example.com/2"}
-            ]
-        })];
-        let out = flatten_google_news(&news, 5);
-        let links: Vec<&str> = out.iter().map(|r| r["link"].as_str().unwrap()).collect();
-        assert_eq!(
-            links,
-            vec![
-                "https://example.com/h",
-                "https://example.com/1",
-                "https://example.com/2"
-            ]
-        );
-    }
-
-    #[test]
-    fn drops_group_headers_with_no_link_and_caps_at_count() {
-        let news = vec![
-            json!({"title": "Topic group with no link of its own"}),
-            json!({"title": "Real 1", "link": "https://example.com/1"}),
-            json!({"title": "Real 2", "link": "https://example.com/2"}),
-            json!({"title": "Real 3", "link": "https://example.com/3"}),
-        ];
-        let out = flatten_google_news(&news, 2);
-        assert_eq!(out.len(), 2);
-        // The header (no link) is skipped; the two real stories come through.
-        assert_eq!(out[0]["title"], "Real 1");
-        assert_eq!(out[1]["title"], "Real 2");
-    }
-
-    #[test]
-    fn missing_snippet_becomes_empty_not_null() {
-        let news = vec![json!({"title": "T", "link": "https://example.com/x"})];
-        let out = flatten_google_news(&news, 5);
-        assert_eq!(out[0]["snippet"], "");
-    }
-}
-
-#[cfg(test)]
-mod unresponsive_engine_tests {
-    use super::*;
-
-    #[test]
-    fn parses_the_engine_and_reason_pairs_searxng_actually_sends() {
-        // Captured verbatim from the instance on 2026-08-31, mid-outage.
-        let json = json!({
-            "results": [],
-            "unresponsive_engines": [
-                ["brave", "too many requests"],
-                ["duckduckgo", "CAPTCHA"],
-                ["google cse", "too many requests"],
-                ["startpage", "CAPTCHA"]
-            ]
-        });
-        let got = parse_unresponsive_engines(&json);
-        assert_eq!(got.len(), 4);
-        assert_eq!(got[1], ("duckduckgo".into(), "CAPTCHA".into()));
-        assert!(format_unresponsive(&got).contains("duckduckgo (CAPTCHA)"));
-    }
-
-    #[test]
-    fn a_healthy_response_reports_nothing() {
-        // Must stay silent on the common path, or the warning becomes noise
-        // and stops being read — which is how the outage stayed invisible.
-        let json = json!({ "results": [{"title": "x"}], "unresponsive_engines": [] });
-        assert!(parse_unresponsive_engines(&json).is_empty());
-        assert!(parse_unresponsive_engines(&json!({ "results": [] })).is_empty());
-    }
-
-    #[test]
-    fn a_single_element_entry_gets_a_placeholder_reason_not_a_guess() {
-        let json = json!({ "unresponsive_engines": [["mwmbl"]] });
-        assert_eq!(
-            parse_unresponsive_engines(&json),
-            vec![("mwmbl".to_string(), "unspecified".to_string())]
-        );
-    }
-
-    #[test]
-    fn malformed_entries_are_skipped_rather_than_panicking() {
-        // The field is version-dependent; a shape change must degrade to a
-        // thinner log line, never take down a search.
-        let json = json!({
-            "unresponsive_engines": [["ok", "reason"], "not-an-array", [], [42], null]
-        });
-        assert_eq!(
-            parse_unresponsive_engines(&json),
-            vec![("ok".to_string(), "reason".to_string())]
-        );
-    }
-}
-
-#[cfg(test)]
 mod keyed_engine_tests {
     use super::*;
-
-    #[test]
-    fn tavily_results_map_to_link_snippet_date() {
-        let j = json!({"results": [
-            {"title": "A", "url": "https://apnews.com/a", "content": "snip", "published_date": "2026-09-25"},
-            {"title": "no url", "content": "dropped"}
-        ]});
-        let out = normalize_tavily(&j, 5);
-        assert_eq!(out.len(), 1, "a result with no url is not a result");
-        assert_eq!(out[0]["link"], "https://apnews.com/a");
-        assert_eq!(out[0]["snippet"], "snip");
-        assert_eq!(out[0]["date"], "2026-09-25");
-    }
-
-    #[test]
-    fn tavily_snippets_are_clipped_to_the_budget() {
-        let long = "é".repeat(TAVILY_SNIPPET_CHARS + 300);
-        let j = json!({"results": [{"title": "T", "url": "https://a.com", "content": long}]});
-        let out = normalize_tavily(&j, 5);
-        let snip = out[0]["snippet"].as_str().unwrap();
-        assert_eq!(
-            snip.chars().count(),
-            TAVILY_SNIPPET_CHARS + 1,
-            "clip + ellipsis"
-        );
-        assert!(snip.ends_with('…'));
-    }
-
-    #[test]
-    fn exa_highlights_become_the_snippet() {
-        let j = json!({"results": [
-            {"title": "B", "url": "https://reuters.com/b", "publishedDate": "2026-09-24T10:00:00Z",
-             "highlights": ["first", "second"]},
-            {"title": "C", "url": "https://bbc.com/c", "text": "fallback text"}
-        ]});
-        let out = normalize_exa(&j, 5);
-        assert_eq!(out[0]["snippet"], "first … second");
-        assert_eq!(out[0]["date"], "2026-09-24T10:00:00Z");
-        assert_eq!(out[1]["snippet"], "fallback text");
-        assert!(out[1].get("date").is_none());
-    }
-
-    #[test]
-    fn serper_reads_organic_and_respects_count() {
-        let j = json!({"organic": [
-            {"title": "1", "link": "https://a.com", "snippet": "s1"},
-            {"title": "2", "link": "https://b.com", "snippet": "s2", "date": "2 days ago"}
-        ]});
-        let out = normalize_serper(&j, 1);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["link"], "https://a.com");
-    }
-
-    /// Normalised results must feed the claim verifier's domain count.
-    #[test]
-    fn normalised_results_count_as_evidence_domains() {
-        let out = normalize_serper(
-            &json!({"organic": [{"title": "1", "link": "https://www.a.com/x"},
-                                 {"title": "2", "link": "https://b.org/y"}]}),
-            5,
-        );
-        let text = serde_json::to_string(&out).unwrap();
-        // What the claim verifier reads (epistemics' `evidence_domains`).
-        let items: Vec<Value> = serde_json::from_str(&text).unwrap();
-        let domains: Vec<String> = items
-            .iter()
-            .filter_map(|i| i["link"].as_str())
-            .filter_map(crate::services::web_result::registrable_domain)
-            .collect();
-        assert_eq!(domains, vec!["a.com".to_string(), "b.org".to_string()]);
-    }
 
     /// Each vendor signals a spent allowance differently; all must demote.
     #[test]

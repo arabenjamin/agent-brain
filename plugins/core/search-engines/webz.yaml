@@ -1,0 +1,26 @@
+# Webz news search (full text), prepaid ~$0.01 a result. Out of the default
+# ladder after measuring (2026-10-06): fringe and off-topic sites, no
+# SourceList outlets. Explicit `engine: webz` only. The key is a self-serve
+# News API key, so the endpoint is /api/news (`newsApiLite` answers "Unknown
+# API token"). Lucene-style query; the window start goes in `ts` (epoch ms).
+# Error bodies echo the token: every error text is redacted.
+name: webz
+key_env: WEBZIO_API_KEY
+limits: { max_window_days: 31, filetype: false }
+request:
+  method: get
+  url: https://api.webz.io/api/news
+  auth: { query: token }
+  count: { param: size, max: 5 }
+  fixed: { includeSyndicated: "false" }
+  dialect: webz
+  timeout_secs: 30
+response:
+  items: posts
+  link: url
+  snippet: [text]
+  snippet_chars: 700
+  date: published
+  log_fields: [balance, cost]
+  spent_status: [402, 429]
+  spent_words: [limit, quota, balance, credit]

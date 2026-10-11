@@ -1,0 +1,19 @@
+# SerpApi, Google organic results. Shares one account (and its monthly quota)
+# with google_news. SerpApi reports quota/rate/service problems as HTTP 200
+# with an `error` field and no results; read as a failure, or a spent account
+# looks like a successful empty search.
+name: serpapi
+rank: 4
+key_env: SERPAPI_KEY
+quota_group: serpapi
+request:
+  method: get
+  url: https://serpapi.com/search.json
+  auth: { query: api_key }
+  query: { param: q, syntax: google }
+  count: { param: num }
+  fixed: { engine: google }
+  dialect: google_tbs
+response:
+  items: organic_results
+  error_field: error

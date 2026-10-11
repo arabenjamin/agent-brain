@@ -1,0 +1,16 @@
+# Brave Search API. Last in the ladder: uncapped but weakest on our queries.
+name: brave
+rank: 7
+key_env: BRAVE_API_KEY
+request:
+  method: get
+  url: https://api.search.brave.com/res/v1/web/search
+  auth: { header: X-Subscription-Token }
+  query: { param: q, syntax: google_undated }
+  count: { param: count, max: 20 }
+  dialect: brave
+response:
+  items: web.results
+  link: url
+  snippet: [description]
+  date: age

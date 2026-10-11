@@ -1,0 +1,24 @@
+# Tavily: 1,000 searches a month free, refills, no card. Reads no operators:
+# domains, dates and news go in parameters.
+name: tavily
+rank: 2
+key_env: TAVILY_API_KEY
+request:
+  method: post
+  url: https://api.tavily.com/search
+  auth: { header: Authorization, prefix: "Bearer " }
+  query: { param: query, syntax: plain_quoted }
+  count: { param: max_results }
+  fixed: { search_depth: basic, include_published_date: true }
+  news: { topic: news }
+  sites: include_domains
+  exclude_sites: exclude_domains
+  dialect: tavily
+response:
+  items: results
+  link: url
+  snippet: [content]
+  snippet_chars: 500
+  date: published_date
+  spent_status: [402, 432, 433]
+  spent_words: [credits]

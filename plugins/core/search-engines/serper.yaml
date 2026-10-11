@@ -1,0 +1,18 @@
+# Serper: Google results, 2,500 free queries ONCE (no refill), no card. Its
+# /news endpoint answers `news` instead of `organic`.
+name: serper
+rank: 3
+key_env: SERPER_API_KEY
+request:
+  method: post
+  url: https://google.serper.dev/search
+  news_url: https://google.serper.dev/news
+  auth: { header: X-API-KEY }
+  query: { param: q, syntax: google }
+  count: { param: num }
+  dialect: google_tbs
+response:
+  items: organic
+  news_items: news
+  spent_status: [402]
+  spent_words: [credits]

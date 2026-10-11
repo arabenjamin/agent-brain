@@ -1,0 +1,28 @@
+# Exa: a neural ranker. $10 of credit a month free, refills, no card. It reads
+# no operators (`site:` there was the word "site"): domains, dates, news and a
+# short exact phrase are parameters. Without `contents` it returns no snippet.
+# News + a one-day window returned CNBC, Al Jazeera, France24, Politico dated
+# that day (2026-10-02).
+name: exa
+rank: 1
+key_env: EXA_API_KEY
+request:
+  method: post
+  url: https://api.exa.ai/search
+  auth: { header: x-api-key }
+  query: { param: query, syntax: plain }
+  count: { param: numResults }
+  fixed:
+    type: auto
+    contents: { highlights: { maxCharacters: 400 } }
+  news: { category: news }
+  sites: includeDomains
+  exclude_sites: excludeDomains
+  dialect: exa
+response:
+  items: results
+  link: url
+  snippet: [highlights, text]
+  date: publishedDate
+  spent_status: [402]
+  spent_words: [credits]
