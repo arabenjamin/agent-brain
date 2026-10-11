@@ -215,6 +215,9 @@ fn build_llm_config(config: &Config) -> LlmConfig {
             }
         }
         LlmProviderType::Gemini => {
+            // Google's endpoint, not the default's host-Ollama URL: chat reads
+            // base_url (clients/chat/openai_loop.rs completions_url).
+            base.base_url = None;
             if let Some(key) = &llm.gemini_api_key {
                 base = base.with_api_key(key);
             }

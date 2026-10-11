@@ -42,7 +42,7 @@ impl ChatService {
     /// Compose the turn's reply from what the worker gathered.
     ///
     /// `gathered` is passed explicitly rather than scraped back out of the
-    /// message history because `run_ollama_cloud_loop` trims that history to
+    /// message history because `run_openai_loop` trims that history to
     /// `MAX_HISTORY_MESSAGES` to keep the context from overflowing. Reading
     /// tool results from it would silently lose the earliest ones on exactly
     /// the long research turns synthesis exists to serve.

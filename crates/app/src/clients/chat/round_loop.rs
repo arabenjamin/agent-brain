@@ -43,7 +43,6 @@ pub(super) struct RoundReply {
 /// One executed call, as the provider must feed it back to the model.
 pub(super) struct ToolOutcome {
     pub(super) id: String,
-    pub(super) name: String,
     pub(super) success: bool,
     /// Budgeted and annotated (`prepare_tool_result`); never carries `bulk`.
     pub(super) model_text: String,
@@ -354,7 +353,6 @@ impl ChatService {
                 }
                 outcomes.push(ToolOutcome {
                     id: call.id.clone(),
-                    name: call.name.clone(),
                     success,
                     model_text,
                 });

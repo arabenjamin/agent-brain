@@ -76,7 +76,16 @@ impl ProviderTurn for OllamaTurn {
             "model": model,
             "messages": self.messages,
             "stream": true,
-            "options": { "temperature": self.config.temperature },
+            // num_ctx on every call: without it host Ollama reads only the
+            // first ~2K tokens, less than the system prompt alone. Measured
+            // 2026-10-11 (Ollama 0.40.2, ~15K-token prompt): 2,050 tokens read
+            // with no num_ctx, 15,293 with 16384. Its OpenAI-compatible
+            // endpoint ignores `options`, which is why host Ollama keeps this
+            // native adapter (CORE_AND_PLUGINS_PLAN 6a).
+            "options": {
+                "temperature": self.config.temperature,
+                "num_ctx": self.config.num_ctx.unwrap_or_else(crate::services::llm::ollama_num_ctx),
+            },
         });
         if offer_tools {
             body["tools"] = Value::Array(self.tools.clone());
@@ -123,7 +132,23 @@ impl ProviderTurn for OllamaTurn {
         let mut think_started = false;
 
         'stream: while let Some(chunk_result) = byte_stream.next().await {
-            let chunk = chunk_result.map_err(|e| format!("Ollama stream read error: {e}"))?;
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    // A body cut off mid-stream is a failed call: ledger it.
+                    let err = format!("Ollama stream read error: {e}");
+                    svc.record_llm_call(
+                        &self.provider_label,
+                        &model,
+                        false,
+                        call_start.elapsed().as_millis() as i64,
+                        None,
+                        None,
+                        Some(&err),
+                    );
+                    return Err(err);
+                }
+            };
             line_buf.push_str(&String::from_utf8_lossy(&chunk));
 
             while let Some(nl) = line_buf.find('\n') {

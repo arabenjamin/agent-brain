@@ -359,7 +359,6 @@ mod anthropic_turn_tests {
         t.push_assistant(&RoundReply::default());
         t.push_tool_results(vec![ToolOutcome {
             id: "u1".into(),
-            name: "x".into(),
             success: true,
             model_text: "result".into(),
         }]);

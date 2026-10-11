@@ -134,27 +134,15 @@ impl ChatService {
                 }
                 LlmProviderType::OllamaCloud
                 | LlmProviderType::LlamaCpp
-                | LlmProviderType::OpenAiCompat => {
-                    // Both speak the OpenAI-compatible /v1/chat/completions wire
-                    // (Ollama Cloud and the llama.cpp `llama-server` sidecar), so
-                    // the same tool-call-accumulating loop drives them — NOT the
-                    // degraded text loop, which only <tool_call>-parses.
+                | LlmProviderType::OpenAiCompat
+                | LlmProviderType::Gemini => {
+                    // All speak the OpenAI-compatible chat/completions wire
+                    // (Gemini at its own path), so one tool-call-accumulating
+                    // adapter drives them. Gemini used a <tool_call> text
+                    // protocol until 2026-10-11 (CORE_AND_PLUGINS_PLAN 6a).
                     // `allow_delegate` is true only for the top-level orchestrator
                     // turn; a sub-agent rung passes false (depth cap 1).
-                    self.run_ollama_cloud_loop(
-                        cfg,
-                        tools,
-                        handler,
-                        request,
-                        system_prompt,
-                        attempt_tx,
-                        allow_delegate,
-                        max_iterations,
-                    )
-                    .await
-                }
-                _ => {
-                    self.run_text_loop(
+                    self.run_openai_loop(
                         cfg,
                         tools,
                         handler,

@@ -818,7 +818,7 @@ mod tool_budget_tests {
     async fn drive(server: &MockServer) -> Vec<ChatEvent> {
         let svc = crate::clients::chat::test_support::chat_service(vec![]);
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(256);
-        svc.run_ollama_cloud_loop(
+        svc.run_openai_loop(
             cloud_config(server),
             vec![],
             None,

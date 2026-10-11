@@ -190,14 +190,14 @@ mod empty_completion_tests {
     use super::*;
     use crate::clients::chat::test_support::*;
 
-    /// Run `run_ollama_cloud_loop` against a mock server and collect what the
+    /// Run `run_openai_loop` against a mock server and collect what the
     /// client saw. Tools and handler are empty — the retry decision depends on
     /// the stream alone.
     async fn drive_cloud_loop(server: &wiremock::MockServer) -> Vec<ChatEvent> {
         let svc = chat_service(vec![]);
 
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(64);
-        svc.run_ollama_cloud_loop(
+        svc.run_openai_loop(
             cloud_config(server),
             vec![],
             None,

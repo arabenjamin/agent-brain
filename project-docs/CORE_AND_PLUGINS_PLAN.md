@@ -407,6 +407,26 @@ Rule: `dev_docs get plugins/api`.
 
 **Phase 6 — consolidation to the second target.** Only after Phase 4 measures what is left. Known candidates: four provider chat loops (`anthropic_`, `ollama_`, `openai_`, `text_loop`) → one OpenAI-wire loop + the Anthropic adapter; the LLM stack (≈7.4K: llm, providers, routing, budget, gate, registry, model config/router, shared_llm); `rest.rs` (2.6K) and per-feature REST clients; search engines as YAML like LLM providers; hand-written tool schemas; splitting `app` into core crates under the per-crate budget.
 
+**Phase 6 decisions (owner, 2026-10-11, after Phase 4's measurement).** Measured at Phase 4's end: core code 61.3K by the §9 column (56K in `app`; 44.4K without comments). The named consolidations add up to roughly 4–5K, so consolidation alone lands near ~51K, not ~32K.
+- **The core is retrieving, storing and reasoning over information.** Search, `http_request`, `ingest_api` and the MCP client stay core: they are how the brain retrieves. A capability that is used rarely may move (the WebSocket tools, the sandboxes).
+- **Finish this plan's consolidations first**, fixing what they break as they go; **then a second extraction round** measures how much further core can go.
+- **~32K is a direction, not a gate.** If it cannot be reached, the measured number is recorded and that is the result: accurate, not precise.
+
+**Phase 6 steps**, each ending with a §9 row:
+- **6a — one chat loop.** The four provider loops (`anthropic_`, `ollama_`, `openai_`, `text_loop`) → one OpenAI-wire loop plus the Anthropic adapter.
+
+  **6a result (2026-10-11).** Measured first, and the measurement changed the step: **host Ollama keeps its native adapter.** Its OpenAI-compatible endpoint ignores `options`, so `num_ctx` can't be set there, and without it host Ollama reads only ~2K tokens (Ollama 0.40.2: a ~15K-token prompt read as 2,050 tokens, 15,293 with `num_ctx` 16384). The native chat adapter sent no `num_ctx` either: a live bug, and 9 granite4 chat turns in the last 30 days had answered from a truncated prompt. So the result is three adapters, not two: Anthropic (native), host Ollama (native, now sending `num_ctx` on every call), and `run_openai_loop` for everything else, **Gemini included** (52 chat and sub-agent calls in 30 days had gone through the text loop). **`text_loop.rs` and its `<tool_call>` parser are deleted.**
+  - Gemini on the OpenAI wire needs two things the measurement found: 3.x refuses the next round ("missing a thought_signature", 400) unless each call's `extra_content` is echoed back, and its streamed tool-call deltas carry no `index`. Both handled; arguments that are not valid JSON become a malformed call (one correction round), not prose.
+  - **Found on the way and fixed:** with `LLM_PROVIDER=gemini`, `main.rs` left the default's host-Ollama URL in `base_url`. The native Gemini provider never read it; the OpenAI wire does, so `main.rs` clears it. A body cut off mid-stream now writes a failed call to the ledger (both text adapters); before, it returned an error without one.
+  - **Verified live:** tool-using chat turns on gemini-2.5-flash, 3.6-flash and 3.8-flash (one 3.8 attempt lost its stream mid-body once, Google-side, and is now ledgered); a host-Ollama turn read 6,164 prompt tokens. 766 + plugin unit tests, clippy clean; `eval-retrieval` unchanged 0.880 / 0.800. Test sessions deleted.
+  - **Size: −131 lines** (code 61.3K → 61.1K). Small because the round loop (`round_loop.rs`) had already unified the loops' control flow; the text loop was the one adapter left to delete, and the Gemini handling and its tests took some back. The rule is now the dev note "Chat wire adapters".
+- **6b — the LLM stack** (≈4.4K: llm, providers, routing, budget, gate, registry, model config/router, shared_llm): fold what overlaps; Gemini through its OpenAI-compatible API if it measures the same.
+- **6c — search engines as YAML**, declared like LLM providers instead of Rust per engine.
+- **6d — REST clients**: `rest.rs` (1.9K) and the per-feature clients share their plumbing.
+- **6e — generated tool schemas** from typed argument structs instead of hand-written JSON.
+- **6f — split `app` into core crates** under the per-crate budget (6K soft / 8K hard), last, so it moves code that has already shrunk.
+- **6g — second extraction round**: the WebSocket tools and the sandboxes to plugins, then a survey of what else neither retrieves, stores nor reasons (snapshots, `gpu_lease`, dev notes, self-model …), measured before anything moves.
+
 **Measurements.**
 
 | Date | Phase | Core Rust | of which tests | Plugins Rust | Frontend | Docs loaded up front | Core tools |
@@ -420,6 +440,7 @@ Rule: `dev_docs get plugins/api`.
 | 2026-10-10 | Phase 3c | 89.1K (code 72.1K) | 17.0K | 0.8K (osint-data) | 18.9K | CLAUDE.md 7.6 KB | 61 (+1 with osint-data) |
 | 2026-10-11 | Phase 4 | 75.6K (code 61.3K) | 14.3K | 15.4K (6 plugins; epistemics 3.9K) | 18.9K | CLAUDE.md 7.6 KB | 42 (+19 from plugins, +1 osint-data with its keys) |
 | 2026-10-11 | Phase 5 | 75.6K (code 61.3K) | 14.3K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
+| 2026-10-11 | Phase 6a | 75.6K (code 61.1K) | 14.5K | 15.4K | 19.1K | CLAUDE.md 7.6 KB | 42 (+19 from plugins) |
 
 ## 10. Open questions
 

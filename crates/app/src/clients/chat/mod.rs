@@ -14,9 +14,11 @@
 //! - `mod.rs` — public types ([`ChatEvent`], [`ChatRequest`]), the [`ChatService`]
 //!   struct and constructors, iteration caps, tool dispatch.
 //! - `turn` — one turn: profile/model resolution, the fallback ladder, one attempt.
-//! - Provider loops, one `impl ChatService` each: `anthropic_loop`, `ollama_loop`,
-//!   `openai_loop` (Ollama Cloud / llama.cpp / OpenAI-compatible), `text_loop`
-//!   (`<tool_call>` text protocol — Gemini).
+//! - Provider wire adapters, one `impl ChatService` each: `anthropic_loop`,
+//!   `ollama_loop` (host Ollama's native API, the only one that takes
+//!   `num_ctx`), `openai_loop` (Ollama Cloud / llama.cpp / Gemini / any
+//!   OpenAI-compatible provider). Gemini's `<tool_call>` text protocol went in
+//!   CORE_AND_PLUGINS_PLAN 6a.
 //! - `synthesis` — the worker/voice split. `delegate` — the `delegate` pseudo-tool
 //!   and the [`SubagentLoopRunner`] impl that `AgentRunner` drives.
 //! - Shared by every loop: `loop_policy` (caps, nudges, tool receipt),
@@ -54,7 +56,6 @@ mod synthesis;
 mod test_support;
 #[cfg(test)]
 mod tests;
-mod text_loop;
 mod tool_calls;
 mod tool_results;
 mod turn;
