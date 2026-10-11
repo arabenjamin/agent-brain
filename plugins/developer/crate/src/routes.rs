@@ -1,5 +1,5 @@
-//! `GET /api/architecture`: the System → Architecture view, computed live
-//! (`services/architecture.rs`, HBI_REDESIGN_PLAN.md §4).
+//! `GET /api/plugins/developer/architecture`: the System → Architecture view,
+//! computed live (`arch.rs`, HBI_REDESIGN_PLAN.md §4).
 //!
 //! Returns the layout's groups filled with live nodes, the nodes no group
 //! claims (`unplaced`), the selectors that matched nothing (`stale`), the
@@ -9,27 +9,43 @@
 
 use std::sync::Arc;
 
-use axum::{Extension, Json, response::IntoResponse};
+use agent_brain_plugin_api::Graph;
+use agent_brain_plugin_api::axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use serde_json::json;
 
-use super::rest::{RestState, internal, unavailable};
-use crate::services::architecture as arch;
+use crate::arch;
 
 const HISTORY: i64 = 12;
 
-pub async fn handle_architecture(Extension(state): Extension<Arc<RestState>>) -> impl IntoResponse {
-    let Some(neo4j) = state.neo4j.as_ref() else {
-        return unavailable("Neo4j not available");
-    };
+pub fn router(graph: Arc<dyn Graph>) -> Router {
+    Router::new()
+        .route("/architecture", get(handle_architecture))
+        .with_state(graph)
+}
+
+async fn handle_architecture(State(graph): State<Arc<dyn Graph>>) -> Response {
+    let neo4j = graph.as_ref();
     let inv = match arch::collect(neo4j).await {
         Ok(i) => i,
-        Err(e) => return internal(e),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
     };
-    let providers = crate::services::provider_registry::snapshot_json();
+    let providers = arch::providers();
     let layout = arch::layout();
     let placement = arch::place(
         layout,
-        arch::build_nodes(&inv, &providers, arch::components()),
+        arch::build_nodes(&inv, &providers, &arch::components()),
     );
 
     let latest = arch::latest(neo4j).await.unwrap_or_else(|e| {

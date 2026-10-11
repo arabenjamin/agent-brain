@@ -23,6 +23,7 @@ COPY plugins/osint-data/crate/Cargo.toml ./plugins/osint-data/crate/
 COPY plugins/media/crate/Cargo.toml ./plugins/media/crate/
 COPY plugins/alias-judge/crate/Cargo.toml ./plugins/alias-judge/crate/
 COPY plugins/reference/crate/Cargo.toml ./plugins/reference/crate/
+COPY plugins/developer/crate/Cargo.toml ./plugins/developer/crate/
 
 # Create dummy source files matching the workspace structure so that
 # cargo can resolve and compile all dependencies without the real source.
@@ -34,7 +35,8 @@ RUN mkdir -p crates/protocol/src \
              plugins/osint-data/crate/src \
              plugins/media/crate/src \
              plugins/alias-judge/crate/src \
-             plugins/reference/crate/src && \
+             plugins/reference/crate/src \
+             plugins/developer/crate/src && \
     echo "" > crates/protocol/src/lib.rs && \
     echo "" > crates/models/src/lib.rs && \
     echo "" > crates/repository/src/lib.rs && \
@@ -44,6 +46,7 @@ RUN mkdir -p crates/protocol/src \
     echo "" > plugins/media/crate/src/lib.rs && \
     echo "" > plugins/alias-judge/crate/src/lib.rs && \
     echo "" > plugins/reference/crate/src/lib.rs && \
+    echo "" > plugins/developer/crate/src/lib.rs && \
     echo "fn main() {}" > crates/app/src/main.rs && \
     cargo build --release 2>/dev/null || true && \
     rm -rf crates/*/src plugins/*/crate/src \

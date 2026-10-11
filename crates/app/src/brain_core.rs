@@ -30,10 +30,10 @@ use crate::services::{
     AgentRunner, ContextBuilderService, KnowledgeService, LlmConfig, SharedLlm, SnapshotService,
 };
 use crate::skills::{
-    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill,
-    codebase::CodebaseSkill, exec::ExecSkill, http::HttpSkill, knowledge::KnowledgeSkill,
-    mcp_client::McpClientSkill, model::ModelSkill, query::QuerySkill, scheduler::SchedulerSkill,
-    search::SearchSkill, task::TaskSkill, working_memory::WorkingMemorySkill,
+    Skill, agent::AgentSkill, agent_runner::AgentRunnerSkill, claims::ClaimSkill, exec::ExecSkill,
+    http::HttpSkill, knowledge::KnowledgeSkill, mcp_client::McpClientSkill, model::ModelSkill,
+    query::QuerySkill, scheduler::SchedulerSkill, search::SearchSkill, task::TaskSkill,
+    working_memory::WorkingMemorySkill,
 };
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 
@@ -127,12 +127,25 @@ pub struct CodebaseConfig {
     pub workspace_dir: Option<PathBuf>,
 }
 
+/// Walk up from `current_dir()` to find the repo root (directory containing `Cargo.toml`).
+pub fn detect_repo_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("Cargo.toml").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 impl Default for CodebaseConfig {
     fn default() -> Self {
         let codebase_dir = std::env::var("CODEBASE_DIR")
             .map(PathBuf::from)
             .ok()
-            .or_else(crate::skills::codebase::detect_repo_root);
+            .or_else(detect_repo_root);
         let workspace_dir = std::env::var("WORKSPACE_DIR").map(PathBuf::from).ok();
         Self {
             codebase_dir,
@@ -653,12 +666,6 @@ impl BrainCore {
             skills.push(Arc::new(exec_skill));
         }
 
-        skills.push(Arc::new(CodebaseSkill::new(
-            self.codebase.codebase_dir.clone(),
-            self.codebase.workspace_dir.clone(),
-            knowledge.clone(),
-            self.storage.neo4j.clone(),
-        )));
         skills.push(Arc::new(ModelSkill));
 
         if let Some(neo4j) = &self.storage.neo4j {
@@ -727,6 +734,8 @@ impl BrainCore {
                 llm: Some(Arc::clone(&llm)),
                 telemetry: self.storage.telemetry.clone(),
                 queue: queue_arc.clone(),
+                codebase_dir: self.codebase.codebase_dir.clone(),
+                workspace_dir: self.codebase.workspace_dir.clone(),
             };
             let (plugin_skills, accepted) = crate::services::plugins::plugin_skills(
                 &crate::services::plugins::Plugins::global(),
@@ -864,14 +873,6 @@ impl BrainCore {
                 && let Err(e) = crate::services::self_model::sync_code_version(neo4j, dir).await
             {
                 warn!(error = %e, "Code-version sync failed (continuing without it)");
-            }
-
-            // The architecture view's "what changed" needs a baseline; take the
-            // first snapshot now rather than after the first weekly run.
-            match crate::services::architecture::ensure_baseline(neo4j).await {
-                Ok(Some(s)) => info!(summary = %s.summary, "Architecture baseline snapshot taken"),
-                Ok(None) => {}
-                Err(e) => warn!(error = %e, "Architecture baseline snapshot failed (continuing)"),
             }
         }
     }

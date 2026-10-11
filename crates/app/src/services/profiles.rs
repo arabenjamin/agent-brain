@@ -71,6 +71,10 @@ pub struct ProfileAudit {
     pub missing_tools: Vec<String>,
     /// Removed tools its prompt still names ("x (removed; use y)").
     pub stale_mentions: Vec<String>,
+    /// Allowlist entries whose plugin is off ("x (plugin p is off)"): not
+    /// missing, and not warned about; they return with the plugin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_off: Vec<String>,
 }
 
 /// What the bundles declare: profiles and extensions, each with its plugin
@@ -395,6 +399,7 @@ pub fn audit(
     registry: &[String],
     removed: &HashMap<String, Option<String>>,
     extensions: &[(String, PromptSection)],
+    plugin_off: &HashMap<String, String>,
 ) -> ProfileAudit {
     let label = |t: &str| match removed.get(t) {
         Some(Some(by)) => format!("{t} (removed; use {by})"),
@@ -407,10 +412,20 @@ pub fn audit(
         profile
             .tools
             .iter()
-            .filter(|t| !registry.contains(t))
+            .filter(|t| !registry.contains(t) && !plugin_off.contains_key(*t))
             .map(|t| label(t))
             .collect()
     };
+    let off: Vec<String> = profile
+        .tools
+        .iter()
+        .filter(|t| !registry.contains(t))
+        .filter_map(|t| {
+            plugin_off
+                .get(t)
+                .map(|p| format!("{t} (plugin {p} is off)"))
+        })
+        .collect();
     let mut prose = profile.system_prompt.clone();
     for s in profile
         .sections
@@ -433,6 +448,7 @@ pub fn audit(
     ProfileAudit {
         missing_tools,
         stale_mentions,
+        plugin_off: off,
     }
 }
 
@@ -548,6 +564,16 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_whose_plugin_is_off_is_not_missing() {
+        let p = profile(json!({ "tools": ["search_web", "get_git_log", "gone_tool"] }));
+        let off: HashMap<String, String> =
+            [("get_git_log".to_string(), "developer".to_string())].into();
+        let a = audit(&p, &["search_web".into()], &HashMap::new(), &[], &off);
+        assert_eq!(a.missing_tools, ["gone_tool"]);
+        assert_eq!(a.plugin_off, ["get_git_log (plugin developer is off)"]);
+    }
+
+    #[test]
     fn audit_names_missing_tools_and_prose_about_removed_ones() {
         let p = profile(json!({
             "tools": ["search_web", "list_notes"],
@@ -559,7 +585,7 @@ mod tests {
             ("fetch_transcript".to_string(), None),
         ]
         .into();
-        let a = audit(&p, &["search_web".into()], &removed, &[]);
+        let a = audit(&p, &["search_web".into()], &removed, &[], &HashMap::new());
         assert_eq!(a.missing_tools, ["list_notes (removed; use search_notes)"]);
         assert_eq!(
             a.stale_mentions,

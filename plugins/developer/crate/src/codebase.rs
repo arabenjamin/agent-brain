@@ -17,11 +17,12 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use crate::repository::Neo4jClient;
-use crate::services::KnowledgeStore;
-use crate::skills::Skill;
-use agent_brain_models::ProvenanceFlag;
-use agent_brain_protocol::{Content, ToolCallResult, ToolDefinition, parse_args};
+use agent_brain_plugin_api::graph::query;
+use agent_brain_plugin_api::protocol::Content;
+use agent_brain_plugin_api::{
+    Feed, FeedItem, Graph, Introspection, Knowledge, PluginContext, Provenance, Skill,
+    ToolCallResult, ToolDefinition, parse_args,
+};
 
 /// Guard for `write_codebase_doc` overwrites of existing docs.
 ///
@@ -216,18 +217,20 @@ pub struct CodebaseSkill {
     /// Writable workspace directory (from WORKSPACE_DIR) — separate from the read-only codebase.
     workspace_dir: Option<PathBuf>,
     /// Optional knowledge store for analyze_own_structure(store_as_note=true).
-    knowledge: Option<Arc<dyn KnowledgeStore>>,
-    /// Optional Neo4j client for querying dynamic capabilities (chains, tools, procedures).
-    neo4j: Option<Neo4jClient>,
+    knowledge: Option<Arc<dyn Knowledge>>,
+    /// The graph, for the self-analysis inventory and the github ApiContext.
+    neo4j: Option<Arc<dyn Graph>>,
+    /// The owner's Feed: a proposal is an item there.
+    feed: Option<Arc<dyn Feed>>,
+    /// The host's view of the core (declared tools).
+    intro: Option<Arc<dyn Introspection>>,
 }
 
 impl CodebaseSkill {
-    pub fn new(
-        codebase_dir: Option<PathBuf>,
-        workspace_dir: Option<PathBuf>,
-        knowledge: Option<Arc<dyn KnowledgeStore>>,
-        neo4j: Option<Neo4jClient>,
-    ) -> Self {
+    pub fn new(ctx: &PluginContext) -> Self {
+        let intro = ctx.introspection.clone();
+        let codebase_dir = intro.as_ref().and_then(|i| i.codebase_dir());
+        let workspace_dir = intro.as_ref().and_then(|i| i.workspace_dir());
         if let Some(ref dir) = codebase_dir {
             info!(path = %dir.display(), "CodebaseSkill initialized with codebase root");
         } else {
@@ -241,8 +244,10 @@ impl CodebaseSkill {
         Self {
             codebase_dir,
             workspace_dir,
-            knowledge,
-            neo4j,
+            knowledge: ctx.knowledge.clone(),
+            neo4j: ctx.graph.clone(),
+            feed: ctx.feed.clone(),
+            intro,
         }
     }
 
@@ -897,7 +902,7 @@ impl CodebaseSkill {
             Err(e) => return e,
         };
 
-        let Some(neo4j) = &self.neo4j else {
+        let Some(feed) = &self.feed else {
             return ToolCallResult::error("write_proposal needs Neo4j: a proposal is a Feed item");
         };
         let affected = args.affected_file.as_deref().unwrap_or("unknown");
@@ -917,7 +922,15 @@ impl CodebaseSkill {
         }
         // Reviewing a proposal is work for the user: it lives in their Feed,
         // whole — there is no proposal file (CORE_AND_PLUGINS_PLAN.md §4).
-        match proposal_item(neo4j, &args.task_id, &args.title, &args.severity, body).await {
+        match proposal_item(
+            feed.as_ref(),
+            &args.task_id,
+            &args.title,
+            &args.severity,
+            body,
+        )
+        .await
+        {
             Ok(id) => {
                 info!(item = %id, severity = %args.severity, "write_proposal: item created");
                 ToolCallResult::success_text(format!(
@@ -1084,7 +1097,6 @@ impl CodebaseSkill {
         // because a truncated result must not be able to drop them — the same
         // position-zero rule as the truncation and search-source markers.
         if let Some(neo4j) = &self.neo4j {
-            use neo4rs::query;
             let mut lines: Vec<String> = Vec::new();
 
             if let Ok(rows) = neo4j
@@ -1211,32 +1223,32 @@ impl CodebaseSkill {
             let mut dyn_lines: Vec<String> = Vec::new();
 
             // Workflow nodes — the brain's configured job chains
-            match neo4j.list_workflows(false).await {
-                Ok(rows) if !rows.is_empty() => {
-                    dyn_lines.push("### Workflows (graph-stored job chains)".into());
-                    for w in &rows {
-                        let when = w
-                            .interval_seconds
-                            .map(|s| {
-                                format!(
-                                    "every {}",
-                                    crate::services::workflow_seeder::format_every(s)
-                                )
-                            })
-                            .unwrap_or_else(|| "by name".into());
-                        let desc = w.description.as_deref().unwrap_or("");
-                        dyn_lines.push(format!("- {} ({when}): {desc}", w.name));
-                    }
+            let workflows = neo4j
+                .execute(query(
+                    "MATCH (w:Workflow) RETURN w.name AS name, w.interval_seconds AS every, \
+                     coalesce(w.description, '') AS description ORDER BY w.name",
+                ))
+                .await
+                .unwrap_or_default();
+            if !workflows.is_empty() {
+                dyn_lines.push("### Workflows (graph-stored job chains)".into());
+                for w in &workflows {
+                    let when = w
+                        .get::<i64>("every")
+                        .map(|s| format!("every {}", format_every(s)))
+                        .unwrap_or_else(|_| "by name".into());
+                    let name = w.get::<String>("name").unwrap_or_default();
+                    let desc = w.get::<String>("description").unwrap_or_default();
+                    dyn_lines.push(format!("- {name} ({when}): {desc}"));
                 }
-                _ => {}
             }
 
             // Declared tools — a bundle's tools/*.yaml (skills/bundle_tools.rs)
-            let mut declared: Vec<(String, String)> = crate::services::plugins::declared_status()
-                .into_iter()
-                .flat_map(|(p, c)| c.tools.into_iter().map(move |t| (t, p.clone())))
-                .collect();
-            declared.sort();
+            let declared: Vec<(String, String)> = self
+                .intro
+                .as_ref()
+                .map(|i| i.declared_tools())
+                .unwrap_or_default();
             if !declared.is_empty() {
                 dyn_lines
                     .push("\n### Declared tools (bundle tools/*.yaml, read-only Cypher)".into());
@@ -1268,17 +1280,16 @@ impl CodebaseSkill {
 
         if store && let Some(knowledge) = &self.knowledge {
             match knowledge
-                .store_note(
+                .store_note_as(
                     &content,
-                    Some("semantic"),
+                    "semantic",
                     Some("codebase_self_analysis"),
-                    None,
-                    Some(ProvenanceFlag::SynthesisInference),
+                    Provenance::SynthesisInference,
                 )
                 .await
             {
-                Ok((id, chunks)) => {
-                    info!(note_id = %id, chunks = chunks, "Stored codebase self-analysis note");
+                Ok(id) => {
+                    info!(note_id = %id, "Stored codebase self-analysis note");
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to store self-analysis note (non-fatal)");
@@ -1538,22 +1549,19 @@ fn build_tree(dir: &Path, prefix: &str, max_depth: usize, depth: usize, out: &mu
     }
 }
 
-/// Walk up from `current_dir()` to find the repo root (directory containing `Cargo.toml`).
-pub fn detect_repo_root() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        if dir.join("Cargo.toml").exists() {
-            return Some(dir);
-        }
-        if !dir.pop() {
-            return None;
+/// A schedule period as written in workflow files (`1w`, `6h`, `30m`).
+fn format_every(secs: i64) -> String {
+    for (unit, size) in [("w", 604_800), ("d", 86_400), ("h", 3600), ("m", 60)] {
+        if secs % size == 0 {
+            return format!("{}{unit}", secs / size);
         }
     }
+    format!("{secs}s")
 }
 
 /// The item that asks the user to review a proposal: the proposal itself.
 async fn proposal_item(
-    neo4j: &Neo4jClient,
+    feed: &dyn Feed,
     task_id: &str,
     title: &str,
     severity: &str,
@@ -1564,19 +1572,14 @@ async fn proposal_item(
         "low" => 3,
         _ => 2,
     };
-    let item = crate::services::items::NewItem {
+    feed.create_item(FeedItem {
         title: format!("Review proposal: {title}"),
-        description: Some(body),
-        priority: Some(priority),
-        patch: crate::repository::TodoItemPatch {
-            assignee: Some(Some("user".into())),
-            origin_kind: Some(Some("proposal".into())),
-            origin_ref: Some(Some(task_id.to_string())),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    Ok(crate::services::items::create_item(neo4j, item).await?.0.id)
+        body,
+        priority,
+        origin_kind: "proposal".into(),
+        origin_ref: task_id.to_string(),
+    })
+    .await
 }
 
 #[cfg(test)]

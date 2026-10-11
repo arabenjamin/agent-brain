@@ -275,6 +275,42 @@ pub async fn sync_self_model(
             stats.tools += 1;
         }
     }
+    // Remember which plugin owns each plugin tool, beyond this run: when the
+    // plugin is off, a profile naming the tool is told "plugin off", not
+    // "missing" (`profiles::audit`). A tool now in the core loses its record.
+    let owned: Vec<neo4rs::BoltType> = tool_names
+        .iter()
+        .filter_map(|n| {
+            plugin_of.get(n).map(|p| {
+                let mut m: std::collections::HashMap<String, neo4rs::BoltType> =
+                    std::collections::HashMap::new();
+                m.insert("name".into(), n.clone().into());
+                m.insert("plugin".into(), p.clone().into());
+                neo4rs::BoltType::from(m)
+            })
+        })
+        .collect();
+    let core_tools: Vec<String> = tool_names
+        .iter()
+        .filter(|n| !plugin_of.contains_key(*n))
+        .cloned()
+        .collect();
+    neo4j
+        .run(
+            neo4rs::query(
+                "UNWIND $rows AS r MERGE (p:PluginTool {name: r.name}) \
+                 SET p.plugin = r.plugin, p.seen_at = datetime($now)",
+            )
+            .param("rows", owned)
+            .param("now", now.as_str()),
+        )
+        .await?;
+    neo4j
+        .run(
+            neo4rs::query("MATCH (p:PluginTool) WHERE p.name IN $core DETACH DELETE p")
+                .param("core", core_tools),
+        )
+        .await?;
     // A plugin's tool gone because its plugin is off is not a removal: no
     // tombstone (it comes back with the plugin).
     neo4j

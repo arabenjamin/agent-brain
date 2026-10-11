@@ -1,4 +1,4 @@
-# How the architecture view (GET /api/architecture, services/architecture.rs)
+# How the architecture view (GET /api/plugins/developer/architecture, the developer plugin's arch.rs)
 # arranges what the brain is made of. Only what can't be derived lives here:
 # the groups, the edges between them, and the container topology. The rest
 # (skills and their tools, routes, agents, workflows, providers, MCP
@@ -54,23 +54,21 @@ groups:
       - "skill:scheduler"
       - "skill:agent"
       - "skill:Agent Runner"
-      - "skill:Agent Constructor"
+      - "skill:Todos"
       - "collection:workflows"
       - "collection:agents"
 
   - id: memory
     label: Memory and knowledge
     column: 2
-    blurb: Notes, claims, datasets and what is in working memory.
+    blurb: Notes, claims, relations, references and what is in working memory.
     members:
       - "skill:Knowledge Manager"
       - "skill:Claims"
-      - "skill:Datasets"
+      - "skill:Relations"
+      - "skill:Wiki"
       - "skill:Query"
       - "skill:Working Memory"
-      - "skill:Context Manager"
-      - "skill:Sleep / Training Data Manager"
-      - "skill:resource"
 
   - id: reach
     label: Reaching out
@@ -80,19 +78,20 @@ groups:
       - "skill:Web Search"
       - "skill:HTTP"
       - "skill:MCP Client"
-      - "skill:WebSocket"
       - "skill:Media Learning"
 
   - id: self
     label: Self and code
     column: 2
-    blurb: Reading its own code, running code, its models and tools.
+    blurb: Reading its own code, running code, its models, tools, plugins and dev notes.
     members:
       - "skill:Codebase Inspector"
-      - "skill:git"
+      - "skill:Architecture"
+      - "skill:Dev Docs"
       - "skill:Code Execution"
       - "skill:Model Management"
-      - "skill:Dynamic Tools"
+      - "skill:Plugins"
+      - "skill:Declared Tools"
       - "collection:declared_tools"
 
   - id: providers

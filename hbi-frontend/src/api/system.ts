@@ -3,7 +3,7 @@
  * machine, the registry of what the brain is made of, and the log buffer.
  */
 import { useQuery } from "@tanstack/react-query";
-import { apiJson, query } from "./client";
+import { apiJson, pluginApi, query } from "./client";
 
 export type ComponentStatus = "up" | "not_configured" | "degraded" | "down";
 
@@ -131,7 +131,7 @@ export function useLogs(q: LogQuery, live: boolean) {
   });
 }
 
-// ── Architecture (`clients/architecture.rs`, `services/architecture.rs`) ────
+// ── Architecture (the `developer` plugin's `routes.rs` / `arch.rs`) ────
 
 export interface ArchNode {
   /** `kind:name`, what a layout.yaml selector matches. */
@@ -190,7 +190,7 @@ export interface Architecture {
 export function useArchitecture() {
   return useQuery({
     queryKey: ["system", "architecture"],
-    queryFn: () => apiJson<Architecture>("/api/architecture"),
+    queryFn: () => apiJson<Architecture>(`${pluginApi("developer")}/architecture`),
     staleTime: 60_000,
   });
 }

@@ -282,6 +282,25 @@ impl ContextBuilderService {
                 }
             }
         }
+        // Tools a plugin owns whose plugin is off (`(:PluginTool)`, kept by the
+        // self-model sync): not missing, they come back with the plugin.
+        let mut plugin_off: HashMap<String, String> = HashMap::new();
+        if let Some(neo4j) = &self.neo4j
+            && let Ok(rows) = neo4j
+                .execute(neo4rs::query(
+                    "MATCH (p:PluginTool) RETURN p.name AS name, p.plugin AS plugin",
+                ))
+                .await
+        {
+            let plugins = crate::services::plugins::Plugins::global();
+            for r in rows {
+                if let (Ok(n), Ok(p)) = (r.get::<String>("name"), r.get::<String>("plugin"))
+                    && !plugins.is_loaded(&p)
+                {
+                    plugin_off.insert(n, p);
+                }
+            }
+        }
         let ext = self.extensions.read().await.clone();
         let mut audits = HashMap::new();
         for p in self.list_profiles().await {
@@ -290,18 +309,25 @@ impl ContextBuilderService {
                 &registry,
                 &removed,
                 ext.get(&p.name).map(Vec::as_slice).unwrap_or(&[]),
+                &plugin_off,
             );
-            if a != ProfileAudit::default() {
+            if !a.missing_tools.is_empty() || !a.stale_mentions.is_empty() {
                 warn!(
                     profile = %p.name,
                     missing_tools = %a.missing_tools.join(", "),
                     stale_mentions = %a.stale_mentions.join(", "),
                     "Profile names tools that do not exist"
                 );
+            }
+            if a != ProfileAudit::default() {
                 audits.insert(p.name.clone(), a);
             }
         }
-        let n = audits.len();
+        // A plugin being off is not a finding: counted only what is wrong.
+        let n = audits
+            .values()
+            .filter(|a: &&ProfileAudit| !a.missing_tools.is_empty() || !a.stale_mentions.is_empty())
+            .count();
         *self.audits.write().await = audits;
         n
     }
@@ -358,6 +384,7 @@ impl ContextBuilderService {
             "extensions": ext,
             "missing_tools": audit.missing_tools,
             "stale_mentions": audit.stale_mentions,
+            "plugin_off": audit.plugin_off,
         })
     }
 

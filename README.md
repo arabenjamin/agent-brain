@@ -76,9 +76,6 @@ also names tools that were removed and what replaced them. A guide by group:
 ### Working Memory
 `push_context`, `notify_user`
 
-### Codebase
-`read_codebase_file`, `search_codebase`, `get_git_log`, `analyze_own_structure`, `write_codebase_doc`, `write_proposal` (a Feed item for the user to review)
-
 ### Query
 `neo4j_query`, `duckdb_query`, `describe_graph`, `list_capabilities`
 
@@ -89,6 +86,7 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `media`: `ingest_media`, `ingest_article`, `poll_media_sources`, `manage_media_source`, `discover_media_sources`, `spawn_gap_tasks`
 - `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`
 - `alias-judge`: no tools; ranks entity merge candidates on idle time (`ALIAS_JUDGE_MODEL`)
+- `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`; the architecture view at `/api/plugins/developer/architecture`
 - `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
 
 ### HTTP / API / MCP

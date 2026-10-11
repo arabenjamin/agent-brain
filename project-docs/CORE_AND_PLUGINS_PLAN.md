@@ -352,6 +352,22 @@ Verified live:
 
 Rule: `dev_docs get plugins/api`.
 
+**Pack 4, `developer` (2026-10-11; owner chose to split the architecture view).**
+- **Measured.** Tool usage in interactions: `get_git_log` 249, `write_codebase_doc` 234 (the doc-update workflow), `search_codebase` 85, `analyze_own_structure` 58, `read_codebase_file` 37, the workspace pair 3, `write_proposal` never.
+- **Moved to `plugins/developer/`.** `skills/codebase.rs` (nine tools with `snapshot_architecture`, which left `QuerySkill`); the view half of `services/architecture.rs` (inventory, route parsing, layout and placement, snapshots and diffs) with its route (`/api/plugins/developer/architecture`), its `ArchSnapshot` schema and the baseline in `start`; `layout.yaml`; the workflows that step on these tools (`codebase` doc-update, `brain-api-sync`, `diagnose`, `capability-mining`, whose agent requires `read_codebase_file`); the profiles `code-analyst` and `self-analyst`.
+- **The core keeps** `components.yaml`, `removed-tools.yaml` and the compiled router source (`architecture::ROUTER_SOURCE`), and `detect_repo_root` for `CODEBASE_DIR`.
+- **New host capabilities.** `introspection` (router source, providers, components, declared tools, codebase and workspace dirs), `feed.create_item` (`write_proposal`), and `knowledge.store_note_as` with a provenance.
+- **Found live and fixed: a plugin being off made six core profiles warn.** `general`, `scribe`, `deep-diver` and others allowlist developer tools. The self-model now keeps `(:PluginTool {name, plugin})`, and the audit reports such tools as `plugin_off` (in `GET /api/contexts`) with no warning. That is the Phase 3 exit criterion, held at last.
+- **Also fixed.**
+  - The layout had drifted: 8 selectors named skills deleted in Phase 0 and 3d, and 7 live skills (Architecture, Declared Tools, Dev Docs, Plugins, Relations, Todos, Wiki) were unplaced. Both are now 0.
+  - `capability-mining`'s description still promised dynamic-tool candidates.
+- **Verified live.**
+  - The architecture counts equal the old endpoint's, except routes (98: the old route is gone, and plugin routes are not parsed) and skills (22: `snapshot_architecture` has its own).
+  - `get_git_log`, `search_codebase`, `snapshot_architecture` (dry run), `analyze_own_structure` (61 tools / 22 skills, workflows from the graph, declared tools from the host) and `write_proposal` (a Feed item, deleted after) all work.
+  - With `developer` off: no warnings, the four workflows are unavailable with reasons, its two profiles are gone, the route answers 404, and nothing is tombstoned. With it back on, all are available.
+  - `eval-retrieval` 0.880 / 0.800, unchanged.
+  - Tests: 806 core and 20 developer; five plugin crates pass the dependency check.
+
 ## 9. Phases 5–6, and measurements
 
 **Phase 5 — chat as a modal** (independent of the others; can run any time). Ctrl-K stays navigation. **Ctrl-J opens an Ask modal** with an agent picker (default the front-door profile), the session list, and the context dock. The Chat workspace and `ChatPanel` go. Old `#/chat…` links and `notify_user`'s `related_session_id` (e.g. a resumable `jobsearch-{{date}}` session) open the modal on that session; nothing that links to chat today may dead-end.

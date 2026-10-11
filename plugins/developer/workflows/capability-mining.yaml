@@ -1,6 +1,6 @@
 # Why: dev_docs get yaml/schedules-capability-mining-1
 name: capability-mining
-description: "Weekly self-improvement scan. Aggregates repeatedly-failing/blocked Tasks by capability (goal prefix) plus a sample of their failure context, then reasons over that REAL signal to propose ScheduledTask, dynamic-tool, or skill-gap candidates. Result is stored as a capability_mining reflection note."
+description: "Weekly self-improvement scan. Aggregates repeatedly-failing/blocked Tasks by capability (goal prefix) plus a sample of their failure context, then reasons over that REAL signal to propose workflow, plugin, or skill-gap candidates. Result is stored as a capability_mining reflection note."
 topic: agent-brain
 kind: maintenance
 every: 1w

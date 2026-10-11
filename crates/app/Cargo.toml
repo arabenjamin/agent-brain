@@ -22,6 +22,7 @@ agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate" }
 agent-brain-plugin-media = { path = "../../plugins/media/crate" }
 agent-brain-plugin-alias-judge = { path = "../../plugins/alias-judge/crate" }
 agent-brain-plugin-reference = { path = "../../plugins/reference/crate" }
+agent-brain-plugin-developer = { path = "../../plugins/developer/crate" }
 
 # Async runtime
 tokio = { workspace = true }

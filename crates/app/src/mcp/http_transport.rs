@@ -370,10 +370,6 @@ impl HttpTransport {
             .route("/api/plugins", get(crate::clients::system::handle_plugins))
             // Each loaded plugin's own routes (`Plugin::routes`), under its name.
             .route("/api/plugins/{plugin}/{*rest}", any(plugin_route))
-            .route(
-                "/api/architecture",
-                get(crate::clients::architecture::handle_architecture),
-            )
             // --- Topics (clients/topics.rs) ---
             .route(
                 "/api/topics",

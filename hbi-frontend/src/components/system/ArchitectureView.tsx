@@ -1,8 +1,8 @@
 /**
  * System → Architecture: what the brain is made of, drawn from live data
- * (`GET /api/architecture`, HBI_REDESIGN_PLAN.md §4). Nothing here is
+ * (`GET /api/plugins/developer/architecture`, HBI_REDESIGN_PLAN.md §4). Nothing here is
  * hand-written: skills, routes, agents, schedules, providers and services come
- * from the running brain; `architecture/layout.yaml` only says where each
+ * from the running brain; the developer plugin's `layout.yaml` only says where each
  * group sits and how the groups connect. A live item the layout doesn't place
  * is drawn under "Unplaced", so a new skill shows up before anyone edits YAML.
  *
@@ -48,7 +48,7 @@ export default function ArchitectureView() {
     return (
       <div className="sys scroll">
         {a.error
-          ? <EmptyState tone="red" title="Couldn't load the architecture" checked={`GET /api/architecture failed: ${a.error.message}`}
+          ? <EmptyState tone="red" title="Couldn't load the architecture" checked={`GET /api/plugins/developer/architecture failed: ${a.error.message}`}
               action={<button type="button" className="btn" onClick={() => a.refetch()}>Retry</button>} />
           : <div className="loading">Reading what the brain is made of…</div>}
       </div>
@@ -72,7 +72,7 @@ export default function ArchitectureView() {
       <ChangeBanner d={d} onHistory={() => setTab("history")} />
       {!d.layout_loaded && (
         <EmptyState tone="yellow" title="No layout"
-          checked="plugins/core/architecture/layout.yaml was not found, so every item is unplaced." />
+          checked="plugins/developer/layout.yaml was not found, so every item is unplaced." />
       )}
       {(d.unplaced.length > 0 || d.stale.length > 0) && <LayoutGaps d={d} />}
 
@@ -141,7 +141,7 @@ function LayoutGaps({ d }: { d: Architecture }) {
         <div className="sys-issue">
           <Pill tone="yellow">unplaced</Pill>
           <span>
-            {d.unplaced.length} live {d.unplaced.length === 1 ? "item has" : "items have"} no group in <code>architecture/layout.yaml</code>:{" "}
+            {d.unplaced.length} live {d.unplaced.length === 1 ? "item has" : "items have"} no group in <code>plugins/developer/layout.yaml</code>:{" "}
             {d.unplaced.map((n) => n.id).join(", ")}. They are drawn under “Unplaced”.
           </span>
         </div>
@@ -355,7 +355,7 @@ function NodeDetail({ d, node, status, onClose }: {
 function Topology({ d, status }: { d: Architecture; status: Map<string, ProbedComponent> }) {
   const t = d.topology;
   if (t.containers.length === 0) {
-    return <EmptyState tone="yellow" title="No topology" checked="architecture/layout.yaml has no topology section." />;
+    return <EmptyState tone="yellow" title="No topology" checked="plugins/developer/layout.yaml has no topology section." />;
   }
   const comp = (name: string | null) => {
     const c = name ? status.get(name) : undefined;

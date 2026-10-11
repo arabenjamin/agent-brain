@@ -185,7 +185,7 @@ A domain the brain tracks. The core bundle's `topics/*.yaml` seeds them, synced 
 
 #### `ArchSnapshot`
 
-What the brain was made of at one moment (`services/architecture.rs`), taken by `snapshot_architecture`: weekly on `brain-api-sync`, once at the first start, or by hand. The newest 104 are kept. The JSON blobs are strings because Neo4j has no map-of-lists property.
+What the brain was made of at one moment (the `developer` plugin's `arch.rs`), taken by `snapshot_architecture`: weekly on `brain-api-sync`, once at the first start, or by hand. The newest 104 are kept. The JSON blobs are strings because Neo4j has no map-of-lists property.
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -404,6 +404,16 @@ Developer documentation in the graph (`services/dev_notes.rs`; rules: `dev_docs 
 | `source` | String | Where it came from (a former doc, a YAML file, `dev_docs`) |
 | `date` | String | Local date written (`YYYY-MM-DD`) |
 | `embedding` | List<Float> | bge-m3 of title + first 4000 chars; backfilled at startup |
+
+#### `PluginTool`
+
+Which plugin owns a tool (`services/self_model.rs`, CORE_AND_PLUGINS_PLAN Phase 4). Written at startup for every tool a loaded plugin registers, and kept while the plugin is off, so a profile naming the tool is audited as "plugin off" rather than "missing". Deleted when the tool is registered by the core.
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | String | Tool name; MERGE key |
+| `plugin` | String | The bundle that registers it |
+| `seen_at` | DateTime | Last start that registered it (UTC) |
 
 #### `RemovedTool`
 

@@ -324,36 +324,6 @@ impl QuerySkill {
     /// Same doctrine as `recall_recent` / `list_endpoints`: a tool that reports
     /// a count must be able to show the rows behind it, and a zero result must
     /// name the values that DO exist.
-    /// Records what the brain is made of and what changed since the last time
-    /// (`services/architecture.rs`). Deterministic: set arithmetic over the
-    /// meta-graph and the route table, no model. Weekly on `brain-api-sync`.
-    fn snapshot_architecture_def() -> ToolDefinition {
-        ToolDefinition {
-            name: "snapshot_architecture".to_string(),
-            description: "Record a snapshot of the brain's own architecture (skills and tools, \
-                          HTTP routes, agents, chains, schedules, MCP servers, dynamic tools, \
-                          providers, services) and return what changed since the previous \
-                          snapshot: added and removed names per category, with counts. \
-                          Deterministic; the answer to 'what changed in your architecture / \
-                          what tools were added this week'. With `dry_run:true` it reports the \
-                          change without storing a snapshot."
-                .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "dry_run": {
-                        "type": "boolean",
-                        "description": "Report the diff against the last snapshot without storing a new one."
-                    },
-                    "trigger": {
-                        "type": "string",
-                        "description": "Why it was taken, recorded on the snapshot (default: manual)."
-                    }
-                }
-            }),
-        }
-    }
-
     fn list_capabilities_def() -> ToolDefinition {
         ToolDefinition {
             name: "list_capabilities".to_string(),
@@ -533,50 +503,6 @@ impl QuerySkill {
     /// Every branch returns the top-level counts, so the caller can never see a
     /// drill-down without the total it belongs to — the inversion that made a
     /// sub-agent report absence while quoting a correct count in the same breath.
-    async fn handle_snapshot_architecture(&self, args: Option<Value>) -> ToolCallResult {
-        use crate::services::architecture as arch;
-        let Some(ref neo4j) = self.neo4j else {
-            return ToolCallResult::error("Neo4j not available".to_string());
-        };
-        let args = args.unwrap_or_default();
-        if args["dry_run"].as_bool().unwrap_or(false) {
-            let inv = match arch::collect(neo4j).await {
-                Ok(i) => i,
-                Err(e) => {
-                    return ToolCallResult::error(format!("snapshot_architecture failed: {e}"));
-                }
-            };
-            let out = match arch::latest(neo4j).await {
-                Ok(Some((s, old))) => {
-                    let d = arch::diff(&old, &inv);
-                    json!({ "dry_run": true, "since": s.taken_at, "summary": arch::summarize(&d), "diff": d, "counts": inv.counts() })
-                }
-                Ok(None) => {
-                    json!({ "dry_run": true, "since": null, "summary": "No snapshot yet: nothing to compare with.", "counts": inv.counts() })
-                }
-                Err(e) => {
-                    return ToolCallResult::error(format!("snapshot_architecture failed: {e}"));
-                }
-            };
-            return ToolCallResult::success_json(out);
-        }
-        let trigger = args["trigger"]
-            .as_str()
-            .filter(|t| !t.is_empty())
-            .unwrap_or("manual");
-        match arch::take(neo4j, trigger).await {
-            Ok(s) => ToolCallResult::success_json(json!({
-                "snapshot_id": s.id,
-                "taken_at": s.taken_at,
-                "previous_id": s.previous_id,
-                "summary": s.summary,
-                "diff": s.diff,
-                "counts": s.counts,
-            })),
-            Err(e) => ToolCallResult::error(format!("snapshot_architecture failed: {e}")),
-        }
-    }
-
     async fn handle_list_capabilities(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize, Default)]
         struct Input {
@@ -995,7 +921,6 @@ impl Skill for QuerySkill {
             Self::list_apis_def(),
             Self::list_endpoints_def(),
             Self::list_capabilities_def(),
-            Self::snapshot_architecture_def(),
         ];
         if self.telemetry.is_some() {
             tools.push(Self::duckdb_query_def());
@@ -1012,7 +937,6 @@ impl Skill for QuerySkill {
             "list_apis" => Some(self.handle_list_apis().await),
             "list_endpoints" => Some(self.handle_list_endpoints(args).await),
             "list_capabilities" => Some(self.handle_list_capabilities(args).await),
-            "snapshot_architecture" => Some(self.handle_snapshot_architecture(args).await),
             _ => None,
         }
     }
@@ -1033,22 +957,6 @@ mod tests {
     fn list_capabilities_is_registered() {
         let names: Vec<String> = skill_no_db().tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(&"list_capabilities".to_string()));
-    }
-
-    #[tokio::test]
-    async fn snapshot_architecture_is_registered_and_needs_the_graph() {
-        let skill = skill_no_db();
-        assert!(
-            skill
-                .tools()
-                .iter()
-                .any(|t| t.name == "snapshot_architecture")
-        );
-        let r = skill
-            .execute("snapshot_architecture", Some(json!({ "dry_run": true })))
-            .await
-            .unwrap();
-        assert!(r.is_error.unwrap_or(false));
     }
 
     /// The description has to steer callers AWAY from the two tools that

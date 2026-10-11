@@ -7,7 +7,7 @@ steps:
   # 1. Snapshot the brain's architecture (skills and tools, routes, agents,
   #    chains, schedules, MCP servers, providers, services) and diff it against
   #    last week's. Deterministic, no model. The HBI's System > Architecture and
-  #    Home show the diff (services/architecture.rs).
+  #    Home show the diff (the developer plugin's arch.rs).
   - tool_name: snapshot_architecture
     arguments:
       trigger: "schedule"

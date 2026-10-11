@@ -2,7 +2,6 @@ pub mod agent;
 pub mod agent_runner;
 pub mod bundle_tools;
 pub mod claims;
-pub mod codebase;
 pub mod dev_docs;
 pub mod exec;
 pub mod http;
@@ -24,7 +23,6 @@ pub mod working_memory;
 
 pub use agent::AgentSkill;
 pub use agent_runner::AgentRunnerSkill;
-pub use codebase::CodebaseSkill;
 pub use exec::ExecSkill;
 pub use http::HttpSkill;
 pub use knowledge::KnowledgeSkill;

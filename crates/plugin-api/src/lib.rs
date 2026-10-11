@@ -184,6 +184,16 @@ pub trait Knowledge: Send + Sync {
         source_context: Option<&str>,
     ) -> anyhow::Result<String>;
 
+    /// Store a note marked with where its words came from (a model's
+    /// synthesis, the brain's own record), which retrieval labels.
+    async fn store_note_as(
+        &self,
+        content: &str,
+        note_type: &str,
+        source_context: Option<&str>,
+        provenance: Provenance,
+    ) -> anyhow::Result<String>;
+
     /// Add an entry to a working-memory session (what a chat or agent is
     /// working with right now).
     async fn push_session_entry(
@@ -192,6 +202,54 @@ pub trait Knowledge: Send + Sync {
         text: &str,
         role: &str,
     ) -> anyhow::Result<()>;
+}
+
+/// Who chose a note's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// A person, or an external system through a tool call.
+    UserInput,
+    /// A model: synthesis, inference, summary.
+    SynthesisInference,
+    /// The brain's own code, with no person or model choosing the words.
+    SystemRecord,
+}
+
+/// The owner's Feed (items to review or act on).
+#[async_trait]
+pub trait Feed: Send + Sync {
+    /// Create an item assigned to the user. The same `origin_kind` +
+    /// `origin_ref` returns the existing item instead of a second one.
+    /// Returns its id.
+    async fn create_item(&self, item: FeedItem) -> anyhow::Result<String>;
+}
+
+/// A Feed item to create.
+#[derive(Debug, Clone, Default)]
+pub struct FeedItem {
+    pub title: String,
+    pub body: String,
+    /// 1 (high) … 3 (low).
+    pub priority: i64,
+    pub origin_kind: String,
+    pub origin_ref: String,
+}
+
+/// What the brain is made of, as the host knows it (for self-description).
+pub trait Introspection: Send + Sync {
+    /// The HTTP transport's router source, as this binary was compiled from
+    /// (its `.route(..)` calls are the core's routes).
+    fn router_source(&self) -> &'static str;
+    /// The live provider registry (`[{name, …}]`).
+    fn providers(&self) -> Value;
+    /// The core's `components.yaml` services (`[{name, label, kind, …}]`).
+    fn components(&self) -> Value;
+    /// Tools declared in bundles' `tools/` (`(tool, plugin)`).
+    fn declared_tools(&self) -> Vec<(String, String)>;
+    /// The brain's own source tree (`CODEBASE_DIR`, else the repo root).
+    fn codebase_dir(&self) -> Option<PathBuf>;
+    /// Where the brain may write files (`WORKSPACE_DIR`).
+    fn workspace_dir(&self) -> Option<PathBuf>;
 }
 
 /// Text generation through the host's routed provider.
@@ -261,6 +319,8 @@ pub struct PluginContext {
     pub telemetry: Option<Arc<dyn Telemetry>>,
     pub entities: Option<Arc<dyn Entities>>,
     pub activity: Option<Arc<dyn Activity>>,
+    pub feed: Option<Arc<dyn Feed>>,
+    pub introspection: Option<Arc<dyn Introspection>>,
     files: Option<FilesFn>,
     root: Option<PathBuf>,
     background: bool,
@@ -279,6 +339,8 @@ impl PluginContext {
             telemetry: None,
             entities: None,
             activity: None,
+            feed: None,
+            introspection: None,
             files: None,
             root: None,
             background: false,

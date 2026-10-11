@@ -39,7 +39,7 @@ src/
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
   components/drawer/ entity drawer: note (a claim shows the article or video it was asserted in), entity, topic, task (lineage), job, schedule, todo, proposal
   components/chat/   Chat: the panel and the context dock under each answer
-  components/system/ System: Health, Logs, Registry, Architecture (drawn from /api/architecture + architecture/layout.yaml)
+  components/system/ System: Health, Logs, Registry, Architecture (drawn from the developer plugin's /api/plugins/developer/architecture + plugins/developer/layout.yaml)
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Map (topic hubs) / Neighbourhood / Timeline
   components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History); the Inbox holds entity merge proposals

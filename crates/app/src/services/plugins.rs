@@ -382,6 +382,7 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
         Arc::new(agent_brain_plugin_media::Media),
         Arc::new(agent_brain_plugin_alias_judge::AliasJudge),
         Arc::new(agent_brain_plugin_reference::Reference),
+        Arc::new(agent_brain_plugin_developer::Developer),
     ]
 }
 

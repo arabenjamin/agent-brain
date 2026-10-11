@@ -223,7 +223,7 @@ services:
       # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer}
       # Bundles the brain drafts (manage_plugin). Inert until PLUGINS_ENABLED names one.
       - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image

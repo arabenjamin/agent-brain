@@ -4,7 +4,6 @@
 //! interaction model into calls against [`crate::brain_core::BrainCore`].
 //!
 //! Current adapters:
-//! - [`architecture`] — the live architecture: layout groups filled from the registry, routes and graph, plus snapshot diffs
 //! - [`chat`] — conversational LLM loop for human-facing `/chat` SSE sessions
 //! - [`entities`] — entity merge proposals, answers to them, and undo
 //! - [`related`] — how entities relate through the notes that mention both: ranked neighbours, pair evidence, ego graphs
@@ -15,7 +14,6 @@
 //! - [`work`] — lineage of tasks, jobs, schedules and todos for the HBI's Work workspace
 
 #[cfg(feature = "http-transport")]
-pub mod architecture;
 pub mod chat;
 #[cfg(feature = "http-transport")]
 pub mod entities;

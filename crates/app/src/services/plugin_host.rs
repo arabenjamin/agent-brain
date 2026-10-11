@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use agent_brain_plugin_api::{
-    Activity, Entities, Graph, Knowledge, Llm, Map, PluginContext, Telemetry, Value, Workflows,
-    async_trait,
+    Activity, Entities, Feed, FeedItem, Graph, Introspection, Knowledge, Llm, Map, PluginContext,
+    Provenance, Telemetry, Value, Workflows, async_trait,
 };
 
 use crate::repository::{Neo4jClient, TelemetryClient};
@@ -21,6 +21,8 @@ pub struct Host {
     pub llm: Option<Arc<dyn LlmProvider>>,
     pub telemetry: Option<TelemetryClient>,
     pub queue: Option<Arc<QueueService>>,
+    pub codebase_dir: Option<std::path::PathBuf>,
+    pub workspace_dir: Option<std::path::PathBuf>,
 }
 
 impl Host {
@@ -46,7 +48,12 @@ impl Host {
             }));
             ctx.entities = Some(Arc::new(HostEntities(n.clone())));
             ctx.activity = Some(Arc::new(HostActivity(n.clone())));
+            ctx.feed = Some(Arc::new(HostFeed(n.clone())));
         }
+        ctx.introspection = Some(Arc::new(HostIntrospection {
+            codebase_dir: self.codebase_dir.clone(),
+            workspace_dir: self.workspace_dir.clone(),
+        }));
         ctx.knowledge = self.knowledge.clone().map(|k| {
             Arc::new(HostKnowledge {
                 store: k,
@@ -105,6 +112,25 @@ impl Knowledge for HostKnowledge {
     ) -> anyhow::Result<String> {
         self.store
             .store_note(content, Some(note_type), source_context, None, None)
+            .await
+            .map(|(id, _)| id)
+    }
+
+    async fn store_note_as(
+        &self,
+        content: &str,
+        note_type: &str,
+        source_context: Option<&str>,
+        provenance: Provenance,
+    ) -> anyhow::Result<String> {
+        use agent_brain_models::ProvenanceFlag as P;
+        let flag = match provenance {
+            Provenance::UserInput => P::UserInput,
+            Provenance::SynthesisInference => P::SynthesisInference,
+            Provenance::SystemRecord => P::SystemRecord,
+        };
+        self.store
+            .store_note(content, Some(note_type), source_context, None, Some(flag))
             .await
             .map(|(id, _)| id)
     }
@@ -253,5 +279,65 @@ struct HostActivity(Neo4jClient);
 impl Activity for HostActivity {
     async fn busy(&self) -> bool {
         crate::services::topics::busy(&self.0).await
+    }
+}
+
+struct HostFeed(Neo4jClient);
+
+#[async_trait]
+impl Feed for HostFeed {
+    async fn create_item(&self, item: FeedItem) -> anyhow::Result<String> {
+        let new = crate::services::items::NewItem {
+            title: item.title,
+            description: Some(item.body),
+            priority: Some(item.priority),
+            patch: crate::repository::TodoItemPatch {
+                assignee: Some(Some("user".into())),
+                origin_kind: Some(Some(item.origin_kind)),
+                origin_ref: Some(Some(item.origin_ref)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        Ok(crate::services::items::create_item(&self.0, new)
+            .await?
+            .0
+            .id)
+    }
+}
+
+struct HostIntrospection {
+    codebase_dir: Option<std::path::PathBuf>,
+    workspace_dir: Option<std::path::PathBuf>,
+}
+
+impl Introspection for HostIntrospection {
+    fn router_source(&self) -> &'static str {
+        crate::services::architecture::ROUTER_SOURCE
+    }
+
+    fn providers(&self) -> Value {
+        crate::services::provider_registry::snapshot_json()
+    }
+
+    fn components(&self) -> Value {
+        serde_json::to_value(crate::services::architecture::components()).unwrap_or_default()
+    }
+
+    fn declared_tools(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = crate::services::plugins::declared_status()
+            .into_iter()
+            .flat_map(|(p, c)| c.tools.into_iter().map(move |t| (t, p.clone())))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn codebase_dir(&self) -> Option<std::path::PathBuf> {
+        self.codebase_dir.clone()
+    }
+
+    fn workspace_dir(&self) -> Option<std::path::PathBuf> {
+        self.workspace_dir.clone()
     }
 }
