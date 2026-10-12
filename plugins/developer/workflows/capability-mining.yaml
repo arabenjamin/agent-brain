@@ -24,7 +24,7 @@ steps:
         say WHY the capability keeps failing.
 
         A capability that keeps failing is a concrete signal of a missing tool,
-        a missing ScheduledTask, or a skill gap — NOT a reason to restate generic
+        a missing workflow, or a skill gap — NOT a reason to restate generic
         best practices. Base every candidate ONLY on the CONTEXT, quoting the
         "[FAILURE]" error or critique that justifies it; do not invent gaps the
         data does not show, and do not propose things the brain already has
