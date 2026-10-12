@@ -13,4 +13,23 @@
 # the note described code that was not yet running. Both problems disappear
 # when the process that owns the facts reports them.
 
+# Cap target/debug. pre-commit's clippy + unit tests reuse it as a build cache,
+# so it is not wiped every commit — but stale hashed artifacts in deps/, build/
+# and incremental/ are never collected and once filled the disk (226 GB). Past
+# the cap (TARGET_DEBUG_MAX_GB, default 30) it is cleared before the image build
+# needs the space.
+max_gb="${TARGET_DEBUG_MAX_GB:-30}"
+debug_dir="$(git rev-parse --show-toplevel)/target/debug"
+if [ -d "$debug_dir" ]; then
+    size_gb=$(( $(du -sk "$debug_dir" | cut -f1) / 1024 / 1024 ))
+    if [ "$size_gb" -ge "$max_gb" ]; then
+        echo "post-commit: target/debug is ${size_gb} GB (cap ${max_gb} GB), clearing it"
+        rm -rf "$debug_dir"
+    fi
+fi
+
 docker compose up -d --build
+
+# Each rebuild leaves the previous image behind untagged; 642 of them once held
+# ~50 GB. Dangling-only, so tagged images of other projects are untouched.
+docker image prune -f >/dev/null
