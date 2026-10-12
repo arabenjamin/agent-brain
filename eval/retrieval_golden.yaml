@@ -143,6 +143,8 @@ cases:
     expect_ids: ["0bf58a62-5d5f-4c72-aebe-eeaf2a879339"]
     expect_substrings: ["normalization of misconduct"]
 
+  # Was a 2026-03-05 self-assessment ("81 static tools across 13 skills"), retired
+  # 2026-10-11 as stale self-description. The live answer is the latest codebase
+  # snapshot, which replaces its predecessor on each run, so match by heading only.
   - query: "How did the brain assess its own architecture and roadmap progress?"
-    expect_ids: ["82d5c674-7327-474b-a85c-65d516105586"]
-    expect_substrings: ["Agent Brain Self-Assessment"]
+    expect_substrings: ["Codebase Self-Analysis"]

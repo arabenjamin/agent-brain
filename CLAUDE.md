@@ -82,7 +82,6 @@ Plugins:    plugins/<name>/ (plugin.yaml, seeds, crate/ on crates/plugin-api); m
 | Rules, history, plan decisions | dev notes (`scripts/dev_docs.sh`) |
 | Environment variables | `project-docs/env.md` |
 | Graph schema, timestamps | `project-docs/schema.md` |
-| Skill registry, init order | `project-docs/architecture_context.md` |
 | CLI | `project-docs/cli.md` |
 | Active plans | `project-docs/PLANS_INDEX.md` |
 | Fine-tuning | `project-docs/FINE_TUNING_PLAYBOOK.md` |

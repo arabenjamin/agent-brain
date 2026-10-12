@@ -1,6 +1,6 @@
 # Project Context: Autonomous API Knowledge Graph (Rust + MCP + Neo4j)
 
-> **Implementation Status**: This architecture has been fully implemented. See `PLAN.md` for completion details.
+> **Historical.** This is the founding spec of Agent API, the project Agent Brain was forked from. It does not describe the brain today: most of the tools named below (`graph_query_endpoint`, `execute_http_request`, the credential and export tools) were removed or folded into others, and the stack is now a Cargo workspace (`crates/*`) with plugins. For the live tool list, ask the brain (`list_capabilities`, `kind: tools`, or `GET /api/tools`); for subsystem rules, see the dev notes (`scripts/dev_docs.sh search`). The brain once answered "what are you?" from notes copied out of this spec (2026-10-11), so treat everything below as history.
 
 ## 1. High-Level Objective
 Build a Model Context Protocol (MCP) server in **Rust** that acts as an "Autonomous API Expert."

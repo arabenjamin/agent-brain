@@ -1290,6 +1290,7 @@ impl CodebaseSkill {
             {
                 Ok(id) => {
                     info!(note_id = %id, "Stored codebase self-analysis note");
+                    self.drop_older_self_analyses(&id).await;
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to store self-analysis note (non-fatal)");
@@ -1298,6 +1299,40 @@ impl CodebaseSkill {
         }
 
         ToolCallResult::success_text(content)
+    }
+
+    /// The newest self-analysis replaces the earlier ones (and their chunks):
+    /// it describes the brain as it is, an older one as it was. Kept, they
+    /// outranked the live inventory: on 2026-10-11 a chat turn answered "how
+    /// far is the brain from …" with a 7-month-old tool count from 87 stored
+    /// snapshots and February's self-description notes. Runs after the new
+    /// note is stored, so a failed store keeps the old one.
+    async fn drop_older_self_analyses(&self, keep: &str) {
+        let Some(graph) = &self.neo4j else {
+            return;
+        };
+        let q = query(
+            "MATCH (n:Note {source_context: 'codebase_self_analysis'}) \
+             WHERE n.id <> $keep AND NOT (n)-[:PART_OF]->() \
+             OPTIONAL MATCH (part:Note)-[:PART_OF]->(n) \
+             WITH n, collect(part) AS parts \
+             FOREACH (p IN parts | DETACH DELETE p) \
+             DETACH DELETE n \
+             RETURN count(n) AS dropped",
+        )
+        .param("keep", keep);
+        match graph.execute(q).await {
+            Ok(rows) => {
+                let dropped: i64 = rows
+                    .first()
+                    .and_then(|r| r.get("dropped").ok())
+                    .unwrap_or(0);
+                if dropped > 0 {
+                    info!(dropped, "Dropped earlier codebase self-analysis notes");
+                }
+            }
+            Err(e) => warn!(error = %e, "Earlier self-analysis notes not dropped (non-fatal)"),
+        }
     }
 }
 
