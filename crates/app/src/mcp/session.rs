@@ -202,19 +202,46 @@ impl SessionManager {
         }
     }
 
+    /// Free a slot in a full map, or say why there is none.
+    ///
+    /// Expired sessions go first. If the map is still full, the least recently
+    /// used session with no open SSE stream is dropped: a client that opens a
+    /// session per call and never DELETEs it (a test script on 2026-10-13)
+    /// otherwise holds all 1,000 slots for the hour they take to expire, and
+    /// every new client is refused. An evicted client loses nothing it can
+    /// see: its next request carries the old ID and is resurrected under it
+    /// (`resurrect_session`). Only when every session has an open stream is
+    /// the new one refused.
+    fn make_room(&self, sessions: &mut HashMap<String, Session>) -> Result<(), SessionError> {
+        if sessions.len() < self.config.max_sessions {
+            return Ok(());
+        }
+        let timeout = self.config.session_timeout;
+        sessions.retain(|_, session| !session.is_expired(timeout));
+        while sessions.len() >= self.config.max_sessions {
+            let idle = sessions
+                .values()
+                .filter(|s| s.sse_tx.receiver_count() == 0)
+                .min_by_key(|s| s.last_accessed)
+                .map(|s| (s.id.clone(), s.last_accessed));
+            let Some((id, last_accessed)) = idle else {
+                return Err(SessionError::MaxSessionsReached(self.config.max_sessions));
+            };
+            sessions.remove(&id);
+            tracing::warn!(
+                session_id = %id,
+                %last_accessed,
+                max_sessions = self.config.max_sessions,
+                "MCP session limit reached: evicted the least recently used idle session"
+            );
+        }
+        Ok(())
+    }
+
     /// Create a new session and return its ID.
     pub async fn create_session(&self) -> Result<String, SessionError> {
         let mut sessions = self.sessions.write().await;
-
-        // Expired sessions are dead weight, not capacity: evict them before
-        // refusing a new one.
-        if sessions.len() >= self.config.max_sessions {
-            let timeout = self.config.session_timeout;
-            sessions.retain(|_, session| !session.is_expired(timeout));
-        }
-        if sessions.len() >= self.config.max_sessions {
-            return Err(SessionError::MaxSessionsReached(self.config.max_sessions));
-        }
+        self.make_room(&mut sessions)?;
 
         let session = Session::new();
         let id = session.id.clone();
@@ -234,16 +261,7 @@ impl SessionManager {
         state: SessionState,
     ) -> Result<(), SessionError> {
         let mut sessions = self.sessions.write().await;
-
-        // Expired sessions are dead weight, not capacity: evict them before
-        // refusing a new one.
-        if sessions.len() >= self.config.max_sessions {
-            let timeout = self.config.session_timeout;
-            sessions.retain(|_, session| !session.is_expired(timeout));
-        }
-        if sessions.len() >= self.config.max_sessions {
-            return Err(SessionError::MaxSessionsReached(self.config.max_sessions));
-        }
+        self.make_room(&mut sessions)?;
 
         let (sse_tx, _) = tokio::sync::broadcast::channel(32);
         let session = Session {
@@ -575,19 +593,57 @@ mod tests {
         assert_eq!(state, SessionState::Running);
     }
 
+    /// A full map of idle sessions makes room by dropping the least recently
+    /// used one, not by refusing the new client.
     #[tokio::test]
-    async fn test_session_manager_max_sessions() {
+    async fn test_session_manager_full_map_evicts_the_least_recently_used_idle_session() {
         let config = SessionConfig {
             max_sessions: 2,
             ..Default::default()
         };
         let manager = SessionManager::with_config(config);
+        let oldest = manager.create_session().await.expect("First session");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let second = manager.create_session().await.expect("Second session");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        manager.get_session(&oldest).await.expect("touch the first");
 
-        // Create up to max
-        manager.create_session().await.expect("First session");
-        manager.create_session().await.expect("Second session");
+        let third = manager.create_session().await.expect("room is made");
+        assert_eq!(manager.count().await, 2);
+        assert!(manager.exists(&oldest).await, "recently used, kept");
+        assert!(
+            !manager.exists(&second).await,
+            "least recently used, evicted"
+        );
+        assert!(manager.exists(&third).await);
+    }
 
-        // Third should fail
+    /// A session with an open SSE stream is a connected client: it is never
+    /// evicted, and when every session has one the new client is refused.
+    #[tokio::test]
+    async fn test_session_manager_sessions_with_open_streams_are_not_evicted() {
+        let config = SessionConfig {
+            max_sessions: 2,
+            ..Default::default()
+        };
+        let manager = SessionManager::with_config(config);
+        let streaming = manager.create_session().await.expect("First session");
+        let _rx = manager.subscribe(&streaming).await.expect("Subscribe");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let idle = manager.create_session().await.expect("Second session");
+
+        manager
+            .create_session()
+            .await
+            .expect("the idle one makes room");
+        assert!(manager.exists(&streaming).await);
+        assert!(!manager.exists(&idle).await);
+
+        let other = manager
+            .create_session()
+            .await
+            .expect("evicts the newest idle one");
+        let _rx2 = manager.subscribe(&other).await.expect("Subscribe");
         let result = manager.create_session().await;
         assert!(matches!(result, Err(SessionError::MaxSessionsReached(2))));
     }
