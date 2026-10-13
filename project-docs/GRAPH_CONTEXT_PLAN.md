@@ -1,8 +1,9 @@
 # Graph Context Plan — the right context is a query away
 
-**Status: planned 2026-10-13; Phase 0 mined and Phase 1 baselines run 2026-10-13
-(§3) on the draft test set (`eval/cypher_golden.yaml`, 47 cases), which awaits
-the owner's grading.**
+**Status: planned 2026-10-13. Phase 0 (mined) and Phase 1 (baselines) done
+2026-10-13, and Phase 2 designed (views, §3), all on the draft test set
+(`eval/cypher_golden.yaml`, 47 cases), which awaits the owner's grading. Phase 2
+decisions are pending.**
 
 The brain is only as good as the context in front of the model, and that context
 is only as good as the query that fetched it. This plan makes graph context
@@ -220,18 +221,132 @@ never closed it, and hit the brain's cap ("Maximum sessions reached: 1000";
 sessions expire after an hour idle). It now keeps one session and DELETEs it on
 exit.
 
-### Phase 2 — the query spec and its compiler
+### Phase 2 — views: named things, a note spec, and its compiler (designed 2026-10-13)
 
-- A small JSON spec, designed from the Phase 0 shapes: start (label, or "search
-  by meaning" with the brain embedding the text), filters, a path to follow, a time
-  window, fields to return, an order and a limit.
-- The compiler writes Cypher with UTC datetime handling, a default `LIMIT`,
-  read-only, and names checked against the live schema. Its output is
-  inspectable (the Cypher it wrote is shown with the rows).
-- Whatever writes the spec (E4B with a JSON schema, or Nimble picking a template
-  and its slots) is measured on the same test set against Phase 1.
-- Free Cypher stays as a fallback for what the spec cannot express, through the
-  existing schema guard.
+Phase 1 decided the shape. Free-form Cypher failed on *where things live in this
+brain*, not on Cypher. So the unit of a query is a **view**: a named thing
+("the daily brief", "open todos", "the agents"), declared once as data, with
+typed slots a model fills. The model never writes Cypher; it picks a view from a
+closed list and fills slots that are closed lists or typed values.
+
+#### What the 40 graph cases need
+
+| Family | Cases | Shape |
+|---|---|---|
+| **Notes**, filtered | 27 | One label (`Note`) under different filters: a time window, note kinds, where they came from (`source_context`), a topic, an entity, words, claim status; returned as rows, a count, or counts by topic/kind/source |
+| **Fixed lookups** | 12 | Todos (open, overdue), tasks (recent, a workflow's runs), jobs (queue, stuck), a workflow's schedule, workflows naming unknown tools, agents, tool count, APIs and their endpoints, topics with counts, a claim's evidence, videos ingested in a window |
+| Neither | 1 | `where-semantic-notes-went` (retype trail): stays free Cypher |
+
+27 of 40 are one label, so notes get a **spec with a compiler**; everything else
+is a **fixed query with parameters**. Both are views.
+
+#### A view is a file
+
+`views/<name>.yaml` in a bundle, loaded like declared tools (`bundle_tools.rs`:
+same checks, same read path through `neo4j_query`), but **not registered as
+MCP tools**. Thirty views as thirty tools would grow the tool list, and a small
+model picks tools badly. The bundle that owns the data owns the view:
+`epistemics` the claim views, `media` the video view, `personal` the résumé,
+`core` the rest.
+
+```yaml
+# kind: notes — a preset over the note spec. `words` are what people call it.
+name: daily_brief
+kind: notes
+description: The scheduled daily news brief, one note per day.
+words: [daily brief, news brief, briefing, the brief]
+preset: { from: [scheduled_daily_news_brief], kinds: [news] }
+defaults: { order: newest, limit: 1 }      # slots the model may still set: window, limit
+---
+# kind: cypher — a fixed query; its slots are its parameters (the declared-tool rules).
+name: overdue_todos
+kind: cypher
+description: Todos still open whose due date is before today (local).
+words: [overdue, late todos, past due]
+input_schema: { type: object, properties: {} }
+cypher: |
+  MATCH (t:Todo) WHERE t.status IN ['pending','in_progress']
+    AND t.due_at IS NOT NULL AND date(t.due_at) < date($today)
+  RETURN t.title AS title, t.due_at AS due ORDER BY t.due_at
+```
+
+The compiler supplies reserved parameters (`$today`, `$now`, `$day_start`), so
+no view writes time arithmetic of its own.
+
+#### The note spec (what `kind: notes` compiles)
+
+| Slot | Type | Compiles to |
+|---|---|---|
+| `window` | `{last: "P2D"}` · `{day: today\|yesterday\|YYYY-MM-DD}` · `{month: YYYY-MM}` · `{since, until}` | `$since`/`$until` bounds in **local** time (`clock::local_midnight_utc`), never a string compared to a datetime |
+| `on` | `created` (default) · `verified` · `asserted` | which datetime the window bounds |
+| `kinds` | list from `note_type` (closed) | `n.note_type IN $kinds`; the word "learned" is a named set (`semantic, claim, source_record, news, reflection, inference`; the owner decides it while grading) |
+| `from` | list of source names from the views catalog | `n.source_context IN $from` |
+| `topic` | `Topic.name` (closed, live) | `(n)-[:IN_TOPIC]->(:Topic {name: $topic})` |
+| `entity` | text | resolved first: lower-case `Entity.name`, then `EntityAlias`; no match → the answer says so and names the nearest entities |
+| `words` | text | case-insensitive `CONTAINS` on content (all words) |
+| `status` | `unverified\|corroborated\|refuted` | `n.claim_status` |
+| `as` | `rows` (default) · `count` · `by_topic` · `by_kind` · `by_source` · `by_day` | the RETURN; rows carry kind, source, status and age (the epistemic labels survive) |
+| `order`, `limit` | `newest\|oldest`, 1–200 (default 30) | `ORDER BY`, `LIMIT`, plus the total, so a cut is marked |
+
+- **Every slot is optional** and the empty spec is "the 30 newest notes".
+- **An empty result is a finding:** the answer repeats the filter in words and
+  gives the count without the window, and without the topic or entity, so "none
+  today" and "none ever" read differently.
+- **The compiled Cypher is shown with the rows** (inspectable, and Phase 4's
+  preview).
+
+#### One tool: `lookup`
+
+- `lookup {view, ...slots}` runs a view.
+- `lookup {}` lists the views (name, description, words, slots): the catalog is
+  drillable, like `list_capabilities`.
+- A wrong slot is refused with that view's slot schema, so the model fixes it
+  in one round.
+- `neo4j_query` stays, for what no view covers.
+
+#### Who fills it, measured on the same test set
+
+Each test case gains `view:` and `slots:` (what the right lookup is), so picking
+the view and filling slots score separately. Contenders:
+
+1. **E4B with constrained output:** the catalog in the prompt; Ollama `format` /
+   llama.cpp JSON schema with the view names and closed slots as enums. It can
+   only emit a lookup that exists, which is the "only the right query" goal at
+   the spec level.
+2. **Nimble picks the view** (a closed choice over descriptions and words, the
+   alias-judge pattern), then E4B fills only that view's slots.
+3. **A cloud model calling `lookup` as a tool** (free Mistral or OpenRouter, not
+   Ollama Cloud).
+
+Phase 1's free-Cypher scores (E4B 10/33, codestral 8/33) are the floor. Each view
+is run on its own cases before any model writes a spec, so a miss is the
+writer's and not the view's.
+
+#### Build order
+
+1. **Bind lists and maps in `neo4j_query`** as real Cypher values; today they
+   become JSON text, and `UNWIND $ids` matches nothing (Phase 0). Views need
+   list slots.
+2. **The `views/` loader** (kinds `cypher` and `notes`; declared-tool checks;
+   `words` and `description` required).
+3. **The note-spec compiler,** with unit tests on the compiled Cypher. Every
+   golden notes case is run through its view and must match the reference
+   rows.
+4. **The views for the 13 fixed cases and the named note sets** (daily brief,
+   monitor findings, deep dives, video notes, résumé, claims, learned).
+5. **`lookup`,** then the three writers measured.
+
+**Not in Phase 2:**
+- Folding `recall_recent`, `recent_tasks`, `list_tasks`, `list_apis` and
+  `list_capabilities` into views (they are views in all but name). That happens
+  after measurement, with Phase 4.
+- Search by meaning as a view slot (the `both` cases use `words` until Phase 3).
+
+**Decisions for the owner:**
+1. One `lookup` tool (recommended), or each view as its own tool?
+2. The tool's name.
+3. Default `limit` 30?
+4. Which note kinds count as "learned" (also asked in the test set).
 
 ### Phase 3 — the "graph needed?" gate
 
