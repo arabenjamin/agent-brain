@@ -1,7 +1,8 @@
 # Graph Context Plan — the right context is a query away
 
-**Status: planned 2026-10-13; Phase 0 mined 2026-10-13 (§3), the test set
-(`eval/cypher_golden.yaml`, 47 draft cases) awaits the owner's grading.**
+**Status: planned 2026-10-13; Phase 0 mined and Phase 1 baselines run 2026-10-13
+(§3) on the draft test set (`eval/cypher_golden.yaml`, 47 cases), which awaits
+the owner's grading.**
 
 The brain is only as good as the context in front of the model, and that context
 is only as good as the query that fetched it. This plan makes graph context
@@ -155,6 +156,69 @@ Grading also turned up what a query writer has to know:
   owner, 2026-10-13): free Mistral or OpenRouter.
 - **Read the failures:** wrong thing asked for (→ spec + routing) vs right
   thing written wrong (→ grammar, fine-tune).
+
+**Results (2026-10-13, on the draft references: re-run after grading).**
+
+**Setup:**
+- **Prompt:** each contender got the same prompt: Neo4j's Text2Cypher instruction,
+  the live schema in its training format (properties with examples, the
+  available options or most common values, datetime ranges, relationship
+  patterns; ~39K chars), and three lines of conventions (UTC datetimes, local
+  zone America/Detroit, today's date).
+- **Execution:** temperature 0. Each query ran read-only through `neo4j_query`,
+  next to its reference.
+- **Scores:** "rows" means every reference row's identifying value came back
+  (accuracy first); "full" means every column too.
+- **Empty cases:** 7 cases have an empty right answer, and all three passed 5
+  of them by returning nothing.
+
+| Contender | Rows (all 40) | Rows (33 non-empty) | Full | Ran | Median s |
+|---|---|---|---|---|---|
+| E4B (`gemma4:e4b`, host Ollama, no grammar) | 15 | **10** | 10 | 39 | 4.7 |
+| codestral (free Mistral) | 13 | 8 | 9 | 35 | 3.0 |
+| Text2Cypher Gemma 3 4B (Q4) | 7 | 2 | 5 | 37 | 2.3 |
+
+**Why E4B missed (25 cases; codestral's misses look the same):**
+- **About 15: it did not know where the thing lives in this brain.** It looked
+  for briefs in `Workflow` or `Task` instead of the brief notes, for the résumé
+  in `Task.goal`, and for agents in note text. Twice it treated "what have we
+  learned" as a sentence to find in chat history. The schema names every label
+  and value; it cannot say that `source_context: 'scheduled_daily_news_brief'`
+  *is* the daily brief.
+- **3: the right place, written wrong.** The day was taken as UTC midnight, not
+  local midnight (`notes-stored-today`, 104 vs 90), and entity names were matched
+  as typed (`{name: 'Adam Kinzinger'}`; stored lower-case).
+- **3: the question's words matched as text** ("Biden administration" +
+  "emergency-shutdown button"; Nebula).
+- **3: the wrong shape:** notes where counts were needed.
+
+Codestral also wrote 4 syntax errors (aggregation scope, a `UNION` with
+mismatched columns, APOC that is not installed). The schema guard rejected 2
+invented relationships from it.
+
+**Reading:**
+- **Free-form Cypher fails on brain knowledge, not on Cypher.** Neither a bigger
+  model nor a grammar supplies what "the daily brief" or "the agents" are. That
+  is the spec's job (Phase 2): named things (`daily brief`, `agents`, `todos`,
+  `monitor findings`, `learned in a window`) mapped once, in code, to the query
+  that fetches them. Writing the queries is the smaller problem.
+- **Text2Cypher 4B is out:** it ignored most of the schema (it answered "how
+  many tools" from `ModelDef`) and wrote 2 of 33 right.
+- **E4B is as good as the free cloud model here,** so the local model can stay
+  the spec-writer to beat.
+
+**Caveats:**
+- The references are ungraded drafts.
+- "Rows" rewards a broad dump (E4B passed `mesh-networks` with 182 rows), so
+  precision is still to measure.
+- The identifying value is a heuristic (the longest text column), and it
+  under-scored one case (`apis-known` keyed on `base_url`). An explicit `key`
+  per case can fix that while grading.
+
+**Harness note:** the test client first opened a new MCP session per call and
+never closed it, and hit the brain's cap ("Maximum sessions reached: 1000";
+sessions expire after an hour idle). It now keeps one session and DELETEs it on
+exit.
 
 ### Phase 2 — the query spec and its compiler
 

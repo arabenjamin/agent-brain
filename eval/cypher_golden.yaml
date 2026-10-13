@@ -34,9 +34,9 @@ cases:
       MATCH (n:Note)
       WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
-      RETURN n.note_type AS type, n.source_context AS from, count(*) AS notes
-      ORDER BY notes DESC
-    decide: which note types count as "learned" (episodic, outcome and unsourced_synthesis are left out here)
+      RETURN n.note_type AS type, n.source_context AS from, n.content AS content
+      ORDER BY n.created_at DESC
+    decide: which note types count as "learned" (episodic, outcome and unsourced_synthesis are left out here); the context is the notes, not counts of them
     status: draft
 
   - id: learned-24h
@@ -48,8 +48,8 @@ cases:
       MATCH (n:Note)
       WHERE n.created_at >= datetime() - duration('PT24H')
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
-      RETURN n.note_type AS type, n.source_context AS from, count(*) AS notes
-      ORDER BY notes DESC
+      RETURN n.note_type AS type, n.source_context AS from, n.content AS content
+      ORDER BY n.created_at DESC
     status: draft
 
   - id: learned-two-weeks
@@ -63,7 +63,7 @@ cases:
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
       RETURN t.name AS topic, count(DISTINCT n) AS notes
       ORDER BY notes DESC
-    decide: by topic (as here) or by source; a two-week answer needs a summary shape, not rows
+    decide: by topic (as here) or by source; two weeks is thousands of notes, so the context has to be a summary shape (counts here), and a candidate returning notes scores 0 against it
     status: draft
 
   - id: learned-this-month
