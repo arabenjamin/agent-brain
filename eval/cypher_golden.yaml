@@ -1,0 +1,583 @@
+# Cypher golden set (GRAPH_CONTEXT_PLAN Phase 0): what context a question needs,
+# and the query that fetches it.
+#
+# WHERE THE CASES COME FROM
+#   Real chat questions, verbatim from WorkingMemory (2026-02 to 2026-10). Workflow
+#   cases are the purpose of a workflow query that the logs show running.
+#   `brain_did` is what the chat turn called, from DuckDB `interactions`
+#   (retrieval tools only, from the 10 minutes after the turn; logging starts
+#   2026-06-12, so earlier turns show nothing).
+#
+# FIELDS
+#   context    graph | meaning | both | telemetry | none: what the question
+#              needs. graph = a structural query answers it; meaning = vector/BM25
+#              retrieval; both = one anchors the other; telemetry = DuckDB, not the
+#              graph; none = no stored context.
+#   reference  the query that fetches the right context (graph and both cases).
+#              It is scored by its rows, not its text: a candidate passes when
+#              it returns the same rows (column names and order aside).
+#   decide     a choice the owner makes while grading (what counts as "learned",
+#              which statuses are "running").
+#   status     draft (proposed, not graded) | accepted | fixed | dropped.
+#
+# GROUND TRUTH IS HUMAN: the owner grades every case. Times are UTC in the graph;
+# "today" is the local day (TZ America/Detroit), as the clock service says it.
+
+cases:
+  # ── What did we learn (time windows over notes) ────────────────────────────
+  - id: learned-today
+    question: "What have we learned today?"
+    source: chat, asked 40+ times 2026-08 to 2026-10
+    context: graph
+    brain_did: [recall_recent] # also search_notes, neo4j_query, list_notes on other days
+    reference: |
+      MATCH (n:Note)
+      WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
+        AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
+      RETURN n.note_type AS type, n.source_context AS from, count(*) AS notes
+      ORDER BY notes DESC
+    decide: which note types count as "learned" (episodic, outcome and unsourced_synthesis are left out here)
+    status: draft
+
+  - id: learned-24h
+    question: "What have we learned in the last 24 hrs?"
+    source: chat 2026-10-02
+    context: graph
+    brain_did: [recall_recent]
+    reference: |
+      MATCH (n:Note)
+      WHERE n.created_at >= datetime() - duration('PT24H')
+        AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
+      RETURN n.note_type AS type, n.source_context AS from, count(*) AS notes
+      ORDER BY notes DESC
+    status: draft
+
+  - id: learned-two-weeks
+    question: "What have we learned in the last two weeks?"
+    source: chat 2026-08-31
+    context: graph
+    brain_did: [neo4j_query, search_notes]
+    reference: |
+      MATCH (n:Note)-[:IN_TOPIC]->(t:Topic)
+      WHERE n.created_at >= datetime() - duration('P14D')
+        AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
+      RETURN t.name AS topic, count(DISTINCT n) AS notes
+      ORDER BY notes DESC
+    decide: by topic (as here) or by source; a two-week answer needs a summary shape, not rows
+    status: draft
+
+  - id: learned-this-month
+    question: "Can you tell me what you have learned this month?"
+    source: chat 2026-08-16
+    context: graph
+    brain_did: [list_tasks, neo4j_query, search_notes]
+    reference: |
+      WITH date({timezone: 'America/Detroit'}) AS today
+      MATCH (n:Note)-[:IN_TOPIC]->(t:Topic)
+      WHERE n.created_at >= datetime({year: today.year, month: today.month, day: 1, timezone: 'America/Detroit'})
+        AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
+      RETURN t.name AS topic, count(DISTINCT n) AS notes
+      ORDER BY notes DESC
+    status: draft
+
+  - id: learned-september
+    question: "IS there nothing new we have learned in september?"
+    source: chat 2026-09-24
+    context: graph
+    brain_did: [neo4j_query]
+    reference: |
+      MATCH (n:Note)
+      WHERE n.created_at >= datetime({year: 2026, month: 9, day: 1, timezone: 'America/Detroit'})
+        AND n.created_at < datetime({year: 2026, month: 10, day: 1, timezone: 'America/Detroit'})
+        AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
+      RETURN n.note_type AS type, count(*) AS notes
+      ORDER BY notes DESC
+    status: draft
+
+  - id: notes-stored-today
+    question: "In one sentence: how many notes did we store today?"
+    source: chat 2026-09-24
+    context: graph
+    brain_did: [recall_recent]
+    reference: |
+      MATCH (n:Note)
+      WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
+      RETURN count(n) AS notes
+    status: draft
+
+  - id: notes-stored-by-type
+    question: "Can you tell me what notes we have stored?"
+    source: chat 2026-03-29
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (n:Note)
+      RETURN n.note_type AS type, count(*) AS notes
+      ORDER BY notes DESC
+    status: draft
+
+  - id: where-semantic-notes-went
+    question: "can you check the database and see where all our semantic notes went"
+    source: chat 2026-03-30
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (n:Note)
+      WHERE n.retyped_from = 'semantic' OR n.original_note_type = 'semantic'
+      RETURN n.note_type AS now, n.retyped_reason AS why, count(*) AS notes
+      ORDER BY notes DESC
+    decide: the 2026-03 answer was a pruning bug; today the trail is the retype fields
+    status: draft
+
+  # ── Sources: videos, news briefs, monitors ─────────────────────────────────
+  - id: videos-today
+    question: "Can you summarize all the Youtube videos you watched today?"
+    source: chat 2026-09-11
+    context: graph
+    brain_did: [describe_graph, neo4j_query, reason, recall_recent]
+    reference: |
+      MATCH (m:Media)-[:FROM_SOURCE]->(s:MediaSource)
+      WHERE m.ingested_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
+        AND m.url CONTAINS 'youtube.com'
+      OPTIONAL MATCH (c:Note {note_type: 'claim'}) WHERE c.source_url = m.url
+      WITH s, m, collect(c.content)[..3] AS claims
+      ORDER BY m.ingested_at
+      RETURN s.name AS channel, m.title AS title, m.url AS url, claims
+    status: draft
+
+  - id: video-notes-today
+    question: "Can you Summarize all notes from the video_learning source context today ?"
+    source: chat 2026-09-12
+    context: graph
+    brain_did: [recall_recent, search_notes]
+    reference: |
+      MATCH (n:Note {source_context: 'video_learning'})
+      WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
+      RETURN n.note_type AS type, n.source_title AS video, n.content AS content
+      ORDER BY n.created_at
+    status: draft
+
+  - id: latest-news-brief
+    question: "Can you look in the graph and get the latest daily news brief?"
+    source: chat, asked 15+ times 2026-04 (no logging then)
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (n:Note {source_context: 'scheduled_daily_news_brief', note_type: 'news'})
+      RETURN n.created_at AS at, n.content AS brief
+      ORDER BY n.created_at DESC LIMIT 1
+    status: draft
+
+  - id: news-brief-on-date
+    question: "Is there a news brief for April 16, 2026"
+    source: chat 2026-04-16
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (n:Note {source_context: 'scheduled_daily_news_brief', note_type: 'news'})
+      WHERE n.created_at >= datetime({year: 2026, month: 4, day: 16, timezone: 'America/Detroit'})
+        AND n.created_at < datetime({year: 2026, month: 4, day: 17, timezone: 'America/Detroit'})
+      RETURN n.created_at AS at, left(n.content, 300) AS brief
+    decide: the right answer is empty (briefs exist for 2026-04-14 and -15 only), and saying so is the test
+    status: draft
+
+  - id: all-news-briefs
+    question: "Can you look at all of the news briefs in the graph and summarize them for me?"
+    source: chat 2026-06-09, 2026-06-18, 2026-07-17
+    context: graph
+    brain_did: [search_notes]
+    reference: |
+      MATCH (n:Note {source_context: 'scheduled_daily_news_brief', note_type: 'news'})
+      RETURN n.created_at AS at, n.content AS brief
+      ORDER BY n.created_at
+    decide: all 128 briefs is a map-reduce job, not one context; the query is right, the size is not
+    status: draft
+
+  - id: intel-monitor-today
+    question: "What did the intelligence-agency-claims-monitor find today?"
+    source: chat 2026-09-09
+    context: graph
+    brain_did: [recall_recent, search_notes]
+    reference: |
+      MATCH (n:Note {source_context: 'intelligence_agency_watch'})
+      WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
+      RETURN n.note_type AS type, n.content AS finding, n.claim_status AS status
+      ORDER BY n.created_at
+    status: draft
+
+  - id: intel-watch-updates
+    question: "Can you tell me more about intelligence agency watch updates?"
+    source: chat 2026-10-12
+    context: graph
+    brain_did: [dev_docs, duckdb_query, recall_recent]
+    reference: |
+      MATCH (n:Note {source_context: 'intelligence_agency_watch'})
+      WHERE n.created_at >= datetime() - duration('P7D')
+      RETURN n.created_at AS at, n.note_type AS type, n.content AS finding, n.claim_status AS status
+      ORDER BY n.created_at DESC LIMIT 30
+    decide: the word "updates" read as the last 7 days
+    status: draft
+
+  - id: deep-dive-latest
+    question: "Tell me more about the deep dive"
+    source: chat 2026-10-07
+    context: graph
+    brain_did: [search_notes]
+    reference: |
+      MATCH (n:Note {source_context: 'deep_dive'})
+      RETURN n.created_at AS at, n.note_type AS type, n.content AS content
+      ORDER BY n.created_at DESC LIMIT 5
+    status: draft
+
+  - id: trump-benefit-analysis
+    question: "Can you tell me what we have learned from the Trump_Benefit_Analysis?"
+    source: chat 2026-09-15
+    context: graph
+    brain_did: [duckdb_query, search_notes]
+    reference: |
+      MATCH (n:Note {source_context: 'trump_daily_news'})
+      RETURN n.created_at AS at, n.note_type AS type, n.content AS content
+      ORDER BY n.created_at DESC
+    decide: the tag lives in 2 notes' text; the monitor's notes carry source_context trump_daily_news
+    status: draft
+
+  - id: professional-history
+    question: "Can you tell me more about my Professional History?"
+    source: chat 2026-09-09
+    context: graph
+    brain_did: [recall_recent, search_notes]
+    reference: |
+      MATCH (n:Note {source_context: 'resume'})
+      RETURN n.content AS content
+    status: draft
+
+  # ── Claims ─────────────────────────────────────────────────────────────────
+  - id: claims-verified-2d
+    question: "Can you tell me what claims were verified in the last 2 days?"
+    source: chat 2026-09-12
+    context: graph
+    brain_did: [neo4j_query]
+    reference: |
+      MATCH (c:Note {note_type: 'claim'})
+      WHERE c.verified_at >= datetime() - duration('P2D')
+      RETURN c.claim_status AS status, c.content AS claim, c.verified_at AS at
+      ORDER BY c.verified_at DESC
+    status: draft
+
+  - id: claims-2d
+    question: "Yeah lets see all claim notes from the last 2 days"
+    source: chat 2026-09-12
+    context: graph
+    brain_did: [describe_graph, neo4j_query, recall_recent, search_notes]
+    reference: |
+      MATCH (c:Note {note_type: 'claim'})
+      WHERE c.created_at >= datetime() - duration('P2D')
+      RETURN c.created_at AS at, c.content AS claim, c.claim_status AS status, c.source_context AS from
+      ORDER BY c.created_at DESC
+    status: draft
+
+  - id: claim-evidence-shutdown-button
+    question: 'Biden administration now requires an "emergency-shutdown button" for powerful AI models. Can you tell me more about that, and what evidence do we have to support that?'
+    source: chat 2026-09-20
+    context: both
+    brain_did: [search_notes]
+    reference: |
+      MATCH (c:Note {note_type: 'claim'})
+      WHERE toLower(c.content) CONTAINS 'emergency' AND toLower(c.content) CONTAINS 'shutdown'
+      OPTIONAL MATCH (c)-[r:CORROBORATED_BY|CONTRADICTED_BY]->(e:Note)
+      RETURN c.content AS claim, c.claim_status AS status, type(r) AS edge, e.source_url AS evidence
+    decide: finding the claim is by meaning (here a word match stands in); its evidence is structure. The stored claims name Governor Newsom (California), not the Biden administration, so the right context corrects the question
+    status: draft
+
+  - id: nhi-mj12-true
+    question: "Can you tell me more about we have learned about NHI/MJ-12 ? Is any of that true?"
+    source: chat 2026-09-24
+    context: both
+    brain_did: [search_notes]
+    reference: |
+      MATCH (e:Entity)<-[:MENTIONS]-(c:Note {note_type: 'claim'})
+      WHERE e.name IN ['mj-12', 'nhi/mj-12']
+      RETURN e.name AS entity, c.content AS claim, c.claim_status AS status, c.corroborating_count AS corroborated_by
+    decide: the stored entities are mj-12 and nhi/mj-12; matching by entity misses claims that only say it in words
+    status: draft
+
+  # ── Topics and entities ────────────────────────────────────────────────────
+  - id: topics-known
+    question: "Can you tell me what topics you know about in your knowledge base?"
+    source: chat 2026-03-29
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (t:Topic)
+      OPTIONAL MATCH (n:Note)-[:IN_TOPIC]->(t)
+      RETURN t.name AS topic, count(n) AS notes
+      ORDER BY notes DESC
+    status: draft
+
+  - id: mesh-networks
+    question: "What have we learned about mesh networks ?"
+    source: chat 2026-08-23
+    context: both
+    brain_did: [neo4j_query, search_notes]
+    reference: |
+      MATCH (n:Note)-[:IN_TOPIC]->(:Topic {name: 'off-grid-networking'})
+      WHERE n.note_type IN ['semantic', 'claim', 'source_record']
+      RETURN n.note_type AS type, n.content AS content
+      ORDER BY n.created_at DESC LIMIT 30
+    decide: the topic narrows; ranking within it is by meaning
+    status: draft
+
+  - id: what-about-ai
+    question: "What do we know about Ai"
+    source: chat 2026-09-05
+    context: both
+    brain_did: [reason, search_notes]
+    reference: |
+      MATCH (n:Note)-[:IN_TOPIC]->(:Topic {name: 'ai-ml'})
+      WHERE n.note_type = 'semantic'
+      RETURN n.content AS content
+      ORDER BY n.created_at DESC LIMIT 30
+    status: draft
+
+  - id: adam-kinzinger
+    question: "Can you tell me more about Adam Kinzinger"
+    source: chat 2026-09-12
+    context: both
+    brain_did: [reason, search_notes]
+    reference: |
+      MATCH (e:Entity {name: 'adam kinzinger'})<-[:MENTIONS]-(n:Note)
+      WHERE n.note_type IN ['semantic', 'claim', 'source_record']
+      RETURN n.note_type AS type, n.content AS content, n.claim_status AS status
+      ORDER BY n.created_at DESC LIMIT 30
+    decide: entity names are stored lower-case; a match on the name as typed misses
+    status: draft
+
+  - id: nia-status
+    question: "Where are we on our Niche Intelligence Agency we discussed a couple days ago?"
+    source: chat 2026-08-10, 2026-08-24, 2026-09-07, 2026-09-24, 2026-09-26
+    context: graph
+    brain_did: [search_notes]
+    reference: |
+      MATCH (n:Note)-[:IN_TOPIC]->(:Topic {name: 'nia'})
+      WHERE n.created_at >= datetime() - duration('P14D')
+      RETURN n.created_at AS at, n.note_type AS type, n.source_context AS from, left(n.content, 300) AS content
+      ORDER BY n.created_at DESC LIMIT 30
+    decide: also list the NIA workflows (topic nia) and their last runs?
+    status: draft
+
+  # ── The brain itself ───────────────────────────────────────────────────────
+  - id: tool-count
+    question: "How many tools does the brain have right now?"
+    source: chat 2026-09-12, 2026-10-02, 2026-10-06
+    context: graph
+    brain_did: [list_capabilities]
+    reference: |
+      MATCH (t:ToolDef)
+      RETURN count(t) AS tools
+    decide: ToolDef is synced from the live registry at startup; list_capabilities is the tool for this
+    status: draft
+
+  - id: agent-count
+    question: "How many agents does the Brain have?"
+    source: chat 2026-09-12
+    context: graph
+    brain_did: [search_notes]
+    reference: |
+      MATCH (p:ContextProfile {spawnable: true})
+      RETURN p.name AS agent, p.specialty AS specialty
+      ORDER BY agent
+    status: draft
+
+  - id: apis-known
+    question: "Can you tell me what Api's we have in the graph?"
+    source: chat 2026-09-10, 2026-09-12
+    context: graph
+    brain_did: [search_notes]
+    reference: |
+      MATCH (a:ApiContext)
+      OPTIONAL MATCH (a)-[:EXPOSES]->(e:ApiEndpoint)
+      RETURN a.name AS api, a.base_url AS base_url, count(e) AS endpoints
+      ORDER BY api
+    status: draft
+
+  - id: homeassistant-endpoints
+    question: "What endpoints do we have for HomeAssistant"
+    source: chat 2026-09-11
+    context: graph
+    brain_did: [list_apis, neo4j_query]
+    reference: |
+      MATCH (:ApiContext {name: 'home_assistant'})-[:EXPOSES]->(e:ApiEndpoint)
+      RETURN e.method AS method, e.path AS path, e.summary AS summary
+      ORDER BY path
+    decide: the stored name is home_assistant; "HomeAssistant" as typed matches nothing
+    status: draft
+
+  - id: consolidation-schedule
+    question: "How often do the consolidation tasks run?"
+    source: chat 2026-04-03
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (w:Workflow {name: 'consolidate'})
+      RETURN w.interval_seconds AS every_seconds, w.enabled AS enabled, w.last_run_at AS last_run, w.next_run_at AS next_run, w.description AS what
+    decide: consolidate has no interval or run times stored; it runs from idle sleep, which the graph does not say
+    status: draft
+
+  - id: daily-news-fired
+    question: "Can you look and see if the daily news brief task fired yet?"
+    source: chat 2026-04-14
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (t:Task {workflow: 'daily-news'})
+      RETURN t.created_at AS at, t.status AS status
+      ORDER BY t.created_at DESC LIMIT 3
+    status: draft
+
+  - id: last-5-tasks
+    question: "Can you tell me the last 5 tasks that ran?"
+    source: chat 2026-09-11
+    context: graph
+    brain_did: [search_notes]
+    reference: |
+      MATCH (t:Task)
+      RETURN t.updated_at AS at, coalesce(t.workflow, left(t.goal, 80)) AS task, t.status AS status
+      ORDER BY t.updated_at DESC LIMIT 5
+    status: draft
+
+  - id: stuck-tasks
+    question: "There seems to be a task stuck in progress, can you look and see whats holding it up?"
+    source: chat 2026-04-16
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (j:AgentJob)
+      WHERE j.status IN ['running', 'queued', 'parked']
+      RETURN j.status AS status, j.tool_name AS tool, j.started_at AS started, j.attempt_count AS attempts, j.error AS error
+      ORDER BY j.created_at
+    decide: which statuses mean stuck; today the graph holds only completed, dead and dead_letter jobs
+    status: draft
+
+  - id: jobs-in-queue
+    question: "Can you tell me what tasks are in the queue?"
+    source: chat 2026-03-30
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (j:AgentJob)
+      WHERE NOT j.status IN ['completed', 'dead', 'dead_letter']
+      RETURN j.status AS status, j.tool_name AS tool, j.priority AS priority, j.created_at AS queued
+      ORDER BY j.priority, j.created_at
+    status: draft
+
+  - id: workflows-broken-tools
+    question: "Audit all scheduled tasks for broken tool names."
+    source: chat 2026-04-19
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (w:Workflow)
+      WITH w, [m IN split(w.steps, '"tool_name":"')[1..] | split(m, '"')[0]] AS tools
+      UNWIND tools AS tool
+      WITH w, tool WHERE NOT EXISTS { MATCH (:ToolDef {name: tool}) }
+      RETURN w.name AS workflow, collect(DISTINCT tool) AS unknown_tools
+    decide: steps is a JSON string (key tool_name) and there is no APOC; this string split is fragile (the spec should own it)
+    status: draft
+
+  # ── Todos (workflow queries that ran for months) ───────────────────────────
+  - id: todos-open
+    question: "Can you see the todo list?"
+    source: chat 2026-08-12; todo-snapshot workflow
+    context: graph
+    brain_did: []
+    reference: |
+      MATCH (t:Todo)
+      WHERE t.status IN ['pending', 'in_progress']
+      RETURN t.title AS title, t.priority AS priority, t.due_at AS due, t.status AS status
+      ORDER BY t.priority, t.due_at
+    status: draft
+
+  - id: todos-overdue
+    question: "Which of my todos are overdue?"
+    source: overdue-todo-review workflow; its query compared due_at to toString(date()) from 2026-06 to 2026-09 and returned nothing 172 of 179 times
+    context: graph
+    brain_did: [neo4j_query]
+    reference: |
+      MATCH (t:Todo)
+      WHERE t.status IN ['pending', 'in_progress']
+        AND t.due_at IS NOT NULL
+        AND date(t.due_at) < date({timezone: 'America/Detroit'})
+      RETURN t.title AS title, t.due_at AS due
+      ORDER BY t.due_at
+    status: draft
+
+  # ── Telemetry, not the graph ───────────────────────────────────────────────
+  - id: search-engines-3d
+    question: "Which search engines answered our web searches over the last 3 days, and how many searches each?"
+    source: chat 2026-10-02 (front-door check)
+    context: telemetry
+    brain_did: [duckdb_query]
+    reference: |
+      -- DuckDB, not Cypher
+      SELECT engine, count(*) AS searches FROM search_usage
+      WHERE timestamp >= now() - INTERVAL 3 DAY GROUP BY engine ORDER BY searches DESC
+    decide: keep telemetry cases in this set so the gate learns a fourth answer
+    status: draft
+
+  # ── By meaning, or nothing stored ──────────────────────────────────────────
+  - id: what-is-cowos
+    question: "What is CoWos?"
+    source: chat 2026-08-10
+    context: meaning
+    brain_did: []
+    status: draft
+
+  - id: nebula-vs-tailscale
+    question: "Have you looked at Nebula as an open source alternative to tailscale? How would it fit with Meshtastic and Reticulum for the off-grid project?"
+    source: chat 2026-08-24
+    context: both
+    brain_did: [reason, search_notes]
+    reference: |
+      MATCH (n:Note)-[:IN_TOPIC]->(:Topic {name: 'off-grid-networking'})
+      WHERE toLower(n.content) CONTAINS 'nebula'
+        AND n.note_type <> 'episodic'
+      RETURN n.note_type AS type, n.source_context AS from, n.content AS content
+      ORDER BY n.created_at DESC LIMIT 20
+    decide: the only stored Nebula knowledge is 5 `inference` notes from `reason` (model output, no source), so the right context says so
+    status: draft
+
+  - id: fine-tuning-how
+    question: "I'm wondering how LLM fine tuning works, and how we might do that ourselves?"
+    source: chat 2026-09-12
+    context: meaning
+    brain_did: [reason, search_notes]
+    status: draft
+
+  - id: prefill-decode
+    question: "Can you tell me more about Prefill/Decode Disaggregation and how we might use that in the brain?"
+    source: chat 2026-10-06 (second half of a two-part question)
+    context: meaning
+    brain_did: [search_notes]
+    status: draft
+
+  - id: none-arithmetic
+    question: "In one sentence: what is 17*23? Do not use tools."
+    source: chat 2026-10-10
+    context: none
+    brain_did: []
+    status: draft
+
+  - id: none-time
+    question: "What time is it for you?"
+    source: chat 2026-08-13
+    context: none
+    brain_did: []
+    status: draft
+
+  - id: none-zero-trust-schedule
+    question: "Can you create a scheduled task to do more research into zero trust architecture ?"
+    source: chat 2026-09-05
+    context: none
+    brain_did: []
+    decide: an action, not a question; it needs no context unless it checks for an existing workflow first
+    status: draft

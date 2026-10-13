@@ -1,6 +1,7 @@
 # Graph Context Plan — the right context is a query away
 
-**Status: planned 2026-10-13, nothing built.**
+**Status: planned 2026-10-13; Phase 0 mined 2026-10-13 (§3), the test set
+(`eval/cypher_golden.yaml`, 47 draft cases) awaits the owner's grading.**
 
 The brain is only as good as the context in front of the model, and that context
 is only as good as the query that fetched it. This plan makes graph context
@@ -22,17 +23,17 @@ and its result (in `response`).
 
 | | Calls |
 |---|---|
-| Logged `neo4j_query` calls | 10,022 (of 62,612 interactions) |
-| Distinct queries | ~3,609 (Cypher pulled out with a rough regex) |
-| Errors | 49 |
-| Rejected by the schema guard | 10 |
-| **Zero rows returned** | **3,822 (38%)** |
+| Logged `neo4j_query` calls | 10,016 parsed (logging began 2026-06-12) |
+| Reads / writes | 6,542 / 3,474 |
+| Distinct query shapes (literals stripped) | 356 (334 reads) |
+| Errors | 29, plus 8 schema-guard and 5 read-only rejections |
+| **Reads returning zero rows** | **369 of 6,506 (5.7%)** |
+
+A first count of 38% empty included writes, which return no rows by design.
 
 **Reading:** syntax is almost never the problem; a query that runs fine and returns
-the wrong rows is. Many of the empty results are legitimate (deletes, existence
-checks, real empties). But an empty result is also what a quietly wrong query looks
-like: a datetime compared to a string (null, row dropped; `schema.md`
-§ Timestamps), a property name slightly off.
+the wrong rows is. Phase 0 (§3) found the clearest case: a datetime compared to a
+string, which returns nothing without an error.
 
 ### The schema is small
 
@@ -97,14 +98,61 @@ baseline, not the answer.
   `eval/cypher_golden.yaml` with a scorer (an `eval-cypher` CLI next to
   `eval-retrieval`).
 
+**Results (2026-10-13).** The telemetry file was copied out of the container and
+read with the DuckDB CLI; calls were tied to workflows through
+`__owner_task_id` → `Task.workflow` (1,609 of 3,843 tasks still exist).
+
+- **What the reads are for:** mostly plumbing. `WorkingMemory` (workflow session
+  state) is in 4,896 of 6,542 reads; then `Todo` 497, `AgentJob` 370, `Note` 361,
+  `Task` 326. Queries that fetch context for a question are a small slice.
+- **Date compared to a string: 207 calls, 200 empty, no error.** Every one was
+  from 2026-06 to 2026-09, and there are none in October (the schema guard's
+  warning and the workflow rewrites). The biggest was `overdue-todo-review`'s
+  `t.due_at < toString(date())`: 179 runs, 172 empty, so for three months
+  overdue todos were never reported. `AgentNotification … created_at > '<date>'`
+  made another 21.
+- **Empty reads by month:** 43% in June, 1.2% in October.
+- **Unknown names** are mostly drift: `ScheduledTask` (98 calls),
+  `SchedulerChain`, `ChainStep` and `HAS_STEP` before workflows replaced them
+  (Phase 2b).
+- **`neo4j_query` binds a list or map parameter as JSON text** (its schema says
+  "string values only"), so `UNWIND $ids` quietly matches nothing. Only 2 logged
+  calls hit it (both errored), but it is a trap a model will walk into.
+
+**Chat.** 388 user turns are stored in `WorkingMemory` (2026-02 to 2026-10). Of the
+213 since logging began, 23 (11%) fetched nothing. The rest reached mostly for
+retrieval by meaning: `search_notes` in 96 turns, `recall_recent` in 88,
+`neo4j_query` in 74. So "not knowing a query was needed", taken narrowly, is
+about 1 turn in 9; whether the retrieval chosen was the right kind is what the
+test set answers.
+
+**The test set:** 47 draft cases in `eval/cypher_golden.yaml`: 34 graph, 6 both,
+3 by meaning, 3 needing nothing, 1 telemetry (DuckDB). The questions are verbatim
+from chat, plus two workflow purposes. Every reference runs on the live graph.
+The scorer CLI comes after grading.
+
+**Drafting the references made the plan's case.** Five of the first drafts were
+wrong in exactly the ways this plan is about, and none of them errored:
+- `Topic {label: 'nia'}` where the short name is `name`: 3 queries empty.
+- A keyword match ("shutdown") that returned a ransomware claim.
+- A guessed JSON key (`tool` for `tool_name`) that made the broken-tools audit
+  report two broken tools that were not.
+- Plus one real syntax error (`ORDER BY` after an aggregation).
+
+Grading also turned up what a query writer has to know:
+- Entity names are stored lower-case.
+- The API is `home_assistant`, not "HomeAssistant".
+- One question's premise was wrong: the stored claims name Governor Newsom
+  (California), not "the Biden administration".
+
 ### Phase 1 — baselines on the test set
 
 - Text2Cypher Gemma 3 4B (GGUF on host Ollama, `num_ctx` set).
 - Local E4B with the schema in the prompt and a GBNF grammar on the sidecar
   (labels, relationship types and properties as closed lists), so it can only
   write Cypher with names that exist.
-- A cloud model as the best case (when quota allows: the Ollama Cloud
-  monthly quota is spent until the reset; free Mistral/OpenRouter otherwise).
+- A cloud model as the best case, **not on Ollama Cloud** (rate-limited; the
+  owner, 2026-10-13): free Mistral or OpenRouter.
 - **Read the failures:** wrong thing asked for (→ spec + routing) vs right
   thing written wrong (→ grammar, fine-tune).
 
@@ -175,6 +223,7 @@ to answer before designing anything:
 - Try the Text2Cypher dataset and models.
 - Write the plan before building; Phase 0 is next.
 - Regex is part of the work, explored after the plan is written.
+- The cloud baseline does not use Ollama Cloud (rate-limited).
 
 ## 5. Open questions
 
