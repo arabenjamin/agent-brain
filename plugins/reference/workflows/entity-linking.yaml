@@ -4,7 +4,12 @@ description: "Hourly: looks up to 20 entities named in claims on Wikidata, picks
 kind: maintenance
 # Shipped off, then turned on (2026-10-09) once the final prompt was measured
 # on a fresh held-out set: 18 of 20 proposals right, 1 close, 1 wrong.
-enabled: true
+# Paused 2026-10-12 (owner): the monthly Ollama Cloud free quota is spent (the
+# 10-10/11 refactor and testing weekend used 70% of it on top of 30% already
+# used), and these two are its largest background callers (1,228 gpt-oss calls
+# on 10-10). Off until the quota resets and background sharing is decided;
+# while it is spent their runs only dead-letter. See the dev note on this pause.
+enabled: false
 # topic: none — spans topics on purpose
 every: 1h
 steps:
