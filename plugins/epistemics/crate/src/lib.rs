@@ -6,7 +6,8 @@
 //! - **Claims** (`claims.rs`, `claim_skill.rs`, the `claim` tool): assertions
 //!   pulled out of source notes, stored unverified and attributed, then
 //!   verified against independent web evidence (the host's `search`). Status
-//!   is derived from evidence edges, never asserted.
+//!   is derived from evidence edges, never asserted. A "supports" must also
+//!   pass the grounding check (`grounding.rs`, a local guardian model).
 //! - **Typed relationships** (`relations.rs`, `relation_skill.rs`,
 //!   `extract_relations`): between entities, from a closed vocabulary (the
 //!   bundle's `relations.yaml`); extracted ones are proposals the person
@@ -25,6 +26,7 @@ use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait, axum};
 mod claim_skill;
 mod claims;
 mod db;
+mod grounding;
 mod relation_skill;
 mod relations;
 mod routes;

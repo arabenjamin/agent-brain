@@ -87,7 +87,7 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`
 - `alias-judge`: no tools; ranks entity merge candidates on idle time (`ALIAS_JUDGE_MODEL`)
 - `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`, `dev_docs` (the dev notes, `scripts/dev_docs.sh`); the architecture view at `/api/plugins/developer/architecture`
-- `epistemics`: `claim` (extract, verify against independent web evidence, list, sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
+- `epistemics`: `claim` (extract, verify against independent web evidence with a local grounding check, list, sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
 - `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
 - `sandbox`: `execute_code` (below); the bundle also holds the two sandbox images (`python/`, `rust/`)
 - `personal`: no tools; the owner's own workflows, agents and topics, from a private repo mounted at `/home/agent/plugins-private` (`PLUGINS_EXTRA_DIRS`); absent elsewhere

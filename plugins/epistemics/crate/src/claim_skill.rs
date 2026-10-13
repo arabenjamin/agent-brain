@@ -18,8 +18,8 @@ use agent_brain_plugin_api::{
     Llm, PluginContext, Search, Skill, ToolCallResult, ToolDefinition, async_trait,
 };
 
-use crate::claims;
 use crate::db::{Db, query};
+use crate::{claims, grounding};
 
 /// How many search results are gathered as candidate evidence per claim.
 /// 8, not 6: echo pages are dropped before judging, and corroboration now
@@ -369,6 +369,44 @@ impl ClaimSkill {
             claims::link_domains(&cited)
         };
 
+        // Grounding gate: do the cited results, read together, say what the
+        // claim says? A second model, because the judge that picked the
+        // results is the one being checked. When the check cannot run, the
+        // support still counts and the edge says it was unchecked: an Ollama
+        // outage must not stall verification, and must not hide either.
+        let mut grounding_status: Option<String> = None;
+        if verdict.verdict == "supports"
+            && let Some(model) = grounding::model()
+        {
+            let document = grounding::cited_document(&evidence_text, &cited);
+            match grounding::is_grounded(&model, &document, claim_text).await {
+                Ok(true) => grounding_status = Some("grounded".to_string()),
+                Ok(false) => {
+                    warn!(claim_id = %claim_id, model = %model, "Support rejected — the cited results do not ground the claim");
+                    let status = claims::recompute_status(&self.neo4j, claim_id)
+                        .await
+                        .map(|s| s.as_str().to_string())
+                        .unwrap_or_else(|_| "unverified".to_string());
+                    return json!({
+                        "claim_id": claim_id,
+                        "claim": claim_text,
+                        "verdict": "support_rejected_ungrounded",
+                        "evidence_recorded": false,
+                        "cited_sources": cited,
+                        "reasoning": format!(
+                            "the judge said supports ({}), but {model} found the claim not grounded in the cited results read together",
+                            verdict.reasoning.as_deref().unwrap_or("no reason given")
+                        ),
+                        "status": status
+                    });
+                }
+                Err(e) => {
+                    warn!(claim_id = %claim_id, error = %e, "Grounding check could not run; support counted unchecked");
+                    grounding_status = Some(format!("unchecked: {e}"));
+                }
+            }
+        }
+
         let attached = claims::attach_evidence(
             &self.neo4j,
             claim_id,
@@ -376,6 +414,7 @@ impl ClaimSkill {
             &verdict.verdict,
             &cited,
             &domains,
+            grounding_status.as_deref(),
         )
         .await
         .unwrap_or(false);
@@ -394,6 +433,7 @@ impl ClaimSkill {
             "echo_results_dropped": echoes_dropped,
             "searxng_fallback": searxng_fallback,
             "evidence_recorded": attached,
+            "grounding": grounding_status,
             "reasoning": verdict.reasoning,
             "status": status
         })

@@ -1326,6 +1326,7 @@ pub async fn attach_evidence(
     verdict: &str,
     sources: &[String],
     domains: &[String],
+    grounding: Option<&str>,
 ) -> Result<bool> {
     let rel = match verdict {
         "supports" => "CORROBORATED_BY",
@@ -1338,12 +1339,15 @@ pub async fn attach_evidence(
     // "corroborated" says nothing about WHO corroborated, and domain diversity is
     // not source independence: five topic-aligned outlets republishing one origin
     // pass any count-based test. Storing the domains keeps that inspectable
-    // instead of hidden behind a one-word status.
+    // instead of hidden behind a one-word status. `grounding` says whether
+    // the grounding check passed it (`grounded`), could not run (`unchecked:
+    // <why>`), or was off (absent); see `grounding.rs`.
     let cypher = format!(
         "MATCH (c:Note {{id: $cid}}), (e:Note {{id: $eid}}) \
          MERGE (c)-[r:{rel}]->(e) \
          ON CREATE SET r.source = $source, r.sources = $sources, \
-                       r.found_at = datetime($now), r.domains = $domains"
+                       r.found_at = datetime($now), r.domains = $domains, \
+                       r.grounding = $grounding"
     );
     neo4j
         .run(
@@ -1353,6 +1357,7 @@ pub async fn attach_evidence(
                 .param("source", sources.first().map(String::as_str).unwrap_or(""))
                 .param("sources", sources.to_vec())
                 .param("domains", domains.to_vec())
+                .param("grounding", grounding.map(String::from))
                 .param("now", chrono::Utc::now().to_rfc3339()),
         )
         .await?;
