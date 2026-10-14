@@ -17,3 +17,6 @@ words: [learned, what we learned, found out, ingested, picked up, new informatio
 preset:
   kinds: [semantic, claim, source_record, news, reflection, inference]
 wide: by_topic
+# The brain's upkeep (health checks, audits, failure reviews) writes inference
+# notes too; the owner (2026-10-14): those are not learning.
+except_work_kinds: [maintenance]

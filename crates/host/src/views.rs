@@ -45,6 +45,8 @@ pub const DEFAULT_LIMIT: usize = 30;
 const MAX_LIMIT: usize = 200;
 /// Groups an aggregate shape returns before it says it was cut off.
 const MAX_GROUPS: usize = 1000;
+/// Days a thin short window is compared against.
+const BASELINE_DAYS: i64 = 7;
 
 // ── The note spec ────────────────────────────────────────────────────────────
 
@@ -271,6 +273,10 @@ pub struct NoteSpec {
     /// matches words the way the rows did, any of them.
     #[serde(skip)]
     any_words: bool,
+    /// Not a slot: the view's `except_work_kinds`. A note a workflow of one of
+    /// these kinds produced is left out (`learned` is not the brain's upkeep).
+    #[serde(skip)]
+    except_work: Vec<String>,
 }
 
 /// The slot names of a [`NoteSpec`], as they appear in a call.
@@ -341,6 +347,14 @@ impl NoteSpec {
         if let Some(f) = self.from.as_ref().filter(|f| !f.is_empty()) {
             conds.push("n.source_context IN $from".into());
             p.insert("from".into(), json!(f));
+        }
+        if !self.except_work.is_empty() {
+            conds.push(
+                "NOT EXISTS { MATCH (pt:Task {id: n.produced_by_task}), (pw:Workflow {name: pt.workflow}) \
+                 WHERE pw.kind IN $except_work }"
+                    .into(),
+            );
+            p.insert("except_work".into(), json!(self.except_work));
         }
         if let Some(s) = &self.status {
             if !STATUSES.contains(&s.as_str()) {
@@ -449,6 +463,12 @@ impl NoteSpec {
         if let Some(s) = &self.status {
             parts.push(format!("with status {s}"));
         }
+        if !self.except_work.is_empty() {
+            parts.push(format!(
+                "not made by {} workflows",
+                self.except_work.join("/")
+            ));
+        }
         if let Some(w) = &self.window {
             let on = match self.on.unwrap_or(On::Created) {
                 On::Created => "created",
@@ -521,6 +541,10 @@ pub struct ViewFile {
     /// are more than the limit (`learned`: a long window is counts by topic).
     #[serde(default)]
     pub wide: Option<Shape>,
+    /// `kind: notes`: leave out notes a workflow of these kinds produced
+    /// (`learned`: `maintenance`, the brain's upkeep, is not learning).
+    #[serde(default)]
+    pub except_work_kinds: Option<Vec<String>>,
 }
 
 impl ViewFile {
@@ -558,8 +582,14 @@ impl ViewFile {
         }
         match self.kind.as_str() {
             "cypher" => {
-                if self.preset.is_some() || self.defaults.is_some() || self.wide.is_some() {
-                    return Err("preset, defaults and wide belong to kind: notes".into());
+                if self.preset.is_some()
+                    || self.defaults.is_some()
+                    || self.wide.is_some()
+                    || self.except_work_kinds.is_some()
+                {
+                    return Err(
+                        "preset, defaults, wide and except_work_kinds belong to kind: notes".into(),
+                    );
                 }
                 let (Some(schema), Some(cypher)) = (&self.input_schema, &self.cypher) else {
                     return Err("kind: cypher needs input_schema and cypher".into());
@@ -937,9 +967,10 @@ impl LookupSkill {
             }
         }
         let preset = view.preset.clone().unwrap_or_default();
-        let spec = preset
+        let mut spec = preset
             .overlay(&view.defaults.clone().unwrap_or_default())
             .overlay(&call);
+        spec.except_work = view.except_work_kinds.clone().unwrap_or_default();
         let c = Clock::live();
         let (mut cypher, mut params) = match spec.compile(&c) {
             Ok(x) => x,
@@ -1002,6 +1033,12 @@ impl LookupSkill {
         if empty {
             out["empty"] = json!(self.explain_empty(&spec, &c).await);
         }
+        if shape == Shape::Rows {
+            let found = out["total"].as_i64().unwrap_or(returned);
+            if let Some(t) = self.thin(&spec, found, &c).await {
+                out["thin"] = json!(t);
+            }
+        }
         if let Some(r) = resolved {
             out["resolved"] = json!(r);
         }
@@ -1028,6 +1065,64 @@ impl LookupSkill {
 
     /// What an empty answer means: the filter in words, then how many exist
     /// without the window and without the narrowing slots.
+    /// A short window that found well under its usual share says so, with the
+    /// days before it: one note "today" reads as all there is unless the
+    /// answer can say the days before had hundreds (a stalled feed, not a
+    /// quiet day). `None` for a long window, or a count near the usual.
+    async fn thin(&self, spec: &NoteSpec, found: i64, c: &Clock) -> Option<String> {
+        let w = spec.window.as_ref()?;
+        let day = match (&w.day, w.hours, w.days) {
+            (Some(d), _, _) => match d.trim() {
+                "today" => c.today,
+                "yesterday" => c.today - Duration::days(1),
+                s => parse_date(s, "day").ok()?,
+            },
+            (None, Some(h), _) if h <= 24 => c.today,
+            (None, None, Some(1)) => c.today,
+            _ => return None,
+        };
+        let mut before = spec.clone();
+        before.shape = Some(Shape::ByDay);
+        before.any_words = true;
+        before.window = Some(Window {
+            since: Some((day - Duration::days(BASELINE_DAYS)).to_string()),
+            until: Some((day - Duration::days(1)).to_string()),
+            ..Default::default()
+        });
+        let (cy, p) = before.compile(c).ok()?;
+        let rows = self.run(&cy, p, None).await.ok()?["rows"]
+            .as_array()?
+            .clone();
+        let per_day: Vec<String> = rows
+            .iter()
+            .filter_map(|r| Some(format!("{} {}", r["day"].as_str()?, r["notes"].as_i64()?)))
+            .collect();
+        let sum: i64 = rows.iter().filter_map(|r| r["notes"].as_i64()).sum();
+        let avg = sum as f64 / BASELINE_DAYS as f64;
+        // Today is partly over: its usual share is the part of a day gone by.
+        let share = if day == c.today && w.day.is_some() {
+            let gone = (c.now - (c.midnight)(c.today)).num_minutes() as f64 / 1440.0;
+            gone.clamp(0.0, 1.0)
+        } else if w.hours.is_some() {
+            w.hours.unwrap_or(24) as f64 / 24.0
+        } else {
+            1.0
+        };
+        let usual = avg * share;
+        if usual < 4.0 || found as f64 >= usual / 2.0 {
+            return None;
+        }
+        Some(format!(
+            "{found} found, against about {usual:.0} usual for this window (the {BASELINE_DAYS} days before averaged {avg:.0} a day: {}). \
+             Far fewer than usual: say so, and give the days before.",
+            if per_day.is_empty() {
+                "none".to_string()
+            } else {
+                per_day.join(", ")
+            }
+        ))
+    }
+
     async fn explain_empty(&self, spec: &NoteSpec, c: &Clock) -> String {
         let mut said = vec![format!("No {}.", spec.describe())];
         if let Some(e) = &spec.entity {
@@ -1295,6 +1390,22 @@ mod tests {
                 .unwrap_err()
                 .contains("YYYY-MM-DD")
         );
+    }
+
+    #[test]
+    fn a_view_can_leave_out_what_its_upkeep_wrote() {
+        let mut s = spec(json!({"window": {"day": "today"}}));
+        s.except_work = vec!["maintenance".into()];
+        let (cy, p) = s.compile(&clock()).unwrap();
+        assert!(
+            cy.contains("NOT EXISTS { MATCH (pt:Task {id: n.produced_by_task})")
+                && cy.contains("pw.kind IN $except_work"),
+            "{cy}"
+        );
+        assert_eq!(p["except_work"], json!(["maintenance"]));
+        assert!(s.describe().contains("not made by maintenance workflows"));
+        let (plain, _) = spec(json!({})).compile(&clock()).unwrap();
+        assert!(!plain.contains("except_work"), "{plain}");
     }
 
     #[test]

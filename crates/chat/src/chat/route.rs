@@ -405,7 +405,7 @@ pub(super) fn extract_prompt(
 pub(super) fn context_block(args: &Value, result: &Value) -> String {
     let mut s =
         format!("\n\nCONTEXT FOR THIS TURN (the brain ran lookup {args} before the turn):\n");
-    for k in ["resolved", "wide", "truncated", "empty"] {
+    for k in ["resolved", "wide", "truncated", "empty", "thin"] {
         if let Some(v) = result[k].as_str() {
             s.push_str(&format!("[{k}] {v}\n"));
         }
@@ -450,7 +450,8 @@ pub(super) fn context_block(args: &Value, result: &Value) -> String {
         "Answer from this context; it is what is stored. Write the answer in your own words for the user: \
          say how many there are, then summarize them; never paste the rows or their [bracketed] headers. \
          Keep each note's standing: an unverified claim is said to be unverified, and \"not checked\" \
-         means no check has looked at it. If it is empty, say so and what does exist.",
+         means no check has looked at it. If it is empty, say so and what does exist. If it is [thin], \
+         say it is far fewer than usual and give the days before.",
     );
     s
 }
@@ -838,6 +839,11 @@ mod tests {
             &json!({"count": 0, "rows": [], "empty": "No notes today. Without the window: 2303."}),
         );
         assert!(e.contains("[empty] No notes today. Without the window: 2303."));
+        let t = context_block(
+            &json!({"view": "learned"}),
+            &json!({"count": 1, "rows": [], "thin": "1 found, against about 120 usual"}),
+        );
+        assert!(t.contains("[thin] 1 found, against about 120 usual"), "{t}");
     }
 
     #[test]

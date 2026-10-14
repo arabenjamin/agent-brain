@@ -72,7 +72,7 @@ also names tools that were removed and what replaced them. A guide by group:
 `enqueue_jobs`, `manage_job`, `dead_letter`
 
 ### Scheduler
-`scheduler_control` (`action: tick` runs one now), `manage_workflow` (list, get, run by name with inputs, upsert, delete, audit)
+`scheduler_control` (`action: tick` runs one now), `manage_workflow` (list, get, run by name with inputs, upsert, delete, audit). Every boot audits the workflows: one whose every step names a missing tool is paused, and re-enabled by a later audit once its tools are back; `health-monitor` reports any such pause and a drop in notes written.
 
 ### Working Memory
 `push_context`, `notify_user`

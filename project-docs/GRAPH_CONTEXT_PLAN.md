@@ -762,6 +762,33 @@ chat, the most of any question.
     one, and contradicted itself, so the SQL renders the report. Writing the
     behaviors stays at build time, with the owner. First run 2026-10-14:
     0 turns (logging began that day).
+- **The first 👎 (2026-10-14): right route, nothing to find.** "What have we
+  learned today?" ran `learned {day: today}` and found 1 note, the health
+  monitor's own analysis, and the answer described it. Three things were
+  wrong underneath, none of them the router:
+  - **The brain had nearly stopped learning.** Notes per day went 174, 252,
+    260, 228 (10-07 to 10-10), then 88, 40, 27, 1. The boot protocol's
+    `manage_workflow audit disable_broken` ran during the 10-11 plugin carve
+    while `poll_media_sources` was briefly unregistered and paused
+    `media-watch`, the poller that feeds `video-learning` and
+    `article-learning`. The tool came back and the pause stayed for three
+    days. The audit now lifts a pause it made once every tool is live, and
+    the health monitor reports non-episodic notes per 24 h against the 7-day
+    rate, plus any audit pause.
+  - **The brain's upkeep counted as learning.** The owner: maintenance
+    inferences are not learned. A notes view takes `except_work_kinds`, and
+    `learned` leaves out notes a `maintenance` workflow's task produced.
+    Notes from before `produced_by_task` was set (10-11) can't be traced and
+    stay.
+  - **One note read as all there is.** A short window (a day, up to 24 h)
+    that finds under half its usual share gets `thin`: the count against the
+    7 days before, by day (today's share is the part of the day gone by).
+    The behavior's context carries it and asks the answer to say so.
+
+  The 👎 itself was stored as -1 and read back as 255. neo4rs 0.8.0 decodes
+  a negative tiny int (-1..-16) unsigned, so every read of one in the brain
+  was wrong. `vendor/neo4rs` carries the one-line fix 0.9 makes, until 0.9
+  is stable.
 - **Next behaviors:** from the route log, a fallback turn at a time.
   Candidates from the routing set are the open todos, the APIs, an API's
   endpoints, the tool and agent counts, and the claims in a window.

@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/app", "crates/host", "crates/api", "crates/skills", "crates/retrieve", "crates/scheduler", "crates/chat", "crates/work", "crates/knowledge", "crates/graph", "crates/llm", "crates/models", "crates/repository", "crates/protocol", "crates/plugin-api", "plugins/*/crate"]
 resolver = "2"
+exclude = ["vendor/neo4rs"]
 
 [workspace.package]
 version = "0.1.0"
@@ -43,3 +44,9 @@ serde_yaml = "0.9"
 
 # Local Analytics & Logging (The Hippocampus)
 duckdb = { version = "1.0", features = ["bundled"] }
+
+# neo4rs 0.8.0 decodes a negative tiny int (-1..-16) as 255..240: a thumbs-down
+# (-1) read back as 255. One-line fix, the same as upstream 0.9's; drop this
+# and vendor/neo4rs when 0.9 is stable.
+[patch.crates-io]
+neo4rs = { path = "vendor/neo4rs" }

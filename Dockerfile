@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
 
 # Copy workspace manifests first for dependency caching
 COPY Cargo.toml ./
+# Patched dependency ([patch.crates-io] in Cargo.toml), needed to resolve.
+COPY vendor/ ./vendor/
 COPY crates/protocol/Cargo.toml ./crates/protocol/
 COPY crates/models/Cargo.toml    ./crates/models/
 COPY crates/repository/Cargo.toml ./crates/repository/

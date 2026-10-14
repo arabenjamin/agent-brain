@@ -316,7 +316,8 @@ impl SchedulerSkill {
                 must reference it. \
                 action=delete: remove by `id` or `name` (upsert enabled=false to pause instead). \
                 action=audit: check every stored workflow against the live tools; optionally \
-                disable those whose every step names a dead tool."
+                disable those whose every step names a dead tool (and re-enable the ones an audit \
+                paused once their tools are live again)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -347,7 +348,7 @@ impl SchedulerSkill {
                     "data_class": { "type": "string", "enum": ["private", "public"], "description": "upsert: stamped onto steps that set none." },
                     "next_run_at": { "type": "string", "description": "upsert: RFC3339 instant of the next scheduled run." },
                     "managed_by": { "type": "string", "enum": ["yaml", "runtime"] },
-                    "disable_broken": { "type": "boolean", "description": "audit: disable workflows whose every step names a dead tool." }
+                    "disable_broken": { "type": "boolean", "description": "audit: disable workflows whose every step names a dead tool, and re-enable those an audit paused whose tools are live again." }
                 },
                 "required": ["action"]
             }),
@@ -603,8 +604,8 @@ impl SchedulerSkill {
             .unwrap_or_default();
         let disable_broken = args["disable_broken"].as_bool().unwrap_or(false);
 
-        let (mut healthy, mut degraded, mut broken, mut disabled) =
-            (vec![], vec![], vec![], vec![]);
+        let (mut healthy, mut degraded, mut broken, mut disabled, mut reenabled) =
+            (vec![], vec![], vec![], vec![], vec![]);
         for wf in all {
             let Ok(steps) = serde_json::from_str::<Vec<Value>>(&wf.steps) else {
                 broken.push(json!({ "name": wf.name, "issue": "steps JSON could not be parsed" }));
@@ -628,6 +629,26 @@ impl SchedulerSkill {
             let lint = serde_json::from_value::<Vec<ChainStep>>(Value::Array(steps.clone()))
                 .map(|cs| lint_chain_steps(&cs, &[]))
                 .unwrap_or_default();
+            // The audit undoes its own pause once every tool is live again: a
+            // boot during the plugin carve (2026-10-11) paused media-watch for
+            // three days after its tool came back. A pause with any other
+            // reason is someone's decision and stays.
+            if disable_broken
+                && dead.is_empty()
+                && !live_tools.is_empty()
+                && !wf.enabled
+                && wf.paused_reason.as_deref() == Some(AUDIT_PAUSE)
+            {
+                let patch = agent_brain_repository::WorkflowPatch {
+                    enabled: Some(true),
+                    paused_reason: Some(None),
+                    ..Default::default()
+                };
+                if neo4j.update_workflow(&wf.id, &patch).await.is_ok() {
+                    tracing::warn!(workflow = %wf.name, "audit: its tools are live again, re-enabled");
+                    reenabled.push(wf.name.clone());
+                }
+            }
             if dead.is_empty() && structural.is_empty() {
                 if lint.is_empty() {
                     healthy.push(json!({ "name": wf.name, "step_count": steps.len() }));
@@ -647,10 +668,11 @@ impl SchedulerSkill {
             if disable_broken && all_dead && wf.enabled {
                 let patch = agent_brain_repository::WorkflowPatch {
                     enabled: Some(false),
-                    paused_reason: Some(Some("audit: every step names a dead tool".into())),
+                    paused_reason: Some(Some(AUDIT_PAUSE.into())),
                     ..Default::default()
                 };
                 if neo4j.update_workflow(&wf.id, &patch).await.is_ok() {
+                    tracing::warn!(workflow = %wf.name, ?dead, "audit: every step names a dead tool, disabled");
                     disabled.push(wf.name);
                 }
             }
@@ -661,13 +683,18 @@ impl SchedulerSkill {
             "degraded_count": degraded.len(),
             "broken_count": broken.len(),
             "disabled_count": disabled.len(),
+            "reenabled_count": reenabled.len(),
             "healthy": healthy,
             "degraded": degraded,
             "broken": broken,
             "disabled": disabled,
+            "reenabled": reenabled,
         }))
     }
 }
+
+/// The reason an audit pause carries; the audit lifts only a pause with it.
+const AUDIT_PAUSE: &str = "audit: every step names a dead tool";
 
 // ---------------------------------------------------------------------------
 // Custom deserializer: handles absent, null, and string values for session_id
