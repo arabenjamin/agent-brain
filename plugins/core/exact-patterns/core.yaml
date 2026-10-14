@@ -67,9 +67,13 @@ patterns:
     rejects: ["a percentage of them", "37.5 percent"]
 
   - name: url
-    pattern: 'https?://[^\s<>"''\)\]]+'
+    # Stops at a backslash, backtick and full-width brackets too: model output
+    # writes "(https://x.com/a)\n-" and "https://x.com/a】" (Phase R step 3).
+    pattern: 'https?://[^\s<>"''`\\\)\]】」〕]+'
     matches:
       - {text: "What did https://therecord.media/spyware-x say?", span: "https://therecord.media/spyware-x"}
+      - {text: "source (https://x.com/a/b)\\n- next", span: "https://x.com/a/b"}
+      - {text: "【https://alertsify.com/blog/x】", span: "https://alertsify.com/blog/x"}
     rejects: ["the record media article"]
 
   - name: quoted

@@ -77,7 +77,7 @@ impl ExactPattern {
             if let Some(m) = m {
                 let s = m
                     .as_str()
-                    .trim_end_matches(['.', ',', ';', ':', '!', '?'])
+                    .trim_end_matches(['.', ',', ';', ':', '!', '?', '*'])
                     .trim();
                 if s.chars().count() >= 3 {
                     out.push((m.start(), m.start() + s.len(), s.to_string()));
@@ -322,6 +322,147 @@ pub(super) fn exact_first(
     (out, counts)
 }
 
+// ── Checking output ─────────────────────────────────────────────────────────
+
+/// Appended after a link that is not in the text the model was given.
+pub const NOT_IN_SOURCES: &str = " [link not in its sources]";
+
+/// What [`check_links`] found, and the text with it applied.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize)]
+pub struct LinkCheck {
+    pub text: String,
+    /// Note ids the model wrote as URLs (`https://<id>`), now `note <id>`.
+    pub relinked: Vec<String>,
+    /// Links in no source it was given, each now marked [`NOT_IN_SOURCES`].
+    pub not_in_sources: Vec<String>,
+}
+
+impl LinkCheck {
+    pub fn changed(&self) -> bool {
+        !self.relinked.is_empty() || !self.not_in_sources.is_empty()
+    }
+
+    /// The finding as JSON for a tool result, or `None` when there is none.
+    pub fn report(&self) -> Option<serde_json::Value> {
+        self.changed().then(|| {
+            serde_json::json!({
+                "relinked_note_ids": self.relinked,
+                "links_not_in_sources": self.not_in_sources,
+            })
+        })
+    }
+}
+
+fn uuid_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+            .expect("valid")
+    })
+}
+
+impl ExactPatterns {
+    /// Check every link in `text` against `evidence`, the text the model was
+    /// given (its prompt, or a chat turn's messages and tool results).
+    ///
+    /// Measured on 795 October `reason` answers (Phase R step 3): 1,913 cited
+    /// links, ~27 in no source, nearly all wrong: note ids written as URLs
+    /// (`https://fd683db5-…`), a site plus a date (`militarytimes.com/2022-11-01`),
+    /// slugs changed on the way through. A link the evidence holds is left
+    /// alone; a note id the evidence holds becomes `note <id>`; anything else
+    /// is kept and marked, never deleted.
+    pub fn check_links(&self, text: &str, evidence: &str) -> LinkCheck {
+        let mut out = LinkCheck {
+            text: text.to_string(),
+            ..Default::default()
+        };
+        let Some(url) = self.patterns.iter().find(|p| p.name == "url") else {
+            return out;
+        };
+        let ev = evidence.to_lowercase().replace("\\/", "/");
+        let mut found = url.spans(text);
+        // Edit from the end so earlier offsets stay valid.
+        found.sort_by_key(|f| std::cmp::Reverse(f.0));
+        for (start, end, link) in found {
+            let key = link.to_lowercase();
+            if ev.contains(key.trim_end_matches('/')) {
+                continue;
+            }
+            if let Some(id) = uuid_re().find(&link).map(|m| m.as_str().to_lowercase())
+                && ev.contains(&id)
+            {
+                out.text.replace_range(start..end, &format!("note {id}"));
+                out.relinked.push(id);
+                continue;
+            }
+            // After the whole markdown link, so it stays one: past `](…)` when
+            // the URL is the link's text, else past its own closing bracket.
+            let rest = &out.text[end..];
+            let at = if rest.starts_with("](")
+                && let Some(close) = rest.find(')')
+            {
+                end + close + 1
+            } else if let Some(c) = rest.chars().next()
+                && matches!(c, ')' | ']' | '】' | '>')
+            {
+                end + c.len_utf8()
+            } else {
+                end
+            };
+            // One mark where a link's text and target are both unsupported.
+            if !out.text[at..].starts_with(NOT_IN_SOURCES) {
+                out.text.insert_str(at, NOT_IN_SOURCES);
+            }
+            if !out.not_in_sources.contains(&link) {
+                out.not_in_sources.push(link);
+            }
+        }
+        out.relinked.reverse();
+        out.relinked.dedup();
+        out.not_in_sources.reverse();
+        out
+    }
+}
+
+/// Check an answer and its inferences against `evidence`: both rewritten,
+/// and every finding together.
+pub fn check_answer(
+    answer: &str,
+    inferences: &[String],
+    evidence: &str,
+) -> (String, Vec<String>, LinkCheck) {
+    let p = ExactPatterns::global();
+    let a = p.check_links(answer, evidence);
+    let mut all = LinkCheck {
+        relinked: a.relinked.clone(),
+        not_in_sources: a.not_in_sources.clone(),
+        ..Default::default()
+    };
+    let infs = inferences
+        .iter()
+        .map(|i| {
+            let c = p.check_links(i, evidence);
+            all.relinked.extend(c.relinked);
+            all.not_in_sources.extend(c.not_in_sources);
+            c.text
+        })
+        .collect();
+    all.relinked.sort();
+    all.relinked.dedup();
+    all.not_in_sources.sort();
+    all.not_in_sources.dedup();
+    if all.changed() {
+        warn!(relinked = all.relinked.len(), not_in_sources = ?all.not_in_sources,
+              "reason: links checked against the prompt");
+    }
+    (a.text, infs, all)
+}
+
+/// [`ExactPatterns::check_links`] with the loaded library.
+pub fn check_links(text: &str, evidence: &str) -> LinkCheck {
+    ExactPatterns::global().check_links(text, evidence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +515,97 @@ mod tests {
         );
         assert!(texts(&p, "What have we learned today?").is_empty());
         assert!(texts(&p, "How do mesh networks route around failures?").is_empty());
+    }
+
+    #[test]
+    fn a_link_in_its_sources_stands_and_one_that_is_not_is_marked() {
+        let p = core();
+        let ev = "CONTEXT: [note fd683db5-f172-45f0-b42a-bd7440a9ac28] HITL matters. \
+                  Source: https://www.pbs.org/newshour/a-story";
+        let c = p.check_links(
+            "HITL (https://fd683db5-f172-45f0-b42a-bd7440a9ac28). PBS: [story](https://www.pbs.org/newshour/a-story). \
+             Giant (https://www.militarytimes.com/2022-11-01).",
+            ev,
+        );
+        assert_eq!(
+            c.text,
+            "HITL (note fd683db5-f172-45f0-b42a-bd7440a9ac28). PBS: [story](https://www.pbs.org/newshour/a-story). \
+             Giant (https://www.militarytimes.com/2022-11-01) [link not in its sources]."
+        );
+        assert_eq!(c.relinked, ["fd683db5-f172-45f0-b42a-bd7440a9ac28"]);
+        assert_eq!(
+            c.not_in_sources,
+            ["https://www.militarytimes.com/2022-11-01"]
+        );
+        // A trailing slash, case and markdown emphasis are not differences.
+        let same = p.check_links("**https://WWW.pbs.org/newshour/a-story/**", ev);
+        assert!(!same.changed(), "{same:?}");
+        // A URL that is a markdown link's text: marked after the whole link.
+        let md = p.check_links("([https://https://x.org/a](https://x.org/a))", ev);
+        assert_eq!(
+            md.text,
+            "([https://https://x.org/a](https://x.org/a) [link not in its sources])"
+        );
+        // A note id the evidence does not hold is not a note: marked.
+        let stray = p.check_links("see https://11111111-2222-3333-4444-555555555555", ev);
+        assert!(stray.relinked.is_empty() && stray.not_in_sources.len() == 1);
+    }
+
+    /// Replay logged `reason` calls (a DuckDB export of `interactions`, one
+    /// JSON object per line with `prompt` and `response`) through the link
+    /// check and print what it would do. Measurement, not a gate:
+    /// `PHASE_R_REPLAY=path cargo test -p agent-brain-knowledge replay -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn replay_logged_reason_calls() {
+        let Ok(path) = std::env::var("PHASE_R_REPLAY") else {
+            return;
+        };
+        let p = core();
+        let (mut answers, mut links, mut changed) = (0usize, 0usize, 0usize);
+        let (mut relinked, mut marked) = (Vec::new(), Vec::new());
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+            let Some(args) = row["prompt"]
+                .as_str()
+                .and_then(|p| p.strip_prefix("reason: "))
+            else {
+                continue;
+            };
+            let Ok(args) = serde_json::from_str::<serde_json::Value>(args) else {
+                continue;
+            };
+            let ctx = match &args["context"] {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let evidence = format!("{}\n{ctx}", args["question"].as_str().unwrap_or(""));
+            let resp = row["response"].as_str().unwrap_or("");
+            let answer = serde_json::from_str::<serde_json::Value>(resp)
+                .ok()
+                .and_then(|v| v["answer"].as_str().map(String::from))
+                .unwrap_or_else(|| resp.to_string());
+            answers += 1;
+            links += p
+                .patterns
+                .iter()
+                .find(|x| x.name == "url")
+                .unwrap()
+                .spans(&answer)
+                .len();
+            let c = p.check_links(&answer, &evidence);
+            if c.changed() {
+                changed += 1;
+            }
+            relinked.extend(c.relinked);
+            marked.extend(c.not_in_sources);
+        }
+        println!("{answers} answers, {links} links; {changed} answers changed");
+        println!("relinked note ids: {}", relinked.len());
+        println!("marked not in sources: {}", marked.len());
+        for m in &marked {
+            println!("  {m}");
+        }
     }
 
     #[test]

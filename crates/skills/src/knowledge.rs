@@ -1035,11 +1035,15 @@ Respond with a JSON object only (no markdown, no explanation):
                                             "gaps": []
                                         })
                                     });
+                            // A link the model cites must be in what it was given:
+                            // a note id written as a URL is relinked, any other
+                            // link outside the prompt is marked (Phase R step 3).
+                            let report = check_reason_links(&mut parsed, &prompt);
                             // The context path must honor store_inference like the
                             // RAG path does — scheduler chains rely on the inference
                             // note as their durable output artifact.
                             if input.store_inference {
-                                let answer = parsed["answer"].as_str().unwrap_or(text).to_string();
+                                let answer = answer_text(&parsed, text, &prompt);
                                 let inferences: Vec<String> = parsed["inferences"]
                                     .as_array()
                                     .map(|arr| {
@@ -1055,6 +1059,9 @@ Respond with a JSON object only (no markdown, no explanation):
                                 {
                                     parsed["id"] = json!(id);
                                 }
+                            }
+                            if let Some(r) = report {
+                                parsed["link_check"] = r;
                             }
                             ToolCallResult::success_json(parsed)
                         }
@@ -1508,6 +1515,59 @@ struct ConsolidateMemoriesInput {
     topic: String,
     #[serde(default = "default_consolidate_limit")]
     limit: usize,
+}
+
+/// Check the links in a reason result's `answer` and `inferences` against
+/// the prompt it was given, rewriting them in place. The finding, if any.
+fn check_reason_links(parsed: &mut Value, prompt: &str) -> Option<Value> {
+    use agent_brain_knowledge::knowledge::exact::{LinkCheck, check_links};
+    // Every string under `answer` and `inferences`: a model asked for a
+    // report sometimes returns `answer` as a list of lines.
+    fn walk(v: &mut Value, prompt: &str, found: &mut LinkCheck) {
+        match v {
+            Value::String(t) => {
+                let c = check_links(t, prompt);
+                if c.changed() {
+                    *t = c.text;
+                    found.relinked.extend(c.relinked);
+                    found.not_in_sources.extend(c.not_in_sources);
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(|i| walk(i, prompt, found)),
+            Value::Object(m) => m.values_mut().for_each(|i| walk(i, prompt, found)),
+            _ => {}
+        }
+    }
+    let mut found = LinkCheck::default();
+    walk(&mut parsed["answer"], prompt, &mut found);
+    walk(&mut parsed["inferences"], prompt, &mut found);
+    found.relinked.sort();
+    found.relinked.dedup();
+    found.not_in_sources.sort();
+    found.not_in_sources.dedup();
+    let report = found.report()?;
+    warn!(relinked = found.relinked.len(), not_in_sources = ?found.not_in_sources,
+          "reason: links checked against the prompt");
+    Some(report)
+}
+
+/// A reason result's `answer` as text to store: a string as it is, a list as
+/// its lines; with no `answer`, the raw reply, link-checked like the rest.
+fn answer_text(parsed: &Value, raw: &str, prompt: &str) -> String {
+    match &parsed["answer"] {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .map(|i| {
+                i.as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| i.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Null => agent_brain_knowledge::knowledge::exact::check_links(raw, prompt).text,
+        other => other.to_string(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2190,6 +2250,21 @@ mod tests {
     }
 
     // -- reason ---------------------------------------------------------------
+
+    /// What a context-path inference stores: a list answer as its lines, a
+    /// missing one as the raw reply.
+    #[test]
+    fn the_stored_answer_is_text_whatever_shape_the_model_returned() {
+        assert_eq!(answer_text(&json!({"answer": "one"}), "raw", ""), "one");
+        assert_eq!(
+            answer_text(&json!({"answer": ["a (x)", "b"]}), "raw", ""),
+            "a (x)\nb"
+        );
+        assert_eq!(
+            answer_text(&json!({"other": 1}), "raw reply", ""),
+            "raw reply"
+        );
+    }
 
     #[tokio::test]
     async fn reason_success() {

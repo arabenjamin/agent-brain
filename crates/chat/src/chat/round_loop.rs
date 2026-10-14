@@ -70,6 +70,12 @@ pub(super) trait ProviderTurn: Send {
     /// Record the model's turn — its calls, or the malformed text it wrote.
     fn push_assistant(&mut self, reply: &RoundReply);
     fn push_tool_results(&mut self, results: Vec<ToolOutcome>);
+    /// Everything the model has been given so far (system prompt, history,
+    /// this turn's context), as text: what its cited links are checked
+    /// against. Default: nothing, so every link would be marked.
+    fn transcript(&self) -> String {
+        String::new()
+    }
     /// Bound history growth between rounds. Default: keep everything.
     fn trim_history(&mut self) {}
     /// Registry name of the provider this turn bills, for the per-call spend
@@ -138,6 +144,10 @@ impl ChatService {
         // One guard per turn: grounding state and duplicate fingerprints are
         // per-turn, and the ladder may run this loop once per rung.
         let mut write_guard = TurnWriteGuard::default();
+        // What the model was given, for checking the links it cites: its
+        // messages now, plus each tool result as it reads it (history trimming
+        // drops old results, but the model already saw them).
+        let mut evidence = provider.transcript();
 
         let mut empty_completions = 0usize;
         let mut malformed_calls = 0usize;
@@ -280,9 +290,18 @@ impl ChatService {
                         })
                         .await;
                 } else {
+                    let checked = agent_brain_knowledge::knowledge::exact::check_links(
+                        &reply.text,
+                        &evidence,
+                    );
+                    if checked.changed() {
+                        warn!(provider = label, model = %model, relinked = checked.relinked.len(),
+                              not_in_sources = ?checked.not_in_sources,
+                              "chat: answer links checked against what the model was given");
+                    }
                     let _ = tx
                         .send(ChatEvent::Message {
-                            content: reply.text,
+                            content: checked.text,
                         })
                         .await;
                 }
@@ -347,6 +366,8 @@ impl ChatService {
                     })
                     .await;
 
+                evidence.push('\n');
+                evidence.push_str(&model_text);
                 tool_trace.push((call.name.clone(), success));
                 if do_synthesis && success {
                     gathered.push(format!("### {}\n{model_text}", call.name));
@@ -415,6 +436,8 @@ mod round_loop_tests {
     struct FakeTurn {
         script: Vec<RoundReply>,
         log: Arc<Mutex<Log>>,
+        /// What the model was given (`transcript`).
+        given: String,
     }
 
     #[async_trait::async_trait]
@@ -446,6 +469,9 @@ mod round_loop_tests {
             self.log.lock().unwrap().users.push(text);
         }
         fn push_assistant(&mut self, _reply: &RoundReply) {}
+        fn transcript(&self) -> String {
+            self.given.clone()
+        }
         fn push_tool_results(&mut self, results: Vec<ToolOutcome>) {
             let mut log = self.log.lock().unwrap();
             log.tool_results
@@ -476,12 +502,22 @@ mod round_loop_tests {
         request: ChatRequest,
         max_iterations: usize,
     ) -> (Vec<ChatEvent>, Arc<Mutex<Log>>) {
+        drive_given(script, request, max_iterations, "").await
+    }
+
+    async fn drive_given(
+        script: Vec<RoundReply>,
+        request: ChatRequest,
+        max_iterations: usize,
+        given: &str,
+    ) -> (Vec<ChatEvent>, Arc<Mutex<Log>>) {
         let svc = chat_service(vec![]);
         let log = Arc::new(Mutex::new(Log::default()));
         let (tx, mut rx) = mpsc::channel::<ChatEvent>(256);
         let turn = FakeTurn {
             script,
             log: log.clone(),
+            given: given.to_string(),
         };
         svc.run_round_loop(turn, &[], None, &request, tx, false, max_iterations)
             .await;
@@ -558,6 +594,19 @@ mod round_loop_tests {
         assert_eq!(messages(&seen), vec!["answer".to_string()]);
         // Both retries, the tool round, then the wrap-up round.
         assert_eq!(log.lock().unwrap().calls.len(), 4);
+    }
+
+    /// The answer sent is the answer with its links checked against what the
+    /// model was given (`transcript`, then each tool result). What the check
+    /// does is `exact::tests`; here, that the loop applies it to that evidence.
+    #[tokio::test]
+    async fn the_answer_sent_is_link_checked_against_what_the_model_was_given() {
+        let given = r#"[{"role":"system","content":"CONTEXT [note 3c90ba42-9eed-4b2c-97bd-bd38fdc40155] see https://example.org/real"}]"#;
+        let answer = "Age checks (https://3c90ba42-9eed-4b2c-97bd-bd38fdc40155), \
+                      [real](https://example.org/real), [made up](https://example.org/invented)";
+        let (seen, _) = drive_given(vec![text(answer)], test_request(), 3, given).await;
+        let expected = agent_brain_knowledge::knowledge::exact::check_links(answer, given).text;
+        assert_eq!(messages(&seen), vec![expected]);
     }
 
     /// Tool results go back to the model, one outcome per call.

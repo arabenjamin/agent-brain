@@ -417,6 +417,10 @@ impl ProviderTurn for OpenAiTurn {
     fn trim_history(&mut self) {
         trim_messages(&mut self.messages, MAX_HISTORY_MESSAGES);
     }
+
+    fn transcript(&self) -> String {
+        serde_json::to_string(&self.messages).unwrap_or_default()
+    }
 }
 
 /// Keep the system message [0], the user message [1] and about the last

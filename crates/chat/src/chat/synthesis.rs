@@ -209,9 +209,22 @@ impl ChatService {
         );
         match chat_result {
             Ok(response) if !response.text.is_empty() => {
+                // Its links are checked against what it read: the prompt, and
+                // the conversation the turn continues.
+                let evidence = format!(
+                    "{synthesis_prompt}\n{}",
+                    serde_json::to_string(&request.history).unwrap_or_default()
+                );
+                let checked =
+                    agent_brain_knowledge::knowledge::exact::check_links(&response.text, &evidence);
+                if checked.changed() {
+                    tracing::warn!(model = %model, relinked = checked.relinked.len(),
+                                   not_in_sources = ?checked.not_in_sources,
+                                   "synthesis: answer links checked against what it read");
+                }
                 let _ = tx
                     .send(ChatEvent::Message {
-                        content: response.text,
+                        content: checked.text,
                     })
                     .await;
             }

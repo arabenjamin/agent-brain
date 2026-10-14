@@ -284,6 +284,14 @@ impl ProviderTurn for AnthropicTurn {
         }));
     }
 
+    fn transcript(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.system_prompt,
+            serde_json::to_string(&self.messages).unwrap_or_default()
+        )
+    }
+
     fn push_tool_results(&mut self, results: Vec<ToolOutcome>) {
         // Every tool_result goes back in ONE user turn.
         let blocks: Vec<Value> = results

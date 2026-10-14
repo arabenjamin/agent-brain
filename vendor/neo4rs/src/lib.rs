@@ -1,3 +1,6 @@
+// Vendored 0.8.0 (see Cargo.toml [patch.crates-io]): its own deprecation and
+// dead-code warnings are upstream's, silenced so the workspace's stay readable.
+#![allow(deprecated, dead_code)]
 //! Neo4j driver compatible with neo4j 4.x versions
 //!
 //! * An implementation of the [bolt protocol][bolt] to interact with Neo4j server

@@ -902,6 +902,36 @@ to answer before designing anything:
   and after. A query with spans costs ~0.18 s more (0.31 s against 0.11–0.14
   s); a query without spans costs nothing.
 
+**Step 3, regex as a checker, built and measured 2026-10-14.**
+- **Logged queries:** the date-compared-to-a-string empties Phase 0 found are
+  already caught by the schema guard's warning, and October has none, so
+  nothing new was built there.
+- **Model output, measured first.** 795 October `reason` calls that were given
+  a context, each answer's spans checked against its question and context
+  (the same pattern library):
+  - **Links: 1,913 cited, about 27 in no source, nearly all wrong.** 11 note
+    ids written as URLs (`https://fd683db5-…`, a YouTube `?v=<note id>`), five
+    made from a site and a date (`militarytimes.com/2022-11-01`), slugs
+    changed on the way (`…-usage-at-villanova` for `…-at-villanova`, a `.pdf`
+    added), a different article on a real domain, an `example.com`
+    placeholder, two URLs run together.
+  - **Numbers and dates: mostly correct, so not checked.** Of 34 not in the
+    evidence, ~15 were computed (a 7-day window's start date, 28/125 =
+    22.4%), ~8 were extraction faults (LaTeX `$10`, a `$40–$50` range,
+    `v2.8.2` for `2.8.2`) and one was wrong (2016 for 2022).
+- **Built:** `exact::check_links(text, evidence)` on every `reason` answer
+  (all three paths; the evidence is the prompt) and every chat answer (the
+  provider's messages plus each tool result as the model read it, and the
+  synthesis prompt for a voice model). A link the evidence holds stands; a
+  note id the evidence holds becomes `note <id>`; any other link is kept and
+  marked ` [link not in its sources]`, after the whole markdown link. A
+  `reason` result carries `link_check`, the structured path adds a caveat,
+  and the stored inference note holds the checked text.
+- **Replayed through the Rust check:** 20 of 795 answers changed, 11 note ids
+  relinked, 15 links marked; every marked link was one graded wrong by hand,
+  and nothing correct was marked. Live, it marked a doubled
+  `https://https://…` and left a real link a sub-agent returned alone.
+
 ## 4. Decisions so far (the owner, 2026-10-13)
 
 - The compiled spec is the direction ("we need the queries to be more

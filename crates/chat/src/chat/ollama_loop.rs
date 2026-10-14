@@ -267,6 +267,10 @@ impl ProviderTurn for OllamaTurn {
         }));
     }
 
+    fn transcript(&self) -> String {
+        serde_json::to_string(&self.messages).unwrap_or_default()
+    }
+
     fn push_tool_results(&mut self, results: Vec<ToolOutcome>) {
         for r in results {
             self.messages

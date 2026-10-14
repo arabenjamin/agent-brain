@@ -82,6 +82,9 @@ impl KnowledgeService {
             })
             .unwrap_or_default();
 
+        // Cited links must be in the notes it was given (Phase R step 3).
+        let (answer, inferences, _) = super::exact::check_answer(&answer, &inferences, &prompt);
+
         // Store inference note and create DERIVED_FROM edges
         let inference_note_id = if store_inference && !inferences.is_empty() {
             let inference_content = format!(
@@ -308,6 +311,16 @@ impl KnowledgeService {
                     .collect()
             })
             .unwrap_or_default();
+
+        // Cited links must be in the notes it was given (Phase R step 3).
+        let (answer, inferences, links) = super::exact::check_answer(&answer, &inferences, &prompt);
+        if !links.not_in_sources.is_empty() {
+            caveats.push(format!(
+                "{} cited link(s) are not in the notes it was given and are marked{}",
+                links.not_in_sources.len(),
+                super::exact::NOT_IN_SOURCES
+            ));
+        }
 
         // Build source refs from retrieved notes.
         let sources: Vec<SourceRef> = notes
