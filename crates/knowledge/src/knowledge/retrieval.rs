@@ -43,6 +43,9 @@ pub struct MatchTrace {
     pub via_chunk: Option<String>,
     /// Not matched itself but added: `graph`, `entity`, or `substring_fallback`.
     pub added_by: Option<&'static str>,
+    /// How many of the query's exact spans (money, dates, codes, quoted text)
+    /// the note holds as written; these rank first.
+    pub exact: Option<usize>,
 }
 
 impl MatchTrace {
@@ -498,6 +501,31 @@ impl KnowledgeService {
             let rrf_ranked = Self::rrf_merge(vec_hits, bm25_hits, 60.0, pool_limit);
             self.apply_freshness_boost(rrf_ranked).await
         };
+
+        // 3.25 Exact spans: a string the query names as written (a dollar
+        // amount, a date, a code, quoted text) is found as a phrase, and the
+        // notes holding it rank first. Before chunk resolution, so a chunk
+        // that holds it brings its parent.
+        let spans = super::exact::ExactPatterns::global().spans(query_text);
+        if !spans.is_empty() {
+            let mut exact = Vec::with_capacity(spans.len());
+            for s in &spans {
+                exact.push(self.exact_hits(&s.text, pool_limit).await);
+            }
+            debug!(
+                spans = ?spans.iter().map(|s| format!("{}:{}", s.pattern, s.text)).collect::<Vec<_>>(),
+                hits = exact.iter().map(Vec::len).sum::<usize>(),
+                "retrieval: exact spans"
+            );
+            let (m, held) = super::exact::exact_first(merged, exact);
+            merged = m;
+            if let Some(t) = trace.as_deref_mut() {
+                for (id, n) in held {
+                    t.entry(id).or_default().exact = Some(n);
+                }
+            }
+            merged.truncate(pool_limit);
+        }
 
         // 3.5 Hybrid Retrieval: Resolve child chunks to parents (Small-to-Big)
         if !merged.is_empty() {

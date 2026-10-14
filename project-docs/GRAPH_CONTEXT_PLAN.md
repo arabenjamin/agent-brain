@@ -875,6 +875,33 @@ to answer before designing anything:
    `eval-retrieval` on the retrieval golden set, so ordinary questions do not
    get worse.
 
+**Step 2, built and measured 2026-10-14.**
+- **The library:** `plugins/core/exact-patterns/core.yaml`, 10 patterns
+  (money, ISO and written dates, CVEs, upper-case codes, versions, model
+  names, percentages, URLs, quoted text). Each carries `matches` (a text and
+  the one span it must give) and `rejects`; a pattern failing its own
+  examples is skipped at load with a WARN. A merged seed kind, so a plugin
+  can add patterns. A query gives at most 4 spans, longest first, a span
+  inside a longer one dropped (`knowledge/exact.rs`).
+- **The leg:** each span is a Lucene phrase, kept where the text holds it
+  literally, plus a `CONTAINS` scan for what the index missed. The scan runs
+  every time: with the phrase alone 6 notes were still missing (a date inside
+  a timestamp tokenizes differently). Notes holding more spans rank first,
+  then the hybrid list as before. `MatchTrace.exact` says how many spans a
+  note held.
+- **Result, the same 54 strings:**
+
+  | `search_notes` | Before | After |
+  |---|---|---|
+  | The string inside a question | 0.28 (22 of 54 found any) | **0.95** (54 of 54) |
+  | The bare string | 0.45 (35 of 54) | **0.95** (54 of 54) |
+
+  Every remaining shortfall is a chunk of a note that was returned (the
+  truth set counts chunks separately), so by note it is complete.
+- **Ordinary questions unchanged:** `eval-retrieval` 0.880 / MRR 0.740 before
+  and after. A query with spans costs ~0.18 s more (0.31 s against 0.11–0.14
+  s); a query without spans costs nothing.
+
 ## 4. Decisions so far (the owner, 2026-10-13)
 
 - The compiled spec is the direction ("we need the queries to be more

@@ -26,6 +26,7 @@ mod analysis;
 pub mod claim_label;
 mod consolidation;
 mod entities;
+pub mod exact;
 mod labels;
 mod maintenance;
 mod reasoning;

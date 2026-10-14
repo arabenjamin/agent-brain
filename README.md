@@ -14,7 +14,7 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 
 ## What It Does
 
-- **Remembers** — notes with hybrid BM25+vector search, spaced repetition, entity extraction
+- **Remembers** — notes with hybrid BM25+vector search, spaced repetition, entity extraction. A string the question names as written (a dollar amount, a date, a code such as GBU-12, a version, a model name, a URL, quoted text) is found as a phrase and ranks first; the spans come from tested patterns in `exact-patterns/`, not a model
 - **Reasons** — LLM inference over stored knowledge with derivation tracking
 - **Plans** — goal decomposition into ordered sub-tasks, autonomous scheduling
 - **Executes** — durable priority job queue with per-provider concurrency

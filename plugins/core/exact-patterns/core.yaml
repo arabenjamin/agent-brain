@@ -1,0 +1,82 @@
+# Exact spans: strings a question names that retrieval must find as written.
+# The embedding blurs numbers and codes, and BM25 reads "$17.3 billion" as the
+# loose words "17.3" OR "billion", so a note holding the exact string ranked
+# below every note about billions (GRAPH_CONTEXT_PLAN Phase R step 1: 0.28
+# recall inside a question). A span found here is searched as a phrase, and the
+# notes holding it rank first.
+#
+# Picked, not written: no model writes a pattern. Each one is tested at load
+# against its own examples (`matches`: the text and the one span it must find;
+# `rejects`: text it must find nothing in). A pattern failing its examples is
+# skipped with a WARN. `group` picks a capture group (default 0, the whole
+# match). Rust `regex` syntax; `(?i)` for any case.
+patterns:
+  - name: money
+    pattern: '\$\d[\d,]*(?:\.\d+)?(?:\s?(?:million|billion|trillion))?'
+    matches:
+      - {text: "What do we know about the $17.3 billion contract?", span: "$17.3 billion"}
+      - {text: "Is it still $1,299?", span: "$1,299"}
+    rejects: ["How much money did they raise?", "a 17.3 billion figure"]
+
+  - name: iso-date
+    pattern: '\b(?:19|20)\d\d-\d\d-\d\d\b'
+    matches:
+      - {text: "What happened on 2026-10-07?", span: "2026-10-07"}
+    rejects: ["What happened in October?", "build 2026-1007"]
+
+  - name: written-date
+    pattern: '\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.? \d{1,2}, (?:19|20)\d\d\b'
+    matches:
+      - {text: "the vote on September 30, 2026 passed?", span: "September 30, 2026"}
+      - {text: "filed Oct. 3, 2026", span: "Oct. 3, 2026"}
+    rejects: ["in May we learned", "October 2026"]
+
+  - name: cve
+    pattern: '\bCVE-\d{4}-\d{4,7}\b'
+    matches:
+      - {text: "Is CVE-2026-31337 patched?", span: "CVE-2026-31337"}
+    rejects: ["any CVEs this week?"]
+
+  - name: code
+    # Upper-case letters, a dash, digits: GBU-12, ICD-10, SB-1047. Case
+    # matters: "covid-19" in prose is a word, not a designation.
+    pattern: '\b[A-Z]{2,5}-\d{2,6}\b'
+    matches:
+      - {text: "Who makes the GBU-12?", span: "GBU-12"}
+      - {text: "What does SB-1047 require?", span: "SB-1047"}
+    rejects: ["a mid-2026 release", "covid-19 cases"]
+
+  - name: version
+    pattern: '\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\b'
+    matches:
+      - {text: "What changed in v0.9.0-rc.10?", span: "v0.9.0-rc.10"}
+      - {text: "Is 1.84.1 out?", span: "1.84.1"}
+    rejects: ["version 2 is out", "it costs 3.5 dollars"]
+
+  - name: model-name
+    pattern: '(?i)\b(?:gpt-oss:\d+b(?:-cloud)?|gemma\d[\w:.-]*|qwen\d[\w:.-]*|llama-?\d[\w:.-]*|mistral-[\w:.-]+|ministral-[\w:.-]+|codestral-[\w:.-]+|bge-m3|lfm\d[\w:.-]*)'
+    matches:
+      - {text: "How fast is gemma4:e4b on our GPU?", span: "gemma4:e4b"}
+      - {text: "did gpt-oss:120b-cloud run out?", span: "gpt-oss:120b-cloud"}
+    rejects: ["which model is fastest?", "the llama in the zoo"]
+
+  - name: percent
+    pattern: '\b\d+(?:\.\d+)?%'
+    matches:
+      - {text: "Which report said 37.5% of them?", span: "37.5%"}
+    rejects: ["a percentage of them", "37.5 percent"]
+
+  - name: url
+    pattern: 'https?://[^\s<>"''\)\]]+'
+    matches:
+      - {text: "What did https://therecord.media/spyware-x say?", span: "https://therecord.media/spyware-x"}
+    rejects: ["the record media article"]
+
+  - name: quoted
+    # Whatever the user put in quotes is meant as written.
+    pattern: '"([^"\n]{3,80})"|“([^”\n]{3,80})”'
+    group: any
+    matches:
+      - {text: 'Find notes on "Emergency Shutdown Protocol" please', span: "Emergency Shutdown Protocol"}
+      - {text: 'what is “Project Glasswing”?', span: "Project Glasswing"}
+    rejects: ['a "x" mark', "no quotes here"]
