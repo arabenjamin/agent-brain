@@ -84,6 +84,81 @@ pub struct ContextProfile {
     /// (`notify_user` with a session id) owns the replies, however terse.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_prefixes: Vec<String>,
+    /// A front door's router (GRAPH_CONTEXT_PLAN Phase 3): before the turn,
+    /// a local model picks where it goes first, and the pick is put in front
+    /// of this profile's model. `None` = no router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingSpec>,
+}
+
+/// How a front door routes a turn. The choices are the spawnable agents (with
+/// their `specialty`) and then `choices`, in order.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingSpec {
+    /// The rules the picker reads with the choices (the owner's graded ones).
+    pub rules: String,
+    /// Behaviors (GRAPH_CONTEXT_PLAN Phase B): a turn one fits is run by
+    /// code, with no agent loop. Offered to the picker as `lookup:<name>`.
+    #[serde(default)]
+    pub behaviors: Vec<Behavior>,
+    /// Choices besides the agents: the front door's own tools and `answer`.
+    #[serde(default)]
+    pub choices: Vec<RouteChoice>,
+    /// The agent that holds what is stored (`knowledge-worker`).
+    pub stored: String,
+    /// The agent that searches the web (`researcher`).
+    pub web: String,
+    /// A case-insensitive regex: a turn that matches asks for the web or for
+    /// facts that change. A pick of `web` for a turn that does not match goes
+    /// to `stored` first (accuracy first: what we have, then the world).
+    #[serde(default)]
+    pub web_words: String,
+    /// The checker's probability at or above which its pick needs no second
+    /// reading (the owner's 85% rule; calibrated on eval/routing_golden.yaml).
+    #[serde(default = "default_confident")]
+    pub confident: f64,
+}
+
+fn default_confident() -> f64 {
+    0.85
+}
+
+/// A behavior: one `lookup` view, run for a turn with the slots the local
+/// model pulls from it. Only `slots` may be filled (E4B over-fills: a status
+/// or a topic nobody asked for); the view's preset holds the rest.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Behavior {
+    pub name: String,
+    /// The `lookup` view it runs.
+    pub view: String,
+    /// What it answers, as the picker reads it.
+    pub says: String,
+    /// The view's slots the model may fill from the turn.
+    #[serde(default)]
+    pub slots: Vec<String>,
+    /// A case-insensitive regex the turn must match for the behavior to run:
+    /// code decides that it fits, the model only that it is wanted. A pick of
+    /// it for a turn that does not match goes to the stored agent. (`learned`
+    /// as a bare choice drew 8 turns it did not fit, any "what have we learned
+    /// about X"; its `when` is a time window.)
+    #[serde(default)]
+    pub when: String,
+    /// A case-insensitive regex that rules the behavior out: the turn names
+    /// something narrower that another route reads ("claims from the last 2
+    /// days", "videos today").
+    #[serde(default)]
+    pub unless: String,
+}
+
+/// One routing choice that is not an agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RouteChoice {
+    pub name: String,
+    /// What it is for, as the picker reads it.
+    pub says: String,
 }
 
 /// Runtime bundle produced by [`ContextBuilderService::build_bundle`].

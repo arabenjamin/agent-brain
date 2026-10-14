@@ -144,6 +144,12 @@ services:
       # knowledge-worker) whose findings fold back into the turn. Flip to measure
       # latency + calls/turn. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
       - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-false}
+      # The front door's router (GRAPH_CONTEXT_PLAN Phase 3): the profile's
+      # `routing:` block picks each turn's first stop on the local E4B. "off"
+      # turns it off. The Nimble check is off by default: on the shared 8 GB GPU
+      # it evicts bge-m3 every turn, and CPU-only it adds ~8.5 s a turn.
+      - CHAT_ROUTER=${CHAT_ROUTER:-on}
+      - CHAT_ROUTER_CHECKER=${CHAT_ROUTER_CHECKER:-off}
       - OLLAMA_EMBED_MODEL=bge-m3:latest
       # Merge candidates get a verdict from this host-Ollama classifier on idle
       # time (plugins/alias-judge/crate/src/judge.rs); "off" turns it off. Needs `ollama pull nimble`.

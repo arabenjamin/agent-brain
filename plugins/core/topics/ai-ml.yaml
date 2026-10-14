@@ -5,6 +5,8 @@
 # local-model prompt shared by every topic).
 name: ai-ml
 label: AI & machine learning
+aliases:   # what the owner calls it in chat ("What do we know about Ai")
+  - AI
 description: >-
   Artificial intelligence and machine learning as a field: models, research,
   training, inference, benchmarks, AI products and AI policy. The brain's own

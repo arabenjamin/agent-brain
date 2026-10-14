@@ -73,6 +73,11 @@ pub struct TopicDef {
     /// classifies nothing again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// Other names people use for it ("Opensource Intelligence Agency" for
+    /// `nia`). `lookup` resolves them to the name. Not part of the version:
+    /// they classify nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// The plugin bundle whose `topics/` declares it (`None` = the core).
     /// Set by the loader, never read from the file; not part of the version.
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
@@ -455,7 +460,7 @@ pub async fn sync(neo4j: &Neo4jClient, topics: &Topics) -> Result<usize> {
                  REMOVE t.schedules \
                  SET t.label = r.label, t.description = r.description, \
                      t.source_lists = r.source_lists, t.assign = r.assign, \
-                     t.members = r.members, t.reference = r.reference, t.managed_by = 'yaml', \
+                     t.members = r.members, t.reference = r.reference, t.aliases = r.aliases, t.managed_by = 'yaml', \
                      t.plugin = r.plugin, t.synced_at = datetime()",
             )
             .param("rows", rows),
@@ -518,6 +523,15 @@ fn def_row(d: &TopicDef) -> neo4rs::BoltType {
             .unwrap_or(neo4rs::BoltType::Null(neo4rs::BoltNull)),
     );
     m.insert(
+        "aliases".to_string(),
+        d.aliases
+            .iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    m.insert(
         "plugin".to_string(),
         d.plugin
             .clone()
@@ -539,7 +553,7 @@ pub async fn reload(neo4j: &Neo4jClient) -> Result<Arc<Topics>> {
                     coalesce(t.source_lists, []) AS source_lists, \
                     coalesce(t.assign, 'classifier') AS assign, \
                     coalesce(t.members, '[]') AS members, t.reference AS reference, \
-                    t.plugin AS plugin",
+                    coalesce(t.aliases, []) AS aliases, t.plugin AS plugin",
         ))
         .await?;
     let defs: Vec<TopicDef> = rows
@@ -555,6 +569,7 @@ pub async fn reload(neo4j: &Neo4jClient) -> Result<Arc<Topics>> {
                 members: serde_json::from_str(&r.get::<String>("members").unwrap_or_default())
                     .unwrap_or_default(),
                 reference: r.get::<String>("reference").ok().filter(|s| !s.is_empty()),
+                aliases: r.get::<Vec<String>>("aliases").unwrap_or_default(),
                 plugin: r.get::<String>("plugin").ok().filter(|s| !s.is_empty()),
             })
         })
@@ -692,6 +707,28 @@ pub fn check_def(def: &TopicDef, current: &Topics, create: bool) -> Result<(), S
             return Err("reference must be one http(s) URL of at most 500 characters".into());
         }
     }
+    if def.aliases.len() > 8
+        || def
+            .aliases
+            .iter()
+            .any(|a| a.trim().is_empty() || a.trim().chars().count() > 60)
+    {
+        return Err("aliases: at most 8, each 1–60 characters".into());
+    }
+    let taken = |a: &str| {
+        current.defs.iter().filter(|d| d.name != def.name).find(|d| {
+            d.name.eq_ignore_ascii_case(a)
+                || d.label.trim().eq_ignore_ascii_case(a)
+                || d.aliases.iter().any(|x| x.trim().eq_ignore_ascii_case(a))
+        })
+    };
+    if let Some((a, d)) = def.aliases.iter().find_map(|a| taken(a.trim()).map(|d| (a, d))) {
+        return Err(format!(
+            "alias '{}' already names topic '{}'",
+            a.trim(),
+            d.name
+        ));
+    }
     if def.assign == Assign::Classifier && !def.members.is_empty() {
         return Err(
             "member rules apply only with assign: rules (the classifier ignores them)".into(),
@@ -734,7 +771,7 @@ pub async fn save(
                  ON CREATE SET t.created_at = datetime() \
                  SET t.label = $r.label, t.description = $r.description, \
                      t.source_lists = $r.source_lists, t.assign = $r.assign, \
-                     t.members = $r.members, t.reference = $r.reference, t.managed_by = 'runtime', \
+                     t.members = $r.members, t.reference = $r.reference, t.aliases = $r.aliases, t.managed_by = 'runtime', \
                      t.updated_at = datetime()",
             )
             .param("r", def_row(def)),
@@ -1312,6 +1349,13 @@ mod tests {
                 .unwrap_err()
                 .contains("label")
         );
+        let mut nia = def("nia", "The user's own program.");
+        nia.aliases = vec!["Opensource Intelligence Agency".into()];
+        assert!(check_def(&nia, &t, true).is_ok());
+        nia.aliases = vec!["AI".into()];
+        assert!(check_def(&nia, &t, true).unwrap_err().contains("already names topic 'ai-ml'"));
+        nia.aliases = vec![" ".into()];
+        assert!(check_def(&nia, &t, true).unwrap_err().contains("aliases"));
     }
 
     fn rules_topic() -> TopicDef {

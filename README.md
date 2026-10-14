@@ -20,6 +20,7 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 - **Executes** — durable priority job queue with per-provider concurrency
 - **Extends** — runtime tool definition via stored procedure pipelines
 - **Integrates** — OpenAPI spec ingestion, credential injection, HTTP execution
+- **Routes** — before a front-door chat turn runs, the local model picks where it goes first (a behavior, an agent, a front-door tool, or a direct answer) under graded rules: what we have stored before the web, and our own names (topic aliases) read with `lookup`. A **behavior** (the routing block's `behaviors:`, such as "what did we learn today") is run by code: the local model fills its slots, `lookup` runs, and the front door phrases the rows with no agent loop. `CHAT_ROUTER`, `project-docs/env.md`
 - **Specialises** — plugin bundles under `plugins/` (`core` always; others via `PLUGINS_ENABLED`) carry workflows, agent profiles, source lists and MCP servers; `GET /api/plugins` shows what loaded and why not
 
 ## Prerequisites

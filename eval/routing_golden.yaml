@@ -24,9 +24,15 @@
 #              on what is already in the conversation).
 #   first_tool inside the agent: the tool it should call first (lookup with
 #              its view, search_notes, search_web, list_capabilities, ...).
+#   always     a check that runs whatever the confidence (the part about us).
 #   then       the next step when the first comes back thin: the order for a
 #              loose question (the brain's own names, then what is stored, then
 #              the web).
+#   check      for `route: answer` on a factual question (the owner's rule,
+#              2026-10-14): answer from what the model knows with a confidence;
+#              below `below` (0.85, to be calibrated on this set), check `then`
+#              in order. A question about us, or about facts that change (news,
+#              versions, prices, "latest"), always checks.
 #   readings   for an ambiguous turn: the plausible readings, most likely first.
 #   decide     a choice the owner makes while grading.
 #   status     draft | accepted | fixed | dropped.
@@ -37,6 +43,7 @@ agents_seen_2026_10_14: [api-integrator, api-scout, code-analyst, deep-diver, de
 
 cases:
   # ── What did we learn (loose time words) ──────────────────────────────────
+
   - id: learned-today
     question: "What have we learned today?"
     source: chat 2026-08 to 2026-10, x30 (and 20 more wordings)
@@ -66,9 +73,9 @@ cases:
     source: chat 2026-09, x2
     brain_did: {agents: [knowledge-worker], tools: [recall_recent x3, consolidate_memories], profile: GeneralDefault-Orchrestator}
     route: knowledge-worker
-    first_tool: {lookup: {view: learned, window: {days: 2}}}
-    decide: '"a couple of days" read as 2'
-    status: draft
+    first_tool: {lookup: {view: learned, window: {days: 3}}}
+    decide: '"a couple of days" is 3 (owner: loose speech covers a bit more than 2)'
+    status: accepted # owner 2026-10-14: a couple of days = 3
 
   - id: learned-two-months
     question: "Can you tell me what we have learned in the last 2 months?"
@@ -91,9 +98,10 @@ cases:
     source: chat 2026-06, x1
     brain_did: {agents: [], tools: [], profile: general}
     route: knowledge-worker
-    first_tool: {lookup: {view: learned, as: by_topic}}
-    decide: the gaps are a judgment over the topic counts (and stored knowledge gaps); is the first step the counts, or the knowledge_gaps table?
-    status: draft
+    first_tool: {lookup: {view: claims, status: unverified, as: by_topic}}
+    then: lookup learned as by_topic (where we are thin); the answer proposes next questions from both
+    decide: knowledge_gaps holds fetch failures and empty web searches, not open questions; owner - both, unverified claims first
+    status: accepted # owner 2026-10-14: unverified claims by topic, then thin topics
 
   - id: learned-and-next
     question: "What have we learned to day, what do we want to do next?"
@@ -121,6 +129,7 @@ cases:
     status: draft
 
   # ── Our own names: the intelligence agency, monitors, deep dives ──────────
+
   - id: nia-where
     question: "Where are we on our Niche Intelligence Agency we discussed a couple days ago?"
     source: chat 2026-08-10, x5
@@ -147,7 +156,7 @@ cases:
     first_tool: {lookup: {view: notes, topic: nia}}
     readings: ["our Intelligence Agency = the NIA program (topic nia)", "the intelligence agency watch (intel_findings)"]
     decide: '"our" points to the NIA; the watch is the second reading'
-    status: draft
+    status: accepted # owner 2026-10-14: "our Intelligence Agency" is the NIA program; aliases to add (step 2)
 
   - id: nia-latest
     question: "What is the latest on Our Niche Intelligence Agency?"
@@ -181,10 +190,10 @@ cases:
     brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
     route: knowledge-worker
     first_tool: {lookup: {view: notes, topic: nia}}
-    then: lookup trump_monitor
+    then: lookup intel_findings (words "trump geopolitics"), then trump_monitor; the answer labels which findings came from the NIA and which from the watch
     readings: ["this agency = the NIA (the session opened on it)", "this agency = the intelligence agency watch, whose findings the previous answer gave"]
-    decide: which agency; the brain answered with no tool at all
-    status: draft
+    decide: "which agency; the brain answered with no tool at all. Owner: both, labelled"
+    status: accepted # owner 2026-10-14: both agencies, labelled
 
   - id: intel-agencies-found
     question: "Can you tell me more about what you found out about Intelligence Agencies?"
@@ -246,6 +255,7 @@ cases:
     status: draft
 
   # ── Stored or the web? ─────────────────────────────────────────────────────
+
   - id: mesh-networks-learned
     question: "What have we learned about mesh networks ?"
     source: chat 2026-08, x1
@@ -276,22 +286,19 @@ cases:
     question: "Does a Nebula lighthouse need a static ip ?"
     source: chat 2026-08, x1
     brain_did: {agents: [], tools: [search_web], profile: general}
-    route: researcher
-    first_tool: search_web
-    readings: ["a technical fact about the world: the web (stored notes first is cheap but unlikely to hold it)"]
-    decide: researcher alone, or knowledge-worker first by the order?
-    status: draft
+    route: answer
+    check: {below: 0.85, then: [{knowledge-worker: {lookup: {view: notes, words: "nebula lighthouse"}}}, {researcher: search_web}]}
+    decide: the owner's fact rule (2026-10-14)
+    status: accepted # owner 2026-10-14: the fact rule
 
   - id: what-is-cowos
     question: "What is CoWos?"
     source: chat 2026-08, x1
     brain_did: {agents: [], tools: [], profile: general}
-    route: knowledge-worker
-    first_tool: {lookup: {view: notes, words: "cowos"}}
-    then: researcher (search_web)
-    readings: ["a term from the NIA chip work: stored first", "general knowledge: answer directly"]
-    decide: the brain answered from model knowledge with no tool
-    status: draft
+    route: answer
+    check: {below: 0.85, then: [{knowledge-worker: {lookup: {view: notes, words: "cowos"}}}, {researcher: search_web}]}
+    decide: the owner's fact rule (2026-10-14) - answer from memory, check below 85% confidence, graph then web
+    status: accepted # owner 2026-10-14: answer, then check below 0.85 (graph, then web)
 
   - id: tora-fit
     question: "What would ToRA-7B be good for in our system? What tasks would it excel at, and where would it not be a good fit?"
@@ -365,13 +372,13 @@ cases:
     question: "I'm wondering how LLM fine tuning works, and how we might do that ourselves?"
     source: chat 2026-09, x2
     brain_did: {agents: [researcher], tools: [search_notes x3, search_web x3, reason], profile: GeneralDefault-Orchrestator}
-    route: researcher
-    first_tool: search_web
-    readings: ["how it works: the web, or answer from knowledge", "how WE might: the brain has run fine-tuning experiments (stored)"]
-    decide: knowledge-worker first, since the brain's own fine-tuning experiments are stored?
-    status: draft
+    route: answer
+    check: {below: 0.85, then: [{researcher: search_web}]}
+    always: {knowledge-worker: {lookup: {view: notes, words: "fine-tuning adapter lora"}}}
+    readings: ["how it works: the fact rule", "how WE might: about us, so it always checks the brain's stored fine-tuning experiments"]
+    decide: the owner's fact rule (2026-10-14); the "ourselves" half is about us, so it always checks
+    status: accepted # owner 2026-10-14: the fact rule, plus the stored experiments
 
-  # ── The brain itself ───────────────────────────────────────────────────────
   - id: tool-count
     question: "How many tools does the brain have?"
     source: chat 2026-09, x12 (and 3 wordings)
@@ -427,9 +434,9 @@ cases:
     brain_did: {agents: [knowledge-worker], tools: [search_notes x8], profile: orchestrator}
     route: knowledge-worker
     first_tool: {lookup: {view: tasks_recent, n: 5}}
-    readings: ["the front door holds list_tasks itself"]
-    decide: self:list_tasks would answer too; which is the right first stop?
-    status: draft
+    readings: ["the front door holds list_tasks itself, but it ignores limit and lists failures first"]
+    decide: "owner: the tool that answers correctly, not the nearest one"
+    status: accepted # owner 2026-10-14: knowledge-worker, lookup tasks_recent
 
   - id: todo-list
     question: "Can you see the todo list?"
@@ -449,7 +456,7 @@ cases:
 
   - id: queue-retries-code
     question: "Take a look at how the queue coordinator retries failed jobs in this codebase."
-    source: chat 2026-09, x8
+    source: probe sessions 2026-09, x8 (a test question, not the owner's; kept as the code-question case)
     brain_did: {agents: [code-analyst], tools: [search_codebase x4, read_codebase_file x4], profile: GeneralDefault-Orchrestator}
     route: code-analyst
     first_tool: search_codebase
@@ -468,11 +475,11 @@ cases:
     question: "Instead of designing a new Architecture, investigate ways we could improve this system using SLMs."
     source: chat 2026-07, x4
     brain_did: {agents: [], tools: [duckdb_query x3, search_codebase x2, read_codebase_file x5, list_codebase_files, neo4j_query], profile: self-analyst}
-    route: code-analyst
-    first_tool: analyze_own_structure
-    then: researcher (which SLMs exist)
-    decide: code-analyst, or deep-diver (a theme drilled to a question, graph then web then a Rust example)?
-    status: draft
+    route: deep-diver
+    first_tool: search_notes
+    readings: ["it needs our code, our stored model evals and the web; only deep-diver holds all three"]
+    decide: "owner: deep-diver (code-analyst cannot see the web)"
+    status: accepted # owner 2026-10-14: deep-diver
 
   - id: my-professional-history
     question: "Can you tell me more about my Professional History?"
@@ -483,6 +490,7 @@ cases:
     status: draft
 
   # ── Do something ───────────────────────────────────────────────────────────
+
   - id: schedule-zero-trust
     question: "Can you create a scheduled task to do more research into zero trust architecture ?"
     source: chat 2026-08, x1
@@ -496,11 +504,12 @@ cases:
     after: {q: "Does this agency think Donald Trump is acting in the benefit for the US, or himself, or another nation…?", a: "I cannot directly answer that question…"}
     source: chat 2026-09-24, x1
     brain_did: {agents: [schedule-author], tools: [], profile: GeneralDefault-Orchrestator}
-    route: schedule-author
-    then: self:manage_workflow upsert
-    readings: ["set up a monitor now", "agreeing in principle: ask before building"]
-    decide: build it, or confirm the scope first (it is broad)?
-    status: draft
+    route: self:manage_workflow
+    first_tool: {manage_workflow: {action: list}}
+    then: schedule-author extends trump-benefit-daily-monitor (topic nia) to other actors' intentions; manage_workflow upsert in place
+    readings: ["extend the monitor that covers it (owner)", "a new workflow, only if it must be separate, under the same topic (nia)"]
+    decide: "owner: expand the existing Trump monitor's scope, not a separate workflow; workflows already share a topic (the brain's nia-actor-motivation-monitoring of that day no longer exists)"
+    status: accepted # owner 2026-10-14: extend the existing monitor
 
   - id: secondary-supply-chains
     question: "Can you make sure we're mapping \"secondary\" supply chains to identify where the next bottleneck will emerge before the tripwire fires."
@@ -527,9 +536,9 @@ cases:
     brain_did: {agents: [api-integrator], tools: [list_apis, list_endpoints], profile: GeneralDefault-Orchrestator}
     route: api-integrator
     first_tool: {list_endpoints: {api: home_assistant}}
-    then: scribe writes the file
-    decide: api-integrator gathers and writes, or knowledge-worker gathers and scribe writes?
-    status: draft
+    then: write_workspace_file (the same agent); the test is that a file exists afterwards
+    decide: "owner: api-integrator alone, one delegation (the brain listed the endpoints and wrote nothing)"
+    status: accepted # owner 2026-10-14: api-integrator gathers and writes
 
   - id: save-hello-notes
     question: "Save a file to the workspace called hello_notes.md containing a one-line summary of what the brain is."
@@ -559,21 +568,26 @@ cases:
     after: {q: "Can you tell me more about what you found out about Intelligence Agencies?", a: "…fragmented and consists primarily of unverified claims…"}
     source: chat 2026-09, x1
     brain_did: {agents: [], tools: [], profile: orchestrator}
-    route: answer
-    readings: ["advice on approach, from the conversation: answer", "start digging: deep-diver"]
-    decide: the owner asks what to do, not to do it; answer, then offer
-    status: draft
+    route: knowledge-worker
+    first_tool: {lookup: {view: intel_findings, status: unverified}}
+    then: lookup claim_evidence for those claims; advise what is missing per claim, where to look, dig vs wait; offer deep-diver to start
+    readings: ["advice, but on stored claims: about us, so it checks first (the fact rule)"]
+    decide: "owner: check the evidence, then advise"
+    status: accepted # owner 2026-10-14: check evidence, then advise
 
   # ── Talk: no tool ──────────────────────────────────────────────────────────
+
   - id: profit-from-chaos
     question: "How do we either profit from this chaos, or defend ourselves against it? We're not rich. We have limited means and resources at the moment. What should our nexts moves be?"
     after: {q: "What have we learned today?", a: "…the integration of Artificial Intelligence in modern warfare…"}
     source: chat 2026-08-07, x1
     brain_did: {agents: [], tools: [search_notes x2, reason x4, update_task x3, search_web], profile: general}
-    route: answer
-    readings: ["advice from what was just said: answer", "ground it in stored knowledge first"]
-    decide: the brain updated tasks and searched the web for an advice question
-    status: draft
+    route: knowledge-worker
+    first_tool: {lookup: {view: resume}}
+    then: list_capabilities (what the brain can do), open todos; then answer. Nothing that writes (tasks, workflows, notes) on an advice question
+    readings: ['"our means and resources" is about us, so it checks first (the fact rule)']
+    decide: "owner: check what we have, then answer; the brain changed 3 tasks and searched the web"
+    status: accepted # owner 2026-10-14: check what we have, then answer, no writes
 
   - id: help-implement-ideas
     question: "Can you help me on some examples of how I might implement some of these ideas? I'm an out of work software engineer. I put this system together, and I'm looking for ways to leverage what I have against the odds."
@@ -620,5 +634,6 @@ cases:
     route: knowledge-worker
     first_tool: {lookup: {view: resume}}
     readings: ["the roles are in the conversation; the résumé is stored"]
-    decide: the brain said it had neither the roles nor the résumé
-    status: draft
+    then: rank the roles from the chat against it, with reasons
+    decide: "the brain said it had neither the roles nor the résumé; owner: résumé, then rank"
+    status: dropped # 2026-10-14: the turn is from session jobsearch-routetest, a test with no roles in it (real job-search chats open with them); the owner's answer for a real one - lookup resume, then rank

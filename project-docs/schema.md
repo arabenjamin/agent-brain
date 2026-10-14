@@ -177,6 +177,7 @@ A domain the brain tracks. The core bundle's `topics/*.yaml` seeds them, synced 
 | `assign` | String | `classifier` (the local model decides) or `rules` (only `members` rules and the user; left out of the classifier prompt) |
 | `members` | String | JSON list of member rules `{note_type?, source_context?, content_contains?}` (`assign: rules`) |
 | `reference` | String? | A page about the topic (an http(s) URL) set by the user or `reference:` in YAML. Not part of `version`: editing it classifies nothing again |
+| `aliases` | String[] | Other names people use for it (`nia`: "Opensource Intelligence Agency"), from `aliases:` in YAML or the topic API. `lookup` resolves a name, label or alias (any case) to the topic, and its catalog lists them. At most 8; one may not name another topic. Not part of `version` |
 | `created_at` / `synced_at` / `updated_at` | DateTime | Native `DATETIME`, UTC (`updated_at`: last HBI edit) |
 
 #### `RetiredTopic`

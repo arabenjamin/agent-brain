@@ -255,11 +255,16 @@ impl ChatService {
         // check, model resolution, toolset build, drain) now lives in
         // `services/agent_runner.rs`; this maps the structured findings back to
         // the `(ok, retrieved, findings)` tuple `dispatch_tool_call` expects.
+        // Our own topics the task names go with it as a lookup to start from:
+        // the 2026-10-14 live test delegated "Opensource Intelligence Agency"
+        // and the worker searched the words five times, missing topic `nia`.
+        let topics = agent_brain_graph::topics::Topics::global();
+        let task = with_named_topics(task, &super::route::named_topics(task, &topics.defs));
         let f = self
             .agent_runner
             .run(
                 agent,
-                task,
+                &task,
                 AgentBudget {
                     max_iterations: MAX_SUBAGENT_ITERATIONS,
                     allow_writes: false,
@@ -274,4 +279,19 @@ impl ChatService {
     // ========================================================================
     // Synthesis step — called after the tool-use loop in research mode
     // ========================================================================
+}
+
+/// `task` with a line per topic of ours it names: where to read it first.
+pub(super) fn with_named_topics(task: &str, named: &[(String, String)]) -> String {
+    if named.is_empty() {
+        return task.to_string();
+    }
+    let mut t = task.to_string();
+    t.push_str("\n\n[Named in this task]");
+    for (name, at) in named {
+        t.push_str(&format!(
+            "\n- \"{at}\" is our topic `{name}`: read it first with lookup {{\"view\": \"notes\", \"topic\": \"{name}\"}}."
+        ));
+    }
+    t
 }

@@ -5,7 +5,10 @@
 shape cases 2026-10-14 (constrained E4B 18/30 full, 20 near-full, 8/9 empty
 right, against 10/33 for free Cypher). Phase 3 rewritten 2026-10-14 from a
 "graph needed?" gate to tool routing: the right agent and tool for a turn,
-loose wording included. Next: Phase 3 step 1, mining the chat turns.**
+loose wording included. Steps 1–4 built 2026-10-14 (a front-door router,
+E4B + a stored-first rule). Phase B, behaviors first and the agent loop as
+the fallback (owner, 2026-10-14): the first behavior is "what did we learn
+today".**
 
 The brain is only as good as the context in front of the model, and that context
 is only as good as the query that fetched it. This plan makes graph context
@@ -493,6 +496,20 @@ gate first drafted here was one corner of this.
 4. Ask the owner only when the readings would lead to different actions
    (send vs draft).
 
+**Factual questions, the owner's rule (2026-10-14).** Answer from what the
+model knows, with a confidence. Below 85%, check the graph, then the web
+("Do I already know this? How certain am I? Below 85% I fact-check myself").
+- A question about us ("our agency", "what we learned") always checks:
+  training data cannot know it.
+- So does a fact that changes (news, versions, prices, "latest").
+- A model's stated confidence is not trusted until it is measured. On the test
+  set, its answers at "≥ 85%" must be right at least 85% of the time, or the
+  threshold moves. Confidence in the answer is a different number from
+  confidence in the route.
+
+**Two of our own things with one name** (topic `nia` and the intelligence
+agency watch): look up both and label which is which (owner, 2026-10-14).
+
 **Steps:**
 1. **Mine the turns.** For each chat turn, record the agent it went to, the
    tools that ran, and how it ended. Draft what it should have used: the
@@ -536,10 +553,198 @@ ambiguous turns and `decide` for 14 choices. The routes are knowledge-worker
   (`intelligence_agency_watch`, view `intel_findings`) monitors claims about
   real agencies. The 2026-09-24 session crossed them ("this agency's findings
   on NHI").
+- **Graded 2026-10-14, the 14 `decide` cases (13 accepted, 1 dropped).**
+  Three rules came out of them, and they now carry most of the routing:
+  - **About us always checks.** A question about our things (claims, means,
+    agencies) is looked up before it is answered, even when it asks for advice
+    ("dig deeper or wait?", "what should our next moves be?").
+  - **The tool that answers correctly, not the nearest.** The front door's
+    `list_tasks` ignores its limit and lists failures first, so "the last 5
+    tasks" goes to knowledge-worker's `lookup tasks_recent`.
+  - **Check what exists before creating.** "We need to be monitoring such
+    things" extends the Trump monitor (topic `nia`) instead of a new
+    workflow. Workflows already share a topic.
+
+  Also graded: "a couple of days" is 3; "what could we learn more about" is
+  unverified claims by topic, then thin topics; investigating SLMs for the
+  system goes to deep-diver (code, notes and web); an OpenAPI doc is
+  api-integrator alone; an advice question never writes. The job-search case
+  was a test session with no roles in it, so it is dropped. 53 cases without a
+  `decide` line are still drafts.
+- **Step 2 built 2026-10-14: topic aliases.** A topic's `aliases:` (in YAML,
+  or through the topic API, which keeps them when an edit leaves them out) are
+  stored on the node. `lookup` runs a topic given by name, label or alias, in
+  any case, and its answer says what it resolved ("topic 'our intelligence
+  agency' is 'nia'"). The catalog lists the aliases with the label, so a
+  writer or router sees them. Seeded from the owner's chat wording: `nia`
+  (Opensource / Open Source Intelligence Agency, our intelligence agency),
+  `off-grid-networking` (mesh networks, the off-grid project) and `ai-ml`
+  ("AI"). Agents, views and workflows already have readable names or `words`.
+- **Step 3 measured 2026-10-14: routers on the 66 cases** (one dropped). Every
+  router chose from the live roster (11 spawnable agents with their
+  `specialty`), the front door's own tools, and `answer`. A follow-up carried
+  the turn before it. `rules` adds the routing rules graded above. Those rules
+  came from grading these same cases, so `rules` scores flatter themselves;
+  `roster` is the clean number.
+
+  | Router | roster | rules | median s | Picks at ≥ 0.85 conf (rules) |
+  |---|---|---|---|---|
+  | E4B, constrained (host Ollama) | 42 | **52** | 1.4 | 66 of 66 at ≥ 0.85, 79% right: no signal |
+  | codestral (free Mistral) | 41 | 50 | 0.8 | 62 at ≥ 0.85, 79% right: no signal |
+  | **Nimble** (warm, alone) | 31 | 48 | 5.0 | **36 at ≥ 0.85, 89% right; below, 57% and 43%** |
+  | bge-m3 kNN over the other cases | 46 | — | 0.01 | learns only from this set |
+  | bge-m3 to the roster text | 8 | — | 0.04 | — |
+
+  - **Nimble's probability is calibrated at the owner's threshold.** Its
+    confident picks are right 89% of the time. E4B's and codestral's stated
+    confidence is ~0.95 whether right or wrong. Warm and alone, Nimble takes
+    3.7–5 s, not the 34 s of the views test (that run swapped it with E4B).
+  - **E4B picks best; Nimble knows when it is unsure.** Where they agree (55
+    of 66), the pick is right 45 times (82%). Where they disagree (11), the right
+    route is one of the two picks in 10. So: agree → go; disagree → run both
+    readings in the order (stored first), as the plan's split rule says.
+  - **The roster alone sends us to the web.** Without rules, Nimble sent 16
+    questions about us to `researcher` and E4B sent 8, because
+    knowledge-worker's specialty ("what the brain already knows") reads weaker
+    than researcher's. That is the owner's original complaint, measured.
+  - **What the rules do not fix:** something in the world that we have also
+    stored ("Have you looked at Nebula", "tell me more about Adam Kinzinger",
+    the emergency-shutdown claim, the 60 Minutes video, "dig deeper into these
+    claims") still goes to the web first, from both models. The fact rule says
+    stored before the web for these too.
+  - In production, E4B runs in the llama.cpp sidecar and Nimble in host Ollama,
+    so the two can run side by side: about 5 s added to a chat turn.
+- **Step 4 built 2026-10-14 (owner: E4B + the rule now, Nimble switchable).**
+  Two constraints were measured first:
+  - **Nimble and bge-m3 cannot share host Ollama's GPU slice.** Each evicts the
+    other: Nimble reloads in about 15 s, bge-m3 in about 4 s.
+  - **CPU-only Nimble coexists but costs ~8.5 s a call**, because the CPU reads
+    the whole prompt each time.
+
+  On the 66 cases, Nimble's added value came to 4 fewer confidently wrong
+  picks and 3 more right routes tried, at 16 two-step turns instead of 5.
+
+  - **The profile's `routing:` block holds the router's data.** That is the
+    rules, the non-agent choices (the front door's own tools, `answer`), the
+    stored and web agents, the `web_words` pattern and `confident`. The front
+    door (`GeneralDefault-Orchrestator`) declares one.
+  - **The router runs in `crates/chat/src/chat/route.rs`.** The picker is the
+    local E4B, its output held to the choice list. A web pick that the turn
+    did not ask for goes to the stored agent first. The checker
+    (`CHAT_ROUTER_CHECKER=nimble`, off by default) splits a disagreement,
+    stored first. A failure or timeout leaves the turn unrouted.
+  - **The pick goes into the prompt** as a short block. It also shows in the
+    stream (`⚙ route: …`) and is logged to DuckDB as `route: {…}`, so later
+    mining can check whether the front door followed it.
+  - **Named topics:** a turn or a delegated task that names one of our topics
+    (by name, label or alias) says to read it with `lookup`.
+  - **Live, 2026-10-14:**
+    - "What about our Opensource Intelligence Agency" routed to
+      knowledge-worker in 0.5 s. The front door passed "(topic: nia)", and the
+      worker's first call was `lookup {topic: nia}`. Before, it ran five word
+      searches and said nothing was recorded.
+    - "Have you looked at Nebula" went to stored knowledge first and was
+      answered from the stored notes, where both models had sent it to the web.
 - **Found on the way:** a `lookup` total counted all the words while its rows
   matched any of them, so 30 rows showed "total 12" and no cut. A count taken
   for rows (the total, a `wide` breakdown) now matches the way the rows did.
 
+
+### Phase B — behaviors first, the agent loop as the fallback (the owner, 2026-10-14)
+
+**The direction.** The owner pointed to swamp-club.com/behavior as a good
+description of the goal. Its argument: use frontier intelligence at *build
+time* to encode intent into behaviors with typed inputs and structured
+outputs, and at runtime call a model only for one narrow job (pulling the
+parameters out of a request). "Each LLM call is scoped to a single,
+well-defined job and never drives the control flow of the broader system."
+(The article is Swamp's own pitch, and its footnote says the cost numbers
+compare different models and setups. The principle stands on our own
+measurements.)
+
+**Where the brain is already there:**
+- **Workflows** run their steps verbatim, with arguments validated against
+  each tool's schema.
+- **Views behind `lookup`**: a named thing with typed slots and live closed
+  values, and the Cypher is written by code. Free Cypher from E4B got 10 of 33
+  right; filled slots got 18 of 30.
+- **Rules a model was measured to ignore became mechanisms:** `wide`
+  (ignored 6 of 6), stored before the web, names resolved through aliases,
+  marked cuts.
+
+**Where it is not:** the chat path. The front door decides, a sub-agent
+loops, and the sub-agent picks its tools. On 2026-10-14 knowledge-worker
+searched "Opensource Intelligence Agency" five times and concluded nothing
+was stored, until a deterministic `lookup` line was added. The Phase 3 router
+is one of the patches the article lists ("model routers, sub-agents"): it
+picks from a closed list under rules in code, but it still hands the turn to
+an agent that improvises.
+
+**The plan:**
+1. **The router picks a behavior when one fits.** A behavior is a view the
+   routing block names, such as `lookup:learned`. For one, code runs the turn:
+   - E4B fills the view's slots, held to the view's slot schema (the extract
+     step);
+   - `lookup` runs;
+   - the rows, with the cuts marked, go into the front door's prompt as the
+     turn's context.
+
+   The front door's model only phrases the answer, and keeps each row's
+   standing. No sub-agent, and no tool choice at runtime.
+2. **The agent loop is the fallback** for a turn no behavior fits, or a
+   behavior that fails.
+3. **The route log is where new behaviors come from.** A fallback turn is a
+   candidate. Behaviors are written at build time (by a session like this
+   one, toolsmith or schedule-author), graded by the owner on
+   `eval/routing_golden.yaml`, and then added to the routing block.
+4. **Typed outputs for workflows** (later). Workflow results are free text
+   today; that is the biggest gap against the article's versioned schemas.
+
+**First behavior: "what did we learn today"**, asked over 40 times in
+chat, the most of any question.
+
+**Built 2026-10-14.**
+- **A behavior is data in the routing block:** `{name, view, says, slots,
+  when, unless}`. The router offers it as `lookup:<name>`. When it is picked,
+  code runs it:
+  - E4B fills only `slots`, held to the view's slot schema;
+  - `lookup` runs;
+  - the rows (marked when cut, widened or empty, each with its standing) go
+    into the prompt;
+  - that turn's front door has no `delegate`, so it can only phrase the rows.
+
+  A behavior that fails sends the turn to the stored agent.
+- **Code decides that a behavior fits; the model only that it is wanted.** As
+  a bare choice, `learned` drew 8 turns it did not fit ("what have we
+  learned about the Trump analysis / mesh networks / NHI"), and overall routing
+  fell from 52 to 42. A `when` pattern (the turn names a time window) and an
+  `unless` pattern (it names something narrower: videos, claims, monitors,
+  search engines) fixed that. Scored as the live router decides, 57 of 66
+  first stops are right (56 without the behavior), and the behavior runs on
+  exactly the 6 learned-in-a-window turns. These are regex guards, the first
+  use for Phase R. The patterns were written knowing these cases, so live
+  turns are the real test.
+- **The prompt rule alone did not hold.** On the first live run the front door
+  got the rows and delegated anyway: its prompt says "your ONLY option is to
+  call delegate". Removing `delegate` for that turn made it phrase the rows.
+  It then pasted a row with its header, so the context now says to write the
+  answer in its own words and give the count first.
+- **Live:**
+  - "learned this month" took 1.7 s to the behavior and 3.8 s to the answer,
+    against ~22 s through the agent loop, with counts by topic and `(no
+    topic)`;
+  - "learned in the last 24 hrs" filled `{hours: 24}` and gave 27 rows in
+    0.9 s, summarized with standing;
+  - "learned today" filled `{day: today}` and found 1 note, said so, and
+    labelled it not checked;
+  - "learned about mesh networks" fell back to knowledge-worker, which went
+    straight to `lookup topic: off-grid-networking`.
+
+  The first behavior after a restart takes ~11 s: the catalog's live values
+  scan the notes cold.
+- **Next behaviors:** from the route log, a fallback turn at a time.
+  Candidates from the routing set are the open todos, the APIs, an API's
+  endpoints, the tool and agent counts, and the claims in a window.
 
 ### Phase 4 — workflow steps hold specs, the frontend shows them
 

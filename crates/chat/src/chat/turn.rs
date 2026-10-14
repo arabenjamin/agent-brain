@@ -495,6 +495,8 @@ impl ChatService {
         // which providers the routing policy may send this turn to.
         let mut turn_class = DataClass::Private;
 
+        // The front door's router spec, when its profile declares one.
+        let mut profile_routing = None;
         let (tools, profile_system_prompt, profile_notes) = if has_explicit_tools {
             let names = request.tools.as_deref().unwrap_or_default();
             (filter_tools(all_tools, names), None, Vec::new())
@@ -507,6 +509,7 @@ impl ChatService {
                     Some(bundle.profile.system_prompt.clone())
                 };
                 let notes = bundle.pre_loaded_notes.clone();
+                profile_routing = bundle.profile.routing.clone();
                 turn_class = bundle.profile.data_class.unwrap_or_default();
                 // Honour the profile's model_preference for this turn, using the
                 // current chat config as the base so timeouts, temperature, and
@@ -556,8 +559,9 @@ impl ChatService {
         // of workers is built live from the spawnable profiles; with none, the
         // tool would be useless, so it is not added.
         let mut tools = tools;
+        let mut spawnable = Vec::new();
         if subagent_enabled() && !has_explicit_tools {
-            let spawnable = match self.context_builder.read().await.clone() {
+            spawnable = match self.context_builder.read().await.clone() {
                 Some(cb) => cb.spawnable_profiles().await,
                 None => Vec::new(),
             };
@@ -633,7 +637,80 @@ impl ChatService {
         };
 
         // Compose once here so every provider loop runs the same prompt.
-        let system_prompt = build_system_prompt(profile_system_prompt.as_deref(), &profile_notes);
+        let mut system_prompt =
+            build_system_prompt(profile_system_prompt.as_deref(), &profile_notes);
+
+        // A front door that declares `routing:` gets the turn's route before it
+        // runs (GRAPH_CONTEXT_PLAN Phase 3). It can only delegate when the
+        // roster exists, so no roster means no routing.
+        let route = match &profile_routing {
+            Some(spec) if super::route::enabled() && !spawnable.is_empty() => {
+                let prev = previous_turn(&request.history);
+                let topics = agent_brain_graph::topics::Topics::global();
+                super::route::route(spec, &spawnable, &topics.defs, prev, &user_message).await
+            }
+            _ => None,
+        };
+        // A behavior route is run here, by code (Phase B): its rows become the
+        // turn's context and the front door only phrases them. Any other route,
+        // or a behavior that fails, becomes a hint; a failed behavior's hint is
+        // the stored agent.
+        let mut behavior_line: Option<String> = None;
+        if let (Some(r), Some(spec)) = (&route, &profile_routing) {
+            let mut ran: Option<(Value, Value)> = None;
+            if let Some(b) = super::route::behavior(spec, &r.plan[0]) {
+                let handler = self.tool_handler.read().await.clone();
+                if let Some(h) = handler {
+                    let t0 = std::time::Instant::now();
+                    let turn =
+                        super::route::turn_text(previous_turn(&request.history), &user_message);
+                    match super::route::run_behavior(b, &h, &turn).await {
+                        Ok((args, result)) => {
+                            system_prompt.push_str(&super::route::context_block(&args, &result));
+                            behavior_line = Some(format!(
+                                "⚙ behavior: lookup {args} → {} rows{} ({} ms)",
+                                result["count"],
+                                if result["wide"].is_string() {
+                                    ", widened"
+                                } else {
+                                    ""
+                                },
+                                t0.elapsed().as_millis()
+                            ));
+                            ran = Some((args, result));
+                            // The behavior is the turn's retrieval: the front door
+                            // phrases its rows and cannot hand the turn to an agent
+                            // (its prompt says to always delegate; it did, on the
+                            // first live run, and ignored the rows).
+                            tools.retain(|t| t.name != "delegate");
+                        }
+                        Err(e) => {
+                            tracing::warn!(behavior = %b.name, error = %e, "chat: the behavior failed; the turn goes to the stored agent");
+                        }
+                    }
+                }
+            }
+            if ran.is_none() {
+                let plan = if super::route::behavior(spec, &r.plan[0]).is_some() {
+                    vec![spec.stored.clone()]
+                } else {
+                    r.plan.clone()
+                };
+                system_prompt.push_str(&super::route::hint(&plan, &r.named));
+            }
+            tracing::info!(plan = ?r.plan, picked = %r.picked, checked = ?r.checked, why = %r.why, ms = r.ms, behavior = ?ran.as_ref().map(|(a, _)| a), "chat: routed the turn");
+            if let Some(t) = &self.telemetry {
+                let _ = t.log_interaction(
+                    &format!("route: {}", json!({"message": user_message, "session_id": session_id})),
+                    &json!({"plan": r.plan, "picked": r.picked, "checked": r.checked, "why": r.why, "named": r.named,
+                            "behavior": ran.as_ref().map(|(a, res)| json!({"call": a, "count": res["count"], "wide": res["wide"], "empty": res["empty"]}))}).to_string(),
+                    None,
+                    true,
+                    r.ms,
+                    "router",
+                );
+            }
+        }
 
         let handler = self.tool_handler.read().await.clone();
 
@@ -714,6 +791,25 @@ impl ChatService {
                     ),
                 })
                 .await;
+            if let Some(r) = &route {
+                let _ = inner_tx
+                    .send(ChatEvent::Thinking {
+                        content: format!(
+                            "⚙ route: {} ({}, {} ms)",
+                            r.plan.join(" → "),
+                            r.why,
+                            r.ms
+                        ),
+                    })
+                    .await;
+            }
+            if let Some(line) = &behavior_line {
+                let _ = inner_tx
+                    .send(ChatEvent::Thinking {
+                        content: line.clone(),
+                    })
+                    .await;
+            }
         }
 
         match config {
@@ -955,4 +1051,12 @@ impl ChatService {
     // ========================================================================
     // Anthropic native tool-use loop
     // ========================================================================
+}
+
+/// The last exchange before this message: the user's turn and the reply to
+/// it, for a router reading a follow-up ("yes please", "check all three").
+fn previous_turn(history: &[super::ChatHistoryMessage]) -> Option<(&str, &str)> {
+    let a = history.iter().rposition(|m| m.role == "assistant")?;
+    let q = history[..a].iter().rposition(|m| m.role == "user")?;
+    Some((history[q].content.as_str(), history[a].content.as_str()))
 }

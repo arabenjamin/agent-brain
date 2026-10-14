@@ -510,8 +510,19 @@ fn body_def(body: &Value, name: Option<&str>) -> Result<TopicDef, String> {
         Some(Value::String(r)) => Some(r.trim().to_string()),
         Some(_) => return Err("reference must be a URL or null".into()),
     };
+    let aliases = match body.get("aliases") {
+        None => old.map(|d| d.aliases.clone()).unwrap_or_default(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::trim))
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
+        Some(_) => return Err("aliases must be an array of names".into()),
+    };
     Ok(TopicDef {
         reference,
+        aliases,
         label: pick("label", old.map(|d| &d.label)),
         description: pick("description", old.map(|d| &d.description)),
         source_lists,

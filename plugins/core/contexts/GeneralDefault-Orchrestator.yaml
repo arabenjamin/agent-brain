@@ -19,7 +19,9 @@ system_prompt: |
   of search_web, search_notes, reason, or similar — you do not have them. For ANY
   question that needs current information, stored knowledge, code inspection, or
   fact-checking, your ONLY option is to call `delegate` with the right worker
-  agent and then relay what it returns.
+  agent and then relay what it returns. One exception: when this prompt ends
+  with CONTEXT FOR THIS TURN, the brain already ran that lookup for you, and
+  you have no `delegate` this turn. Answer from that context.
 
   CHOOSING THE AGENT — the `delegate` tool description lists the agents that
   exist right now, each with what it is for. That list is generated live and is
@@ -115,3 +117,50 @@ data_class: private
 fallback_models:
 - gpt-oss:120b-cloud
 - gemini-2.5-flash
+# The router (GRAPH_CONTEXT_PLAN Phase 3): before each turn the local model
+# picks where it goes first, from the live roster and these choices, and the
+# pick is put in front of this profile's model. The rules are the owner's,
+# graded on eval/routing_golden.yaml (2026-10-14); measured there, the local
+# E4B picker plus the stored-first rule sends 56 of 66 turns right first.
+# CHAT_ROUTER=off turns it off; CHAT_ROUTER_CHECKER=nimble adds the Nimble
+# check (off: on the shared GPU it evicts bge-m3).
+routing:
+  stored: knowledge-worker
+  web: researcher
+  # A turn asking for the web or for facts that change; any other web pick
+  # goes to what is stored first.
+  web_words: '\b(web|online|internet|search (the|for)|google|look (it|him|her|them)? ?up|latest|current|news|today''s|prices?|releases?|versions?|youtube)\b'
+  confident: 0.85
+  # Behaviors (GRAPH_CONTEXT_PLAN Phase B): a turn one fits is run by code -
+  # the local model fills only `slots`, lookup runs the view, and the rows
+  # become the turn's context. No agent loop. Offered as `lookup:<name>`.
+  behaviors:
+    - name: learned
+      view: learned
+      says: everything the brain learned (took in) in a time window - today, the last 24 hours, the last few days, this month - with each note's standing. Not for one subject, source, monitor, claim or video
+      slots: [window]
+      # Runs only when the turn names a time window (code decides it fits; as
+      # a bare choice it drew 8 "what have we learned about X" turns).
+      when: '\b(to ?day|tonight|yesterday|this (morning|afternoon|evening|week|month|year)|last|past|recent(ly)?|so far|since|\d+ ?(h|hrs?|hours?|days?|weeks?|months?)|(couple|few) (of )?(days|weeks)|january|february|march|april|june|july|august|september|october|november|december)\b'
+      # ...and not when it names something narrower another route reads.
+      unless: '\b(videos?|youtube|claims?|monitors?|watch|search(es)?|engines?|briefs?|deep ?dives?|tasks?|todos?|workflows?|jobs?|apis?|tools?|agents?)\b'
+  choices:
+    - name: self:manage_todo
+      says: the front door's own tool - list, add or finish the user's todos
+    - name: self:manage_workflow
+      says: the front door's own tool - list, read, create or change scheduled workflows (monitors, recurring jobs)
+    - name: self:create_task
+      says: the front door's own tool - queue a one-off background task
+    - name: self:list_tasks
+      says: the front door's own tool - list background tasks by status
+    - name: answer
+      says: no tool - reply from the conversation and general knowledge (talk, advice on what was just said, arithmetic, a well-known fact)
+  rules: |
+    Routing rules:
+    - A question a behavior (lookup:...) answers exactly goes to that behavior: it runs without an agent.
+    - A question about us (our notes, claims, agencies, monitors, topics, tasks, tools, agents, APIs, what we learned, the user's own history) goes to stored knowledge first: knowledge-worker. This holds even for advice about our own things.
+    - A fact about the world: answer it from knowledge if it is well known and does not change; current or changing facts (news, versions, prices, "latest") go to researcher. Explicit "search the web" goes to researcher.
+    - "Keep an eye on", "monitor", "make sure we're tracking": check the existing workflows first (self:manage_workflow).
+    - Saving or writing a file goes to scribe; turning a stored API into a document or client goes to api-integrator.
+    - Questions about this codebase's code go to code-analyst; an open-ended investigation that needs code, notes and the web goes to deep-diver.
+    - Use the tool that answers correctly, not the nearest one.

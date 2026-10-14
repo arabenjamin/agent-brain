@@ -53,6 +53,7 @@ mod ollama_loop;
 mod openai_loop;
 mod prompt;
 mod round_loop;
+mod route;
 mod synthesis;
 #[cfg(test)]
 mod test_support;

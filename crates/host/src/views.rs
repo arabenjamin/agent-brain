@@ -662,7 +662,10 @@ fn reserved_params(c: &Clock) -> Map<String, Value> {
 const NOTE_VALUES: &[(&str, &str)] = &[
     (
         "topic",
-        "MATCH (t:Topic) RETURN t.name AS value, t.label AS label ORDER BY value",
+        "MATCH (t:Topic) WITH t, coalesce(t.aliases, []) AS al \
+         RETURN t.name AS value, coalesce(t.label, t.name) + CASE WHEN size(al) = 0 THEN '' \
+           ELSE '; also called ' + reduce(s = '', a IN al | s + CASE WHEN s = '' THEN '' ELSE ', ' END + a) END AS label \
+         ORDER BY value",
     ),
     (
         "from",
@@ -896,7 +899,7 @@ impl LookupSkill {
     }
 
     async fn run_notes(&self, view: &ViewFile, args: &Map<String, Value>) -> ToolCallResult {
-        let call: NoteSpec = match serde_json::from_value(Value::Object(args.clone())) {
+        let mut call: NoteSpec = match serde_json::from_value(Value::Object(args.clone())) {
             Ok(s) => s,
             Err(e) => {
                 return ToolCallResult::error(format!(
@@ -913,9 +916,16 @@ impl LookupSkill {
                 view.name
             ));
         }
-        if let Some(t) = &call.topic {
+        // A topic may be named by its label or an alias; it runs as its name.
+        let mut resolved = None;
+        if let Some(t) = call.topic.clone() {
             let (topics, _) = self.values(NOTE_VALUES[0].1).await;
-            if !topics.is_empty() && !topics.iter().any(|x| x.as_str() == Some(t.trim())) {
+            if !topics.iter().any(|x| x.as_str() == Some(t.trim()))
+                && let Some(name) = self.topic_named(&t).await
+            {
+                resolved = Some(format!("topic '{}' is '{name}'", t.trim()));
+                call.topic = Some(name);
+            } else if !topics.is_empty() && !topics.iter().any(|x| x.as_str() == Some(t.trim())) {
                 return ToolCallResult::error(format!(
                     "No topic named '{t}'. Topics: {}",
                     topics
@@ -992,10 +1002,28 @@ impl LookupSkill {
         if empty {
             out["empty"] = json!(self.explain_empty(&spec, &c).await);
         }
+        if let Some(r) = resolved {
+            out["resolved"] = json!(r);
+        }
         out["view"] = json!(view.name);
         out["cypher"] = json!(cypher);
         out["params"] = Value::Object(params);
         ToolCallResult::success_json(out)
+    }
+
+    /// The topic whose name, label or alias is `said` (any case).
+    async fn topic_named(&self, said: &str) -> Option<String> {
+        let r = self
+            .run(
+                "MATCH (t:Topic) WHERE toLower(t.name) = $s OR toLower(coalesce(t.label, '')) = $s \
+                   OR $s IN [a IN coalesce(t.aliases, []) | toLower(trim(a))] \
+                 RETURN t.name AS name LIMIT 1",
+                Map::from_iter([("s".to_string(), json!(said.trim().to_lowercase()))]),
+                None,
+            )
+            .await
+            .ok()?;
+        r["rows"][0]["name"].as_str().map(String::from)
     }
 
     /// What an empty answer means: the filter in words, then how many exist
