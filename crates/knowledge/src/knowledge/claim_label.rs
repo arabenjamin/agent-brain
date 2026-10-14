@@ -115,7 +115,10 @@ mod tests {
         // A source's opinion, forecast or hypothetical is theirs, however well
         // the saying of it is corroborated.
         for k in ["opinion", "prediction", "hypothetical"] {
-            assert_eq!(kind_qualifier(k, "corroborated"), kind_qualifier("attribution", "corroborated"));
+            assert_eq!(
+                kind_qualifier(k, "corroborated"),
+                kind_qualifier("attribution", "corroborated")
+            );
         }
     }
 
