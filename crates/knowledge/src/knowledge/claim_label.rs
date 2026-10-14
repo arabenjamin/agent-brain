@@ -19,7 +19,9 @@ pub fn kind_qualifier(kind: &str, status: &str) -> Option<String> {
         return None;
     }
     match kind {
-        "attribution" => Some("corroborates that it was asserted, not that it is true".to_string()),
+        "attribution" | "opinion" | "prediction" | "hypothetical" => {
+            Some("corroborates that it was asserted, not that it is true".to_string())
+        }
         "mechanism" => Some("corroborates the causal claim itself".to_string()),
         _ => None,
     }
@@ -110,6 +112,11 @@ mod tests {
         assert!(kind_qualifier("attribution", "unverified").is_none());
         assert!(kind_qualifier("attribution", "refuted").is_none());
         assert!(kind_qualifier("mechanism", "corroborated").is_some());
+        // A source's opinion, forecast or hypothetical is theirs, however well
+        // the saying of it is corroborated.
+        for k in ["opinion", "prediction", "hypothetical"] {
+            assert_eq!(kind_qualifier(k, "corroborated"), kind_qualifier("attribution", "corroborated"));
+        }
     }
 
     #[test]

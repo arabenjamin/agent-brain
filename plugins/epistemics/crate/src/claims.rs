@@ -85,7 +85,8 @@ pub struct ExtractedClaim {
     /// Who asserted it, as identified in the source.
     #[serde(default)]
     pub asserted_by: Option<String>,
-    /// `event` | `attribution` | `mechanism` — see `kind_qualifier`.
+    /// `event` | `attribution` | `mechanism` | `opinion` | `prediction` |
+    /// `hypothetical` — see `kind_qualifier` and `UNVERIFIABLE_KINDS`.
     #[serde(default)]
     pub kind: Option<String>,
     /// The named things the claim is about, written as the claim names them,
@@ -419,10 +420,12 @@ pub(crate) const STANDALONE_RULES: &str = "Each claim must stand alone: someone 
 
 /// Extract checkable propositions from a piece of source text.
 ///
-/// Deliberately narrow: only assertions of fact that could in principle be
-/// checked against another source. Opinions, predictions, and analysis are left
-/// as ordinary note content — labelling those as unverifiable claims would make
-/// the status field meaningless through sheer volume.
+/// Assertions that can be traced to who made them and checked: facts about the
+/// world, and a named party's opinions, predictions and hypotheticals labelled
+/// by `kind` (owner, 2026-10-14: a hypothetical a source poses is worth keeping
+/// when it stays marked as theirs). Never a statement about the source itself
+/// (its title, date, "this video explores…"): on 60 graded claims those were 9
+/// of the 14 that should not have existed.
 pub async fn extract_claims(
     llm: &dyn Llm,
     text: &str,
@@ -436,18 +439,35 @@ pub async fn extract_claims(
         "Extract factual assertions from the SOURCE that a researcher could \
          independently verify or refute.\n\n\
          Include: specific, checkable statements of fact — events, quantities, \
-         dates, attributions, causal claims about the world.\n\
-         EXCLUDE: opinions, predictions, value judgements, analysis, and \
-         anything already presented as uncertain by the source itself.\n\n\
+         dates, attributions, causal claims about the world. Prefer these.\n\
+         An opinion, prediction or hypothetical is taken only when it is a main \
+         point of the SOURCE, and only as its holder's: \"Julian Dorey argues \
+         that…\", never stated as fact.\n\
+         NEVER a claim about the SOURCE itself: its title, channel, publication \
+         date, length, or what it covers, offers, explores or suggests. Extract \
+         what it says, not what it is.\n\
+         Keep the SOURCE's hedges (\"reportedly\", \"allegedly\", \"may\"). \
+         Never a relative day (\"next week\", \"Sunday\"): write the date the \
+         SOURCE gives, or leave the claim out.\n\n\
          {STANDALONE_RULES}\n\
          Do NOT editorialise, debunk, endorse, or soften \
          them — record what was asserted, exactly as asserted. An extraordinary \
          claim is recorded the same way as a mundane one.\n\n\
-         Set asserted_by to whoever the SOURCE attributes the claim to (a person, \
-         outlet, agency, or study). Use null when the source does not attribute it.\n\n\
-         Classify each claim's kind by asking ONE question: if this claim were \
-         fully confirmed, would that settle whether the underlying phenomenon is \
-         real?\n\
+         Set asserted_by to whoever the SOURCE says reported or claimed it (a \
+         person, outlet, agency, or study), by name — never \"the speaker\", \
+         \"the video\", \"System\" or the SOURCE's own title. The speaker is \
+         never just the party the item is about: in \"2026-10-07 — CIA — NPR \
+         reports that …\" NPR speaks and the CIA is the subject, so write \"NPR \
+         reports that the CIA …\", never \"the CIA reports\". When the SOURCE \
+         names no one, use the channel or outlet it gives for itself; else null.\n\n\
+         Classify each claim's kind:\n\
+         - \"opinion\": a named party's judgement or argument (X is wrong, \
+         better, to blame; Y should happen). Saying, urging, demanding or \
+         criticising is an attribution, not an opinion.\n\
+         - \"prediction\": a named party's forecast.\n\
+         - \"hypothetical\": a scenario a named party poses (\"could\", \"if\").\n\
+         Otherwise ask ONE question: if this claim were fully confirmed, would \
+         that settle whether the underlying phenomenon is real?\n\
          - \"attribution\": NO — confirming it establishes only that a named party \
          said, claimed, demonstrated, or showcased something. Use this whenever \
          the claim is about someone asserting or exhibiting a disputed or \
@@ -461,9 +481,9 @@ pub async fn extract_claims(
          with nothing contested behind it (a hearing was held, a report was \
          released, a budget was N dollars).\n\n\
          Return at most {max_claims} claims, most significant first. If the source \
-         contains no checkable factual assertions, return an empty array.\n\n\
+         contains no such assertions, return an empty array.\n\n\
          Respond with JSON only:\n\
-         {{\"claims\": [{{\"claim\": \"...\", \"asserted_by\": \"...\", \"kind\": \"event|attribution|mechanism\", \
+         {{\"claims\": [{{\"claim\": \"...\", \"asserted_by\": \"...\", \"kind\": \"event|attribution|mechanism|opinion|prediction|hypothetical\", \
          \"about\": [{{\"name\": \"...\", \"what\": \"...\"}}]}}]}}\n\n\
          {title}SOURCE:\n{text}"
     );
@@ -471,7 +491,7 @@ pub async fn extract_claims(
     let value = llm
         .generate_json(
             &prompt,
-            Some("You extract verifiable factual assertions verbatim in meaning. You never judge them."),
+            Some("You extract assertions verbatim in meaning, each with who made it. You never judge them."),
             &["claims"],
             2,
         )
@@ -1384,6 +1404,12 @@ pub async fn mark_verify_attempt(neo4j: &Db, claim_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Kinds a web search cannot settle: that the party said it is already shown
+/// by the claim's ASSERTED_IN source, and whether an opinion is right, a
+/// hypothetical would happen or a forecast comes true is not in the results.
+/// The sweep leaves them `unverified` rather than spend searches on them.
+pub const UNVERIFIABLE_KINDS: [&str; 3] = ["opinion", "prediction", "hypothetical"];
+
 /// Fetch claims awaiting verification: never-attempted first, then
 /// least-recently-attempted.
 ///
@@ -1411,13 +1437,15 @@ pub async fn unverified_claims(neo4j: &Db, limit: usize) -> Result<Vec<(String, 
             query(
                 "MATCH (c:Note {note_type: 'claim'}) \
                  WHERE COALESCE(c.claim_status, 'unverified') = 'unverified' \
+                   AND NOT COALESCE(c.claim_kind, '') IN $unverifiable \
                  RETURN c.id AS id, c.content AS content \
                  ORDER BY CASE WHEN c.last_verify_attempt_at IS NULL THEN 0 ELSE 1 END ASC, \
                           CASE WHEN c.last_verify_attempt_at IS NULL THEN c.created_at END DESC, \
                           c.last_verify_attempt_at ASC \
                  LIMIT $limit",
             )
-            .param("limit", limit as i64),
+            .param("limit", limit as i64)
+            .param("unverifiable", UNVERIFIABLE_KINDS.to_vec()),
         )
         .await?;
 
