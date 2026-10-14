@@ -124,7 +124,8 @@ impl WorkingMemoryStore for Neo4jClient {
     async fn get_entries(&self, session_id: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
         let cypher = r#"
         MATCH (w:WorkingMemory {session_id: $session_id})
-        RETURN w.turn_index AS turn, w.role AS role, w.content AS content
+        RETURN w.turn_index AS turn, w.role AS role, w.content AS content,
+               w.feedback_score AS feedback
         ORDER BY w.turn_index ASC LIMIT $limit
         "#;
 
@@ -142,7 +143,8 @@ impl WorkingMemoryStore for Neo4jClient {
                 json!({
                     "turn": row.get::<i64>("turn").unwrap_or(0),
                     "role": row.get::<String>("role").unwrap_or_default(),
-                    "content": row.get::<String>("content").unwrap_or_default()
+                    "content": row.get::<String>("content").unwrap_or_default(),
+                    "feedback": row.get::<i64>("feedback").ok(),
                 })
             })
             .collect())

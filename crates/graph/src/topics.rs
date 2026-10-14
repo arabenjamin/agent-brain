@@ -716,13 +716,21 @@ pub fn check_def(def: &TopicDef, current: &Topics, create: bool) -> Result<(), S
         return Err("aliases: at most 8, each 1–60 characters".into());
     }
     let taken = |a: &str| {
-        current.defs.iter().filter(|d| d.name != def.name).find(|d| {
-            d.name.eq_ignore_ascii_case(a)
-                || d.label.trim().eq_ignore_ascii_case(a)
-                || d.aliases.iter().any(|x| x.trim().eq_ignore_ascii_case(a))
-        })
+        current
+            .defs
+            .iter()
+            .filter(|d| d.name != def.name)
+            .find(|d| {
+                d.name.eq_ignore_ascii_case(a)
+                    || d.label.trim().eq_ignore_ascii_case(a)
+                    || d.aliases.iter().any(|x| x.trim().eq_ignore_ascii_case(a))
+            })
     };
-    if let Some((a, d)) = def.aliases.iter().find_map(|a| taken(a.trim()).map(|d| (a, d))) {
+    if let Some((a, d)) = def
+        .aliases
+        .iter()
+        .find_map(|a| taken(a.trim()).map(|d| (a, d)))
+    {
         return Err(format!(
             "alias '{}' already names topic '{}'",
             a.trim(),
@@ -1353,7 +1361,11 @@ mod tests {
         nia.aliases = vec!["Opensource Intelligence Agency".into()];
         assert!(check_def(&nia, &t, true).is_ok());
         nia.aliases = vec!["AI".into()];
-        assert!(check_def(&nia, &t, true).unwrap_err().contains("already names topic 'ai-ml'"));
+        assert!(
+            check_def(&nia, &t, true)
+                .unwrap_err()
+                .contains("already names topic 'ai-ml'")
+        );
         nia.aliases = vec![" ".into()];
         assert!(check_def(&nia, &t, true).unwrap_err().contains("aliases"));
     }

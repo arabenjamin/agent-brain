@@ -1,0 +1,125 @@
+name: behavior-candidates
+description: "Weekly route mining (GRAPH_CONTEXT_PLAN Phase B): which chat turns fell back to an agent that made the same first call each time - behaviors waiting to be written - and how the existing behaviors did, with the owner's thumbs."
+topic: agent-brain
+kind: brief
+every: 7d
+steps:
+  # No model in this workflow: code finds the candidates and writes the report.
+  # The chat logs one `turn:` row per front-door turn (route, behavior, every
+  # tool call, answered) and one `feedback:` row per thumbs click (latest wins).
+  # A fallback group is a CANDIDATE when it has 3+ turns in the week, its agent
+  # made the same first call, and it got no more thumbs-down than up; a
+  # behavior with a thumbs-down is CHECK. Test chats (`routetest-`) are left
+  # out. The window compares epoch seconds: the embedded DuckDB has no ICU, so
+  # a timestamptz minus an interval does not bind. (A local model given these
+  # rows to write up mis-sorted them and dropped one; the SQL does not.)
+  - id: report
+    tool_name: duckdb_query
+    arguments:
+      sql: |-
+        WITH turns AS (
+          SELECT timestamp AS at,
+                 json_extract_string(substr(prompt, 7), '$.message') AS msg,
+                 json_extract_string(substr(prompt, 7), '$.session_id') AS sid,
+                 response AS r
+          FROM interactions
+          WHERE prompt LIKE 'turn: %' AND epoch(timestamp) >= epoch(now()) - 7 * 86400
+            AND coalesce(json_extract_string(substr(prompt, 7), '$.session_id'), '') NOT LIKE 'routetest-%'
+        ),
+        fb AS (
+          SELECT json_extract_string(substr(prompt, 11), '$.session_id') AS sid,
+                 json_extract_string(substr(prompt, 11), '$.message') AS msg,
+                 arg_max(CAST(json_extract_string(response, '$.score') AS INTEGER), timestamp) AS score
+          FROM interactions WHERE prompt LIKE 'feedback: %' GROUP BY ALL
+        ),
+        t AS (
+          SELECT turns.*, fb.score,
+                 json_extract_string(r, '$.route.behavior.call.view') AS behavior,
+                 json_extract_string(r, '$.route.plan[0]') AS route,
+                 coalesce(json_extract_string(r, '$.agents[0]'), 'front door') AS agent,
+                 list_filter(CAST(json_extract(r, '$.calls') AS JSON[]), x -> json_extract_string(x, '$.tool') <> 'delegate') AS work,
+                 json_extract_string(r, '$.answered') = 'true' AS answered
+          FROM turns LEFT JOIN fb USING (sid, msg)
+        ),
+        f AS (
+          SELECT *, CASE WHEN len(work) = 0 THEN '(no tool)' ELSE
+                   json_extract_string(work[1], '$.tool')
+                   || coalesce(' view=' || json_extract_string(work[1], '$.args.view'), '')
+                   || coalesce(' topic=' || json_extract_string(work[1], '$.args.topic'), '') END AS first_call,
+                 len(work) AS calls
+          FROM t WHERE behavior IS NULL AND route IS NOT NULL
+        ),
+        g AS (
+          SELECT 'fallback' AS section, agent || ' :: ' || first_call AS key,
+                 CASE WHEN count(*) >= 3 AND first_call <> '(no tool)'
+                           AND count(*) FILTER (WHERE score = -1) <= count(*) FILTER (WHERE score = 1)
+                      THEN 'candidate' ELSE '' END AS verdict,
+                 count(*) AS turns,
+                 count(DISTINCT msg) AS wordings, round(avg(calls), 1) AS avg_calls,
+                 count(*) FILTER (WHERE score = 1) AS up, count(*) FILTER (WHERE score = -1) AS down,
+                 count(*) FILTER (WHERE NOT answered) AS unanswered,
+                 array_to_string(list_slice(list(DISTINCT left(msg, 90)), 1, 2), ' | ') AS examples
+          FROM f GROUP BY agent, first_call
+          UNION ALL
+          SELECT 'behavior', behavior,
+                 CASE WHEN count(*) FILTER (WHERE score = -1) > 0 THEN 'check' ELSE 'ok' END,
+                 count(*), count(DISTINCT msg), 0,
+                 count(*) FILTER (WHERE score = 1), count(*) FILTER (WHERE score = -1),
+                 count(*) FILTER (WHERE json_extract_string(r, '$.route.behavior.empty') IS NOT NULL),
+                 array_to_string(list_slice(list(DISTINCT left(msg, 90)), 1, 2), ' | ')
+          FROM t WHERE behavior IS NOT NULL GROUP BY behavior
+          UNION ALL
+          SELECT 'unrouted', '(router off or failed)', 'check', count(*), count(DISTINCT msg), 0,
+                 count(*) FILTER (WHERE score = 1), count(*) FILTER (WHERE score = -1),
+                 count(*) FILTER (WHERE NOT answered), array_to_string(list_slice(list(DISTINCT left(msg, 90)), 1, 2), ' | ')
+          FROM t WHERE route IS NULL HAVING count(*) > 0
+        ),
+        lines AS (
+          SELECT 0 AS ord, 0 AS n,
+                 (SELECT count(*) FROM t) || ' front-door turns this week: '
+                 || (SELECT count(*) FROM t WHERE behavior IS NOT NULL) || ' run by a behavior, '
+                 || (SELECT count(*) FROM t WHERE behavior IS NULL) || ' through an agent or the front door.' AS line
+          UNION ALL SELECT 1, 0, chr(10) || 'CANDIDATES (3+ turns where the agent made the same first call):'
+          UNION ALL SELECT 2, turns, '- ' || key || ': ' || turns || ' turns, ' || wordings || ' wordings, up ' || up || ' / down ' || down
+                           || '. e.g. "' || examples || '"'
+                    FROM g WHERE verdict = 'candidate'
+          UNION ALL SELECT 3, 0, '- none this week' WHERE NOT EXISTS (SELECT 1 FROM g WHERE verdict = 'candidate')
+          UNION ALL SELECT 4, 0, chr(10) || 'BEHAVIORS:'
+          UNION ALL SELECT 5, turns, '- ' || key || ': ' || turns || ' runs, ' || unanswered || ' empty, up ' || up || ' / down ' || down
+                           || CASE WHEN verdict = 'check' THEN '  <- CHECK (thumbs-down)' ELSE '' END
+                    FROM g WHERE section = 'behavior'
+          UNION ALL SELECT 6, 0, '- none ran' WHERE NOT EXISTS (SELECT 1 FROM g WHERE section = 'behavior')
+          UNION ALL SELECT 7, 0, chr(10) || 'OTHER AGENT TURNS:'
+          UNION ALL SELECT 8, turns, '- ' || key || ': ' || turns || ' turns, ' || avg_calls || ' calls each, up ' || up || ' / down ' || down
+                           || CASE WHEN avg_calls >= 4 OR down > 0 OR unanswered > 0 THEN '  <- worth a look' ELSE '' END
+                           || '. e.g. "' || examples || '"'
+                    FROM g WHERE section = 'fallback' AND verdict <> 'candidate'
+          UNION ALL SELECT 8, -1, '- none' WHERE NOT EXISTS (SELECT 1 FROM g WHERE section = 'fallback' AND verdict <> 'candidate')
+          UNION ALL SELECT 9, turns, '- ' || turns || ' turns ran unrouted (router off or failed)  <- worth a look'
+                    FROM g WHERE section = 'unrouted'
+          UNION ALL SELECT 10, 0, chr(10) || 'Reply here to have a candidate built, or to say a behavior answered wrong.'
+        )
+        SELECT string_agg(line, chr(10) ORDER BY ord, n DESC) AS report FROM lines
+      limit: 5
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+
+  - tool_name: notify_user
+    arguments:
+      message: "Behavior candidates, week of {{date}}\n\n{{steps.report.rows.0.report}}"
+      context: "Behavior candidates {{date}}"
+      related_session_id: "behaviors-{{date}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+
+  # The report opens the session, so a reply ("build the todos one") lands in it.
+  - tool_name: push_context
+    arguments:
+      session_id: "behaviors-{{date}}"
+      content: "Behavior candidates, week of {{date}}\n\n{{steps.report.rows.0.report}}"
+      role: assistant
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama

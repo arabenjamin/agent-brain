@@ -742,6 +742,26 @@ chat, the most of any question.
 
   The first behavior after a restart takes ~11 s: the catalog's live values
   scan the notes cold.
+- **The loop for new behaviors, built 2026-10-14:**
+  - **One record per turn.** Each front-door turn logs one `turn:` row to
+    DuckDB `interactions`: the route, the behavior's call, every tool call
+    (sub-agents' included, from the stream) and whether it answered.
+  - **The owner's thumbs.** HBI chat answers take a 👍/👎 (owner, 2026-10-14):
+    `POST /api/sessions/{id}/feedback` sets `feedback_score` on the answer's
+    working-memory entry and logs a `feedback:` row. A reloaded session shows
+    it.
+  - **The weekly report.** `behavior-candidates` (weekly) is one DuckDB query
+    and a notification, with no model:
+    - a fallback group with 3+ turns, the same first call, and no more 👎
+      than 👍 is a CANDIDATE;
+    - a behavior with a 👎 is CHECK;
+    - the report is rendered in SQL and opens a `behaviors-<date>` chat
+      session for the reply.
+
+    A local model given the same rows to write up mis-sorted them, dropped
+    one, and contradicted itself, so the SQL renders the report. Writing the
+    behaviors stays at build time, with the owner. First run 2026-10-14:
+    0 turns (logging began that day).
 - **Next behaviors:** from the route log, a fallback turn at a time.
   Candidates from the routing set are the open todos, the APIs, an API's
   endpoints, the tool and agent counts, and the claims in a window.
@@ -781,6 +801,52 @@ to answer before designing anything:
   library (named, tested), picked and filled rather than written free-form.
 - **As a checker:** regex over model output and logged queries (Phase 0's
   suspicious-empties scan is the first use).
+- **Already in use (2026-10-14):** the router's `web_words`, behaviors'
+  `when`/`unless`, and topic-name matching are regex guards that decide in
+  code what a model was measured to get wrong.
+
+**Step 1, measured 2026-10-14 (`phaseR/exact_eval.py` in the scratch harness).**
+- **Exact strings are everywhere in the notes.** Of 23,083 notes: URLs 9,411,
+  ISO dates 4,049, written dates 2,015, dollar amounts 1,143, percentages
+  1,143, `ABC-123` codes 1,784, version numbers 756, model names 298, CVEs 4.
+- **A scan is cheap.** `toLower(content) CONTAINS` over every note takes 0.16 s,
+  and a Cypher `=~` regex takes 0.5–1.3 s. Accuracy first is affordable in a
+  chat turn.
+- **Today's search loses exact strings.** I sampled 54 real strings, each in
+  1–15 notes (dollar amounts, dates, codes such as GBU-12 and ICD-10, model
+  names, versions, URLs, CVEs). This is the share of the notes holding each
+  string that came back in the top 10:
+
+  | Retriever | Mean recall | Found at least one |
+  |---|---|---|
+  | `search_notes`, the string inside a question ("What do we know about $17.3 billion?") | **0.28** | 22 of 54 |
+  | `search_notes`, the bare string | 0.45 | 35 of 54 |
+  | Lucene full-text index, the string as a quoted phrase | 0.95 | 53 of 54 |
+  | A plain scan (`CONTAINS`) | 1.00 | 54 of 54 |
+
+  By kind, inside a question, `search_notes` found:
+  - dollar amounts 0.12, ISO dates 0.04, written dates 0.17, versions 0.00,
+    percentages 0.00, codes 0.25, model names 0.30;
+  - CVEs 1.00 and URLs 0.67, the only ones it handled.
+- **Why:** the BM25 half sends the whole question as loose words ("17.3" OR
+  "billion"), so every note about billions competes. The vector half blurs
+  numbers and codes, and merging the two buries the exact match. The phrase
+  index already exists; the search does not ask it for a phrase.
+
+**Step 2, proposed: an exact leg in hybrid retrieval.**
+1. **Find the exact spans in the query with a vetted pattern library**: named,
+   tested patterns for money, dates, codes, versions, model names, URLs and
+   CVEs, plus anything the user put in quotes. The patterns are data with
+   examples, written once at build time; no model writes a pattern. This is
+   the plan's "picked, not written" answer for regex, as for Cypher.
+2. **Find each span as written:** a Lucene phrase query first (indexed, 0.95),
+   then a `CONTAINS` scan when the phrase finds nothing (0.16 s, 1.00).
+3. **Notes holding the exact span rank first**, marked `exact` in the search
+   trace. Then the hybrid list follows as today. A note that holds what was
+   asked for, word for word, is the most accurate answer there is.
+4. **Measure both ways:** this set (the target is ~1.0 recall) and
+   `eval-retrieval` on the retrieval golden set, so ordinary questions do not
+   get worse.
 
 ## 4. Decisions so far (the owner, 2026-10-13)
 

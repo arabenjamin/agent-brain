@@ -280,6 +280,7 @@ Session-scoped scratchpad entries. Each HTTP session or stdio invocation has its
 | `role` | String | `user` \| `assistant` \| `system` |
 | `turn_index` | Integer | Ordering within the session |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
+| `feedback_score` / `feedback_note` / `feedback_at` | Integer? / String? / DateTime? | The owner's thumbs on an assistant entry (1 up, -1 down; null when cleared), set by `POST /api/sessions/{id}/feedback`, which also logs a `feedback:` row to DuckDB `interactions` |
 
 #### `AgentJob`
 

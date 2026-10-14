@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import type { ChatEvent, ChatHistoryMessage } from "../../api/chat";
-import { streamChat } from "../../api/chat";
+import { sendFeedback, streamChat } from "../../api/chat";
 import { callTool } from "../../api/mcp";
 import { apiRequest } from "../../api/client";
 import { useDefaultProfile, useProfiles, type ProfileInfo } from "../../api/queries";
@@ -32,6 +32,10 @@ interface AssistantMsg {
   model?: string;
   /** Working-memory role when it is not "assistant" (e.g. "observation"). */
   role?: string;
+  /** The owner's thumbs on this answer, as stored. */
+  feedback?: 1 | -1;
+  /** Why the last thumbs click did not save. */
+  feedbackErr?: string;
 }
 
 type Msg = UserMsg | AssistantMsg;
@@ -138,6 +142,7 @@ const SESSION_KINDS: ReadonlyArray<readonly [string, string]> = [
   ["slmwatch-", "SLM benchmark watch"],
   ["tripwire-", "Hardware tripwire"],
   ["synthesis-", "Tech dependency synthesis"],
+  ["behaviors-", "Behavior candidates"],
   ["conduit-", "Phone (Conduit)"],
 ];
 
@@ -574,7 +579,7 @@ export default function ChatPanel({
     try {
       const res = await apiRequest(`/api/sessions/${sid}/entries?limit=200`);
       const parsed = (await res.json()) as {
-        entries?: Array<{ role: string; content: string }>;
+        entries?: Array<{ role: string; content: string; feedback?: number | null }>;
       };
       const entries = parsed.entries ?? [];
       const restored: Msg[] = entries.map((e) => {
@@ -591,6 +596,7 @@ export default function ChatPanel({
           // Labelled in the message meta so an agent observation is not
           // mistaken for something the assistant said to the user.
           role: e.role === "assistant" ? undefined : e.role,
+          feedback: e.feedback === 1 || e.feedback === -1 ? e.feedback : undefined,
         };
       });
       setMsgs(restored);
@@ -729,6 +735,26 @@ export default function ChatPanel({
     return "";
   };
 
+  // Thumbs: a click sets it, a second click on the same thumb clears it.
+  const handleFeedback = useCallback(async (msgId: string, score: 1 | -1) => {
+    const msg = msgs.find((m) => m.kind === "assistant" && m.id === msgId);
+    if (!msg || msg.kind !== "assistant") return;
+    const question = getPriorUserMsg(msgId);
+    if (!question) return;
+    const before = msg.feedback;
+    const next = before === score ? undefined : score;
+    const set = (feedback: 1 | -1 | undefined, feedbackErr?: string) =>
+      setMsgs((prev) => prev.map((m) =>
+        m.kind === "assistant" && m.id === msgId ? { ...m, feedback, feedbackErr } : m
+      ));
+    set(next);
+    try {
+      await sendFeedback(sessionId, question, next ?? 0);
+    } catch (e) {
+      set(before, `Not saved: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [msgs, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleReflect = useCallback(async (msgId: string, responseText: string) => {
     const userQuery = getPriorUserMsg(msgId);
     setMsgs((prev) => prev.map((m) =>
@@ -849,6 +875,31 @@ export default function ChatPanel({
             <span className="chat-msg-ts">{formatTime(m.ts)}</span>
             {m.role && <span className="chat-msg-model">{m.role}</span>}
             {modelLabel && <span className="chat-msg-model">{modelLabel}</span>}
+            {!m.role && (
+              <>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 11, padding: "1px 5px", opacity: m.feedback === 1 ? 1 : 0.55 }}
+                  onClick={() => handleFeedback(m.id, 1)}
+                  title={m.feedback === 1 ? "You marked this answer good (click to clear)" : "Good answer"}
+                  aria-label="Good answer"
+                  aria-pressed={m.feedback === 1}
+                >
+                  👍
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 11, padding: "1px 5px", opacity: m.feedback === -1 ? 1 : 0.55 }}
+                  onClick={() => handleFeedback(m.id, -1)}
+                  title={m.feedback === -1 ? "You marked this answer bad (click to clear)" : "Bad answer"}
+                  aria-label="Bad answer"
+                  aria-pressed={m.feedback === -1}
+                >
+                  👎
+                </button>
+                {m.feedbackErr && <span className="event-muted" style={{ fontSize: 10 }}>{m.feedbackErr}</span>}
+              </>
+            )}
             {m.reflecting ? (
               <span className="event-muted" style={{ fontSize: 10 }}>Reflecting…</span>
             ) : !m.reflection ? (

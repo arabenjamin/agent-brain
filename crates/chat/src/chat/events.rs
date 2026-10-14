@@ -71,6 +71,39 @@ impl Drop for TurnAbandonGuard {
     }
 }
 
+/// The tool calls a turn made, as the forwarder saw them stream past, for the
+/// turn's `turn:` telemetry row (route mining, GRAPH_CONTEXT_PLAN Phase B).
+pub(super) type TurnTrace = Arc<std::sync::Mutex<Vec<Value>>>;
+
+/// One call, small: the tool and the arguments that say what it was for.
+fn trace_call(tool: &str, args: &Value) -> Value {
+    let mut brief = serde_json::Map::new();
+    if let Some(o) = args.as_object() {
+        for (k, v) in o {
+            if matches!(
+                k.as_str(),
+                "agent"
+                    | "view"
+                    | "topic"
+                    | "window"
+                    | "query"
+                    | "entity_name"
+                    | "action"
+                    | "kind"
+                    | "api"
+                    | "name"
+            ) {
+                let v = match v.as_str() {
+                    Some(s) => Value::String(s.chars().take(120).collect()),
+                    None => v.clone(),
+                };
+                brief.insert(k.clone(), v);
+            }
+        }
+    }
+    serde_json::json!({"tool": tool, "args": brief})
+}
+
 pub(super) async fn forward_chat_events(
     mut inner_rx: mpsc::Receiver<ChatEvent>,
     tx: mpsc::Sender<ChatEvent>,
@@ -78,6 +111,7 @@ pub(super) async fn forward_chat_events(
     session_id: Option<String>,
     user_snippet: String,
     citations: Option<Arc<dyn CitationChecker>>,
+    trace: Option<TurnTrace>,
 ) {
     // Armed for the whole turn; disarmed once the stream drains normally. See
     // TurnAbandonGuard — a cancelled turn runs none of the code below.
@@ -89,6 +123,11 @@ pub(super) async fn forward_chat_events(
             event = ChatEvent::Message {
                 content: check_citations(content, citations.as_deref()).await,
             };
+        }
+        if let (ChatEvent::ToolCall { tool, args }, Some(t)) = (&event, &trace)
+            && let Ok(mut calls) = t.lock()
+        {
+            calls.push(trace_call(tool, args));
         }
         match &event {
             ChatEvent::Message { content } => final_text = content.clone(),

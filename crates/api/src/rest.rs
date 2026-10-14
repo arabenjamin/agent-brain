@@ -1892,6 +1892,79 @@ pub async fn handle_archive_session(
     }
 }
 
+/// POST /api/sessions/:id/feedback — the owner's thumbs on one answer.
+///
+/// Body `{question, score, note?}`: `score` is 1 (up), -1 (down) or 0 (clear).
+/// The answer is the first assistant entry after the newest user entry with
+/// that exact text in the session; it carries the score in working memory,
+/// and a `feedback:` row goes to DuckDB `interactions` for route mining
+/// (GRAPH_CONTEXT_PLAN Phase B: a thumbs-down marks a route or behavior that
+/// answered wrong).
+pub async fn handle_session_feedback(
+    Extension(state): Extension<Arc<RestState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let neo4j = graph!(state);
+    let Some(question) = body["question"].as_str().filter(|q| !q.trim().is_empty()) else {
+        return bad_request("question is required: the user message the answer replied to");
+    };
+    let score = match body["score"].as_i64() {
+        Some(s @ (-1..=1)) => s,
+        _ => return bad_request("score must be 1 (up), -1 (down) or 0 (clear)"),
+    };
+    let note = body["note"]
+        .as_str()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let rows = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (u:WorkingMemory {session_id: $s, role: 'user'}) WHERE u.content = $q \
+                 WITH u ORDER BY u.turn_index DESC LIMIT 1 \
+                 MATCH (a:WorkingMemory {session_id: $s, role: 'assistant'}) WHERE a.turn_index > u.turn_index \
+                 WITH a ORDER BY a.turn_index ASC LIMIT 1 \
+                 SET a.feedback_score = CASE WHEN $score = 0 THEN null ELSE $score END, \
+                     a.feedback_note = CASE WHEN $note = '' THEN null ELSE $note END, \
+                     a.feedback_at = datetime() \
+                 RETURN a.turn_index AS turn",
+            )
+            .param("s", session_id.as_str())
+            .param("q", question)
+            .param("score", score)
+            .param("note", note.as_str()),
+        )
+        .await;
+    let turn = match rows {
+        Ok(r) => match r.first().and_then(|r| r.get::<i64>("turn").ok()) {
+            Some(t) => t,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "no answer to that question in this session (is the turn still running?)"})),
+                )
+                    .into_response();
+            }
+        },
+        Err(e) => return internal(format!("Failed to record feedback: {e}")),
+    };
+    if let Some(db) = &state.telemetry {
+        let _ = db.log_interaction(
+            &format!(
+                "feedback: {}",
+                json!({"message": question, "session_id": session_id})
+            ),
+            &json!({"score": score, "note": note, "turn": turn}).to_string(),
+            None,
+            true,
+            0,
+            "owner",
+        );
+    }
+    Json(json!({"session_id": session_id, "turn": turn, "score": score})).into_response()
+}
+
 /// GET /api/models/usage?hours=<n> — aggregated model usage stats from DuckDB.
 /// `hours` restricts the window (quota budgets are time-windowed); omit for all-time.
 pub async fn handle_model_usage(

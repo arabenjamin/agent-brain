@@ -656,6 +656,8 @@ impl ChatService {
         // or a behavior that fails, becomes a hint; a failed behavior's hint is
         // the stored agent.
         let mut behavior_line: Option<String> = None;
+        // The route as logged, kept for the turn's `turn:` row at the end.
+        let mut route_log: Option<Value> = None;
         if let (Some(r), Some(spec)) = (&route, &profile_routing) {
             let mut ran: Option<(Value, Value)> = None;
             if let Some(b) = super::route::behavior(spec, &r.plan[0]) {
@@ -699,11 +701,16 @@ impl ChatService {
                 system_prompt.push_str(&super::route::hint(&plan, &r.named));
             }
             tracing::info!(plan = ?r.plan, picked = %r.picked, checked = ?r.checked, why = %r.why, ms = r.ms, behavior = ?ran.as_ref().map(|(a, _)| a), "chat: routed the turn");
+            let logged = json!({"plan": r.plan, "picked": r.picked, "checked": r.checked, "why": r.why, "named": r.named,
+                                "behavior": ran.as_ref().map(|(a, res)| json!({"call": a, "count": res["count"], "wide": res["wide"], "empty": res["empty"]}))});
+            route_log = Some(logged.clone());
             if let Some(t) = &self.telemetry {
                 let _ = t.log_interaction(
-                    &format!("route: {}", json!({"message": user_message, "session_id": session_id})),
-                    &json!({"plan": r.plan, "picked": r.picked, "checked": r.checked, "why": r.why, "named": r.named,
-                            "behavior": ran.as_ref().map(|(a, res)| json!({"call": a, "count": res["count"], "wide": res["wide"], "empty": res["empty"]}))}).to_string(),
+                    &format!(
+                        "route: {}",
+                        json!({"message": user_message, "session_id": session_id})
+                    ),
+                    &logged.to_string(),
                     None,
                     true,
                     r.ms,
@@ -749,6 +756,8 @@ impl ChatService {
             .await
             .clone()
             .map(|h| Arc::new(GraphCitationChecker(h)) as Arc<dyn CitationChecker>);
+        let trace: super::events::TurnTrace = Default::default();
+        let turn_started = std::time::Instant::now();
         tokio::spawn(forward_chat_events(
             inner_rx,
             tx,
@@ -756,6 +765,7 @@ impl ChatService {
             dropped_turn_session,
             dropped_turn_snippet,
             citations,
+            Some(trace.clone()),
         ));
 
         // Emit a diagnostic context event so the client can see what configuration
@@ -1001,6 +1011,38 @@ impl ChatService {
 
         // Wait for the forwarder to return the captured assistant text.
         let final_text = result_rx.recv().await.unwrap_or_default();
+
+        // One row per turn for route mining (GRAPH_CONTEXT_PLAN Phase B): what
+        // the router chose, every tool the turn ran, and whether it answered.
+        // A fallback turn whose agent ran the same calls every time is a
+        // behavior waiting to be written.
+        if let Some(t) = &self.telemetry {
+            let calls = trace.lock().map(|c| c.clone()).unwrap_or_default();
+            let agents: Vec<String> = calls
+                .iter()
+                .filter(|c| c["tool"] == "delegate")
+                .filter_map(|c| c["args"]["agent"].as_str().map(String::from))
+                .collect();
+            let _ = t.log_interaction(
+                &format!(
+                    "turn: {}",
+                    json!({"message": user_message, "session_id": session_id})
+                ),
+                &json!({
+                    "profile": resolved_profile.as_deref().unwrap_or(&default_profile),
+                    "route": route_log,
+                    "agents": agents,
+                    "calls": calls,
+                    "answered": !final_text.trim().is_empty(),
+                    "reply_chars": final_text.chars().count(),
+                })
+                .to_string(),
+                None,
+                !final_text.trim().is_empty(),
+                turn_started.elapsed().as_millis() as u64,
+                "chat",
+            );
+        }
 
         // Persist the assistant response to working memory.
         if let (Some(sid), Some(h)) = (&session_id, &handler)

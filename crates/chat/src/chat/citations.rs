@@ -200,6 +200,7 @@ mod citation_check_tests {
             None,
             "q".into(),
             Some(Arc::new(OnlyReal)),
+            None,
         )
         .await;
         let mut shown = String::new();

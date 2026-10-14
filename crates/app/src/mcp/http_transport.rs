@@ -490,6 +490,10 @@ impl HttpTransport {
                 "/api/sessions/{id}/archive",
                 axum::routing::post(rest_handlers::handle_archive_session),
             )
+            .route(
+                "/api/sessions/{id}/feedback",
+                axum::routing::post(rest_handlers::handle_session_feedback),
+            )
             .route("/api/jobs", get(rest_handlers::handle_list_jobs))
             .route("/api/tasks", get(rest_handlers::handle_list_tasks))
             .route(

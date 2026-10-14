@@ -50,6 +50,21 @@ export interface StreamChatOptions {
 }
 
 /**
+ * The owner's thumbs on one answer: 1 up, -1 down, 0 clear. The answer is the
+ * one that followed `question` in the session; route mining reads it.
+ */
+export async function sendFeedback(sessionId: string, question: string, score: 1 | -1 | 0): Promise<void> {
+  const res = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/feedback`, {
+    method: "POST",
+    body: JSON.stringify({ question, score }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/**
  * POST /chat and stream SSE events until `done` or abort.
  */
 export async function streamChat(opts: StreamChatOptions): Promise<void> {
