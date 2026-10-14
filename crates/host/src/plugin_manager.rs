@@ -280,6 +280,7 @@ impl PluginManagerSkill {
                         .await
                 }
                 "contexts" => check_context(name, &path, &profiles),
+                "views" => crate::views::ViewFile::load(&path).map(|_| ()),
                 "schemas" => check_schema(&path),
                 _ => plugins::check_seed_file(kind, &path),
             };

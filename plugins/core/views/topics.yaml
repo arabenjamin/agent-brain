@@ -1,0 +1,10 @@
+name: topics
+kind: cypher
+description: The brain's topics (what it follows) and how many notes each holds. A topic's name is the `topic` slot of the notes views.
+words: [topics, what topics, subjects, what do you know about, knowledge areas]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (t:Topic)
+  OPTIONAL MATCH (n:Note)-[:IN_TOPIC]->(t)
+  RETURN t.name AS topic, t.label AS label, count(n) AS notes
+  ORDER BY notes DESC

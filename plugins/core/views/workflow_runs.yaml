@@ -1,0 +1,17 @@
+name: workflow_runs
+kind: cypher
+description: A workflow's latest runs (its tasks) and their status, e.g. whether the daily news fired today.
+words: [did it run, did it fire, workflow runs, last run, has it run]
+input_schema:
+  type: object
+  required: [workflow]
+  properties:
+    workflow:
+      type: string
+      description: The workflow's name.
+      values_from: "MATCH (w:Workflow) RETURN w.name AS value, w.description AS label ORDER BY value"
+    n: { type: integer, default: 3, description: How many runs. }
+cypher: |-
+  MATCH (t:Task {workflow: $workflow})
+  RETURN toString(t.created_at) AS at, t.status AS status
+  ORDER BY t.created_at DESC LIMIT $n

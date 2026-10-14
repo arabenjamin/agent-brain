@@ -1,0 +1,12 @@
+name: jobs_open
+kind: cypher
+description: >-
+  Queue jobs not finished (queued, parked, running), oldest first, with
+  attempts and errors: what is in the queue or stuck.
+words: [queue, jobs, stuck, running jobs, what's holding it up, in progress]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (j:AgentJob) WHERE NOT j.status IN ['completed', 'dead', 'dead_letter']
+  RETURN j.status AS status, j.tool_name AS tool, toString(j.created_at) AS queued,
+         toString(j.started_at) AS started, j.attempt_count AS attempts, j.error AS error
+  ORDER BY j.created_at

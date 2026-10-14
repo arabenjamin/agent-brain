@@ -1,0 +1,8 @@
+name: deep_dives
+kind: notes
+description: The brain's deep dives (a theme drilled to a specific question), newest first.
+words: [deep dive, deep dives, deep-dive, drill down]
+preset:
+  from: [deep_dive]
+defaults:
+  limit: 5

@@ -672,6 +672,13 @@ impl BrainCore {
             accepted
         };
 
+        // `lookup` runs the bundles' views (skills/views.rs); before the
+        // declared tools, so none can take its name.
+        skills.push(Arc::new(crate::skills::views::LookupSkill::load(
+            &crate::services::plugins::Plugins::global(),
+            Arc::clone(&query_skill),
+        )));
+
         // Declared tools last (skills/bundle_tools.rs): one can never shadow a built-in.
         {
             let taken: Vec<String> = skills

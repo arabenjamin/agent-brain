@@ -9,3 +9,4 @@ pub mod plugin_host;
 pub mod plugin_manager;
 pub mod plugins;
 pub mod self_model;
+pub mod views;

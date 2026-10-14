@@ -1,0 +1,10 @@
+# The note spec itself, nothing fixed: for a filter no named view covers.
+# Every note, unfiltered, is counts by kind (owner, 2026-10-14).
+name: notes
+kind: notes
+description: >-
+  Any notes, filtered by any slot: a time window, note kinds, where they came
+  from, a topic, an entity, words, a claim's status; as rows, a count, or
+  counts by topic, kind, source or day. Asked what notes are stored, with no
+  window or filter, set `as: by_kind` (tens of thousands of notes).
+words: [notes, stored notes, knowledge, what we know, what is stored]

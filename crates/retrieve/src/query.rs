@@ -26,6 +26,13 @@ pub struct QuerySkill {
     schema_cache: RwLock<Option<Arc<GraphSchema>>>,
 }
 
+/// One query parameter as a Bolt value: lists and maps stay lists and maps.
+/// A number Bolt cannot hold (a u64 past i64) is an error naming the value.
+pub fn bolt_param(v: &Value) -> Result<neo4rs::BoltType, String> {
+    neo4rs::BoltType::try_from(v.clone())
+        .map_err(|e| format!("parameter value {v} cannot be sent to Neo4j: {e}"))
+}
+
 /// True when a row-returning query has no `LIMIT` of its own and should get one.
 ///
 /// Both halves are matched on **whitespace-separated words**, not substrings.
@@ -194,7 +201,7 @@ impl QuerySkill {
                     },
                     "params": {
                         "type": "object",
-                        "description": "Query parameters as key-value pairs (string values only)"
+                        "description": "Query parameters as key-value pairs: strings, numbers, booleans, lists and maps"
                     },
                     "readonly": {
                         "type": "boolean",
@@ -815,21 +822,14 @@ impl QuerySkill {
             input.cypher.clone()
         };
 
-        // Build the query with params
+        // Build the query with params. Lists and maps bind as Cypher lists and
+        // maps: as JSON text (before 2026-10-13) `UNWIND $ids` matched nothing.
         let mut q = neo4rs::query(&cypher);
         if let Some(params) = &input.params {
             for (k, v) in params {
-                match v {
-                    Value::String(s) => q = q.param(k.as_str(), s.clone()),
-                    Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            q = q.param(k.as_str(), i);
-                        } else if let Some(f) = n.as_f64() {
-                            q = q.param(k.as_str(), f);
-                        }
-                    }
-                    Value::Bool(b) => q = q.param(k.as_str(), *b),
-                    _ => q = q.param(k.as_str(), v.to_string()),
+                match bolt_param(v) {
+                    Ok(b) => q = q.param(k.as_str(), b),
+                    Err(e) => return ToolCallResult::error(e),
                 }
             }
         }
@@ -957,6 +957,29 @@ mod tests {
 
     fn skill_no_db() -> QuerySkill {
         QuerySkill::new(None, None)
+    }
+
+    /// A list parameter is a Cypher list, not its JSON text (`UNWIND $ids`).
+    #[test]
+    fn list_and_map_params_bind_as_lists_and_maps() {
+        use neo4rs::BoltType;
+        let list = bolt_param(&serde_json::json!(["a", "b"])).unwrap();
+        assert!(
+            matches!(list, BoltType::List(ref l) if l.value.len() == 2),
+            "{list:?}"
+        );
+        let map = bolt_param(&serde_json::json!({"k": 1})).unwrap();
+        assert!(matches!(map, BoltType::Map(_)), "{map:?}");
+        assert!(matches!(
+            bolt_param(&serde_json::json!("s")).unwrap(),
+            BoltType::String(_)
+        ));
+        assert!(matches!(
+            bolt_param(&serde_json::json!(3)).unwrap(),
+            BoltType::Integer(_)
+        ));
+        let err = bolt_param(&serde_json::json!(u64::MAX)).unwrap_err();
+        assert!(err.contains("18446744073709551615"), "{err}");
     }
 
     // -- list_capabilities ----------------------------------------------------

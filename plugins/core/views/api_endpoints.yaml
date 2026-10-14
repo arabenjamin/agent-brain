@@ -1,0 +1,17 @@
+name: api_endpoints
+kind: cypher
+description: One API's endpoints (method, path, summary).
+words: [endpoints, api endpoints, routes]
+input_schema:
+  type: object
+  required: [api]
+  properties:
+    api:
+      type: string
+      description: The API's name.
+      values_from: "MATCH (a:ApiContext) RETURN a.name AS value, a.description AS label ORDER BY value"
+cypher: |-
+  MATCH (a:ApiContext {name: $api})-[:EXPOSES]->(e:ApiEndpoint)
+  RETURN a.name AS api, e.method AS method, e.path AS path, e.summary AS summary
+  ORDER BY path
+limit: 200

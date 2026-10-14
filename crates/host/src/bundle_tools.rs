@@ -78,44 +78,7 @@ impl ToolFile {
         if self.description.trim().is_empty() {
             return Err("a tool needs a description: it is all a model sees".into());
         }
-        if self.input_schema.get("type").and_then(Value::as_str) != Some("object") {
-            return Err("input_schema must be `type: object`".into());
-        }
-        if let Some(kw) = agent_brain_retrieve::query::write_keyword(&self.cypher) {
-            return Err(format!(
-                "the cypher writes ({kw}); a declared tool only reads"
-            ));
-        }
-        let props = self.properties();
-        let required: Vec<&str> = self
-            .input_schema
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        for (name, schema) in &props {
-            if !required.contains(&name.as_str()) && schema.get("default").is_none() {
-                return Err(format!(
-                    "parameter '{name}' must be required or have a default (the query always receives it)"
-                ));
-            }
-        }
-        for p in cypher_params(&self.cypher) {
-            if !props.iter().any(|(n, _)| *n == p) {
-                return Err(format!(
-                    "the cypher uses ${p}, which input_schema does not declare"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn properties(&self) -> Vec<(String, Value)> {
-        self.input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default()
+        check_query(&self.input_schema, &self.cypher, &[])
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -129,16 +92,74 @@ impl ToolFile {
     /// The Cypher parameters for one call: each declared property, from the
     /// arguments or its default.
     fn params(&self, args: &Map<String, Value>) -> Map<String, Value> {
-        self.properties()
-            .into_iter()
-            .filter_map(|(name, schema)| {
-                args.get(&name)
-                    .cloned()
-                    .or_else(|| schema.get("default").cloned())
-                    .map(|v| (name, v))
-            })
-            .collect()
+        params(&self.input_schema, args)
     }
+}
+
+/// The checks a read query and its `input_schema` pass (declared tools and
+/// `kind: cypher` views): an object schema, no write keyword, every property
+/// required or defaulted, and every `$param` declared or in `reserved` (the
+/// parameters the caller always supplies).
+pub(crate) fn check_query(
+    input_schema: &Value,
+    cypher: &str,
+    reserved: &[&str],
+) -> Result<(), String> {
+    if input_schema.get("type").and_then(Value::as_str) != Some("object") {
+        return Err("input_schema must be `type: object`".into());
+    }
+    if let Some(kw) = agent_brain_retrieve::query::write_keyword(cypher) {
+        return Err(format!(
+            "the cypher writes ({kw}); a declared query only reads"
+        ));
+    }
+    let props = properties(input_schema);
+    let required: Vec<&str> = input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    for (name, schema) in &props {
+        if !required.contains(&name.as_str()) && schema.get("default").is_none() {
+            return Err(format!(
+                "parameter '{name}' must be required or have a default (the query always receives it)"
+            ));
+        }
+        if reserved.contains(&name.as_str()) {
+            return Err(format!(
+                "parameter '{name}' is reserved: the caller supplies it"
+            ));
+        }
+    }
+    for p in cypher_params(cypher) {
+        if !props.iter().any(|(n, _)| *n == p) && !reserved.contains(&p.as_str()) {
+            return Err(format!(
+                "the cypher uses ${p}, which input_schema does not declare"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn properties(input_schema: &Value) -> Vec<(String, Value)> {
+    input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default()
+}
+
+/// Each declared property, from the arguments or its default.
+pub(crate) fn params(input_schema: &Value, args: &Map<String, Value>) -> Map<String, Value> {
+    properties(input_schema)
+        .into_iter()
+        .filter_map(|(name, schema)| {
+            args.get(&name)
+                .cloned()
+                .or_else(|| schema.get("default").cloned())
+                .map(|v| (name, v))
+        })
+        .collect()
 }
 
 /// The `$name` parameters a Cypher query uses.

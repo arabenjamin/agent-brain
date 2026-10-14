@@ -1,0 +1,9 @@
+name: agents
+kind: cypher
+description: The brain's agents (spawnable worker profiles) and what each is for.
+words: [agents, how many agents, sub-agents, workers]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (p:ContextProfile {spawnable: true})
+  RETURN p.name AS agent, coalesce(p.specialty, p.description) AS for
+  ORDER BY agent

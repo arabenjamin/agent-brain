@@ -1,0 +1,10 @@
+name: apis
+kind: cypher
+description: The APIs the brain knows (API contexts), their base URLs and how many endpoints each has.
+words: [apis, api, known apis, what apis, integrations]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (a:ApiContext)
+  OPTIONAL MATCH (a)-[:EXPOSES]->(e:ApiEndpoint)
+  RETURN a.name AS api, a.base_url AS base_url, a.description AS what, count(e) AS endpoints
+  ORDER BY api

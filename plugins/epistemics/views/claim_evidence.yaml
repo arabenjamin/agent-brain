@@ -1,0 +1,24 @@
+# Any word, ranked by how many a claim holds: a question's wording (or its
+# wrong premise: "the Biden administration" for a Newsom order) rarely
+# matches a claim word for word.
+name: claim_evidence
+kind: cypher
+description: >-
+  Claims holding the given words (any of them, most first), each with its
+  standing and the evidence attached to it (corroborating or contradicting
+  sources): "what evidence do we have for X".
+words: [evidence, what evidence, sources for, is that true, support for a claim]
+input_schema:
+  type: object
+  required: [words]
+  properties:
+    words: { type: string, description: "A few key words from the claim, any case." }
+cypher: |-
+  MATCH (c:Note {note_type: 'claim'})
+  WITH c, size([w IN split(toLower($words), ' ') WHERE size(w) >= 2 AND toLower(c.content) CONTAINS w]) AS hits
+  WHERE hits > 0
+  WITH c, hits ORDER BY hits DESC, c.created_at DESC LIMIT 10
+  OPTIONAL MATCH (c)-[r:CORROBORATED_BY|CONTRADICTED_BY]->(e:Note)
+  RETURN c.content AS claim, c.claim_status AS standing, c.asserted_by AS asserted_by, hits,
+         collect(CASE WHEN r IS NULL THEN NULL ELSE {edge: type(r), url: e.source_url} END) AS evidence
+  ORDER BY hits DESC

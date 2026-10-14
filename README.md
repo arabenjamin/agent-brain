@@ -77,7 +77,7 @@ also names tools that were removed and what replaced them. A guide by group:
 `push_context`, `notify_user`
 
 ### Query
-`neo4j_query`, `duckdb_query`, `describe_graph`, `list_capabilities`
+`lookup` (runs a named view: the daily brief, open todos, claims, what was learned in a window, an API's endpoints; with no arguments it lists the views), `neo4j_query`, `duckdb_query`, `describe_graph`, `list_capabilities`. A view is a bundle's `views/*.yaml`: a read-only Cypher query with parameters (`kind: cypher`), or a preset over the note spec, which bounds time in local days (`kind: notes`); a notes view's `wide` shape (`learned`: counts by topic) answers a call whose notes outnumber the limit. A cut-off answer says so. It is not its own tool.
 
 ### Plugins
 `manage_plugin` (drafts a bundle into `PLUGINS_RUNTIME_DIR`; it loads only once you add it to `PLUGINS_ENABLED`). Declared tools (a bundle's `tools/*.yaml`, read-only Cypher) such as `list_tasks`

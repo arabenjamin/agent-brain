@@ -1,0 +1,9 @@
+name: claims
+kind: notes
+description: >-
+  Claims the brain recorded: who asserted what, and its standing
+  (corroborated, unverified, refuted). Window `on: verified` for claims
+  checked in a window; `status` for one standing.
+words: [claims, claim, verified claims, corroborated, refuted, is it true, fact check]
+preset:
+  kinds: [claim]

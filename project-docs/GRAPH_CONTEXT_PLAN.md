@@ -1,9 +1,11 @@
 # Graph Context Plan — the right context is a query away
 
-**Status: planned 2026-10-13. Phase 0 (mined) and Phase 1 (baselines) done
-2026-10-13, and Phase 2 designed (views, §3), all on the draft test set
-(`eval/cypher_golden.yaml`, 47 cases), which awaits the owner's grading. Phase 2
-decisions are pending.**
+**Status: planned 2026-10-13. Phases 0 (mined), 1 (baselines) and 2 (views and
+`lookup`, built and measured) done 2026-10-13; the owner graded the five
+shape cases 2026-10-14 (constrained E4B 18/30 full, 20 near-full, 8/9 empty
+right, against 10/33 for free Cypher). Phase 3 rewritten 2026-10-14 from a
+"graph needed?" gate to tool routing: the right agent and tool for a turn,
+loose wording included. Next: Phase 3 step 1, mining the chat turns.**
 
 The brain is only as good as the context in front of the model, and that context
 is only as good as the query that fetched it. This plan makes graph context
@@ -277,7 +279,7 @@ no view writes time arithmetic of its own.
 
 | Slot | Type | Compiles to |
 |---|---|---|
-| `window` | `{last: "P2D"}` · `{day: today\|yesterday\|YYYY-MM-DD}` · `{month: YYYY-MM}` · `{since, until}` | `$since`/`$until` bounds in **local** time (`clock::local_midnight_utc`), never a string compared to a datetime |
+| `window` | `{hours: N}` · `{days: N}` · `{day: today\|yesterday\|YYYY-MM-DD}` · `{month: this\|last\|YYYY-MM}` · `{since, until}` | `$since`/`$until` bounds in **local** time (`clock::local_midnight_utc`), never a string compared to a datetime |
 | `on` | `created` (default) · `verified` · `asserted` | which datetime the window bounds |
 | `kinds` | list from `note_type` (closed) | `n.note_type IN $kinds`; the word "learned" is a named set (`semantic, claim, source_record, news, reflection, inference`; the owner decides it while grading) |
 | `from` | list of source names from the views catalog | `n.source_context IN $from` |
@@ -336,28 +338,208 @@ writer's and not the view's.
    monitor findings, deep dives, video notes, résumé, claims, learned).
 5. **`lookup`,** then the three writers measured.
 
+**Built 2026-10-13 (steps 1–4):**
+- **Lists and maps bind natively in `neo4j_query`** (`bolt_param`, neo4rs's
+  JSON-to-Bolt conversion).
+- **The loader and `lookup`** are in `crates/host/src/views.rs`. `views/` is a
+  merged seed kind, and `manage_plugin` checks view files. `lookup` is
+  registered before the declared tools and is in `knowledge-worker`'s
+  allowlist, with one prompt line: a named thing or a period → `lookup`.
+- **24 views:**
+  - core: `notes`, `learned`, `intel_findings`, `deep_dives`, `todos_open`,
+    `todos_overdue`, `tasks_recent`, `workflow_runs`, `workflow`,
+    `workflows_unknown_tools`, `jobs_open`, `agents`, `tools`, `apis`,
+    `api_endpoints`, `topics`
+  - epistemics: `claims`, `claim_evidence`
+  - media: `videos`, `video_notes`
+  - personal (private repo): `daily_brief`, `resume`, `off_grid_findings`,
+    `trump_monitor`
+- **Windows take simple forms** (`{hours}`, `{days}`, `{day}`, `{month}`,
+  `{since, until}`) instead of ISO durations, which is easier for a small model
+  to fill.
+- **Every golden case gained `view:` and `slots:`.** Run through its view, **36
+  of 39 returned exactly the reference rows**. The other 3 were cut at the
+  default 30 rows and marked `truncated` with the total.
+- **Empty answers explain themselves** (checked live). "No notes of kind news,
+  from scheduled_daily_news_brief, created on 2026-04-16. Without the window:
+  129." An unknown entity names the nearest ones ("nearest: … adam kinzinger").
+
+**Step 5, who writes the lookup call (2026-10-13).** Each writer turned a
+golden question into `{view, slots}`; the call ran through `lookup`, and its
+rows were scored against the reference (same measure as Phase 1).
+
+| Writer | View right (39) | All rows (32 non-empty) | ≥ 90% of rows | Median s |
+|---|---|---|---|---|
+| **E4B, one step**, output constrained to view names and slots, catalog with live values | 35 | **15** | **18** | 2.1 |
+| codestral (free Mistral), same prompt, JSON mode | 34 | 16 | 18 | 0.9 |
+| E4B, two steps (pick the view, then fill only its slots) | 33 | 11 | 13 | 3.1 |
+| Nimble picks the view, E4B fills it (first round, before live values) | 32 | 11 | — | 33.9 |
+| *Phase 1: free Cypher, E4B / codestral* | — | *10 / 8 (of 33)* | — | — |
+
+**What changed between rounds:**
+- **Live closed values.** The first round's misses were names a model cannot
+  guess: `entity: "mesh networks"` for the topic `off-grid-networking`,
+  workflow `daily_brief` for `daily-news`, an invented source `knowledge`. The
+  catalog now gives the `topic`, `from` and `kinds` slots their live values,
+  and a cypher view's slot may declare `values_from: <query>` (used by
+  `workflow`, `workflow_runs`, `api_endpoints`). An unknown topic or value is
+  refused with the list. After this, E4B named topics and workflows right.
+- **`words` matches any word, ranked by how many a note holds** (a count or
+  breakdown still needs all of them). E4B passed the whole question ("Biden
+  administration emergency-shutdown button powerful AI models"), and an
+  all-words match missed the Newsom claim. It now comes first.
+- **Empty values are unset slots** (`entity: ""`, `kinds: []`, `window: {}`),
+  and a list of strings for a text slot is joined (codestral sent `words` as a
+  list).
+
+**Reading:**
+- **Views beat free Cypher:** E4B went from 10 to 15 of 32, and 18 counting
+  near-complete answers. The constrained local model ties the free cloud one,
+  so E4B with constrained output is the writer.
+- **Nimble is out for this.** It picked worse (32 of 39) and cost 34 s a call
+  swapping models on host Ollama.
+- **Two steps is worse:** without the other views in view, E4B picked
+  `learned` for "claims from the last 2 days".
+- **E4B's remaining misses (14):**
+  - 5 are reference shapes the owner has not graded: "learned in two weeks /
+    this month / September" as counts, notes counted by type, and "all
+    briefs" at 200 rows.
+  - 2 are the 30-row default, marked `truncated`.
+  - The rest are over-filling: slots the question did not ask for
+    (`status: unverified`, `window: today`, a list of 40 sources) and one
+    ambiguous reading ("a couple days ago" meant the conversation, not the
+    window).
+
 **Not in Phase 2:**
 - Folding `recall_recent`, `recent_tasks`, `list_tasks`, `list_apis` and
   `list_capabilities` into views (they are views in all but name). That happens
   after measurement, with Phase 4.
 - Search by meaning as a view slot (the `both` cases use `words` until Phase 3).
 
-**Decisions for the owner:**
-1. One `lookup` tool (recommended), or each view as its own tool?
-2. The tool's name.
-3. Default `limit` 30?
-4. Which note kinds count as "learned" (also asked in the test set).
+**Decisions (the owner, 2026-10-13):**
+1. One tool, named `lookup`.
+2. Default `limit` 30.
+3. "Learned" means the information the brain ingested, and anything not
+   corroborated says so. The named set stays as drafted for now and is
+   iterated later. Every row carries its standing: a claim shows its
+   `claim_status`, and a note no check has looked at says "not checked".
 
-### Phase 3 — the "graph needed?" gate
+#### Grading the shapes (the owner, 2026-10-14)
 
-- Before the model answers, a classifier names the context a turn needs:
-  structural, by meaning, both, or none. The brain fetches it and puts it in
-  front of the model (the graph-first block before `search_web`, extended to all
-  of chat).
-- **Candidate:** `nimble` (a closed choice with probabilities, the alias-judge
-  pattern). **Baseline to beat:** bge-m3 similarity to example turns.
-- **Test set:** chat turns where context was missing, flagged by the owner, plus
-  turns that rightly needed none.
+The owner graded the five cases whose right answer was a choice of shape:
+
+| Case | Graded answer |
+|---|---|
+| learned in two weeks, this month, September | counts by topic; a `(no topic)` row counts the untopiced |
+| what notes are stored (all 23,053) | counts by kind |
+| summarize all the briefs (129, over a million characters) | the index of days (`as: by_day`); the reply offers a map-reduce job |
+
+**What grading changed in the code:**
+- **`by_topic` now counts untopiced notes as `(no topic)`.** Before, it dropped
+  them: 3,376 of September's 6,543 learned notes have no topic, and the counts
+  hid them.
+- **`lookup` says when it cut off an answer.** `neo4j_query`'s default
+  `LIMIT 100` cut aggregates silently. The brief index stopped at 2026-09-16,
+  and the 403 sources showed as 100. Aggregates now run to 1,000 groups, and a
+  cypher view's limit is marked: `run_capped` asks for one row more than the
+  limit.
+- **A notes view can declare `wide: <by_* shape>`.** A call that asks for no
+  shape and matches more notes than the limit gets that shape instead, with a
+  `wide` line saying why. `learned` declares `wide: by_topic`. The same rule
+  written in its description was ignored 6 of 6 times by E4B and codestral; in
+  `notes` and `daily_brief`, the description sentence worked.
+
+**Re-measured (all 39 view cases, references now graded where it mattered):**
+
+| Writer | View right | All rows (of 30 non-empty) | ≥90% of rows | Right empty (of 9) | Median |
+|---|---|---|---|---|---|
+| E4B, constrained | 34 | 18 | 20 | 8 | 2.1 s |
+| codestral | 34 | 18 | 19 | 9 | 0.9 s |
+
+E4B gets all seven "learned" and notes cases. Its remaining misses are
+over-filling (a `status`, a `topic` the question did not ask for), the 30-row
+default on 3 cases, one JSON cut off at 300 tokens, and questions that go
+through an entity or words where a topic view holds the answer.
+
+The other 42 cases (34 of them with a view) are still `status: draft`. Their references were written to
+match what the views return, but the owner has not graded them.
+
+### Phase 3 — the right tool for the turn (rewritten 2026-10-14)
+
+**The owner's aim:** use the right tool for the task. That means not the graph
+when the question needs the web, and not the web when the answer is stored,
+and so on for every tool. Requests are loose ("what did we learn today", "our
+Opensource Intelligence Agency"), and the brain should work through that
+ambiguity to fulfil the request instead of failing on it. The "graph needed?"
+gate first drafted here was one corner of this.
+
+**Where the choice happens today:**
+- **The front door (`GeneralDefault-Orchrestator`) holds no retrieval tools.**
+  It delegates to an agent (`run_agent`), and the agent picks the tools. An
+  agent's allowlist decides what it can do: `researcher` can only search the
+  web, and `knowledge-worker` can only look in the graph. So the first wrong
+  turn is usually the agent, and the right tool is then out of reach.
+- **The intelligence-agency turns (about 13, 2026-08-08 to 10-12, under three
+  names).** Two turns searched the web (2026-09-07). Every turn ran
+  `search_notes` again and again, up to 4 times, matching words, while the
+  answer is a named thing: the `nia` topic, its workflows and their runs. The
+  brain does not know its own names: "Opensource Intelligence Agency" never
+  resolves to `nia`.
+
+**Ambiguity, by a default order instead of a question back:**
+1. A name the brain owns (a topic, workflow, agent or monitor) is looked up first.
+2. Then what is stored.
+3. Then the web.
+4. Ask the owner only when the readings would lead to different actions
+   (send vs draft).
+
+**Steps:**
+1. **Mine the turns.** For each chat turn, record the agent it went to, the
+   tools that ran, and how it ended. Draft what it should have used: the
+   agent, and the first tool. The owner grades the drafts one at a time, as with
+   the shapes. Then the test set goes in `eval/routing_golden.yaml`.
+2. **Name resolution.** The brain's own names, with aliases (`nia` = "Niche /
+   Opensource Intelligence Agency"), as a closed list for the router. The topic,
+   workflow and agent names come from the graph already (`lookup`'s live
+   values). Aliases are data, on the node they name.
+3. **Measure routers on the test set:** `nimble` (a choice with probabilities),
+   E4B constrained to the roster, and bge-m3 similarity to example turns. Score
+   the right agent and the right first tool. Check whether Nimble's
+   probability separates its right picks from its wrong ones: a confident pick
+   goes, a split runs both readings in the order above, and a flat one asks.
+   Nimble (9.5 GB) sits mostly in system RAM beside the llama.cpp E4B, so its
+   latency is measured warm, alone, before it is ruled in or out. The views
+   test (34 s) swapped it with E4B on host Ollama, so that number does not settle it.
+4. **Wire the winner into the front door,** with the order above for a split pick.
+
+**Step 1, mined 2026-10-14.** The chat logs each turn cleanly. The turn
+opens with `push_context` (role user) and closes with the
+`Chat turn [session: …] — profile: …` note, and `model_usage`
+`subagent:<agent>` rows inside it name the agents. That gives 324 turns from
+2026-06-12 to 10-12, 149 distinct questions. Profiles: the front door 157,
+`general` (every tool itself, before delegation) 125, `orchestrator` 30. 111
+turns called no tool. The draft set is `eval/routing_golden.yaml`: 67 cases,
+each with a route (an agent, a front-door tool, or `answer`), the first tool
+inside it, `then` for the next step by the order, `readings` for 16
+ambiguous turns and `decide` for 14 choices. The routes are knowledge-worker
+43, researcher 7, answer 6, code-analyst 3, and 8 others.
+- **The brain's first stop agrees with the draft on 49 of 67.** Of the 18
+  misses, 12 answered with no tool where a lookup was needed (tool and agent
+  counts, the todo list, "learned in 24 hrs" asked 19 times, "this agency").
+  One sent an advice question through tasks and the web. One applied to a job
+  without `job-applicant`.
+- **Within the right agent, the tool was the bigger miss.** The NIA turns ran
+  `search_notes` up to 5 times where topic `nia` holds 35 notes. That half is
+  graded with `first_tool`.
+- **Two agencies share a name.** Topic `nia` is the owner's program (Niche, or
+  Opensource, Intelligence Agency). The intelligence agency *watch*
+  (`intelligence_agency_watch`, view `intel_findings`) monitors claims about
+  real agencies. The 2026-09-24 session crossed them ("this agency's findings
+  on NHI").
+- **Found on the way:** a `lookup` total counted all the words while its rows
+  matched any of them, so 30 rows showed "total 12" and no cut. A count taken
+  for rows (the total, a `wide` breakdown) now matches the way the rows did.
+
 
 ### Phase 4 — workflow steps hold specs, the frontend shows them
 
@@ -408,7 +590,7 @@ to answer before designing anything:
 
 - Does the owner grade the test set alone, or does a cloud model draft the
   questions for the owner to correct?
-- Should the gate (Phase 3) run on every chat turn, or only for the front door's
+- Does the router (Phase 3) run on every chat turn, or only for the front door's
   profile? Nimble's first call loads ~9.5 GB from disk, so a cold chat turn
   waits for it.
 - Does the spec replace `neo4j_query` in agent allowlists, or sit beside it?

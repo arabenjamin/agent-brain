@@ -1,0 +1,12 @@
+name: tasks_recent
+kind: cypher
+description: The most recently updated tasks (workflow runs and one-off tasks) and how they ended.
+words: [recent tasks, last tasks, tasks that ran, what ran]
+input_schema:
+  type: object
+  properties:
+    n: { type: integer, default: 5, description: How many tasks. }
+cypher: |-
+  MATCH (t:Task)
+  RETURN toString(t.updated_at) AS at, coalesce(t.workflow, left(t.goal, 80)) AS task, t.status AS status
+  ORDER BY t.updated_at DESC LIMIT $n

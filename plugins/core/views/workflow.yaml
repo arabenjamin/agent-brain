@@ -1,0 +1,22 @@
+name: workflow
+kind: cypher
+description: >-
+  Workflows (scheduled and on-demand jobs): what each does, whether it is
+  enabled, how often it runs, and its last and next run. Give a name for one,
+  or leave it empty for all.
+words: [workflow, schedule, scheduled task, how often, when does it run, monitors, jobs]
+input_schema:
+  type: object
+  properties:
+    name:
+      type: string
+      default: ""
+      description: A workflow's name; empty for all.
+      values_from: "MATCH (w:Workflow) RETURN w.name AS value, w.description AS label ORDER BY value"
+cypher: |-
+  MATCH (w:Workflow) WHERE $name = '' OR w.name = $name
+  RETURN w.name AS workflow, w.enabled AS enabled, w.description AS what,
+         w.interval_seconds AS every_seconds, toString(w.last_run_at) AS last_run,
+         toString(w.next_run_at) AS next_run, w.paused_reason AS paused_because
+  ORDER BY w.name
+limit: 60

@@ -1,0 +1,15 @@
+name: videos
+kind: cypher
+description: Videos (and articles) the brain watched or read in the last N local days, with their channel.
+words: [videos, youtube videos, videos watched, what did you watch, media]
+input_schema:
+  type: object
+  properties:
+    days: { type: integer, default: 1, description: "1 = today (local), 2 = today and yesterday, ..." }
+cypher: |-
+  MATCH (m:Media)
+  WHERE m.ingested_at >= datetime($day_start) - duration({days: $days - 1})
+  OPTIONAL MATCH (m)-[:FROM_SOURCE]->(s:MediaSource)
+  RETURN toString(m.ingested_at) AS at, coalesce(s.name, m.channel) AS channel, m.title AS title, m.url AS url
+  ORDER BY m.ingested_at
+limit: 100

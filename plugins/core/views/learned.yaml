@@ -1,0 +1,19 @@
+# "Learned" (the owner, 2026-10-13): the information the brain ingested, and
+# anything not corroborated says so (rows carry `standing`). The kinds are the
+# drafted set, to iterate on. Shape (owner, 2026-10-14): what fits is the
+# notes; more is counts by topic. Written as a rule here, the writers ignored it
+# 6 of 6, so `wide` does it in code.
+name: learned
+kind: notes
+description: >-
+  What the brain learned: the information it ingested and wrote down
+  (sourced notes, claims, source records, news, reflections, inferences).
+  Each row carries its standing: a claim is corroborated, unverified or
+  refuted, and anything else is "not checked". Set a window for "today",
+  "this month", "the last 2 weeks". When the notes are more than the limit
+  (a long window), the answer is counts by topic; ask again with a topic to
+  read them.
+words: [learned, what we learned, found out, ingested, picked up, new information, what's new]
+preset:
+  kinds: [semantic, claim, source_record, news, reflection, inference]
+wide: by_topic

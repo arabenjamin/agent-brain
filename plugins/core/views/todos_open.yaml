@@ -1,0 +1,10 @@
+name: todos_open
+kind: cypher
+description: The owner's todo list, still open (pending or in progress), by priority then due date.
+words: [todo list, todos, my todos, open todos, to-do]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (t:Todo) WHERE t.status IN ['pending', 'in_progress']
+  RETURN t.title AS title, t.priority AS priority, toString(t.due_at) AS due,
+         t.status AS status, t.description AS description
+  ORDER BY t.priority, t.due_at

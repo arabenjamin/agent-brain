@@ -1,0 +1,8 @@
+name: tools
+kind: cypher
+description: How many tools the brain has right now, and their names (synced from the live registry at startup).
+words: [tools, how many tools, tool count, capabilities]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (t:ToolDef)
+  RETURN count(t) AS tools, collect(t.name) AS names

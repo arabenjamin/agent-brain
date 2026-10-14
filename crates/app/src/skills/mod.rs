@@ -8,7 +8,7 @@ pub use agent_brain_skills::{
     agent, agent_runner, knowledge, model, scheduler, task, todo, working_memory,
 };
 
-pub use agent_brain_host::{bundle_tools, plugin_manager};
+pub use agent_brain_host::{bundle_tools, plugin_manager, views};
 
 pub use agent::AgentSkill;
 pub use agent_runner::AgentRunnerSkill;

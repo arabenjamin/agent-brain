@@ -1,0 +1,6 @@
+name: video_notes
+kind: notes
+description: Notes the video learning wrote (claims and summaries from watched videos).
+words: [video notes, video learning, what we learned from videos, video summaries]
+preset:
+  from: [video_learning]

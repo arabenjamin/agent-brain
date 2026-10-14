@@ -1,0 +1,624 @@
+# Routing golden set (GRAPH_CONTEXT_PLAN Phase 3): which agent or tool a chat
+# turn should go to.
+#
+# WHERE THE CASES COME FROM
+#   Real chat turns, verbatim, mined from DuckDB `interactions` 2026-06-12 to
+#   2026-10-12 (324 turns, 149 distinct questions). A turn runs from its
+#   push_context (role user) to the "Chat turn [session: …]" note the chat
+#   stores; model_usage `subagent:<agent>` rows in that window name the agents.
+#   Dropped: pings ("Say OK", "PONG"), turns that name the tool to call, and
+#   wording repeats beyond a few variants. Scratch harness: phase3/mine_turns.py.
+#
+# FIELDS
+#   question   the owner's words, verbatim.
+#   after      for a follow-up: the turn before it, which the router sees too.
+#   source     when it was asked, and how often (xN).
+#   brain_did  agents and tools from the last time it was asked (profile in
+#              brackets; `general` held every tool itself, before the front door
+#              delegated).
+#   route      where it should go first: an agent (knowledge-worker, researcher,
+#              deep-diver, code-analyst, schedule-author, scribe, api-integrator,
+#              api-scout, job-applicant, toolsmith), the front door's own tool
+#              (self:manage_todo, self:manage_workflow, self:create_task,
+#              self:list_tasks), or answer (no tool: talk, arithmetic, opinion
+#              on what is already in the conversation).
+#   first_tool inside the agent: the tool it should call first (lookup with
+#              its view, search_notes, search_web, list_capabilities, ...).
+#   then       the next step when the first comes back thin: the order for a
+#              loose question (the brain's own names, then what is stored, then
+#              the web).
+#   readings   for an ambiguous turn: the plausible readings, most likely first.
+#   decide     a choice the owner makes while grading.
+#   status     draft | accepted | fixed | dropped.
+#
+# GROUND TRUTH IS HUMAN: the owner grades every case.
+
+agents_seen_2026_10_14: [api-integrator, api-scout, code-analyst, deep-diver, deep-diver-hard, job-applicant, knowledge-worker, researcher, schedule-author, scribe, toolsmith]
+
+cases:
+  # ── What did we learn (loose time words) ──────────────────────────────────
+  - id: learned-today
+    question: "What have we learned today?"
+    source: chat 2026-08 to 2026-10, x30 (and 20 more wordings)
+    brain_did: {agents: [knowledge-worker], tools: [recall_recent, reason], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, window: {day: today}}}
+    status: draft
+
+  - id: learned-today-typo
+    question: "What did we learn to day?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [neo4j_query, search_notes x8], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, window: {day: today}}}
+    status: draft
+
+  - id: learned-24h
+    question: "Can you tell me what we learned in the last 24 hrs?"
+    source: chat 2026-10, x19
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, window: {hours: 24}}}
+    status: draft
+
+  - id: learned-couple-days
+    question: "Can you tell me what you learned in the last couple of days?"
+    source: chat 2026-09, x2
+    brain_did: {agents: [knowledge-worker], tools: [recall_recent x3, consolidate_memories], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, window: {days: 2}}}
+    decide: '"a couple of days" read as 2'
+    status: draft
+
+  - id: learned-two-months
+    question: "Can you tell me what we have learned in the last 2 months?"
+    source: chat 2026-08, x3
+    brain_did: {agents: [], tools: [neo4j_query x5, search_notes x5], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, window: {days: 60}}}
+    status: draft
+
+  - id: learned-everything
+    question: "Can you summarize everything you learned thats in the graph?"
+    source: chat 2026-06, x1
+    brain_did: {agents: [], tools: [search_notes x3], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned}}
+    status: draft
+
+  - id: learn-more-about
+    question: "Based on whats in the graph, what could we learn more about ?"
+    source: chat 2026-06, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, as: by_topic}}
+    decide: the gaps are a judgment over the topic counts (and stored knowledge gaps); is the first step the counts, or the knowledge_gaps table?
+    status: draft
+
+  - id: learned-and-next
+    question: "What have we learned to day, what do we want to do next?"
+    source: chat 2026-08-24, x1
+    brain_did: {agents: [], tools: [neo4j_query x3, list_tasks, manage_scheduled_task], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, window: {day: today}}}
+    then: lookup todos_open (what we want to do next)
+    status: draft
+
+  - id: video-learning-today
+    question: "I want to see all of what we learned from video learning today."
+    source: chat 2026-09, x18
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: video_notes, window: {day: today}}}
+    status: draft
+
+  - id: claims-last-2-days
+    question: "Yeah lets see all claim notes from the last 2 days"
+    source: chat 2026-09, x15
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: claims, window: {days: 2}}}
+    status: draft
+
+  # ── Our own names: the intelligence agency, monitors, deep dives ──────────
+  - id: nia-where
+    question: "Where are we on our Niche Intelligence Agency we discussed a couple days ago?"
+    source: chat 2026-08-10, x5
+    brain_did: {agents: [], tools: [manage_scheduled_task x4, neo4j_query, list_tasks, search_notes], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia, window: {days: 14}}}
+    then: the nia workflows and their last runs
+    status: draft
+
+  - id: nia-opensource-name
+    question: "What about our Opensource Intelligence Agency we were working on ?"
+    source: chat 2026-08-24, x1
+    brain_did: {agents: [], tools: [search_notes x2, manage_scheduled_task, neo4j_query, list_tasks], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia}}
+    readings: ['"Opensource Intelligence Agency" is the owner''s other name for the NIA (topic nia)']
+    status: draft
+
+  - id: nia-short-name
+    question: "What about our Intelligence Agency"
+    source: chat 2026-08-25, x1
+    brain_did: {agents: [], tools: [search_notes, manage_scheduled_task, neo4j_query x2, list_tasks], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia}}
+    readings: ["our Intelligence Agency = the NIA program (topic nia)", "the intelligence agency watch (intel_findings)"]
+    decide: '"our" points to the NIA; the watch is the second reading'
+    status: draft
+
+  - id: nia-latest
+    question: "What is the latest on Our Niche Intelligence Agency?"
+    source: chat 2026-09-07, x5
+    brain_did: {agents: [], tools: [search_notes x5], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia}}
+    status: draft
+
+  - id: nia-learning
+    question: "Can you tell me what our niche/opensource intelligence agency is learning or working on?"
+    source: chat 2026-09-24, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x2, recall_recent, reason], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia}}
+    status: draft
+
+  - id: nia-found-so-far
+    question: "What has it found so far?"
+    after: {q: "Where are we on our Niche Intelligence Agency we discussed a couple days ago?", a: "We have moved the Niche Intelligence Agency (NIA) from a conceptual blueprint into active, autonomous execution…"}
+    source: chat 2026-08-10, x1
+    brain_did: {agents: [], tools: [search_notes x2, neo4j_query], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia}}
+    status: draft
+
+  - id: nia-agency-geopolitical
+    question: "Is this agency looking at anything Geopolitical ? What are it's findings on Donald Trump ?"
+    after: {q: "Can you tell me more about we have learned about NHI/MJ-12 ? Is any of that true?", a: "The agency's findings on NHI and MJ-12 are a mix of historical anomalies, researcher claims, and official denials…"}
+    source: chat 2026-09-24, x1
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia}}
+    then: lookup trump_monitor
+    readings: ["this agency = the NIA (the session opened on it)", "this agency = the intelligence agency watch, whose findings the previous answer gave"]
+    decide: which agency; the brain answered with no tool at all
+    status: draft
+
+  - id: intel-agencies-found
+    question: "Can you tell me more about what you found out about Intelligence Agencies?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [knowledge-worker], tools: [recall_recent x5, search_notes x11], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: intel_findings}}
+    readings: ["the intelligence agency watch's findings (agencies, plural)", "the NIA"]
+    status: draft
+
+  - id: intel-watch-updates
+    question: "Can you tell me more about intelligence agency watch updates?"
+    source: chat 2026-10-12, x1
+    brain_did: {agents: [knowledge-worker], tools: [recall_recent], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: intel_findings, window: {days: 7}}}
+    status: draft
+
+  - id: claims-monitor-today
+    question: "What did the intelligence-agency-claims-monitor find today?"
+    source: chat 2026-09, x2
+    brain_did: {agents: [knowledge-worker], tools: [manage_scheduled_task, recall_recent x2, search_notes x6], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: intel_findings, window: {day: today}}}
+    status: draft
+
+  - id: nia-status-report
+    question: "Yes, can you generate a formalized status report on the findings from the Hardware Tripwire or the Tech Dependency Synthesis to show me exactly what the \"Agency\" has uncovered recently?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [neo4j_query x4], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: nia, words: "tripwire dependency"}}
+    status: draft
+
+  - id: trump-benefit-learned
+    question: "Can you tell me what we have learned from the Trump_Benefit_Analysis?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x3], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: trump_monitor}}
+    status: draft
+
+  - id: deep-dive-more
+    question: "Tell me more about the deep dive"
+    after: {q: "What have we learned today?", a: "…132 distinct notes were created or updated… (mentions a deep dive)"}
+    source: chat 2026-10-06, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x3], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: deep_dives, window: {day: today}}}
+    status: draft
+
+  - id: daily-briefs-star-wars
+    question: "Can you look in the graph and find all of the daily news briefs, and summarize them as if it was the opening scroll to a star wars movie"
+    source: chat 2026-06, x3 wordings
+    brain_did: {agents: [], tools: [search_notes], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: daily_brief, as: by_day}}
+    then: offer the map-reduce job (129 briefs do not fit one context)
+    status: draft
+
+  # ── Stored or the web? ─────────────────────────────────────────────────────
+  - id: mesh-networks-learned
+    question: "What have we learned about mesh networks ?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [search_notes x2, neo4j_query], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, topic: off-grid-networking}}
+    status: draft
+
+  - id: what-about-ai
+    question: "What do we know about Ai"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [search_notes x9, reason], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: learned, topic: ai-ml}}
+    status: draft
+
+  - id: nebula-looked-at
+    question: "Have you looked at Nebula as an open source alternative to tailscale?"
+    source: chat 2026-08, x1 (and x3 with Meshtastic and Reticulum)
+    brain_did: {agents: [], tools: [search_notes, search_web, reason], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, words: "nebula tailscale"}}
+    then: researcher (search_web) when nothing is stored
+    readings: ["have WE looked at it: what is stored", "look at it now: the web"]
+    status: draft
+
+  - id: nebula-static-ip
+    question: "Does a Nebula lighthouse need a static ip ?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [search_web], profile: general}
+    route: researcher
+    first_tool: search_web
+    readings: ["a technical fact about the world: the web (stored notes first is cheap but unlikely to hold it)"]
+    decide: researcher alone, or knowledge-worker first by the order?
+    status: draft
+
+  - id: what-is-cowos
+    question: "What is CoWos?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, words: "cowos"}}
+    then: researcher (search_web)
+    readings: ["a term from the NIA chip work: stored first", "general knowledge: answer directly"]
+    decide: the brain answered from model knowledge with no tool
+    status: draft
+
+  - id: tora-fit
+    question: "What would ToRA-7B be good for in our system? What tasks would it excel at, and where would it not be a good fit?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: researcher
+    first_tool: search_web
+    then: knowledge-worker (list_capabilities, for "our system")
+    status: draft
+
+  - id: meshtastic-firmware-web
+    question: "Search the web for the latest Meshtastic firmware releases and MeshCore comparisons, then summarise what you find."
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [search_web x2, reason], profile: general}
+    route: researcher
+    first_tool: search_web
+    status: draft
+
+  - id: embedding-model-3060
+    question: "Can you search the web and see what the current best embedding model that could run on a Nividia 3060ti with 8GB of ram is?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [search_web x10, reason x2, update_task x2, search_notes x2, neo4j_query x2], profile: general}
+    route: researcher
+    first_tool: search_web
+    status: draft
+
+  - id: kinzinger-tell-more
+    question: "Can you tell me more about Adam Kinzinger"
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [search_notes, reason], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, entity: "adam kinzinger"}}
+    then: researcher (the owner asked for the web next)
+    status: draft
+
+  - id: kinzinger-web
+    question: "Can you look up Adam Kinzinger on the Web and see what more we can learn about him?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [search_web x2, reason], profile: general}
+    route: researcher
+    first_tool: search_web
+    status: draft
+
+  - id: shutdown-button-evidence
+    question: "Biden administration now requires an \"emergency-shutdown button\" for powerful AI models. Can you tell me more about that, and what evidence do we have"
+    source: chat 2026-09, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x4, search_web x4], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: claim_evidence, words: "emergency shutdown button ai models"}}
+    then: researcher, only if nothing is stored
+    status: draft
+
+  - id: nhi-mj12-true
+    question: "Can you tell me more about we have learned about NHI/MJ-12 ? Is any of that true?"
+    source: chat 2026-09-24, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x4], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: claims, words: "nhi mj-12"}}
+    status: draft
+
+  - id: trump-2-video-year
+    question: "Ok that clears up the Prefill/Decode. But I still have questions about the Trump 2.0 admin. What year was this 60 mins video from ? We're already in the Trump 2.0 administration, and it's been rough so far."
+    after: {q: "What exactly is a \"Trump 2.0\" scenario? And can you tell me more about Prefill/Decode Disaggregation…", a: "Based on a 60 Minutes segment from today…"}
+    source: chat 2026-10-06, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: notes, from: [video_learning], words: "60 minutes trump 2.0"}}
+    status: draft
+
+  - id: fine-tuning-how
+    question: "I'm wondering how LLM fine tuning works, and how we might do that ourselves?"
+    source: chat 2026-09, x2
+    brain_did: {agents: [researcher], tools: [search_notes x3, search_web x3, reason], profile: GeneralDefault-Orchrestator}
+    route: researcher
+    first_tool: search_web
+    readings: ["how it works: the web, or answer from knowledge", "how WE might: the brain has run fine-tuning experiments (stored)"]
+    decide: knowledge-worker first, since the brain's own fine-tuning experiments are stored?
+    status: draft
+
+  # ── The brain itself ───────────────────────────────────────────────────────
+  - id: tool-count
+    question: "How many tools does the brain have?"
+    source: chat 2026-09, x12 (and 3 wordings)
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {list_capabilities: {kind: tools}}
+    status: draft
+
+  - id: agent-count
+    question: "How many agents does the Brain have?"
+    source: chat 2026-09, x13
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {list_capabilities: {kind: agents}}
+    status: draft
+
+  - id: write-execute-code
+    question: "What about writing and executing code ?"
+    after: {q: "How many tools does the brain have ?", a: "The brain currently has 10 distinct tools available…"}
+    source: chat 2026-09, x2
+    brain_did: {agents: [], tools: [], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: {list_capabilities: {kind: tools}}
+    status: draft
+
+  - id: apis-in-graph
+    question: "Can you tell me what Api's we have in the graph?"
+    source: chat 2026-09, x3 (and x2 "stored in the Graph")
+    brain_did: {agents: [knowledge-worker], tools: [list_apis], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: apis}}
+    status: draft
+
+  - id: homeassistant-endpoints
+    question: "What endpoints do we have for HomeAssistant"
+    source: chat 2026-09, x4 wordings
+    brain_did: {agents: [knowledge-worker], tools: [list_apis, neo4j_query], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: api_endpoints, api: home_assistant}}
+    status: draft
+
+  - id: homeassistant-sure
+    question: "Are you sure we dont know about HomeAssistant?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x8], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: apis}}
+    status: draft
+
+  - id: last-5-tasks
+    question: "Can you tell me the last 5 tasks that ran?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [knowledge-worker], tools: [search_notes x8], profile: orchestrator}
+    route: knowledge-worker
+    first_tool: {lookup: {view: tasks_recent, n: 5}}
+    readings: ["the front door holds list_tasks itself"]
+    decide: self:list_tasks would answer too; which is the right first stop?
+    status: draft
+
+  - id: todo-list
+    question: "Can you see the todo list?"
+    source: chat 2026-07, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: self:manage_todo
+    first_tool: {manage_todo: {action: list}}
+    status: draft
+
+  - id: search-engines-3-days
+    question: "Which search engines answered our web searches over the last 3 days, and how many searches each? Short answer."
+    source: chat 2026-09, x3
+    brain_did: {agents: [knowledge-worker], tools: [get_search_usage], profile: GeneralDefault-Orchrestator}
+    route: knowledge-worker
+    first_tool: get_search_usage
+    status: draft
+
+  - id: queue-retries-code
+    question: "Take a look at how the queue coordinator retries failed jobs in this codebase."
+    source: chat 2026-09, x8
+    brain_did: {agents: [code-analyst], tools: [search_codebase x4, read_codebase_file x4], profile: GeneralDefault-Orchrestator}
+    route: code-analyst
+    first_tool: search_codebase
+    status: draft
+
+  - id: brain-vs-architecture
+    question: "Can you tell me how far off this system, a.k.a The Brain, is from the design and architecture ideas you just mentioned?"
+    after: {q: "Can you tell me more about AI Development: Progress in building AI systems with persistent memory", a: "…DeepLearningAI's approach to persistent memory… OpenCode…"}
+    source: chat 2026-10, x1
+    brain_did: {agents: [code-analyst, knowledge-worker], tools: [select_agent, search_codebase x20, read_codebase_file x47, analyze_own_structure x2, run_agent x2, describe_graph, search_notes x10, reason], profile: GeneralDefault-Orchrestator}
+    route: code-analyst
+    first_tool: analyze_own_structure
+    status: draft
+
+  - id: slm-improve
+    question: "Instead of designing a new Architecture, investigate ways we could improve this system using SLMs."
+    source: chat 2026-07, x4
+    brain_did: {agents: [], tools: [duckdb_query x3, search_codebase x2, read_codebase_file x5, list_codebase_files, neo4j_query], profile: self-analyst}
+    route: code-analyst
+    first_tool: analyze_own_structure
+    then: researcher (which SLMs exist)
+    decide: code-analyst, or deep-diver (a theme drilled to a question, graph then web then a Rust example)?
+    status: draft
+
+  - id: my-professional-history
+    question: "Can you tell me more about my Professional History?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [search_notes x5, recall_recent x5], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: resume}}
+    status: draft
+
+  # ── Do something ───────────────────────────────────────────────────────────
+  - id: schedule-zero-trust
+    question: "Can you create a scheduled task to do more research into zero trust architecture ?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [manage_scheduled_task x2], profile: general}
+    route: schedule-author
+    then: self:manage_workflow upsert with the draft
+    status: draft
+
+  - id: monitor-actors
+    question: "We need to be monitoring such things. I think that would be in our purview along with following other actors domestic and abroad as to their intentions and motivations."
+    after: {q: "Does this agency think Donald Trump is acting in the benefit for the US, or himself, or another nation…?", a: "I cannot directly answer that question…"}
+    source: chat 2026-09-24, x1
+    brain_did: {agents: [schedule-author], tools: [], profile: GeneralDefault-Orchrestator}
+    route: schedule-author
+    then: self:manage_workflow upsert
+    readings: ["set up a monitor now", "agreeing in principle: ask before building"]
+    decide: build it, or confirm the scope first (it is broad)?
+    status: draft
+
+  - id: secondary-supply-chains
+    question: "Can you make sure we're mapping \"secondary\" supply chains to identify where the next bottleneck will emerge before the tripwire fires."
+    source: chat 2026-08, x24
+    brain_did: {agents: [], tools: [], profile: general}
+    route: self:manage_workflow
+    first_tool: {manage_workflow: {action: list}}
+    then: schedule-author to add or extend the tripwire workflow
+    readings: ["check the existing tripwire workflow covers it", "create a new one"]
+    status: draft
+
+  - id: ingest-aidevboard
+    question: "I need you to ingest the api at this site, https://aidevboard.com/docs I'd like to set up a scheduled task that looks through job postings I could apply for. Let me know if I need an Api key."
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [prune_old_notes, search_web x4, http_request x2, manage_scheduled_task x2], profile: general}
+    route: api-integrator
+    first_tool: ingest_api
+    then: schedule-author for the job-search workflow
+    status: draft
+
+  - id: openapi-doc-homeassistant
+    question: "Can you write the HomeAssistant Api to an OpenApi doc?"
+    source: chat 2026-09, x4
+    brain_did: {agents: [api-integrator], tools: [list_apis, list_endpoints], profile: GeneralDefault-Orchrestator}
+    route: api-integrator
+    first_tool: {list_endpoints: {api: home_assistant}}
+    then: scribe writes the file
+    decide: api-integrator gathers and writes, or knowledge-worker gathers and scribe writes?
+    status: draft
+
+  - id: save-hello-notes
+    question: "Save a file to the workspace called hello_notes.md containing a one-line summary of what the brain is."
+    source: chat 2026-09, x1
+    brain_did: {agents: [scribe], tools: [write_workspace_file, list_workspace_files], profile: GeneralDefault-Orchrestator}
+    route: scribe
+    first_tool: write_workspace_file
+    status: draft
+
+  - id: apply-drata
+    question: "Can you apply to #3 Senior AI Product Engineer — Drata please"
+    source: chat 2026-09-11, x2 wordings
+    brain_did: {agents: [], tools: [search_notes x17, neo4j_query, search_web, mcp_call], profile: general}
+    route: job-applicant
+    status: draft
+
+  - id: youtube-to-watchlist
+    question: "Yeah could you start by using the web search tool and look for youtube videos to watch to learn more about LoRA, Meshtastic, reticulum, etc. And maybe"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [search_web x2, reason], profile: general}
+    route: researcher
+    first_tool: search_web
+    status: draft
+
+  - id: dig-deeper-claims
+    question: "I think we ought to dig deeper into these claims, what else could we search for or through that would help us determine more? Should we leave the claims alone and just wait and see if something else pops up that corroborates them?"
+    after: {q: "Can you tell me more about what you found out about Intelligence Agencies?", a: "…fragmented and consists primarily of unverified claims…"}
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [], profile: orchestrator}
+    route: answer
+    readings: ["advice on approach, from the conversation: answer", "start digging: deep-diver"]
+    decide: the owner asks what to do, not to do it; answer, then offer
+    status: draft
+
+  # ── Talk: no tool ──────────────────────────────────────────────────────────
+  - id: profit-from-chaos
+    question: "How do we either profit from this chaos, or defend ourselves against it? We're not rich. We have limited means and resources at the moment. What should our nexts moves be?"
+    after: {q: "What have we learned today?", a: "…the integration of Artificial Intelligence in modern warfare…"}
+    source: chat 2026-08-07, x1
+    brain_did: {agents: [], tools: [search_notes x2, reason x4, update_task x3, search_web], profile: general}
+    route: answer
+    readings: ["advice from what was just said: answer", "ground it in stored knowledge first"]
+    decide: the brain updated tasks and searched the web for an advice question
+    status: draft
+
+  - id: help-implement-ideas
+    question: "Can you help me on some examples of how I might implement some of these ideas? I'm an out of work software engineer. I put this system together, and I'm looking for ways to leverage what I have against the odds."
+    source: chat 2026-08-07, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: answer
+    status: draft
+
+  - id: blend-options
+    question: "Lets keep thinking about option 1. Though option 3 seems like a natural route. How could we blend the two ideas, lets see if we can dogfood it and refine our process and workflow, and in 3 months after we have collected enough data"
+    source: chat 2026-08-08, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: answer
+    status: draft
+
+  - id: what-time
+    question: "What time is it for you?"
+    source: chat 2026-07, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: answer
+    readings: ["the clock is in the system prompt"]
+    status: draft
+
+  - id: arithmetic
+    question: "What is 2+2?"
+    source: chat 2026-08, x1
+    brain_did: {agents: [], tools: [], profile: general}
+    route: answer
+    status: draft
+
+  - id: trump-benefit-opinion
+    question: "Based on what we have seen, do you think Trump is working for the benefit of the United States, or does his actions benefit of other countries?"
+    source: chat 2026-09, x1
+    brain_did: {agents: [], tools: [reason], profile: general}
+    route: knowledge-worker
+    first_tool: {lookup: {view: trump_monitor}}
+    readings: ['"based on what we have seen" = what is stored, not an opinion from the model']
+    status: draft
+
+  - id: which-job-best
+    question: "which of these looks best for me?"
+    source: chat 2026-09 (job-search chat), x1
+    brain_did: {agents: [], tools: [], profile: job-applicant}
+    route: knowledge-worker
+    first_tool: {lookup: {view: resume}}
+    readings: ["the roles are in the conversation; the résumé is stored"]
+    decide: the brain said it had neither the roles nor the résumé
+    status: draft

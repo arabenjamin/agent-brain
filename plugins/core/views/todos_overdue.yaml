@@ -1,0 +1,13 @@
+# due_at is a calendar date stored at 00:00 UTC: overdue once it is before the
+# local today (schema.md). The query this replaces compared it to
+# toString(date()) and found nothing for three months (GRAPH_CONTEXT_PLAN §3).
+name: todos_overdue
+kind: cypher
+description: Open todos whose due date is before today (local).
+words: [overdue, overdue todos, late, past due]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (t:Todo) WHERE t.status IN ['pending', 'in_progress']
+    AND t.due_at IS NOT NULL AND date(t.due_at) < date($today)
+  RETURN t.title AS title, toString(t.due_at) AS due, t.priority AS priority
+  ORDER BY t.due_at

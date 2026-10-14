@@ -1,0 +1,13 @@
+# steps is JSON text (key tool_name) and there is no APOC, so the tool names are
+# split out of the text.
+name: workflows_unknown_tools
+kind: cypher
+description: Workflows whose steps name a tool the brain does not have (broken steps).
+words: [broken tools, unknown tools, broken workflows, audit workflows, broken steps]
+input_schema: { type: object, properties: {} }
+cypher: |-
+  MATCH (w:Workflow)
+  WITH w, [m IN split(w.steps, '"tool_name":"')[1..] | split(m, '"')[0]] AS tools
+  UNWIND tools AS tool
+  WITH w, tool WHERE NOT EXISTS { MATCH (:ToolDef {name: tool}) }
+  RETURN w.name AS workflow, collect(DISTINCT tool) AS unknown_tools

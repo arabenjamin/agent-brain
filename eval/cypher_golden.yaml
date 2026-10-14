@@ -18,6 +18,8 @@
 #              it returns the same rows (column names and order aside).
 #   decide     a choice the owner makes while grading (what counts as "learned",
 #              which statuses are "running").
+#   view/slots the `lookup` call that answers it (Phase 2): picking the view and
+#              filling its slots are scored apart. No view: free Cypher stays.
 #   status     draft (proposed, not graded) | accepted | fixed | dropped.
 #
 # GROUND TRUTH IS HUMAN: the owner grades every case. Times are UTC in the graph;
@@ -37,6 +39,8 @@ cases:
       RETURN n.note_type AS type, n.source_context AS from, n.content AS content
       ORDER BY n.created_at DESC
     decide: which note types count as "learned" (episodic, outcome and unsourced_synthesis are left out here); the context is the notes, not counts of them
+    view: learned
+    slots: {"window": {"day": "today"}}
     status: draft
 
   - id: learned-24h
@@ -50,6 +54,8 @@ cases:
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
       RETURN n.note_type AS type, n.source_context AS from, n.content AS content
       ORDER BY n.created_at DESC
+    view: learned
+    slots: {"window": {"hours": 24}}
     status: draft
 
   - id: learned-two-weeks
@@ -58,13 +64,16 @@ cases:
     context: graph
     brain_did: [neo4j_query, search_notes]
     reference: |
-      MATCH (n:Note)-[:IN_TOPIC]->(t:Topic)
+      MATCH (n:Note)
       WHERE n.created_at >= datetime() - duration('P14D')
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
-      RETURN t.name AS topic, count(DISTINCT n) AS notes
+      OPTIONAL MATCH (n)-[:IN_TOPIC]->(t:Topic)
+      RETURN coalesce(t.name, '(no topic)') AS topic, count(DISTINCT n) AS notes
       ORDER BY notes DESC
     decide: by topic (as here) or by source; two weeks is thousands of notes, so the context has to be a summary shape (counts here), and a candidate returning notes scores 0 against it
-    status: draft
+    view: learned
+    slots: {"window": {"days": 14}, "as": "by_topic"}
+    status: accepted # owner 2026-10-14: by topic
 
   - id: learned-this-month
     question: "Can you tell me what you have learned this month?"
@@ -73,12 +82,15 @@ cases:
     brain_did: [list_tasks, neo4j_query, search_notes]
     reference: |
       WITH date({timezone: 'America/Detroit'}) AS today
-      MATCH (n:Note)-[:IN_TOPIC]->(t:Topic)
+      MATCH (n:Note)
       WHERE n.created_at >= datetime({year: today.year, month: today.month, day: 1, timezone: 'America/Detroit'})
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
-      RETURN t.name AS topic, count(DISTINCT n) AS notes
+      OPTIONAL MATCH (n)-[:IN_TOPIC]->(t:Topic)
+      RETURN coalesce(t.name, '(no topic)') AS topic, count(DISTINCT n) AS notes
       ORDER BY notes DESC
-    status: draft
+    view: learned
+    slots: {"window": {"month": "this"}, "as": "by_topic"}
+    status: accepted # owner 2026-10-14: by topic; a window over a day is by topic
 
   - id: learned-september
     question: "IS there nothing new we have learned in september?"
@@ -90,9 +102,13 @@ cases:
       WHERE n.created_at >= datetime({year: 2026, month: 9, day: 1, timezone: 'America/Detroit'})
         AND n.created_at < datetime({year: 2026, month: 10, day: 1, timezone: 'America/Detroit'})
         AND n.note_type IN ['semantic', 'claim', 'source_record', 'news', 'reflection', 'inference']
-      RETURN n.note_type AS type, count(*) AS notes
+      OPTIONAL MATCH (n)-[:IN_TOPIC]->(t:Topic)
+      RETURN coalesce(t.name, '(no topic)') AS topic, count(DISTINCT n) AS notes
       ORDER BY notes DESC
-    status: draft
+    decide: the premise is wrong (thousands of notes), so the counts correct it; untopiced notes count as (no topic)
+    view: learned
+    slots: {"window": {"month": "2026-09"}, "as": "by_topic"}
+    status: accepted # owner 2026-10-14: by topic, with a (no topic) row
 
   - id: notes-stored-today
     question: "In one sentence: how many notes did we store today?"
@@ -103,6 +119,8 @@ cases:
       MATCH (n:Note)
       WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
       RETURN count(n) AS notes
+    view: notes
+    slots: {"window": {"day": "today"}, "as": "count"}
     status: draft
 
   - id: notes-stored-by-type
@@ -114,7 +132,9 @@ cases:
       MATCH (n:Note)
       RETURN n.note_type AS type, count(*) AS notes
       ORDER BY notes DESC
-    status: draft
+    view: notes
+    slots: {"as": "by_kind"}
+    status: accepted # owner 2026-10-14: by kind
 
   - id: where-semantic-notes-went
     question: "can you check the database and see where all our semantic notes went"
@@ -143,6 +163,8 @@ cases:
       WITH s, m, collect(c.content)[..3] AS claims
       ORDER BY m.ingested_at
       RETURN s.name AS channel, m.title AS title, m.url AS url, claims
+    view: videos
+    slots: {}
     status: draft
 
   - id: video-notes-today
@@ -155,6 +177,8 @@ cases:
       WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
       RETURN n.note_type AS type, n.source_title AS video, n.content AS content
       ORDER BY n.created_at
+    view: video_notes
+    slots: {"window": {"day": "today"}}
     status: draft
 
   - id: latest-news-brief
@@ -166,6 +190,8 @@ cases:
       MATCH (n:Note {source_context: 'scheduled_daily_news_brief', note_type: 'news'})
       RETURN n.created_at AS at, n.content AS brief
       ORDER BY n.created_at DESC LIMIT 1
+    view: daily_brief
+    slots: {}
     status: draft
 
   - id: news-brief-on-date
@@ -179,6 +205,8 @@ cases:
         AND n.created_at < datetime({year: 2026, month: 4, day: 17, timezone: 'America/Detroit'})
       RETURN n.created_at AS at, left(n.content, 300) AS brief
     decide: the right answer is empty (briefs exist for 2026-04-14 and -15 only), and saying so is the test
+    view: daily_brief
+    slots: {"window": {"day": "2026-04-16"}}
     status: draft
 
   - id: all-news-briefs
@@ -188,10 +216,12 @@ cases:
     brain_did: [search_notes]
     reference: |
       MATCH (n:Note {source_context: 'scheduled_daily_news_brief', note_type: 'news'})
-      RETURN n.created_at AS at, n.content AS brief
-      ORDER BY n.created_at
-    decide: all 128 briefs is a map-reduce job, not one context; the query is right, the size is not
-    status: draft
+      RETURN toString(date(datetime({datetime: n.created_at, timezone: 'America/Detroit'}))) AS day, count(n) AS notes
+      ORDER BY day
+    decide: all 129 briefs are over a million characters, a map-reduce job, not one context; the context is the index of days and the reply offers the job
+    view: daily_brief
+    slots: {"as": "by_day"}
+    status: accepted # owner 2026-10-14: the index, then hand off to a job
 
   - id: intel-monitor-today
     question: "What did the intelligence-agency-claims-monitor find today?"
@@ -203,6 +233,8 @@ cases:
       WHERE n.created_at >= datetime({date: date({timezone: 'America/Detroit'}), timezone: 'America/Detroit'})
       RETURN n.note_type AS type, n.content AS finding, n.claim_status AS status
       ORDER BY n.created_at
+    view: intel_findings
+    slots: {"window": {"day": "today"}}
     status: draft
 
   - id: intel-watch-updates
@@ -216,6 +248,8 @@ cases:
       RETURN n.created_at AS at, n.note_type AS type, n.content AS finding, n.claim_status AS status
       ORDER BY n.created_at DESC LIMIT 30
     decide: the word "updates" read as the last 7 days
+    view: intel_findings
+    slots: {"window": {"days": 7}}
     status: draft
 
   - id: deep-dive-latest
@@ -227,6 +261,8 @@ cases:
       MATCH (n:Note {source_context: 'deep_dive'})
       RETURN n.created_at AS at, n.note_type AS type, n.content AS content
       ORDER BY n.created_at DESC LIMIT 5
+    view: deep_dives
+    slots: {}
     status: draft
 
   - id: trump-benefit-analysis
@@ -239,6 +275,8 @@ cases:
       RETURN n.created_at AS at, n.note_type AS type, n.content AS content
       ORDER BY n.created_at DESC
     decide: the tag lives in 2 notes' text; the monitor's notes carry source_context trump_daily_news
+    view: trump_monitor
+    slots: {}
     status: draft
 
   - id: professional-history
@@ -249,6 +287,8 @@ cases:
     reference: |
       MATCH (n:Note {source_context: 'resume'})
       RETURN n.content AS content
+    view: resume
+    slots: {}
     status: draft
 
   # ── Claims ─────────────────────────────────────────────────────────────────
@@ -262,6 +302,8 @@ cases:
       WHERE c.verified_at >= datetime() - duration('P2D')
       RETURN c.claim_status AS status, c.content AS claim, c.verified_at AS at
       ORDER BY c.verified_at DESC
+    view: claims
+    slots: {"window": {"days": 2}, "on": "verified"}
     status: draft
 
   - id: claims-2d
@@ -274,6 +316,8 @@ cases:
       WHERE c.created_at >= datetime() - duration('P2D')
       RETURN c.created_at AS at, c.content AS claim, c.claim_status AS status, c.source_context AS from
       ORDER BY c.created_at DESC
+    view: claims
+    slots: {"window": {"days": 2}}
     status: draft
 
   - id: claim-evidence-shutdown-button
@@ -287,6 +331,8 @@ cases:
       OPTIONAL MATCH (c)-[r:CORROBORATED_BY|CONTRADICTED_BY]->(e:Note)
       RETURN c.content AS claim, c.claim_status AS status, type(r) AS edge, e.source_url AS evidence
     decide: finding the claim is by meaning (here a word match stands in); its evidence is structure. The stored claims name Governor Newsom (California), not the Biden administration, so the right context corrects the question
+    view: claim_evidence
+    slots: {"words": "emergency shutdown"}
     status: draft
 
   - id: nhi-mj12-true
@@ -299,6 +345,8 @@ cases:
       WHERE e.name IN ['mj-12', 'nhi/mj-12']
       RETURN e.name AS entity, c.content AS claim, c.claim_status AS status, c.corroborating_count AS corroborated_by
     decide: the stored entities are mj-12 and nhi/mj-12; matching by entity misses claims that only say it in words
+    view: claims
+    slots: {"entity": "MJ-12"}
     status: draft
 
   # ── Topics and entities ────────────────────────────────────────────────────
@@ -312,6 +360,8 @@ cases:
       OPTIONAL MATCH (n:Note)-[:IN_TOPIC]->(t)
       RETURN t.name AS topic, count(n) AS notes
       ORDER BY notes DESC
+    view: topics
+    slots: {}
     status: draft
 
   - id: mesh-networks
@@ -325,6 +375,8 @@ cases:
       RETURN n.note_type AS type, n.content AS content
       ORDER BY n.created_at DESC LIMIT 30
     decide: the topic narrows; ranking within it is by meaning
+    view: notes
+    slots: {"topic": "off-grid-networking", "kinds": ["semantic", "claim", "source_record"]}
     status: draft
 
   - id: what-about-ai
@@ -337,6 +389,8 @@ cases:
       WHERE n.note_type = 'semantic'
       RETURN n.content AS content
       ORDER BY n.created_at DESC LIMIT 30
+    view: notes
+    slots: {"topic": "ai-ml", "kinds": ["semantic"]}
     status: draft
 
   - id: adam-kinzinger
@@ -350,6 +404,8 @@ cases:
       RETURN n.note_type AS type, n.content AS content, n.claim_status AS status
       ORDER BY n.created_at DESC LIMIT 30
     decide: entity names are stored lower-case; a match on the name as typed misses
+    view: notes
+    slots: {"entity": "Adam Kinzinger", "kinds": ["semantic", "claim", "source_record"]}
     status: draft
 
   - id: nia-status
@@ -363,6 +419,8 @@ cases:
       RETURN n.created_at AS at, n.note_type AS type, n.source_context AS from, left(n.content, 300) AS content
       ORDER BY n.created_at DESC LIMIT 30
     decide: also list the NIA workflows (topic nia) and their last runs?
+    view: notes
+    slots: {"topic": "nia", "window": {"days": 14}}
     status: draft
 
   # ── The brain itself ───────────────────────────────────────────────────────
@@ -375,6 +433,8 @@ cases:
       MATCH (t:ToolDef)
       RETURN count(t) AS tools
     decide: ToolDef is synced from the live registry at startup; list_capabilities is the tool for this
+    view: tools
+    slots: {}
     status: draft
 
   - id: agent-count
@@ -386,6 +446,8 @@ cases:
       MATCH (p:ContextProfile {spawnable: true})
       RETURN p.name AS agent, p.specialty AS specialty
       ORDER BY agent
+    view: agents
+    slots: {}
     status: draft
 
   - id: apis-known
@@ -398,6 +460,8 @@ cases:
       OPTIONAL MATCH (a)-[:EXPOSES]->(e:ApiEndpoint)
       RETURN a.name AS api, a.base_url AS base_url, count(e) AS endpoints
       ORDER BY api
+    view: apis
+    slots: {}
     status: draft
 
   - id: homeassistant-endpoints
@@ -410,6 +474,8 @@ cases:
       RETURN e.method AS method, e.path AS path, e.summary AS summary
       ORDER BY path
     decide: the stored name is home_assistant; "HomeAssistant" as typed matches nothing
+    view: api_endpoints
+    slots: {"api": "home_assistant"}
     status: draft
 
   - id: consolidation-schedule
@@ -421,6 +487,8 @@ cases:
       MATCH (w:Workflow {name: 'consolidate'})
       RETURN w.interval_seconds AS every_seconds, w.enabled AS enabled, w.last_run_at AS last_run, w.next_run_at AS next_run, w.description AS what
     decide: consolidate has no interval or run times stored; it runs from idle sleep, which the graph does not say
+    view: workflow
+    slots: {"name": "consolidate"}
     status: draft
 
   - id: daily-news-fired
@@ -432,6 +500,8 @@ cases:
       MATCH (t:Task {workflow: 'daily-news'})
       RETURN t.created_at AS at, t.status AS status
       ORDER BY t.created_at DESC LIMIT 3
+    view: workflow_runs
+    slots: {"workflow": "daily-news"}
     status: draft
 
   - id: last-5-tasks
@@ -443,6 +513,8 @@ cases:
       MATCH (t:Task)
       RETURN t.updated_at AS at, coalesce(t.workflow, left(t.goal, 80)) AS task, t.status AS status
       ORDER BY t.updated_at DESC LIMIT 5
+    view: tasks_recent
+    slots: {"n": 5}
     status: draft
 
   - id: stuck-tasks
@@ -456,6 +528,8 @@ cases:
       RETURN j.status AS status, j.tool_name AS tool, j.started_at AS started, j.attempt_count AS attempts, j.error AS error
       ORDER BY j.created_at
     decide: which statuses mean stuck; today the graph holds only completed, dead and dead_letter jobs
+    view: jobs_open
+    slots: {}
     status: draft
 
   - id: jobs-in-queue
@@ -468,6 +542,8 @@ cases:
       WHERE NOT j.status IN ['completed', 'dead', 'dead_letter']
       RETURN j.status AS status, j.tool_name AS tool, j.priority AS priority, j.created_at AS queued
       ORDER BY j.priority, j.created_at
+    view: jobs_open
+    slots: {}
     status: draft
 
   - id: workflows-broken-tools
@@ -482,6 +558,8 @@ cases:
       WITH w, tool WHERE NOT EXISTS { MATCH (:ToolDef {name: tool}) }
       RETURN w.name AS workflow, collect(DISTINCT tool) AS unknown_tools
     decide: steps is a JSON string (key tool_name) and there is no APOC; this string split is fragile (the spec should own it)
+    view: workflows_unknown_tools
+    slots: {}
     status: draft
 
   # ── Todos (workflow queries that ran for months) ───────────────────────────
@@ -495,6 +573,8 @@ cases:
       WHERE t.status IN ['pending', 'in_progress']
       RETURN t.title AS title, t.priority AS priority, t.due_at AS due, t.status AS status
       ORDER BY t.priority, t.due_at
+    view: todos_open
+    slots: {}
     status: draft
 
   - id: todos-overdue
@@ -509,6 +589,8 @@ cases:
         AND date(t.due_at) < date({timezone: 'America/Detroit'})
       RETURN t.title AS title, t.due_at AS due
       ORDER BY t.due_at
+    view: todos_overdue
+    slots: {}
     status: draft
 
   # ── Telemetry, not the graph ───────────────────────────────────────────────
@@ -544,6 +626,8 @@ cases:
       RETURN n.note_type AS type, n.source_context AS from, n.content AS content
       ORDER BY n.created_at DESC LIMIT 20
     decide: the only stored Nebula knowledge is 5 `inference` notes from `reason` (model output, no source), so the right context says so
+    view: notes
+    slots: {"topic": "off-grid-networking", "words": "nebula", "kinds": ["semantic", "claim", "source_record", "inference"]}
     status: draft
 
   - id: fine-tuning-how

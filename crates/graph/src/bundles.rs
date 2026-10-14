@@ -49,6 +49,7 @@ pub const MERGED_KINDS: &[&str] = &[
     "mcp-servers",
     "schemas",
     "tools",
+    "views",
     "apis",
     "topics",
     "search-engines",

@@ -1,0 +1,8 @@
+name: intel_findings
+kind: notes
+description: >-
+  What the intelligence agency watch (the intelligence-agency-claims-monitor
+  workflow) found: its reports and the claims it recorded.
+words: [intelligence agency watch, intel monitor, agency findings, intelligence-agency-claims-monitor, intelligence agencies]
+preset:
+  from: [intelligence_agency_watch]
