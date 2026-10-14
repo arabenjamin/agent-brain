@@ -1,6 +1,6 @@
 # Why: dev_docs get yaml/schedules-intelligence-agency-claims-monitor-1
 name: intelligence-agency-claims-monitor
-description: "Daily sweep of news about intelligence agencies (CIA, NSA, FBI, Mossad, GRU/FSB/SVR, MI6, MSS) making or facing claims, via ApiTube + SearXNG news. Dated delta against the prior report, stored as a source_record with claims extracted."
+description: "Daily sweep of news about intelligence agencies (CIA, NSA, FBI, Mossad, GRU/FSB/SVR, MI6, MSS) making or facing claims, via three news sweeps (the search ladder, Exa first). Dated delta against the prior report, stored as a source_record with claims extracted."
 topic: national-security
 kind: monitor
 every: 1d
@@ -8,7 +8,11 @@ data_class: public
 steps:
   - tool_name: neo4j_query
     arguments:
-      cypher: "MATCH (n:Note) WHERE n.source_context = 'intelligence_agency_watch' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+      # source_record only: the claim step stores its claims under the same
+      # source_context after the report, so without it the "prior report" was
+      # yesterday's last claim, one line with no date, and the delta re-listed
+      # a week of known items (2026-10-14: 6 of 10 "new" were yesterday's).
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'intelligence_agency_watch' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
     priority: 1
     max_attempts: 3
     provider_hint: ollama
@@ -24,68 +28,10 @@ steps:
     provider_hint: ollama
     description: "Bank prior report"
 
-  # ── ApiTube: dated, structured articles (results[]: title, href, published_at, source.domain) ──
-  - tool_name: http_request
-    arguments:
-      method: GET
-      url: "https://api.apitube.io/v1/news/everything?title=CIA&language.code=en&sort.by=published_at&per_page=2"
-      context_name: apitube
-    priority: 1
-    max_attempts: 3
-    provider_hint: ollama
-    description: "ApiTube: CIA headlines"
-
-  - tool_name: push_context
-    arguments:
-      session_id: "intel-{{task_id}}"
-      content: "## APITUBE — title contains CIA (JSON results[]: title, href, published_at, source.domain)\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-    description: "Bank CIA articles"
-
-  - tool_name: http_request
-    arguments:
-      method: GET
-      url: "https://api.apitube.io/v1/news/everything?title=Mossad&language.code=en&sort.by=published_at&per_page=2"
-      context_name: apitube
-    priority: 1
-    max_attempts: 3
-    provider_hint: ollama
-    description: "ApiTube: Mossad headlines"
-
-  - tool_name: push_context
-    arguments:
-      session_id: "intel-{{task_id}}"
-      content: "## APITUBE — title contains Mossad (JSON results[]: title, href, published_at, source.domain)\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-    description: "Bank Mossad articles"
-
-  - tool_name: http_request
-    arguments:
-      method: GET
-      url: "https://api.apitube.io/v1/news/everything?title=espionage&language.code=en&sort.by=published_at&per_page=2"
-      context_name: apitube
-    priority: 1
-    max_attempts: 3
-    provider_hint: ollama
-    description: "ApiTube: espionage headlines"
-
-  - tool_name: push_context
-    arguments:
-      session_id: "intel-{{task_id}}"
-      content: "## APITUBE — title contains espionage (JSON results[]: title, href, published_at, source.domain)\n{{_prev}}"
-      role: observation
-    priority: 1
-    max_attempts: 2
-    provider_hint: ollama
-    description: "Bank espionage articles"
-
-  # ── SearXNG news sweeps (approved domains only) ──
+  # ApiTube removed 2026-10-14: its responses were ~200K of the report step's
+  # 232K characters (entity and sentiment metadata for 6 articles, 5 of them
+  # aggregator copies or fringe) while the sweeps carried the report.
+  # ── News sweeps (approved domains only) ──
   - tool_name: search_web
     arguments:
       query: "CIA NSA FBI intelligence agency claims allegations report"
@@ -166,8 +112,9 @@ steps:
   - tool_name: reason
     arguments:
       question: |
-        The CONTEXT holds a PRIOR REPORT, then three ApiTube article lists and
-        three news-search sweeps about intelligence agencies. Today is {{date}}.
+        The CONTEXT holds a PRIOR REPORT (its title line carries its date),
+        then three news-search sweeps about intelligence agencies. Today is
+        {{date}}.
 
         Write a daily watch report with exactly these sections:
 
@@ -175,8 +122,9 @@ steps:
         One line per item: `<date> — <agency> — <who claims what> — <outlet> — <URL>`.
         Gates, applied in order:
         1. DATE OR DROP. An item needs a publication date from the CONTEXT
-           (ApiTube `published_at`, or a date in the search result). No date,
-           it goes under UNDATED, never here.
+           (the search result's `date`). No date, it goes under UNDATED, never
+           here. An event the snippet dates earlier ("in July, ...") carries
+           that earlier date, not the article's.
         2. LAST 7 DAYS. Only items dated within 7 days before {{date}}. This
            holds on the first run too: an empty PRIOR REPORT does not make a
            2016 article new. News searches return evergreen coverage; older

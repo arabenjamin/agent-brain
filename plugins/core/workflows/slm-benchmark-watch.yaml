@@ -14,7 +14,9 @@ steps:
   #    inherit source_context and would otherwise return a partial section.
   - tool_name: neo4j_query
     arguments:
-      cypher: "MATCH (n:Note) WHERE (n.source_context = 'slm_benchmark_watch' OR n.content STARTS WITH 'BASELINE: State of SLMs') AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
+      # Claims are stored under the same source_context after the report: without
+      # this filter the "prior report" was the last claim (fixed 2026-10-14).
+      cypher: "MATCH (n:Note) WHERE (n.source_context = 'slm_benchmark_watch' OR n.content STARTS WITH 'BASELINE: State of SLMs') AND coalesce(n.note_type, '') <> 'claim' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 2"
     priority: 1
     max_attempts: 3
     provider_hint: ollama
