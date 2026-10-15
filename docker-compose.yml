@@ -201,10 +201,6 @@ services:
       # Anakin.io: headless-browser fallback when ingest_article cannot read a
       # page itself (blocked or script-rendered). ~1 of 300 credits/month each.
       - ANAKINIO_API_KEY=${ANAKINIO_API_KEY:-}
-      # ApiTube news API key — injected into http_request via the seeded `apitube`
-      # ApiContext (X-API-Key header). Used by the daily news brief for structured,
-      # dated articles alongside google_news. Free tier is 100 requests/day.
-      - APITUBE_API_KEY=${APITUBE_API_KEY:-}
       # ACLED conflict-event API (acled_events). OAuth password grant — ACLED has
       # no API keys, so the account's email + password. Unset => tool not registered.
       - ACLED_EMAIL=${ACLED_EMAIL:-}

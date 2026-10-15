@@ -1,6 +1,0 @@
-name: apitube
-description: "ApiTube news API — structured, dated news articles (results[]: title, href, published_at, source.domain, description)"
-base_url: https://api.apitube.io/v1
-auth_scheme: header
-auth_param: X-API-Key
-auth_env_var: APITUBE_API_KEY
