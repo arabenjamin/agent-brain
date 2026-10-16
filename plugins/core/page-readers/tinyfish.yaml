@@ -1,0 +1,21 @@
+# TinyFish Fetch: free up to 1,000 URLs a day (counted per successful URL,
+# resets 00:00 UTC), 150 URLs a minute; past the allowance a call needs wallet
+# credit (402). Renders JavaScript when needed and returns markdown. Its
+# allowance is separate from TinyFish Search's. Measured 2026-10-16: a Reuters
+# section page (which blocks plain fetches) read in 0.2 s.
+name: tinyfish
+rank: 1
+key_env: TINYFISH_API_KEY
+budget: { free: 1000, per: day, per_minute: 150 }
+request:
+  url: https://api.fetch.tinyfish.ai
+  auth: { header: X-API-Key }
+  urls_field: urls
+  fixed: { format: markdown }
+  timeout_secs: 120
+response:
+  text: [results.0.text]
+  title: results.0.title
+  error: [errors.0.error, errors.0.message]
+  spent_status: [402]
+  spent_words: [insufficient_credits]

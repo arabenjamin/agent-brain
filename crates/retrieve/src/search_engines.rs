@@ -664,7 +664,12 @@ pub struct Answer {
 /// What a successful call cost: the answer's own price for a usd budget
 /// (else its default), one call otherwise.
 pub fn units_of(spec: &EngineSpec, json: &Value) -> f64 {
-    match &spec.budget {
+    budget_units(spec.budget.as_ref(), json)
+}
+
+/// [`units_of`] for any provider with a budget (`page_readers` too).
+pub fn budget_units(budget: Option<&Budget>, json: &Value) -> f64 {
+    match budget {
         Some(b) if b.unit == BudgetUnit::Usd => b
             .cost_field
             .as_deref()
@@ -838,7 +843,7 @@ pub fn results(
 }
 
 /// `a.b.0.c` into a JSON value; numeric segments index arrays.
-fn path_get<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
+pub fn path_get<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.')
         .try_fold(v, |cur, seg| match seg.parse::<usize>() {
             Ok(i) if cur.is_array() => cur.get(i),

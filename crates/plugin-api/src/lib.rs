@@ -291,6 +291,25 @@ pub trait Search: Send + Sync {
     async fn web(&self, query: &str, count: u8) -> Result<String, String>;
 }
 
+/// Reading a web page through the host's page readers (`read_page`: free
+/// rendering services in rotation, then a direct fetch).
+#[async_trait]
+pub trait Reader: Send + Sync {
+    /// The page as the first reader that returned enough text read it.
+    /// `Err` names every reader tried and why each failed.
+    async fn read(&self, url: &str) -> Result<ReadPage, String>;
+}
+
+/// A page as [`Reader::read`] returns it.
+#[derive(Debug, Clone)]
+pub struct ReadPage {
+    /// The reader that read it (`tinyfish`, `anakin`, `direct`, …).
+    pub reader: String,
+    pub title: Option<String>,
+    /// Markdown from a rendering service, plain text from the direct fetch.
+    pub text: String,
+}
+
 /// Running the host's workflows.
 #[async_trait]
 pub trait Workflows: Send + Sync {
@@ -341,6 +360,7 @@ pub struct PluginContext {
     pub feed: Option<Arc<dyn Feed>>,
     pub introspection: Option<Arc<dyn Introspection>>,
     pub search: Option<Arc<dyn Search>>,
+    pub reader: Option<Arc<dyn Reader>>,
     files: Option<FilesFn>,
     root: Option<PathBuf>,
     background: bool,
@@ -363,6 +383,7 @@ impl PluginContext {
             feed: None,
             introspection: None,
             search: None,
+            reader: None,
             files: None,
             root: None,
             background: false,

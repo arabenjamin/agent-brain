@@ -251,7 +251,7 @@ fn parse<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Option<T> {
     }
 }
 
-/// Check one seed file (`sources`, `mcp-servers`, `apis`, `search-engines`) as its
+/// Check one seed file (`sources`, `mcp-servers`, `apis`, `search-engines`, `page-readers`) as its
 /// seeder would parse it; a kind a compiled plugin owns (`sources-media`)
 /// goes to that plugin. `Err` says what is wrong.
 pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
@@ -296,6 +296,10 @@ pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
         "search-engines" => {
             let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
             agent_brain_retrieve::search_engines::parse(&text)?;
+        }
+        "page-readers" => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+            agent_brain_retrieve::page_readers::parse(&text)?;
         }
         other => return Err(format!("'{other}' is not an ON-CREATE seed kind")),
     }

@@ -113,8 +113,9 @@ pub struct MediaService {
     /// Scratch dir for yt-dlp subtitle/audio downloads (cleaned per call).
     media_dir: std::path::PathBuf,
     http: reqwest::Client,
-    /// Anakin.io key for the rendering fallback in `fetch_article`.
-    anakin_key: Option<String>,
+    /// The host's page readers, `fetch_article`'s fallback for a page our own
+    /// fetch cannot read (rendering services in rotation: TinyFish, Anakin).
+    reader: Option<Arc<dyn agent_brain_plugin_api::Reader>>,
 }
 
 impl MediaService {
@@ -132,10 +133,14 @@ impl MediaService {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::env::temp_dir()),
             http: reqwest::Client::new(),
-            anakin_key: std::env::var("ANAKINIO_API_KEY")
-                .ok()
-                .filter(|k| !k.trim().is_empty()),
+            reader: None,
         }
+    }
+
+    /// Give `fetch_article` the host's page readers as its fallback.
+    pub fn with_reader(mut self, reader: Option<Arc<dyn agent_brain_plugin_api::Reader>>) -> Self {
+        self.reader = reader;
+        self
     }
 
     // ========================================================================
@@ -825,28 +830,30 @@ impl MediaService {
         {
             anyhow::bail!("article fetch failed: HTTP {code}");
         }
-        // 2. Blocked, or no article in what we got: a headless browser may
-        //    still read it (paywall-lite, script-rendered, bot-blocked).
-        let fallback = match self.anakin_key.as_deref() {
-            Some(key) => match self.anakin_markdown(url, key).await {
-                Ok(md) => {
-                    let text = markdown_article_text(&md);
+        // 2. Blocked, or no article in what we got: the host's page readers
+        //    (rendering services in rotation) may still read it
+        //    (paywall-lite, script-rendered, bot-blocked).
+        let fallback = match &self.reader {
+            Some(reader) => match reader.read(url).await {
+                Ok(page) => {
+                    let text = markdown_article_text(&page.text);
                     if text.len() >= ARTICLE_MIN_CHARS {
                         let meta = match &html {
                             Some(h) => article_meta(url, h),
-                            None => meta_from_markdown(url, &md),
+                            None => meta_from_markdown(url, &page.text),
                         };
-                        tracing::info!(url, chars = text.len(), "article read via Anakin fallback");
+                        tracing::info!(url, chars = text.len(), reader = %page.reader, "article read via the page readers");
                         return Ok((meta, clip_article(text)));
                     }
                     format!(
-                        "Anakin rendered it but found {} chars of article text",
+                        "{} read it but found {} chars of article text",
+                        page.reader,
                         text.len()
                     )
                 }
-                Err(e) => format!("Anakin fallback failed: {e}"),
+                Err(e) => format!("page readers failed: {e}"),
             },
-            None => "no Anakin key for a rendering fallback".to_string(),
+            None => "no page readers for a rendering fallback".to_string(),
         };
         let first = match own_status {
             Some(code) => format!("HTTP {code} to a direct fetch"),
@@ -889,41 +896,6 @@ impl MediaService {
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
-
-    /// Render a page with Anakin's headless browser and return its markdown.
-    /// ~1 credit (300/month free). Synchronous endpoint; a 202 (still running
-    /// after ~90 s) is treated as a failure rather than polled.
-    async fn anakin_markdown(&self, url: &str, key: &str) -> anyhow::Result<String> {
-        let resp = self
-            .http
-            .post("https://api.anakin.io/v1/url-scraper/scrape")
-            .header("X-API-Key", key)
-            .json(&serde_json::json!({"url": url, "useBrowser": true}))
-            .timeout(std::time::Duration::from_secs(120))
-            .send()
-            .await?;
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(Value::Null);
-        if status.as_u16() != 200 {
-            let msg = body
-                .get("error")
-                .or_else(|| body.get("message"))
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-            anyhow::bail!("HTTP {status} {}", msg.replace(key, "<redacted>"));
-        }
-        if body.get("status").and_then(|v| v.as_str()) != Some("completed") {
-            anyhow::bail!(
-                "job not completed: {}",
-                body.get("status").cloned().unwrap_or(Value::Null)
-            );
-        }
-        Ok(body
-            .get("markdown")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string())
-    }
 }
 
 enum FetchError {
@@ -943,7 +915,7 @@ fn clip_article(text: String) -> String {
     text[..cut].to_string()
 }
 
-/// Metadata when only Anakin's markdown was readable: the first `# ` heading
+/// Metadata when only a page reader's markdown was readable: the first `# ` heading
 /// as title, the host as site.
 fn meta_from_markdown(url: &str, md: &str) -> VideoMeta {
     let title = md
@@ -1140,7 +1112,7 @@ fn keep_article_lines(text: &str, link_texts: &[String]) -> String {
     lines.join("\n")
 }
 
-/// Readable text of an article from Anakin's markdown: images dropped, links
+/// Readable text of an article from a page reader's markdown: images dropped, links
 /// reduced to their text, block markers stripped, then the same paragraph
 /// filter as HTML extraction (a line that was wholly a link is navigation).
 pub fn markdown_article_text(md: &str) -> String {
@@ -1818,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn anakin_markdown_becomes_article_text() {
+    fn rendered_markdown_becomes_article_text() {
         let md = "# Toronto-Based VPN Provider Plans to Quit Canada\n\n\
             ### Date Published\n\nOctober 6, 2026\n\n\
             [Law & Policy](https://citizenlab.ca/focus-area/law-policy/) | [bill c-22](https://citizenlab.ca/topic/bill-c-22/)\n\n\

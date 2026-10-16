@@ -6,7 +6,9 @@
 
 pub mod http;
 pub mod mcp_client;
+pub mod page_readers;
 pub mod query;
+pub mod read;
 pub mod search;
 pub mod search_engines;
 pub mod search_quality;

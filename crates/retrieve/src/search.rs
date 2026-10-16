@@ -1200,6 +1200,8 @@ impl SearchSkill {
             Err(e) => return ToolCallResult::error(format!("Failed to read search usage: {e}")),
         };
         stats["rotation"] = self.rotation_state(t);
+        // read_page's readers ride the same pacing; their ledger is read_usage.
+        stats["page_reads"] = crate::read::ReadSkill::new(Some(t.clone())).report(window);
         // Links are kept 90 days; an all-time window reads what is there.
         stats["used"] = self.used_results(t, window.unwrap_or(90 * 24)).await;
         ToolCallResult::success_json(stats)

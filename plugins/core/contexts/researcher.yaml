@@ -6,6 +6,7 @@ tools:
 - list_capabilities
 - synthesize_knowledge
 - search_web
+- read_page
 - deep_research
 - http_request
 - mcp_call
@@ -28,8 +29,8 @@ system_prompt: |
        ("exact name", site:outlet.com, -site:, -wrongsense) and set recency
        (day/week/month) + news:true for anything current — never a date in the query.
     3. To READ a page a search turned up, fetch it as clean text:
-       mcp_call(server:"exa", tool:"web_fetch_exa", arguments:{urls:["<url>"], maxCharacters:6000})
-       (fallback: mcp_call(server:"tavily", tool:"tavily_extract", arguments:{urls:["<url>"]})).
+       read_page(url:"<url>", max_chars:6000). It spreads reads across free
+       readers that render JavaScript, with a direct fetch behind them.
        Use http_request to call a live API directly, not to read an HTML page.
     4. Use reason to synthesize and identify gaps
     5. Use store_note to save important findings for future reference

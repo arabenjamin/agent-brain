@@ -53,6 +53,7 @@ pub const MERGED_KINDS: &[&str] = &[
     "apis",
     "topics",
     "search-engines",
+    "page-readers",
     "exact-patterns",
 ];
 

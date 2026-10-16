@@ -1,0 +1,22 @@
+# Anakin.io headless browser: 300 credits a month free, about one per page.
+# Synchronous; an answer still running after ~90 s comes back unfinished and
+# counts as a failure. Until 2026-10-16 this was ingest_article's only
+# rendering fallback (plugins/media); it is now one reader in the rotation.
+name: anakin
+rank: 2
+key_env: ANAKINIO_API_KEY
+# weight 0.2: its first reads took ~20 s against TinyFish's ~1 s (2026-10-16),
+# and it has 300 a month; TinyFish takes ~5 reads for each of its.
+budget: { free: 300, per: month, weight: 0.2 }
+request:
+  url: https://api.anakin.io/v1/url-scraper/scrape
+  auth: { header: X-API-Key }
+  url_field: url
+  fixed: { useBrowser: true }
+  timeout_secs: 120
+response:
+  text: [markdown]
+  require: { path: status, equals: completed }
+  error: [error]
+  spent_status: [402]
+  spent_words: [credits]

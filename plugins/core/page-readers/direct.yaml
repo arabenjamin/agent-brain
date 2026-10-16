@@ -1,0 +1,12 @@
+# Our own GET: free, unlimited, and no third party sees the URL. HTML is
+# reduced to text crudely (boilerplate elements dropped, blocks as lines), so
+# for web pages the services above go first and this is the fallback. Raw
+# files are the exception: the exact bytes beat any service's markdown.
+name: direct
+rank: 9
+builtin: direct
+first_for:
+  hosts:
+    - raw.githubusercontent.com
+    - gist.githubusercontent.com
+  extensions: [txt, md, rst, json, yaml, yml, toml, csv, xml, rs, py, go, js, ts, c, h, cpp, java, sh]

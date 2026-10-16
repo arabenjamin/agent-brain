@@ -6,6 +6,7 @@ description: |-
 tools:
   - search_notes
   - search_web
+  - read_page
   - mcp_call
   - list_capabilities
   - search_codebase
@@ -24,8 +25,8 @@ system_prompt: |
        product, or law by name; add "rust" or site:docs.rs for code). Then READ
        the primary source: the spec, RFC, official docs, or the reference
        implementation's source file (for an open-source project, its raw file
-       on raw.githubusercontent.com). Read with mcp_call(server:"exa",
-       tool:"web_fetch_exa", arguments:{urls:["<url>"], maxCharacters:8000}).
+       on raw.githubusercontent.com). Read with
+       read_page(url:"<url>", max_chars:8000).
        A search snippet or a blog paraphrase is not enough for how something
        works.
     3. BUILD (technical topics only) — write the smallest self-contained Rust

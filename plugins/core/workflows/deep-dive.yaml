@@ -12,7 +12,9 @@ steps:
       max_rounds: 16
       # Why: dev_docs get yaml/chains-deep-dive-2
       verify:
-        require_tools: [mcp_call]
+        # It must have read a page (read_page; before 2026-10-16, mcp_call to
+        # Exa's paid web_fetch_exa).
+        require_tools: [read_page]
         code_requires_tests: true
         code_requires_clippy_clean: true
         # The verifier compiles, tests and lints the code SHOWN in the answer

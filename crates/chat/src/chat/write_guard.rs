@@ -13,6 +13,7 @@ use super::*;
 /// add theirs through `Plugin::retrieval_tools` (media: `ingest_media`).
 pub(super) const RETRIEVAL_TOOLS: &[&str] = &[
     "search_web",
+    "read_page",
     "search_notes",
     "neo4j_query",
     "http_request",

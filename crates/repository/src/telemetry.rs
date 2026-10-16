@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
-use crate::{EngineUse, SearchAttempt};
+use crate::{EngineUse, Ledger, ReadAttempt, SearchAttempt};
 
 /// How long each search result link is kept for the "used" report.
 const SEARCH_RESULTS_KEEP_DAYS: i64 = 90;
@@ -142,6 +142,25 @@ impl TelemetryClient {
             -- Each attempt's result links, so a report can tell which results
             -- were later used (cited as claim evidence, ingested). Pruned to
             -- 90 days at startup.
+            -- One row per read_page reader attempt (2026-10-16): the page
+            -- readers' quota ledger and performance record.
+            CREATE TABLE IF NOT EXISTS read_usage (
+                id          TEXT PRIMARY KEY,
+                call_id     TEXT,
+                reader      TEXT NOT NULL,
+                url         TEXT,
+                success     BOOLEAN,
+                chars       INTEGER,
+                duration_ms INTEGER,
+                error_kind  TEXT,
+                units       DOUBLE,
+                picked      TEXT,
+                purpose     TEXT,
+                tool        TEXT,
+                task_id     TEXT,
+                created_at  TIMESTAMPTZ DEFAULT current_timestamp
+            );
+
             CREATE TABLE IF NOT EXISTS search_results (
                 usage_id   TEXT NOT NULL,
                 rank       INTEGER,
@@ -655,6 +674,21 @@ impl TelemetryClient {
         engine: &str,
         period_start: chrono::DateTime<Utc>,
     ) -> Result<EngineUse> {
+        self.provider_use(Ledger::Search, engine, period_start)
+    }
+
+    /// [`Self::engine_use`] for either ledger: `search_usage` by `engine`,
+    /// `read_usage` by `reader`.
+    pub fn provider_use(
+        &self,
+        ledger: Ledger,
+        name: &str,
+        period_start: chrono::DateTime<Utc>,
+    ) -> Result<EngineUse> {
+        let (table, column) = match ledger {
+            Ledger::Search => ("search_usage", "engine"),
+            Ledger::Read => ("read_usage", "reader"),
+        };
         let conn = self
             .conn
             .lock()
@@ -671,7 +705,7 @@ impl TelemetryClient {
             (now - chrono::Duration::hours(1)).to_rfc3339(),
             (now - chrono::Duration::minutes(1)).to_rfc3339(),
         );
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT
                COALESCE(SUM(CASE WHEN success AND created_at >= CAST(? AS TIMESTAMPTZ)
                                  THEN units END), 0) AS period_units,
@@ -680,17 +714,17 @@ impl TelemetryClient {
                COUNT(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END),
                COUNT(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END),
                COUNT(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END)
-             FROM search_usage
-             WHERE engine = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
-        )?;
+             FROM {table}
+             WHERE {column} = ? AND created_at >= CAST(? AS TIMESTAMPTZ)"
+        ))?;
         // The scan starts at the earliest cutoff it needs (just after
         // midnight, the last hour reaches back past the day's start).
         let earliest = period.clone().min(day.clone()).min(hour.clone());
         let row = stmt.query_row(
-            params![period, period, day, hour, minute, engine, earliest],
+            params![period, period, day, hour, minute, name, earliest],
             |r| {
                 Ok(EngineUse {
-                    engine: engine.to_string(),
+                    engine: name.to_string(),
                     period_units: r.get::<_, f64>(0)?,
                     period_unpriced: r.get::<_, i64>(1)?,
                     day_calls: r.get::<_, i64>(2)?,
@@ -700,6 +734,87 @@ impl TelemetryClient {
             },
         )?;
         Ok(row)
+    }
+
+    /// Record one `read_page` reader attempt.
+    pub fn record_read_attempt(&self, a: &ReadAttempt) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let url: String = a.url.chars().take(1000).collect();
+        conn.execute(
+            "INSERT INTO read_usage
+             (id, call_id, reader, url, success, chars, duration_ms, error_kind,
+              units, picked, purpose, tool, task_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                a.call_id,
+                a.reader,
+                url,
+                a.success,
+                a.chars,
+                a.duration_ms,
+                a.error_kind,
+                a.units,
+                a.picked,
+                a.purpose,
+                a.tool,
+                a.task_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Per reader: attempts, successes, failures by kind, units, median
+    /// text length and latency, and how each was picked.
+    pub fn get_read_stats(&self, window_hours: Option<i64>) -> Result<serde_json::Value> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let cutoff = window_hours
+            .map(|h| (Utc::now() - chrono::Duration::hours(h)).to_rfc3339())
+            .unwrap_or_else(|| "1970-01-01T00:00:00+00:00".to_string());
+        let mut stmt = conn.prepare(
+            "SELECT reader,
+                    COUNT(*) AS attempts,
+                    SUM(CASE WHEN success THEN 1 ELSE 0 END) AS successes,
+                    SUM(CASE WHEN error_kind = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted,
+                    SUM(CASE WHEN error_kind = 'too_little_text' THEN 1 ELSE 0 END) AS too_little_text,
+                    SUM(units) AS units,
+                    MEDIAN(CASE WHEN success THEN chars END) AS median_chars,
+                    AVG(duration_ms) AS avg_duration_ms,
+                    SUM(CASE WHEN picked = 'rotation' THEN 1 ELSE 0 END) AS by_rotation,
+                    SUM(CASE WHEN picked = 'direct' THEN 1 ELSE 0 END) AS by_direct,
+                    SUM(CASE WHEN picked = 'fallback' THEN 1 ELSE 0 END) AS by_fallback,
+                    SUM(CASE WHEN picked = 'pinned' THEN 1 ELSE 0 END) AS by_pin
+             FROM read_usage
+             WHERE created_at >= CAST(? AS TIMESTAMPTZ)
+             GROUP BY reader ORDER BY attempts DESC",
+        )?;
+        let rows = stmt.query_map(params![cutoff], |row| {
+            let n = |i: usize| row.get::<_, Option<i64>>(i);
+            Ok(serde_json::json!({
+                "reader": row.get::<_, String>(0)?,
+                "attempts": row.get::<_, i64>(1)?,
+                "successes": n(2)?.unwrap_or(0),
+                "quota_exhausted": n(3)?.unwrap_or(0),
+                "too_little_text": n(4)?.unwrap_or(0),
+                "units": row.get::<_, Option<f64>>(5)?,
+                "median_chars": row.get::<_, Option<f64>>(6)?,
+                "avg_duration_ms": row.get::<_, Option<f64>>(7)?.map(f64::round),
+                "picked": {
+                    "rotation": n(8)?.unwrap_or(0),
+                    "direct": n(9)?.unwrap_or(0),
+                    "fallback": n(10)?.unwrap_or(0),
+                    "pinned": n(11)?.unwrap_or(0),
+                },
+            }))
+        })?;
+        let readers: Vec<serde_json::Value> = rows.filter_map(|r| r.ok()).collect();
+        Ok(serde_json::json!({ "window_hours": window_hours, "readers": readers }))
     }
 
     /// `(engine, link)` for every result returned in the last `window_hours`.
@@ -737,6 +852,22 @@ impl TelemetryClient {
         let cutoff = (Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
         let mut stmt = conn.prepare(
             "SELECT DISTINCT engine FROM search_usage
+             WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
+        )?;
+        let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Readers that recorded `error_kind` within the last `hours`
+    /// ([`Self::search_engines_with_recent_errors`] for `read_usage`).
+    pub fn readers_with_recent_errors(&self, error_kind: &str, hours: i64) -> Result<Vec<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let cutoff = (Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT reader FROM read_usage
              WHERE error_kind = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
         )?;
         let rows = stmt.query_map(params![error_kind, cutoff], |row| row.get::<_, String>(0))?;

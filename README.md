@@ -114,7 +114,7 @@ as a *successful* tool call, so the model can fix the code rather than burn a
 retry. Offered only when `SANDBOX_URL` (or `RUST_SANDBOX_URL`, for `language: "rust"`) is set.
 
 ### Other
-`search_web`, `get_search_usage`
+`search_web`, `read_page`, `get_search_usage`
 
 `search_web` spreads its searches across the free allowances: each engine file
 in `plugins/*/search-engines/` may declare a `budget` (Exa $10/month, Tavily
@@ -126,6 +126,11 @@ cannot fail the call (`SEARCH_ROTATION=off` restores the plain ladder).
 `get_search_usage` reports each engine's burn, its standing in the rotation,
 who searched, and quality hints: dated, in-window and known-source shares, and
 how many of its results were later cited as claim evidence.
+
+`read_page` turns a URL into text the same way: the page readers in
+`plugins/*/page-readers/` (TinyFish Fetch 1,000/day, Anakin 300/month) are
+paced and rotated, with our own direct fetch behind them (and first for raw
+files). `ingest_article` uses the same readers when its own fetch is blocked.
 
 ## Connect via HTTP
 

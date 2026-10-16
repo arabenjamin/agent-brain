@@ -575,6 +575,10 @@ impl BrainCore {
             search = search.with_knowledge(Arc::clone(k));
         }
         skills.push(Arc::new(search));
+        // read_page: a URL to text, spread across the free page readers.
+        skills.push(Arc::new(agent_brain_retrieve::read::ReadSkill::new(
+            self.storage.telemetry.clone(),
+        )));
 
         // Generic Neo4j + DuckDB primitives.
         let query_skill = Arc::new(QuerySkill::new(

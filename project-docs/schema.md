@@ -108,6 +108,10 @@ One row per `search_web` engine *attempt* (a failover writes one per engine trie
 | `recency`, `news` | TEXT, BOOLEAN | What was asked for |
 | `dated`, `in_window`, `known_source`, `domains` | INTEGER | Quality hints over the results: carrying a parseable date, inside the requested window (NULL without one), on any `:SourceList` domain, distinct hosts |
 
+### `read_usage`
+
+One row per `read_page` reader attempt (`crates/retrieve/src/read.rs`): the page readers' quota ledger and the rotation's pacing input. Columns: `id`, `call_id`, `reader`, `url` (first 1,000 chars), `success`, `chars` (text returned), `duration_ms`, `error_kind` (`quota_exhausted`, `rate_limited`, `blocked`, `too_little_text` = billed but under 200 chars, `network_error`, `api_error`), `units`, `picked` (`rotation`, `direct` = raw file, `pinned`, `fallback`, `ladder`), `purpose`, `tool`, `task_id`, `created_at`. Reported under `page_reads` by `get_search_usage`.
+
 ### `search_results`
 
 Each successful attempt's result links in rank order (`usage_id` → `search_usage.id`, `rank`, `link`, `created_at`), kept 90 days. `get_search_usage` matches them against links cited as claim evidence (`CORROBORATED_BY`/`CONTRADICTED_BY` `sources`) or ingested (`Note.source_url`) to report each engine's *used* share.

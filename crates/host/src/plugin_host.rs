@@ -74,6 +74,9 @@ impl Host {
             .telemetry
             .clone()
             .map(|t| Arc::new(HostTelemetry(t)) as Arc<dyn Telemetry>);
+        ctx.reader = Some(Arc::new(HostReader(
+            agent_brain_retrieve::read::ReadSkill::new(self.telemetry.clone()),
+        )));
         ctx.search = Some(Arc::new(HostSearch(
             agent_brain_retrieve::search::SearchSkill::new(
                 self.telemetry.clone(),
@@ -204,6 +207,22 @@ impl Llm for HostLlm {
 }
 
 /// `search_web` as the claim verifier called it from inside the core.
+struct HostReader(agent_brain_retrieve::read::ReadSkill);
+
+#[async_trait]
+impl agent_brain_plugin_api::Reader for HostReader {
+    async fn read(&self, url: &str) -> Result<agent_brain_plugin_api::ReadPage, String> {
+        self.0
+            .read(url, None)
+            .await
+            .map(|p| agent_brain_plugin_api::ReadPage {
+                reader: p.reader,
+                title: p.title,
+                text: p.text,
+            })
+    }
+}
+
 struct HostSearch(agent_brain_retrieve::search::SearchSkill);
 
 #[async_trait]

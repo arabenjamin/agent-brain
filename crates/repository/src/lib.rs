@@ -60,6 +60,34 @@ pub struct SearchAttempt {
     pub links: Vec<String>,
 }
 
+/// One `read_page` reader attempt (`read_usage`): the page-reading twin of
+/// [`SearchAttempt`], read by the same rotation.
+#[derive(Debug, Clone, Default)]
+pub struct ReadAttempt {
+    pub call_id: String,
+    pub reader: String,
+    pub url: String,
+    pub success: bool,
+    /// Characters of text returned (before the caller's cut).
+    pub chars: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub error_kind: Option<String>,
+    pub units: Option<f64>,
+    pub picked: String,
+    pub purpose: Option<String>,
+    pub tool: Option<String>,
+    pub task_id: Option<String>,
+}
+
+/// Which provider ledger a rotation reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ledger {
+    /// `search_usage` (`search_web` engines).
+    Search,
+    /// `read_usage` (`read_page` readers).
+    Read,
+}
+
 /// One engine's recent use, for rotation: units spent since each cutoff
 /// (`*_unpriced` counts successful rows written before units were recorded),
 /// and attempts in the last hour and minute for rate limits.
@@ -199,6 +227,31 @@ impl TelemetryClient {
         _period_start: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<EngineUse> {
         Ok(EngineUse::default())
+    }
+
+    pub fn provider_use(
+        &self,
+        _ledger: Ledger,
+        _name: &str,
+        _period_start: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<EngineUse> {
+        Ok(EngineUse::default())
+    }
+
+    pub fn record_read_attempt(&self, _a: &ReadAttempt) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    pub fn readers_with_recent_errors(
+        &self,
+        _error_kind: &str,
+        _hours: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(vec![])
+    }
+
+    pub fn get_read_stats(&self, _window_hours: Option<i64>) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::json!({ "readers": [] }))
     }
 
     pub fn search_links_since(&self, _window_hours: i64) -> anyhow::Result<Vec<(String, String)>> {
