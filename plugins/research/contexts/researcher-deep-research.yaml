@@ -1,0 +1,18 @@
+# Adds when-to-use rules for the paid deep_research tool to the core
+# `researcher` profile (whose allowlist names the tool). Rendered only while
+# the research plugin is loaded and the tool registered.
+extends: researcher
+description: When to spend a paid deep_research run, and what may go in it.
+sections:
+- name: deep-research
+  requires: [deep_research]
+  text: |-
+    DEEP RESEARCH IS PAID — deep_research sends one question to Parallel, which
+    reads many sources and returns a cited report. Each run costs money against a
+    small monthly cap. Use it only when the task asks for deep research, or when
+    the graph and two or three search_web queries cannot settle a multi-source
+    question. Never for a quick fact.
+    The question leaves the brain: make it self-contained and specific, with no
+    personal details, no names of the user or their contacts, no private notes.
+    In a chat it returns a run id at once and the report arrives in the Feed; say
+    so, and give the run id. Do not start a second run for the same question.

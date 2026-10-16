@@ -205,6 +205,9 @@ services:
       # no API keys, so the account's email + password. Unset => tool not registered.
       - ACLED_EMAIL=${ACLED_EMAIL:-}
       - ACLED_PASSWORD=${ACLED_PASSWORD:-}
+      # Parallel Task API (deep_research, the `research` plugin). Paid per run;
+      # capped monthly in plugins/research/parallel.yaml. Unset => plugin skipped.
+      - PARALLEL_API_KEY=${PARALLEL_API_KEY:-}
       # search_web failover ladder. Keyed engines first; SearXNG is the flagged
       # last resort (its working backends are Naver/Seznam/Zapmeta: undated,
       # foreign-index results, and it always answers, so leading with it starved
@@ -229,7 +232,7 @@ services:
       # MCP servers, schemas, topics, entity seeds, relation types. `core` always loads;
       # PLUGINS_ENABLED names the others (comma-separated). GET /api/plugins shows each one.
       - PLUGINS_DIR=/home/agent/agent-brain/plugins
-      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,personal}
+      - PLUGINS_ENABLED=${PLUGINS_ENABLED:-osint-data,media,reference,alias-judge,developer,epistemics,sandbox,personal,research}
       # More bundle dirs (colon-separated), searched after plugins/: the private
       # repo of the owner's own seeds (`personal`), mounted below.
       - PLUGINS_EXTRA_DIRS=/home/agent/plugins-private

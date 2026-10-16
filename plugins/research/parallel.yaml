@@ -1,0 +1,26 @@
+# Parallel Task API processors the deep_research tool may use.
+#
+# usd: the price of one run (parallel.ai/pricing, read 2026-10-16). Every run
+#   Parallel accepts is charged against the cap, failed or not: the cautious
+#   reading, since Parallel does not say whether a failed run is billed.
+# wait_minutes: how long a caller inside a workflow run waits for the report
+#   before handing the run to the background collector. Parallel quotes ~10 min
+#   for pro and up to ~2 h for the ultra family. Outside a run (a chat turn, a
+#   direct call) the caller does not wait; the report arrives in the Feed.
+#
+# Measured 2026-10-16: one `core` run on a llama.cpp KV-cache question took
+# 41 s and answered with the exact perplexity figures, the flags and the
+# GitHub issue they came from, rated "medium" confidence (one measurement).
+
+# Spend ceiling per calendar month (UTC), in USD. Parallel's free credit is
+# $5 a month; a run that would pass the cap is refused before it is created.
+monthly_cap_usd: 5.0
+
+default_processor: pro
+
+processors:
+  core: { usd: 0.025, wait_minutes: 10 }
+  core2x: { usd: 0.05, wait_minutes: 15 }
+  pro: { usd: 0.10, wait_minutes: 30 }
+  ultra: { usd: 0.30, wait_minutes: 60 }
+  ultra2x: { usd: 0.60, wait_minutes: 90 }

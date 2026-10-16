@@ -17,6 +17,7 @@ agent-brain-scheduler = { path = "../scheduler" }
 agent-brain-retrieve = { path = "../retrieve" }
 # In-tree plugin crates, compiled in and enabled at runtime (plugins.rs).
 agent-brain-plugin-osint-data = { path = "../../plugins/osint-data/crate" }
+agent-brain-plugin-research = { path = "../../plugins/research/crate" }
 agent-brain-plugin-media = { path = "../../plugins/media/crate" }
 agent-brain-plugin-alias-judge = { path = "../../plugins/alias-judge/crate" }
 agent-brain-plugin-reference = { path = "../../plugins/reference/crate" }

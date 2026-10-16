@@ -417,6 +417,26 @@ Which plugin owns a tool (`services/self_model.rs`, CORE_AND_PLUGINS_PLAN Phase 
 | `plugin` | String | The bundle that registers it |
 | `seen_at` | DateTime | Last start that registered it (UTC) |
 
+#### `ResearchRun`
+
+One paid Parallel Task run started by `deep_research` (the `research` plugin, `plugins/research/crate/src/runs.rs`). It is the spend ledger (the monthly cap in `plugins/research/parallel.yaml` sums `usd` over the calendar month, UTC), the resume point (the same question + processor within 24 h reuses a run that has not failed), and the delivery state for the plugin's background collector. Schema is created in the plugin's `start`.
+
+| Property | Type | Description |
+|---|---|---|
+| `run_id` | String | Parallel's run id (`trun_…`); UNIQUE |
+| `question` | String | The question sent (≤ 2,000 chars; the only thing that leaves the brain) |
+| `processor` | String | `core`, `pro`, `ultra`, … |
+| `usd` | Float | The price charged against the cap (every accepted run counts, failed ones too) |
+| `status` | String | `running`, `completed`, `failed`; moved out of `running` once, by whichever caller gets there first, which is the one that delivers the report |
+| `task_id` | String? | The workflow run's Task that started it, if any |
+| `created_at`, `completed_at` | DateTime | UTC |
+| `waiting_until` | DateTime? | A tool call is waiting on the run until then; the collector leaves it alone until it passes |
+| `report` | String? | The markdown report |
+| `confidence` | String? | Parallel's confidence (`low`/`medium`/`high`) |
+| `sources` | String? | JSON list of `{url, title?, excerpt?}`, the first 50 cited |
+| `source_count` | Integer? | All cited sources |
+| `error` | String? | Why it failed |
+
 #### `RemovedTool`
 
 A tombstone for a tool the brain no longer has (`services/self_model.rs`). Written at startup when a `:ToolDef` vanishes from the registry, annotated from `architecture/removed-tools.yaml`, and deleted if the tool is registered again. `list_capabilities(kind=tools)` lists them under `removed`.
@@ -479,6 +499,7 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `todo_id` | `Todo` | `id` | UNIQUE |
 | `note_id` | `Note` | `id` | UNIQUE |
 | `task_id` | `Task` | `id` | UNIQUE |
+| `research_run_id` | `ResearchRun` | `run_id` | UNIQUE (research plugin) |
 
 ### Indexes
 
@@ -498,4 +519,5 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `agent_job_status` | `AgentJob` | `status` | RANGE | Queue coordinator polling |
 | `agent_job_priority` | `AgentJob` | `priority` | RANGE | Priority-ordered dispatch |
 | `agent_job_created` | `AgentJob` | `created_at` | RANGE | FIFO ordering within priority |
+| `research_run_created` | `ResearchRun` | `created_at` | RANGE | The monthly spend sum (research plugin) |
 | `agent_job_parent` | `AgentJob` | `parent_job_id` | RANGE | Chain unpark / cancel-children lookups |

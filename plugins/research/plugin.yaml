@@ -1,0 +1,7 @@
+# Paid deep research through Parallel's Task API. Rust code in crate/
+# (deep_research); prices, waits and the monthly cap in parallel.yaml.
+name: research
+version: 1
+description: "Deep research (deep_research): a cited multi-source report from Parallel's Task API, capped by a monthly spend ledger (:ResearchRun), and the deep-research workflow."
+requires:
+  env: [PARALLEL_API_KEY]

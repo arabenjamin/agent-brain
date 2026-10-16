@@ -90,6 +90,7 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`, `dev_docs` (the dev notes, `scripts/dev_docs.sh`); the architecture view at `/api/plugins/developer/architecture`
 - `epistemics`: `claim` (extract facts, and a named source's opinions, predictions and hypotheticals labelled as theirs; verify against independent web evidence with a local grounding check; list; sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
 - `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
+- `research`: `deep_research` (needs `PARALLEL_API_KEY`): a cited multi-source report from Parallel's Task API, paid per run and capped monthly (`plugins/research/parallel.yaml`); in chat it returns a run id and the report arrives in the Feed and as a note; the `deep-research` workflow
 - `sandbox`: `execute_code` (below); the bundle also holds the two sandbox images (`python/`, `rust/`)
 - `personal`: no tools; the owner's own workflows, agents and topics, from a private repo mounted at `/home/agent/plugins-private` (`PLUGINS_EXTRA_DIRS`); absent elsewhere
 

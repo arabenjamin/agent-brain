@@ -6,6 +6,7 @@ tools:
 - list_capabilities
 - synthesize_knowledge
 - search_web
+- deep_research
 - http_request
 - mcp_call
 - ingest_api

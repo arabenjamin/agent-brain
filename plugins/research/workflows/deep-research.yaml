@@ -1,0 +1,35 @@
+name: deep-research
+description: "Paid deep research: one question answered by Parallel's Task API (pro, ~$0.10) as a cited report, stored as a note. Capped monthly (research/parallel.yaml)."
+inputs:
+  - name: question
+    description: "The research question, self-contained, with no personal details (it leaves the brain)."
+steps:
+  # Waits up to the processor's wait_minutes. A retry of this step resumes the
+  # same Parallel run (matched by question + this task), so it never pays twice.
+  - tool_name: deep_research
+    arguments:
+      question: "{{inputs.question}}"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Deep research: run the Parallel task"
+
+  - tool_name: store_note
+    arguments:
+      content: "## Deep research: {{inputs.question}}\n\n{{_prev}}"
+      note_type: semantic
+      source_context: deep_research
+      provenance: synthesis_inference
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Deep research: store the report"
+
+  - tool_name: update_task
+    arguments:
+      task_id: "{{task_id}}"
+      status: completed
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Deep research: complete the task"
