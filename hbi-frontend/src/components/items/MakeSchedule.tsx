@@ -11,6 +11,7 @@ import { invalidateWork } from "../../api/work";
 import { answerBody, extractJson, runAssist } from "../../lib/assist";
 import { openEntity } from "../drawer/entities";
 import { useProfiles } from "../../api/queries";
+import { buildDraftTask, useToolSchemas } from "../schedules/draft";
 import { useMergedToolGroups } from "../schedules/useToolGroups";
 import ModelPicker from "../ui/ModelPicker";
 import type { Todo } from "../todos/model";
@@ -24,6 +25,7 @@ function slug(s: string): string {
 
 export default function MakeSchedule({ item }: { item: Todo }) {
   const toolGroups = useMergedToolGroups();
+  const toolSchemas = useToolSchemas();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // schedule-author's own model is the default; a small local model can miss
@@ -34,12 +36,12 @@ export default function MakeSchedule({ item }: { item: Todo }) {
 
   /** One draft from schedule-author; `fix` names what a previous draft got wrong. */
   const draft = async (fix?: { previous: string; errors: string }) => {
-    let task =
-      `Draft a scheduled workflow that does this regularly:\n"${prompt}"\n\n` +
-      `Tools available to a scheduled step: ${toolGroups.flatMap((g) => g.tools).join(", ")}`;
-    if (fix) {
-      task += `\n\nYour previous draft was rejected when saved:\n${fix.errors}\n\nThe draft was:\n${fix.previous}\n\nReturn the corrected object.`;
-    }
+    const task = buildDraftTask({
+      request: `Do this regularly: ${prompt}`,
+      tools: toolGroups.flatMap((g) => g.tools),
+      schemas: toolSchemas,
+      fix,
+    });
     const run = await runAssist("schedule-author", task, model);
     const text = extractJson(answerBody(run.answer), "object");
     if (!text) throw new Error(`No schedule in schedule-author's reply:\n${answerBody(run.answer).slice(0, 400)}`);

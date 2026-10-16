@@ -14,6 +14,8 @@ export interface AssistRun {
   model: string;
   agent: string;
   trace: { tool: string; success: boolean }[];
+  /** The model the caller asked for ("" = the agent's own), to ask again on the same one. */
+  requestedModel?: string;
 }
 
 /**
@@ -58,7 +60,7 @@ export async function runAssist(agent: string, task: string, model: string): Pro
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "run_agent", arguments: args } }),
   });
   if (!res.ok) throw new Error(`run_agent: HTTP ${res.status}`);
-  return parseRunAgentResult(await res.json());
+  return { ...parseRunAgentResult(await res.json()), requestedModel: model.trim() };
 }
 
 /**

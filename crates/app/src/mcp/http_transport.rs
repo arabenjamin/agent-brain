@@ -334,6 +334,10 @@ impl HttpTransport {
                     .post(rest_handlers::handle_create_workflow),
             )
             .route(
+                "/workflows/check",
+                post(rest_handlers::handle_check_workflow),
+            )
+            .route(
                 "/workflows/{id}",
                 get(rest_handlers::handle_get_workflow)
                     .put(rest_handlers::handle_update_workflow)

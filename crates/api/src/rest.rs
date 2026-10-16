@@ -556,6 +556,25 @@ async fn save_workflow(
     create_only: bool,
     body: &Value,
 ) -> Result<agent_brain_work::workflows::Saved, agent_brain_work::workflows::SaveError> {
+    let (live, schemas, catalog) = check_inputs(state).await;
+    let checks = agent_brain_work::workflows::SaveChecks {
+        live_tools: &live,
+        tool_schemas: &schemas,
+        catalog: &catalog,
+        envelope: None,
+    };
+    agent_brain_work::workflows::save(neo4j, id, create_only, body, &checks).await
+}
+
+/// What a workflow save is checked against: the registered tools, their
+/// input schemas, and the model catalog.
+async fn check_inputs(
+    state: &RestState,
+) -> (
+    Vec<String>,
+    HashMap<String, Value>,
+    Vec<agent_brain_llm::model_router::CatalogModel>,
+) {
     let (live, schemas) = match state.tool_registry.as_ref() {
         Some(reg) => {
             let defs = reg.read().await.list();
@@ -571,13 +590,7 @@ async fn save_workflow(
         .as_ref()
         .map(agent_brain_llm::model_router::catalog_models)
         .unwrap_or_default();
-    let checks = agent_brain_work::workflows::SaveChecks {
-        live_tools: &live,
-        tool_schemas: &schemas,
-        catalog: &catalog,
-        envelope: None,
-    };
-    agent_brain_work::workflows::save(neo4j, id, create_only, body, &checks).await
+    (live, schemas, catalog)
 }
 
 fn save_error(e: agent_brain_work::workflows::SaveError) -> axum::response::Response {
@@ -616,6 +629,31 @@ pub async fn handle_create_workflow(
             };
             (status, Json(serde_json::json!(saved.workflow))).into_response()
         }
+        Err(e) => save_error(e),
+    }
+}
+
+/// POST /workflows/check — every check a save runs, nothing written. The body
+/// is a save body; with `id` it is checked as an edit of that workflow, without
+/// as a new one. 200 `{ok, warnings}`, or 400 with the error a save would give.
+pub async fn handle_check_workflow(
+    Extension(state): Extension<Arc<RestState>>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let neo4j = graph!(state, "Workflow storage not available");
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let (live, schemas, catalog) = check_inputs(&state).await;
+    let checks = agent_brain_work::workflows::SaveChecks {
+        live_tools: &live,
+        tool_schemas: &schemas,
+        catalog: &catalog,
+        envelope: None,
+    };
+    match agent_brain_work::workflows::check(neo4j, id, id.is_none(), &body, &checks).await {
+        Ok(warnings) => Json(json!({ "ok": true, "warnings": warnings })).into_response(),
         Err(e) => save_error(e),
     }
 }
@@ -2159,9 +2197,11 @@ pub async fn handle_list_skills(Extension(state): Extension<Arc<RestState>>) -> 
 /// (the Scheduled Tasks step editor) can offer every tool a background step may
 /// call — a scheduled step is dispatched through the skill registry regardless
 /// of any chat profile. Returns a flat `tools` name list (for membership checks)
-/// plus `groups` keyed by skill, each tool as `{name, description}`.
+/// plus `groups` keyed by skill, each tool as `{name, description}`, and with
+/// `?schemas=true` a `schemas` map of tool name → `input_schema`.
 pub async fn handle_list_all_tools(
     Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let Some(ref registry_arc) = state.tool_registry else {
         return unavailable("Tool registry not available");
@@ -2182,9 +2222,19 @@ pub async fn handle_list_all_tools(
         })
         .collect();
 
-    let names: Vec<String> = registry.list().into_iter().map(|t| t.name).collect();
-
-    Json(json!({ "count": names.len(), "tools": names, "groups": groups })).into_response()
+    let defs = registry.list();
+    let names: Vec<String> = defs.iter().map(|t| t.name.clone()).collect();
+    let mut body = json!({ "count": names.len(), "tools": names, "groups": groups });
+    // `?schemas=true`: each tool's `input_schema`, so a step drafter (the HBI
+    // editor's agent assist) can name real arguments instead of guessing.
+    if params.get("schemas").is_some_and(|v| v == "true") {
+        body["schemas"] = defs
+            .into_iter()
+            .map(|t| (t.name, t.input_schema))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+    }
+    Json(body).into_response()
 }
 
 // ============================================================================

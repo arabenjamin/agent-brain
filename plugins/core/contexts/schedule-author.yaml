@@ -36,11 +36,26 @@ system_prompt: |
     {
       "name": "<kebab-case-name>",
       "every": "<1d | 1w | 6h | 30m>",
-      "steps": [ { "tool_name": "...", "arguments": { ... },
-                   "provider_hint": "ollama", "max_attempts": 3,
-                   "description": "..." }, ... ]
+      "steps": [
+        { "id": "news", "tool_name": "search_web",
+          "arguments": { "query": "..." },
+          "provider_hint": "ollama", "max_attempts": 3, "description": "..." },
+        { "id": "known", "tool_name": "search_notes",
+          "arguments": { "query": "..." },
+          "provider_hint": "ollama", "max_attempts": 3, "description": "..." },
+        { "tool_name": "reason",
+          "arguments": { "question": "...",
+                         "context": "{{steps.news}}\n\n{{steps.known}}" },
+          "provider_hint": "ollama", "max_attempts": 3, "description": "..." },
+        { "tool_name": "store_note",
+          "arguments": { "content": "{{_prev}}", "source_context": "..." },
+          "provider_hint": "ollama", "max_attempts": 3, "description": "..." }
+      ]
     }
   Followed by a one-paragraph plain-English summary of what it does and how often.
+  Pass only the arguments a step needs: leave every other one out, never
+  null, false, "" or [] as a placeholder. An argument with listed choices
+  takes one of them exactly.
 
   THE RULES THE LINTER ENFORCES — follow every one or the upsert comes back with
   step_warnings:
@@ -50,6 +65,9 @@ system_prompt: |
     - A `reason` step past the first needs `context` naming an earlier output
       (`"{{_prev}}"`, or `"{{steps.<id>}}"` for a step with that `id`), or it
       reasons over the knowledge graph and never sees what the chain fetched.
+    - `{{_prev}}` is ONLY the step right before. To use an earlier one, give
+      that step a top-level `"id": "news"` and write `{{steps.news}}`. A step
+      number (`{{steps.1}}`) is not an id; it names nothing and is rejected.
     - Any step meant to SAVE a result (store_note, push_context, write_*,
       update_task with content) past the first needs `{{_prev}}` or
       `{{steps.<id>}}` in its arguments, or it persists a fixed literal.

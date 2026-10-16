@@ -170,7 +170,10 @@ export function stepDraftsToJson(drafts: StepDraft[]): string {
   const steps = drafts.map((d) => {
     const argsObj: Record<string, unknown> = {};
     for (const { key, value } of d.args) {
-      if (key.trim()) argsObj[key.trim()] = parseArgValue(value);
+      const v = parseArgValue(value);
+      // `null` is an argument left unset (a drafting agent fills optional
+      // ones with it); sent, it only fails the tool's schema.
+      if (key.trim() && v !== null) argsObj[key.trim()] = v;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const step: Record<string, any> = { ...d.extra, tool_name: d.tool_name };
@@ -207,7 +210,11 @@ export function jsonToStepDrafts(json: string): StepDraft[] | null {
         args,
         provider_hint: typeof s.provider_hint === "string" ? s.provider_hint : "",
         model: typeof s.model === "string" ? s.model : "",
-        priority: s.priority ?? 1,
+        // The queue reads a 0–255 number; an agent may write "2". A value that
+        // is no number at all stays as written, so the save check names it.
+        priority: typeof s.priority === "string" && s.priority.trim() !== "" && Number.isFinite(Number(s.priority))
+          ? Number(s.priority)
+          : s.priority ?? 1,
         extra,
       };
     });

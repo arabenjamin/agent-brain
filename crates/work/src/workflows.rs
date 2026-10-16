@@ -232,6 +232,32 @@ pub fn to_body(wf: &Workflow) -> Value {
     b
 }
 
+/// A save body checked and resolved, not yet written: what `save` writes and
+/// `check` reports on.
+struct Prepared {
+    current: Option<Workflow>,
+    def: agent_brain_repository::WorkflowDef,
+    enabled: bool,
+    managed_by: Option<String>,
+    paused_reason: Option<String>,
+    warnings: Vec<String>,
+}
+
+/// Every check `save` runs, with nothing written: the warnings the save would
+/// return, or the error it would refuse with. The HBI checks an agent's draft
+/// with it, so a draft that cannot be saved is not shown as ready.
+pub async fn check(
+    neo4j: &Neo4jClient,
+    id: Option<&str>,
+    create_only: bool,
+    body: &Value,
+    checks: &SaveChecks<'_>,
+) -> Result<Vec<String>, SaveError> {
+    prepare(neo4j, id, create_only, body, checks)
+        .await
+        .map(|p| p.warnings)
+}
+
 /// Create or update a workflow from a save body. With `id`, that workflow is
 /// edited; without, the one named `name` is, or a new one is created — unless
 /// `create_only`, when an existing name is refused instead of edited. Keys the
@@ -245,6 +271,78 @@ pub async fn save(
     body: &Value,
     checks: &SaveChecks<'_>,
 ) -> Result<Saved, SaveError> {
+    let storage = |e: agent_brain_repository::RepositoryError| SaveError::Storage(e.to_string());
+    let Prepared {
+        current,
+        def,
+        enabled,
+        managed_by,
+        paused_reason,
+        warnings,
+    } = prepare(neo4j, id, create_only, body, checks).await?;
+
+    let Some(cur) = current else {
+        let wf = neo4j
+            .create_workflow(&def, enabled, managed_by.as_deref().unwrap_or("runtime"))
+            .await
+            .map_err(storage)?;
+        return Ok(Saved {
+            workflow: wf,
+            created: true,
+            warnings,
+        });
+    };
+
+    // A schedule added is first due now; a schedule removed has no next run.
+    let next_run_at = match (
+        body.get("next_run_at").and_then(Value::as_str),
+        def.interval_seconds,
+    ) {
+        (_, None) => Some(None),
+        (Some(t), Some(_)) => Some(Some(t.to_string())),
+        (None, Some(_)) if cur.next_run_at.is_none() => Some(Some(chrono::Utc::now().to_rfc3339())),
+        (None, Some(_)) => None,
+    };
+    let name = def.name.clone();
+    let patch = agent_brain_repository::WorkflowPatch {
+        name: Some(def.name),
+        description: Some(def.description),
+        enabled: Some(enabled),
+        interval_seconds: Some(def.interval_seconds),
+        steps: Some(def.steps),
+        inputs: Some(def.inputs),
+        checks: Some(def.checks),
+        evaluation_rubric: Some(def.evaluation_rubric),
+        is_default: Some(def.is_default),
+        next_run_at,
+        managed_by,
+        paused_reason: Some(paused_reason),
+        topic: Some(def.topic),
+        kind: Some(def.kind),
+    };
+    let wf = neo4j
+        .update_workflow(&cur.id, &patch)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| {
+            SaveError::NotFound(format!("Workflow '{name}' vanished during the save"))
+        })?;
+    Ok(Saved {
+        workflow: wf,
+        created: false,
+        warnings,
+    })
+}
+
+/// The checking half of `save`: the stored workflow with the body laid over
+/// it, every hard check run, and the definition it would write.
+async fn prepare(
+    neo4j: &Neo4jClient,
+    id: Option<&str>,
+    create_only: bool,
+    body: &Value,
+    checks: &SaveChecks<'_>,
+) -> Result<Prepared, SaveError> {
     use crate::{validation, workflow_seeder};
     let storage = |e: agent_brain_repository::RepositoryError| SaveError::Storage(e.to_string());
 
@@ -378,19 +476,10 @@ pub async fn save(
     let enabled = cand.get("enabled").and_then(Value::as_bool).unwrap_or(true);
 
     let mut warnings = Vec::new();
-    let Some(cur) = current else {
-        let wf = neo4j
-            .create_workflow(&def, enabled, managed_by.as_deref().unwrap_or("runtime"))
-            .await
-            .map_err(storage)?;
-        return Ok(Saved {
-            workflow: wf,
-            created: true,
-            warnings,
-        });
-    };
-
-    if cur.managed_by.as_deref() == Some("yaml") && managed_by.as_deref() != Some("runtime") {
+    if let Some(cur) = &current
+        && cur.managed_by.as_deref() == Some("yaml")
+        && managed_by.as_deref() != Some("runtime")
+    {
         warnings.push(format!(
             "This workflow is yaml-managed: its definition is overwritten from \
              workflows/{}.yaml on the next startup. Edit the file, or pass \
@@ -398,42 +487,12 @@ pub async fn save(
             cur.name
         ));
     }
-    // A schedule added is first due now; a schedule removed has no next run.
-    let next_run_at = match (
-        body.get("next_run_at").and_then(Value::as_str),
-        interval_seconds,
-    ) {
-        (_, None) => Some(None),
-        (Some(t), Some(_)) => Some(Some(t.to_string())),
-        (None, Some(_)) if cur.next_run_at.is_none() => Some(Some(chrono::Utc::now().to_rfc3339())),
-        (None, Some(_)) => None,
-    };
-    let patch = agent_brain_repository::WorkflowPatch {
-        name: Some(def.name),
-        description: Some(def.description),
-        enabled: Some(enabled),
-        interval_seconds: Some(def.interval_seconds),
-        steps: Some(def.steps),
-        inputs: Some(def.inputs),
-        checks: Some(def.checks),
-        evaluation_rubric: Some(def.evaluation_rubric),
-        is_default: Some(def.is_default),
-        next_run_at,
+    Ok(Prepared {
+        current,
+        def,
+        enabled,
         managed_by,
-        paused_reason: Some(str_of("paused_reason")),
-        topic: Some(def.topic),
-        kind: Some(def.kind),
-    };
-    let wf = neo4j
-        .update_workflow(&cur.id, &patch)
-        .await
-        .map_err(storage)?
-        .ok_or_else(|| {
-            SaveError::NotFound(format!("Workflow '{name}' vanished during the save"))
-        })?;
-    Ok(Saved {
-        workflow: wf,
-        created: false,
+        paused_reason: str_of("paused_reason"),
         warnings,
     })
 }

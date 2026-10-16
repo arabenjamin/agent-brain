@@ -48,3 +48,17 @@ describe("step model", () => {
     expect(JSON.parse(stepDraftsToJson([{ ...d, model: " " }]))[0]).not.toHaveProperty("model");
   });
 });
+
+describe("step priority", () => {
+  it("reads a numeric string as the number the queue needs", () => {
+    const [d] = jsonToStepDrafts(JSON.stringify([{ tool_name: "reason", priority: "2" }]))!;
+    expect(JSON.parse(stepDraftsToJson([d]))[0].priority).toBe(2);
+  });
+});
+
+describe("null arguments", () => {
+  it("are left out, as unset", () => {
+    const [d] = jsonToStepDrafts(JSON.stringify([{ tool_name: "reason", arguments: { question: "q", task_id: null } }]))!;
+    expect(JSON.parse(stepDraftsToJson([d]))[0].arguments).toEqual({ question: "q" });
+  });
+});

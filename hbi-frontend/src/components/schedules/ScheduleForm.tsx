@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../../api/client";
-import { extractJson } from "../../lib/assist";
+import { answerBody, extractJson, runAssist, type AssistRun } from "../../lib/assist";
 import AgentAssist from "../ui/AgentAssist";
 import { useTopics } from "../../api/topics";
 import { KIND_LABELS, SCHEDULE_KINDS } from "../../lib/scheduleGroups";
 import { jsonToStepDrafts, makeDefaultStep, stepDraftsToJson, stUrl, type ScheduledTask, type StepDraft } from "./model";
+import { buildDraftTask, checkWorkflow, useToolSchemas } from "./draft";
 import StepCard from "./StepCard";
 import { useMergedToolGroups } from "./useToolGroups";
 
@@ -117,37 +118,97 @@ export default function ScheduledTaskForm({
   };
 
   // The `schedule-author` agent holds the step rules (provider_hint at the
-  // step top level, {{_prev}} handoffs, note types, source_context); this
-  // form only says what is wanted and which tools exist. The agent sees
-  // nothing else, so the task is self-contained.
-  const buildAssistTask = (prompt: string) =>
-    `Draft a scheduled workflow for this request:\n"${prompt}"\n\n` +
-    `Tools available to a scheduled step: ${toolGroups.flatMap((g) => g.tools).join(", ")}`;
+  // step top level, {{_prev}} handoffs, note types, source_context); the task
+  // carries what it can't know: the request, the workflow as it stands (an
+  // edit changes those steps, not a blank slate), and each tool's arguments.
+  // The agent sees nothing else, so the task is self-contained.
+  const toolSchemas = useToolSchemas();
+  const toolNames = toolGroups.flatMap((g) => g.tools);
+  const currentForAssist = () => {
+    const untouched = !existing && JSON.stringify(steps) === JSON.stringify([makeDefaultStep()]);
+    if (untouched) return null;
+    return { name: name.trim(), every: scheduled ? every() : null, steps: JSON.parse(stepDraftsToJson(steps)) as unknown[] };
+  };
+  const buildAssistTask = (prompt: string, fix?: { previous: string; errors: string }) =>
+    buildDraftTask({ request: prompt, current: currentForAssist(), tools: toolNames, schemas: toolSchemas, fix });
 
   // schedule-author answers with {name, every, steps}; an older or other agent
   // may answer with the bare steps array.
-  const applyAssist = (body: string): string | null => {
-    let stepsText: string | null = null;
+  type Draft = { steps: unknown[]; name?: string; every?: string; text: string };
+  const readDraft = (body: string): Draft | string => {
     const obj = extractJson(body, "object");
     if (obj) {
       try {
         const o = JSON.parse(obj);
         if (Array.isArray(o?.steps)) {
-          stepsText = JSON.stringify(o.steps);
-          if (!name.trim() && typeof o.name === "string") setName(o.name);
-          const m = typeof o.every === "string" ? /^(\d+)([mhdw])$/.exec(o.every.trim()) : null;
-          if (!existing && m) {
-            setScheduled(true);
-            setFromSeconds(Number(m[1]) * { m: 60, h: 3600, d: 86400, w: 604800 }[m[2] as "m" | "h" | "d" | "w"]);
-          }
+          return {
+            steps: o.steps,
+            name: typeof o.name === "string" ? o.name : undefined,
+            every: typeof o.every === "string" && /^\d+[mhdw]$/.test(o.every.trim()) ? o.every.trim() : undefined,
+            text: obj,
+          };
         }
       } catch { /* not the object form; try the array below */ }
     }
-    stepsText ??= extractJson(body, "array");
-    if (!stepsText) return `No step array in the agent's reply:\n${body.slice(0, 400)}`;
-    const parsed = jsonToStepDrafts(stepsText);
+    const arr = extractJson(body, "array");
+    if (!arr) return `No step array in the agent's reply:\n${body.slice(0, 400)}`;
+    try {
+      const steps = JSON.parse(arr);
+      if (Array.isArray(steps) && steps.length) return { steps, text: arr };
+    } catch { /* fall through */ }
+    return "Could not parse the step array the agent returned";
+  };
+
+  /** The brain's save check on the form as it would be saved with this draft's steps. */
+  const checkDraft = (d: Draft) => {
+    const drafts = jsonToStepDrafts(JSON.stringify(d.steps));
+    return checkWorkflow({
+      id: existing?.id,
+      name: name.trim() || d.name || "",
+      every: !existing && d.every ? d.every : scheduled ? every() : null,
+      // Through the step editor's own round trip, so what is checked is what Save sends.
+      steps: drafts ? JSON.parse(stepDraftsToJson(drafts)) : d.steps,
+      topic: topic || null,
+      kind: kind || null,
+    });
+  };
+
+  const applyAssist = async (body: string, run: AssistRun, _action: string | undefined, prompt: string): Promise<string | null> => {
+    const askAgain = async (previous: string, errors: string) =>
+      readDraft(answerBody((await runAssist(run.agent || "schedule-author",
+        buildAssistTask(prompt, { previous, errors }), run.requestedModel ?? "")).answer));
+    // A reply with no usable draft, or a draft the save check refuses, goes
+    // back to the agent once with what was wrong, as "Make it a schedule"
+    // does, before the form shows it.
+    let draft = readDraft(body);
+    let retried = false;
+    if (typeof draft === "string") {
+      draft = await askAgain(body.slice(0, 2000), draft);
+      retried = true;
+      if (typeof draft === "string") return draft;
+    }
+    let check = await checkDraft(draft);
+    if (!check.ok && check.refused && !retried) {
+      const redraft = await askAgain(draft.text, check.error);
+      if (typeof redraft !== "string") {
+        draft = redraft;
+        check = await checkDraft(draft);
+      }
+    }
+    const parsed = jsonToStepDrafts(JSON.stringify(draft.steps));
     if (!parsed || parsed.length === 0) return "Could not parse the step array the agent returned";
     setSteps(parsed);
+    if (!name.trim() && draft.name) setName(draft.name);
+    const m = draft.every ? /^(\d+)([mhdw])$/.exec(draft.every) : null;
+    if (!existing && m) {
+      setScheduled(true);
+      setFromSeconds(Number(m[1]) * { m: 60, h: 3600, d: 86400, w: 604800 }[m[2] as "m" | "h" | "d" | "w"]);
+    }
+    if (!check.ok) {
+      return check.refused
+        ? `The draft is in the form, but Save will refuse it until these are fixed:\n${check.error}`
+        : `The draft is in the form, unchecked: ${check.error}`;
+    }
     return null;
   };
 
@@ -313,7 +374,7 @@ export default function ScheduledTaskForm({
             title="Ask an agent to design the steps"
             defaultAgent="schedule-author"
             placeholder="Describe what this task should do, e.g. 'Every day, search for AI news and store a summary note'."
-            buildTask={buildAssistTask}
+            buildTask={(prompt) => buildAssistTask(prompt)}
             onResult={applyAssist}
             runLabel="Draft steps"
             note="Replaces current steps"

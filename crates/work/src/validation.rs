@@ -293,7 +293,9 @@ fn step_ref_violations(steps: &[Value]) -> Vec<Violation> {
                     format!("steps[{i}] (`{tool}`)"),
                     format!(
                         "`{{{{steps.{r}}}}}` names no earlier step (earlier step ids: {}) \
-                         — a step can only use the output of a step before it",
+                         — a step can only use the output of a step before it; give the \
+                         step you mean a top-level `\"id\": \"{r}\"`, or use `{{{{_prev}}}}` \
+                         for the step right before",
                         if named.is_empty() {
                             "none".to_string()
                         } else {

@@ -29,7 +29,8 @@ export default function AgentAssist({
   defaultAgent: string;
   placeholder: string;
   buildTask: (prompt: string, action?: string) => string;
-  onResult: (body: string, run: AssistRun, action?: string) => string | null;
+  /** May be async (e.g. to check the draft, or ask again); the run stays busy until it settles. */
+  onResult: (body: string, run: AssistRun, action: string | undefined, prompt: string) => string | null | Promise<string | null>;
   runLabel?: string;
   /** A line beside the run button, e.g. "Replaces current steps". */
   note?: string;
@@ -58,7 +59,7 @@ export default function AgentAssist({
       const r = await runAssist(agent, buildTask(prompt.trim(), action), model);
       setLast(r);
       if (!r.ok) throw new Error(`${r.agent || agent} ran but gave no answer`);
-      const problem = onResult(answerBody(r.answer), r, action);
+      const problem = await onResult(answerBody(r.answer), r, action, prompt.trim());
       if (problem) setError(problem);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
