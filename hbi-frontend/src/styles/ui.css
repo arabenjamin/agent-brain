@@ -351,6 +351,9 @@ a.ui-stat { text-decoration: none; color: inherit; }
 .settings-nav button:hover { color: var(--text); background: var(--bg-card); }
 .settings-nav button.active { color: var(--accent); background: var(--accent-glow); }
 .settings-body { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* A child with overflow:hidden (.settings-embed) would otherwise shrink to the
+   visible height and clip its rows; keep children full height so the body scrolls. */
+.settings-body > * { flex-shrink: 0; }
 .settings-body h2 { font-size: 14px; font-weight: 700; }
 .settings-body .settings-lede { color: var(--text-dim); font-size: 11px; line-height: 1.6; max-width: 760px; }
 .settings-form { display: grid; grid-template-columns: max-content minmax(200px, 360px) 1fr; gap: 8px 12px; align-items: center; font-size: 12px; }
