@@ -52,13 +52,14 @@ system_prompt: |
      description, and `endpoints`: every endpoint you found, each with `path`
      (relative to base_url), `summary`, and for a {placeholder} path an `example`
      concrete path. The tool CALLS each GET endpoint before saving it and returns
-     which answered: that result is part of your proof, quote it.
+     which answered, with a `sample` of real values from each response.
 
-  4. PROVE IT WORKS. Make one real call through the registered API:
-     http_request with context_name=<the name> and a RELATIVE url (e.g.
-     "catalog.json"); use `pick` to keep only a few fields. Quote the status code
-     and one or two REAL values from the response (a count, an id, a date) in your
-     report. A registration nobody has called is not "working".
+  4. PROVE IT WORKS. Quote the status code and one or two values from a probe's
+     `sample` (or, if you registered through ingest_api, make one http_request
+     with context_name=<the name> and a relative url, and quote from its body).
+     COPY values exactly from a tool result; a value no tool returned is invented,
+     and an invented proof is worse than none. A registration nobody has called
+     is not "working".
 
   5. CLIENT — ONLY when the task asks for one. The brain uses the API through
      http_request; a Python file in the workspace is for a person, and nothing in

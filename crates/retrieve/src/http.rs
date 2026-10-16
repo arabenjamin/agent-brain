@@ -255,7 +255,7 @@ impl HttpSkill {
                     },
                     "endpoints": {
                         "type": "array",
-                        "description": "For an API with no OpenAPI spec: the endpoints you found, saved so list_endpoints shows them. Each GET endpoint is CALLED once before it is saved, and the result says which answered (status, response shape): that is the proof it works. A path with a {placeholder} needs `example`, a concrete path to call.",
+                        "description": "For an API with no OpenAPI spec: the endpoints you found, saved so list_endpoints shows them. Each GET endpoint is CALLED once before it is saved, and the result says which answered (status, response shape, and `sample`: a few real values from the response, the only values you may quote): that is the proof it works. A path with a {placeholder} needs `example`, a concrete path to call.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -636,6 +636,7 @@ impl HttpSkill {
                             "method": method, "path": path, "probed": true, "called": v["url"],
                             "status": v["status_code"], "ok": v["ok"],
                             "shape": body_shape(&v["body"]),
+                            "sample": body_sample(&v["body"]),
                         }),
                         _ => json!({
                             "method": method, "path": path, "probed": true, "ok": false,
@@ -2039,6 +2040,43 @@ fn probe_verdict(p: &Value) -> String {
     }
 }
 
+/// A few real values from a response body, for the caller to quote: an
+/// object's first scalar fields, or an array's first items (an object item
+/// reduced the same way). Strings are cut at 80 chars.
+fn body_sample(body: &Value) -> Value {
+    fn scalar(v: &Value) -> Option<Value> {
+        match v {
+            Value::String(s) if s.chars().count() > 80 => Some(Value::String(format!(
+                "{}…",
+                s.chars().take(80).collect::<String>()
+            ))),
+            Value::String(_) | Value::Number(_) | Value::Bool(_) => Some(v.clone()),
+            _ => None,
+        }
+    }
+    fn fields(m: &serde_json::Map<String, Value>) -> Value {
+        Value::Object(
+            m.iter()
+                .filter_map(|(k, v)| scalar(v).map(|v| (k.clone(), v)))
+                .take(6)
+                .collect(),
+        )
+    }
+    match body {
+        Value::Object(m) => fields(m),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .take(3)
+                .map(|v| match v {
+                    Value::Object(m) => fields(m),
+                    other => scalar(other).unwrap_or(Value::Null),
+                })
+                .collect(),
+        ),
+        other => scalar(other).unwrap_or(Value::Null),
+    }
+}
+
 /// A response body in a few words: its top-level keys, or its length.
 fn body_shape(body: &Value) -> String {
     match body {
@@ -2151,6 +2189,15 @@ mod ingest_api_tests {
         );
         assert_eq!(probe_verdict(&json!({"probed": false})), "not probed");
         assert_eq!(body_shape(&json!([1, 2])), "JSON array of 2 item(s)");
+        // The sample is real values, never containers: what a caller may quote.
+        assert_eq!(
+            body_sample(&json!([45601, 45602, 45603, 45604])),
+            json!([45601, 45602, 45603])
+        );
+        assert_eq!(
+            body_sample(&json!({"by": "pg", "id": 1, "kids": [15], "title": "Y Combinator"})),
+            json!({"by": "pg", "id": 1, "title": "Y Combinator"})
+        );
     }
 
     #[test]
