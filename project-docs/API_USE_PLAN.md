@@ -3,7 +3,8 @@
 **Status: planned 2026-10-16; nothing built. Due for the owner's review by 2026-10-18.**
 
 The brain can now find, register and prove a keyless API end to end
-(api-scout on a schedule; api-integrator from chat, with probed endpoints).
+(the api-scout workflow on a schedule and api-integrator from chat, both run
+by the api-integrator agent since 2026-10-16, with probed endpoints).
 What it cannot do is *use* one: nothing connects a registered API to the work
 that needs its data. This plan is that connection, and the pruning that keeps
 the catalog from becoming a collection.
@@ -105,12 +106,12 @@ Both chosen so the payoff is checkable, not assumed:
   feed step `<id>` of `<workflow>` instead of `search_web`." Its ask says
   what approving does: `schedule-author` drafts the changed workflow,
   disabled, for review.
-- It also lists needs no API covers: that list becomes api-scout's input
+- It also lists needs no API covers: that list becomes the api-scout workflow's input
   (Phase 4).
 
 ### Phase 4: demand-driven discovery and retirement
 
-- api-scout searches for the uncovered needs from Phase 3, not its fixed
+- The api-scout workflow searches for the uncovered needs from Phase 3, not its fixed
   interest areas. An API that needs a key becomes an owner item ("get a key
   at <url>; it would feed <workflow>"), which is where the Vault plan lands.
 - An API used by no workflow for 30 days (and not a seeded engine) gets a

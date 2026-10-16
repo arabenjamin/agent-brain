@@ -616,7 +616,8 @@ mod tests {
     fn the_shipped_profiles_and_their_sections_parse() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/contexts");
         let b = BundleProfiles::read(&dir, &[]);
-        assert!(b.profiles.len() >= 12, "{} profiles", b.profiles.len());
+        // 8 core profiles since the 2026-10-16 consolidation.
+        assert!(b.profiles.len() >= 8, "{} profiles", b.profiles.len());
         for (_, path, p) in &b.profiles {
             for s in &p.sections {
                 assert!(

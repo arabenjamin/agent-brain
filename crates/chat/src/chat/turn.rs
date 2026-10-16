@@ -484,6 +484,25 @@ impl ChatService {
         } else {
             None
         };
+        // A named profile that no longer exists (a browser still remembering a
+        // retired one, an old client) runs as the front door. Left as is, the
+        // turn below would get every tool and no system prompt.
+        let resolved_profile = match (resolved_profile, &cb_opt) {
+            (Some(name), Some(cb))
+                if name != default_profile && cb.get_profile(&name).await.is_none() =>
+            {
+                warn!(profile = %name, fallback = %default_profile, "chat named an unknown profile; using the default");
+                let _ = tx
+                    .send(ChatEvent::Thinking {
+                        content: format!(
+                            "⚙ agent `{name}` does not exist; using `{default_profile}`"
+                        ),
+                    })
+                    .await;
+                Some(default_profile.clone())
+            }
+            (p, _) => p,
+        };
 
         // A profile may pin a model (`model_preference` + optional
         // `provider_hint`); resolved here and applied as this turn's active

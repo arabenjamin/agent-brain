@@ -17,8 +17,9 @@ steps:
       Context profiles are YAML files in the contexts/ directory. Each profile
       specifies a tool allowlist, system prompt, token budget, and optional
       pre-load query. The ContextBuilderService loads profiles at startup and
-      auto-assigns them to goals via keyword matching. Profiles: general,
-      knowledge-worker, task-manager, code-analyst, api-builder, scheduler.
+      auto-assigns them to goals via keyword matching. The front door is
+      GeneralDefault-Orchrestator; the live roster is list_capabilities
+      (kind: agents).
     note_type: semantic
   - type: tool_call
     tool: analyze_own_structure

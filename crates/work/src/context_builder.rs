@@ -65,8 +65,9 @@ pub struct ContextProfile {
     pub retrieval_exclude: Option<agent_brain_knowledge::knowledge::RetrievalExclude>,
     /// Runnable only when named in a `run_agent` step, never offered to a
     /// model: left out of the `delegate` roster and `run_agent(agent:"auto")`,
-    /// and refused by chat `delegate`. For a paid agent (`deep-diver-hard`), so
-    /// spending stays a decision a human made by writing the task.
+    /// and refused by chat `delegate`. For an agent a human must choose to run
+    /// (none ships today; a paid model is pinned per step with `run_agent`'s
+    /// `model` instead, as `workflows/deep-dive-hard.yaml` does).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub explicit_only: bool,
     /// Whether an item assigned to this agent may run on its own
@@ -266,7 +267,8 @@ pub struct ContextBuilderService {
 
 /// The profile used when nothing else selects one.
 ///
-/// Read from `CHAT_DEFAULT_PROFILE`, falling back to `"general"`. This exists so
+/// Read from `CHAT_DEFAULT_PROFILE`, falling back to
+/// `"GeneralDefault-Orchrestator"` (the shipped front door). This exists so
 /// the conversational front door can be swapped (and reverted) with an env var
 /// rather than a rebuild — the front-door design is deliberately tool-poor, and
 /// which profile plays that role is a deployment decision, not a code constant.
@@ -279,7 +281,7 @@ pub fn default_profile_name() -> String {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "general".to_string())
+        .unwrap_or_else(|| "GeneralDefault-Orchrestator".to_string())
 }
 
 impl ContextBuilderService {
@@ -589,7 +591,7 @@ impl ContextBuilderService {
     /// seed it again from its file, which is what to edit or remove.
     /// Returns `false` if there was no such profile.
     pub async fn delete_profile(&self, name: &str) -> anyhow::Result<bool> {
-        if name == "general" || name == default_profile_name().as_str() {
+        if name == default_profile_name().as_str() {
             anyhow::bail!("Cannot delete the default '{name}' profile");
         }
         if self.get_profile(name).await.is_none() {
@@ -701,7 +703,7 @@ impl ContextBuilderService {
         // Score each non-default profile by token overlap with name + description.
         let mut scores: Vec<(usize, String)> = profiles
             .iter()
-            .filter(|(n, _)| n.as_str() != default_name && n.as_str() != "general")
+            .filter(|(n, _)| n.as_str() != default_name)
             .map(|(name, profile)| {
                 let profile_tokens = Self::tokenize(&format!(
                     "{} {}",
@@ -737,7 +739,7 @@ impl ContextBuilderService {
         if let Some(llm) = self.make_llm().await {
             let profile_list: String = profiles
                 .iter()
-                .filter(|(n, _)| n.as_str() != default_name && n.as_str() != "general")
+                .filter(|(n, _)| n.as_str() != default_name)
                 .map(|(name, p)| format!("- {}: {}", name, p.description))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -747,8 +749,8 @@ impl ContextBuilderService {
                  Given a goal, pick the single most relevant context profile.\n\
                  Profiles:\n{}\n\n\
                  Goal: {}\n\n\
-                 Reply with ONLY the profile name exactly as shown (e.g. \"task-manager\"). \
-                 If none fit well, reply with \"general\".",
+                 Reply with ONLY the profile name exactly as shown (e.g. \"researcher\"). \
+                 If none fit well, reply with \"none\".",
                 profile_list, goal
             );
 
@@ -1032,17 +1034,25 @@ mod tests {
         assert!(count > 0, "no context profiles found at {}", dir.display());
     }
 
-    /// The paid deep diver is reachable only by a step that names it: if it
-    /// lost `explicit_only`, the orchestrator could delegate to Claude Sonnet
-    /// on its own and spend without anyone asking.
+    /// The paid deep dive runs `deep-diver` pinned to Claude Sonnet per step;
+    /// there is no paid twin profile. If the pin moved into the profile, the
+    /// front door could delegate to Sonnet on its own and spend without anyone
+    /// asking.
     #[test]
-    fn the_paid_deep_diver_is_explicit_only() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/core/contexts/deep-diver-hard.yaml");
-        let text = std::fs::read_to_string(path).unwrap();
-        let profile: ContextProfile = serde_yaml::from_str(&text).unwrap();
-        assert!(profile.spawnable && profile.explicit_only);
-        assert_eq!(profile.model_preference.as_deref(), Some("claude-sonnet-5"));
+    fn the_paid_deep_dive_pins_sonnet_per_step_not_per_profile() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core");
+        let wf: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(root.join("workflows/deep-dive-hard.yaml")).unwrap(),
+        )
+        .unwrap();
+        let args = &wf["steps"][0]["arguments"];
+        assert_eq!(args["agent"].as_str(), Some("deep-diver"));
+        assert_eq!(args["model"].as_str(), Some("claude-sonnet-5"));
+        let profile: ContextProfile = serde_yaml::from_str(
+            &std::fs::read_to_string(root.join("contexts/deep-diver.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(profile.model_preference.as_deref(), Some("claude-sonnet-5"));
     }
 
     /// The schedule-author drafting specialist must be spawnable — the
@@ -1116,7 +1126,7 @@ mod tests {
     }
 
     /// `CHAT_DEFAULT_PROFILE` selects the fallback profile; absent or blank it
-    /// stays `general`. This is the whole mechanism behind swapping the chat
+    /// stays the shipped front door. This is the whole mechanism behind swapping the chat
     /// front door without a rebuild, so a regression here silently reverts the
     /// deployment to the old tool-heavy default.
     ///
@@ -1127,18 +1137,18 @@ mod tests {
         let saved = std::env::var("CHAT_DEFAULT_PROFILE").ok();
 
         unsafe { std::env::remove_var("CHAT_DEFAULT_PROFILE") };
-        assert_eq!(default_profile_name(), "general");
-
-        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "GeneralDefault-Orchrestator") };
         assert_eq!(default_profile_name(), "GeneralDefault-Orchrestator");
+
+        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "researcher") };
+        assert_eq!(default_profile_name(), "researcher");
 
         // Blank / whitespace-only must not produce an unresolvable profile name.
         unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "   ") };
-        assert_eq!(default_profile_name(), "general");
+        assert_eq!(default_profile_name(), "GeneralDefault-Orchrestator");
 
         // Surrounding whitespace is trimmed, not preserved into a lookup key.
-        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "  orchestrator  ") };
-        assert_eq!(default_profile_name(), "orchestrator");
+        unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", "  researcher  ") };
+        assert_eq!(default_profile_name(), "researcher");
 
         match saved {
             Some(v) => unsafe { std::env::set_var("CHAT_DEFAULT_PROFILE", v) },

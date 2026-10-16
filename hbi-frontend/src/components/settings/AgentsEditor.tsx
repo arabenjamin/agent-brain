@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiRequest } from "../../api/client";
+import { useDefaultProfile } from "../../api/queries";
 import { extractJson } from "../../lib/assist";
 import AgentAssist from "../ui/AgentAssist";
 import ModelPicker from "../ui/ModelPicker";
@@ -129,6 +130,8 @@ export default function ContextProfileModal({
   const [fetchingEdit, setFetchingEdit] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<ProfileInfo | null>(null);
+  // The front door (CHAT_DEFAULT_PROFILE): the server refuses to delete it.
+  const defaultProfile = useDefaultProfile().data ?? null;
 
   // Reset to list mode when modal opens/closes
   useEffect(() => {
@@ -240,7 +243,7 @@ export default function ContextProfileModal({
           const body = await res.json().catch(() => ({}));
           throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
         }
-        if (activeProfile === name) onProfileChange("general");
+        if (activeProfile === name) onProfileChange(defaultProfile ?? "");
         onProfilesChanged();
       } catch (e) {
         setError(e instanceof Error ? e.message : `Failed to delete "${name}"`);
@@ -280,6 +283,7 @@ export default function ContextProfileModal({
             profiles={profiles}
             activeProfile={activeProfile}
             disabled={!!disabled}
+            defaultProfile={defaultProfile}
             deleting={deleting}
             fetchingEdit={fetchingEdit}
             error={error}
@@ -369,6 +373,7 @@ export default function ContextProfileModal({
 function ListPane({
   profiles,
   activeProfile,
+  defaultProfile,
   disabled,
   deleting,
   fetchingEdit,
@@ -381,6 +386,7 @@ function ListPane({
 }: {
   profiles: AgentSummary[];
   activeProfile: string;
+  defaultProfile: string | null;
   disabled: boolean;
   deleting: string | null;
   fetchingEdit: boolean;
@@ -432,7 +438,11 @@ function ListPane({
           </div>
         )}
 
-        {(profiles.length > 0 ? profiles : [{ name: "general" }]).map((p) => {
+        {profiles.length === 0 && !error && (
+          <div style={{ fontSize: 11, color: "var(--text-muted, #7a8099)" }}>The brain returned no agents.</div>
+        )}
+
+        {profiles.map((p) => {
           const isActive = p.name === activeProfile;
           const isBusy = deleting === p.name || fetchingEdit;
           const toolCount = p.tools?.length ?? p.tool_count ?? 0;
@@ -504,7 +514,7 @@ function ListPane({
                   onClick={() => onEdit(p.name)}
                   color="rgba(79,142,247,0.7)"
                 />
-                {p.name !== "general" && (
+                {p.name !== defaultProfile && (
                   <ActionBtn
                     label={deleting === p.name ? "…" : "Delete"}
                     disabled={disabled || isBusy}
