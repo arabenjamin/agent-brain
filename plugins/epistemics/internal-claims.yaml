@@ -1,0 +1,62 @@
+# What makes a claim INTERNAL: about the brain itself (what it logged,
+# watched, dispatched, stored, its own status). The brain's own ledger answers
+# those; no web search can, so they are never extracted and never verified.
+#
+# Found 2026-10-16: 28 claims like "The brain logged 37 dispatches of
+# scheduler activity in the last 24 h." came from the daily brief's self
+# sections, and the verifier searched the web for each (one was "refuted").
+#
+# A claim is internal when one of `self_names` is followed within
+# `verb_window` words by one of `verbs` (the brain as the subject doing its
+# bookkeeping) AND it names one of `nouns` (what the brain keeps). Both, so a
+# neuroscience claim is not caught: "the brain actively establishes a target
+# level for body fat" has no bookkeeping verb, "the brain processed visual
+# input" no bookkeeping noun. A noun matches its plural ("note" -> "notes").
+self_names:
+  - the brain
+  - agent-brain
+  - agent brain
+  - this brain
+  - our brain
+  # Only with a bookkeeping verb and noun: "the system recorded 2208
+  # completed tasks" (the brief), not "Michigan's voter-registration system".
+  - the system
+verb_window: 4
+verbs:
+  - logged
+  - recorded
+  - processed
+  - watched
+  - dispatched
+  - filled
+  - generated
+  - researched
+  - ingested
+  - stored
+  - entered
+  - extracted
+  - verified
+  - completed
+  - ran
+  - failed
+nouns:
+  - note
+  - video
+  - dispatch
+  - scheduler
+  - knowledge gap
+  - knowledge-gap
+  - claim-evidence
+  - claim
+  - source record
+  - video-learning
+  - dead-job
+  - dead job
+  - job
+  - task
+  - workflow
+  - entries
+  - entry
+  - sleep mode
+  - code base
+  - codebase

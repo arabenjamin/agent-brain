@@ -446,6 +446,9 @@ pub async fn extract_claims(
          NEVER a claim about the SOURCE itself: its title, channel, publication \
          date, length, or what it covers, offers, explores or suggests. Extract \
          what it says, not what it is.\n\
+         NEVER a claim about the brain that wrote or collected the SOURCE (\"the \
+         brain logged 176 notes\", what it watched, dispatched, stored, its jobs \
+         or status): that is its own bookkeeping, not a fact about the world.\n\
          Keep the SOURCE's hedges (\"reportedly\", \"allegedly\", \"may\"). \
          Never a relative day (\"next week\", \"Sunday\"): write the date the \
          SOURCE gives, or leave the claim out.\n\n\
@@ -1384,6 +1387,21 @@ pub async fn attach_evidence(
     Ok(true)
 }
 
+/// Take a claim out of the verification sweep for good, saying why
+/// (`internal`: about the brain itself). Its status stays as it was.
+pub async fn mark_verify_skipped(neo4j: &Db, claim_id: &str, why: &str) -> Result<()> {
+    neo4j
+        .run(
+            query(
+                "MATCH (c:Note {id: $id, note_type: 'claim'}) \
+                 SET c.verify_skipped = $why",
+            )
+            .param("id", claim_id)
+            .param("why", why),
+        )
+        .await
+}
+
 /// Record that a verification attempt was made against a claim.
 ///
 /// Stamped *before* the attempt runs, not after, so a claim advances the cursor
@@ -1438,6 +1456,7 @@ pub async fn unverified_claims(neo4j: &Db, limit: usize) -> Result<Vec<(String, 
                 "MATCH (c:Note {note_type: 'claim'}) \
                  WHERE COALESCE(c.claim_status, 'unverified') = 'unverified' \
                    AND NOT COALESCE(c.claim_kind, '') IN $unverifiable \
+                   AND c.verify_skipped IS NULL \
                  RETURN c.id AS id, c.content AS content \
                  ORDER BY CASE WHEN c.last_verify_attempt_at IS NULL THEN 0 ELSE 1 END ASC, \
                           CASE WHEN c.last_verify_attempt_at IS NULL THEN c.created_at END DESC, \

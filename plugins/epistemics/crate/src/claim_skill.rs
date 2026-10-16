@@ -19,12 +19,16 @@ use agent_brain_plugin_api::{
 };
 
 use crate::db::{Db, query};
-use crate::{claims, grounding};
+use crate::{claims, grounding, internal};
 
 /// How many search results are gathered as candidate evidence per claim.
 /// 8, not 6: echo pages are dropped before judging, and corroboration now
 /// needs two CITED independent results rather than any two results.
 const EVIDENCE_RESULTS: u8 = 8;
+
+/// Why an internal claim is dropped or never searched.
+const INTERNAL_PROBLEM: &str = "it is about the brain's own activity: its own ledger answers \
+     that, and no web search can";
 
 /// Default number of claims a single `verify` sweep will process.
 const DEFAULT_VERIFY_BATCH: usize = 5;
@@ -83,6 +87,11 @@ impl ClaimSkill {
                         "type": "string",
                         "description": "extract only: fallback attribution (e.g. the channel) when the text does not name a source."
                     },
+                    "exclude_sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "extract only: Markdown sections to leave out, by heading prefix (case-insensitive), e.g. a brief's self-report sections. Each runs to the next heading."
+                    },
                     "claim_id": {
                         "type": "string",
                         "description": "verify only: verify one specific claim. Omit to sweep the unverified backlog."
@@ -121,6 +130,21 @@ impl ClaimSkill {
         let source_context = args["source_context"].as_str();
         let fallback_by = args["asserted_by"].as_str();
 
+        // Sections about the brain itself (a brief's "what I did", "system
+        // status") are its own bookkeeping, not assertions about the world.
+        let exclude: Vec<String> = match &args["exclude_sections"] {
+            Value::Array(a) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+            Value::String(s) => s.split(',').map(|p| p.trim().to_string()).collect(),
+            _ => vec![],
+        };
+        let (kept_text, removed_sections) = internal::strip_sections(text, &exclude);
+        if !removed_sections.is_empty() {
+            info!(sections = ?removed_sections, "Claim extraction: left out sections");
+        }
+
         // What the source is (title, URL, outlet), stored on every claim so a
         // reader sees where it came from without following ASSERTED_IN. The text
         // usually carries it; otherwise the source note does.
@@ -132,16 +156,34 @@ impl ClaimSkill {
             source = source_reference(&content);
         }
 
-        let extraction =
-            match claims::extract_claims(self.llm.as_ref(), text, max, source.title.as_deref())
-                .await
-            {
-                Ok(c) => c,
-                Err(e) => return ToolCallResult::error(format!("Claim extraction failed: {e}")),
-            };
+        let mut extraction = match claims::extract_claims(
+            self.llm.as_ref(),
+            &kept_text,
+            max,
+            source.title.as_deref(),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => return ToolCallResult::error(format!("Claim extraction failed: {e}")),
+        };
+        // The prompt says so too; this is the check that holds when a model
+        // does not listen.
+        let rules = internal::rules();
+        let (internal_claims, world): (Vec<_>, Vec<_>) = extraction
+            .claims
+            .into_iter()
+            .partition(|c| rules.is_internal(&c.claim));
+        extraction.claims = world;
+        extraction
+            .dropped
+            .extend(internal_claims.into_iter().map(|c| claims::DroppedClaim {
+                claim: c.claim,
+                problems: vec![INTERNAL_PROBLEM.to_string()],
+            }));
         let (repaired, dropped) = (extraction.repaired, extraction.dropped);
         for d in &dropped {
-            warn!(claim = %d.claim, problems = ?d.problems, "Claim dropped: it does not stand alone");
+            warn!(claim = %d.claim, problems = ?d.problems, "Claim dropped");
         }
 
         if extraction.claims.is_empty() {
@@ -149,11 +191,12 @@ impl ClaimSkill {
                 "stored": 0,
                 "claims": [],
                 "dropped": dropped,
+                "excluded_sections": removed_sections,
                 "answer": text,
                 "note": if dropped.is_empty() {
                     "No independently checkable factual assertions found in this source."
                 } else {
-                    "Every claim found was dropped: none could be stated so it stands alone (see dropped)."
+                    "Every claim found was dropped (see dropped for why)."
                 }
             }));
         }
@@ -200,6 +243,7 @@ impl ClaimSkill {
             "claims": stored,
             "repaired": repaired,
             "dropped": dropped,
+            "excluded_sections": removed_sections,
             "answer": text,
             "note": "Stored as unverified. Run claim(action=verify) to gather evidence."
         }))
@@ -239,6 +283,20 @@ impl ClaimSkill {
     /// that says nothing happened must still say what it was that did not
     /// happen.
     async fn verify_one(&self, claim_id: &str, claim_text: &str) -> Value {
+        // 0. A claim about the brain itself is answered by its own ledger, not
+        //    the web: never search for it, and keep the sweep from picking it again.
+        if internal::rules().is_internal(claim_text) {
+            if let Err(e) = claims::mark_verify_skipped(&self.neo4j, claim_id, "internal").await {
+                warn!(claim_id = %claim_id, error = %e, "Could not mark internal claim");
+            }
+            return json!({
+                "claim_id": claim_id,
+                "claim": claim_text,
+                "verdict": "skipped_internal",
+                "note": INTERNAL_PROBLEM,
+            });
+        }
+
         // 1. Search for independent coverage of the claim.
         let Some(search) = &self.search else {
             return json!({ "claim_id": claim_id, "claim": claim_text, "error": "search unavailable" });

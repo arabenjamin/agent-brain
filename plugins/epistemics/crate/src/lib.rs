@@ -27,6 +27,7 @@ mod claim_skill;
 mod claims;
 mod db;
 mod grounding;
+mod internal;
 mod relation_skill;
 mod relations;
 mod routes;
