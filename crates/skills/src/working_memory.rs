@@ -102,6 +102,10 @@ impl WorkingMemorySkill {
                         "type": "string",
                         "enum": ["action"],
                         "description": "Set \"action\" when the user must do or decide something (an API needs a key, apply to this job?). It also creates an item for the user in their Feed, with this conversation as its thread. Leave it out for something to read (a brief, a report)."
+                    },
+                    "ask": {
+                        "type": "string",
+                        "description": "Required with needs: \"action\". What exactly the user must do or decide, and what is blocked until they do, in one or two sentences — e.g. 'Sign up at https://x.dev and add X_API_KEY to docker-compose.yml; I can ingest the API after that.' The item records which run, workflow or agent sent it by itself."
                     }
                 },
                 "required": ["message"]
@@ -134,6 +138,20 @@ impl WorkingMemorySkill {
             ));
         }
 
+        let needs_action = input.needs.as_deref().map(str::trim) == Some("action");
+        let ask = input
+            .ask
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(String::from);
+        if needs_action && ask.is_none() {
+            return ToolCallResult::error(
+                "needs: \"action\" requires `ask`: what exactly the user must do or decide, and \
+                 what is blocked until they do. Nothing was sent.",
+            );
+        }
+
         let notification_id = Uuid::new_v4().to_string();
         let created_at = Utc::now().to_rfc3339();
 
@@ -158,7 +176,6 @@ impl WorkingMemorySkill {
 
         // An ask, not a read: it becomes an item the user acts on, linked back
         // to this notification and threaded in its conversation.
-        let needs_action = input.needs.as_deref().map(str::trim) == Some("action");
         let mut item_id: Option<String> = None;
         if needs_action {
             let title = input
@@ -176,6 +193,8 @@ impl WorkingMemorySkill {
                     origin_kind: Some(Some("agent".into())),
                     origin_ref: Some(Some(notification_id.clone())),
                     session_id: Some(input.related_session_id.clone()),
+                    ask: Some(ask.clone()),
+                    source: Some(Some(sender_label(neo4j).await)),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -277,6 +296,17 @@ impl Skill for WorkingMemorySkill {
 // Input structs
 // ============================================================================
 
+/// Who is sending a notification, in words: the agent when one runs this
+/// (`subagent:<name>` on the usage label), in the run its task records.
+async fn sender_label(neo4j: &agent_brain_repository::Neo4jClient) -> String {
+    let agent = agent_brain_chat::chat::USAGE_TOOL_LABEL
+        .try_with(|l| l.strip_prefix("subagent:").map(|a| format!("agent {a}")))
+        .ok()
+        .flatten();
+    let task = agent_brain_llm::ctx::current_owner_task();
+    agent_brain_scheduler::items::source_label(neo4j, task.as_deref(), agent.as_deref()).await
+}
+
 #[derive(Debug, Deserialize)]
 struct NotifyUserInput {
     message: String,
@@ -286,6 +316,8 @@ struct NotifyUserInput {
     related_session_id: Option<String>,
     #[serde(default)]
     needs: Option<String>,
+    #[serde(default)]
+    ask: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

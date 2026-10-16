@@ -72,6 +72,17 @@ pub struct Todo {
     /// run about to start, so one approval can never start a second run.
     #[serde(default)]
     pub approved_dispatch: Option<i64>,
+    /// What the user must do or decide, in one or two sentences: the reason
+    /// the item is theirs. Set by whatever made it (`notify_user`'s `ask`).
+    #[serde(default)]
+    pub ask: Option<String>,
+    /// The Task whose run made the item (a workflow run's record task).
+    #[serde(default)]
+    pub source_task: Option<String>,
+    /// Who made it, in words: "agent api-scout in workflow 'api-scout'",
+    /// "a chat turn", "an MCP client call". `None` = the user, in the HBI.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Item fields a write may set. `None` leaves a field as it is; `Some(None)`
@@ -86,6 +97,9 @@ pub struct TodoItemPatch {
     pub snoozed_until: Option<Option<String>>,
     pub result_note_id: Option<Option<String>>,
     pub model: Option<Option<String>>,
+    pub ask: Option<Option<String>>,
+    pub source_task: Option<Option<String>>,
+    pub source: Option<Option<String>>,
 }
 
 impl TodoItemPatch {
@@ -98,6 +112,9 @@ impl TodoItemPatch {
             && self.snoozed_until.is_none()
             && self.result_note_id.is_none()
             && self.model.is_none()
+            && self.ask.is_none()
+            && self.source_task.is_none()
+            && self.source.is_none()
     }
 }
 
@@ -168,6 +185,9 @@ impl Neo4jClient {
             model: None,
             review_comment: None,
             approved_dispatch: None,
+            ask: None,
+            source_task: None,
+            source: None,
         })
     }
 
@@ -181,7 +201,7 @@ impl Neo4jClient {
         if patch.is_empty() {
             return self.get_todo(id).await;
         }
-        let fields: [(&str, &Option<Option<String>>, bool); 8] = [
+        let fields: [(&str, &Option<Option<String>>, bool); 11] = [
             ("assignee", &patch.assignee, false),
             ("origin_kind", &patch.origin_kind, false),
             ("origin_ref", &patch.origin_ref, false),
@@ -190,6 +210,9 @@ impl Neo4jClient {
             ("snoozed_until", &patch.snoozed_until, true),
             ("result_note_id", &patch.result_note_id, false),
             ("model", &patch.model, false),
+            ("ask", &patch.ask, false),
+            ("source_task", &patch.source_task, false),
+            ("source", &patch.source, false),
         ];
         let mut sets = vec!["t.updated_at = datetime()".to_string()];
         let mut q_params: Vec<(String, neo4rs::BoltType)> = Vec::new();
@@ -374,5 +397,8 @@ fn todo_from_row(row: &neo4rs::Row) -> Option<Todo> {
         model: text("model"),
         review_comment: text("review_comment"),
         approved_dispatch: node.get("approved_dispatch").ok(),
+        ask: text("ask"),
+        source_task: text("source_task"),
+        source: text("source"),
     })
 }

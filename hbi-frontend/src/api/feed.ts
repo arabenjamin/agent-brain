@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiJson, apiRequest } from "./client";
 import { queryClient } from "./queries";
 import { openAsk } from "../lib/ask";
+import { DRAWER_KINDS } from "../components/drawer/entities";
 import type { Todo } from "../components/todos/model";
 import type { AgentNotification } from "./notifications";
 
@@ -76,9 +77,10 @@ export async function ensureThread(item: Todo): Promise<string> {
   return sid;
 }
 
-/** Open a conversation in the Ask modal, over the current page. */
+/** Open a conversation in the Ask modal, over the current page. An open
+ * drawer closes: it floats above the modal and would cover the chat. */
 export function openSession(sid: string) {
-  openAsk(sid);
+  openAsk(sid, DRAWER_KINDS);
 }
 
 export async function markRead(id: string): Promise<void> {

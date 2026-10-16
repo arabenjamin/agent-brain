@@ -1,7 +1,7 @@
 /**
- * A todo: what it asks, when it is due, the tasks made from it, and the
- * controls — done/reopen, edit, hand to the brain, delete. `id = "new"`
- * creates one.
+ * A todo: what the user must do and who asked, its thread, when it is due,
+ * and the tasks made from it. Editing it is where it is handed to an agent,
+ * to the brain, or made a schedule. `id = "new"` creates one.
  */
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -28,24 +28,6 @@ export default function TodoView({ id }: { id: string }) {
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const now = useNow();
 
-  if (isNew || editing) {
-    return (
-      <Drawer title={isNew ? "New todo" : "Edit todo"} onClose={isNew ? closeEntity : () => setEditing(false)} wide>
-        <TodoForm
-          embedded
-          existing={!isNew && q.data ? (q.data.todo as Todo) : null}
-          onCancel={() => (isNew ? closeEntity() : setEditing(false))}
-          onSaved={async (savedId) => {
-            await invalidateWork();
-            setEditing(false);
-            if (isNew && savedId) openEntity("todo", savedId);
-            else if (isNew) closeEntity();
-          }}
-        />
-      </Drawer>
-    );
-  }
-
   const d = q.data;
   const t = d?.todo;
 
@@ -63,13 +45,58 @@ export default function TodoView({ id }: { id: string }) {
     }
   };
 
+  if (isNew || editing) {
+    return (
+      <Drawer title={isNew ? "New todo" : "Edit todo"} onClose={isNew ? closeEntity : () => setEditing(false)} wide>
+        <TodoForm
+          embedded
+          existing={!isNew && t ? (t as Todo) : null}
+          onCancel={() => (isNew ? closeEntity() : setEditing(false))}
+          onSaved={async (savedId) => {
+            await invalidateWork();
+            setEditing(false);
+            if (isNew && savedId) openEntity("todo", savedId);
+            else if (isNew) closeEntity();
+          }}
+        />
+        {!isNew && t && (
+          <Section title="Hand it over" aside={t.dispatch_count ? `${t.dispatch_count} of 3 runs` : undefined}>
+            {["in_progress", "done", "awaiting_approval"].includes(t.status)
+              ? <div className="dw-note">It is {STATUS_LABELS[t.status]?.toLowerCase() ?? t.status}; there is nothing to hand over now.</div>
+              : (
+                <>
+                  <div className="dw-note">To an agent: it is told only the prompt below, and its result comes back to you for review.</div>
+                  <HandToAgent item={t} onDone={() => q.refetch()} />
+                  <div className="dw-note">Or to the brain: it plans the steps itself, from the title as the goal and the description as context, on the scheduler's next tick.</div>
+                  <div className="settings-actions">
+                    <button type="button" className="btn-ghost" disabled={!!busy}
+                      onClick={() => window.confirm(`Create a task for “${t.title}”? The brain will plan and run it on its next tick.`)
+                        && act("Hand to the brain", async () => {
+                          const r = await todoToTask(t.id);
+                          if (r.warning) throw new Error(r.warning);
+                          openEntity("task", r.task_id);
+                        })}>
+                      Hand to the brain
+                    </button>
+                  </div>
+                </>
+              )}
+            <MakeSchedule item={t} />
+            {result && <div className={result.ok ? "tone-text-green" : "tone-text-red"}>{result.text}</div>}
+          </Section>
+        )}
+      </Drawer>
+    );
+  }
+
   const actions = t && (
     <>
       <button type="button" className="btn" disabled={!!busy}
         onClick={() => act(t.status === "done" ? "Reopen" : "Mark done", () => setTodoStatus(t.id, t.status === "done" ? "pending" : "done"))}>
         {t.status === "done" ? "Reopen" : "Mark done"}
       </button>
-      <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => setEditing(true)}>Edit</button>
+      <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => setEditing(true)}
+        title="Edit it, or hand it to an agent or the brain">Edit / hand over</button>
     </>
   );
 
@@ -91,42 +118,46 @@ export default function TodoView({ id }: { id: string }) {
           </div>
           {result && <div className={result.ok ? "tone-text-green" : "tone-text-red"}>{result.text}</div>}
 
-          <Section title="Item">
+          <AskBox item={t} />
+
+          <div className="dw-thread">
+            <button type="button" className="btn" disabled={!!busy}
+              title="Opens the Ask chat on this item's own conversation; the drawer closes so the chat is usable"
+              onClick={() => act("Open the chat", async () => openSession(await ensureThread(t)))}>
+              💬 {t.session_id ? "Continue the chat about this" : "Chat with the brain about this"}
+            </button>
+            <span className="dw-dim">{t.session_id ? "Its conversation so far opens in Ask." : "Starts a conversation that stays linked to this item."}</span>
+          </div>
+
+          <Section title="Where it came from">
             <div className="dw-grid">
-              <span>For</span><span>{assigneeLabel(t.assignee)}</span>
-              <span>Status</span><span>{STATUS_LABELS[t.status] ?? t.status}</span>
               <span>From</span>
-              <span>
-                {!t.origin || t.origin.kind === "user" ? "you"
-                  : t.origin.kind === "proposal" && t.origin.ref
-                    ? <EntityLink kind="task" id={t.origin.ref}>{ORIGIN_LABELS.proposal} from task {t.origin.ref.slice(0, 8)}</EntityLink>
-                    : <>{ORIGIN_LABELS[t.origin.kind] ?? t.origin.kind}{t.origin.ref && <span className="dw-dim"> · {t.origin.ref.slice(0, 8)}</span>}</>}
-              </span>
-              <span>Thread</span>
-              <span>
-                <button type="button" className="wk-link" disabled={!!busy}
-                  onClick={() => act("Open the thread", async () => openSession(await ensureThread(t)))}>
-                  {t.session_id ? "open the conversation" : "start a conversation about it"}
-                </button>
-              </span>
+              <span><Source item={t} /></span>
+              {t.source_task && (
+                <><span>Run</span><span><EntityLink kind="task" id={t.source_task}>task {t.source_task.slice(0, 8)}</EntityLink></span></>
+              )}
+              {t.origin && t.origin.kind !== "user" && (
+                <><span>Kind</span><span>{ORIGIN_LABELS[t.origin.kind] ?? t.origin.kind}{t.origin.ref && <span className="dw-dim"> · {t.origin.ref}</span>}</span></>
+              )}
+              <span>For</span><span>{assigneeLabel(t.assignee)}</span>
               {t.snoozed_until && Date.parse(t.snoozed_until) > now && (
                 <><span>Snoozed</span><span>until {formatLocal(t.snoozed_until)}</span></>
               )}
             </div>
           </Section>
 
-          <Section title="Agent" aside={t.dispatch_count ? `${t.dispatch_count} of 3 runs` : undefined}>
-            {t.status === "in_progress" && t.assignee?.startsWith("agent:") && (
-              <div className="dw-note">{t.assignee.slice(6)} is working on it; the result will land in the thread for your review.</div>
-            )}
-            {(t.status === "awaiting_approval" || t.status === "awaiting_review") && <ReviewActions item={t} />}
-            {t.result_note_id && t.status !== "awaiting_review" && (
-              <div className="dw-dim">Last result: <EntityLink kind="note" id={t.result_note_id}>{t.result_note_id.slice(0, 8)}</EntityLink></div>
-            )}
-            {t.review_comment && <div className="dw-dim">Your last comment: {t.review_comment}</div>}
-            {!["in_progress", "done", "awaiting_approval"].includes(t.status) && <HandToAgent item={t} />}
-            <MakeSchedule item={t} />
-          </Section>
+          {(t.assignee?.startsWith("agent:") || t.status === "awaiting_approval" || t.status === "awaiting_review" || t.result_note_id || t.review_comment) && (
+            <Section title="Agent" aside={t.dispatch_count ? `${t.dispatch_count} of 3 runs` : undefined}>
+              {t.status === "in_progress" && t.assignee?.startsWith("agent:") && (
+                <div className="dw-note">{t.assignee.slice(6)} is working on it; the result will land in the thread for your review.</div>
+              )}
+              {(t.status === "awaiting_approval" || t.status === "awaiting_review") && <ReviewActions item={t} />}
+              {t.result_note_id && t.status !== "awaiting_review" && (
+                <div className="dw-dim">Last result: <EntityLink kind="note" id={t.result_note_id}>{t.result_note_id.slice(0, 8)}</EntityLink></div>
+              )}
+              {t.review_comment && <div className="dw-dim">Your last comment: {t.review_comment}</div>}
+            </Section>
+          )}
 
           <Section title="Description">
             {t.description
@@ -134,8 +165,8 @@ export default function TodoView({ id }: { id: string }) {
               : <div className="dw-note">No description.</div>}
           </Section>
 
-          <Section title="Handed to the brain" aside={d.tasks.length ? `${d.tasks.length}` : undefined}>
-            {d.tasks.length > 0 && (
+          {d.tasks.length > 0 && (
+            <Section title="Handed to the brain" aside={`${d.tasks.length}`}>
               <ul className="dw-list">
                 {d.tasks.map((task) => (
                   <li key={task.id}>
@@ -144,21 +175,8 @@ export default function TodoView({ id }: { id: string }) {
                   </li>
                 ))}
               </ul>
-            )}
-            {d.tasks.length === 0 && <div className="dw-note">Not yet. Handing it over creates a task with this title as its goal and the description as context; the scheduler plans and runs it on its next tick.</div>}
-            <div className="settings-actions">
-              <button type="button" className="btn" disabled={!!busy || t.status === "done"}
-                title={t.status === "done" ? "Reopen it first" : undefined}
-                onClick={() => window.confirm(`Create a task for “${t.title}”? The brain will plan and run it on its next tick.`)
-                  && act("Hand to the brain", async () => {
-                    const r = await todoToTask(t.id);
-                    if (r.warning) throw new Error(r.warning);
-                    openEntity("task", r.task_id);
-                  })}>
-                Hand to the brain
-              </button>
-            </div>
-          </Section>
+            </Section>
+          )}
 
           <Section title="Danger">
             <button type="button" className="btn danger" disabled={!!busy}
@@ -171,4 +189,38 @@ export default function TodoView({ id }: { id: string }) {
       )}
     </Drawer>
   );
+}
+
+/** What the user must do. An item the user wrote needs no box; one the brain
+ * made says what it wants, or that it never said. */
+function AskBox({ item }: { item: Todo }) {
+  if (item.ask) {
+    return (
+      <div className="dw-ask">
+        <span className="dw-ask-head">What you need to do</span>
+        <span className="dw-ask-body">{item.ask}</span>
+      </div>
+    );
+  }
+  if (!item.source && (!item.origin || item.origin.kind === "user")) return null;
+  return (
+    <div className="dw-ask missing">
+      <span className="dw-ask-head">No ask recorded</span>
+      <span className="dw-ask-body dw-dim">
+        Whatever made this did not say what it needs from you (items made before 2026-10-16 never did).
+        The description below is all it left; ask in the chat, or mark it done if there is nothing to do.
+      </span>
+    </div>
+  );
+}
+
+/** Who made the item, in words. */
+function Source({ item }: { item: Todo }) {
+  if (item.source) return <>{item.source}</>;
+  const o = item.origin;
+  if (!o || o.kind === "user") return <>you</>;
+  if (o.kind === "proposal" && o.ref) {
+    return <EntityLink kind="task" id={o.ref}>{ORIGIN_LABELS.proposal} from task {o.ref.slice(0, 8)}</EntityLink>;
+  }
+  return <>{ORIGIN_LABELS[o.kind] ?? o.kind}<span className="dw-dim"> · not recorded which run</span></>;
 }

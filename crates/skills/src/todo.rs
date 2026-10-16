@@ -66,8 +66,10 @@ impl TodoSkill {
                 (`count` is every match; at most 50 are listed). action=get: one item by id. \
                 action=upsert: create (no id) or update (id) an item: title, description, \
                 priority (0 urgent … 3 low), due_at, prompt, session_id, status. \
-                action=complete: mark it done. Items you create are assigned to the user; \
-                only the user assigns an item to an agent. To ask the user something that \
+                action=complete: mark it done. Items you create are assigned to the user and \
+                need `ask`: what exactly the user must do or decide, and what is blocked \
+                until they do; the item records where it came from (this run, workflow or \
+                chat) by itself. Only the user assigns an item to an agent. To ask the user something that \
                 needs an answer, prefer notify_user with needs: \"action\", which also makes \
                 the item."
                 .to_string(),
@@ -92,7 +94,8 @@ impl TodoSkill {
                     "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
                     "due_at": { "type": "string", "description": "RFC 3339 time, or empty to clear." },
                     "prompt": { "type": "string", "description": "What an agent would be told; defaults to title + description." },
-                    "session_id": { "type": "string", "description": "The item's chat thread." }
+                    "session_id": { "type": "string", "description": "The item's chat thread." },
+                    "ask": { "type": "string", "description": "upsert: what the user must do or decide, and what waits on it, in one or two sentences (required to create). E.g. 'Get a key at https://x.dev/signup and add X_API_KEY to docker-compose.yml; the weather workflow cannot run until then.'" }
                 },
                 "required": ["action"]
             }),
@@ -254,6 +257,13 @@ impl TodoSkill {
                 let Some(title) = text("title") else {
                     return ToolCallResult::error("`title` is required to create an item");
                 };
+                if text("ask").is_none() {
+                    return ToolCallResult::error(
+                        "`ask` is required to create an item: say what the user must do or \
+                         decide, and what is blocked until they do. Nothing was saved.",
+                    );
+                }
+                items::stamp_source(&self.neo4j, &mut patch).await;
                 // What the brain creates is the user's to act on, and says so.
                 patch.assignee = patch.assignee.or(Some(Some("user".to_string())));
                 patch.origin_kind = Some(Some(

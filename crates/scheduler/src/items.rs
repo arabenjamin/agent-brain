@@ -53,6 +53,75 @@ pub fn patch_from_json(body: &Value) -> TodoItemPatch {
         snoozed_until: field(body, "snoozed_until"),
         result_note_id: field(body, "result_note_id"),
         model: field(body, "model"),
+        ask: field(body, "ask"),
+        // Who made it is the writer's to stamp, never a body's to claim.
+        source_task: None,
+        source: None,
+    }
+}
+
+/// Who is writing right now, in words, from what the call runs under: an
+/// outside MCP client, a chat turn, an agent run or a queued job.
+pub fn caller_label() -> String {
+    use agent_brain_llm::routing::{Purpose, ROUTE_CONTEXT};
+    if agent_brain_knowledge::knowledge::CLIENT_CALL
+        .try_with(|_| ())
+        .is_ok()
+    {
+        return "an MCP client call from outside the brain".into();
+    }
+    match ROUTE_CONTEXT.try_with(|c| c.purpose) {
+        Ok(Purpose::Chat) => "a chat turn",
+        Ok(Purpose::Subagent) => "an agent run",
+        Ok(Purpose::Background) => "a background job",
+        Err(_) => "a direct call",
+    }
+    .into()
+}
+
+/// Who made an item, in words: `who` (e.g. "agent api-scout"), in the run
+/// `task` records (a workflow's run, or a task), else in [`caller_label`].
+pub async fn source_label(neo4j: &Neo4jClient, task: Option<&str>, who: Option<&str>) -> String {
+    let run = match task {
+        Some(id) => {
+            let row = neo4j
+                .execute(
+                    neo4rs::query(
+                        "MATCH (t:Task {id: $id}) RETURN t.workflow AS wf, t.goal AS goal",
+                    )
+                    .param("id", id),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.into_iter().next());
+            let get = |k: &str| {
+                row.as_ref()
+                    .and_then(|r| r.get::<String>(k).ok())
+                    .filter(|s| !s.is_empty())
+            };
+            match (get("wf"), get("goal")) {
+                (Some(wf), _) => format!("a run of workflow '{wf}'"),
+                (None, Some(goal)) => format!("task '{}'", title_from(&goal)),
+                (None, None) => format!("task {id}"),
+            }
+        }
+        None => caller_label(),
+    };
+    match who {
+        Some(w) => format!("{w}, in {run}"),
+        None => run,
+    }
+}
+
+/// Stamp where an item comes from, unless the writer already did: the Task
+/// this call runs under, and [`source_label`] in words.
+pub async fn stamp_source(neo4j: &Neo4jClient, patch: &mut TodoItemPatch) {
+    if patch.source_task.is_none() {
+        patch.source_task = Some(agent_brain_llm::ctx::current_owner_task());
+    }
+    if patch.source.is_none() {
+        let task = patch.source_task.clone().flatten();
+        patch.source = Some(Some(source_label(neo4j, task.as_deref(), None).await));
     }
 }
 
@@ -142,12 +211,13 @@ pub struct NewItem {
 
 /// Create an item, or return the one already made for the same origin, so a
 /// retried notification or a re-run backfill never makes two.
-pub async fn create_item(neo4j: &Neo4jClient, item: NewItem) -> anyhow::Result<(Todo, bool)> {
+pub async fn create_item(neo4j: &Neo4jClient, mut item: NewItem) -> anyhow::Result<(Todo, bool)> {
     if let (Some(Some(kind)), Some(Some(r))) = (&item.patch.origin_kind, &item.patch.origin_ref)
         && let Some(existing) = neo4j.find_todo_by_origin(kind, r).await?
     {
         return Ok((existing, false));
     }
+    stamp_source(neo4j, &mut item.patch).await;
     let todo = neo4j
         .create_todo(
             &item.title,

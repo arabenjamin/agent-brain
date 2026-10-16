@@ -20,9 +20,10 @@ export function askState(params: Record<string, string>): AskState {
   return v === OPEN ? { open: true } : { open: true, session: v };
 }
 
-/** Open the modal, on `session` when given. */
-export function openAsk(session?: string): void {
-  navigate({ params: { ask: session || OPEN } });
+/** Open the modal, on `session` when given. `clear` names other params to
+ * drop in the same step (an open drawer, which would cover the chat). */
+export function openAsk(session?: string, clear: readonly string[] = []): void {
+  navigate({ params: { ...Object.fromEntries(clear.map((k) => [k, null])), ask: session || OPEN } });
 }
 
 export function closeAsk(): void {

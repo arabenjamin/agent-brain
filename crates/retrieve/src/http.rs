@@ -643,7 +643,7 @@ impl HttpSkill {
         // Resolve the source to a parsed spec Value + provenance.
         // (spec, origin_url used for base_url resolution, source label, discovered_from).
         let (spec, origin_url, source, discovered_from): (Value, String, &str, Option<String>) =
-            if let Some(spec_url) = input.spec_url.clone() {
+            if let Some(spec_url) = input.spec_url.as_deref().map(raw_github_url) {
                 match self
                     .fetch_text(&spec_url)
                     .await
@@ -657,7 +657,11 @@ impl HttpSkill {
                     Ok(h) => h,
                     Err(e) => return ToolCallResult::error(e),
                 };
-                match self.find_linked_spec(&html, &docs_url).await {
+                match self
+                    .find_linked_spec(&html, &docs_url)
+                    .await
+                    .map(|u| raw_github_url(&u))
+                {
                     Some(spec_url) => {
                         match self
                             .fetch_text(&spec_url)
@@ -1359,6 +1363,25 @@ fn derive_api_name(spec: &Value, spec_url: &str) -> String {
 }
 
 /// Parse spec text as JSON, then YAML (many specs are served as .yaml).
+/// A GitHub file page (`github.com/o/r/blob/<ref>/path`) as its raw file:
+/// the page is HTML around the spec, so fetching it reads as "not a spec".
+fn raw_github_url(url: &str) -> String {
+    let Some(rest) = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+    else {
+        return url.to_string();
+    };
+    let parts: Vec<&str> = rest.splitn(4, '/').collect();
+    match parts.as_slice() {
+        [owner, repo, "blob", path] => {
+            let path = path.split(['?', '#']).next().unwrap_or(path);
+            format!("https://raw.githubusercontent.com/{owner}/{repo}/{path}")
+        }
+        _ => url.to_string(),
+    }
+}
+
 fn parse_spec_text(body: &str) -> Result<Value, String> {
     serde_json::from_str(body)
         .or_else(|_| serde_yaml::from_str(body))
@@ -1813,6 +1836,26 @@ impl Skill for HttpSkill {
 #[cfg(test)]
 mod ingest_api_tests {
     use super::*;
+
+    #[test]
+    fn a_github_file_page_is_read_as_its_raw_file() {
+        assert_eq!(
+            raw_github_url(
+                "https://github.com/alibaba/UnifiedModel/blob/main/api/openapi/openapi.yaml"
+            ),
+            "https://raw.githubusercontent.com/alibaba/UnifiedModel/main/api/openapi/openapi.yaml"
+        );
+        assert_eq!(
+            raw_github_url("https://github.com/o/r/blob/v1/spec.json?plain=1#L3"),
+            "https://raw.githubusercontent.com/o/r/v1/spec.json"
+        );
+        for same in [
+            "https://github.com/o/r",
+            "https://api.example.com/openapi.json",
+        ] {
+            assert_eq!(raw_github_url(same), same);
+        }
+    }
 
     fn find<'a>(spec: &'a ParsedSpec, method: &str, path: &str) -> &'a ParsedEndpoint {
         spec.endpoints

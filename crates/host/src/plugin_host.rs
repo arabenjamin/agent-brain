@@ -44,7 +44,8 @@ impl Host {
                 crate::plugins::Plugins::global().files(kind, "yaml")
             }))
             .with_day_start(Arc::new(agent_brain_graph::clock::local_day_start_utc))
-            .with_current_task(Arc::new(agent_brain_llm::ctx::current_owner_task));
+            .with_current_task(Arc::new(agent_brain_llm::ctx::current_owner_task))
+            .with_caller(Arc::new(agent_brain_scheduler::items::caller_label));
         if let Some(n) = &self.neo4j {
             ctx.graph = Some(Arc::new(HostGraph(n.clone())));
             ctx.workflows = Some(Arc::new(HostWorkflows {
@@ -361,6 +362,10 @@ impl Feed for HostFeed {
                 assignee: Some(Some("user".into())),
                 origin_kind: Some(Some(item.origin_kind)),
                 origin_ref: Some(Some(item.origin_ref)),
+                ask: Some(item.ask),
+                source_task: Some(item.source_task),
+                // Unset, `create_item` names the task's run, else this call.
+                source: item.source.map(Some),
                 ..Default::default()
             },
             ..Default::default()

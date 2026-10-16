@@ -831,3 +831,12 @@ button.wk-group-head:hover { color: var(--text-dim); }
   .ask-modal { width: 100vw; height: 100vh; border-radius: 0; border: none; }
   .ask-hint { display: none; }
 }
+.dw-ask {
+  border: 1px solid var(--accent-dim); border-left: 3px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--accent-glow); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+}
+.dw-ask-head { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.dw-ask-body { font-size: 13px; line-height: 1.5; }
+.dw-ask.missing { border-color: var(--border); border-left-color: var(--yellow); background: none; }
+.dw-ask.missing .dw-ask-head { color: var(--yellow); }
+.dw-thread { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

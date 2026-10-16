@@ -1613,6 +1613,13 @@ async fn proposal_item(
         priority,
         origin_kind: "proposal".into(),
         origin_ref: task_id.to_string(),
+        ask: Some(
+            "Review this proposed code change and approve or reject it; nothing in the \
+             codebase changes until you do."
+                .into(),
+        ),
+        source_task: Some(task_id.to_string()),
+        source: None,
     })
     .await
 }

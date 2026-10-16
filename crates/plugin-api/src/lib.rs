@@ -237,6 +237,14 @@ pub struct FeedItem {
     pub priority: i64,
     pub origin_kind: String,
     pub origin_ref: String,
+    /// What the user must do or decide, and what waits on it.
+    pub ask: Option<String>,
+    /// The Task whose run asked for this ([`PluginContext::current_task`]
+    /// captured when the work started); the host names its workflow.
+    pub source_task: Option<String>,
+    /// Who asked, in words, when there is no task ([`PluginContext::caller`]
+    /// captured when the work started).
+    pub source: Option<String>,
 }
 
 /// What the brain is made of, as the host knows it (for self-description).
@@ -366,6 +374,7 @@ pub struct PluginContext {
     background: bool,
     day_start: Option<Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>>,
     current_task: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    caller: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 impl PluginContext {
@@ -389,6 +398,7 @@ impl PluginContext {
             background: false,
             day_start: None,
             current_task: None,
+            caller: None,
         }
     }
 
@@ -448,6 +458,18 @@ impl PluginContext {
     /// job's owner), for provenance; `None` outside a run.
     pub fn current_task(&self) -> Option<String> {
         self.current_task.as_ref().and_then(|f| f())
+    }
+
+    /// The host side: attach the description of who is calling.
+    pub fn with_caller(mut self, f: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
+        self.caller = Some(f);
+        self
+    }
+
+    /// Who is calling this tool right now, in words ("a chat turn", "an MCP
+    /// client call from outside the brain"), for provenance.
+    pub fn caller(&self) -> Option<String> {
+        self.caller.as_ref().map(|f| f())
     }
 
     /// The plugin this context belongs to.

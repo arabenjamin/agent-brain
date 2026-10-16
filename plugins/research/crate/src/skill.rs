@@ -239,7 +239,14 @@ impl ResearchSkill {
                     };
                     if let Err(e) = self
                         .ledger
-                        .record(&id, &question, &processor, spec.usd, task.as_deref())
+                        .record(
+                            &id,
+                            &question,
+                            &processor,
+                            spec.usd,
+                            task.as_deref(),
+                            self.ctx.caller().as_deref(),
+                        )
                         .await
                     {
                         // The run exists and is billed; say so rather than lose it.

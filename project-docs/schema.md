@@ -385,7 +385,9 @@ The one record for work that wants doing, the user's or an agent's (HBI plan §9
 | `tags` | String | JSON array |
 | `due_at` | DateTime? | A calendar date stored at 00:00 UTC; overdue once it is before today's *local* date |
 | `assignee` | String? | `user`, `agent:<spawnable profile>` or `agent:auto`, checked against the live roster when written; only the user assigns an agent. Absent = the user's own (every todo before 2026-10-09) |
-| `origin_kind` / `origin_ref` | String? | Who asked: `user`, `schedule`, `proposal` (ref = filename), `agent` (ref = the notification id). An item is found again by its origin, so it is never made twice |
+| `origin_kind` / `origin_ref` | String? | Who asked: `user`, `schedule`, `proposal` (ref = filename), `agent` (ref = the notification id), `deep_research` (ref = the Parallel run id). An item is found again by its origin, so it is never made twice |
+| `ask` | String? | What the user must do or decide, and what waits on it. Required from `manage_todo` create and `notify_user` `needs: "action"`; plugins set it on their Feed items. The drawer's "What you need to do" box |
+| `source_task` / `source` | String? | Where it came from, stamped by the writer, never taken from a body: the Task the call ran under (`current_owner_task`), and in words, e.g. `agent api-scout, in a run of workflow 'api-scout'`, `a chat turn`, `an MCP client call from outside the brain`. Absent = the user, in the HBI (and every item before 2026-10-16) |
 | `prompt` | String? | What an agent is told; falls back to title + description |
 | `session_id` | String? | Its thread, a chat session (`todo-<id>` when the HBI starts one) |
 | `snoozed_until` | DateTime? | Hidden from the Feed until then |

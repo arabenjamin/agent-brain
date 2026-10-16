@@ -42,12 +42,17 @@ pub struct Run {
     pub confidence: Option<String>,
     pub sources: Vec<Citation>,
     pub error: Option<String>,
+    /// The Task whose run started it, if a run did.
+    pub task_id: Option<String>,
+    /// Who started it, in words (`PluginContext::caller`).
+    pub requested_by: Option<String>,
 }
 
 const RETURN_RUN: &str = "RETURN r.run_id AS run_id, r.question AS question, \
      r.processor AS processor, r.usd AS usd, r.status AS status, \
      toString(r.created_at) AS created_at, r.report AS report, \
-     r.confidence AS confidence, r.sources AS sources, r.error AS error";
+     r.confidence AS confidence, r.sources AS sources, r.error AS error, \
+     r.task_id AS task_id, r.requested_by AS requested_by";
 
 fn run_from(row: &Row) -> Result<Run> {
     let sources: Vec<Citation> = row
@@ -66,6 +71,11 @@ fn run_from(row: &Row) -> Result<Run> {
         confidence: row.get("confidence").ok(),
         sources,
         error: row.get("error").ok(),
+        task_id: row.get::<String>("task_id").ok().filter(|s| !s.is_empty()),
+        requested_by: row
+            .get::<String>("requested_by")
+            .ok()
+            .filter(|s| !s.is_empty()),
     })
 }
 
@@ -157,19 +167,21 @@ impl Ledger {
         processor: &str,
         usd: f64,
         task_id: Option<&str>,
+        requested_by: Option<&str>,
     ) -> Result<()> {
         self.graph
             .run(
                 query(
                     "CREATE (:ResearchRun {run_id: $id, question: $q, processor: $p, \
                      usd: $usd, status: 'running', task_id: $task, \
-                     created_at: datetime()})",
+                     requested_by: $by, created_at: datetime()})",
                 )
                 .param("id", run_id)
                 .param("q", question)
                 .param("p", processor)
                 .param("usd", usd)
-                .param("task", task_id),
+                .param("task", task_id)
+                .param("by", requested_by),
             )
             .await
     }
@@ -333,11 +345,35 @@ async fn deliver(ctx: &PluginContext, run: &Run) {
             priority: 2,
             origin_kind: "deep_research".into(),
             origin_ref: run.run_id.clone(),
+            ask: Some(format!(
+                "Nothing is blocked: this is the report you asked for. Read it{} and mark \
+                 this done, or reply in its thread to act on it.",
+                note_id
+                    .as_ref()
+                    .map(|id| format!(" (note {id})"))
+                    .unwrap_or_default()
+            )),
+            source_task: run.task_id.clone(),
+            source: requested(run),
         })
         .await
     {
         warn!(run = %run.run_id, error = %e, "deep_research: Feed item failed");
     }
+}
+
+/// Who started a run, in words, when no task did (a task's run is named by
+/// the host from `source_task`).
+fn requested(run: &Run) -> Option<String> {
+    if run.task_id.is_some() {
+        return None;
+    }
+    Some(format!(
+        "deep_research, started by {}",
+        run.requested_by
+            .as_deref()
+            .unwrap_or("an unrecorded caller")
+    ))
 }
 
 async fn tell_failed(ctx: &PluginContext, run: &Run, why: &str) {
@@ -353,6 +389,13 @@ async fn tell_failed(ctx: &PluginContext, run: &Run, why: &str) {
             priority: 3,
             origin_kind: "deep_research".into(),
             origin_ref: run.run_id.clone(),
+            ask: Some(
+                "Nothing is blocked. Decide whether to ask again (a failed run is still \
+                 billed) or mark this done."
+                    .into(),
+            ),
+            source_task: run.task_id.clone(),
+            source: requested(run),
         })
         .await;
 }
@@ -431,6 +474,8 @@ mod tests {
                 })
                 .collect(),
             error: None,
+            task_id: None,
+            requested_by: None,
         }
     }
 

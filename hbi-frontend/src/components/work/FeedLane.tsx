@@ -75,14 +75,15 @@ function ItemRow({ t, openId }: { t: FeedItem; openId?: string }) {
       </span>
       <button type="button" className="wk-row-main wk-link" onClick={() => openEntity("todo", t.id)}>
         <span className="wk-row-title">{t.title}</span>
-        {origin && origin !== "user" && <span className="wk-dim"> · {ORIGIN_LABELS[origin] ?? origin}</span>}
+        {t.source ? <span className="wk-dim"> · from {t.source}</span>
+          : origin && origin !== "user" && <span className="wk-dim"> · {ORIGIN_LABELS[origin] ?? origin}</span>}
         {t.assignee && t.assignee !== "user" && <span className="wk-dim"> · for {assigneeLabel(t.assignee)}</span>}
         {t.due_at && !t.overdue && <span className="wk-dim"> · due {t.due_at.slice(0, 10)}</span>}
         {error && <span className="tone-text-red"> · {error}</span>}
       </button>
       <span className="wk-row-meta wk-feed-actions">
-        <button type="button" className="btn-ghost" disabled={busy} title="Open this item's conversation"
-          onClick={() => act(async () => openSession(await ensureThread(t)))}>Reply</button>
+        <button type="button" className="btn-ghost" disabled={busy} title="Chat with the brain about this item, in its own conversation"
+          onClick={() => act(async () => openSession(await ensureThread(t)))}>💬 Chat</button>
         {awaiting ? (
           <ReviewActions item={t} compact />
         ) : (
@@ -98,8 +99,9 @@ function ItemRow({ t, openId }: { t: FeedItem; openId?: string }) {
         )}
       </span>
     </div>
+    {t.ask && !awaiting && <div className="wk-hint">To do: {t.ask}</div>}
     {t.status === "awaiting_approval" && agent && (
-      <div className="wk-hint">{agent} is assigned this and waits for your approval; its reason is in the thread (Reply).</div>
+      <div className="wk-hint">{agent} is assigned this and waits for your approval; its reason is in the thread (💬 Chat).</div>
     )}
     {t.status === "awaiting_review" && agent && (
       <div className="wk-hint">{agent} finished run {t.dispatch_count ?? 1}; the result is in the thread and in its note.</div>

@@ -29,6 +29,12 @@ export interface Todo {
   review_comment?: string | null;
   /** Open and the user's to act on now. */
   for_user?: boolean;
+  /** What the user must do or decide, and what waits on it. */
+  ask?: string | null;
+  /** The Task whose run made the item. */
+  source_task?: string | null;
+  /** Who made it, in words; absent = the user, in the HBI. */
+  source?: string | null;
 }
 
 /** Who an item is for, in words. */
@@ -44,6 +50,7 @@ export const ORIGIN_LABELS: Record<string, string> = {
   agent: "the brain asked",
   proposal: "code proposal",
   schedule: "a schedule",
+  deep_research: "deep research",
 };
 
 export type SortBy = "priority" | "due" | "created" | "updated";
