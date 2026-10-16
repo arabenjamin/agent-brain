@@ -1,0 +1,229 @@
+name: rust-training-data-scout
+description: "Monthly search for Rust training data, Rust fine-tuning prior work and hard Rust benchmarks, compared against the previous run, ending in a ranked shortlist for the next fine-tuning experiment."
+topic: ai-ml
+kind: monitor
+every: 30d
+# Public web research on public topics: its reasoning step may use free tiers
+# that train on prompts. See PROVIDER_ROUTING_PLAN.md §3.
+data_class: public
+
+# Why: Experiment 1 (gemma4:e4b -> Rust, concluded 2026-09-13) failed on data,
+# not compute: ~200 examples drawn from the 76 Exercism exercises taught style
+# without skill. The next attempt needs harder, compiler-verified data at
+# benchmark level, far more of it, and a bigger hard benchmark. Others are
+# fine-tuning for Rust too; this workflow finds what they built.
+
+steps:
+  # 1. Prior report, so the shortlist moves instead of resetting each month.
+  #    `NOT (n)-[:PART_OF]->()` excludes store_note's semantic chunks; the
+  #    note_type filter excludes claims stored under the same source_context.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'rust_training_data_scout' AND coalesce(n.note_type, '') <> 'claim' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch prior shortlist for delta analysis"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "rustdata-{{task_id}}"
+      content: "## PRIOR REPORT (may be empty on first run)\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank prior report"
+
+  # 2-5. Datasets, fine-tuning prior work, verifiable-reward training, benchmarks.
+  #      Datasets don't turn over monthly, so the window is a year.
+  - tool_name: search_web
+    arguments:
+      query: "Rust code instruction tuning dataset huggingface SFT compiled tested Rust programs"
+      recency: year
+      count: 10
+      source_list: ml-research
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: Rust training datasets"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "rustdata-{{task_id}}"
+      content: "## SWEEP — DATASETS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank dataset sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "fine-tuning small language model Rust code generation results paper LoRA"
+      recency: year
+      count: 10
+      source_list: ml-research
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: Rust fine-tuning prior work"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "rustdata-{{task_id}}"
+      content: "## SWEEP — PRIOR WORK\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank prior-work sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "Rust compiler feedback reinforcement learning verifiable rewards cargo test LLM training"
+      recency: year
+      count: 10
+      source_list: ml-research
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: compiler-verified training (RL / rejection sampling)"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "rustdata-{{task_id}}"
+      content: "## SWEEP — COMPILER-VERIFIED TRAINING\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank verified-training sweep"
+
+  - tool_name: search_web
+    arguments:
+      query: "Rust benchmark LLM code generation hard evaluation repository-level SWE-bench Rust"
+      recency: year
+      count: 10
+      source_list: ml-research
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: hard Rust benchmarks"
+
+  - tool_name: push_context
+    arguments:
+      session_id: "rustdata-{{task_id}}"
+      content: "## SWEEP — BENCHMARKS\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank benchmark sweep"
+
+  # 6. Reassemble everything for the reason step.
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'rustdata-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Reassemble prior report + sweeps"
+
+  # 7. Material goes in `context`, not `question` (RAG contamination guard).
+  - tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT contains a PRIOR REPORT (possibly empty) and four fresh web
+        sweeps: Rust training datasets, Rust fine-tuning prior work,
+        compiler-verified training methods, and hard Rust benchmarks.
+
+        WHO THIS IS FOR. We fine-tune a small local model (Gemma-4-E4B, about
+        4B parameters, trained with QLoRA on an 8 GB GPU, or a rented cloud
+        GPU) to write better Rust. Our first experiment failed: about 200
+        examples drawn from 76 Exercism exercises taught the model a style
+        without the skill. We need harder data, far more of it, verified by
+        the compiler and tests, and a larger hard benchmark. Our current
+        benchmarks are Aider polyglot's 30 Rust exercises (Exercism) and
+        MultiPL-E HumanEval-rs, so any dataset built from Exercism, HumanEval
+        or MBPP problems is a CONTAMINATION risk and must be flagged.
+
+        Write a report with exactly these sections:
+
+        ## NEW SINCE LAST REPORT
+        Items in this report that are not in the PRIOR REPORT. If the CONTEXT
+        has no prior report, say this is the first run. If nothing is new,
+        say so plainly; an empty delta is a valid result.
+
+        ## DATASETS
+        One line per dataset:
+        `<name> — <URL> — <size> — <license> — <verified by compiler/tests? yes/no/unknown> — <contamination risk with our benchmarks>`
+        Write "unknown" for any field the CONTEXT does not state. Never guess
+        a size or a license.
+
+        ## PRIOR WORK
+        Who fine-tuned a model for Rust: the base model, the method, the data
+        and the measured result, each with its source URL and date.
+
+        ## BENCHMARKS
+        Rust benchmarks harder than ours, with size, source URL and whether
+        they publish tests we can run offline.
+
+        ## RECOMMENDATION FOR THE NEXT EXPERIMENT
+        At most three concrete picks (a dataset, a method, a benchmark), each
+        with why it fits a 4B model and what would have to be true for it to
+        beat our first attempt. Say "nothing usable found" if that is honest.
+
+        ## WATCH
+        Promising but unproven items to re-check next month.
+
+        Gates: every item needs a URL from the CONTEXT. Ground every claim in
+        the CONTEXT; if the sweeps returned nothing usable, say so rather than
+        answering from general knowledge or repeating the prior report as if
+        it were fresh. Today is {{date}}.
+      context: "{{_prev}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    description: "Delta analysis + ranked shortlist"
+
+  # 8. Bank the report, then re-query it alone: store_note returns a JSON
+  #    wrapper, so a step chained directly off reason would store that.
+  - tool_name: push_context
+    arguments:
+      session_id: "rustdata-{{task_id}}"
+      content: "## REPORT\n{{_prev}}"
+      role: observation
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Bank the finished report"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'rustdata-{{task_id}}'}) WHERE w.content STARTS WITH '## REPORT' RETURN w.content AS content ORDER BY w.turn_index DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Re-read the report alone"
+
+  - tool_name: store_note
+    arguments:
+      content: "# Rust training data scout — {{date}}\n\n{{_prev}}"
+      note_type: source_record
+      source_context: rust_training_data_scout
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the scout report"
+
+  - tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (w:WorkingMemory {session_id: 'rustdata-{{task_id}}'}) DETACH DELETE w"
+      readonly: false
+    # priority 1, not 0: the queue is a max-heap, so 0 starves under a fed queue.
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Delete scratch session"
