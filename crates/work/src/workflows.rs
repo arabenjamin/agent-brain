@@ -203,6 +203,15 @@ pub struct Saved {
     pub workflow: Workflow,
     pub created: bool,
     pub warnings: Vec<String>,
+    /// `validation::lint_chain_steps`: steps that save but run badly.
+    pub step_warnings: Vec<String>,
+}
+
+/// What `check` found: the save's warnings and the step lint, the save
+/// itself refused only on a hard error.
+pub struct Checked {
+    pub warnings: Vec<String>,
+    pub step_warnings: Vec<String>,
 }
 
 /// The fields a save body carries, from a stored workflow: what an edit is
@@ -241,10 +250,11 @@ struct Prepared {
     managed_by: Option<String>,
     paused_reason: Option<String>,
     warnings: Vec<String>,
+    step_warnings: Vec<String>,
 }
 
-/// Every check `save` runs, with nothing written: the warnings the save would
-/// return, or the error it would refuse with. The HBI checks an agent's draft
+/// Every check `save` runs, with nothing written: the warnings and step lint
+/// the save would return, or the error it would refuse with. The HBI checks an agent's draft
 /// with it, so a draft that cannot be saved is not shown as ready.
 pub async fn check(
     neo4j: &Neo4jClient,
@@ -252,10 +262,13 @@ pub async fn check(
     create_only: bool,
     body: &Value,
     checks: &SaveChecks<'_>,
-) -> Result<Vec<String>, SaveError> {
+) -> Result<Checked, SaveError> {
     prepare(neo4j, id, create_only, body, checks)
         .await
-        .map(|p| p.warnings)
+        .map(|p| Checked {
+            warnings: p.warnings,
+            step_warnings: p.step_warnings,
+        })
 }
 
 /// Create or update a workflow from a save body. With `id`, that workflow is
@@ -279,6 +292,7 @@ pub async fn save(
         managed_by,
         paused_reason,
         warnings,
+        step_warnings,
     } = prepare(neo4j, id, create_only, body, checks).await?;
 
     let Some(cur) = current else {
@@ -290,6 +304,7 @@ pub async fn save(
             workflow: wf,
             created: true,
             warnings,
+            step_warnings,
         });
     };
 
@@ -331,6 +346,7 @@ pub async fn save(
         workflow: wf,
         created: false,
         warnings,
+        step_warnings,
     })
 }
 
@@ -418,8 +434,9 @@ async fn prepare(
     if validation::has_hard(&hard) {
         return Err(SaveError::Invalid(validation::render_hard(&hard)));
     }
-    serde_json::from_value::<Vec<ChainStep>>(Value::Array(steps.clone()))
+    let chain = serde_json::from_value::<Vec<ChainStep>>(Value::Array(steps.clone()))
         .map_err(|e| SaveError::Invalid(format!("steps: {e}")))?;
+    let step_warnings = validation::lint_chain_steps(&chain, checks.live_tools);
 
     let str_of = |k: &str| {
         cand.get(k)
@@ -494,6 +511,7 @@ async fn prepare(
         managed_by,
         paused_reason: str_of("paused_reason"),
         warnings,
+        step_warnings,
     })
 }
 

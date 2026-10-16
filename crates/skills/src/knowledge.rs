@@ -282,6 +282,11 @@ impl KnowledgeSkill {
                 "properties": {
                     "action": {
                         "type": "string",
+                        // A drafting agent invents modes ("summarize", "classify")
+                        // when only the description names them; the enum lets
+                        // the save check refuse one instead of it silently
+                        // running as infer.
+                        "enum": ["infer", "explain", "clarify", "audit", "structured"],
                         "description": "Mode: infer (default), explain, clarify, audit, or structured"
                     },
                     "question": {

@@ -14,13 +14,16 @@ specialty: >-
 tools:
   - neo4j_query
   - list_tasks
-# Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11). Measured over
-# 7 days this agent's largest sub-agent turn was well inside the sidecar's
-# 16384-token/request budget, and E4B drives multi-round tool loops with zero
-# errors, so the unmetered-cloud base is no longer needed here. The sub-agent
-# clamp keeps `llamacpp` (local is always unmetered).
-model_preference: "gemma4-e4b"
-provider_hint: "llamacpp"
+# PAID, pinned to Haiku 2026-10-16. Measured on one edit + three new drafts
+# through the HBI editor's save check: Haiku passed 4/4 first try and its
+# drafts read sound; gemma4-e4b passed 7/7 only after fix-up rounds and its new
+# drafts were weak (placeholder arguments, invented templates); Ministral
+# (free) passed with hardcoded dates. About 1-2 cents a draft. A capped run
+# falls back to the free models.
+model_preference: claude-haiku-4-5
+provider_hint: anthropic
+fallback_models:
+  - ministral-14b-latest
 token_budget: 6000
 pre_load_query: "MATCH (w:Workflow) WHERE w.interval_seconds IS NOT NULL RETURN w.name AS name, w.interval_seconds AS interval_seconds, w.steps AS steps ORDER BY w.name"
 system_prompt: |
@@ -56,6 +59,9 @@ system_prompt: |
   Pass only the arguments a step needs: leave every other one out, never
   null, false, "" or [] as a placeholder. An argument with listed choices
   takes one of them exactly.
+  A workflow runs again and again, so never write today's date (or a year) into
+  a query or argument: it would search that day forever. Use `recency` on
+  search_web for "latest", and leave `event_at` out.
 
   THE RULES THE LINTER ENFORCES — follow every one or the upsert comes back with
   step_warnings:

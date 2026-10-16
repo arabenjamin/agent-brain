@@ -5,7 +5,7 @@ import AgentAssist from "../ui/AgentAssist";
 import { useTopics } from "../../api/topics";
 import { KIND_LABELS, SCHEDULE_KINDS } from "../../lib/scheduleGroups";
 import { jsonToStepDrafts, makeDefaultStep, stepDraftsToJson, stUrl, type ScheduledTask, type StepDraft } from "./model";
-import { buildDraftTask, checkWorkflow, useToolSchemas } from "./draft";
+import { buildDraftTask, checkWorkflow, useToolSchemas, type CheckResult } from "./draft";
 import StepCard from "./StepCard";
 import { useMergedToolGroups } from "./useToolGroups";
 
@@ -188,8 +188,11 @@ export default function ScheduledTaskForm({
       if (typeof draft === "string") return draft;
     }
     let check = await checkDraft(draft);
-    if (!check.ok && check.refused && !retried) {
-      const redraft = await askAgain(draft.text, check.error);
+    // A draft that saves but lints badly is worth the one round too.
+    const problems = (c: CheckResult) => (!c.ok ? (c.refused ? c.error : null) : c.step_warnings.join("\n") || null);
+    const firstProblems = problems(check);
+    if (firstProblems && !retried) {
+      const redraft = await askAgain(draft.text, firstProblems);
       if (typeof redraft !== "string") {
         draft = redraft;
         check = await checkDraft(draft);
@@ -208,6 +211,9 @@ export default function ScheduledTaskForm({
       return check.refused
         ? `The draft is in the form, but Save will refuse it until these are fixed:\n${check.error}`
         : `The draft is in the form, unchecked: ${check.error}`;
+    }
+    if (check.step_warnings.length) {
+      return `The draft is in the form and will save, but these steps may run badly:\n${check.step_warnings.join("\n")}`;
     }
     return null;
   };

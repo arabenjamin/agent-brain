@@ -627,7 +627,11 @@ pub async fn handle_create_workflow(
             } else {
                 StatusCode::OK
             };
-            (status, Json(serde_json::json!(saved.workflow))).into_response()
+            let mut v = serde_json::json!(saved.workflow);
+            if !saved.step_warnings.is_empty() {
+                v["step_warnings"] = serde_json::json!(saved.step_warnings);
+            }
+            (status, Json(v)).into_response()
         }
         Err(e) => save_error(e),
     }
@@ -635,7 +639,8 @@ pub async fn handle_create_workflow(
 
 /// POST /workflows/check — every check a save runs, nothing written. The body
 /// is a save body; with `id` it is checked as an edit of that workflow, without
-/// as a new one. 200 `{ok, warnings}`, or 400 with the error a save would give.
+/// as a new one. 200 `{ok, warnings, step_warnings}` (step lint: saves, but
+/// runs badly), or 400 with the error a save would give.
 pub async fn handle_check_workflow(
     Extension(state): Extension<Arc<RestState>>,
     Json(body): Json<Value>,
@@ -653,7 +658,12 @@ pub async fn handle_check_workflow(
         envelope: None,
     };
     match agent_brain_work::workflows::check(neo4j, id, id.is_none(), &body, &checks).await {
-        Ok(warnings) => Json(json!({ "ok": true, "warnings": warnings })).into_response(),
+        Ok(c) => Json(json!({
+            "ok": true,
+            "warnings": c.warnings,
+            "step_warnings": c.step_warnings,
+        }))
+        .into_response(),
         Err(e) => save_error(e),
     }
 }
@@ -693,6 +703,9 @@ pub async fn handle_update_workflow(
             }
             if !saved.warnings.is_empty() {
                 v["warnings"] = serde_json::json!(saved.warnings);
+            }
+            if !saved.step_warnings.is_empty() {
+                v["step_warnings"] = serde_json::json!(saved.step_warnings);
             }
             Json(v).into_response()
         }

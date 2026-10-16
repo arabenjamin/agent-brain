@@ -99,14 +99,17 @@ export function buildDraftTask({
     `and only these):\n${toolSignatures(tools, schemas)}`;
   if (fix) {
     task +=
-      `\n\nYour previous draft was rejected by the save check:\n${fix.errors}\n\n` +
+      `\n\nThe save check found these problems in your previous draft:\n${fix.errors}\n\n` +
       `The draft was:\n${fix.previous}\n\nReturn the corrected object.`;
   }
   return task;
 }
 
 /** `refused`: the check ran and the draft fails it (worth sending back to the agent); else it couldn't run. */
-export type CheckResult = { ok: true; warnings: string[] } | { ok: false; refused: boolean; error: string };
+export type CheckResult =
+  /** `step_warnings`: the step lint — steps that save but run badly (no `{{_prev}}`, a web note typed `semantic`, …). */
+  | { ok: true; warnings: string[]; step_warnings: string[] }
+  | { ok: false; refused: boolean; error: string };
 
 /**
  * Run the brain's save checks on a workflow body without saving it. `id`
@@ -116,8 +119,8 @@ export type CheckResult = { ok: true; warnings: string[] } | { ok: false; refuse
 export async function checkWorkflow(body: Record<string, unknown>): Promise<CheckResult> {
   try {
     const res = await apiRequest(`/workflows/check`, { method: "POST", body: JSON.stringify(body) });
-    const data = (await res.json().catch(() => ({}))) as { warnings?: string[]; error?: string };
-    if (res.ok) return { ok: true, warnings: data.warnings ?? [] };
+    const data = (await res.json().catch(() => ({}))) as { warnings?: string[]; step_warnings?: string[]; error?: string };
+    if (res.ok) return { ok: true, warnings: data.warnings ?? [], step_warnings: data.step_warnings ?? [] };
     return { ok: false, refused: res.status === 400, error: data.error ?? `save check: HTTP ${res.status}` };
   } catch (e) {
     return { ok: false, refused: false, error: `save check could not run: ${e instanceof Error ? e.message : String(e)}` };

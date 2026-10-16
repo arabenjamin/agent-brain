@@ -34,6 +34,6 @@ describe("buildDraftTask", () => {
   it("drafts from scratch without one, and names a refused draft's errors", () => {
     const t = buildDraftTask({ request: "daily AI news", tools: [], schemas: {}, fix: { previous: "{}", errors: "question is required" } });
     expect(t).toMatch(/^Draft a scheduled workflow/);
-    expect(t).toContain("question is required");
+    expect(t).toContain("problems in your previous draft:\nquestion is required");
   });
 });
