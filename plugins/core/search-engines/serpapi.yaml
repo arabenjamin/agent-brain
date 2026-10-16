@@ -3,7 +3,7 @@
 # with an `error` field and no results; read as a failure, or a spent account
 # looks like a successful empty search.
 name: serpapi
-rank: 4
+rank: 5
 key_env: SERPAPI_KEY
 quota_group: serpapi
 request:

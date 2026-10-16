@@ -1,6 +1,6 @@
 # Brave Search API. Last in the ladder: uncapped but weakest on our queries.
 name: brave
-rank: 7
+rank: 8
 key_env: BRAVE_API_KEY
 request:
   method: get

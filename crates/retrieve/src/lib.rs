@@ -9,7 +9,9 @@ pub mod mcp_client;
 pub mod query;
 pub mod search;
 pub mod search_engines;
+pub mod search_quality;
 pub mod search_query;
+pub mod search_rotation;
 pub mod serde_flex;
 
 pub use http::HttpSkill;

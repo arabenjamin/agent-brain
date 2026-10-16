@@ -86,6 +86,32 @@ Per-invocation telemetry for every LLM call. Aggregated by `get_model_stats`.
 | `cost` | DOUBLE | — | Computed cost in USD (may be NULL) |
 | `created_at` | TIMESTAMPTZ | DEFAULT `current_timestamp` | — |
 
+### `search_usage`
+
+One row per `search_web` engine *attempt* (a failover writes one per engine tried). Quota accounting, the rotation's pacing input (`crates/retrieve/src/search_rotation.rs`), and the performance record; aggregated by `get_search_usage`. Columns after `error_kind` were added 2026-10-16 and are NULL on older rows.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT | UUID, PRIMARY KEY |
+| `engine` | TEXT | The engine tried |
+| `query` | TEXT | The rendered query (Google syntax, `[recency:…]`), first 500 chars |
+| `success` | BOOLEAN | Answered without error (an empty answer is a success that falls through) |
+| `result_count` | INTEGER | Results returned |
+| `duration_ms` | INTEGER | Latency |
+| `error_kind` | TEXT | `quota_exhausted` (6 h demotion), `rate_limited`, `not_configured`, `auth_error`, `network_error`, `api_error` |
+| `created_at` | TIMESTAMPTZ | UTC |
+| `call_id` | TEXT | Groups the attempts of one call |
+| `units` | DOUBLE | Cost in the engine's budget unit (Exa: its own `costDollars`; one call elsewhere); NULL when failed |
+| `picked` | TEXT | `rotation`, `pinned` (caller named it), `ladder` (rotation off / nothing on pace), `fallback` |
+| `requested` | TEXT | The engine the caller named |
+| `purpose`, `tool`, `task_id` | TEXT | Who searched: routing purpose (`chat`, `subagent`, `background`, `direct`), the queue job's tool, the workflow run's Task |
+| `recency`, `news` | TEXT, BOOLEAN | What was asked for |
+| `dated`, `in_window`, `known_source`, `domains` | INTEGER | Quality hints over the results: carrying a parseable date, inside the requested window (NULL without one), on any `:SourceList` domain, distinct hosts |
+
+### `search_results`
+
+Each successful attempt's result links in rank order (`usage_id` → `search_usage.id`, `rank`, `link`, `created_at`), kept 90 days. `get_search_usage` matches them against links cited as claim evidence (`CORROBORATED_BY`/`CONTRADICTED_BY` `sources`) or ingested (`Note.source_url`) to report each engine's *used* share.
+
 ---
 
 ## Neo4j — Knowledge Graph

@@ -6,6 +6,15 @@
 name: exa
 rank: 1
 key_env: EXA_API_KEY
+# Each answer prices itself (`costDollars.total`, $0.007 for an auto search
+# with highlights, 2026-10-16): ~1,430 searches on the $10 monthly credit,
+# which the ladder alone spent in two weeks.
+budget:
+  free: 10.0
+  unit: usd
+  per: month
+  cost_field: costDollars.total
+  cost_default: 0.007
 request:
   method: post
   url: https://api.exa.ai/search

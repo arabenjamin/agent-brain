@@ -15,16 +15,48 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use crate::search_engines;
+use crate::search_quality;
 use crate::search_query::{QuerySpec, Recency};
+use crate::search_rotation::{self, Rung, Standing};
 use agent_brain_knowledge::web_result::{SEARXNG_FALLBACK_BANNER, is_search_page};
 use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
-use agent_brain_repository::{Neo4jClient, TelemetryClient};
+use agent_brain_repository::{Neo4jClient, SearchAttempt, TelemetryClient};
 
 /// How long a quota-exhausted engine stays demoted to the back of the ladder.
 /// Sized for daily-reset quotas (Google CSE); a monthly cap simply stays demoted
 /// because it keeps re-recording the error on each retry.
 const QUOTA_COOLDOWN_HOURS: i64 = 6;
+
+/// How long the union of the source lists' domains is cached for the
+/// ledger's known-source count.
+const KNOWN_DOMAINS_TTL_SECS: u64 = 600;
+
+/// Whether `search_web` rotates its first pick across budgeted engines
+/// (`SEARCH_ROTATION=off` restores the plain ladder).
+fn rotation_enabled() -> bool {
+    !matches!(
+        std::env::var("SEARCH_ROTATION")
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            .as_str(),
+        "off" | "false" | "0" | "no"
+    )
+}
+
+/// Who is searching: the routing purpose (`direct` when nothing scoped
+/// one: an MCP tool call), the queue job's tool, and the workflow run's Task.
+fn caller() -> (String, Option<String>, Option<String>) {
+    let purpose = agent_brain_llm::routing::ROUTE_CONTEXT
+        .try_with(|c| c.purpose.as_str().to_string())
+        .unwrap_or_else(|_| "direct".to_string());
+    let tool = agent_brain_llm::ctx::CURRENT_TOOL
+        .try_with(|t| t.clone())
+        .ok()
+        .flatten();
+    (purpose, tool, agent_brain_llm::ctx::current_owner_task())
+}
 
 /// The warning that leads a SearXNG answer. Ends without a blank line; the
 /// caller adds one, which `strip_fallback_banner` splits on.
@@ -54,12 +86,18 @@ fn classify_search_error(error_text: &str) -> &'static str {
         || lower.contains("not enough credits")
         || lower.contains("out of credits")
         || lower.contains("quota")
-        || lower.contains("rate limit")
-        || lower.contains("429")
-        || lower.contains("too many requests")
         || lower.contains("insufficient credits")
+        || lower.contains("insufficient_credits")
     {
         "quota_exhausted"
+    } else if lower.contains("rate limit")
+        || lower.contains("429")
+        || lower.contains("too many requests")
+    {
+        // A per-minute limit (TinyFish: 30/min) clears in seconds; counting
+        // it as a spent quota would bench the engine for six hours. The
+        // rotation's own minute/hour counters keep it from recurring.
+        "rate_limited"
     } else if lower.contains("not configured") {
         "not_configured"
     } else if lower.contains("has not been used in project") || lower.contains("is disabled") {
@@ -191,6 +229,8 @@ pub struct SearchSkill {
     /// `search_notes_readonly` so the probe never bumps a note's access count.
     /// Optional: absent it, the probe falls back to BM25 over the raw query.
     knowledge: Option<std::sync::Arc<dyn agent_brain_knowledge::KnowledgeStore>>,
+    /// Every source list's domains, and when they were read.
+    known_domains: std::sync::Mutex<Option<(Instant, Vec<String>)>>,
 }
 
 impl SearchSkill {
@@ -200,7 +240,42 @@ impl SearchSkill {
             telemetry,
             neo4j,
             knowledge: None,
+            known_domains: std::sync::Mutex::new(None),
         }
+    }
+
+    /// The union of every `:SourceList`'s domains (cached ten minutes): what
+    /// "known source" means in the ledger.
+    async fn known_domains(&self) -> Vec<String> {
+        if let Ok(guard) = self.known_domains.lock()
+            && let Some((at, domains)) = guard.as_ref()
+            && at.elapsed().as_secs() < KNOWN_DOMAINS_TTL_SECS
+        {
+            return domains.clone();
+        }
+        let Some(neo4j) = &self.neo4j else {
+            return vec![];
+        };
+        let domains: Vec<String> = match neo4j
+            .execute(neo4rs::query(
+                "MATCH (s:SourceList) UNWIND coalesce(s.domains, []) AS d \
+                 RETURN collect(DISTINCT toLower(d)) AS domains",
+            ))
+            .await
+        {
+            Ok(rows) => rows
+                .first()
+                .and_then(|r| r.get::<Vec<String>>("domains").ok())
+                .unwrap_or_default(),
+            Err(e) => {
+                warn!(error = %e, "search: could not read source-list domains");
+                vec![]
+            }
+        };
+        if let Ok(mut guard) = self.known_domains.lock() {
+            *guard = Some((Instant::now(), domains.clone()));
+        }
+        domains
     }
 
     /// Give the prior-knowledge probe hybrid (vector + BM25) recall.
@@ -230,8 +305,11 @@ impl SearchSkill {
         ToolDefinition {
             name: "search_web".to_string(),
             description:
-                "Search the web. Tries engines in a failover ladder (keyed engines first; self-hosted SearXNG only as a flagged last resort) so \
-                 one exhausted quota does not fail the call. \
+                "Search the web. The first engine is picked by rotation across the free \
+                 allowances (each engine paced through its day or month), with a failover \
+                 ladder behind it (self-hosted SearXNG only as a flagged last resort) so one \
+                 exhausted quota does not fail the call. Leave `engine` unset unless the task \
+                 needs one engine's particular strength: naming one skips the rotation. \
                  QUERY SYNTAX — Google operators work on EVERY engine (translated for the ones that \
                  do not read them): \"exact phrase\", -word, -\"phrase\", site:example.com, \
                  -site:example.com, filetype:pdf, after:2026-09-01, before:2026-10-01, a OR b. \
@@ -240,8 +318,8 @@ impl SearchSkill {
                  FOR CURRENT EVENTS set recency (day/week/month/year) and news:true instead of \
                  writing a date or 'today' into the query — engines rank by relevance, so 'today' \
                  alone returns months-old pages. Phrase it as 'latest …'. \
-                 engine=\"exa\" is best for primary sources and dated news; \"google_news\" is \
-                 SerpApi's Google News (250/month shared quota). \
+                 \"google_news\" is SerpApi's Google News (250/month shared quota), only \
+                 when named. \
                  Pass source_list to restrict results to an approved domain list stored in the graph."
                     .to_string(),
             input_schema: json!({
@@ -291,8 +369,11 @@ impl SearchSkill {
             name: "get_search_usage".to_string(),
             description:
                 "THE answer to any question about our own web searches: which search engines \
-                 (searxng, exa, tavily, serper, google_news, …) answered, how many searches each, \
-                 how many failed and why, and a per-day breakdown — read from the telemetry \
+                 (searxng, exa, tavily, serper, tinyfish, google_news, …) answered, how many \
+                 searches each, how many failed and why, who searched (by_caller), each \
+                 engine's quality hints (dated, in-window and known-source shares, and the share \
+                 of its results later used as claim evidence), where each budgeted engine \
+                 stands in the rotation, and a per-day breakdown — read from the telemetry \
                  ledger, exact. Use it for \"which engines did we use\", \"how many searches\", \
                  quota burn against a free-tier cap. Notes do not record this; never infer it \
                  from them. (LLM models and providers are a different question: get_llm_budget.)"
@@ -364,7 +445,12 @@ impl SearchSkill {
     /// moved to the back rather than dropped — a quota that reset overnight
     /// should recover on its own, but should not cost a round-trip on all eight
     /// searches of the daily news chain until it does.
-    async fn engine_ladder(&self, requested: Option<&str>) -> Vec<String> {
+    async fn engine_ladder(
+        &self,
+        requested: Option<&str>,
+        spec: &QuerySpec,
+        today: chrono::NaiveDate,
+    ) -> (Vec<String>, bool) {
         let configured = std::env::var("SEARCH_ENGINE_ORDER").unwrap_or_default();
         let exhausted = self
             .telemetry
@@ -399,30 +485,70 @@ impl SearchSkill {
             .filter(|e| search_engines::get(e).is_none_or(search_engines::configured))
             .cloned()
             .collect();
-        retain_configured(ladder, &keep)
+        let ladder = retain_configured(ladder, &keep);
+        if !rotation_enabled() {
+            return (ladder, false);
+        }
+        let rungs: Vec<Rung> = ladder
+            .iter()
+            .map(|name| self.rung(name, &exhausted, spec, today))
+            .collect();
+        let pinned = requested
+            .map(|r| r.trim().to_lowercase())
+            .filter(|r| !r.is_empty());
+        search_rotation::order(&rungs, pinned.as_deref())
+    }
+
+    /// One ladder engine as the rotation sees it. Outside the rotation
+    /// (`standing: None`): no budget, or it cannot serve this query. A
+    /// recently spent quota is `Spent` whatever the ledger's arithmetic says
+    /// (a vendor that refills on the signup anniversary).
+    fn rung(
+        &self,
+        name: &str,
+        exhausted: &[String],
+        spec: &QuerySpec,
+        today: chrono::NaiveDate,
+    ) -> Rung {
+        let declared = search_engines::get(name);
+        let budget = declared.and_then(|e| e.budget.as_ref());
+        let serves =
+            declared.is_some_and(|e| search_engines::unsupported(e, spec, today).is_none());
+        let mut rung = Rung {
+            name: name.to_string(),
+            standing: None,
+            day_calls: 0,
+            weight: budget.and_then(|b| b.weight).unwrap_or(1.0),
+        };
+        let (Some(b), true) = (budget, serves) else {
+            return rung;
+        };
+        if exhausted.iter().any(|e| e == name) {
+            rung.standing = Some(Standing::Spent);
+            return rung;
+        }
+        let now = chrono::Utc::now();
+        let Some(t) = &self.telemetry else {
+            // No ledger to pace against: every budgeted engine is eligible.
+            rung.standing = Some(Standing::OnPace);
+            return rung;
+        };
+        match t.engine_use(name, search_rotation::period_start(b.per, now)) {
+            Ok(u) => {
+                rung.day_calls = u.day_calls;
+                rung.standing = Some(search_rotation::standing(b, &u, now));
+            }
+            Err(e) => warn!(engine = %name, error = %e, "search rotation: ledger read failed"),
+        }
+        rung
     }
 
     /// Write one row to the search usage ledger. Never fails the search.
-    fn record_usage(
-        &self,
-        engine: &str,
-        query: &str,
-        success: bool,
-        result_count: Option<i64>,
-        duration_ms: i64,
-        error_kind: Option<&str>,
-    ) {
+    fn record_usage(&self, attempt: &SearchAttempt) {
         if let Some(ref t) = self.telemetry
-            && let Err(e) = t.record_search_usage(
-                engine,
-                query,
-                success,
-                result_count,
-                Some(duration_ms),
-                error_kind,
-            )
+            && let Err(e) = t.record_search_attempt(attempt)
         {
-            warn!(engine = %engine, error = %e, "Failed to record search usage");
+            warn!(engine = %attempt.engine, error = %e, "Failed to record search usage");
         }
     }
 
@@ -471,10 +597,10 @@ impl SearchSkill {
     }
 
     /// Number of results in a successful engine response.
-    fn result_count(result: &ToolCallResult) -> usize {
-        serde_json::from_str::<Vec<Value>>(&Self::result_text(result))
-            .map(|v| v.len())
-            .unwrap_or(0)
+    /// The results of a successful engine response; unparseable output is
+    /// none, so it falls through like an empty answer.
+    fn result_items(result: &ToolCallResult) -> Vec<Value> {
+        serde_json::from_str::<Vec<Value>>(&Self::result_text(result)).unwrap_or_default()
     }
 
     // ========================================================================
@@ -809,15 +935,46 @@ impl SearchSkill {
         // Build the failover ladder. A single dead engine must not take the
         // whole chain with it: an exhausted SerpApi free tier previously killed
         // 39 jobs and 38 tasks because `search_web` hard-failed on one engine.
-        let ladder = self.engine_ladder(input.engine.as_deref()).await;
+        // Its head is the rotation's pick (`search_rotation.rs`).
+        let today = chrono::Utc::now().date_naive();
+        let (ladder, rotated) = self
+            .engine_ladder(input.engine.as_deref(), &spec, today)
+            .await;
 
         info!(
             query = %effective_query,
             ladder = ?ladder,
+            rotated,
             requested_engine = ?input.engine,
             source_list = ?input.source_list,
             "Searching web"
         );
+
+        // Every attempt of this call shares one ledger record shape.
+        let (purpose, tool, task_id) = caller();
+        let base = SearchAttempt {
+            call_id: uuid::Uuid::new_v4().to_string(),
+            query: effective_query.clone(),
+            requested: input.engine.as_deref().map(str::to_lowercase),
+            purpose: Some(purpose),
+            tool,
+            task_id,
+            recency: input.recency.clone(),
+            news: input.news,
+            ..Default::default()
+        };
+        let known = self.known_domains().await;
+        let mut attempts_made = 0usize;
+        let mut picked = || {
+            attempts_made += 1;
+            match attempts_made {
+                1 if base.requested.is_some() => "pinned",
+                1 if rotated => "rotation",
+                1 => "ladder",
+                _ => "fallback",
+            }
+            .to_string()
+        };
 
         let mut failures: Vec<String> = Vec::new();
         // "engine (why)" for each rung passed over — the banner names them.
@@ -838,7 +995,6 @@ impl SearchSkill {
         // chain-death attribution.
         let mut empty_success: Option<ToolCallResult> = None;
 
-        let today = chrono::Utc::now().date_naive();
         for engine in &ladder {
             let declared = search_engines::get(engine);
             if let Some(why) = declared.and_then(|e| search_engines::unsupported(e, &spec, today)) {
@@ -847,14 +1003,24 @@ impl SearchSkill {
                 continue;
             }
             let started = Instant::now();
+            let mut units: Option<f64> = None;
             let attempt = match declared {
                 Some(e) => match search_engines::run(&self.client, e, &spec, count).await {
-                    Ok(items) => ToolCallResult::success_json(items),
+                    Ok(answer) => {
+                        units = Some(answer.units);
+                        ToolCallResult::success_json(answer.items)
+                    }
                     Err(text) => ToolCallResult::error(text),
                 },
                 None => ToolCallResult::error(format!("Unsupported search engine: {engine}")),
             };
             let duration_ms = started.elapsed().as_millis() as i64;
+            let mut row = SearchAttempt {
+                engine: engine.clone(),
+                duration_ms: Some(duration_ms),
+                picked: picked(),
+                ..base.clone()
+            };
 
             if attempt.is_error == Some(true) {
                 let error_text = Self::result_text(&attempt);
@@ -865,14 +1031,9 @@ impl SearchSkill {
                     error = %error_text,
                     "Search engine failed — trying next in ladder"
                 );
-                self.record_usage(
-                    engine,
-                    &effective_query,
-                    false,
-                    None,
-                    duration_ms,
-                    Some(kind),
-                );
+                row.success = false;
+                row.error_kind = Some(kind.to_string());
+                self.record_usage(&row);
                 failures.push(format!("{engine}: {error_text}"));
                 passed_over.push(format!("{engine} ({kind})"));
                 continue;
@@ -890,15 +1051,18 @@ impl SearchSkill {
                 );
             }
 
-            let n = Self::result_count(&attempt);
-            self.record_usage(
-                engine,
-                &effective_query,
-                true,
-                Some(n as i64),
-                duration_ms,
-                None,
-            );
+            let items = Self::result_items(&attempt);
+            let n = items.len();
+            let quality = search_quality::assess(&items, &spec, &known, chrono::Utc::now());
+            row.success = true;
+            row.result_count = Some(n as i64);
+            row.units = units;
+            row.dated = Some(quality.dated);
+            row.in_window = quality.in_window;
+            row.known_source = Some(quality.known_source);
+            row.domains = Some(quality.domains);
+            row.links = quality.links;
+            self.record_usage(&row);
 
             if n == 0 {
                 warn!(
@@ -1031,10 +1195,113 @@ impl SearchSkill {
         };
         // Default to a 30-day window: monthly caps are the ones that bite.
         let window = input.window_hours.or(Some(720));
-        match t.get_search_stats(window) {
-            Ok(stats) => ToolCallResult::success_json(stats),
-            Err(e) => ToolCallResult::error(format!("Failed to read search usage: {e}")),
+        let mut stats = match t.get_search_stats(window) {
+            Ok(stats) => stats,
+            Err(e) => return ToolCallResult::error(format!("Failed to read search usage: {e}")),
+        };
+        stats["rotation"] = self.rotation_state(t);
+        // Links are kept 90 days; an all-time window reads what is there.
+        stats["used"] = self.used_results(t, window.unwrap_or(90 * 24)).await;
+        ToolCallResult::success_json(stats)
+    }
+
+    /// Each budgeted engine against its allowance now, as the next call's
+    /// rotation would see it.
+    fn rotation_state(&self, t: &TelemetryClient) -> Value {
+        let now = chrono::Utc::now();
+        let engines: Vec<Value> = search_engines::engines()
+            .iter()
+            .filter(|e| search_engines::configured(e))
+            .filter_map(|e| {
+                let b = e.budget.as_ref()?;
+                let u = t
+                    .engine_use(&e.name, search_rotation::period_start(b.per, now))
+                    .ok()?;
+                let round = |x: f64| (x * 1000.0).round() / 1000.0;
+                Some(json!({
+                    "engine": e.name,
+                    "unit": format!("{:?}", b.unit).to_lowercase(),
+                    "per": format!("{:?}", b.per).to_lowercase(),
+                    "free": b.free,
+                    "used": round(search_rotation::used(b, &u)),
+                    "allowed_so_far": round(search_rotation::allowance_so_far(b, now)),
+                    "standing": format!("{:?}", search_rotation::standing(b, &u, now)),
+                    "calls_today": u.day_calls,
+                    "weight": b.weight.unwrap_or(1.0),
+                }))
+            })
+            .collect();
+        json!({
+            "enabled": rotation_enabled(),
+            "engines": engines,
+            "note": "The next search_web call goes first to the OnPace engine with the fewest \
+                     calls today per unit of weight; the rest of the ladder is the fallback.",
+        })
+    }
+
+    /// Per engine: how many of its logged result links were later used,
+    /// cited as claim evidence (`CORROBORATED_BY`/`CONTRADICTED_BY`
+    /// `sources`) or ingested as a note's `source_url`.
+    async fn used_results(&self, t: &TelemetryClient, window_hours: i64) -> Value {
+        let Some(neo4j) = &self.neo4j else {
+            return json!({"note": "no graph: used results cannot be matched"});
+        };
+        let links = match t.search_links_since(window_hours) {
+            Ok(l) => l,
+            Err(e) => return json!({"error": format!("reading result links failed: {e}")}),
+        };
+        let since = (chrono::Utc::now() - chrono::Duration::hours(window_hours)).to_rfc3339();
+        let cited: std::collections::HashSet<String> = match neo4j
+            .execute(
+                neo4rs::query(
+                    "CALL () { \
+                       MATCH ()-[r:CORROBORATED_BY|CONTRADICTED_BY]->() \
+                       WHERE r.found_at >= datetime($since) \
+                       UNWIND coalesce(r.sources, []) AS u RETURN u \
+                       UNION \
+                       MATCH (n:Note) WHERE n.created_at >= datetime($since) \
+                         AND n.source_url IS NOT NULL RETURN n.source_url AS u } \
+                     RETURN collect(DISTINCT u) AS links",
+                )
+                .param("since", since),
+            )
+            .await
+        {
+            Ok(rows) => rows
+                .first()
+                .and_then(|r| r.get::<Vec<String>>("links").ok())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|l| search_quality::link_key(l))
+                .collect(),
+            Err(e) => return json!({"error": format!("reading cited links failed: {e}")}),
+        };
+        let mut per: std::collections::BTreeMap<String, (i64, i64)> = Default::default();
+        for (engine, link) in &links {
+            let e = per.entry(engine.clone()).or_default();
+            e.0 += 1;
+            if search_quality::link_key(link).is_some_and(|k| cited.contains(&k)) {
+                e.1 += 1;
+            }
         }
+        let engines: Vec<Value> = per
+            .into_iter()
+            .map(|(engine, (results, used))| {
+                json!({
+                    "engine": engine,
+                    "results_logged": results,
+                    "used": used,
+                    "used_share": if results > 0 {
+                        json!(((used as f64 / results as f64) * 1000.0).round() / 1000.0)
+                    } else { Value::Null },
+                })
+            })
+            .collect();
+        json!({
+            "engines": engines,
+            "note": "A result is used when its link was later cited as claim evidence or \
+                     ingested as a note's source. Links are logged from 2026-10-16 on.",
+        })
     }
 }
 
@@ -1390,13 +1657,13 @@ mod tests {
         // no results. `is_error` is false, so only the count distinguishes it
         // from a working engine — and it must not end the ladder.
         let empty = ToolCallResult::success_text("[]");
-        assert_eq!(SearchSkill::result_count(&empty), 0);
+        assert_eq!(SearchSkill::result_items(&empty).len(), 0);
         assert_ne!(empty.is_error, Some(true));
 
         let one = ToolCallResult::success_text(
             r#"[{"title":"t","link":"https://example.com","snippet":"s"}]"#,
         );
-        assert_eq!(SearchSkill::result_count(&one), 1);
+        assert_eq!(SearchSkill::result_items(&one).len(), 1);
     }
 
     #[test]
@@ -1404,7 +1671,7 @@ mod tests {
         // A rung that answers with something that is not a result array is no
         // more useful than one that answers with none.
         let junk = ToolCallResult::success_text("<html>rate limited</html>");
-        assert_eq!(SearchSkill::result_count(&junk), 0);
+        assert_eq!(SearchSkill::result_items(&junk).len(), 0);
     }
 
     #[test]
@@ -1443,7 +1710,7 @@ mod keyed_engine_tests {
         ]);
         let (kept, dropped) = SearchSkill::drop_search_pages(mixed);
         assert_eq!(dropped, 1);
-        assert_eq!(SearchSkill::result_count(&kept), 1);
+        assert_eq!(SearchSkill::result_items(&kept).len(), 1);
 
         let echo_only = ToolCallResult::success_json(vec![json!({
             "title": "t", "link": "https://us.search.yahoo.com/search?p=x", "snippet": "x"
@@ -1451,7 +1718,7 @@ mod keyed_engine_tests {
         let (kept, dropped) = SearchSkill::drop_search_pages(echo_only);
         assert_eq!(dropped, 1);
         assert_eq!(
-            SearchSkill::result_count(&kept),
+            SearchSkill::result_items(&kept).len(),
             0,
             "falls through like an empty answer"
         );

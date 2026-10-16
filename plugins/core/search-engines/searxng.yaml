@@ -4,7 +4,7 @@
 # left Naver alone for general queries and 2 news results (vs 54, 45 dated,
 # without it). The window is enforced from each result's own date instead.
 name: searxng
-rank: 6
+rank: 7
 request:
   method: get
   base_url_env: SEARXNG_URL

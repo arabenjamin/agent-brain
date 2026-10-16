@@ -6,6 +6,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+use crate::{EngineUse, SearchAttempt};
+
+/// How long each search result link is kept for the "used" report.
+const SEARCH_RESULTS_KEEP_DAYS: i64 = 90;
+
 /// One provider's usage for the budget ledger, as returned by
 /// [`TelemetryClient::budget_usage_since`]: `(provider, requests_today,
 /// tokens_today, spend_today_usd, spend_month_usd)`.
@@ -117,6 +122,32 @@ impl TelemetryClient {
                 error_kind   TEXT,
                 created_at   TIMESTAMPTZ DEFAULT current_timestamp
             );
+
+            -- Attribution, budget units and quality hints (2026-10-16, search
+            -- rotation). NULL on rows written before then.
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS call_id TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS units DOUBLE;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS picked TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS requested TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS purpose TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS tool TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS task_id TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS recency TEXT;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS news BOOLEAN;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS dated INTEGER;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS in_window INTEGER;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS known_source INTEGER;
+            ALTER TABLE search_usage ADD COLUMN IF NOT EXISTS domains INTEGER;
+
+            -- Each attempt's result links, so a report can tell which results
+            -- were later used (cited as claim evidence, ingested). Pruned to
+            -- 90 days at startup.
+            CREATE TABLE IF NOT EXISTS search_results (
+                usage_id   TEXT NOT NULL,
+                rank       INTEGER,
+                link       TEXT,
+                created_at TIMESTAMPTZ DEFAULT current_timestamp
+            );
             ",
         )?;
 
@@ -125,6 +156,12 @@ impl TelemetryClient {
         // mid-write kill leaves a tail that fails replay and bricks telemetry
         // (observed 2026-06-12: 16 MB WAL, main file untouched for six weeks).
         // Checkpointing right after open bounds the WAL to one process lifetime.
+        let cutoff = (Utc::now() - chrono::Duration::days(SEARCH_RESULTS_KEEP_DAYS)).to_rfc3339();
+        conn.execute(
+            "DELETE FROM search_results WHERE created_at < CAST(? AS TIMESTAMPTZ)",
+            params![cutoff],
+        )?;
+
         conn.execute_batch("CHECKPOINT;")?;
 
         info!("Telemetry (DuckDB) schema initialized");
@@ -552,47 +589,135 @@ impl TelemetryClient {
     // Search usage ledger
     // =========================================================================
 
-    /// Record a single `search_web` engine attempt.
+    /// Record one `search_web` engine attempt, and its result links.
     ///
-    /// One row per *engine attempt*, not per tool call — a failover that tries
-    /// searxng then google writes two rows. That is deliberate: quota accounting
-    /// needs to know what each engine was actually asked to do.
+    /// One row per *engine attempt*, not per tool call: a failover that tries
+    /// two engines writes two rows, because quota accounting needs to know
+    /// what each engine was actually asked to do. `call_id` groups them.
     ///
-    /// `error_kind` marks notable failure classes — `"quota_exhausted"` is the
-    /// one that matters, since it is how the free tier dying becomes queryable
+    /// `error_kind` marks notable failure classes; `"quota_exhausted"` is the
+    /// one that matters, since it is how a free tier dying becomes queryable
     /// instead of an opaque 429 buried in a dead job's error text.
-    pub fn record_search_usage(
-        &self,
-        engine: &str,
-        query: &str,
-        success: bool,
-        result_count: Option<i64>,
-        duration_ms: Option<i64>,
-        error_kind: Option<&str>,
-    ) -> Result<()> {
-        let conn = self
+    pub fn record_search_attempt(&self, a: &SearchAttempt) -> Result<()> {
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let id = uuid::Uuid::new_v4().to_string();
         // Queries can be whole reasoning prompts on gap-fill chains; the ledger
         // only needs enough to identify the search, not to reproduce it.
-        let truncated: String = query.chars().take(500).collect();
-        conn.execute(
+        let truncated: String = a.query.chars().take(500).collect();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO search_usage
-             (id, engine, query, success, result_count, duration_ms, error_kind)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (id, engine, query, success, result_count, duration_ms, error_kind,
+              call_id, units, picked, requested, purpose, tool, task_id,
+              recency, news, dated, in_window, known_source, domains)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
-                engine,
+                a.engine,
                 truncated,
-                success,
-                result_count,
-                duration_ms,
-                error_kind
+                a.success,
+                a.result_count,
+                a.duration_ms,
+                a.error_kind,
+                a.call_id,
+                a.units,
+                a.picked,
+                a.requested,
+                a.purpose,
+                a.tool,
+                a.task_id,
+                a.recency,
+                a.news,
+                a.dated,
+                a.in_window,
+                a.known_source,
+                a.domains
             ],
         )?;
+        for (rank, link) in a.links.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO search_results (usage_id, rank, link) VALUES (?, ?, ?)",
+                params![id, rank as i64 + 1, link],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
+    }
+
+    /// One engine's use since its budget period began (successful attempts
+    /// only: no vendor bills a failed call), today's calls (UTC), and its
+    /// attempts in the last hour and minute.
+    pub fn engine_use(
+        &self,
+        engine: &str,
+        period_start: chrono::DateTime<Utc>,
+    ) -> Result<EngineUse> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let now = Utc::now();
+        let day_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map(|d| d.and_utc())
+            .unwrap_or(now);
+        let (period, day, hour, minute) = (
+            period_start.to_rfc3339(),
+            day_start.to_rfc3339(),
+            (now - chrono::Duration::hours(1)).to_rfc3339(),
+            (now - chrono::Duration::minutes(1)).to_rfc3339(),
+        );
+        let mut stmt = conn.prepare(
+            "SELECT
+               COALESCE(SUM(CASE WHEN success AND created_at >= CAST(? AS TIMESTAMPTZ)
+                                 THEN units END), 0) AS period_units,
+               COUNT(CASE WHEN success AND units IS NULL
+                               AND created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END),
+               COUNT(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END),
+               COUNT(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END),
+               COUNT(CASE WHEN created_at >= CAST(? AS TIMESTAMPTZ) THEN 1 END)
+             FROM search_usage
+             WHERE engine = ? AND created_at >= CAST(? AS TIMESTAMPTZ)",
+        )?;
+        // The scan starts at the earliest cutoff it needs (just after
+        // midnight, the last hour reaches back past the day's start).
+        let earliest = period.clone().min(day.clone()).min(hour.clone());
+        let row = stmt.query_row(
+            params![period, period, day, hour, minute, engine, earliest],
+            |r| {
+                Ok(EngineUse {
+                    engine: engine.to_string(),
+                    period_units: r.get::<_, f64>(0)?,
+                    period_unpriced: r.get::<_, i64>(1)?,
+                    day_calls: r.get::<_, i64>(2)?,
+                    hour_calls: r.get::<_, i64>(3)?,
+                    minute_calls: r.get::<_, i64>(4)?,
+                })
+            },
+        )?;
+        Ok(row)
+    }
+
+    /// `(engine, link)` for every result returned in the last `window_hours`.
+    pub fn search_links_since(&self, window_hours: i64) -> Result<Vec<(String, String)>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let cutoff = (Utc::now() - chrono::Duration::hours(window_hours)).to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT u.engine, r.link FROM search_results r
+             JOIN search_usage u ON u.id = r.usage_id
+             WHERE r.created_at >= CAST(? AS TIMESTAMPTZ) AND r.link IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![cutoff], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// Engines that recorded a given `error_kind` within the last `hours`.
@@ -646,25 +771,54 @@ impl TelemetryClient {
                SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) AS failures,
                SUM(CASE WHEN error_kind = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted,
                SUM(result_count) AS total_results,
-               AVG(duration_ms)  AS avg_duration_ms
+               AVG(duration_ms)  AS avg_duration_ms,
+               SUM(units) AS units,
+               -- Quality hints, over the attempts that recorded them.
+               SUM(CASE WHEN dated IS NOT NULL THEN result_count END) AS measured_results,
+               SUM(dated) AS dated,
+               SUM(CASE WHEN in_window IS NOT NULL THEN result_count END) AS windowed_results,
+               SUM(in_window) AS in_window,
+               SUM(known_source) AS known_source,
+               SUM(CASE WHEN picked = 'rotation' THEN 1 ELSE 0 END) AS by_rotation,
+               SUM(CASE WHEN picked = 'pinned' THEN 1 ELSE 0 END) AS by_pin,
+               SUM(CASE WHEN picked = 'fallback' THEN 1 ELSE 0 END) AS by_fallback,
+               SUM(CASE WHEN picked = 'ladder' THEN 1 ELSE 0 END) AS by_ladder
              FROM search_usage
              WHERE {window_clause}
              GROUP BY engine
              ORDER BY total DESC"
         );
         let mut stmt = conn.prepare(&engine_sql)?;
-        let map_engine = |row: &duckdb::Row<'_>| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<i64>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<f64>>(6)?,
-            ))
+        let ratio = |part: Option<i64>, whole: Option<i64>| match (part, whole) {
+            (Some(p), Some(w)) if w > 0 => {
+                serde_json::json!(((p as f64 / w as f64) * 1000.0).round() / 1000.0)
+            }
+            _ => serde_json::Value::Null,
         };
-        let engine_rows: Vec<_> = if let Some(ref c) = cutoff {
+        let map_engine = |row: &duckdb::Row<'_>| {
+            let n = |i: usize| row.get::<_, Option<i64>>(i);
+            let measured = n(8)?;
+            Ok(serde_json::json!({
+                "engine":          row.get::<_, String>(0)?,
+                "total_searches":  row.get::<_, i64>(1)?,
+                "successes":       n(2)?.unwrap_or(0),
+                "failures":        n(3)?.unwrap_or(0),
+                "quota_exhausted": n(4)?.unwrap_or(0),
+                "total_results":   n(5)?.unwrap_or(0),
+                "avg_duration_ms": row.get::<_, Option<f64>>(6)?.map(f64::round),
+                "units":           row.get::<_, Option<f64>>(7)?,
+                "dated_share":     ratio(n(9)?, measured),
+                "in_window_share": ratio(n(11)?, n(10)?),
+                "known_source_share": ratio(n(12)?, measured),
+                "picked": {
+                    "rotation": n(13)?.unwrap_or(0),
+                    "pinned":   n(14)?.unwrap_or(0),
+                    "fallback": n(15)?.unwrap_or(0),
+                    "ladder":   n(16)?.unwrap_or(0),
+                },
+            }))
+        };
+        let engines: Vec<serde_json::Value> = if let Some(ref c) = cutoff {
             stmt.query_map(params![c], map_engine)?
                 .filter_map(|r| r.ok())
                 .collect()
@@ -673,20 +827,36 @@ impl TelemetryClient {
                 .filter_map(|r| r.ok())
                 .collect()
         };
-        let engines: Vec<serde_json::Value> = engine_rows
-            .into_iter()
-            .map(|(engine, total, succ, fail, quota, results, avg_ms)| {
-                serde_json::json!({
-                    "engine":          engine,
-                    "total_searches":  total,
-                    "successes":       succ.unwrap_or(0),
-                    "failures":        fail.unwrap_or(0),
-                    "quota_exhausted": quota.unwrap_or(0),
-                    "total_results":   results.unwrap_or(0),
-                    "avg_duration_ms": avg_ms,
-                })
-            })
-            .collect();
+
+        // Who searched: the queue job's tool, else the routing purpose.
+        let caller_sql = format!(
+            "SELECT COALESCE(tool, purpose, 'unrecorded') AS caller,
+                    COUNT(DISTINCT call_id) AS calls,
+                    COUNT(*) AS attempts,
+                    STRING_AGG(DISTINCT engine, ',') AS engines
+             FROM search_usage
+             WHERE {window_clause}
+             GROUP BY caller
+             ORDER BY attempts DESC"
+        );
+        let mut stmt = conn.prepare(&caller_sql)?;
+        let map_caller = |row: &duckdb::Row<'_>| {
+            Ok(serde_json::json!({
+                "caller":   row.get::<_, String>(0)?,
+                "calls":    row.get::<_, i64>(1)?,
+                "attempts": row.get::<_, i64>(2)?,
+                "engines":  row.get::<_, Option<String>>(3)?,
+            }))
+        };
+        let by_caller: Vec<serde_json::Value> = if let Some(ref c) = cutoff {
+            stmt.query_map(params![c], map_caller)?
+                .filter_map(|r| r.ok())
+                .collect()
+        } else {
+            stmt.query_map([], map_caller)?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
 
         let daily_sql = format!(
             "SELECT
@@ -730,6 +900,7 @@ impl TelemetryClient {
         Ok(serde_json::json!({
             "window_hours": window_hours,
             "engines":      engines,
+            "by_caller":    by_caller,
             "by_day":       by_day,
         }))
     }
@@ -1110,5 +1281,62 @@ mod selection_order_tests {
         );
         assert_eq!(winner(&db, "reasoning"), "text-only");
         assert_eq!(winner(&db, "vision"), "sees");
+    }
+}
+
+#[cfg(test)]
+mod search_ledger_tests {
+    use super::*;
+
+    fn attempt(engine: &str, success: bool, units: Option<f64>) -> SearchAttempt {
+        SearchAttempt {
+            call_id: "c1".into(),
+            engine: engine.into(),
+            query: "q".into(),
+            success,
+            result_count: success.then_some(2),
+            units,
+            picked: "rotation".into(),
+            tool: Some("claim".into()),
+            purpose: Some("background".into()),
+            dated: success.then_some(1),
+            known_source: success.then_some(1),
+            links: if success {
+                vec!["https://a.example/1".into(), "https://b.example/2".into()]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_attempt_is_counted_priced_and_its_links_kept() {
+        let db = TelemetryClient::new(":memory:").unwrap();
+        db.record_search_attempt(&attempt("exa", true, Some(0.007)))
+            .unwrap();
+        db.record_search_attempt(&attempt("exa", true, None))
+            .unwrap();
+        // A failed call is not billed: it counts toward rate limits only.
+        db.record_search_attempt(&attempt("exa", false, None))
+            .unwrap();
+        let month = Utc::now() - chrono::Duration::days(1);
+        let u = db.engine_use("exa", month).unwrap();
+        assert!((u.period_units - 0.007).abs() < 1e-9);
+        assert_eq!(u.period_unpriced, 1);
+        assert_eq!((u.day_calls, u.hour_calls, u.minute_calls), (3, 3, 3));
+        assert_eq!(db.engine_use("tavily", month).unwrap().day_calls, 0);
+
+        let links = db.search_links_since(1).unwrap();
+        assert_eq!(links.len(), 4);
+        assert!(links.iter().all(|(e, _)| e == "exa"));
+
+        let stats = db.get_search_stats(Some(24)).unwrap();
+        let exa = &stats["engines"][0];
+        assert_eq!(exa["total_searches"], 3);
+        assert_eq!(exa["picked"]["rotation"], 3);
+        assert_eq!(exa["dated_share"], 0.5);
+        assert_eq!(stats["by_caller"][0]["caller"], "claim");
+        assert_eq!(stats["by_caller"][0]["calls"], 1);
     }
 }

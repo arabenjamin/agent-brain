@@ -1,0 +1,30 @@
+# TinyFish Search: free up to 12,000 searches a day (resets 00:00 UTC), but
+# rate-limited to 30 a minute and 500 an hour (docs + X-RateLimit headers,
+# 2026-10-16); past the allowance a call needs wallet credit (402
+# INSUFFICIENT_CREDITS). News answers carry a publisher and a relative date
+# ("2 days ago"); web answers carry no date. It reads `site:` but documents
+# include/exclude parameters instead; dates and windows are parameters.
+# Measured 2026-10-16: a news query returned Reuters, WSJ, USA Today, The
+# Hill, all dated within the week.
+name: tinyfish
+rank: 3
+key_env: TINYFISH_API_KEY
+budget: { free: 12000, per: day, per_hour: 500, per_minute: 30 }
+request:
+  method: get
+  url: https://api.search.tinyfish.ai
+  auth: { header: X-API-Key }
+  query: { param: query, syntax: plain_quoted }
+  fixed: { location: US, language: en }
+  news: { domain_type: news }
+  sites: include_domains
+  exclude_sites: exclude_domains
+  dialect: tinyfish
+response:
+  items: results
+  link: url
+  snippet: [snippet]
+  date: date
+  source: publisher
+  spent_status: [402]
+  spent_words: [insufficient_credits]

@@ -3,6 +3,8 @@
 name: tavily
 rank: 2
 key_env: TAVILY_API_KEY
+# A basic search is one credit.
+budget: { free: 1000, per: month }
 request:
   method: post
   url: https://api.tavily.com/search

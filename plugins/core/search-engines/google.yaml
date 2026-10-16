@@ -1,6 +1,6 @@
 # Google Custom Search JSON API. Needs a key and a search-engine id (cx).
 name: google
-rank: 5
+rank: 6
 key_env: GOOGLE_API_KEY
 env_params: { cx: GOOGLE_CX }
 request:

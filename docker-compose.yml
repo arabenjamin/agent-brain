@@ -192,6 +192,8 @@ services:
       - EXA_API_KEY=${EXA_API_KEY:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      # TinyFish Search: 12,000 free a day (00:00 UTC), 30/min, 500/hour.
+      - TINYFISH_API_KEY=${TINYFISH_API_KEY:-}
       # News engines (search_web) — explicit `engine:` only, not in the ladder
       # (fringe/off-topic results on the brain's queries, 2026-10-06).
       # Currents 250/day (7-day windows); Webz is prepaid credit
@@ -212,8 +214,11 @@ services:
       # last resort (its working backends are Naver/Seznam/Zapmeta: undated,
       # foreign-index results, and it always answers, so leading with it starved
       # the keyed engines). Brave stays behind it: card on file, no spend cap.
-      # Reorder here to change preference without a rebuild.
-      - SEARCH_ENGINE_ORDER=exa,tavily,serper,serpapi,google,searxng,brave
+      # Reorder here to change preference without a rebuild. This is the
+      # fallback order: the first engine of each call is picked by rotation
+      # across the engines with a `budget` (search_rotation.rs), each paced
+      # through its free allowance. SEARCH_ROTATION=off restores the plain ladder.
+      - SEARCH_ENGINE_ORDER=exa,tavily,tinyfish,serper,serpapi,google,searxng,brave
       - SEARXNG_URL=http://searxng:8080
       # Sandboxed code execution. Unset => execute_code is not registered at
       # all, so a deployment without the sandbox service degrades cleanly.

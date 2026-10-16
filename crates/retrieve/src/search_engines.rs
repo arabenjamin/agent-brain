@@ -48,8 +48,56 @@ pub struct EngineSpec {
     pub quota_group: Option<String>,
     #[serde(default)]
     pub limits: Limits,
+    /// The free allowance. An engine with one is in the rotation
+    /// (`search_rotation.rs`); one without is reached only as a fallback or
+    /// when a caller names it.
+    #[serde(default)]
+    pub budget: Option<Budget>,
     pub request: RequestSpec,
     pub response: ResponseSpec,
+}
+
+/// What an engine's free tier allows, in its own unit and period.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Budget {
+    /// The allowance per `per`, in `unit`s.
+    pub free: f64,
+    #[serde(default)]
+    pub unit: BudgetUnit,
+    pub per: BudgetPeriod,
+    /// `usd` only: dot path to the answer's own price (Exa `costDollars.total`).
+    pub cost_field: Option<String>,
+    /// `usd` only: the price of a call whose answer names none.
+    pub cost_default: Option<f64>,
+    /// Vendor rate limits, in attempts.
+    pub per_hour: Option<u32>,
+    pub per_minute: Option<u32>,
+    /// Relative share of the rotation (default 1): an engine with weight 2 is
+    /// picked until it has twice the calls of a weight-1 engine today.
+    pub weight: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetUnit {
+    /// One search is one unit.
+    #[default]
+    Call,
+    /// Dollars of credit.
+    Usd,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetPeriod {
+    /// Resets at 00:00 UTC.
+    Day,
+    /// Resets on the 1st (UTC). Vendors that refill on the signup
+    /// anniversary drift by up to a month; the spent-quota signal covers it.
+    Month,
+    /// Never resets (a signup grant).
+    Once,
 }
 
 /// What an engine cannot serve; a query outside these skips it.
@@ -146,6 +194,8 @@ pub enum Dialect {
     Currents,
     /// Webz Lucene query and `ts` window start.
     Webz,
+    /// TinyFish `recency_minutes`, or `after_date`/`before_date`.
+    Tinyfish,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +257,8 @@ pub struct ResponseSpec {
     pub snippet: Vec<String>,
     #[serde(default = "field_date")]
     pub date: String,
+    /// The publisher's name, when the engine gives one (`source` in the result).
+    pub source: Option<String>,
     pub snippet_chars: Option<usize>,
     /// A field that, when present in a 200 answer, is the error (SerpApi).
     pub error_field: Option<String>,
@@ -276,6 +328,17 @@ pub fn check(spec: &EngineSpec) -> Result<(), String> {
         && a.header.is_some() == a.query.is_some()
     {
         return Err("auth takes exactly one of `header` or `query`".into());
+    }
+    if let Some(b) = &spec.budget {
+        if b.free.is_nan() || b.free <= 0.0 {
+            return Err("budget.free must be above zero".into());
+        }
+        if b.unit == BudgetUnit::Usd && !b.cost_default.is_some_and(|c| c > 0.0) {
+            return Err("a usd budget needs cost_default above zero".into());
+        }
+        if b.weight.is_some_and(|w| w.is_nan() || w <= 0.0) {
+            return Err("budget.weight must be above zero".into());
+        }
     }
     Ok(())
 }
@@ -475,6 +538,17 @@ fn dialect_params(d: Dialect, q: &QuerySpec, now: DateTime<Utc>) -> Vec<(String,
         Dialect::Brave => put("freshness", q.brave_freshness().map(Value::String)),
         Dialect::Currents => p.extend(currents_params(q, now)),
         Dialect::Webz => p.extend(webz_params(q, now.date_naive())),
+        Dialect::Tinyfish => {
+            // It refuses `recency_minutes` combined with a date bound.
+            match (q.recency, q.after, q.before) {
+                (Some(r), None, None) => put("recency_minutes", Some(json!(r.days() * 1440))),
+                _ => {
+                    let (start, end) = q.tavily_dates();
+                    put("after_date", start.map(Value::String));
+                    put("before_date", end.map(Value::String));
+                }
+            }
+        }
     }
     p
 }
@@ -579,15 +653,38 @@ fn query_string(v: &Value) -> String {
     }
 }
 
+/// One engine's answer: the results, and what the call cost in the engine's
+/// budget unit.
+#[derive(Debug)]
+pub struct Answer {
+    pub items: Vec<Value>,
+    pub units: f64,
+}
+
+/// What a successful call cost: the answer's own price for a usd budget
+/// (else its default), one call otherwise.
+pub fn units_of(spec: &EngineSpec, json: &Value) -> f64 {
+    match &spec.budget {
+        Some(b) if b.unit == BudgetUnit::Usd => b
+            .cost_field
+            .as_deref()
+            .and_then(|p| path_get(json, p))
+            .and_then(Value::as_f64)
+            .or(b.cost_default)
+            .unwrap_or(0.0),
+        _ => 1.0,
+    }
+}
+
 /// Call one engine. `Ok` is the result list in the ladder's shape
-/// (`{title, link, snippet, date}`); `Err` is text `classify_search_error`
-/// buckets (a spent allowance says "quota exhausted").
+/// (`{title, link, snippet, date}`) and its cost; `Err` is text
+/// `classify_search_error` buckets (a spent allowance says "quota exhausted").
 pub async fn run(
     client: &Client,
     spec: &EngineSpec,
     q: &QuerySpec,
     count: u8,
-) -> Result<Vec<Value>, String> {
+) -> Result<Answer, String> {
     let name = &spec.name;
     let r = &spec.request;
     let key = match &spec.key_env {
@@ -686,7 +783,10 @@ pub async fn run(
         let fields = Value::Object(fields);
         info!(engine = %name, fields = %fields, "Search engine reported");
     }
-    Ok(results(spec, &json, q, count, now.date_naive()))
+    Ok(Answer {
+        items: results(spec, &json, q, count, now.date_naive()),
+        units: units_of(spec, &json),
+    })
 }
 
 /// The engine's answer mapped onto `{title, link, snippet, date}`.
@@ -781,6 +881,15 @@ fn map_item(rs: &ResponseSpec, r: &Value) -> Option<Value> {
     });
     if let Some(d) = path_get(r, &rs.date).filter(|d| !d.is_null()) {
         out["date"] = d.clone();
+    }
+    if let Some(src) = rs
+        .source
+        .as_deref()
+        .and_then(|p| path_get(r, p))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        out["source"] = json!(src);
     }
     Some(out)
 }
@@ -915,13 +1024,80 @@ mod tests {
     #[test]
     fn every_bundled_engine_parses_and_the_ladder_keeps_its_order() {
         let all = bundled();
-        assert_eq!(all.len(), 10);
+        assert_eq!(all.len(), 11);
         assert_eq!(
             default_order(&all),
             [
-                "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave"
+                "exa", "tavily", "tinyfish", "serper", "serpapi", "google", "searxng", "brave"
             ]
         );
+    }
+
+    #[test]
+    fn the_rotation_holds_the_free_allowances_only() {
+        let budgeted: Vec<String> = bundled()
+            .into_iter()
+            .filter(|e| e.budget.is_some())
+            .map(|e| e.name)
+            .collect();
+        // SerpApi's 250/month is google_news's; SearXNG is the junk-prone last
+        // resort; Brave bills a card.
+        assert_eq!(budgeted, ["exa", "serper", "tavily", "tinyfish"]);
+        let exa = engine("exa");
+        let b = exa.budget.as_ref().unwrap();
+        assert_eq!((b.unit, b.per), (BudgetUnit::Usd, BudgetPeriod::Month));
+    }
+
+    #[test]
+    fn a_usd_budget_without_a_default_price_is_refused() {
+        let text = "name: x\nbudget: { free: 10, unit: usd, per: month }\n\
+                    request: { method: get, url: https://x, query: { param: q, syntax: plain } }\n\
+                    response: { items: r }";
+        assert!(parse(text).unwrap_err().contains("cost_default"));
+    }
+
+    #[test]
+    fn a_call_is_priced_from_the_answer_or_its_default() {
+        let exa = engine("exa");
+        assert_eq!(
+            units_of(&exa, &json!({"costDollars": {"total": 0.012}})),
+            0.012
+        );
+        assert_eq!(units_of(&exa, &json!({})), 0.007);
+        assert_eq!(units_of(&engine("tavily"), &json!({})), 1.0);
+    }
+
+    #[test]
+    fn tinyfish_takes_a_window_in_minutes_or_dates_never_both() {
+        let tf = engine("tinyfish");
+        let mut q = QuerySpec::parse("fed rate site:reuters.com");
+        q.recency = crate::search_query::Recency::parse("week");
+        q.news = true;
+        let p = pairs(&params(&tf, &q, 5, Utc::now()));
+        assert_eq!(p["recency_minutes"], json!(7 * 1440));
+        assert_eq!(p["domain_type"], json!("news"));
+        assert_eq!(p["include_domains"], json!(["reuters.com"]));
+        assert!(!p.contains_key("after_date"));
+        let q = QuerySpec::parse("fed rate after:2026-10-01");
+        let p = pairs(&params(&tf, &q, 5, Utc::now()));
+        assert_eq!(p["after_date"], json!("2026-10-01"));
+        assert!(!p.contains_key("recency_minutes"));
+    }
+
+    #[test]
+    fn tinyfish_news_maps_its_publisher() {
+        let json = json!({"results": [{"url": "https://www.reuters.com/x", "title": "T",
+            "snippet": "S", "date": "2 days ago", "publisher": "Reuters"}]});
+        let r = results(
+            &engine("tinyfish"),
+            &json,
+            &QuerySpec::parse("x"),
+            5,
+            today(),
+        );
+        assert_eq!(r[0]["source"], json!("Reuters"));
+        assert_eq!(r[0]["date"], json!("2 days ago"));
+        assert_eq!(r[0]["link"], json!("https://www.reuters.com/x"));
     }
 
     #[test]

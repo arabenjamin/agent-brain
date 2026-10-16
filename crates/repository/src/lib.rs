@@ -19,6 +19,60 @@ pub use workflow::{WorkflowDef, WorkflowPatch, YamlSyncOutcome};
 #[cfg(feature = "telemetry")]
 pub use telemetry::TelemetryClient;
 
+/// One `search_web` engine attempt, as the usage ledger records it.
+///
+/// The ledger is both quota accounting (what each engine was asked to do,
+/// in its budget's units) and the performance record that rotation weights
+/// come from: who asked, whether the engine was picked by rotation, pinned
+/// or reached as a fallback, and cheap quality hints from the results in
+/// hand (dated, inside the requested window, on a known source list).
+#[derive(Debug, Clone, Default)]
+pub struct SearchAttempt {
+    /// Groups the attempts of one `search_web` call.
+    pub call_id: String,
+    pub engine: String,
+    pub query: String,
+    pub success: bool,
+    pub result_count: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub error_kind: Option<String>,
+    /// What the attempt cost in the engine's budget unit (USD for Exa, one
+    /// call elsewhere); `None` for a failed attempt, which no vendor bills.
+    pub units: Option<f64>,
+    /// `rotation`, `pinned` (the caller named the engine), `ladder` (rotation
+    /// off or no budgeted engine fit), or `fallback` (an earlier rung failed).
+    pub picked: String,
+    /// The engine the caller named, if any.
+    pub requested: Option<String>,
+    /// `chat`, `background`, `subagent`, ... (the routing purpose).
+    pub purpose: Option<String>,
+    /// The queue job's tool (`claim`, `run_agent`, `search_web`, ...).
+    pub tool: Option<String>,
+    /// The workflow run's Task, for drilling into which workflow searched.
+    pub task_id: Option<String>,
+    pub recency: Option<String>,
+    pub news: bool,
+    pub dated: Option<i64>,
+    pub in_window: Option<i64>,
+    pub known_source: Option<i64>,
+    pub domains: Option<i64>,
+    /// The result links, in rank order.
+    pub links: Vec<String>,
+}
+
+/// One engine's recent use, for rotation: units spent since each cutoff
+/// (`*_unpriced` counts successful rows written before units were recorded),
+/// and attempts in the last hour and minute for rate limits.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EngineUse {
+    pub engine: String,
+    pub period_units: f64,
+    pub period_unpriced: i64,
+    pub day_calls: i64,
+    pub hour_calls: i64,
+    pub minute_calls: i64,
+}
+
 /// Stub TelemetryClient compiled when the `telemetry` feature is disabled.
 ///
 /// Provides the same public API so downstream code compiles unchanged.
@@ -120,18 +174,6 @@ impl TelemetryClient {
         Ok(vec![])
     }
 
-    pub fn record_search_usage(
-        &self,
-        _engine: &str,
-        _query: &str,
-        _success: bool,
-        _result_count: Option<i64>,
-        _duration_ms: Option<i64>,
-        _error_kind: Option<&str>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     pub fn search_engines_with_recent_errors(
         &self,
         _error_kind: &str,
@@ -145,5 +187,21 @@ impl TelemetryClient {
         _window_hours: Option<i64>,
     ) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::json!({ "engines": [], "by_day": [] }))
+    }
+
+    pub fn record_search_attempt(&self, _a: &SearchAttempt) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    pub fn engine_use(
+        &self,
+        _engine: &str,
+        _period_start: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<EngineUse> {
+        Ok(EngineUse::default())
+    }
+
+    pub fn search_links_since(&self, _window_hours: i64) -> anyhow::Result<Vec<(String, String)>> {
+        Ok(vec![])
     }
 }

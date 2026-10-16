@@ -1,8 +1,12 @@
 # Serper: Google results, 2,500 free queries ONCE (no refill), no card. Its
 # /news endpoint answers `news` instead of `organic`.
 name: serper
-rank: 3
+rank: 4
 key_env: SERPER_API_KEY
+# The grant is per account, not per period; usage before the ledger existed
+# is not counted, so its spent-quota answer ("Not enough credits") is the
+# real end.
+budget: { free: 2500, per: once }
 request:
   method: post
   url: https://google.serper.dev/search
