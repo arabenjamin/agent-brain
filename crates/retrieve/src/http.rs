@@ -155,8 +155,9 @@ impl HttpSkill {
     fn http_request_def() -> ToolDefinition {
         ToolDefinition {
             name: "http_request".to_string(),
-            description: "Execute an HTTP request. Pass context_name to auto-inject \
-                          authentication from a stored ApiContext. \
+            description: "Execute an HTTP request. Pass context_name to use a stored \
+                          ApiContext: its auth is injected, and a relative url (e.g. \
+                          'by-kind/CHAT.json') is resolved against its base_url. \
                           Use RETURN n.field AS field syntax for Neo4j queries."
                 .to_string(),
             input_schema: json!({
@@ -169,7 +170,7 @@ impl HttpSkill {
                     },
                     "url": {
                         "type": "string",
-                        "description": "Full URL to request"
+                        "description": "Full URL, or a path relative to the context_name API's base_url"
                     },
                     "headers": {
                         "type": "object",
@@ -185,7 +186,7 @@ impl HttpSkill {
                     },
                     "context_name": {
                         "type": "string",
-                        "description": "Name of a stored ApiContext for automatic auth injection"
+                        "description": "Name of a stored ApiContext (list_apis): injects its auth and resolves a relative url against its base_url"
                     },
                     "timeout_ms": {
                         "type": "integer",
@@ -216,7 +217,9 @@ impl HttpSkill {
             description: "Store or update an API context in Neo4j. The context holds \
                           base URL, auth scheme, and the NAME of the environment variable \
                           containing the secret (not the secret itself). \
-                          Used by http_request via context_name."
+                          Used by http_request via context_name. For an API with no \
+                          OpenAPI spec, pass `endpoints`: each GET one is called before \
+                          it is saved, and the result reports which answered."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -249,6 +252,20 @@ impl HttpSkill {
                     "description": {
                         "type": "string",
                         "description": "Human-readable description of what this context is for"
+                    },
+                    "endpoints": {
+                        "type": "array",
+                        "description": "For an API with no OpenAPI spec: the endpoints you found, saved so list_endpoints shows them. Each GET endpoint is CALLED once before it is saved, and the result says which answered (status, response shape): that is the proof it works. A path with a {placeholder} needs `example`, a concrete path to call.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "method": { "type": "string", "description": "Default GET" },
+                                "path": { "type": "string", "description": "Relative to base_url, e.g. 'catalog.json' or 'by-kind/{kind}.json'" },
+                                "summary": { "type": "string", "description": "What it returns" },
+                                "example": { "type": "string", "description": "A concrete path to probe when `path` has a {placeholder}, e.g. 'by-kind/CHAT.json'" }
+                            },
+                            "required": ["path"]
+                        }
                     }
                 },
                 "required": ["name", "base_url"]
@@ -320,7 +337,7 @@ impl HttpSkill {
     async fn fetch_context(&self, name: &str) -> Option<ApiContext> {
         let neo4j = self.neo4j.as_ref()?;
         let cypher = "MATCH (c:ApiContext {name: $name}) \
-                      RETURN c.auth_scheme AS auth_scheme, \
+                      RETURN c.base_url AS base_url, c.auth_scheme AS auth_scheme, \
                              c.auth_param AS auth_param, c.auth_env_var AS auth_env_var, \
                              c.default_headers AS default_headers";
         let rows = neo4j
@@ -329,6 +346,10 @@ impl HttpSkill {
             .ok()?;
         let row = rows.first()?;
         Some(ApiContext {
+            base_url: row
+                .get::<String>("base_url")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
             auth_scheme: row
                 .get::<String>("auth_scheme")
                 .unwrap_or_else(|_| "none".into()),
@@ -377,11 +398,27 @@ impl HttpSkill {
             .build()
             .unwrap_or_else(|_| self.client.clone());
 
-        // Load ApiContext if requested
-        let ctx = if let Some(ref name) = input.context_name {
-            self.fetch_context(name).await
-        } else {
-            None
+        // Load ApiContext if requested. A named context that does not exist is
+        // an error, not a silent unauthenticated call.
+        let ctx = match input.context_name.as_deref() {
+            Some(name) => match self.fetch_context(name).await {
+                Some(c) => Some(c),
+                None => {
+                    return ToolCallResult::error(format!(
+                        "No ApiContext named '{name}'; list_apis shows the stored ones. \
+                         Nothing was requested."
+                    ));
+                }
+            },
+            None => None,
+        };
+        let url = match request_url(
+            &input.url,
+            ctx.as_ref().and_then(|c| c.base_url.as_deref()),
+            input.context_name.as_deref(),
+        ) {
+            Ok(u) => u,
+            Err(e) => return ToolCallResult::error(e),
         };
 
         // Build the request
@@ -395,7 +432,7 @@ impl HttpSkill {
             other => return ToolCallResult::error(format!("Unknown method: {}", other)),
         };
 
-        let mut req = client.request(method, &input.url);
+        let mut req = client.request(method, &url);
 
         // Inject default headers from context
         if let Some(ref c) = ctx {
@@ -444,7 +481,7 @@ impl HttpSkill {
             req = req.json(body);
         }
 
-        debug!(url = %input.url, method = %input.method, "http_request executing");
+        debug!(url = %url, method = %input.method, "http_request executing");
         let start = Instant::now();
 
         match req.send().await {
@@ -480,10 +517,11 @@ impl HttpSkill {
                     "body": body_out,
                     "body_projected": projected,
                     "context_used": input.context_name,
+                    "url": url,
                 });
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("HTTP request failed: {}", e)),
+            Err(e) => ToolCallResult::error(format!("HTTP request to {url} failed: {e}")),
         }
     }
 
@@ -502,6 +540,8 @@ impl HttpSkill {
             default_headers: Option<serde_json::Map<String, Value>>,
             #[serde(default)]
             description: Option<String>,
+            #[serde(default)]
+            endpoints: Vec<EndpointInput>,
         }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
@@ -512,6 +552,7 @@ impl HttpSkill {
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
+        let description = input.description.clone().unwrap_or_default();
 
         let default_headers_json =
             serde_json::to_string(&input.default_headers.unwrap_or_default())
@@ -538,17 +579,142 @@ impl HttpSkill {
                     .param("auth_param", input.auth_param.unwrap_or_default())
                     .param("auth_env_var", input.auth_env_var.unwrap_or_default())
                     .param("default_headers", default_headers_json)
-                    .param("description", input.description.unwrap_or_default()),
+                    .param("description", description.clone()),
             )
             .await
         {
             return ToolCallResult::error(format!("Failed to store ApiContext: {}", e));
         }
 
+        if input.endpoints.is_empty() {
+            return ToolCallResult::success_json(json!({
+                "stored": true,
+                "name": input.name,
+                "base_url": input.base_url,
+            }));
+        }
+        self.store_probed_endpoints(
+            neo4j,
+            &input.name,
+            &input.base_url,
+            &description,
+            &input.endpoints,
+        )
+        .await
+    }
+
+    /// Call each GET endpoint once through `http_request` (the context's auth,
+    /// its base_url), then save them all, each stamped with what the call got.
+    /// The probe is the tool's, not the caller's choice: the result is the proof.
+    async fn store_probed_endpoints(
+        &self,
+        neo4j: &Neo4jClient,
+        name: &str,
+        base_url: &str,
+        description: &str,
+        endpoints: &[EndpointInput],
+    ) -> ToolCallResult {
+        let mut parsed = Vec::with_capacity(endpoints.len());
+        let mut probes: Vec<Value> = Vec::with_capacity(endpoints.len());
+        for ep in endpoints {
+            let method = ep.method.as_deref().unwrap_or("GET").trim().to_uppercase();
+            let path = ep.path.trim().to_string();
+            let probe = match probe_target(&method, &path, ep.example.as_deref()) {
+                Err(why) => json!({ "method": method, "path": path, "probed": false, "why": why }),
+                Ok(target) => {
+                    let r = self
+                        .handle_http_request(Some(json!({
+                            "method": "GET", "url": target, "context_name": name,
+                        })))
+                        .await;
+                    let text = r.model_text();
+                    match (
+                        r.is_error == Some(true),
+                        serde_json::from_str::<Value>(&text),
+                    ) {
+                        (false, Ok(v)) => json!({
+                            "method": method, "path": path, "probed": true, "called": v["url"],
+                            "status": v["status_code"], "ok": v["ok"],
+                            "shape": body_shape(&v["body"]),
+                        }),
+                        _ => json!({
+                            "method": method, "path": path, "probed": true, "ok": false,
+                            "error": text.chars().take(300).collect::<String>(),
+                        }),
+                    }
+                }
+            };
+            parsed.push(ParsedEndpoint {
+                method,
+                path,
+                summary: ep.summary.clone().unwrap_or_default(),
+                operation_id: String::new(),
+                parameters: "[]".into(),
+                security: "[]".into(),
+                tags: "[]".into(),
+            });
+            probes.push(probe);
+        }
+
+        let stored = self
+            .persist_endpoints(
+                neo4j,
+                name,
+                base_url,
+                "",
+                description,
+                "",
+                &parsed,
+                "manual_probe",
+                None,
+                false,
+            )
+            .await;
+        if stored.is_error == Some(true) {
+            return stored;
+        }
+
+        // Stamp each endpoint with its probe, so a later reader sees whether it
+        // was ever shown to work, and when.
+        let rows: Vec<neo4rs::BoltType> = probes
+            .iter()
+            .map(|p| {
+                let mut row: HashMap<String, neo4rs::BoltType> = HashMap::new();
+                row.insert("method".into(), p["method"].as_str().unwrap_or("").into());
+                row.insert("path".into(), p["path"].as_str().unwrap_or("").into());
+                row.insert("verdict".into(), probe_verdict(p).into());
+                neo4rs::BoltType::from(row)
+            })
+            .collect();
+        let _ = neo4j
+            .run(
+                neo4rs::query(
+                    "UNWIND $rows AS r \
+                     MATCH (e:ApiEndpoint {api_name: $name, method: r.method, path: r.path}) \
+                     SET e.probe = r.verdict, e.probed_at = datetime()",
+                )
+                .param("name", name)
+                .param("rows", rows),
+            )
+            .await;
+
+        let ok = probes.iter().filter(|p| p["ok"] == json!(true)).count();
+        let probed = probes.iter().filter(|p| p["probed"] == json!(true)).count();
         ToolCallResult::success_json(json!({
             "stored": true,
-            "name": input.name,
-            "base_url": input.base_url,
+            "name": name,
+            "base_url": base_url,
+            "endpoints_stored": parsed.len(),
+            "probed": probed,
+            "answered_ok": ok,
+            "verdict": if probed > 0 && ok == probed {
+                format!("all {probed} probed endpoint(s) answered: the API works as registered")
+            } else if ok == 0 {
+                "NO probed endpoint answered: the API is registered but NOT shown to work".to_string()
+            } else {
+                format!("{ok} of {probed} probed endpoint(s) answered; the others are marked failed")
+            },
+            "probes": probes,
         }))
     }
 
@@ -1363,6 +1529,37 @@ fn derive_api_name(spec: &Value, spec_url: &str) -> String {
 }
 
 /// Parse spec text as JSON, then YAML (many specs are served as .yaml).
+/// The URL a request goes to: `url` when it is absolute, else `url` as a path
+/// under the context's `base_url` (a leading `/` stays under the base path, as
+/// "relative to the API" means). `Err` says what to pass instead.
+fn request_url(url: &str, base: Option<&str>, context: Option<&str>) -> Result<String, String> {
+    let url = url.trim();
+    if url::Url::parse(url).is_ok_and(|u| u.has_host()) {
+        return Ok(url.to_string());
+    }
+    let Some(base) = base else {
+        return Err(match context {
+            Some(c) => format!(
+                "url '{url}' is not a full URL, and ApiContext '{c}' has no base_url to \
+                 resolve it against. Pass a full URL. Nothing was requested."
+            ),
+            None => format!(
+                "url '{url}' is not a full URL. Pass one (https://…), or a context_name \
+                 whose base_url it is a path under. Nothing was requested."
+            ),
+        });
+    };
+    let base = if base.ends_with('/') {
+        base.to_string()
+    } else {
+        format!("{base}/")
+    };
+    url::Url::parse(&base)
+        .and_then(|b| b.join(url.trim_start_matches('/')))
+        .map(|u| u.to_string())
+        .map_err(|e| format!("could not resolve '{url}' against base_url '{base}': {e}"))
+}
+
 /// A GitHub file page (`github.com/o/r/blob/<ref>/path`) as its raw file:
 /// the page is HTML around the spec, so fetching it reads as "not a spec".
 fn raw_github_url(url: &str) -> String {
@@ -1800,8 +1997,64 @@ fn find_route_files(root: &Path) -> Vec<PathBuf> {
     scored.into_iter().map(|(_, p)| p).collect()
 }
 
+/// An endpoint `define_api_context` is given for an API with no spec.
+#[derive(Debug, Clone, Deserialize)]
+struct EndpointInput {
+    #[serde(default)]
+    method: Option<String>,
+    path: String,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    example: Option<String>,
+}
+
+/// What path to call to show an endpoint works: only a GET is called (it
+/// changes nothing), and a `{placeholder}` path needs a concrete `example`.
+fn probe_target(method: &str, path: &str, example: Option<&str>) -> Result<String, String> {
+    if method != "GET" {
+        return Err(format!("{method} is not called: a probe only reads"));
+    }
+    match example.map(str::trim).filter(|e| !e.is_empty()) {
+        Some(e) => Ok(e.to_string()),
+        None if path.contains('{') => {
+            Err("the path has a {placeholder}; pass `example`, a concrete path".into())
+        }
+        None => Ok(path.to_string()),
+    }
+}
+
+/// A probe's outcome as stored on the endpoint: `ok 200`, `failed 404`,
+/// `failed (no response)` or `not probed`.
+fn probe_verdict(p: &Value) -> String {
+    if p["probed"] == json!(false) {
+        "not probed".to_string()
+    } else if p["ok"] == json!(true) {
+        format!("ok {}", p["status"])
+    } else {
+        match p["status"].as_i64() {
+            Some(s) => format!("failed {s}"),
+            None => "failed (no response)".to_string(),
+        }
+    }
+}
+
+/// A response body in a few words: its top-level keys, or its length.
+fn body_shape(body: &Value) -> String {
+    match body {
+        Value::Object(m) => {
+            let keys: Vec<&str> = m.keys().take(8).map(String::as_str).collect();
+            format!("JSON object with keys: {}", keys.join(", "))
+        }
+        Value::Array(a) => format!("JSON array of {} item(s)", a.len()),
+        Value::String(s) => format!("text, {} chars", s.chars().count()),
+        other => format!("JSON {other}"),
+    }
+}
+
 // Internal type used during auth injection
 struct ApiContext {
+    base_url: Option<String>,
     auth_scheme: String,
     auth_param: Option<String>,
     auth_env_var: Option<String>,
@@ -1836,6 +2089,69 @@ impl Skill for HttpSkill {
 #[cfg(test)]
 mod ingest_api_tests {
     use super::*;
+
+    #[test]
+    fn a_relative_url_resolves_under_the_context_base_path() {
+        let base = Some("https://openviglet.github.io/model-catalog/");
+        let want = "https://openviglet.github.io/model-catalog/by-kind/CHAT.json";
+        assert_eq!(
+            request_url("by-kind/CHAT.json", base, Some("c")).unwrap(),
+            want
+        );
+        // A leading slash stays under the base path, and a base without a
+        // trailing slash keeps its last segment.
+        assert_eq!(
+            request_url("/by-kind/CHAT.json", base, Some("c")).unwrap(),
+            want
+        );
+        assert_eq!(
+            request_url(
+                "by-kind/CHAT.json",
+                Some("https://openviglet.github.io/model-catalog"),
+                Some("c")
+            )
+            .unwrap(),
+            want
+        );
+        // An absolute url is used as given, base or not.
+        assert_eq!(
+            request_url("https://example.com/x", base, Some("c")).unwrap(),
+            "https://example.com/x"
+        );
+        // No base to resolve against: say so, instead of a "builder error".
+        let e = request_url("by-kind/CHAT.json", None, None).unwrap_err();
+        assert!(e.contains("not a full URL"), "{e}");
+        let e = request_url("x.json", None, Some("c")).unwrap_err();
+        assert!(e.contains("has no base_url"), "{e}");
+    }
+
+    #[test]
+    fn only_a_concrete_get_is_probed() {
+        assert_eq!(
+            probe_target("GET", "catalog.json", None).unwrap(),
+            "catalog.json"
+        );
+        assert!(probe_target("GET", "by-kind/{kind}.json", None).is_err());
+        assert_eq!(
+            probe_target("GET", "by-kind/{kind}.json", Some("by-kind/CHAT.json")).unwrap(),
+            "by-kind/CHAT.json"
+        );
+        assert!(probe_target("POST", "items", None).is_err());
+        assert_eq!(
+            probe_verdict(&json!({"probed": true, "ok": true, "status": 200})),
+            "ok 200"
+        );
+        assert_eq!(
+            probe_verdict(&json!({"probed": true, "ok": false, "status": 404})),
+            "failed 404"
+        );
+        assert_eq!(
+            probe_verdict(&json!({"probed": true, "ok": false})),
+            "failed (no response)"
+        );
+        assert_eq!(probe_verdict(&json!({"probed": false})), "not probed");
+        assert_eq!(body_shape(&json!([1, 2])), "JSON array of 2 item(s)");
+    }
 
     #[test]
     fn a_github_file_page_is_read_as_its_raw_file() {

@@ -293,7 +293,7 @@ impl QuerySkill {
     fn list_endpoints_def() -> ToolDefinition {
         ToolDefinition {
             name: "list_endpoints".to_string(),
-            description: "Every endpoint (method + path + summary) an API exposes, for a given \
+            description: "Every endpoint (method, path, summary, and `probe`: whether define_api_context ever called it and what it got) an API exposes, for a given \
                           API name. This is the deterministic answer to 'what endpoints does \
                           <API> have' / 'list the endpoints for <API>' — do NOT hand-write \
                           Cypher for it (the graph has more than one endpoint-shaped structure, \
@@ -475,7 +475,9 @@ impl QuerySkill {
         // Baking it here is the point — a hand-written query can pick the wrong
         // endpoint-shaped path or mis-case the name and silently return zero.
         let cypher = "MATCH (c:ApiContext {name: $api})-[:EXPOSES]->(e:ApiEndpoint) \
-             RETURN e.method AS method, e.path AS path, coalesce(e.summary, '') AS summary \
+             RETURN e.method AS method, e.path AS path, coalesce(e.summary, '') AS summary, \
+                    CASE WHEN e.probe IS NULL THEN 'never called' \
+                         ELSE e.probe + ' on ' + toString(date(e.probed_at)) END AS probe \
              ORDER BY e.path, e.method";
         match neo4j
             .execute(neo4rs::query(cypher).param("api", input.api.clone()))
