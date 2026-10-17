@@ -233,6 +233,8 @@ A unit of the brain's work (PROGRAMS_PLAN.md): a department, project, investigat
 | `budget_monthly_usd` | Float? | The program's monthly cap, shown on `program_scorecard`; not enforced yet |
 | `status` | String | `active`, `paused` or `closed`. Graph-owned (a file sets it only on create). Not active ⇒ its workflows and those of programs under it are disabled with `paused_reason` `PROGRAM_PAUSE: …`, except its `keep_running`; active again resumes exactly those |
 | `finding` | String? | What a closed investigation or case found (required to close one). Graph-owned |
+| `last_review_at` / `last_review_verdict` / `last_review_summary` | DateTime? / String? / String? | The latest `program-review`: `healthy`, `attention` or `failing`, and its summary (what the parent's review reads) |
+| `review_started_at` | DateTime? | When `program-reviews` last started its review; the next is due `review.every` later |
 | `managed_by` / `plugin` / `source` | String / String? / String? | `yaml` or `runtime`; the bundle and file it is seeded from |
 | `created_at` / `updated_at` / `status_changed_at` | DateTime | Native `DATETIME`, UTC |
 

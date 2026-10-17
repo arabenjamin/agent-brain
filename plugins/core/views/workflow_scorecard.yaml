@@ -12,7 +12,7 @@ description: >-
   runs, how many succeeded and failed, the notes its runs wrote, how often
   those notes were read again and cited by claims, its model calls and cost
   (cost is recorded only from 2026-10-17), and its last run. Name a workflow
-  for just that one.
+  for just that one, or a program for its workflows.
 words: [scorecard, workflow scorecard, how are the workflows doing, which workflows are worth it, workflow value, workflow cost, what does each workflow cost]
 limit: 100
 input_schema:
@@ -27,9 +27,15 @@ input_schema:
       default: ""
       description: One workflow's name; empty for all of them.
       values_from: "MATCH (w:Workflow) RETURN w.name AS value, w.description AS label ORDER BY value"
+    program:
+      type: string
+      default: ""
+      description: Only the workflows of this program and the programs under it; empty for all.
+      values_from: "MATCH (p:Program) RETURN p.name AS value, p.label AS label ORDER BY value"
 cypher: |-
   MATCH (w:Workflow)
-  WHERE $workflow = '' OR w.name = $workflow
+  WHERE ($workflow = '' OR w.name = $workflow)
+    AND ($program = '' OR EXISTS { (:Program {name: $program})<-[:UNDER*0..]-(:Program)-[:OWNS]->(w) })
   OPTIONAL MATCH (t:Task {workflow: w.name})
     WHERE t.created_at > datetime() - duration({days: $days})
   WITH w, collect(t) AS runs

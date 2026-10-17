@@ -1,0 +1,28 @@
+# Programs (PROGRAMS_PLAN.md): the read-only way to a program's definition and
+# its latest review, for agents that cannot call manage_program (a read-only
+# sub-agent, such as program-manager in chat).
+name: programs
+kind: cypher
+description: >-
+  The brain's programs (departments, projects, investigations, cases and
+  shared services): what each is for, its status, what it sits under, the
+  workflows it owns, and its latest review's verdict and summary. Give a name
+  for one, or leave it empty for all.
+words: [programs, departments, the nia, niche intelligence agency, program review, how is the program doing, investigations, cold cases]
+input_schema:
+  type: object
+  properties:
+    program:
+      type: string
+      default: ""
+      description: A program's name; empty for all.
+      values_from: "MATCH (p:Program) RETURN p.name AS value, p.label AS label ORDER BY value"
+cypher: |-
+  MATCH (p:Program) WHERE $program = '' OR p.name = $program
+  RETURN p.name AS program, p.label AS label, p.kind AS kind, p.status AS status,
+         p.parent AS parent, p.workflows AS workflows, p.topics AS topics,
+         p.budget_monthly_usd AS budget_monthly_usd,
+         toString(p.last_review_at) AS last_review_at,
+         p.last_review_verdict AS verdict, p.last_review_summary AS summary
+  ORDER BY coalesce(p.parent, p.name), p.parent IS NOT NULL, program
+limit: 60

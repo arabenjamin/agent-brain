@@ -170,7 +170,7 @@ routing:
     - A question about us (our notes, claims, agencies, monitors, topics, tasks, tools, agents, APIs, what we learned, the user's own history) goes to stored knowledge first: knowledge-worker. This holds even for advice about our own things.
     - A fact about the world: answer it from knowledge if it is well known and does not change; current or changing facts (news, versions, prices, "latest") go to researcher. Explicit "search the web" goes to researcher.
     - "Keep an eye on", "monitor", "make sure we're tracking": check the existing workflows first (self:manage_workflow).
-    - How a program or department is organized, or pausing, closing or reopening one: self:manage_program.
+    - How a program or department is organized, or pausing, closing or reopening one: self:manage_program. How one is DOING (its numbers, what to change): program-manager.
     - Saving or writing a file goes to scribe; turning a stored API into a document or client goes to api-integrator.
     - Questions about this codebase's code go to code-analyst; an open-ended investigation that needs code, notes and the web goes to deep-diver.
     - Use the tool that answers correctly, not the nearest one.

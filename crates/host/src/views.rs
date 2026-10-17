@@ -1443,6 +1443,9 @@ impl Skill for LookupSkill {
         // An empty value is an unset slot: a small model filling a schema
         // writes `entity: ""`, `kinds: []` or `window: {}` for slots it skips.
         args.retain(|_, v| !is_empty_value(v));
+        // The queue stamps `__owner_task_id`, `__data_class`, … on every job
+        // a workflow step runs; they are plumbing, not slots.
+        args.retain(|k, _| !k.starts_with("__"));
         if let Some(Value::Object(w)) = args.get_mut("window") {
             w.retain(|_, v| !is_empty_value(v));
             if w.is_empty() {

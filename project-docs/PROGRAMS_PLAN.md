@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Phases 0–2 built 2026-10-17; Phase 3 (manager) next.
+Workflow Admin" (`0fcc6502`). Phases 0–3 built 2026-10-17; Phase 2b (assist + schema) and Phase 4 (agents) next.
 
 ## 1. Why
 
@@ -148,7 +148,8 @@ manager separate keeps chat a conversation and the review a scheduled job.
 | 0. Scorecard (**done** 2026-10-17) | `workflow_scorecard` lookup view; task id on `model_usage` | The §1 table, with cost, comes from one view |
 | 1. Programs (**done** 2026-10-17) | Seed kind, validator, `manage_program`, REST, graph nodes, the §4 tree seeded, `program` on todos | Every enabled workflow is in a program or shared; a bad save is refused with what fits |
 | 2. HBI (**done** 2026-10-17) | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
-| 3. Manager | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
+| 2b. Assist + schema (owner, 2026-10-17; after Phase 3) | The New Program drawer gets the `AgentAssist` widget like the workflow form (an agent drafts the program from a prompt, read-only, the draft fills the form); `schemas/program.json` is the program's JSON Schema, checked before any other check on every save (tool, REST, seed), as `schemas/workflow.json` is for workflows | An agent's draft fills the form and saves; a body that breaks the schema is refused with the schema's own error |
+| 3. Manager (**built** 2026-10-17; the daily dispatcher ships off) | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
 | 4. Agents | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
 
 ## 8. Decisions (owner, 2026-10-17)
@@ -226,3 +227,35 @@ manager separate keeps chat a conversation and the review a scheduled job.
 - **One set of numbers:** `GET /api/programs/scorecard` runs the
   `program_scorecard` lookup view through the tool registry
   (`ToolRegistry::call`), so the HBI shows what the brain reads.
+
+## 11. Phase 3 as built (2026-10-17)
+
+- **`program-manager`** (`plugins/core/contexts/program-manager.yaml`):
+  spawnable, read-only tools (`lookup`, `search_notes`, `recall_recent`), on
+  Haiku 5.5 with free `ministral-14b-latest` as the fallback. It judges a
+  program against its charter and success line and returns one JSON object:
+  `verdict` (healthy · attention · failing), `summary`, `findings`, and at
+  most 3 `proposals` {title, why, ask, target}. It changes nothing. In chat
+  the front door sends "how is the NIA doing?" to it; it reads the
+  `programs`, `program_scorecard` and `workflow_scorecard` views.
+- **`program-review`** (input `program`) is a fixed chain; only the judgement
+  is a model call: `manage_program review_context` (definition, workflows'
+  state, the programs under it with their latest verdicts, its previous
+  review, open todos, issues) → `lookup workflow_scorecard program=…` (its
+  subtree's workflows, 30 days) → `run_agent program-manager` (read-only) →
+  `manage_program record_review` (each proposal a todo for the owner, tagged
+  with the program, an open one with the same title not filed again; the
+  program stamped with verdict and summary) → `store_note` (a `reflection`,
+  `source_context: program-review:<name>`).
+- **`program-reviews`** (daily, **seeded off**): `manage_program
+  start_due_reviews` starts a review for each active program whose
+  `review.every` has passed (not `services`), deepest first, so a parent
+  reads its children's fresh verdicts. Turning it on costs about a tenth of
+  a cent per review (10 programs weekly).
+- **Testing does not spend** (owner, 2026-10-17): the live test ran a
+  runtime copy pinned to `ministral-14b-latest` via `run_agent`'s `model`,
+  then deleted it. National Security came back `attention` (69 notes, 2
+  reads) with two proposals; both todos were closed after the test.
+- Found by the test: `lookup` refused the queue's `__owner_task_id` as an
+  unknown slot (no workflow had used `lookup` as a step before); the queue's
+  `__` stamps are now dropped before the slot check.

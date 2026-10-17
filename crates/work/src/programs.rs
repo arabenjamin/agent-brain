@@ -1218,6 +1218,265 @@ pub async fn detail(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<Option<Va
     Ok(Some(out))
 }
 
+// ── Reviews (Phase 3) ────────────────────────────────────────────────────
+
+/// The workflow that reviews one program (input `program`).
+pub const REVIEW_WORKFLOW: &str = "program-review";
+
+/// What the manager's review must say about a program, in one word.
+pub const VERDICTS: &[&str] = &["healthy", "attention", "failing"];
+
+/// At most this many proposals a review turns into todos.
+pub const MAX_PROPOSALS: usize = 3;
+
+/// What `program-manager` returns: a verdict, what it found, and proposals
+/// the owner approves or not. It changes nothing itself.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ProgramReview {
+    pub verdict: String,
+    pub summary: String,
+    #[serde(default)]
+    pub findings: Vec<String>,
+    #[serde(default)]
+    pub proposals: Vec<ReviewProposal>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ReviewProposal {
+    /// A todo title: the change, in a few words.
+    pub title: String,
+    /// The evidence, from the facts it was given.
+    #[serde(default)]
+    pub why: String,
+    /// What the owner decides, in one or two sentences.
+    #[serde(default)]
+    pub ask: String,
+    /// The workflow, agent or program it is about.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+/// Parse the manager's answer. `Err` says what is missing, so the run fails
+/// visibly instead of writing nothing.
+pub fn parse_review(text: &str) -> Result<ProgramReview, String> {
+    let v = agent_brain_llm::llm::first_json_object(text, &["verdict", "summary"]).ok_or_else(
+        || {
+            format!(
+                "the review has no JSON object with `verdict` and `summary`; it began: {}",
+                text.chars().take(300).collect::<String>()
+            )
+        },
+    )?;
+    let mut r: ProgramReview =
+        serde_json::from_value(v).map_err(|e| format!("the review's JSON does not fit: {e}"))?;
+    r.verdict = r.verdict.trim().to_lowercase();
+    if !VERDICTS.contains(&r.verdict.as_str()) {
+        return Err(format!(
+            "verdict '{}' is not one of {}",
+            r.verdict,
+            VERDICTS.join(", ")
+        ));
+    }
+    if r.summary.trim().is_empty() {
+        return Err("the review's summary is empty".into());
+    }
+    r.proposals.retain(|p| !p.title.trim().is_empty());
+    Ok(r)
+}
+
+/// The review as a note: what a person and the parent's next review read.
+pub fn review_note(
+    label: &str,
+    name: &str,
+    date: &str,
+    r: &ProgramReview,
+    filed: &[String],
+) -> String {
+    let mut out = format!(
+        "# Program review: {label} ({date})\n\nProgram `{name}` · verdict: **{}**\n\n{}\n",
+        r.verdict,
+        r.summary.trim()
+    );
+    if !r.findings.is_empty() {
+        out.push_str("\n## Findings\n\n");
+        for f in &r.findings {
+            out.push_str(&format!("- {}\n", f.trim()));
+        }
+    }
+    if !r.proposals.is_empty() {
+        out.push_str("\n## Proposals (todos for the owner)\n\n");
+        for p in &r.proposals {
+            out.push_str(&format!("- **{}**", p.title.trim()));
+            if !p.why.trim().is_empty() {
+                out.push_str(&format!(": {}", p.why.trim()));
+            }
+            out.push('\n');
+        }
+    }
+    if !filed.is_empty() {
+        out.push_str(&format!("\n{}\n", filed.join("\n")));
+    }
+    out
+}
+
+/// Stamp the program with its latest review, which its parent's review reads.
+pub async fn mark_reviewed(
+    neo4j: &Neo4jClient,
+    name: &str,
+    r: &ProgramReview,
+) -> anyhow::Result<()> {
+    neo4j
+        .run(
+            neo4rs::query(
+                "MATCH (p:Program {name: $n}) SET p.last_review_at = datetime(), \
+                 p.last_review_verdict = $v, p.last_review_summary = $s",
+            )
+            .param("n", name.to_string())
+            .param("v", r.verdict.clone())
+            .param("s", r.summary.chars().take(1500).collect::<String>()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Everything the manager is given about one program besides the workflow
+/// scorecard: its definition, its workflows' state, the programs under it
+/// with their latest reviews, its own last review, its open todos (so it
+/// does not propose what is already waiting) and its issues.
+pub async fn review_context(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<Option<Value>> {
+    let Some(d) = detail(neo4j, name).await? else {
+        return Ok(None);
+    };
+    let rows = neo4j
+        .execute(neo4rs::query(
+            "MATCH (p:Program) RETURN p.name AS name, p.label AS label, p.status AS status, \
+                    p.parent AS parent, toString(p.last_review_at) AS at, \
+                    p.last_review_verdict AS verdict, p.last_review_summary AS summary",
+        ))
+        .await?;
+    let review_of = |r: &neo4rs::Row| {
+        json!({
+            "name": r.get::<String>("name").unwrap_or_default(),
+            "label": r.get::<String>("label").unwrap_or_default(),
+            "status": r.get::<String>("status").unwrap_or_default(),
+            "last_review_at": r.get::<String>("at").ok(),
+            "verdict": r.get::<String>("verdict").ok(),
+            "summary": r.get::<String>("summary").ok(),
+        })
+    };
+    let children: Vec<Value> = rows
+        .iter()
+        .filter(|r| r.get::<String>("parent").ok().as_deref() == Some(name))
+        .map(review_of)
+        .collect();
+    let own = rows
+        .iter()
+        .find(|r| r.get::<String>("name").ok().as_deref() == Some(name))
+        .map(review_of);
+    Ok(Some(json!({
+        "program": {
+            "name": d["name"], "label": d["label"], "kind": d["kind"], "status": d["status"],
+            "parent": d["parent"], "charter": d["charter"], "success": d["success"],
+            "topics": d["topics"], "agents": d["agents"], "apis": d["apis"],
+            "keep_running": d["keep_running"], "budget": d["budget"], "review": d["review"],
+        },
+        "workflows": d["workflow_state"],
+        "programs_under_it": children,
+        "previous_review": own,
+        "open_todos": d["open_todos"],
+        "issues": d["issues"],
+    })))
+}
+
+/// Whether a review that last started `last` (None: never) is due under a
+/// review period of `every_secs`.
+pub fn review_due(
+    last: Option<chrono::DateTime<chrono::Utc>>,
+    every_secs: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    last.is_none_or(|t| now - t >= chrono::Duration::seconds(every_secs))
+}
+
+/// Start a `program-review` run for every active program whose review is
+/// due (one with `review.every`, not `services`), deepest programs first so
+/// a parent's review reads fresh child reviews when the queue keeps order.
+/// Returns `(program, task id)` for each run started.
+pub async fn start_due_reviews(neo4j: &Neo4jClient) -> anyhow::Result<Vec<(String, String)>> {
+    let stored = load_all(neo4j).await?;
+    let started_rows = neo4j
+        .execute(neo4rs::query(
+            "MATCH (p:Program) RETURN p.name AS name, toString(p.review_started_at) AS at",
+        ))
+        .await?;
+    let started: HashMap<String, chrono::DateTime<chrono::Utc>> = started_rows
+        .iter()
+        .filter_map(|r| {
+            let at = r.get::<String>("at").ok()?;
+            let t = chrono::DateTime::parse_from_rfc3339(&at).ok()?;
+            Some((r.get::<String>("name").ok()?, t.with_timezone(&chrono::Utc)))
+        })
+        .collect();
+    let by_name: HashMap<&str, &ProgramDef> = stored
+        .iter()
+        .map(|s| (s.def.name.as_str(), &s.def))
+        .collect();
+    let depth = |name: &str| {
+        let mut d = 0;
+        let mut cur = by_name.get(name).and_then(|p| p.parent.as_deref());
+        while let Some(n) = cur {
+            d += 1;
+            if d > 32 {
+                break;
+            }
+            cur = by_name.get(n).and_then(|p| p.parent.as_deref());
+        }
+        d
+    };
+    let now = chrono::Utc::now();
+    let mut due: Vec<&ProgramDef> = stored
+        .iter()
+        .map(|s| &s.def)
+        .filter(|p| p.status == "active" && p.kind != "services")
+        .filter(|p| {
+            p.review
+                .as_ref()
+                .and_then(|r| crate::workflow_seeder::parse_every(&r.every).ok())
+                .is_some_and(|secs| review_due(started.get(&p.name).copied(), secs, now))
+        })
+        .collect();
+    due.sort_by_key(|p| std::cmp::Reverse(depth(&p.name)));
+    let mut out = Vec::new();
+    for p in due {
+        let mut inputs = serde_json::Map::new();
+        inputs.insert("program".into(), json!(p.name));
+        match crate::workflows::start_run(
+            neo4j,
+            Some(REVIEW_WORKFLOW),
+            &inputs,
+            Some(&format!("Review the program '{}'", p.label())),
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(run) => {
+                neo4j
+                    .run(
+                        neo4rs::query(
+                            "MATCH (p:Program {name: $n}) SET p.review_started_at = datetime()",
+                        )
+                        .param("n", p.name.clone()),
+                    )
+                    .await?;
+                out.push((p.name.clone(), run.task_id));
+            }
+            Err(e) => warn!(program = %p.name, error = %e, "programs: review not started"),
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1440,6 +1699,44 @@ mod tests {
         for d in &defs {
             check(d, &inv).unwrap_or_else(|e| panic!("{}: {e}", d.name));
         }
+    }
+
+    #[test]
+    fn a_review_parses_from_the_managers_answer() {
+        let text = "Here is my review:\n```json\n{\"verdict\": \"Attention\", \"summary\": \"Reads are low.\", \
+                    \"findings\": [\"69 notes, 2 reads\"], \"proposals\": [{\"title\": \"Pause x\", \"why\": \"nobody reads it\", \
+                    \"ask\": \"Pause x?\", \"target\": \"x\"}, {\"title\": \"  \"}]}\n```";
+        let r = parse_review(text).unwrap();
+        assert_eq!(r.verdict, "attention");
+        assert_eq!(r.proposals.len(), 1, "a proposal with no title is dropped");
+        let note = review_note("NatSec", "nat-sec", "2026-10-17", &r, &[]);
+        assert!(
+            note.contains("verdict: **attention**")
+                && note.contains("**Pause x**: nobody reads it")
+        );
+        assert!(
+            parse_review("{\"verdict\": \"great\", \"summary\": \"x\"}")
+                .unwrap_err()
+                .contains("not one of")
+        );
+        assert!(
+            parse_review("no json here")
+                .unwrap_err()
+                .contains("no JSON object")
+        );
+    }
+
+    #[test]
+    fn a_review_is_due_after_its_period() {
+        let now = chrono::Utc::now();
+        let week = 7 * 86_400;
+        assert!(review_due(None, week, now));
+        assert!(!review_due(
+            Some(now - chrono::Duration::days(3)),
+            week,
+            now
+        ));
+        assert!(review_due(Some(now - chrono::Duration::days(7)), week, now));
     }
 
     #[test]

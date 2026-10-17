@@ -1,0 +1,57 @@
+# PROGRAMS_PLAN.md Phase 3: one program's review. Gathering the facts and
+# filing the proposals are deterministic steps; only the judgement is a model
+# call (program-manager, read-only). Started by `program-reviews` for each
+# program whose review is due, or by name.
+name: program-review
+description: "Reviews one program against its charter: gathers its definition, workflows, the programs under it and their reviews, and its 30-day workflow scorecard; program-manager judges it; its proposals become todos tagged with the program and the review is stored as a note."
+inputs:
+  - name: program
+    description: The program's name (manage_program list).
+    required: true
+defaults:
+  provider_hint: ollama
+  max_attempts: 2
+steps:
+  - id: context
+    tool_name: manage_program
+    description: The program, its workflows, the programs under it and their latest reviews, its open todos
+    arguments:
+      action: review_context
+      name: "{{inputs.program}}"
+  - id: scores
+    tool_name: lookup
+    description: The 30-day workflow scorecard for the program and the programs under it
+    arguments:
+      view: workflow_scorecard
+      program: "{{inputs.program}}"
+      days: 30
+  - id: review
+    tool_name: run_agent
+    description: program-manager judges the program and drafts proposals (read-only)
+    provider_hint: anthropic
+    arguments:
+      agent: program-manager
+      read_only: true
+      max_rounds: 3
+      task: |-
+        Review the program '{{inputs.program}}' (today is {{date}}). Return the
+        review JSON object your instructions describe, and nothing after it.
+
+        THE PROGRAM, ITS WORKFLOWS, THE PROGRAMS UNDER IT, ITS PREVIOUS REVIEW AND OPEN TODOS:
+        {{steps.context}}
+
+        ITS WORKFLOW SCORECARD, LAST 30 DAYS (rows: one per workflow):
+        {{steps.scores}}
+  - id: record
+    tool_name: manage_program
+    description: File the proposals as todos tagged with the program; stamp the verdict
+    arguments:
+      action: record_review
+      name: "{{inputs.program}}"
+      answer: "{{steps.review.answer}}"
+  - tool_name: store_note
+    description: Store the review, which the parent program's next review reads
+    arguments:
+      content: "{{steps.record.note}}"
+      note_type: reflection
+      source_context: "program-review:{{inputs.program}}"

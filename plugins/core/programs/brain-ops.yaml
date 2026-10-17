@@ -25,4 +25,6 @@ workflows:
   - claim-verification
   - relation-extraction
   - entity-linking
+  - program-reviews
+  - program-review
 review: { every: 1w }
