@@ -37,7 +37,7 @@ More: `project-docs/cli.md`. Endpoints: `POST/GET/DELETE /mcp`, `GET /health`, `
 ## Deployment facts
 
 - **The brain runs in Docker.** Test Rust changes by rebuilding the image; never install deps on the host; external CLI tools (yt-dlp, ffmpeg) go in the Dockerfile.
-- **The brain has no `env_file`** — every key must be passed through in `docker-compose.yml`, or it never reaches the process. Seed dirs live in plugin bundles.
+- **The brain has a `env_file`** — `.env` is the live environment file.
 - Env reference: **`project-docs/env.md`**. Compose sets the values that matter (`LOCAL_LLM_BACKEND=llamacpp`, `CHAT_DEFAULT_PROFILE`/`MCP_TOOL_PROFILE=GeneralDefault-Orchrestator`, `CLOUD_TIER=2`, `TZ`); code defaults are often stale.
 - The GPU is an 8 GB RTX 3060 Ti on driver 535 / CUDA 12.2. The llama.cpp sidecar is built from source for it (Gemma-4-E4B, `-c 32768 -np 2` ⇒ 16384 tokens/request). Embeddings (bge-m3) always stay on host Ollama.
 - `.githooks/post-commit` runs `docker compose up -d --build` (`git config core.hooksPath .githooks`).
