@@ -167,6 +167,20 @@ impl TelemetryClient {
                 link       TEXT,
                 created_at TIMESTAMPTZ DEFAULT current_timestamp
             );
+
+            -- One row per tool call whose arguments did not fit the tool's
+            -- schema (2026-10-16, the dispatch check). `refused` is false in
+            -- shadow mode: the call ran anyway.
+            CREATE TABLE IF NOT EXISTS arg_checks (
+                id         TEXT PRIMARY KEY,
+                tool       TEXT NOT NULL,
+                purpose    TEXT,
+                mode       TEXT,
+                refused    BOOLEAN,
+                problems   TEXT,
+                args       TEXT,
+                created_at TIMESTAMPTZ DEFAULT current_timestamp
+            );
             ",
         )?;
 
@@ -184,6 +198,38 @@ impl TelemetryClient {
         conn.execute_batch("CHECKPOINT;")?;
 
         info!("Telemetry (DuckDB) schema initialized");
+        Ok(())
+    }
+
+    /// Record a tool call whose arguments did not fit its schema. `args` is
+    /// cut to 2,000 characters; `problems` is stored as a JSON array.
+    pub fn log_arg_check(
+        &self,
+        tool: &str,
+        purpose: &str,
+        mode: &str,
+        refused: bool,
+        problems: &[String],
+        args: &str,
+    ) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        let cut: String = args.chars().take(2000).collect();
+        conn.execute(
+            "INSERT INTO arg_checks (id, tool, purpose, mode, refused, problems, args) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                tool,
+                purpose,
+                mode,
+                refused,
+                serde_json::to_string(problems).unwrap_or_default(),
+                cut,
+            ],
+        )?;
         Ok(())
     }
 

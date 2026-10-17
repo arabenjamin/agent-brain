@@ -144,6 +144,9 @@ services:
       # knowledge-worker) whose findings fold back into the turn. Flip to measure
       # latency + calls/turn. See project-docs/SUBAGENT_ORCHESTRATION_PLAN.md.
       - SUBAGENT_ENABLED=${SUBAGENT_ENABLED:-false}
+      # Every tool call's arguments checked against the tool's schema (off |
+      # shadow | enforce). shadow records misfits in DuckDB arg_checks and runs the call.
+      - TOOL_ARG_CHECK=${TOOL_ARG_CHECK:-shadow}
       # The front door's router (GRAPH_CONTEXT_PLAN Phase 3): the profile's
       # `routing:` block picks each turn's first stop on the local E4B. "off"
       # turns it off. The Nimble check is off by default: on the shared 8 GB GPU

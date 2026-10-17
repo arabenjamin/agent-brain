@@ -546,6 +546,7 @@ impl BrainCore {
             }
             Arc::new(all)
         };
+        crate::services::validation::set_envelope_schemas(Arc::clone(&envelope_schemas_arc));
 
         let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
 

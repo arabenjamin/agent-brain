@@ -114,6 +114,11 @@ impl ToolHandler {
     pub async fn execute(&self, name: &str, arguments: Option<Value>) -> ToolCallResult {
         debug!(tool = %name, "Executing tool");
 
+        let mode = crate::validation::ArgCheckMode::from_env();
+        if let Some(refusal) = self.check_arguments(mode, name, arguments.as_ref()) {
+            return refusal;
+        }
+
         let start = Instant::now();
 
         for skill in self.skills.iter() {
@@ -157,6 +162,59 @@ impl ToolHandler {
     }
 }
 
+impl ToolHandler {
+    /// The dispatch check: the call's arguments against the schema of the
+    /// tool that will run it (the first skill that declares the name, the
+    /// same skill dispatch picks). Every caller passes here: chat, agents,
+    /// workflow steps, MCP. A misfit is recorded in `arg_checks`; in
+    /// `enforce` mode the call is refused with what fits, in `shadow` it runs.
+    fn check_arguments(
+        &self,
+        mode: crate::validation::ArgCheckMode,
+        name: &str,
+        arguments: Option<&Value>,
+    ) -> Option<ToolCallResult> {
+        if mode == crate::validation::ArgCheckMode::Off {
+            return None;
+        }
+        let schema = self
+            .skills
+            .iter()
+            .find_map(|s| s.tools().into_iter().find(|t| t.name == name))?
+            .input_schema;
+        let problems = crate::validation::check_tool_arguments(name, &schema, arguments);
+        if problems.is_empty() {
+            return None;
+        }
+        let refused = mode == crate::validation::ArgCheckMode::Enforce;
+        let purpose = agent_brain_llm::routing::RouteContext::current().purpose;
+        tracing::warn!(
+            tool = %name,
+            purpose = purpose.as_str(),
+            mode = mode.as_str(),
+            problems = %problems.join("; "),
+            "tool arguments do not fit the schema"
+        );
+        if let Some(tel) = &self.telemetry {
+            let args = arguments.map(Value::to_string).unwrap_or_default();
+            let _ = tel.log_arg_check(
+                name,
+                purpose.as_str(),
+                mode.as_str(),
+                refused,
+                &problems,
+                &args,
+            );
+        }
+        refused.then(|| {
+            ToolCallResult::error(format!(
+                "Arguments rejected; {name} did not run. {}",
+                problems.join(". ")
+            ))
+        })
+    }
+}
+
 #[async_trait]
 impl ToolHandlerTrait for ToolHandler {
     async fn execute(&self, name: &str, arguments: Option<Value>) -> ToolCallResult {
@@ -182,4 +240,73 @@ pub fn plugin_retrieval_tools() -> Vec<&'static str> {
 /// Set once plugins are accepted (`services::plugins::plugin_skills`).
 pub fn set_plugin_retrieval_tools(tools: Vec<&'static str>) {
     *retrieval_cell().write().unwrap_or_else(|e| e.into_inner()) = tools;
+}
+
+#[cfg(test)]
+mod arg_check_tests {
+    use super::*;
+    use crate::validation::ArgCheckMode;
+    use serde_json::json;
+
+    struct Echo;
+
+    #[async_trait]
+    impl Skill for Echo {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn tools(&self) -> Vec<agent_brain_protocol::ToolDefinition> {
+            vec![agent_brain_protocol::ToolDefinition {
+                name: "list_things".into(),
+                description: "d".into(),
+                input_schema: json!({"type": "object", "properties": {}}),
+            }]
+        }
+        async fn execute(&self, tool: &str, _a: Option<Value>) -> Option<ToolCallResult> {
+            (tool == "list_things").then(|| ToolCallResult::success_text("ran".to_string()))
+        }
+    }
+
+    fn handler() -> ToolHandler {
+        ToolHandler::new(vec![Box::new(Echo)])
+    }
+
+    #[test]
+    fn shadow_lets_a_misfit_run() {
+        let h = handler();
+        let a = json!({"status": "failed"});
+        assert!(
+            h.check_arguments(ArgCheckMode::Shadow, "list_things", Some(&a))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn enforce_refuses_a_misfit_and_says_what_fits() {
+        let h = handler();
+        let a = json!({"status": "failed"});
+        let r = h
+            .check_arguments(ArgCheckMode::Enforce, "list_things", Some(&a))
+            .expect("refused");
+        assert_eq!(r.is_error, Some(true));
+        let text = format!("{:?}", r.content);
+        assert!(
+            text.contains("did not run") && text.contains("takes no arguments"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_fitting_call_and_an_unknown_tool_pass_untouched() {
+        let h = handler();
+        assert!(
+            h.check_arguments(ArgCheckMode::Enforce, "list_things", None)
+                .is_none()
+        );
+        let a = json!({"x": 1});
+        assert!(
+            h.check_arguments(ArgCheckMode::Enforce, "no_such_tool", Some(&a))
+                .is_none()
+        );
+    }
 }

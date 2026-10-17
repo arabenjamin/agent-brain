@@ -557,11 +557,14 @@ async fn save_workflow(
     body: &Value,
 ) -> Result<agent_brain_work::workflows::Saved, agent_brain_work::workflows::SaveError> {
     let (live, schemas, catalog) = check_inputs(state).await;
+    // The same `workflow.json` envelope manage_workflow checks against; the
+    // HBI save skipped it until 2026-10-16.
+    let envelope = agent_brain_work::validation::envelope_schema("workflow");
     let checks = agent_brain_work::workflows::SaveChecks {
         live_tools: &live,
         tool_schemas: &schemas,
         catalog: &catalog,
-        envelope: None,
+        envelope: envelope.as_ref(),
     };
     agent_brain_work::workflows::save(neo4j, id, create_only, body, &checks).await
 }
@@ -651,11 +654,12 @@ pub async fn handle_check_workflow(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty());
     let (live, schemas, catalog) = check_inputs(&state).await;
+    let envelope = agent_brain_work::validation::envelope_schema("workflow");
     let checks = agent_brain_work::workflows::SaveChecks {
         live_tools: &live,
         tool_schemas: &schemas,
         catalog: &catalog,
-        envelope: None,
+        envelope: envelope.as_ref(),
     };
     match agent_brain_work::workflows::check(neo4j, id, id.is_none(), &body, &checks).await {
         Ok(c) => Json(json!({

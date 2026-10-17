@@ -715,8 +715,226 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
     warnings
 }
 
+/// The bundles' object-envelope schemas (`schemas/*.json`), set once at
+/// startup by `brain_core` so a path that cannot reach the plugin host (the
+/// REST workflow save) checks against the same `workflow.json` as
+/// `manage_workflow`. Unset (tests, no bundles): no envelope check.
+static ENVELOPES: std::sync::OnceLock<std::sync::Arc<HashMap<String, Value>>> =
+    std::sync::OnceLock::new();
+
+pub fn set_envelope_schemas(schemas: std::sync::Arc<HashMap<String, Value>>) {
+    let _ = ENVELOPES.set(schemas);
+}
+
+pub fn envelope_schema(name: &str) -> Option<Value> {
+    ENVELOPES.get().and_then(|m| m.get(name).cloned())
+}
+
+// ── The dispatch check: every tool call is a form ─────────────────────────
+
+/// How the dispatch check acts on a call whose arguments do not fit the
+/// tool's schema (`TOOL_ARG_CHECK`): `off`, `shadow` (record it, run the call
+/// anyway; the default) or `enforce` (refuse it, saying what fits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgCheckMode {
+    Off,
+    Shadow,
+    Enforce,
+}
+
+impl ArgCheckMode {
+    pub fn from_env() -> Self {
+        static MODE: std::sync::OnceLock<ArgCheckMode> = std::sync::OnceLock::new();
+        *MODE.get_or_init(|| {
+            match std::env::var("TOOL_ARG_CHECK")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "off" => ArgCheckMode::Off,
+                "enforce" => ArgCheckMode::Enforce,
+                _ => ArgCheckMode::Shadow,
+            }
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArgCheckMode::Off => "off",
+            ArgCheckMode::Shadow => "shadow",
+            ArgCheckMode::Enforce => "enforce",
+        }
+    }
+}
+
+/// What is wrong with one call's `arguments` against the tool's registered
+/// `input_schema`, in words a model can act on; empty when they fit.
+///
+/// A key the schema does not declare is the failure this exists for: serde
+/// drops it, the call succeeds, and the model believes it filtered, tagged or
+/// limited something (measured 2026-10-16: ~230 calls a month, `list_tasks`
+/// `status` alone 73). Types, enums and required fields come from the schema
+/// itself. Keys starting `__` are the queue's own stamps and always pass. A
+/// schema with `additionalProperties: true` (lookup's per-view slots) or with
+/// no `properties` is not checked for unknown keys.
+pub fn check_tool_arguments(tool: &str, schema: &Value, args: Option<&Value>) -> Vec<String> {
+    let mut given = match args {
+        None | Some(Value::Null) => Value::Object(Default::default()),
+        Some(v) => v.clone(),
+    };
+    if let Some(m) = given.as_object_mut() {
+        m.retain(|k, _| !k.starts_with("__"));
+    }
+    let mut out = Vec::new();
+    let props: Option<Vec<String>> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|m| m.keys().cloned().collect());
+    // `false` is the schema validator's to report; absent is ours.
+    let open = schema.get("additionalProperties").is_some();
+    if let (Some(props), false, Some(m)) = (&props, open, given.as_object()) {
+        let unknown: Vec<&String> = m.keys().filter(|k| !props.contains(k)).collect();
+        for k in &unknown {
+            let hint = closest(k, props)
+                .map(|p| format!(" (did you mean `{p}`?)"))
+                .unwrap_or_default();
+            out.push(format!("`{k}` is not an argument of {tool}{hint}"));
+        }
+        if !unknown.is_empty() {
+            let mut takes = props.clone();
+            takes.sort();
+            out.push(if takes.is_empty() {
+                format!("{tool} takes no arguments")
+            } else {
+                format!("{tool} takes: {}", takes.join(", "))
+            });
+        }
+    }
+    for v in validate_against_schema("arguments", schema, &given) {
+        // An unknown key reported twice (once above, once by a schema that
+        // sets additionalProperties itself) would read as two problems.
+        if !v.message.contains("Additional properties") || open {
+            out.push(v.render());
+        }
+    }
+    out
+}
+
+/// The declared argument a misspelled key most likely meant: edit distance
+/// at most 2, or one name containing the other (`top_n` → `count` does not
+/// qualify; `querry` → `query` and `max_results` → `results` would).
+fn closest<'a>(key: &str, props: &'a [String]) -> Option<&'a String> {
+    let k = key.to_ascii_lowercase();
+    props
+        .iter()
+        .map(|p| (levenshtein(&k, &p.to_ascii_lowercase()), p))
+        .filter(|(d, p)| {
+            *d <= 2 || (p.len() > 3 && (k.contains(p.as_str()) || p.contains(k.as_str())))
+        })
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, p)| p)
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != *cb);
+            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
 #[cfg(test)]
 mod tests {
+
+    fn schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+                "status": {"type": "string", "enum": ["open", "done"]}
+            },
+            "required": ["query"]
+        })
+    }
+
+    #[test]
+    fn fitting_arguments_pass_and_queue_stamps_are_ignored() {
+        let a = serde_json::json!({"query": "x", "limit": 3, "__owner_task_id": "t", "__data_class": "public"});
+        assert!(check_tool_arguments("search_notes", &schema(), Some(&a)).is_empty());
+    }
+
+    /// The silent drop: a misspelled or invented key ran as if it were not there.
+    #[test]
+    fn an_unknown_key_is_named_with_a_suggestion_and_what_fits() {
+        let a = serde_json::json!({"querry": "x", "tags": ["a"]});
+        let p = check_tool_arguments("search_notes", &schema(), Some(&a));
+        assert!(
+            p.iter()
+                .any(|m| m.contains("`querry`") && m.contains("did you mean `query`")),
+            "{p:?}"
+        );
+        assert!(
+            p.iter().any(|m| m.contains("`tags` is not an argument")),
+            "{p:?}"
+        );
+        assert!(
+            p.iter()
+                .any(|m| m == "search_notes takes: limit, query, status"),
+            "{p:?}"
+        );
+        assert!(
+            p.iter()
+                .any(|m| m.contains("query") && m.contains("required")),
+            "{p:?}"
+        );
+    }
+
+    #[test]
+    fn a_tool_with_no_arguments_says_so() {
+        let s = serde_json::json!({"type": "object", "properties": {}});
+        let a = serde_json::json!({"status": "failed", "limit": 5});
+        let p = check_tool_arguments("list_tasks", &s, Some(&a));
+        assert!(
+            p.contains(&"list_tasks takes no arguments".to_string()),
+            "{p:?}"
+        );
+    }
+
+    #[test]
+    fn types_and_enums_come_from_the_schema() {
+        let a = serde_json::json!({"query": "x", "limit": "five", "status": "bogus"});
+        let p = check_tool_arguments("t", &schema(), Some(&a));
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert!(p.iter().any(|m| m.contains("/limit")), "{p:?}");
+        assert!(p.iter().any(|m| m.contains("/status")), "{p:?}");
+    }
+
+    #[test]
+    fn open_schemas_are_not_checked_for_unknown_keys() {
+        let mut s = schema();
+        s["additionalProperties"] = serde_json::json!(true);
+        let a = serde_json::json!({"query": "x", "api": "github"});
+        assert!(check_tool_arguments("lookup", &s, Some(&a)).is_empty());
+        let free = serde_json::json!({"type": "object"});
+        assert!(check_tool_arguments("t", &free, Some(&a)).is_empty());
+    }
+
+    #[test]
+    fn a_schema_that_closes_itself_reports_an_unknown_key_once() {
+        let mut s = schema();
+        s["additionalProperties"] = serde_json::json!(false);
+        let a = serde_json::json!({"query": "x", "tags": 1});
+        let p = check_tool_arguments("t", &s, Some(&a));
+        assert_eq!(p.len(), 1, "{p:?}");
+    }
 
     #[test]
     fn a_raw_graph_write_step_is_found() {
@@ -740,8 +958,11 @@ mod tests {
         let mut stamped = cleanup.clone();
         stamped["arguments"]["__data_class"] = serde_json::json!("public");
         assert!(
-            validate_raw_graph_writes(std::slice::from_ref(&stamped), &[cleanup.clone()])
-                .is_empty()
+            validate_raw_graph_writes(
+                std::slice::from_ref(&stamped),
+                std::slice::from_ref(&cleanup)
+            )
+            .is_empty()
         );
         let mut changed = cleanup.clone();
         changed["arguments"]["cypher"] = serde_json::json!("MATCH (n) DETACH DELETE n");

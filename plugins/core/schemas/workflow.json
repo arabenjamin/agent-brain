@@ -15,7 +15,11 @@
       "description": "Unique slug; the name the workflow is run by. Upsert key."
     },
     "description": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Blank or null means none (the HBI sends null for an empty field)."
     },
     "every": {
       "type": [
