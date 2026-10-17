@@ -221,6 +221,27 @@ A domain the brain tracks. The core bundle's `topics/*.yaml` seeds them, synced 
 
 `{name, retired_at}`: a topic that `topics/*.yaml` declares and the user deleted in the HBI. While it exists, `init-db` does not recreate the topic. Reset (`POST /api/topics/{name}/reset`) and re-creating the topic both remove it.
 
+#### `Program`
+
+A unit of the brain's work (PROGRAMS_PLAN.md): a department, project, investigation, case, or the shared `services` every program uses. Seeded from every loaded bundle's `programs/*.yaml` after workflows (`init-db` and startup), edited through `manage_program` and `/api/programs` (`services/programs.rs`, one save path checked whole). An edit of anything but `status`/`finding` makes a seeded program `runtime`-owned; reset puts the file back. A yaml-owned program whose file is gone is deleted, unless its plugin is only off.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | String | Slug, unique; the file stem |
+| `definition` | String | The program as JSON (`label`, `kind`, `parent`, `charter`, `success`, `topics`, `workflows`, `keep_running`, `agents`, `apis`, `review`, `budget`): what `get` returns and an edit is laid over |
+| `label` / `kind` / `parent` / `workflows` / `topics` | String / String / String? / String[] / String[] | Mirrored from `definition` for Cypher. A workflow is in at most one program |
+| `budget_monthly_usd` | Float? | The program's monthly cap, shown on `program_scorecard`; not enforced yet |
+| `status` | String | `active`, `paused` or `closed`. Graph-owned (a file sets it only on create). Not active ⇒ its workflows and those of programs under it are disabled with `paused_reason` `PROGRAM_PAUSE: …`, except its `keep_running`; active again resumes exactly those |
+| `finding` | String? | What a closed investigation or case found (required to close one). Graph-owned |
+| `managed_by` / `plugin` / `source` | String / String? / String? | `yaml` or `runtime`; the bundle and file it is seeded from |
+| `created_at` / `updated_at` / `status_changed_at` | DateTime | Native `DATETIME`, UTC |
+
+`(:Program)-[:UNDER]->(:Program)` and `(:Program)-[:OWNS]->(:Workflow)` are rebuilt from `parent` and `workflows` after every write.
+
+#### `RetiredProgram`
+
+`{name, retired_at}`: a seeded program the user deleted. While it exists the seed does not recreate it; `reset` removes it.
+
 #### `ArchSnapshot`
 
 What the brain was made of at one moment (the `developer` plugin's `arch.rs`), taken by `snapshot_architecture`: weekly on `brain-api-sync`, once at the first start, or by hand. The newest 104 are kept. The JSON blobs are strings because Neo4j has no map-of-lists property.
@@ -395,6 +416,7 @@ The one record for work that wants doing, the user's or an agent's (HBI plan §9
 | `origin_kind` / `origin_ref` | String? | Who asked: `user`, `schedule`, `proposal` (ref = filename), `agent` (ref = the notification id), `deep_research` (ref = the Parallel run id). An item is found again by its origin, so it is never made twice |
 | `ask` | String? | What the user must do or decide, and what waits on it. Required from `manage_todo` create and `notify_user` `needs: "action"`; plugins set it on their Feed items. The drawer's "What you need to do" box |
 | `source_task` / `source` | String? | Where it came from, stamped by the writer, never taken from a body: the Task the call ran under (`current_owner_task`), and in words, e.g. `agent api-scout, in a run of workflow 'api-scout'`, `a chat turn`, `an MCP client call from outside the brain`. Absent = the user, in the HBI (and every item before 2026-10-16) |
+| `program` | String? | The program it belongs to: set by hand (checked to exist), or stamped from the program of the workflow run that made it. `manage_todo list program=` and `GET /todos?program=` filter by it |
 | `prompt` | String? | What an agent is told; falls back to title + description |
 | `session_id` | String? | Its thread, a chat session (`todo-<id>` when the HBI starts one) |
 | `snoozed_until` | DateTime? | Hidden from the Feed until then |
@@ -517,6 +539,8 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `ALIAS_VERDICT` | `(Entity)→(Entity)` (candidate `from` → `into`) | `verdict: 'same' \| 'related' \| 'different'`, `p_same`, `p_related`, `p_different` (floats), `model`, `version` (prompt version), `at: datetime` | The alias judge's opinion on a merge candidate (`plugins/alias-judge/crate/src/judge.rs`). It only orders the candidate list. A verdict from another model or prompt version is judged again, and a merge deletes it with the node |
 | `NOT_SAME` | `(Entity)→(Entity)` | `decided_at: datetime` | A person answered a merge proposal "different things": never proposed again |
 | `RELATED_ENTITY` | `(Entity)→(Entity)` | `decided_at: datetime` | Related but not the same (`trump administration` → `donald trump`): never proposed as a merge |
+| `UNDER` | `(Program)→(Program)` | — | A program's parent, derived from `Program.parent` |
+| `OWNS` | `(Program)→(Workflow)` | — | A program's workflows, derived from `Program.workflows` |
 | `DERIVED_FROM` | `(Note{inference})→(Note)` | — | Inference note citing its source notes |
 | `SUBTASK_OF` | `(Task)→(Task)` | — | Sub-task of a parent task |
 | `DEPENDS_ON` | `(Task)→(Task)` | — | Task ordering dependency |
@@ -533,6 +557,7 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `entity_name` | `Entity` | `name` | UNIQUE |
 | `entity_alias_name` | `EntityAlias` | `name` | UNIQUE |
 | `topic_name` | `Topic` | `name` | UNIQUE |
+| `program_name` | `Program` | `name` | UNIQUE |
 | `arch_snapshot_id` | `ArchSnapshot` | `id` | UNIQUE |
 | `agent_job_id` | `AgentJob` | `id` | UNIQUE |
 | `todo_id` | `Todo` | `id` | UNIQUE |

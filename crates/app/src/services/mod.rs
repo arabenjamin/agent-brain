@@ -10,8 +10,8 @@ pub use agent_brain_llm::{
 };
 pub use agent_brain_scheduler::{item_dispatch, items, repair, scheduler};
 pub use agent_brain_work::{
-    context_builder, cypher_guard, graph_schema, mcp_client, profiles, queue, store_impls,
-    validation, workflow_seeder, workflows,
+    context_builder, cypher_guard, graph_schema, mcp_client, profiles, programs, queue,
+    store_impls, validation, workflow_seeder, workflows,
 };
 
 pub use agent_runner::{

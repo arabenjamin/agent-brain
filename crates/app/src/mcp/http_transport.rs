@@ -390,6 +390,22 @@ impl HttpTransport {
                 "/api/topics/{name}/reset",
                 post(crate::clients::topics::handle_reset),
             )
+            // --- Programs (clients/programs.rs) ---
+            .route(
+                "/api/programs",
+                get(crate::clients::programs::handle_list)
+                    .post(crate::clients::programs::handle_create),
+            )
+            .route(
+                "/api/programs/{name}",
+                get(crate::clients::programs::handle_get)
+                    .put(crate::clients::programs::handle_update)
+                    .delete(crate::clients::programs::handle_delete),
+            )
+            .route(
+                "/api/programs/{name}/reset",
+                post(crate::clients::programs::handle_reset),
+            )
             // --- Entity resolution (clients/entities.rs) ---
             .route(
                 "/api/entities/candidates",

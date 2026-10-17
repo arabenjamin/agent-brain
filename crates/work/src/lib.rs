@@ -10,6 +10,7 @@ pub mod events;
 pub mod graph_schema;
 pub mod mcp_client;
 pub mod profiles;
+pub mod programs;
 pub mod queue;
 pub mod store_impls;
 pub mod tools;

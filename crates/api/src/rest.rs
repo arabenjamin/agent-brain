@@ -321,6 +321,9 @@ async fn check_todo_body(
         &roster,
         false,
     )?;
+    if let Some(neo4j) = state.neo4j.as_ref() {
+        agent_brain_scheduler::items::check_program(neo4j, &patch).await?;
+    }
     Ok(patch)
 }
 
@@ -332,10 +335,12 @@ pub async fn handle_list_todos(
     let neo4j = graph!(state, "Todo storage not available");
 
     let status_filter = params.get("status").map(String::as_str);
+    let program = params.get("program").filter(|p| !p.is_empty());
     match neo4j.list_todos(status_filter).await {
         Ok(todos) => {
             let items: Vec<Value> = todos
                 .iter()
+                .filter(|t| program.is_none_or(|p| t.program.as_ref() == Some(p)))
                 .map(agent_brain_scheduler::items::item_json)
                 .collect();
             Json(serde_json::json!({"todos": items})).into_response()

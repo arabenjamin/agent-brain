@@ -31,6 +31,7 @@ pub const WRITE_TOOLS: &[&str] = &[
     "notify_user",
     "claim",
     "manage_workflow",
+    "manage_program",
 ];
 
 /// Appended to a `store_note` result when the guard downgraded its type, so the

@@ -1,0 +1,17 @@
+name: ai-ml-research
+label: AI & ML Research
+kind: department
+charter: >-
+  Follow the field the brain is built from: small-model releases and
+  benchmarks for local use, Rust training data and fine-tuning prior work,
+  and a drill-down question every two days.
+success: >-
+  A current recommendation for the local model tier, a ranked shortlist for
+  the next fine-tuning run, and deep dives that answer one specific question
+  with cited facts.
+topics: [ai-ml]
+workflows:
+  - slm-benchmark-watch
+  - rust-training-data-scout
+  - deep-dive-pick
+review: { every: 1w }

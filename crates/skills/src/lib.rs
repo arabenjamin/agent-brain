@@ -8,6 +8,7 @@ pub mod agent;
 pub mod agent_runner;
 pub mod knowledge;
 pub mod model;
+pub mod program;
 pub mod scheduler;
 pub mod task;
 #[cfg(test)]

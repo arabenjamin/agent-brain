@@ -337,6 +337,11 @@ async fn run_init_db(config: &Config) -> Result<()> {
         Ok(n) => info!(count = n, "Seeded workflows from the plugin bundles"),
         Err(e) => warn!(error = %e, "Failed to seed workflows (non-fatal)"),
     }
+    // Programs after workflows: a program names its workflows.
+    match agent_brain::services::programs::seed_programs(&client, &plugins).await {
+        Ok(n) => info!(count = n, "Seeded programs from the plugin bundles"),
+        Err(e) => warn!(error = %e, "Failed to seed programs (non-fatal)"),
+    }
 
     // Entity resolution: seed aliases, keys, and the automatic merges (after a
     // snapshot). Non-fatal: the brain runs fine on unmerged entities.

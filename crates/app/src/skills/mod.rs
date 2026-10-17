@@ -5,7 +5,7 @@ pub use agent_brain_retrieve::{
     http, mcp_client, query, search, search_engines, search_query, serde_flex,
 };
 pub use agent_brain_skills::{
-    agent, agent_runner, knowledge, model, scheduler, task, todo, working_memory,
+    agent, agent_runner, knowledge, model, program, scheduler, task, todo, working_memory,
 };
 
 pub use agent_brain_host::{bundle_tools, plugin_manager, views};

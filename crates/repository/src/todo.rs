@@ -83,6 +83,10 @@ pub struct Todo {
     /// "a chat turn", "an MCP client call". `None` = the user, in the HBI.
     #[serde(default)]
     pub source: Option<String>,
+    /// The program the item belongs to (PROGRAMS_PLAN): set by hand, or
+    /// stamped from the program of the workflow run that made it.
+    #[serde(default)]
+    pub program: Option<String>,
 }
 
 /// Item fields a write may set. `None` leaves a field as it is; `Some(None)`
@@ -100,6 +104,7 @@ pub struct TodoItemPatch {
     pub ask: Option<Option<String>>,
     pub source_task: Option<Option<String>>,
     pub source: Option<Option<String>>,
+    pub program: Option<Option<String>>,
 }
 
 impl TodoItemPatch {
@@ -115,6 +120,7 @@ impl TodoItemPatch {
             && self.ask.is_none()
             && self.source_task.is_none()
             && self.source.is_none()
+            && self.program.is_none()
     }
 }
 
@@ -188,6 +194,7 @@ impl Neo4jClient {
             ask: None,
             source_task: None,
             source: None,
+            program: None,
         })
     }
 
@@ -201,7 +208,7 @@ impl Neo4jClient {
         if patch.is_empty() {
             return self.get_todo(id).await;
         }
-        let fields: [(&str, &Option<Option<String>>, bool); 11] = [
+        let fields: [(&str, &Option<Option<String>>, bool); 12] = [
             ("assignee", &patch.assignee, false),
             ("origin_kind", &patch.origin_kind, false),
             ("origin_ref", &patch.origin_ref, false),
@@ -213,6 +220,7 @@ impl Neo4jClient {
             ("ask", &patch.ask, false),
             ("source_task", &patch.source_task, false),
             ("source", &patch.source, false),
+            ("program", &patch.program, false),
         ];
         let mut sets = vec!["t.updated_at = datetime()".to_string()];
         let mut q_params: Vec<(String, neo4rs::BoltType)> = Vec::new();
@@ -400,5 +408,6 @@ fn todo_from_row(row: &neo4rs::Row) -> Option<Todo> {
         ask: text("ask"),
         source_task: text("source_task"),
         source: text("source"),
+        program: text("program"),
     })
 }

@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Phase 0 built 2026-10-17; Phase 1 next.
+Workflow Admin" (`0fcc6502`). Phases 0 and 1 built 2026-10-17; Phase 2 (HBI) next.
 
 ## 1. Why
 
@@ -146,7 +146,7 @@ manager separate keeps chat a conversation and the review a scheduled job.
 | Phase | Scope | Done when |
 |---|---|---|
 | 0. Scorecard (**done** 2026-10-17) | `workflow_scorecard` lookup view; task id on `model_usage` | The §1 table, with cost, comes from one view |
-| 1. Programs | Seed kind, validator, `manage_program`, REST, graph nodes, the §4 tree seeded, `program` on todos | Every enabled workflow is in a program or shared; a bad save is refused with what fits |
+| 1. Programs (**done** 2026-10-17) | Seed kind, validator, `manage_program`, REST, graph nodes, the §4 tree seeded, `program` on todos | Every enabled workflow is in a program or shared; a bad save is refused with what fits |
 | 2. HBI | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
 | 3. Manager | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
 | 4. Agents | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
@@ -167,3 +167,40 @@ manager separate keeps chat a conversation and the review a scheduled job.
    whole and **re-openable** (by the owner, or a manager proposal the owner
    approves). Status: `active | paused | closed`, and a closed program keeps
    its history, notes and workflows (disabled).
+
+## 9. Phase 1 as built (2026-10-17)
+
+`services/programs.rs` (work crate), `manage_program` (`skills/program.rs`),
+`/api/programs` (`clients/programs.rs`), seed kind `programs/`. Dev note:
+"Programs own work; their status reaches their workflows".
+
+- **The tree is seeded** as §4 with §8's changes: in the core bundle
+  `brain-ops`, `ai-ml-research` and `shared-services` (kind `services`); in the
+  private bundle `nia` with `critical-tech-dependencies`, `national-security`,
+  `cybersecurity-privacy` and `accountability` under it, `jobsearch`,
+  `off-grid-networking` (top level) and `briefings` (Briefings & Intake, which
+  also holds `api-scout`). Every enabled workflow is in a program; the
+  charters and success lines are first drafts for the owner to edit.
+- **Membership lives on the program** (`workflows:`), as §2 planned: a personal
+  program owns core workflows (the NIA owns the core claims monitor), which a
+  workflow-side link could not do without core files naming personal programs.
+  A seed file's names this brain lacks are dropped with a warning.
+- **Pausing (§8.2):** a program that is not `active` disables its workflows and
+  those of every program under it, with `paused_reason` `PROGRAM_PAUSE: program
+  'x' is paused`; `keep_running` is the per-workflow opt-out. Active again
+  resumes exactly those; a workflow paused for any other reason is never
+  touched. Enabling such a workflow directly is refused, with the way out.
+- **Closing (§8.4):** closing an investigation or case needs a `finding`. The
+  brain on its own (a job, an agent run) may close an investigation or case,
+  never standing work, and never reopens: it proposes that as a todo. A
+  person (HBI, chat, an MCP client) decides any of it.
+- **Budgets (§8.3):** `budget: {monthly_usd}` is stored and shown on
+  `program_scorecard` next to the cost; the routing policy does not enforce
+  it yet. Enforcement waits for a few weeks of measured cost per program.
+- **Status is graph-owned**, like a workflow's `enabled`: a status change
+  keeps a seeded program yaml-owned; any other edit makes it runtime-owned,
+  and `reset` puts the file back.
+- **Todos** carry `program`, checked to exist, and an item a workflow run makes
+  is stamped with that workflow's program.
+- **`program_scorecard`** (lookup view) rolls the workflow scorecard up each
+  program's subtree, with its budget.

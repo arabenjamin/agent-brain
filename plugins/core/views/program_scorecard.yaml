@@ -1,0 +1,61 @@
+# The program scorecard (PROGRAMS_PLAN.md Phase 1, 2026-10-17): the workflow
+# scorecard rolled up each program's subtree (the program, the programs under
+# it, their workflows), so the NIA's row covers its verticals. Cost is the
+# DuckDB ledger joined on the runs' task ids, recorded only from 2026-10-17;
+# budget_monthly_usd is the program's cap, not enforced yet.
+name: program_scorecard
+kind: cypher
+description: >-
+  How each program (department, project, investigation) is doing over a
+  window (default the last 30 days), counting its own workflows and those of
+  the programs under it: workflows and how many are on, runs, successes and
+  failures, notes written, how often they were read again and cited, model
+  calls and cost (from 2026-10-17), and its monthly budget. Name a program
+  for just that one.
+words: [program scorecard, how are the programs doing, how is the nia doing, department scorecard, program cost, which programs are worth it, program budget]
+limit: 100
+input_schema:
+  type: object
+  properties:
+    days:
+      type: integer
+      default: 30
+      description: The window, in days back from now.
+    program:
+      type: string
+      default: ""
+      description: One program's name; empty for all of them.
+      values_from: "MATCH (p:Program) RETURN p.name AS value, p.label AS label ORDER BY value"
+cypher: |-
+  MATCH (p:Program)
+  WHERE $program = '' OR p.name = $program
+  OPTIONAL MATCH (c:Program)-[:UNDER*0..]->(p)
+  OPTIONAL MATCH (c)-[:OWNS]->(w:Workflow)
+  WITH p, collect(DISTINCT w.name) AS wfs,
+       collect(DISTINCT CASE WHEN coalesce(w.enabled, true) THEN w.name END) AS live
+  OPTIONAL MATCH (t:Task) WHERE t.workflow IN wfs
+    AND t.created_at > datetime() - duration({days: $days})
+  WITH p, wfs, live, collect(t) AS runs
+  OPTIONAL MATCH (n:Note) WHERE n.produced_by_task IN [r IN runs | r.id]
+  WITH p, wfs, live, runs, collect(n) AS notes
+  RETURN p.name AS program, p.label AS label, p.kind AS kind, p.status AS status,
+         p.parent AS parent, size(wfs) AS workflows, size(live) AS enabled,
+         size(runs) AS runs,
+         size([r IN runs WHERE r.status IN ['completed', 'done']]) AS ok,
+         size([r IN runs WHERE r.status IN ['failed', 'dead']]) AS failed,
+         size(notes) AS notes,
+         reduce(s = 0, x IN notes | s + coalesce(x.access_count, 0)) AS reads,
+         size([x IN notes WHERE EXISTS { (x)<-[:ASSERTED_IN|CORROBORATED_BY|CONTRADICTED_BY]-() }]) AS cited,
+         p.budget_monthly_usd AS budget_monthly_usd,
+         [r IN runs | r.id] AS tasks
+  ORDER BY coalesce(p.parent, p.name), p.parent IS NOT NULL, program
+sql: |-
+  SELECT task_id AS tasks,
+         count(*) AS model_calls,
+         sum(coalesce(tokens_in, 0)) AS tokens_in,
+         round(sum(coalesce(cost, 0)), 6) AS cost_usd
+  FROM model_usage
+  WHERE task_id IS NOT NULL
+    AND CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+  GROUP BY task_id
+join: tasks

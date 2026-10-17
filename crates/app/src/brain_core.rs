@@ -620,6 +620,12 @@ impl BrainCore {
                     .with_telemetry(self.storage.telemetry.clone()),
             ));
         }
+        // Programs: the work organized (PROGRAMS_PLAN.md).
+        if let Some(neo4j) = &self.storage.neo4j {
+            skills.push(Arc::new(crate::skills::program::ProgramSkill::new(
+                neo4j.clone(),
+            )));
+        }
         // Brain-drafted plugin bundles (PLUGINS_RUNTIME_DIR), checked like a save.
         if let Some(neo4j) = &self.storage.neo4j {
             skills.push(Arc::new(
@@ -852,6 +858,11 @@ impl BrainCore {
                 error!(error = %e, "Cannot seed workflows. Refusing to start.");
                 std::process::exit(1);
             }
+        }
+        // Programs name workflows, so they come after them.
+        match crate::services::programs::seed_programs(neo4j, &plugins).await {
+            Ok(n) => debug!(count = n, "Seeded programs from the plugin bundles"),
+            Err(e) => warn!(error = %e, "Cannot seed programs (non-fatal)"),
         }
     }
 }

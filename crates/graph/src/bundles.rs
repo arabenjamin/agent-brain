@@ -43,6 +43,7 @@ pub fn extra_dirs() -> Vec<PathBuf> {
 /// Seed dirs read from every enabled bundle.
 pub const MERGED_KINDS: &[&str] = &[
     "workflows",
+    "programs",
     "contexts",
     "sources",
     "sources-media",

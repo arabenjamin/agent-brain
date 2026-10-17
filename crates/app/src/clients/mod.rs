@@ -10,7 +10,9 @@
 //!   [`related`], [`search`], [`system`], [`topics`], [`work`]
 
 #[cfg(feature = "http-transport")]
-pub use agent_brain_api::{entities, feed, items, related, rest, search, system, topics, work};
+pub use agent_brain_api::{
+    entities, feed, items, programs, related, rest, search, system, topics, work,
+};
 pub use agent_brain_chat::chat;
 
 pub use chat::{ChatEvent, ChatHistoryMessage, ChatRequest, ChatService};

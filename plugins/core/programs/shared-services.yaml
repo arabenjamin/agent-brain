@@ -1,0 +1,19 @@
+# On-demand workflows every program uses; no program owns their output.
+name: shared-services
+label: Shared services
+kind: services
+charter: >-
+  On-demand workflows any program runs by name: the default chain for a
+  free-text task, filling a knowledge gap, deep dives, paid deep research,
+  codebase analysis and diagnosis.
+success: >-
+  Each run answers what it was asked, with sources; failures are rare and
+  visible.
+workflows:
+  - default
+  - fill-knowledge-gap
+  - deep-dive
+  - deep-dive-hard
+  - deep-research
+  - codebase
+  - diagnose

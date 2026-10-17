@@ -499,6 +499,23 @@ async fn prepare(
         plugin: None,
     };
     let enabled = cand.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    // A program's pause is lifted by the program, so the next reconcile does
+    // not quietly undo this save.
+    if let Some(cur) = &current
+        && enabled
+        && !cur.enabled
+        && crate::programs::is_program_pause(cur.paused_reason.as_deref())
+    {
+        return Err(SaveError::Invalid(format!(
+            "'{}' is off because {}. Resume the program (manage_program upsert status: active), or add the workflow to its keep_running.",
+            cur.name,
+            cur.paused_reason
+                .as_deref()
+                .and_then(|r| r.strip_prefix(crate::programs::PROGRAM_PAUSE))
+                .map(|r| r.trim_start_matches(':').trim())
+                .unwrap_or("its program is paused")
+        )));
+    }
 
     let mut warnings = Vec::new();
     if let Some(cur) = &current

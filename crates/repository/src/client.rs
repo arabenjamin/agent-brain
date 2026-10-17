@@ -42,6 +42,8 @@ impl Neo4jClient {
             "CREATE CONSTRAINT entity_alias_name IF NOT EXISTS FOR (a:EntityAlias) REQUIRE a.name IS UNIQUE",
             // Topics (services/topics.rs): one node per topics/*.yaml file.
             "CREATE CONSTRAINT topic_name IF NOT EXISTS FOR (t:Topic) REQUIRE t.name IS UNIQUE",
+            // Programs (PROGRAMS_PLAN): one node per name; MERGE relies on it.
+            "CREATE CONSTRAINT program_name IF NOT EXISTS FOR (p:Program) REQUIRE p.name IS UNIQUE",
             // Architecture snapshots: the developer plugin's `start`.
             "CREATE CONSTRAINT agent_job_id IF NOT EXISTS FOR (j:AgentJob) REQUIRE j.id IS UNIQUE",
             "CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE",

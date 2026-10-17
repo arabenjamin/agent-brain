@@ -89,6 +89,7 @@ impl TodoSkill {
                         "description": "list: only items assigned to this ('user', 'agent:<profile>', 'agent:auto'). upsert: 'user' or empty."
                     },
                     "include_done": { "type": "boolean", "description": "list: include done items (default false)." },
+                    "program": { "type": "string", "description": "list: only this program's items. upsert: the program it belongs to (manage_program list); a workflow run's items get theirs on their own." },
                     "title": { "type": "string" },
                     "description": { "type": "string" },
                     "priority": { "type": "integer", "minimum": 0, "maximum": 3 },
@@ -180,6 +181,7 @@ impl TodoSkill {
         }
         let include_done = args["include_done"].as_bool().unwrap_or(false);
         let assignee = args["assignee"].as_str().filter(|s| !s.is_empty());
+        let program = args["program"].as_str().filter(|s| !s.is_empty());
         let all = match self.neo4j.list_todos(status).await {
             Ok(t) => t,
             Err(e) => return ToolCallResult::error(format!("Failed to list items: {e}")),
@@ -194,6 +196,7 @@ impl TodoSkill {
                 Some("user") => t.assignee.as_deref().is_none_or(|a| a == "user"),
                 Some(a) => t.assignee.as_deref() == Some(a),
             })
+            .filter(|t| program.is_none_or(|p| t.program.as_deref() == Some(p)))
             .collect();
         let shown: Vec<Value> = matched
             .iter()
@@ -231,6 +234,9 @@ impl TodoSkill {
             &roster,
             items::written_by_brain(),
         ) {
+            return ToolCallResult::error(format!("Item rejected — nothing was saved: {e}"));
+        }
+        if let Err(e) = items::check_program(&self.neo4j, &patch).await {
             return ToolCallResult::error(format!("Item rejected — nothing was saved: {e}"));
         }
         let text = |k: &str| args[k].as_str().map(str::trim).filter(|s| !s.is_empty());

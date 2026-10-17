@@ -1,0 +1,28 @@
+# The brain's own upkeep. Programs: PROGRAMS_PLAN.md; manage_program edits.
+name: brain-ops
+label: Brain Ops
+kind: department
+charter: >-
+  Keep the brain itself healthy and improving: watch the scheduler, queue and
+  failures, keep todos and items moving, verify claims, link entities, keep
+  its own API documentation current, and mine its failures and chat routes
+  for fixes.
+success: >-
+  Failures are caught within a day and turned into a fix or a todo; the claim
+  backlog shrinks; nothing runs that nobody reads.
+topics: [agent-brain]
+workflows:
+  - health-monitor
+  - item-dispatch
+  - overdue-todo-review
+  - todo-snapshot
+  - todo-review-chat
+  - behavior-candidates
+  - brain-exercise
+  - consolidate
+  - capability-mining
+  - brain-api-sync
+  - claim-verification
+  - relation-extraction
+  - entity-linking
+review: { every: 1w }

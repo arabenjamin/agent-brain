@@ -54,6 +54,7 @@ pub fn patch_from_json(body: &Value) -> TodoItemPatch {
         result_note_id: field(body, "result_note_id"),
         model: field(body, "model"),
         ask: field(body, "ask"),
+        program: field(body, "program"),
         // Who made it is the writer's to stamp, never a body's to claim.
         source_task: None,
         source: None,
@@ -122,6 +123,43 @@ pub async fn stamp_source(neo4j: &Neo4jClient, patch: &mut TodoItemPatch) {
     if patch.source.is_none() {
         let task = patch.source_task.clone().flatten();
         patch.source = Some(Some(source_label(neo4j, task.as_deref(), None).await));
+    }
+    // An item a workflow run makes is that workflow's program's work.
+    if patch.program.is_none()
+        && let Some(task) = patch.source_task.clone().flatten()
+        && let Some(wf) = neo4j
+            .execute(
+                neo4rs::query("MATCH (t:Task {id: $id}) RETURN t.workflow AS wf").param("id", task),
+            )
+            .await
+            .ok()
+            .and_then(|r| r.first().and_then(|r| r.get::<String>("wf").ok()))
+        && let Some(program) = agent_brain_work::programs::program_of(neo4j, &wf).await
+    {
+        patch.program = Some(Some(program));
+    }
+}
+
+/// An item's `program` must name a program that exists.
+pub async fn check_program(neo4j: &Neo4jClient, patch: &TodoItemPatch) -> Result<(), String> {
+    let Some(Some(p)) = &patch.program else {
+        return Ok(());
+    };
+    match agent_brain_work::programs::exists(neo4j, p).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let names: Vec<String> = agent_brain_work::programs::load_all(neo4j)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.def.name)
+                .collect();
+            Err(format!(
+                "program '{p}' does not exist (programs: {})",
+                names.join(", ")
+            ))
+        }
+        Err(e) => Err(format!("could not check the program: {e}")),
     }
 }
 
