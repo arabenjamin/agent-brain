@@ -43,7 +43,8 @@ async-trait = "0.1"
 serde_yaml = "0.9"
 
 # Local Analytics & Logging (The Hippocampus)
-duckdb = { version = "1.0", features = ["bundled"] }
+# json compiled in: telemetry locks external access, so it cannot be fetched.
+duckdb = { version = "1.0", features = ["bundled", "json"] }
 
 # neo4rs 0.8.0 decodes a negative tiny int (-1..-16) as 255..240: a thumbs-down
 # (-1) read back as 255. One-line fix, the same as upstream 0.9's.

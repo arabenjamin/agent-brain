@@ -197,6 +197,19 @@ impl TelemetryClient {
 
         conn.execute_batch("CHECKPOINT;")?;
 
+        // Model-written SQL reaches this connection (`duckdb_query`), and a
+        // SELECT can read files and URLs (`read_csv('/etc/passwd')`,
+        // `read_text`, `glob`, httpfs). The brain itself never reads outside
+        // the database here, so external access is off for the process, and
+        // locked so no statement turns it back on (2026-10-16).
+        //
+        // `query_raw`'s SELECT check needs the json extension. It is compiled
+        // in (the `json` crate feature); were it ever not, DuckDB would fetch
+        // it on first use, which the lock forbids, and every `duckdb_query`
+        // would then fail closed. So json is used once here, before the lock.
+        conn.query_row("SELECT json_serialize_sql('SELECT 1')", [], |_| Ok(()))?;
+        conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")?;
+
         info!("Telemetry (DuckDB) schema initialized");
         Ok(())
     }
@@ -1575,6 +1588,72 @@ mod query_raw_tests {
         assert!(err.contains("only a single SELECT runs here"), "{err}");
         t.query_raw("SELECT count(*) AS n FROM model_usage", 1)
             .expect("model_usage must still exist");
+    }
+
+    /// json must be in the binary, not fetched: with external access locked
+    /// off before any json use, `json_serialize_sql` (the SELECT check) still
+    /// runs. Fails if the `json` duckdb feature is dropped.
+    #[test]
+    fn json_is_compiled_in() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")
+            .unwrap();
+        let out: String = conn
+            .query_row("SELECT json_serialize_sql('SELECT 1')::VARCHAR", [], |r| {
+                r.get(0)
+            })
+            .expect("json extension must be compiled in");
+        assert!(out.contains("SELECT_NODE"), "{out}");
+    }
+
+    /// A SELECT that reads outside the database: local files, globs, URLs.
+    /// `enable_external_access = false` (set at open, then locked) refuses
+    /// them; before 2026-10-16 `SELECT * FROM read_csv('/etc/passwd')` ran.
+    #[test]
+    fn a_select_cannot_read_files_or_urls() {
+        let t = client();
+        for sql in [
+            "SELECT * FROM read_csv('/etc/passwd')",
+            "SELECT * FROM read_text('/etc/hostname')",
+            "SELECT * FROM glob('/*')",
+            "SELECT * FROM read_json_auto('https://example.com/x.json')",
+        ] {
+            let err = t.query_raw(sql, 10).unwrap_err().to_string();
+            assert!(
+                !err.contains("only a single SELECT"),
+                "{sql} should reach DuckDB: {err}"
+            );
+            assert!(
+                err.to_lowercase().contains("external") || err.to_lowercase().contains("disabled"),
+                "{sql}: {err}"
+            );
+        }
+    }
+
+    /// What the brain itself uses still works with external access off.
+    #[test]
+    fn json_and_ordinary_reads_still_work() {
+        let t = client();
+        let rows = t
+            .query_raw(
+                "SELECT json_keys('{\"a\": 1}') AS k, regexp_extract('ab1', '[0-9]') AS d",
+                1,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        t.query_raw("SELECT table_name FROM information_schema.tables", 50)
+            .unwrap();
+    }
+
+    /// Locked: the setting cannot be switched back on from inside.
+    #[test]
+    fn external_access_cannot_be_turned_back_on() {
+        let t = client();
+        let conn = t.conn.lock().unwrap();
+        assert!(
+            conn.execute_batch("SET enable_external_access = true")
+                .is_err()
+        );
     }
 
     /// A write hidden in a SELECT: `query()` runs a string as SQL.

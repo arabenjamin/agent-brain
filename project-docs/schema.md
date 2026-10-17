@@ -114,7 +114,7 @@ One row per `read_page` reader attempt (`crates/retrieve/src/read.rs`): the page
 
 ### `arg_checks`
 
-One row per tool call whose arguments did not fit the tool's registered `input_schema` (the dispatch check, `ToolHandler::execute`; `TOOL_ARG_CHECK`). Columns: `id`, `tool`, `purpose` (`chat`, `subagent`, `background` = a workflow step or an operator call), `mode` (`shadow`, `enforce`), `refused` (false in shadow: the call ran), `problems` (JSON array of what did not fit, each naming the argument and, for an unknown key, the closest declared one and the tool's arguments), `args` (the call's arguments, first 2,000 chars), `created_at`. Started 2026-10-16 in shadow mode. To see what enforcement would refuse: `SELECT tool, count(*) n FROM arg_checks GROUP BY 1 ORDER BY 2 DESC`.
+One row per tool call whose arguments did not fit the tool's registered `input_schema` (the dispatch check, `ToolHandler::execute`; `TOOL_ARG_CHECK`). Columns: `id`, `tool` (`mcp_call:<server>/<tool>` for an `mcp_call` checked against the remote tool's schema), `purpose` (`chat`, `subagent`, `background` = a workflow step or an operator call), `mode` (`shadow`, `enforce`), `refused` (false in shadow: the call ran), `problems` (JSON array of what did not fit, each naming the argument and, for an unknown key, the closest declared one and the tool's arguments), `args` (the call's arguments, first 2,000 chars), `created_at`. Started 2026-10-16 in shadow mode. To see what enforcement would refuse: `SELECT tool, count(*) n FROM arg_checks GROUP BY 1 ORDER BY 2 DESC`.
 
 ### `search_results`
 

@@ -594,7 +594,10 @@ impl BrainCore {
             Some(Arc::clone(&llm)),
         )));
         // Tools on external MCP servers (:McpServer nodes).
-        skills.push(Arc::new(McpClientSkill::new(self.storage.neo4j.clone())));
+        skills.push(Arc::new(
+            McpClientSkill::new(self.storage.neo4j.clone())
+                .with_telemetry(self.storage.telemetry.clone()),
+        ));
         skills.push(Arc::new(ModelSkill));
 
         if let Some(neo4j) = &self.storage.neo4j {

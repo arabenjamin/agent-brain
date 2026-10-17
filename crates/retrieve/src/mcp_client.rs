@@ -10,6 +10,8 @@
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
@@ -19,14 +21,108 @@ use agent_brain_work::mcp_client::{McpClient, McpServerConfig, content_text};
 pub struct McpClientSkill {
     neo4j: Option<Neo4jClient>,
     client: McpClient,
+    /// Where an `mcp_call` whose arguments do not fit the remote tool is
+    /// recorded (`arg_checks`), as the dispatch check records a local one.
+    telemetry: Option<agent_brain_repository::TelemetryClient>,
+    /// Each server's tool schemas from its `tools/list`, by server name, kept
+    /// for [`SCHEMA_TTL`] so a check costs one listing per server per window.
+    schemas: tokio::sync::Mutex<HashMap<String, (Instant, ToolSchemas)>>,
 }
+
+/// A server's tools by name, each with its `inputSchema`.
+type ToolSchemas = HashMap<String, Value>;
+
+/// How long a server's tool list is reused for argument checks.
+const SCHEMA_TTL: Duration = Duration::from_secs(600);
 
 impl McpClientSkill {
     pub fn new(neo4j: Option<Neo4jClient>) -> Self {
         Self {
             neo4j,
             client: McpClient::new(),
+            telemetry: None,
+            schemas: tokio::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_telemetry(
+        mut self,
+        telemetry: Option<agent_brain_repository::TelemetryClient>,
+    ) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// The server's tools and their input schemas, from cache or a fresh
+    /// `tools/list`. None when the server cannot be listed: the call is then
+    /// not checked (fail-open, as before this check existed).
+    async fn remote_schemas(&self, cfg: &McpServerConfig) -> Option<ToolSchemas> {
+        let mut cache = self.schemas.lock().await;
+        if let Some((at, m)) = cache.get(&cfg.name)
+            && at.elapsed() < SCHEMA_TTL
+        {
+            return Some(m.clone());
+        }
+        let tools = self.client.list_tools(cfg).await.ok()?;
+        let m: ToolSchemas = tools
+            .iter()
+            .filter_map(|t| {
+                let name = t["name"].as_str()?.to_string();
+                let schema = t.get("inputSchema").cloned().unwrap_or_else(|| json!({}));
+                Some((name, schema))
+            })
+            .collect();
+        cache.insert(cfg.name.clone(), (Instant::now(), m.clone()));
+        Some(m)
+    }
+
+    /// Validation Phase 4: an `mcp_call`'s `arguments` against the remote
+    /// tool's own `inputSchema` (the dispatch check sees only mcp_call's
+    /// envelope). Same checker and mode (`TOOL_ARG_CHECK`) as a local tool;
+    /// a misfit is recorded as `mcp_call:<server>/<tool>`. Returns the
+    /// refusal in `enforce` mode.
+    async fn check_remote_arguments(
+        &self,
+        cfg: &McpServerConfig,
+        tool: &str,
+        arguments: &Value,
+    ) -> Option<ToolCallResult> {
+        use agent_brain_work::validation::ArgCheckMode;
+        let mode = ArgCheckMode::from_env();
+        if mode == ArgCheckMode::Off {
+            return None;
+        }
+        let schemas = self.remote_schemas(cfg).await?;
+        let label = format!("{}/{tool}", cfg.name);
+        let problems = remote_problems(&schemas, &cfg.name, tool, arguments);
+        if problems.is_empty() {
+            return None;
+        }
+        let refused = mode == ArgCheckMode::Enforce;
+        let purpose = agent_brain_llm::routing::RouteContext::current().purpose;
+        tracing::warn!(
+            tool = %label,
+            purpose = purpose.as_str(),
+            mode = mode.as_str(),
+            problems = %problems.join("; "),
+            "mcp_call arguments do not fit the remote tool's schema"
+        );
+        if let Some(tel) = &self.telemetry {
+            let _ = tel.log_arg_check(
+                &format!("mcp_call:{label}"),
+                purpose.as_str(),
+                mode.as_str(),
+                refused,
+                &problems,
+                &arguments.to_string(),
+            );
+        }
+        refused.then(|| {
+            ToolCallResult::error(format!(
+                "Arguments rejected; {label} was not called. {}",
+                problems.join(". ")
+            ))
+        })
     }
 
     /// Resolve a `server` argument to a connection config: a registered
@@ -209,6 +305,9 @@ impl McpClientSkill {
             Ok(c) => c,
             Err(e) => return ToolCallResult::error(e),
         };
+        if let Some(refusal) = self.check_remote_arguments(&cfg, tool, &arguments).await {
+            return refusal;
+        }
 
         match self.client.call_tool(&cfg, tool, arguments).await {
             Ok(result) => {
@@ -248,6 +347,29 @@ impl McpClientSkill {
     }
 }
 
+/// What is wrong with calling `tool` on `server` with `arguments`, given the
+/// server's listed tools: an unknown tool names the ones it has, a known one
+/// is checked against its `inputSchema`.
+fn remote_problems(
+    schemas: &ToolSchemas,
+    server: &str,
+    tool: &str,
+    arguments: &Value,
+) -> Vec<String> {
+    use agent_brain_work::validation::check_tool_arguments;
+    match schemas.get(tool) {
+        Some(schema) => check_tool_arguments(&format!("{server}/{tool}"), schema, Some(arguments)),
+        None => {
+            let mut names: Vec<&str> = schemas.keys().map(String::as_str).collect();
+            names.sort();
+            vec![format!(
+                "`{tool}` is not a tool of {server}; it has: {}",
+                names.join(", ")
+            )]
+        }
+    }
+}
+
 #[async_trait]
 impl Skill for McpClientSkill {
     fn name(&self) -> &str {
@@ -264,5 +386,55 @@ impl Skill for McpClientSkill {
             "mcp_call" => Some(self.handle_call(args).await),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schemas() -> ToolSchemas {
+        let mut m = ToolSchemas::new();
+        m.insert(
+            "search_jobs".into(),
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "remote": {"type": "boolean"}},
+                "required": ["query"]
+            }),
+        );
+        m.insert("list_companies".into(), json!({}));
+        m
+    }
+
+    #[test]
+    fn fitting_arguments_pass() {
+        let args = json!({"query": "rust", "remote": true});
+        assert!(remote_problems(&schemas(), "aidevboard", "search_jobs", &args).is_empty());
+    }
+
+    #[test]
+    fn a_misspelt_argument_names_the_right_one() {
+        let args = json!({"querry": "rust"});
+        let p = remote_problems(&schemas(), "aidevboard", "search_jobs", &args).join("; ");
+        assert!(
+            p.contains("`querry` is not an argument of aidevboard/search_jobs"),
+            "{p}"
+        );
+        assert!(p.contains("did you mean `query`"), "{p}");
+    }
+
+    #[test]
+    fn a_wrong_type_is_caught() {
+        let args = json!({"query": "rust", "remote": "yes"});
+        let p = remote_problems(&schemas(), "aidevboard", "search_jobs", &args);
+        assert!(!p.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_tool_lists_what_the_server_has() {
+        let p = remote_problems(&schemas(), "aidevboard", "find_jobs", &json!({})).join("; ");
+        assert!(p.contains("`find_jobs` is not a tool of aidevboard"), "{p}");
+        assert!(p.contains("list_companies, search_jobs"), "{p}");
     }
 }
