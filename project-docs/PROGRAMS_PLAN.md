@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Phases 0 and 1 built 2026-10-17; Phase 2 (HBI) next.
+Workflow Admin" (`0fcc6502`). Phases 0–2 built 2026-10-17; Phase 3 (manager) next.
 
 ## 1. Why
 
@@ -147,7 +147,7 @@ manager separate keeps chat a conversation and the review a scheduled job.
 |---|---|---|
 | 0. Scorecard (**done** 2026-10-17) | `workflow_scorecard` lookup view; task id on `model_usage` | The §1 table, with cost, comes from one view |
 | 1. Programs (**done** 2026-10-17) | Seed kind, validator, `manage_program`, REST, graph nodes, the §4 tree seeded, `program` on todos | Every enabled workflow is in a program or shared; a bad save is refused with what fits |
-| 2. HBI | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
+| 2. HBI (**done** 2026-10-17) | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
 | 3. Manager | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
 | 4. Agents | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
 
@@ -204,3 +204,25 @@ manager separate keeps chat a conversation and the review a scheduled job.
   is stamped with that workflow's program.
 - **`program_scorecard`** (lookup view) rolls the workflow scorecard up each
   program's subtree, with its budget.
+
+## 10. Phase 2 as built (2026-10-17)
+
+- **Work › Programs** (`#/work?view=programs`, `ProgramsLane.tsx`): the tree
+  as a table, each row with its scorecard over 7, 30 or 90 days (workflows
+  on/owned, runs and failures, notes, reads, cited, cost, budget); a parent's
+  row counts the programs under it. Enabled workflows in no program are
+  listed under the table with links. "+ New program" opens the form.
+- **The program drawer** (`?program=<name>`, `ProgramView.tsx`): charter,
+  success, finding, who owns the definition (file or edited here), the
+  30-day scorecard, the programs under it, its workflows with their state and
+  pause reasons (each opens the workflow), topics, agents, APIs and open
+  todos. Actions: Edit, Pause/Resume, Close… (asks for the finding; required
+  for an investigation or case), Reopen, Reset to file, Delete (disabled while
+  programs sit under it).
+- **The form** (`ProgramForm.tsx`) offers what exists: workflows (one taken
+  by another program is shown and disabled), topics, agents, the parent
+  (never itself or anything below it). The server's check still decides, and
+  its refusal is shown as given.
+- **One set of numbers:** `GET /api/programs/scorecard` runs the
+  `program_scorecard` lookup view through the tool registry
+  (`ToolRegistry::call`), so the HBI shows what the brain reads.

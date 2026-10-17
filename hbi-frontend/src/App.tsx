@@ -16,6 +16,7 @@ const FeedLane           = lazy(() => import("./components/work/FeedLane"));
 const ActiveLane         = lazy(() => import("./components/work/ActiveLane"));
 const ScheduledLane      = lazy(() => import("./components/work/ScheduledLane"));
 const TodosLane          = lazy(() => import("./components/work/TodosLane"));
+const ProgramsLane       = lazy(() => import("./components/work/ProgramsLane"));
 const HistoryLane        = lazy(() => import("./components/work/HistoryLane"));
 const AskModal           = lazy(() => import("./components/chat/AskModal"));
 const KnowledgeWorkspace = lazy(() => import("./components/knowledge/KnowledgeWorkspace"));
@@ -183,6 +184,7 @@ export default function App() {
               {view === "feed"      && <FeedLane openId={openId} mode={p.mode} />}
               {view === "active"    && <ActiveLane openId={openId} />}
               {view === "scheduled" && <ScheduledLane mode={p.mode} openId={openId} />}
+              {view === "programs"  && <ProgramsLane openId={p.program} />}
               {view === "todos"     && <TodosLane openId={openId} />}
               {view === "history"   && <HistoryLane key={JSON.stringify(historyDrill)} drill={historyDrill} openId={openId} />}
             </WorkspaceFrame>

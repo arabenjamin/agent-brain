@@ -58,6 +58,18 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Run a tool through the first skill that claims it (dispatch order),
+    /// for REST handlers that serve what a tool computes (a lookup view).
+    /// `None` when no skill offers it.
+    pub async fn call(&self, name: &str, arguments: Option<Value>) -> Option<ToolCallResult> {
+        for skill in &self.skills {
+            if skill.tools().iter().any(|t| t.name == name) {
+                return skill.execute(name, arguments).await;
+            }
+        }
+        None
+    }
+
     /// Get a tool definition by name.
     pub fn get(&self, name: &str) -> Option<ToolDefinition> {
         for skill in &self.skills {

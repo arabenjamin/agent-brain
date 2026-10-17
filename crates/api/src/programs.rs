@@ -6,15 +6,18 @@
 //!   plus the enabled workflows in no program.
 //! - `GET /api/programs/{name}` — one program: definition, owner, children,
 //!   its workflows' state, open todos, issues.
+//! - `GET /api/programs/scorecard?days=` — the `program_scorecard` view's rows
+//!   (the workflow scorecard rolled up each program's subtree, with cost).
 //! - `POST /api/programs` (create only), `PUT|DELETE /api/programs/{name}`,
 //!   `POST /api/programs/{name}/reset` — edits, checked whole before anything
 //!   is written; a status change pauses or resumes the program's workflows.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
     Extension, Json,
-    extract::Path,
+    extract::{Path, Query},
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
@@ -36,6 +39,39 @@ pub async fn handle_list(Extension(state): Extension<Arc<RestState>>) -> Respons
     match programs::tree(neo4j).await {
         Ok(t) => Json(t).into_response(),
         Err(e) => internal(e),
+    }
+}
+
+/// `GET /api/programs/scorecard?days=30` — the `program_scorecard` lookup
+/// view, so the HBI and the brain read the same numbers.
+pub async fn handle_scorecard(
+    Extension(state): Extension<Arc<RestState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let days = params
+        .get("days")
+        .and_then(|d| d.parse::<i64>().ok())
+        .unwrap_or(30)
+        .clamp(1, 365);
+    let Some(registry) = state.tool_registry.as_ref() else {
+        return internal("the tool registry is not available");
+    };
+    let args = json!({"view": "program_scorecard", "days": days});
+    let result = registry.read().await.call("lookup", Some(args)).await;
+    let Some(r) = result else {
+        return internal("the lookup tool is not registered");
+    };
+    // Read through its JSON form: the api crate does not link the protocol.
+    let text = serde_json::to_value(&r)
+        .ok()
+        .and_then(|v| v["content"][0]["text"].as_str().map(String::from))
+        .unwrap_or_default();
+    if r.is_error == Some(true) {
+        return internal(text);
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => internal(format!("program_scorecard: {e}")),
     }
 }
 

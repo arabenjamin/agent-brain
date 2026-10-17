@@ -706,11 +706,11 @@ pub fn file_defs(
             continue;
         }
         seen.insert(def.name.clone(), plugin.clone());
-        let source = path
-            .strip_prefix(&plugins.dir)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
+        // Relative to the folder it was found in: `personal/programs/nia.yaml`.
+        let source = std::iter::once(plugins.dir.clone())
+            .chain(agent_brain_graph::bundles::extra_dirs())
+            .find_map(|d| path.strip_prefix(&d).ok().map(|p| p.display().to_string()))
+            .unwrap_or_else(|| path.display().to_string());
         out.push((plugin, source, def));
     }
     out
@@ -1140,6 +1140,7 @@ pub async fn tree(neo4j: &Neo4jClient) -> anyhow::Result<Value> {
             "parent": s.def.parent,
             "depth": depth,
             "workflows": s.def.workflows.len(),
+            "workflow_names": s.def.workflows,
             "enabled_workflows": s.def.workflows.iter().filter(|w| enabled.contains(w.as_str())).count(),
             "managed_by": s.managed_by,
             "issues": issues,

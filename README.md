@@ -75,7 +75,7 @@ also names tools that were removed and what replaced them. A guide by group:
 `scheduler_control` (`action: tick` runs one now), `manage_workflow` (list, get, run by name with inputs, upsert, delete, audit). Every boot audits the workflows: one whose every step names a missing tool is paused, and re-enabled by a later audit once its tools are back; `health-monitor` reports any such pause and a drop in notes written.
 
 ### Programs
-`manage_program` (list, get, upsert, delete, reset, audit): the brain's work organized into departments, projects, investigations and cases that nest (the Niche Intelligence Agency over its verticals), each owning its workflows. Seeded from `programs/*.yaml`, edited by the tool or `/api/programs`, checked whole on every save. Pausing or closing a program pauses its workflows; `program_scorecard` rolls the workflow scorecard up each program. See `project-docs/PROGRAMS_PLAN.md`.
+`manage_program` (list, get, upsert, delete, reset, audit): the brain's work organized into departments, projects, investigations and cases that nest (the Niche Intelligence Agency over its verticals), each owning its workflows. Seeded from `programs/*.yaml`, edited by the tool or `/api/programs`, checked whole on every save. Pausing or closing a program pauses its workflows; `program_scorecard` rolls the workflow scorecard up each program. In the HBI: Work › Programs (`GET /api/programs/scorecard` serves the same view). See `project-docs/PROGRAMS_PLAN.md`.
 
 ### Working Memory
 `push_context`, `notify_user`

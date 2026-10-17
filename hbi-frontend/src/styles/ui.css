@@ -843,3 +843,11 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .dw-ask.missing { border-color: var(--border); border-left-color: var(--yellow); background: none; }
 .dw-ask.missing .dw-ask-head { color: var(--yellow); }
 .dw-thread { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Programs (PROGRAMS_PLAN Phase 2) */
+.prog-table tbody tr.prog-row { cursor: pointer; }
+.prog-table tbody tr.prog-row:hover td { background: var(--accent-glow); }
+.prog-table tbody tr.prog-row.active td { background: var(--accent-glow); border-bottom-color: var(--accent); }
+.prog-checks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; max-height: 180px; overflow-y: auto; }
+.prog-taken { opacity: 0.6; }
+.prog-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

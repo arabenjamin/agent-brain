@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyUpdate, formatHash, parseHash } from "../router";
+import { resolveRoute } from "../workspaces";
+import { drawerTarget } from "../components/drawer/entities";
 
 describe("parseHash", () => {
   it("reads the workspace and params", () => {
@@ -60,5 +62,13 @@ describe("applyUpdate", () => {
   it("does not mutate the input", () => {
     applyUpdate(base, { params: { note: null } });
     expect(base.params.note).toBe("n1");
+  });
+});
+
+describe("programs (PROGRAMS_PLAN Phase 2)", () => {
+  it("is a Work view, and a program opens in the drawer", () => {
+    const r = resolveRoute({ path: "work", params: { view: "programs" } });
+    expect(r.kind === "show" && r.view?.id).toBe("programs");
+    expect(drawerTarget({ program: "nia" })).toEqual({ kind: "program", id: "nia" });
   });
 });
