@@ -4,7 +4,7 @@ use duckdb::{Connection, params};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{EngineUse, Ledger, ReadAttempt, SearchAttempt};
 
@@ -29,10 +29,50 @@ pub struct TelemetryClient {
     conn: Arc<Mutex<Connection>>,
 }
 
+/// Time-zone support (TIMESTAMPTZ arithmetic, casts to DATE) is DuckDB's icu
+/// extension, which the crate cannot compile in (its `icu` feature needs DuckDB
+/// sources the published crate does not ship). So it is loaded here, before
+/// external access is locked off: from `dir` (next to the database, so it
+/// survives rebuilds), downloaded into it the first time. A failure is logged
+/// and init goes on: without icu only queries that do time-zone arithmetic on
+/// `created_at` fail, and casting to TIMESTAMP first still works.
+fn load_icu(conn: &Connection, dir: &Path) {
+    let dir_sql = dir.display().to_string().replace('\'', "''");
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        warn!(dir = %dir.display(), error = %e, "DuckDB extension dir not writable; icu not loaded");
+        return;
+    }
+    if let Err(e) = conn.execute_batch(&format!("SET extension_directory = '{dir_sql}';")) {
+        warn!(error = %e, "Could not set DuckDB extension_directory; icu not loaded");
+        return;
+    }
+    if conn.execute_batch("LOAD icu;").is_ok() {
+        info!("DuckDB icu loaded");
+        return;
+    }
+    match conn.execute_batch("INSTALL icu; LOAD icu;") {
+        Ok(()) => info!(dir = %dir.display(), "DuckDB icu downloaded and loaded"),
+        Err(e) => warn!(
+            error = %e,
+            "DuckDB icu unavailable: time-zone arithmetic on TIMESTAMPTZ will fail (cast to TIMESTAMP first)"
+        ),
+    }
+}
+
 impl TelemetryClient {
     /// Create a new TelemetryClient backed by a file.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         let conn = Connection::open(path).context("Failed to open DuckDB file")?;
+        // Before `init_schema` locks external access: icu is the one extension
+        // that cannot be compiled in. An in-memory database (tests) skips it.
+        if path != Path::new(":memory:") {
+            let dir = path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("duckdb_extensions");
+            load_icu(&conn, &dir);
+        }
 
         let client = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -207,6 +247,7 @@ impl TelemetryClient {
         // in (the `json` crate feature); were it ever not, DuckDB would fetch
         // it on first use, which the lock forbids, and every `duckdb_query`
         // would then fail closed. So json is used once here, before the lock.
+        // (icu is loaded in `new`, before this.)
         conn.query_row("SELECT json_serialize_sql('SELECT 1')", [], |_| Ok(()))?;
         conn.execute_batch("SET enable_external_access = false; SET lock_configuration = true;")?;
 

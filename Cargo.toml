@@ -44,6 +44,8 @@ serde_yaml = "0.9"
 
 # Local Analytics & Logging (The Hippocampus)
 # json compiled in: telemetry locks external access, so it cannot be fetched.
+# (icu cannot be: its feature needs DuckDB sources the crate does not ship; it
+# is loaded from disk at init instead, telemetry.rs.)
 duckdb = { version = "1.0", features = ["bundled", "json"] }
 
 # neo4rs 0.8.0 decodes a negative tiny int (-1..-16) as 255..240: a thumbs-down
