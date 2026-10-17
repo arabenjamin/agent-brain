@@ -120,7 +120,7 @@ groups:
   - id: sidecars
     label: Sidecars
     column: 4
-    members: ["component:sandbox", "component:rust-sandbox", "component:whisper", "component:searxng"]
+    members: ["component:sandbox", "component:rust-sandbox", "component:whisper"]
 
 edges:
   - { from: clients, to: doors, label: "MCP, chat, OpenAI wire" }
@@ -158,9 +158,6 @@ topology:
       networks: [brain-internal]
     - name: whisper
       component: whisper
-      networks: [brain-internal]
-    - name: searxng
-      component: searxng
       networks: [brain-internal]
     - name: sandbox
       component: sandbox

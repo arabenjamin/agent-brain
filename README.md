@@ -120,9 +120,8 @@ retry. Offered only when `SANDBOX_URL` (or `RUST_SANDBOX_URL`, for `language: "r
 in `plugins/*/search-engines/` may declare a `budget` (Exa $10/month, Tavily
 1,000/month, TinyFish 12,000/day, Serper's one-time 2,500), and each call goes
 first to the engine that is within its paced allowance and least used today.
-The failover ladder (`SEARCH_ENGINE_ORDER`) stays behind that pick, with the
-self-hosted SearXNG as the flagged last resort, so one exhausted free tier
-cannot fail the call (`SEARCH_ROTATION=off` restores the plain ladder).
+The failover ladder (`SEARCH_ENGINE_ORDER`) stays behind that pick, with
+Brave last, so one exhausted free tier cannot fail the call (`SEARCH_ROTATION=off` restores the plain ladder).
 `get_search_usage` reports each engine's burn, its standing in the rotation,
 who searched, and quality hints: dated, in-window and known-source shares, and
 how many of its results were later cited as claim evidence.

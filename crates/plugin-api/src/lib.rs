@@ -293,9 +293,8 @@ pub trait Llm: Send + Sync {
 pub trait Search: Send + Sync {
     /// Up to `count` results for `query`, external sources only (no "what we
     /// already know" block from the graph), as `search_web` returns them: a
-    /// JSON array of `{title, link, snippet, …}`, perhaps behind the
-    /// SearXNG fallback banner (`web::strip_fallback_banner`). `Err` is the
-    /// search's own error text.
+    /// JSON array of `{title, link, snippet, …}`. `Err` is the search's own
+    /// error text.
     async fn web(&self, query: &str, count: u8) -> Result<String, String>;
 }
 

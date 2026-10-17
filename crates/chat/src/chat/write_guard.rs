@@ -310,7 +310,7 @@ mod write_guard_tests {
 
     #[test]
     fn a_failed_retrieval_does_not_ground_anything() {
-        // The 2026-08-18 SearXNG outage returned well-formed empty results for
+        // The 2026-08-18 SearXNG outage (since removed) returned well-formed empty results for
         // three days. A retrieval that did not retrieve must not license a
         // note claiming to be established knowledge.
         let mut g = TurnWriteGuard::default();

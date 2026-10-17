@@ -8,7 +8,7 @@
 //!
 //! The engines disagree about all of it. The Google family (SerpApi, Serper,
 //! Google CSE, Google News) reads the operators in the query text and also has
-//! a native recency parameter; Brave and SearXNG's backends read `site:`,
+//! a native recency parameter; Brave reads `site:`,
 //! quotes and `-` but not the date operators; Exa and Tavily read none of them
 //! — operator text there is just noise words — but take domains and date
 //! ranges as API parameters. So the query is parsed into a [`QuerySpec`] and
@@ -48,7 +48,7 @@ impl Recency {
         }
     }
 
-    /// One-letter code shared by Google `tbs=qdr:` and SearXNG-style ranges.
+    /// One-letter code for Google `tbs=qdr:` ranges.
     fn letter(self) -> char {
         match self {
             Recency::Day => 'd',
@@ -68,7 +68,7 @@ impl Recency {
     }
 
     /// The smallest window that still covers `since`, for engines that only
-    /// take a window (SearXNG, Tavily) when the caller gave an `after:` date.
+    /// take a window (Tavily) when the caller gave an `after:` date.
     fn covering(since: NaiveDate, today: NaiveDate) -> Self {
         match (today - since).num_days() {
             d if d <= 1 => Recency::Day,
@@ -246,8 +246,7 @@ impl QuerySpec {
     }
 
     /// Google syntax. `with_dates` adds `after:`/`before:` (Google web search
-    /// honours them; SearXNG's other backends and Brave do not, so those get a
-    /// window parameter instead).
+    /// honours them; Brave does not, so it gets a window parameter instead).
     pub fn google_syntax(&self, with_dates: bool) -> String {
         let mut out = vec![self.free_text(true, true)];
         out.extend(self.exclude_words.iter().map(|w| format!("-{w}")));

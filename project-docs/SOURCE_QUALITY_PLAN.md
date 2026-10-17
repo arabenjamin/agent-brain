@@ -158,8 +158,7 @@ What surfaced Webz was a question from the user. Make it routine:
 1. A weekly `source-review` schedule (extend `dataset-review`'s pattern):
    - per source (channel, feed, outlet): claims extracted, attempted,
      corroborated, contradicted, and corroboration rate;
-   - per scheduled search: results returned, share from a vetted list,
-     SearXNG-fallback count;
+   - per scheduled search: results returned, share from a vetted list;
    - per list: hit rate and dominant domains (one publisher crowding a list —
      pv magazine + ESS News — is flagged).
 2. Stated, not inferred (Principle 4): every judgement in the report is computed

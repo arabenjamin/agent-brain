@@ -11,7 +11,7 @@
 //!   formats (Exa, Tavily, Google `tbs`, CSE, Brave) and the Currents and Webz
 //!   query builders.
 //! - [`Shape`]: result shapes a field mapping cannot read — Google News'
-//!   clustered stories, SearXNG's date window and upstream-failure report.
+//!   clustered stories.
 //!
 //! An engine that needs nothing new (a POST/GET API answering a list of
 //! results) is a YAML file and a key; no Rust.
@@ -234,8 +234,6 @@ pub enum Shape {
     Items,
     /// SerpApi Google News: stories, highlights and topic clusters, unrolled.
     GoogleNews,
-    /// SearXNG: the date window enforced per result, upstream failures logged.
-    Searxng,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -789,19 +787,13 @@ pub async fn run(
         info!(engine = %name, fields = %fields, "Search engine reported");
     }
     Ok(Answer {
-        items: results(spec, &json, q, count, now.date_naive()),
+        items: results(spec, &json, count),
         units: units_of(spec, &json),
     })
 }
 
 /// The engine's answer mapped onto `{title, link, snippet, date}`.
-pub fn results(
-    spec: &EngineSpec,
-    json: &Value,
-    q: &QuerySpec,
-    count: u8,
-    today: NaiveDate,
-) -> Vec<Value> {
+pub fn results(spec: &EngineSpec, json: &Value, count: u8) -> Vec<Value> {
     let rs = &spec.response;
     let list = |path: &str| {
         path_get(json, path)
@@ -820,25 +812,6 @@ pub fn results(
             .filter_map(|r| map_item(rs, r))
             .take(count as usize)
             .collect(),
-        Shape::Searxng => {
-            report_unresponsive(json, &q.display());
-            let (since, before) = (q.since(today), q.before);
-            items
-                .iter()
-                .filter(|r| {
-                    let Some(d) = path_get(r, &rs.date)
-                        .and_then(Value::as_str)
-                        .and_then(|s| s.get(..10))
-                        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                    else {
-                        return true;
-                    };
-                    since.is_none_or(|s| d >= s) && before.is_none_or(|b| d < b)
-                })
-                .filter_map(|r| map_item(rs, r))
-                .take(count as usize)
-                .collect()
-        }
     }
 }
 
@@ -945,56 +918,6 @@ pub fn flatten_google_news(news_results: &[Value], count: usize) -> Vec<Value> {
     out
 }
 
-/// `(engine, reason)` pairs from SearXNG's `unresponsive_engines`
-/// (`[["naver", "access denied"], …]`; one or two elements per entry).
-/// Anything unparseable is skipped: a wrong reason is worse than none.
-pub fn parse_unresponsive_engines(json: &Value) -> Vec<(String, String)> {
-    json.get("unresponsive_engines")
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|e| {
-                    let parts = e.as_array()?;
-                    let name = parts.first()?.as_str()?.to_string();
-                    let reason = parts
-                        .get(1)
-                        .and_then(Value::as_str)
-                        .unwrap_or("unspecified")
-                        .to_string();
-                    Some((name, reason))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// SearXNG answers 200 with per-upstream failures in `unresponsive_engines`.
-/// Nothing read that field, which is why two multi-day outages were invisible
-/// (2026-08-18 every upstream lost DNS; 2026-08-31 all four default engines
-/// were bot-blocked): both looked like an obscure query. The reasons are what
-/// tell them apart, so they are logged verbatim. Whether the answer was empty
-/// is the ladder's call (`search_web` falls through on zero results).
-fn report_unresponsive(json: &Value, query: &str) {
-    let failed = parse_unresponsive_engines(json);
-    if failed.is_empty() {
-        return;
-    }
-    let detail = failed
-        .iter()
-        .map(|(e, why)| format!("{e} ({why})"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let returned = json["results"].as_array().map_or(0, Vec::len);
-    warn!(
-        query = %query,
-        failed_engines = %detail,
-        returned,
-        "SearXNG upstream engines failed (0 returned = an outage, not an empty query; \
-         run scripts/searxng_engine_health.py)"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,11 +952,11 @@ mod tests {
     #[test]
     fn every_bundled_engine_parses_and_the_ladder_keeps_its_order() {
         let all = bundled();
-        assert_eq!(all.len(), 11);
+        assert_eq!(all.len(), 10);
         assert_eq!(
             default_order(&all),
             [
-                "exa", "tavily", "tinyfish", "serper", "serpapi", "google", "searxng", "brave"
+                "exa", "tavily", "tinyfish", "serper", "serpapi", "google", "brave"
             ]
         );
     }
@@ -1045,8 +968,7 @@ mod tests {
             .filter(|e| e.budget.is_some())
             .map(|e| e.name)
             .collect();
-        // SerpApi's 250/month is google_news's; SearXNG is the junk-prone last
-        // resort; Brave bills a card.
+        // SerpApi's 250/month is google_news's; Brave bills a card.
         assert_eq!(budgeted, ["exa", "serper", "tavily", "tinyfish"]);
         let exa = engine("exa");
         let b = exa.budget.as_ref().unwrap();
@@ -1093,13 +1015,7 @@ mod tests {
     fn tinyfish_news_maps_its_publisher() {
         let json = json!({"results": [{"url": "https://www.reuters.com/x", "title": "T",
             "snippet": "S", "date": "2 days ago", "publisher": "Reuters"}]});
-        let r = results(
-            &engine("tinyfish"),
-            &json,
-            &QuerySpec::parse("x"),
-            5,
-            today(),
-        );
+        let r = results(&engine("tinyfish"), &json, 5);
         assert_eq!(r[0]["source"], json!("Reuters"));
         assert_eq!(r[0]["date"], json!("2 days ago"));
         assert_eq!(r[0]["link"], json!("https://www.reuters.com/x"));
@@ -1235,10 +1151,6 @@ mod tests {
         assert_eq!(redact("short", "abc"), "short");
     }
 
-    fn today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 10, 6).unwrap()
-    }
-
     #[test]
     fn exa_highlights_become_the_snippet_and_text_is_the_fallback() {
         let json = json!({"results": [
@@ -1246,7 +1158,7 @@ mod tests {
             {"title": "B", "url": "https://b", "highlights": [], "text": "body"},
             {"title": "C", "url": ""},
         ]});
-        let r = results(&engine("exa"), &json, &QuerySpec::parse("x"), 5, today());
+        let r = results(&engine("exa"), &json, 5);
         assert_eq!(r.len(), 2);
         assert_eq!(r[0]["snippet"], json!("one … two"));
         assert_eq!(r[0]["date"], json!("2026-10-01"));
@@ -1257,7 +1169,7 @@ mod tests {
     fn tavily_snippets_are_clipped_to_the_budget() {
         let long = "x".repeat(800);
         let json = json!({"results": [{"title": "T", "url": "https://t", "content": long}]});
-        let r = results(&engine("tavily"), &json, &QuerySpec::parse("x"), 5, today());
+        let r = results(&engine("tavily"), &json, 5);
         assert_eq!(r[0]["snippet"].as_str().unwrap().chars().count(), 501);
     }
 
@@ -1265,10 +1177,10 @@ mod tests {
     fn serper_news_answers_under_news_and_brave_maps_to_the_common_shape() {
         let json =
             json!({"news": [{"title": "N", "link": "https://n", "snippet": "s", "date": "1h"}]});
-        let r = results(&engine("serper"), &json, &QuerySpec::parse("x"), 5, today());
+        let r = results(&engine("serper"), &json, 5);
         assert_eq!(r[0]["link"], json!("https://n"));
         let brave = json!({"web": {"results": [{"title": "B", "url": "https://b", "description": "d", "age": "2d"}]}});
-        let r = results(&engine("brave"), &brave, &QuerySpec::parse("x"), 5, today());
+        let r = results(&engine("brave"), &brave, 5);
         assert_eq!(
             r[0],
             json!({"title": "B", "link": "https://b", "snippet": "d", "date": "2d"})
@@ -1283,44 +1195,10 @@ mod tests {
              "stories": [{"title": "S1", "link": "https://s1"}, {"title": "S2", "link": "https://s2"}]},
             {"title": "Header only"},
         ]});
-        let r = results(
-            &engine("google_news"),
-            &json,
-            &QuerySpec::parse("x"),
-            3,
-            today(),
-        );
+        let r = results(&engine("google_news"), &json, 3);
         let links: Vec<_> = r.iter().map(|v| v["link"].as_str().unwrap()).collect();
         assert_eq!(links, ["https://f", "https://h", "https://s1"]);
         assert_eq!(r[0]["source"], json!("Freep"));
-    }
-
-    #[test]
-    fn searxng_dates_enforce_the_window_and_keep_undated_results() {
-        let json = json!({"results": [
-            {"title": "old", "url": "https://o", "publishedDate": "2026-09-01T00:00:00"},
-            {"title": "new", "url": "https://n", "publishedDate": "2026-10-05T00:00:00"},
-            {"title": "undated", "url": "https://u"},
-        ]});
-        let mut q = QuerySpec::parse("x");
-        q.recency = Some(Recency::Week);
-        let r = results(&engine("searxng"), &json, &q, 5, today());
-        let titles: Vec<_> = r.iter().map(|v| v["title"].as_str().unwrap()).collect();
-        assert_eq!(titles, ["new", "undated"]);
-    }
-
-    #[test]
-    fn parses_the_engine_and_reason_pairs_searxng_actually_sends() {
-        let json =
-            json!({"unresponsive_engines": [["naver", "access denied"], ["wiby"], [1], "x"]});
-        assert_eq!(
-            parse_unresponsive_engines(&json),
-            vec![
-                ("naver".to_string(), "access denied".to_string()),
-                ("wiby".to_string(), "unspecified".to_string())
-            ]
-        );
-        assert!(parse_unresponsive_engines(&json!({"results": []})).is_empty());
     }
 
     /// Mapped results must feed the claim verifier's domain count
@@ -1329,7 +1207,7 @@ mod tests {
     fn mapped_results_count_as_evidence_domains() {
         let json = json!({"organic": [{"title": "1", "link": "https://www.a.com/x"},
                                       {"title": "2", "link": "https://b.org/y"}]});
-        let out = results(&engine("serper"), &json, &QuerySpec::parse("x"), 5, today());
+        let out = results(&engine("serper"), &json, 5);
         let domains: Vec<String> = out
             .iter()
             .filter_map(|i| i["link"].as_str())

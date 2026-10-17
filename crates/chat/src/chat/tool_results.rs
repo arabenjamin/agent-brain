@@ -202,7 +202,7 @@ pub(super) fn search_sources_marker(tool_name: &str, text: &str) -> Option<Strin
     let sources: Vec<(String, String)> = items
         .iter()
         .filter_map(|item| {
-            // Engines disagree on the field name: SearXNG/SerpApi/Google CSE
+            // Engines disagree on the field name: SerpApi/Google CSE
             // are normalised to `link`, Brave still emits `url`.
             let url = item
                 .get("link")
@@ -681,7 +681,7 @@ mod limits_marker_tests {
 mod search_sources_tests {
     use super::*;
 
-    /// The shape SearXNG / SerpApi / Google CSE are normalised to. Trimmed from
+    /// The shape SerpApi / Google CSE are normalised to. Trimmed from
     /// the real `search_web` result of 2026-08-24 whose sources went uncited.
     fn serp_results() -> String {
         serde_json::json!([

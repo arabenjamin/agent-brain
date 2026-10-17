@@ -18,7 +18,7 @@ use crate::search_engines;
 use crate::search_quality;
 use crate::search_query::{QuerySpec, Recency};
 use crate::search_rotation::{self, Rung, Standing};
-use agent_brain_knowledge::web_result::{SEARXNG_FALLBACK_BANNER, is_search_page};
+use agent_brain_knowledge::web_result::is_search_page;
 use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
 use agent_brain_repository::{Neo4jClient, SearchAttempt, TelemetryClient};
@@ -56,24 +56,6 @@ fn caller() -> (String, Option<String>, Option<String>) {
         .ok()
         .flatten();
     (purpose, tool, agent_brain_llm::ctx::current_owner_task())
-}
-
-/// The warning that leads a SearXNG answer. Ends without a blank line; the
-/// caller adds one, which `strip_fallback_banner` splits on.
-fn searxng_banner(why: &str, recency_requested: bool) -> String {
-    let mut b = format!(
-        "{SEARXNG_FALLBACK_BANNER} — {why}.\n\
-         These results come from SearXNG's working backends (Naver, Seznam, Zapmeta, \
-         Wiby, Wikipedia): weaker relevance, usually undated, often foreign-index \
-         pages. Treat them as leads to check, not as confirmation."
-    );
-    if recency_requested {
-        b.push_str(
-            "\nThe date window was enforced only on results that carry a date; \
-             undated ones may be old.",
-        );
-    }
-    b
 }
 
 /// Classify an engine failure for the usage ledger.
@@ -200,8 +182,8 @@ fn order_engines(
 
 /// Drop engines with no working credentials from an already-ordered ladder so
 /// they don't burn a rung failing `not_configured` on every single search.
-/// `keep` is the subset of engines known to be configured (searxng always is —
-/// it needs no key). Unlike quota exhaustion (demote-and-recover) a missing key
+/// `keep` is the subset of engines known to be configured (a keyless engine
+/// always is). Unlike quota exhaustion (demote-and-recover) a missing key
 /// never fixes itself at runtime, so these are removed outright.
 ///
 /// Never empties the ladder: if `keep` is empty (nothing configured at all) the
@@ -307,7 +289,7 @@ impl SearchSkill {
             description:
                 "Search the web. The first engine is picked by rotation across the free \
                  allowances (each engine paced through its day or month), with a failover \
-                 ladder behind it (self-hosted SearXNG only as a flagged last resort) so one \
+                 ladder behind it so one \
                  exhausted quota does not fail the call. Leave `engine` unset unless the task \
                  needs one engine's particular strength: naming one skips the rotation. \
                  QUERY SYNTAX — Google operators work on EVERY engine (translated for the ones that \
@@ -369,7 +351,7 @@ impl SearchSkill {
             name: "get_search_usage".to_string(),
             description:
                 "THE answer to any question about our own web searches: which search engines \
-                 (searxng, exa, tavily, serper, tinyfish, google_news, …) answered, how many \
+                 (exa, tavily, serper, tinyfish, google_news, …) answered, how many \
                  searches each, how many failed and why, who searched (by_caller), each \
                  engine's quality hints (dated, in-window and known-source shares, and the share \
                  of its results later used as claim evidence), where each budgeted engine \
@@ -477,7 +459,7 @@ impl SearchSkill {
         // `not_configured` on every call — the 2026-09-08 GDELT session put
         // `engine: google` on each search, and with no GOOGLE_API_KEY every one
         // wasted its first rung (and log line) before falling through to
-        // SearXNG, helping exhaust the 8-round tool budget twice. Unlike a spent
+        // the next engine, helping exhaust the 8-round tool budget twice. Unlike a spent
         // quota this never recovers at runtime, so remove rather than demote.
         // An engine no file declares is kept: its call reports "unsupported".
         let keep: Vec<String> = ladder
@@ -977,12 +959,9 @@ impl SearchSkill {
         };
 
         let mut failures: Vec<String> = Vec::new();
-        // "engine (why)" for each rung passed over — the banner names them.
-        let mut passed_over: Vec<String> = Vec::new();
-        let mut answered_by: Option<String> = None;
         let mut result: Option<ToolCallResult> = None;
         // An engine that answers `200` with zero results is not an answer — it
-        // is a silent outage. SearXNG lost DNS on 2026-08-18 and every upstream
+        // is a silent outage. SearXNG (since removed) lost DNS on 2026-08-18 and every upstream
         // reported "HTTP connection error", so it returned a well-formed empty
         // result set for three days; because that is not an error the ladder
         // stopped at the first rung and never tried Google/SerpApi/Brave, and
@@ -999,7 +978,6 @@ impl SearchSkill {
             let declared = search_engines::get(engine);
             if let Some(why) = declared.and_then(|e| search_engines::unsupported(e, &spec, today)) {
                 info!(engine = %engine, reason = %why, "Search engine skipped — cannot serve this query");
-                passed_over.push(format!("{engine} (skipped: {why})"));
                 continue;
             }
             let started = Instant::now();
@@ -1035,7 +1013,6 @@ impl SearchSkill {
                 row.error_kind = Some(kind.to_string());
                 self.record_usage(&row);
                 failures.push(format!("{engine}: {error_text}"));
-                passed_over.push(format!("{engine} ({kind})"));
                 continue;
             }
 
@@ -1071,14 +1048,12 @@ impl SearchSkill {
                     "Search engine returned zero results — trying next in ladder"
                 );
                 failures.push(format!("{engine}: returned 0 results"));
-                passed_over.push(format!("{engine} (0 results)"));
                 // Keep the first one so an all-empty ladder still returns `[]`
                 // in the engine's own shape rather than an error.
                 empty_success.get_or_insert(attempt);
                 continue;
             }
 
-            answered_by = Some(engine.clone());
             result = Some(attempt);
             break;
         }
@@ -1105,22 +1080,9 @@ impl SearchSkill {
             );
         }
 
-        let banner = (answered_by.as_deref() == Some("searxng")).then(|| {
-            let why =
-                if input.engine.as_deref().map(str::to_lowercase).as_deref() == Some("searxng") {
-                    "requested explicitly".to_string()
-                } else if passed_over.is_empty() {
-                    "no keyed search engine is configured".to_string()
-                } else {
-                    format!("keyed engines unavailable: {}", passed_over.join(", "))
-                };
-            warn!(query = %effective_query, reason = %why, "Search answered by SearXNG fallback");
-            searxng_banner(&why, spec.recency.is_some())
-        });
-
         // Post-filter: drop any result whose URL is not from an approved domain.
         if allowed_domains.is_empty() {
-            return self.finish_search(&input, result, banner).await;
+            return self.finish_search(&input, result).await;
         }
         let content_text = result
             .content
@@ -1134,7 +1096,7 @@ impl SearchSkill {
             })
             .unwrap_or("[]");
         let Ok(items) = serde_json::from_str::<Vec<Value>>(content_text) else {
-            return self.finish_search(&input, result, banner).await;
+            return self.finish_search(&input, result).await;
         };
         let filtered: Vec<Value> = items
             .into_iter()
@@ -1150,32 +1112,13 @@ impl SearchSkill {
         // Source-list path returns here; it must carry the prior-knowledge
         // block too, or a domain-restricted search is the one route that
         // silently skips the "do we already know this?" check.
-        self.finish_search(&input, ToolCallResult::success_json(filtered), banner)
+        self.finish_search(&input, ToolCallResult::success_json(filtered))
             .await
     }
 
     /// Every return path of `search_web` ends here, so the `prior_knowledge`
     /// opt-out cannot be honoured on one path and forgotten on another.
-    ///
-    /// The SearXNG banner goes on first so the prior-knowledge block, when
-    /// present, still leads: block, banner, results.
-    async fn finish_search(
-        &self,
-        input: &SearchInput,
-        result: ToolCallResult,
-        banner: Option<String>,
-    ) -> ToolCallResult {
-        let result = match banner {
-            Some(b) if result.is_error != Some(true) => ToolCallResult {
-                content: vec![agent_brain_protocol::Content::text(format!(
-                    "{b}\n\n{}",
-                    Self::result_text(&result)
-                ))],
-                is_error: result.is_error,
-                bulk: result.bulk,
-            },
-            _ => result,
-        };
+    async fn finish_search(&self, input: &SearchInput, result: ToolCallResult) -> ToolCallResult {
         if !input.prior_knowledge {
             return result;
         }
@@ -1349,7 +1292,7 @@ struct SearchInput {
     /// to each engine's own date filter.
     #[serde(default, deserialize_with = "crate::serde_flex::empty_string_as_none")]
     recency: Option<String>,
-    /// News results only (Exa `category`, Tavily `topic`, SearXNG and Serper
+    /// News results only (Exa `category`, Tavily `topic`, the Serper
     /// news verticals).
     #[serde(default)]
     news: bool,
@@ -1465,9 +1408,7 @@ mod tests {
     /// The bundled engines' rank order (`search_engines` tests check the files
     /// still give it).
     fn test_default() -> Vec<String> {
-        v(&[
-            "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave",
-        ])
+        v(&["exa", "tavily", "serper", "serpapi", "google", "brave"])
     }
 
     fn order_with_default(c: &str, r: Option<&str>, e: &[String]) -> Vec<String> {
@@ -1490,45 +1431,29 @@ mod tests {
     }
 
     #[test]
-    fn default_ladder_puts_searxng_last_before_the_uncapped_engine() {
+    fn default_ladder_follows_the_engine_ranks() {
         assert_eq!(
             order_with_default("", None, &[]),
-            v(&[
-                "exa", "tavily", "serper", "serpapi", "google", "searxng", "brave"
-            ])
+            v(&["exa", "tavily", "serper", "serpapi", "google", "brave"])
         );
     }
 
     #[test]
-    fn spent_keyed_engines_fall_behind_searxng_but_brave_stays_last() {
+    fn spent_keyed_engines_fall_behind_the_live_ones() {
         let ladder = order_with_default("", None, &v(&["exa", "tavily"]));
         let pos = |e: &str| ladder.iter().position(|x| x == e).unwrap();
-        assert!(pos("serper") < pos("searxng"));
-        assert!(pos("searxng") < pos("brave"));
-    }
-
-    #[test]
-    fn the_searxng_banner_names_why_and_the_date_caveat() {
-        let b = searxng_banner("keyed engines unavailable: exa (quota_exhausted)", true);
-        assert!(b.starts_with(SEARXNG_FALLBACK_BANNER));
-        assert!(b.contains("exa (quota_exhausted)"));
-        assert!(b.contains("undated ones may be old"));
-        assert!(!searxng_banner("requested explicitly", false).contains("date window"));
-        let text = format!("{b}\n\n[]");
-        assert_eq!(
-            agent_brain_knowledge::web_result::strip_fallback_banner(&text),
-            (true, "[]")
-        );
+        assert!(pos("serper") < pos("exa"));
+        assert!(pos("brave") < pos("tavily"));
     }
 
     #[test]
     fn unconfigured_engines_are_dropped_from_the_ladder() {
-        // Only searxng + serpapi have keys: google and brave leave the ladder
+        // Only exa + serpapi have keys: google and brave leave the ladder
         // entirely rather than wasting a rung on `not_configured` each call.
         let ladder = order_with_default("", None, &[]);
         assert_eq!(
-            retain_configured(ladder, &v(&["searxng", "serpapi"])),
-            v(&["serpapi", "searxng"])
+            retain_configured(ladder, &v(&["exa", "serpapi"])),
+            v(&["exa", "serpapi"])
         );
     }
 
@@ -1542,18 +1467,18 @@ mod tests {
 
     #[test]
     fn retain_configured_preserves_order() {
-        let ladder = v(&["searxng", "google", "serpapi", "brave"]);
+        let ladder = v(&["tavily", "google", "serpapi", "brave"]);
         assert_eq!(
-            retain_configured(ladder, &v(&["brave", "searxng"])),
-            v(&["searxng", "brave"])
+            retain_configured(ladder, &v(&["brave", "tavily"])),
+            v(&["tavily", "brave"])
         );
     }
 
     #[test]
     fn configured_order_overrides_the_default() {
         assert_eq!(
-            order_with_default("google, serpapi ,searxng", None, &[]),
-            v(&["google", "serpapi", "searxng"])
+            order_with_default("google, serpapi ,brave", None, &[]),
+            v(&["google", "serpapi", "brave"])
         );
     }
 
@@ -1569,7 +1494,7 @@ mod tests {
         let ladder = order_with_default("", Some("serpapi"), &[]);
         assert_eq!(ladder[0], "serpapi");
         assert_eq!(ladder.len(), test_default().len());
-        assert!(ladder.contains(&"searxng".to_string()));
+        assert!(ladder.contains(&"brave".to_string()));
     }
 
     #[test]
@@ -1582,8 +1507,8 @@ mod tests {
 
     #[test]
     fn exhausted_engines_are_demoted_not_removed() {
-        let ladder = order_with_default("", None, &v(&["searxng"]));
-        assert_eq!(*ladder.last().unwrap(), "searxng");
+        let ladder = order_with_default("", None, &v(&["tavily"]));
+        assert_eq!(*ladder.last().unwrap(), "tavily");
         assert_eq!(ladder.len(), test_default().len());
     }
 
@@ -1655,7 +1580,7 @@ mod tests {
 
     #[test]
     fn a_zero_result_answer_does_not_count_as_an_answer() {
-        // The signature of the SearXNG DNS outage: HTTP 200, well-formed body,
+        // The signature of the 2026-08-18 SearXNG DNS outage: HTTP 200, well-formed body,
         // no results. `is_error` is false, so only the count distinguishes it
         // from a working engine — and it must not end the ladder.
         let empty = ToolCallResult::success_text("[]");
@@ -1682,19 +1607,19 @@ mod tests {
         // move both to the back of the ladder (the sibling expansion happens in
         // engine_ladder; order_engines then demotes both).
         let ladder = order_with_default(
-            "searxng,google,serpapi,brave",
+            "exa,google,serpapi,brave",
             Some("google_news"),
             &v(&["serpapi", "google_news"]),
         );
         // Both siblings sink below the unmetered engine even though google_news
         // was explicitly requested.
-        assert_eq!(ladder[0], "searxng");
+        assert_eq!(ladder[0], "exa");
         assert!(
-            ladder.iter().position(|e| e == "serpapi") > ladder.iter().position(|e| e == "searxng")
+            ladder.iter().position(|e| e == "serpapi") > ladder.iter().position(|e| e == "brave")
         );
         assert!(
             ladder.iter().position(|e| e == "google_news")
-                > ladder.iter().position(|e| e == "searxng")
+                > ladder.iter().position(|e| e == "brave")
         );
     }
 }

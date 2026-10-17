@@ -249,13 +249,13 @@ mod tests {
             rung("exa", Some(Standing::OnPace), 40),
             rung("tavily", Some(Standing::OnPace), 12),
             rung("serper", Some(Standing::Spent), 0),
-            rung("searxng", None, 0),
+            rung("brave", None, 0),
             rung("tinyfish", Some(Standing::OnPace), 12),
         ];
         let (o, rotated) = order(&ladder, None);
         assert!(rotated);
         // Ties keep ladder order: tavily before tinyfish.
-        assert_eq!(o, ["tavily", "tinyfish", "exa", "searxng", "serper"]);
+        assert_eq!(o, ["tavily", "tinyfish", "exa", "brave", "serper"]);
     }
 
     #[test]
@@ -271,11 +271,11 @@ mod tests {
         let ladder = vec![
             rung("exa", Some(Standing::OnPace), 40),
             rung("tavily", Some(Standing::OnPace), 12),
-            rung("searxng", None, 0),
+            rung("brave", None, 0),
         ];
         let (o, rotated) = order(&ladder, Some("exa"));
         assert!(!rotated);
-        assert_eq!(o, ["exa", "tavily", "searxng"]);
+        assert_eq!(o, ["exa", "tavily", "brave"]);
     }
 
     #[test]
@@ -283,10 +283,10 @@ mod tests {
         let ladder = vec![
             rung("exa", Some(Standing::AheadOfPace), 40),
             rung("tavily", Some(Standing::RateLimited), 12),
-            rung("searxng", None, 0),
+            rung("brave", None, 0),
         ];
         let (o, rotated) = order(&ladder, None);
         assert!(!rotated);
-        assert_eq!(o, ["exa", "searxng", "tavily"]);
+        assert_eq!(o, ["exa", "brave", "tavily"]);
     }
 }

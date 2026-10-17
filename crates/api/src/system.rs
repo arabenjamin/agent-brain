@@ -634,7 +634,7 @@ mod tests {
     fn probe_urls_strip_suffixes_and_need_their_env() {
         let env = |k: &str| match k {
             "W" => Some("http://whisper:8000/v1/".to_string()),
-            "S" => Some("http://searxng:8080".to_string()),
+            "S" => Some("http://sandbox:8000".to_string()),
             "E" => Some("  ".to_string()),
             _ => None,
         };
@@ -644,7 +644,7 @@ mod tests {
         );
         assert_eq!(
             probe_url(&comp("S", None, "/healthz"), env).as_deref(),
-            Some("http://searxng:8080/healthz")
+            Some("http://sandbox:8000/healthz")
         );
         assert_eq!(probe_url(&comp("MISSING", None, "/h"), env), None);
         assert_eq!(

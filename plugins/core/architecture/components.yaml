@@ -65,10 +65,3 @@ components:
     path: /health
     purpose: Transcripts for media without captions.
 
-  - name: searxng
-    label: SearXNG
-    kind: search
-    probe: http
-    url_env: SEARXNG_URL
-    path: /healthz
-    purpose: Self-hosted metasearch, the last rung of the search ladder.

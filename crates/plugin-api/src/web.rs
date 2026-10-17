@@ -2,24 +2,6 @@
 //! and the epistemics plugin's claim verifier (moved here from the core's
 //! `services/web_result.rs`, which re-exports it).
 
-/// First line of the banner `search_web` puts ahead of a SearXNG answer.
-pub const SEARXNG_FALLBACK_BANNER: &str = "⚠ SEARXNG FALLBACK";
-
-/// Split a `search_web` result into (answered by the SearXNG fallback?, body).
-///
-/// The banner is text ahead of the JSON array, ended by a blank line, so a
-/// caller that parses the array must strip it first or it reads nothing.
-pub fn strip_fallback_banner(text: &str) -> (bool, &str) {
-    let trimmed = text.trim_start();
-    if !trimmed.starts_with(SEARXNG_FALLBACK_BANNER) {
-        return (false, text);
-    }
-    match trimmed.split_once("\n\n") {
-        Some((_, body)) => (true, body),
-        None => (true, ""),
-    }
-}
-
 /// Second-level labels that sit under a two-letter country code as part of the
 /// public suffix (`co.uk`, `com.cn`, `re.kr`). A parsing rule, not a source list.
 const CC_SECOND_LEVEL: &[&str] = &[
@@ -86,18 +68,6 @@ pub fn is_search_page(link: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_fallback_banner_is_stripped_and_reported() {
-        let text = format!(
-            "{SEARXNG_FALLBACK_BANNER} — keyed engines unavailable\nmore\n\n[{{\"link\":\"https://a.com\"}}]"
-        );
-        let (fallback, body) = strip_fallback_banner(&text);
-        assert!(fallback);
-        assert_eq!(body, r#"[{"link":"https://a.com"}]"#);
-        let plain = r#"[{"link":"https://a.com"}]"#;
-        assert_eq!(strip_fallback_banner(plain), (false, plain));
-    }
 
     #[test]
     fn engine_results_pages_are_search_pages() {
