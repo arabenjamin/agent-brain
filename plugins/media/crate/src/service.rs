@@ -234,17 +234,52 @@ impl MediaService {
     // Metadata + captions (yt-dlp)
     // ========================================================================
 
-    async fn run_yt_dlp_json(&self, url: &str) -> anyhow::Result<Value> {
-        let output = tokio::process::Command::new(&self.yt_dlp_path)
-            .args(["-J", "--no-warnings", "--no-playlist", url])
+    /// Run yt-dlp through the gate ([`YtDlpGate`]): wait for its slot, refuse
+    /// while backing off, and start a back-off when the answer is a bot check.
+    async fn yt_dlp(&self, args: &[&str], what: &str) -> anyhow::Result<std::process::Output> {
+        let wait = {
+            let mut gate = YT_DLP_GATE.lock().await;
+            let now = tokio::time::Instant::now();
+            if let Some((at, utc)) = gate.backoff_until
+                && at > now
+            {
+                anyhow::bail!(backoff_message(utc));
+            }
+            let start = gate.next_start.max(now);
+            gate.next_start = start
+                + std::time::Duration::from_secs(env_secs("MEDIA_YTDLP_MIN_INTERVAL_SECS", 20));
+            start - now
+        };
+        if !wait.is_zero() {
+            debug!(what, wait_ms = wait.as_millis() as u64, "yt-dlp paced");
+            tokio::time::sleep(wait).await;
+        }
+        let out = tokio::process::Command::new(&self.yt_dlp_path)
+            .args(args)
             .output()
             .await
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "failed to run yt-dlp ('{}'): {e}. Install yt-dlp or set YT_DLP_PATH.",
+                    "failed to run yt-dlp ('{}') for {what}: {e}. Install yt-dlp or set YT_DLP_PATH.",
                     self.yt_dlp_path
                 )
             })?;
+        if !out.status.success() && is_bot_check(&String::from_utf8_lossy(&out.stderr)) {
+            let mins = env_secs("MEDIA_YTDLP_BOT_BACKOFF_MINS", 60);
+            let until_utc = chrono::Utc::now() + chrono::Duration::minutes(mins as i64);
+            YT_DLP_GATE.lock().await.backoff_until = Some((
+                tokio::time::Instant::now() + std::time::Duration::from_secs(mins * 60),
+                until_utc,
+            ));
+            warn!(what, until = %until_utc, "YouTube bot check — yt-dlp backs off");
+        }
+        Ok(out)
+    }
+
+    async fn run_yt_dlp_json(&self, url: &str) -> anyhow::Result<Value> {
+        let output = self
+            .yt_dlp(&["-J", "--no-warnings", "--no-playlist", url], "metadata")
+            .await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("yt-dlp failed: {}", stderr.trim());
@@ -294,11 +329,7 @@ impl MediaService {
         args.push("--playlist-items");
         args.push("1");
         args.push(&target);
-        let output = tokio::process::Command::new(&self.yt_dlp_path)
-            .args(&args)
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to run yt-dlp for channel resolution: {e}"))?;
+        let output = self.yt_dlp(&args, "channel resolution").await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("yt-dlp channel resolution failed: {}", stderr.trim());
@@ -385,24 +416,27 @@ impl MediaService {
 
         // Match the exact lang plus regional variants (en, en-US, en-orig, …).
         let lang_pat = format!("{lang},{lang}-.*,{lang}.*", lang = self.caption_lang);
-        let out = tokio::process::Command::new(&self.yt_dlp_path)
-            .args([
-                "--skip-download",
-                "--no-warnings",
-                "--no-playlist",
-                "--write-subs",
-                "--write-auto-subs",
-                "--sub-langs",
-                &lang_pat,
-                "--sub-format",
-                "json3",
-                "-o",
-                "%(id)s",
-                "-P",
-                &dir.to_string_lossy(),
-                url,
-            ])
-            .output()
+        let dir_s = dir.to_string_lossy().to_string();
+        let out = self
+            .yt_dlp(
+                &[
+                    "--skip-download",
+                    "--no-warnings",
+                    "--no-playlist",
+                    "--write-subs",
+                    "--write-auto-subs",
+                    "--sub-langs",
+                    &lang_pat,
+                    "--sub-format",
+                    "json3",
+                    "-o",
+                    "%(id)s",
+                    "-P",
+                    &dir_s,
+                    url,
+                ],
+                "captions",
+            )
             .await;
 
         let text = self.read_first_json3(&dir).await;
@@ -414,10 +448,7 @@ impl MediaService {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 warn!(video = %id, stderr = %stderr.trim(), "yt-dlp subtitle download reported failure");
             }
-            Err(e) => anyhow::bail!(
-                "failed to run yt-dlp ('{}') for captions: {e}",
-                self.yt_dlp_path
-            ),
+            Err(e) => return Err(e),
             _ => {}
         }
         Ok(text.filter(|t| !t.trim().is_empty()))
@@ -599,21 +630,23 @@ impl MediaService {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
             anyhow::anyhow!("could not create audio scratch dir {}: {e}", dir.display())
         })?;
-        let out = tokio::process::Command::new(&self.yt_dlp_path)
-            .args([
-                "-f",
-                "bestaudio/best",
-                "--no-warnings",
-                "--no-playlist",
-                "-o",
-                "%(id)s.%(ext)s",
-                "-P",
-                &dir.to_string_lossy(),
-                url,
-            ])
-            .output()
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to run yt-dlp for audio: {e}"))?;
+        let dir_s = dir.to_string_lossy().to_string();
+        let out = self
+            .yt_dlp(
+                &[
+                    "-f",
+                    "bestaudio/best",
+                    "--no-warnings",
+                    "--no-playlist",
+                    "-o",
+                    "%(id)s.%(ext)s",
+                    "-P",
+                    &dir_s,
+                    url,
+                ],
+                "audio",
+            )
+            .await?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -1518,6 +1551,56 @@ fn split_sentences(text: &str) -> Vec<String> {
 /// Whether a yt-dlp failure means the video simply has not aired yet — a
 /// scheduled premiere or an upcoming live event. Not transient on the scale of
 /// a job's retries, not permanent either: skip it now, pick it up later.
+/// YouTube's "Sign in to confirm you're not a bot": an IP whose requests look
+/// automated. Measured 2026-10-16: it hit bursts (3-4 yt-dlp calls in one
+/// minute) from a Mullvad exit, while calls spaced minutes apart from the same
+/// kind of address went through.
+pub fn is_bot_check(err: &str) -> bool {
+    let e = err.to_ascii_lowercase().replace('\u{2019}', "'");
+    e.contains("confirm you're not a bot") || e.contains("sign in to confirm")
+}
+
+/// Every yt-dlp call passes one process-wide gate: starts are spaced
+/// `MEDIA_YTDLP_MIN_INTERVAL_SECS` apart (default 20), and a bot check stops
+/// them for `MEDIA_YTDLP_BOT_BACKOFF_MINS` (default 60), so a burst cannot
+/// re-trigger it. While backing off a call fails at once and says until when;
+/// the feed poll skips video items, which come back on a later poll.
+struct YtDlpGate {
+    next_start: tokio::time::Instant,
+    backoff_until: Option<(tokio::time::Instant, chrono::DateTime<chrono::Utc>)>,
+}
+
+static YT_DLP_GATE: std::sync::LazyLock<tokio::sync::Mutex<YtDlpGate>> =
+    std::sync::LazyLock::new(|| {
+        tokio::sync::Mutex::new(YtDlpGate {
+            next_start: tokio::time::Instant::now(),
+            backoff_until: None,
+        })
+    });
+
+fn env_secs(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+/// When YouTube's bot back-off ends, if one is on.
+pub async fn youtube_backoff_until() -> Option<chrono::DateTime<chrono::Utc>> {
+    let gate = YT_DLP_GATE.lock().await;
+    gate.backoff_until
+        .filter(|(at, _)| *at > tokio::time::Instant::now())
+        .map(|(_, utc)| utc)
+}
+
+fn backoff_message(until: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "YouTube bot check: backing off until {} UTC; yt-dlp is not called before then \
+         (the feed poll proposes skipped videos again later)",
+        until.format("%H:%M")
+    )
+}
+
 pub fn is_not_yet_available(err: &str) -> bool {
     let e = err.to_ascii_lowercase();
     e.contains("live event will begin")
@@ -1554,6 +1637,12 @@ mod tests {
         assert!(is_not_yet_available(
             "ERROR: [youtube] x: Premieres in 2 days"
         ));
+        // The bot check is its own outcome, with both apostrophes YouTube uses.
+        assert!(is_bot_check(
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser"
+        ));
+        assert!(is_bot_check("Sign in to confirm you\u{2019}re not a bot"));
+        assert!(!is_bot_check("ERROR: [youtube] abc: Video unavailable"));
         assert!(!is_not_yet_available(
             "ERROR: [youtube] x: Video unavailable"
         ));

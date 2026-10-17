@@ -135,6 +135,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ADD https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux /usr/local/bin/yt-dlp
 RUN chmod 0755 /usr/local/bin/yt-dlp
 
+# deno: yt-dlp solves YouTube's JavaScript challenges with it (yt-dlp's EJS;
+# only deno is enabled by default). Without it yt-dlp warns that YouTube
+# extraction "has been deprecated" and its requests look less like a real
+# client, one reason for the 2026-10-16 "Sign in to confirm you're not a bot"
+# blocks. The official binary-only image, pinned.
+COPY --from=denoland/deno:bin-2.9.7 /deno /usr/local/bin/deno
+
 # Create non-root user
 RUN useradd -m -u 1000 agent
 

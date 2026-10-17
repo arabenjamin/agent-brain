@@ -430,6 +430,7 @@ impl MediaSkill {
 
         let mut polled = 0usize;
         let mut created = 0usize;
+        let mut deferred = 0usize;
         let mut goals = Vec::new();
         for ms in sources {
             polled += 1;
@@ -482,6 +483,14 @@ impl MediaSkill {
                 let max = self.svc.max_duration_secs();
                 // Articles have no duration, live state, or premiere: the
                 // yt-dlp probe below is for video and would fail on a web page.
+                // A YouTube bot back-off: no probe, no task, no dedup record,
+                // so a later poll proposes the video once it is over.
+                if !is_article && let Some(until) = crate::service::youtube_backoff_until().await {
+                    deferred += 1;
+                    info!(source = %ms.name, url = %item.url, %until,
+                        "poll_media_sources: YouTube bot back-off; video deferred to a later poll");
+                    continue;
+                }
                 if !is_article {
                     match self.svc.fetch_meta(&item.url).await {
                         // ── Live broadcast: skip WITHOUT a dedup record ──────
@@ -579,6 +588,7 @@ impl MediaSkill {
             "enabled": true,
             "sources_polled": polled,
             "tasks_created": created,
+            "deferred_bot_check": deferred,
             "max_per_source": max_per_source,
             "goals": goals,
         }))
