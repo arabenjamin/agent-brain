@@ -109,12 +109,18 @@ pre_load_query: |-
     AS content
   ORDER BY t.priority ASC, t.due_at ASC
   LIMIT 15
-model_preference: gemma4:31b-cloud
-provider_hint: ollama-cloud
+# PAID front door since 2026-10-17 (owner's choice): Haiku 5.5 at $0.10 / $0.50
+# per MTok, about 1-2 cents a turn. Anthropic is no_log, so private chat may
+# use it, and its $1/day, $10/month cap (models.yaml) is shared with the
+# investigations' Sonnet synthesis. A refused pin (cap reached, no key) is
+# reported in the stream and the turn walks the free models below.
+model_preference: claude-haiku-5-5
+provider_hint: anthropic
 spawnable: false
 specialty: null
 data_class: private
 fallback_models:
+- gemma4:31b-cloud
 - gpt-oss:120b-cloud
 - gemini-2.5-flash
 # The router (GRAPH_CONTEXT_PLAN Phase 3): before each turn the local model
