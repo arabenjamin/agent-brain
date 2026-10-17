@@ -1,7 +1,9 @@
 # =============================================================================
 # Stage 1: Build
 # =============================================================================
-FROM rust:latest AS builder
+# Debian release matches the runtime stage; the compiler version comes from
+# rust-toolchain.toml (rustup installs it on the first cargo call).
+FROM rust:1-trixie AS builder
 
 WORKDIR /app
 
@@ -12,7 +14,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for dependency caching
-COPY Cargo.toml ./
+# Cargo.lock is committed and every build is --locked: the image gets exactly
+# the versions the host tested. Update them with scripts/update_deps.sh.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 # Patched dependency ([patch.crates-io] in Cargo.toml), needed to resolve.
 COPY vendor/ ./vendor/
 COPY crates/protocol/Cargo.toml ./crates/protocol/
@@ -89,7 +93,7 @@ RUN mkdir -p crates/protocol/src \
     echo "" > plugins/sandbox/crate/src/lib.rs && \
     echo "" > plugins/research/crate/src/lib.rs && \
     echo "fn main() {}" > crates/app/src/main.rs && \
-    cargo build --release 2>/dev/null || true && \
+    cargo build --release --locked 2>/dev/null || true && \
     rm -rf crates/*/src plugins/*/crate/src \
            target/release/.fingerprint/agent* \
            target/release/deps/agent* \
@@ -101,7 +105,7 @@ COPY crates ./crates
 COPY plugins ./plugins
 
 # Build the application
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # =============================================================================
 # Stage 2: Runtime

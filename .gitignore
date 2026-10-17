@@ -2,7 +2,6 @@
 /target
 /snapshots
 /backups
-Cargo.lock
 
 # Node stuff
 hbi-frontend/node_modules

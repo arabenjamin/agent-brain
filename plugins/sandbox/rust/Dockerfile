@@ -9,7 +9,7 @@
 #     which is read-only and works that way (verified 2026-09-12).
 #   - The run scratch must allow exec: Rust compiles test binaries and build
 #     scripts and has to run them. That lives in compose, not here.
-FROM rust:1.98.1-slim-trixie
+FROM rust:1.99.1-slim-trixie
 
 RUN rustup component add clippy rustfmt \
  && apt-get update \

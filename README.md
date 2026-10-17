@@ -25,7 +25,7 @@ I have a NVidia3060, and the goal was to get this to work locally on a small GPU
 
 ## Prerequisites
 
-- Rust 1.75+
+- Rust via rustup: the version is pinned in `rust-toolchain.toml` and installed automatically
 - Docker & Docker Compose
 - Ollama (for LLM features, or llama.cpp)
 
@@ -171,6 +171,16 @@ cargo run --release -- serve --transport http --bind 0.0.0.0:8080 --api-key your
 docker compose up -d --build
 # With API key
 MCP_API_KEY=secret docker compose up -d --build
+```
+
+### Keeping dependencies current
+
+`Cargo.lock` is committed and the image builds `--locked`, so the container runs exactly what was tested on the host. Update on purpose:
+
+```bash
+scripts/update_deps.sh                 # latest compatible crates: build, clippy, tests; restores the lock on failure
+scripts/update_deps.sh --rust 1.99.1   # also move the compiler pin (brain + Rust sandbox)
+docker compose up -d --build agent-brain   # then commit Cargo.lock
 ```
 
 

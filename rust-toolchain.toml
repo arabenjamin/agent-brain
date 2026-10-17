@@ -1,0 +1,6 @@
+# The one place the compiler version is named. rustup on the host and in the
+# Docker builder both obey it. Bump it with scripts/update_deps.sh.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -788,6 +788,32 @@ mod tests {
         }
     }
 
+    /// The Rust sandbox builds from its own context, so it names its compiler
+    /// itself; it must be the one rust-toolchain.toml pins for the brain, or
+    /// code the brain tests there is compiled by a different rustc than its own.
+    /// `scripts/update_deps.sh --rust X` moves both.
+    #[test]
+    fn the_rust_sandbox_runs_the_pinned_compiler() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let toolchain = std::fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
+        let pinned = toolchain
+            .lines()
+            .find_map(|l| l.strip_prefix("channel = \""))
+            .and_then(|l| l.strip_suffix('"'))
+            .expect("rust-toolchain.toml names a channel");
+        let dockerfile =
+            std::fs::read_to_string(root.join("plugins/sandbox/rust/Dockerfile")).unwrap();
+        let from = dockerfile
+            .lines()
+            .find(|l| l.starts_with("FROM rust:"))
+            .expect("the sandbox builds FROM rust:");
+        assert_eq!(
+            from,
+            format!("FROM rust:{pinned}-slim-trixie"),
+            "the Rust sandbox and rust-toolchain.toml disagree"
+        );
+    }
+
     #[test]
     fn a_missing_core_refuses() {
         let tmp = tempfile::tempdir().unwrap();
