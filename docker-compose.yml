@@ -272,6 +272,15 @@ services:
       - GIT_USER_EMAIL=${GIT_USER_EMAIL:-agent-brain@noreply.local}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Tailscale MagicDNS first, so tailnet names (*.ts.net) resolve inside the
+    # container; Docker service names still resolve through Docker's own DNS.
+    # Without it Docker forwards to the host's first resolver (8.8.8.8), which
+    # does not know the tailnet, and home_assistant failed to resolve
+    # (found 2026-10-16). Reaching a tailnet host is still the network
+    # policy's call: only HTTP_ALLOW_INTERNAL entries get through.
+    dns:
+      - 100.100.100.100
+      - 8.8.8.8
     volumes:
       - /home/ara/gadgetlabs:/home/agent/gadgetlabs:ro
       - /home/ara/agent-brain:/home/agent/agent-brain:rw
