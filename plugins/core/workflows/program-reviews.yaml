@@ -1,6 +1,6 @@
 # PROGRAMS_PLAN.md Phase 3: once a day, start a program-review run for every
 # active program whose `review.every` has passed. Seeded OFF: each review is a
-# paid call (Haiku 5.5, about a tenth of a cent); the owner turns it on.
+# paid call (Haiku 5.5, about $0.003 measured 2026-10-17); the owner turns it on.
 name: program-reviews
 description: "Daily: starts a program-review run for every active program whose review is due (its review.every has passed). Deterministic; the reviews themselves call program-manager. Seeded disabled for the owner to turn on."
 topic: agent-brain

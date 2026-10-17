@@ -1335,9 +1335,15 @@ pub struct ReviewProposal {
 pub fn parse_review(text: &str) -> Result<ProgramReview, String> {
     let v = agent_brain_llm::llm::first_json_object(text, &["verdict", "summary"]).ok_or_else(
         || {
+            if text.contains("[TRUNCATED") {
+                return "the manager's answer was cut off at the model's output limit, so its \
+                        JSON is incomplete"
+                    .to_string();
+            }
+            let n = text.chars().count();
             format!(
-                "the review has no JSON object with `verdict` and `summary`; it began: {}",
-                text.chars().take(300).collect::<String>()
+                "the review has no complete JSON object with `verdict` and `summary`; it ends: {}",
+                text.chars().skip(n.saturating_sub(300)).collect::<String>()
             )
         },
     )?;
@@ -1897,8 +1903,16 @@ mod tests {
         assert!(
             parse_review("no json here")
                 .unwrap_err()
-                .contains("no JSON object")
+                .contains("no complete JSON object")
         );
+    }
+
+    /// A reply the model stopped at its output limit says so (Brain Ops,
+    /// 2026-10-17: Haiku thought, then ran out mid-JSON).
+    #[test]
+    fn a_cut_off_review_says_it_was_cut_off() {
+        let text = "{\"verdict\": \"attention\", \"summary\": \"x\", \"findings\": [\"a\"\n\n[TRUNCATED: the model reached its output limit]";
+        assert!(parse_review(text).unwrap_err().contains("cut off"));
     }
 
     #[test]

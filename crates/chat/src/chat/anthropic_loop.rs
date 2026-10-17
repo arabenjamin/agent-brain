@@ -1,6 +1,10 @@
 //! Anthropic wire format: `/v1/messages` with native `tool_use` /
 //! `tool_result` content blocks (non-streaming).
 
+/// Appended to a reply the model stopped at its output limit.
+pub const TRUNCATED_MARK: &str =
+    "\n\n[TRUNCATED: the model reached its output limit (max_tokens); this answer is cut off.]";
+
 use super::*;
 
 struct AnthropicTurn {
@@ -135,7 +139,11 @@ impl ProviderTurn for AnthropicTurn {
         let model = self.config.model.clone();
         let mut body = json!({
             "model": model,
-            "max_tokens": 4096,
+            // The provider's ceiling, not the old 4096: thinking counts against
+            // it, and on 2026-10-17 Haiku 5.5 thought, then ran out ~1K tokens
+            // into a program review's JSON. A ceiling is not a charge.
+            "max_tokens": agent_brain_llm::llm_providers::anthropic::DEFAULT_MAX_TOKENS
+                .max(self.config.max_tokens.unwrap_or(0)),
             "system": cached_system(&self.system_prompt),
             "tools": self.tools,
             "messages": cached_messages(&self.messages),
@@ -246,6 +254,12 @@ impl ProviderTurn for AnthropicTurn {
             }
         }
         self.last_blocks = blocks;
+        // A reply cut off at the output limit says so, instead of reading as
+        // a whole answer that happens to end mid-sentence.
+        if resp_json["stop_reason"].as_str() == Some("max_tokens") {
+            tracing::warn!(model = %model, "Anthropic reply hit max_tokens — marked truncated");
+            text.push_str(TRUNCATED_MARK);
+        }
 
         Ok(RoundReply {
             text,

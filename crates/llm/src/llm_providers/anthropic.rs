@@ -10,7 +10,7 @@ use crate::llm::{ChatMessage, LlmResponse};
 /// on by default and its tokens count against `max_tokens`, so the old 4096
 /// truncated a ~3K-token report once the model had thought first. It is a
 /// ceiling, not a charge — only generated tokens are billed.
-const DEFAULT_MAX_TOKENS: u32 = 16_000;
+pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 
 /// Floor on the request timeout. A thinking model writing a report over a
 /// ~55K-token prompt runs past the shared 120s cloud default, and a call killed

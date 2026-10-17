@@ -314,7 +314,9 @@ manager separate keeps chat a conversation and the review a scheduled job.
 ## 14. Reviews turned on (owner, 2026-10-17)
 
 `program-reviews` is enabled, and every reviewed program's `review.every` is
-`30d` (was `1w`): about a cent a month for the ten programs on Haiku 5.5. The
+`30d` (was `1w`). The first batch (2026-10-17) measured about three cents a
+month for the ten programs on Haiku 5.5 (about $0.003 a review, mostly thinking
+tokens), not the one cent estimated. The
 dispatcher still runs daily, deterministically and without a model call; it
 starts only the reviews that are due. Shared services is not reviewed. The
 form's agent assist now drafts `review: 30d` for a department.
