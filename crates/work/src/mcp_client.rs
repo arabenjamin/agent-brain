@@ -113,7 +113,10 @@ impl McpClient {
         Self {
             // Some servers refuse a request with no User-Agent: Exa's hosted
             // MCP answers 403 (found 2026-09-26), and reqwest sends none.
-            http: reqwest::Client::builder()
+            // Under the network policy: `mcp_call` also takes a bare URL a
+            // model chose. The registered servers are public; an internal one
+            // goes in HTTP_ALLOW_INTERNAL.
+            http: agent_brain_protocol::net_policy::guard(reqwest::Client::builder())
                 .user_agent(concat!("agent-brain/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .unwrap_or_default(),
@@ -168,10 +171,13 @@ impl McpClient {
         }
         req = self.with_auth(req, cfg);
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("{}: request failed: {e}", cfg.name))?;
+        let resp =
+            req.send().await.map_err(|e| {
+                match agent_brain_protocol::net_policy::refusal_in(&e) {
+                    Some(why) => format!("{}: not requested: {why}", cfg.name),
+                    None => format!("{}: request failed: {e}", cfg.name),
+                }
+            })?;
         let status = resp.status();
         let sid = resp
             .headers()

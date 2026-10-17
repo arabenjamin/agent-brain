@@ -26,6 +26,7 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use agent_brain_plugin_api::Llm as LlmProvider;
+use agent_brain_plugin_api::protocol::net_policy;
 
 /// A recent item discovered from a channel/playlist/podcast feed.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -132,7 +133,8 @@ impl MediaService {
             media_dir: std::env::var("MEDIA_DIR")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| std::env::temp_dir()),
-            http: reqwest::Client::new(),
+            // A media or article URL comes from a model: public hosts only.
+            http: net_policy::guarded_client(),
             reader: None,
         }
     }
@@ -256,6 +258,7 @@ impl MediaService {
     /// candidate's duration and filter out over-length videos before they become
     /// Tasks (RSS feeds carry no duration, so a probe is the only way to know).
     pub async fn fetch_meta(&self, url: &str) -> anyhow::Result<VideoMeta> {
+        net_check(url).await?;
         let v = self.run_yt_dlp_json(url).await?;
         self.parse_meta(&v)
     }
@@ -439,7 +442,11 @@ impl MediaService {
     /// captions (Whisper fallback); direct audio URLs (podcast enclosures) and
     /// local files always transcribe via Whisper.
     pub async fn fetch_transcript(&self, url: &str) -> anyhow::Result<(VideoMeta, String, String)> {
-        match self.classify_input(url)? {
+        let input = self.classify_input(url)?;
+        if !matches!(input, MediaInput::LocalFile(_)) {
+            net_check(url).await?;
+        }
+        match input {
             MediaInput::YtDlp(u) => self.fetch_via_ytdlp(&u).await,
             MediaInput::DirectMedia(u) => self.fetch_via_direct_media(&u).await,
             MediaInput::LocalFile(p) => self.fetch_via_local_file(&p).await,
@@ -811,6 +818,7 @@ impl MediaService {
     /// paywall or a script-rendered page, permanent for that URL.
     pub async fn fetch_article(&self, url: &str) -> anyhow::Result<(VideoMeta, String)> {
         Self::validate_url(url)?;
+        net_check(url).await?;
         // 1. Our own fetch: free, and enough for server-rendered CMS pages.
         let (html, own_status) = match self.fetch_html(url).await {
             Ok(h) => (Some(h), None),
@@ -1516,6 +1524,22 @@ pub fn is_not_yet_available(err: &str) -> bool {
         || e.contains("premieres in")
         || e.contains("premiere will begin")
         || e.contains("is_upcoming")
+}
+
+/// The network policy for a URL a model handed the media tools: an IP-literal
+/// host, then where a name resolves. yt-dlp makes its own lookup afterwards,
+/// so for that path this narrows the window rather than closing it; the
+/// reqwest paths are also guarded on every connection.
+async fn net_check(url: &str) -> anyhow::Result<()> {
+    net_policy::check_url_str(url).map_err(|why| anyhow::anyhow!("Not fetched: {why}"))?;
+    if let Ok(u) = url::Url::parse(url)
+        && let Some(url::Host::Domain(host)) = u.host()
+    {
+        net_policy::check_host(host)
+            .await
+            .map_err(|why| anyhow::anyhow!("Not fetched: {why}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

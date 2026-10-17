@@ -147,6 +147,11 @@ services:
       # Every tool call's arguments checked against the tool's schema (off |
       # shadow | enforce). shadow records misfits in DuckDB arg_checks and runs the call.
       - TOOL_ARG_CHECK=${TOOL_ARG_CHECK:-shadow}
+      # Internal hosts a model's URL may reach (http_request, read_page, media,
+      # mcp_call): comma-separated host or host:port. Everything else internal
+      # (loopback, private, link-local, tailnet, Docker services) is refused.
+      # Set the value in .env, not here: it names hosts on the owner's network.
+      - HTTP_ALLOW_INTERNAL=${HTTP_ALLOW_INTERNAL:-}
       # The front door's router (GRAPH_CONTEXT_PLAN Phase 3): the profile's
       # `routing:` block picks each turn's first stop on the local E4B. "off"
       # turns it off. The Nimble check is off by default: on the shared 8 GB GPU

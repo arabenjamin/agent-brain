@@ -9,6 +9,7 @@
 //! then our own direct fetch. Raw files go to the direct fetch first. Every
 //! attempt is a row in the `read_usage` ledger.
 
+use agent_brain_protocol::net_policy;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -99,7 +100,7 @@ pub struct ReadSkill {
 impl ReadSkill {
     pub fn new(telemetry: Option<TelemetryClient>) -> Self {
         Self {
-            client: Client::new(),
+            client: net_policy::guarded_client(),
             telemetry,
         }
     }
@@ -200,6 +201,17 @@ impl ReadSkill {
         let url = url.trim();
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(format!("not an http(s) URL: {url:?}"));
+        }
+        // Before any reader: our direct GET would reach it, and a hosted reader
+        // would be handed an internal address. The direct reader's client is
+        // guarded as well, for the redirects this check cannot see.
+        net_policy::check_url_str(url).map_err(|why| format!("Not read: {why}"))?;
+        if let Ok(parsed) = url::Url::parse(url)
+            && let Some(url::Host::Domain(host)) = parsed.host()
+        {
+            net_policy::check_host(host)
+                .await
+                .map_err(|why| format!("Not read: {why}"))?;
         }
         let (ladder, how) = self.ladder(url, pinned);
         if ladder.is_empty() {

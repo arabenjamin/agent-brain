@@ -8,6 +8,7 @@
 //! `define_api_context` manages the `ApiContext` nodes that power auth injection.
 //! Use `neo4j_query` to inspect contexts: MATCH (c:ApiContext) RETURN c
 
+use agent_brain_protocol::net_policy;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -139,7 +140,9 @@ impl HttpSkill {
     pub fn new(neo4j: Option<Neo4jClient>, llm: Option<Arc<dyn LlmProvider>>) -> Self {
         Self {
             neo4j,
-            client: reqwest::Client::builder()
+            // Under the network policy: a model's URL reaches public hosts only
+            // (agent_brain_protocol::net_policy).
+            client: net_policy::guard(reqwest::Client::builder())
                 .timeout(Duration::from_secs(30))
                 .user_agent("agent-brain/1.0")
                 .build()
@@ -392,7 +395,7 @@ impl HttpSkill {
         };
 
         let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(10_000));
-        let client = reqwest::Client::builder()
+        let client = net_policy::guard(reqwest::Client::builder())
             .timeout(timeout)
             .user_agent("agent-brain/1.0")
             .build()
@@ -420,6 +423,10 @@ impl HttpSkill {
             Ok(u) => u,
             Err(e) => return ToolCallResult::error(e),
         };
+        // An IP-literal host never reaches the guarded resolver; judge it here.
+        if let Err(why) = net_policy::check_url_str(&url) {
+            return ToolCallResult::error(format!("Not requested: {why}"));
+        }
 
         // Build the request
         let method = match input.method.to_uppercase().as_str() {
@@ -521,7 +528,10 @@ impl HttpSkill {
                 });
                 ToolCallResult::success_json(response)
             }
-            Err(e) => ToolCallResult::error(format!("HTTP request to {url} failed: {e}")),
+            Err(e) => match net_policy::refusal_in(&e) {
+                Some(why) => ToolCallResult::error(format!("Not requested: {why}")),
+                None => ToolCallResult::error(format!("HTTP request to {url} failed: {e}")),
+            },
         }
     }
 
@@ -723,12 +733,16 @@ impl HttpSkill {
     /// process (which has egress), never the sandbox.
     async fn fetch_text(&self, url: &str) -> Result<String, String> {
         const MAX_BYTES: usize = 8 * 1024 * 1024;
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to fetch {url}: {e}"))?;
+        net_policy::check_url_str(url).map_err(|why| format!("Not fetched: {why}"))?;
+        let resp =
+            self.client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| match net_policy::refusal_in(&e) {
+                    Some(why) => format!("Not fetched: {why}"),
+                    None => format!("Failed to fetch {url}: {e}"),
+                })?;
         if !resp.status().is_success() {
             return Err(format!("{url} returned {}", resp.status()));
         }

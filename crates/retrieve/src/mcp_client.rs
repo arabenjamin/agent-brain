@@ -72,6 +72,8 @@ impl McpClientSkill {
 
         // Fallback: a bare URL is a keyless server addressed directly.
         if server.starts_with("https://") || server.starts_with("http://") {
+            agent_brain_protocol::net_policy::check_url_str(server)
+                .map_err(|why| format!("Not requested: {why}"))?;
             return Ok(McpServerConfig::keyless(server));
         }
 

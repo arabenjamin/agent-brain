@@ -4,6 +4,7 @@
 //! `services/` layer and the `mcp/` transport layer, breaking the circular
 //! dependency between those two modules.
 
+pub mod net_policy;
 pub mod params;
 pub mod skill;
 pub mod sse_notifier;

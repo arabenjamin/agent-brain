@@ -336,7 +336,10 @@ async fn read_direct(client: &Client, url: &str) -> Result<Page, String> {
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|e| match agent_brain_protocol::net_policy::refusal_in(&e) {
+            Some(why) => format!("Not read: {why}"),
+            None => format!("Request failed: {e}"),
+        })?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("direct read failed: HTTP {status}"));
