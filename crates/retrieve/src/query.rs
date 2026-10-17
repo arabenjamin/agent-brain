@@ -45,6 +45,27 @@ pub fn bolt_param(v: &Value) -> Result<neo4rs::BoltType, String> {
 /// The first write keyword in `cypher`, if any. A keyword counts as a whole
 /// word: exact, or followed by a non-word character (`CREATE(` is a write;
 /// `created_at` is not).
+/// What a model is told when its query would write.
+const WRITE_HINT: &str = "To change the graph, use the tool for it (store_note, update_task, \
+     manage_todo, manage_workflow, ...). A raw Cypher write runs only from a workflow step or \
+     an operator's direct call.";
+
+const WRITE_REFUSED: &str = "readonly=false refused: chat turns and agents read the graph and \
+     never write it with raw Cypher. To change the graph, use the tool for it (store_note, \
+     update_task, manage_todo, manage_workflow, ...).";
+
+/// Whether this call may run a raw Cypher write: a queued workflow step or an
+/// operator's direct MCP/REST call (both `Purpose::Background`), never a chat
+/// turn or an agent loop, whose tool calls run scoped as `Chat` / `Subagent`.
+pub fn writes_allowed_here() -> bool {
+    !validation::model_driven_call()
+}
+
+/// Neo4j's answer to a write sent in read access mode.
+fn is_read_mode_refusal(err: &str) -> bool {
+    err.contains("read access mode")
+}
+
 pub fn write_keyword(cypher: &str) -> Option<&'static str> {
     let upper = cypher.to_uppercase();
     [
@@ -181,8 +202,12 @@ impl QuerySkill {
         ToolDefinition {
             name: "neo4j_query".to_string(),
             description: "Execute a Cypher query against Neo4j. \
-                          Read-only by default (readonly=true); set readonly=false to allow \
-                          CREATE/MERGE/SET/DELETE. Use params for safe parameter binding. \
+                          Read-only: the query runs in Neo4j's read access mode, so the \
+                          server refuses any write. Writes (readonly=false) run only from \
+                          a workflow step or an operator's direct call, never from chat or \
+                          an agent; to change the graph from here use the tool for it \
+                          (store_note, update_task, manage_todo, ...). Use params for safe \
+                          parameter binding. \
                           TIMESTAMPS: every temporal property (created_at, updated_at, \
                           next_review_at, asserted_at, next_run_at, …) is a native Neo4j \
                           DATETIME in UTC — never a string. Comparing one to a quoted \
@@ -205,7 +230,7 @@ impl QuerySkill {
                     },
                     "readonly": {
                         "type": "boolean",
-                        "description": "Reject write keywords when true (default: true)"
+                        "description": "Default true. false is honoured only in a workflow step or an operator's direct call"
                     },
                     "limit": {
                         "type": "integer",
@@ -781,13 +806,20 @@ impl QuerySkill {
             Err(e) => return ToolCallResult::error(format!("Invalid args: {}", e)),
         };
 
-        // Safety guard for read-only mode — checked before the DB call so it
-        // fires even when Neo4j is unavailable (fail-fast on bad input).
+        // Who may write is decided by where the call runs, never by an argument
+        // the model sends: a chat turn or an agent loop always reads. Before
+        // 2026-10-16 `readonly: false` from any caller turned writes on, and the
+        // refusal said how.
+        if !input.readonly && !writes_allowed_here() {
+            return ToolCallResult::error(WRITE_REFUSED.to_string());
+        }
+        // A fast, readable refusal for the plain cases. Not the guard: a
+        // keyword scan misses `(n)SET`; read access mode below is the guard.
         if input.readonly
             && let Some(kw) = write_keyword(&input.cypher)
         {
             return ToolCallResult::error(format!(
-                "Write keyword '{kw}' rejected in readonly mode. Pass readonly=false to allow writes."
+                "Write keyword '{kw}' rejected: neo4j_query reads. {WRITE_HINT}"
             ));
         }
 
@@ -827,6 +859,9 @@ impl QuerySkill {
         // Build the query with params. Lists and maps bind as Cypher lists and
         // maps: as JSON text (before 2026-10-13) `UNWIND $ids` matched nothing.
         let mut q = neo4rs::query(&cypher);
+        if input.readonly {
+            q = q.read_only();
+        }
         if let Some(params) = &input.params {
             for (k, v) in params {
                 match bolt_param(v) {
@@ -869,6 +904,9 @@ impl QuerySkill {
                 }
                 ToolCallResult::success_json(response)
             }
+            Err(e) if is_read_mode_refusal(&e.to_string()) => ToolCallResult::error(format!(
+                "Neo4j refused a write in this read-only query. {WRITE_HINT}"
+            )),
             Err(e) => ToolCallResult::error(format!("Neo4j query failed: {}", e)),
         }
     }
@@ -1156,7 +1194,53 @@ mod tests {
                 .unwrap(),
         );
         assert!(msg.contains("CREATE"));
-        assert!(msg.contains("readonly"));
+        // The refusal names the right tool, not the flag that used to lift it.
+        assert!(msg.contains("store_note"), "{msg}");
+        assert!(!msg.contains("Pass readonly=false"), "{msg}");
+    }
+
+    /// A chat turn or an agent loop never writes with raw Cypher, whatever it
+    /// sends: before 2026-10-16 `readonly: false` from any caller allowed it.
+    #[tokio::test]
+    async fn neo4j_query_refuses_writes_from_chat_and_agents() {
+        use agent_brain_llm::routing::{DataClass, Purpose, ROUTE_CONTEXT, RouteContext};
+        for purpose in [Purpose::Chat, Purpose::Subagent] {
+            let r = ROUTE_CONTEXT
+                .scope(RouteContext::new(purpose, DataClass::Private), async {
+                    skill_no_db()
+                        .execute(
+                            "neo4j_query",
+                            Some(serde_json::json!({
+                                "cypher": "MATCH (n:Note {id: 'x'}) SET n.zz = 1",
+                                "readonly": false
+                            })),
+                        )
+                        .await
+                        .unwrap()
+                })
+                .await;
+            let msg = result_error(r);
+            assert!(msg.contains("readonly=false refused"), "{purpose:?}: {msg}");
+        }
+    }
+
+    /// A workflow step or an operator's direct call (`Background`) still may:
+    /// it gets past the gate to the database (absent here).
+    #[tokio::test]
+    async fn neo4j_query_lets_a_workflow_step_write() {
+        let msg = result_error(
+            skill_no_db()
+                .execute(
+                    "neo4j_query",
+                    Some(serde_json::json!({
+                        "cypher": "MATCH (w:WorkingMemory {session_id: 'x'}) DETACH DELETE w",
+                        "readonly": false
+                    })),
+                )
+                .await
+                .unwrap(),
+        );
+        assert!(msg.contains("Neo4j not available"), "{msg}");
     }
 
     #[tokio::test]

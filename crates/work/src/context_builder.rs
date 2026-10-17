@@ -641,7 +641,9 @@ impl ContextBuilderService {
             //   2. Plain text — treated as a keyword and matched against note
             //      content, the original behaviour.
             let q = if is_read_cypher(query) {
-                neo4rs::query(query.as_str())
+                // Read access mode: the keyword check above it misses `(n)SET`;
+                // the server does not. A pre-load runs on every turn.
+                neo4rs::query(query.as_str()).read_only()
             } else {
                 neo4rs::query(
                     "MATCH (n:Note) \

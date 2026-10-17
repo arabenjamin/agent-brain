@@ -19,6 +19,12 @@ impl Run {
                 .collect(),
         }
     }
+
+    /// agent-brain patch: access mode "r" — the server refuses writes.
+    pub fn read_mode(mut self) -> Run {
+        self.extra.put("mode".into(), "r".into());
+        self
+    }
 }
 
 #[cfg(test)]
@@ -27,6 +33,13 @@ mod tests {
 
     use super::*;
     use crate::version::Version;
+
+    #[test]
+    fn read_mode_sets_access_mode_r() {
+        let run = Run::new("neo4j".into(), "RETURN 1".into(), BoltMap::default()).read_mode();
+        assert_eq!(run.extra.get::<String>("mode").ok().as_deref(), Some("r"));
+        assert_eq!(run.extra.get::<String>("db").ok().as_deref(), Some("neo4j"));
+    }
 
     #[test]
     fn should_serialize_run() {

@@ -46,7 +46,10 @@ serde_yaml = "0.9"
 duckdb = { version = "1.0", features = ["bundled"] }
 
 # neo4rs 0.8.0 decodes a negative tiny int (-1..-16) as 255..240: a thumbs-down
-# (-1) read back as 255. One-line fix, the same as upstream 0.9's; drop this
-# and vendor/neo4rs when 0.9 is stable.
+# (-1) read back as 255. One-line fix, the same as upstream 0.9's.
+# Second patch (2026-10-16, ours): `Query::read_only()` sends RUN with access
+# mode "r", so Neo4j itself refuses a write in a query that must only read
+# (neo4j_query, views, declared tools, profile pre-loads). Upstream has no
+# auto-commit read mode; carry it forward before dropping vendor/neo4rs.
 [patch.crates-io]
 neo4rs = { path = "vendor/neo4rs" }

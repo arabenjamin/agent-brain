@@ -322,6 +322,9 @@ impl PluginManagerSkill {
             .unwrap_or_default();
         v.extend(validation::validate_step_models(&steps, &catalog));
         v.extend(validation::validate_input_refs(&steps, &declared));
+        if validation::model_driven_call() {
+            v.extend(validation::validate_raw_graph_writes(&steps, &[]));
+        }
         if validation::has_hard(&v) {
             return Err(validation::render_hard(&v));
         }

@@ -12,6 +12,9 @@ use crate::{
 pub struct Query {
     query: String,
     params: BoltMap,
+    // agent-brain patch: an auto-commit query sent with access mode "r", so
+    // the server itself refuses any write in it, however it is spelled.
+    read_only: bool,
 }
 
 impl Query {
@@ -19,6 +22,27 @@ impl Query {
         Query {
             query,
             params: BoltMap::default(),
+            read_only: false,
+        }
+    }
+
+    /// Send this query in read access mode: the server refuses any write in
+    /// it. Applies to auto-commit queries (`Graph::execute`/`run`); inside an
+    /// explicit transaction the transaction's own mode governs.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn request(&self, db: &str, params: BoltMap) -> BoltRequest {
+        if self.read_only {
+            BoltRequest::run_read(db, &self.query, params)
+        } else {
+            BoltRequest::run(db, &self.query, params)
         }
     }
 
@@ -44,7 +68,7 @@ impl Query {
     }
 
     pub(crate) async fn run(self, db: &str, connection: &mut ManagedConnection) -> Result<()> {
-        let request = BoltRequest::run(db, &self.query, self.params);
+        let request = self.request(db, self.params.clone());
         Self::try_run(request, connection)
             .await
             .map_err(unwrap_backoff)
@@ -55,7 +79,7 @@ impl Query {
         db: &str,
         connection: &mut ManagedConnection,
     ) -> Result<(), backoff::Error<Error>> {
-        let request = BoltRequest::run(db, &self.query, self.params.clone());
+        let request = self.request(db, self.params.clone());
         Self::try_run(request, connection).await
     }
 
@@ -65,7 +89,7 @@ impl Query {
         fetch_size: usize,
         mut connection: ManagedConnection,
     ) -> Result<DetachedRowStream, backoff::Error<Error>> {
-        let request = BoltRequest::run(db, &self.query, self.params.clone());
+        let request = self.request(db, self.params.clone());
         Self::try_execute(request, fetch_size, &mut connection)
             .await
             .map(|stream| DetachedRowStream::new(stream, connection))
@@ -77,7 +101,7 @@ impl Query {
         fetch_size: usize,
         connection: &'conn mut ManagedConnection,
     ) -> Result<RowStream> {
-        let run = BoltRequest::run(db, &self.query, self.params);
+        let run = self.request(db, self.params.clone());
         Self::try_execute(run, fetch_size, connection)
             .await
             .map_err(unwrap_backoff)

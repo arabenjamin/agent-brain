@@ -366,6 +366,55 @@ fn step_refs(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether the current call is driven by a model: a chat turn or an agent loop
+/// (`Purpose::Chat` / `Subagent`). Queued workflow steps and an operator's
+/// direct MCP or REST call run as `Background`.
+pub fn model_driven_call() -> bool {
+    agent_brain_llm::routing::RouteContext::current().purpose
+        != agent_brain_llm::routing::Purpose::Background
+}
+
+/// A step that writes the graph with raw Cypher (`neo4j_query` with
+/// `readonly: false`). Refused when a model saves the workflow: the 2026-10-10
+/// draft that would `SET` a property on every node created in the last week,
+/// nightly, passed every shape check, because `readonly: false` is a valid
+/// argument. Who may write is not a question of shape. Workflows the owner
+/// writes (YAML, the HBI, a direct call) keep their cleanup steps, and a model
+/// editing one (pausing it, changing another step) may carry such a step over
+/// unchanged: only a raw write not already in `stored` is refused.
+pub fn validate_raw_graph_writes(steps: &[Value], stored: &[Value]) -> Vec<Violation> {
+    let is_raw_write = |s: &Value| {
+        s.get("tool_name").and_then(Value::as_str) == Some("neo4j_query")
+            && s.pointer("/arguments/readonly").and_then(Value::as_bool) == Some(false)
+    };
+    // Compared without the `__` keys the queue stamps (data class, owner).
+    let args = |s: &Value| -> Value {
+        let mut a = s.get("arguments").cloned().unwrap_or_default();
+        if let Some(m) = a.as_object_mut() {
+            m.retain(|k, _| !k.starts_with("__"));
+        }
+        a
+    };
+    let kept: Vec<Value> = stored
+        .iter()
+        .filter(|s| is_raw_write(s))
+        .map(args)
+        .collect();
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| is_raw_write(s) && !kept.contains(&args(s)))
+        .map(|(i, _)| {
+            Violation::hard(
+                format!("steps[{i}] (`neo4j_query`).arguments.readonly"),
+                "a workflow drafted by a model cannot write the graph with raw Cypher; use \
+                 the tool for the change (store_note, update_task, manage_todo, ...), or ask \
+                 the user to add the step",
+            )
+        })
+        .collect()
+}
+
 /// Every step's pinned `model` must be in the catalog, and a `provider_hint`
 /// written beside it must agree with that model's provider. A hint that
 /// contradicts its model is the Zero Trust schedule: `ollama-cloud` on a step
@@ -668,6 +717,54 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_raw_graph_write_step_is_found() {
+        let steps = vec![
+            serde_json::json!({"tool_name": "neo4j_query", "arguments": {"cypher": "MATCH (n) RETURN n"}}),
+            serde_json::json!({"tool_name": "neo4j_query", "arguments": {"cypher": "MATCH (n) SET n.external = false", "readonly": false}}),
+            serde_json::json!({"tool_name": "store_note", "arguments": {"content": "x", "readonly": false}}),
+        ];
+        let v = validate_raw_graph_writes(&steps, &[]);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].path.starts_with("steps[1]"));
+        assert!(has_hard(&v));
+    }
+
+    /// Pausing an owner's workflow from chat re-saves its steps: a cleanup
+    /// step it already had is carried over, a new or changed one is not.
+    #[test]
+    fn a_stored_raw_write_step_carries_over_unchanged() {
+        let cleanup = serde_json::json!({"tool_name": "neo4j_query", "arguments": {
+            "cypher": "MATCH (w:WorkingMemory {session_id: 'x'}) DETACH DELETE w", "readonly": false}});
+        let mut stamped = cleanup.clone();
+        stamped["arguments"]["__data_class"] = serde_json::json!("public");
+        assert!(
+            validate_raw_graph_writes(std::slice::from_ref(&stamped), &[cleanup.clone()])
+                .is_empty()
+        );
+        let mut changed = cleanup.clone();
+        changed["arguments"]["cypher"] = serde_json::json!("MATCH (n) DETACH DELETE n");
+        assert_eq!(validate_raw_graph_writes(&[changed], &[cleanup]).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn only_background_calls_are_not_model_driven() {
+        use agent_brain_llm::routing::{DataClass, Purpose, ROUTE_CONTEXT, RouteContext};
+        assert!(
+            !model_driven_call(),
+            "unscoped = a queue step or an operator call"
+        );
+        for p in [Purpose::Chat, Purpose::Subagent] {
+            let driven = ROUTE_CONTEXT
+                .scope(RouteContext::new(p, DataClass::Private), async {
+                    model_driven_call()
+                })
+                .await;
+            assert!(driven, "{p:?}");
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

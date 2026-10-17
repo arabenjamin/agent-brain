@@ -1189,28 +1189,21 @@ impl TelemetryClient {
 
     /// Execute a read-only SQL query and return results as a JSON array.
     ///
-    /// Write operations (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`,
-    /// `TRUNCATE`) are rejected with an error.  A `LIMIT` clause is appended
-    /// automatically if the query does not already contain one.
+    /// Exactly one `SELECT` (CTEs and set operations included) runs, judged by
+    /// DuckDB's own parser (`json_serialize_sql`), not by scanning the text:
+    /// before 2026-10-16 a keyword scan let `SELECT 1 LIMIT 1;DROP TABLE t`
+    /// run its `DROP`, and never knew `COPY`, `ATTACH`, `INSTALL` or `PRAGMA`.
+    /// A `LIMIT` clause is appended automatically if the query does not
+    /// already contain one.
     pub fn query_raw(&self, sql: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
         use duckdb::types::ValueRef;
 
         let upper = sql.trim().to_uppercase();
-        for kw in &[
-            "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE",
-        ] {
-            if upper.split_whitespace().any(|w| w == *kw) {
-                anyhow::bail!(
-                    "Write operations are not allowed via query_raw (keyword: {})",
-                    kw
-                );
-            }
-        }
-
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        check_single_select(&conn, sql)?;
 
         let base = sql.trim().trim_end_matches(';');
         let limited = if upper.contains(" LIMIT ") {
@@ -1469,5 +1462,100 @@ mod search_ledger_tests {
         assert_eq!(exa["dated_share"], 0.5);
         assert_eq!(stats["by_caller"][0]["caller"], "claim");
         assert_eq!(stats["by_caller"][0]["calls"], 1);
+    }
+}
+
+/// Refuse anything but one `SELECT`, using DuckDB's parser: it serializes
+/// only SELECT statements and lists each statement it parsed. Fails closed:
+/// if the check itself cannot run, the query does not either.
+fn check_single_select(conn: &Connection, sql: &str) -> Result<()> {
+    let serialized: String = conn
+        .query_row(
+            "SELECT json_serialize_sql(CAST(? AS VARCHAR))",
+            [sql],
+            |r| r.get(0),
+        )
+        .context("could not check the query is a single SELECT")?;
+    let v: serde_json::Value =
+        serde_json::from_str(&serialized).context("unreadable query check")?;
+    if v["error"].as_bool().unwrap_or(true) {
+        let why = v["error_message"].as_str().unwrap_or("not a SELECT");
+        anyhow::bail!(
+            "only a single SELECT runs here ({why}). For a table's columns, \
+             SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '<t>'"
+        );
+    }
+    let n = v["statements"].as_array().map_or(0, Vec::len);
+    if n != 1 {
+        anyhow::bail!("only a single SELECT runs here; this has {n} statements");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod query_raw_tests {
+    use super::*;
+
+    fn client() -> TelemetryClient {
+        TelemetryClient::new(":memory:").expect("in-memory duckdb")
+    }
+
+    #[test]
+    fn a_select_and_a_cte_run() {
+        let t = client();
+        assert_eq!(t.query_raw("SELECT 1 AS a", 10).unwrap().len(), 1);
+        assert_eq!(
+            t.query_raw(
+                "WITH x AS (SELECT 1 AS a) SELECT a FROM x UNION ALL SELECT 2",
+                10
+            )
+            .unwrap()
+            .len(),
+            2
+        );
+    }
+
+    /// The 2026-10-16 bypass: a LIMIT already present meant nothing was
+    /// appended, and the keyword scan never saw `;DROP`.
+    #[test]
+    fn a_second_statement_is_refused_before_it_runs() {
+        let t = client();
+        t.query_raw("SELECT count(*) AS n FROM model_usage", 1)
+            .unwrap();
+        let err = t
+            .query_raw("SELECT 1 AS a LIMIT 1;DROP TABLE model_usage", 10)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only a single SELECT runs here"), "{err}");
+        t.query_raw("SELECT count(*) AS n FROM model_usage", 1)
+            .expect("model_usage must still exist");
+    }
+
+    /// A write hidden in a SELECT: `query()` runs a string as SQL.
+    #[test]
+    fn a_write_inside_query_function_does_not_run() {
+        let t = client();
+        let _ = t.query_raw("SELECT * FROM query('DROP TABLE model_usage')", 10);
+        t.query_raw("SELECT count(*) AS n FROM model_usage", 1)
+            .expect("model_usage must still exist");
+    }
+
+    #[test]
+    fn writes_and_side_effects_are_refused() {
+        let t = client();
+        for sql in [
+            "CREATE TABLE zz (a INT)",
+            "COPY (SELECT 1) TO '/tmp/zz_probe.csv'",
+            "ATTACH ':memory:' AS zz",
+            "INSTALL httpfs",
+            "PRAGMA version",
+            "SET threads = 1",
+        ] {
+            let err = t.query_raw(sql, 10).unwrap_err().to_string();
+            assert!(
+                err.contains("only a single SELECT runs here"),
+                "{sql}: {err}"
+            );
+        }
     }
 }

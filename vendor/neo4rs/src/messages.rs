@@ -116,6 +116,11 @@ impl BoltRequest {
         BoltRequest::Run(Run::new(db.into(), query.into(), params))
     }
 
+    /// agent-brain patch: RUN in read access mode (`mode: "r"`).
+    pub fn run_read(db: &str, query: &str, params: BoltMap) -> BoltRequest {
+        BoltRequest::Run(Run::new(db.into(), query.into(), params).read_mode())
+    }
+
     pub fn pull(n: usize, qid: i64) -> BoltRequest {
         BoltRequest::Pull(Pull::new(n as i64, qid))
     }

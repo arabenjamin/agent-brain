@@ -431,6 +431,14 @@ async fn prepare(
     ));
     hard.extend(validation::validate_step_models(&steps, checks.catalog));
     hard.extend(validation::validate_input_refs(&steps, &declared));
+    if validation::model_driven_call() {
+        let stored: Vec<Value> = current
+            .as_ref()
+            .map(to_body)
+            .and_then(|b| b["steps"].as_array().cloned())
+            .unwrap_or_default();
+        hard.extend(validation::validate_raw_graph_writes(&steps, &stored));
+    }
     if validation::has_hard(&hard) {
         return Err(SaveError::Invalid(validation::render_hard(&hard)));
     }
