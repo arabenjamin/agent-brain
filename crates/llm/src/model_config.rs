@@ -554,7 +554,7 @@ mod tests {
     /// silently take every paid synthesis step back, and a spent budget would
     /// stop being the only reason it runs on gpt-oss.
     #[test]
-    fn deep_reasoning_is_held_by_sonnet_5_alone() {
+    fn deep_reasoning_is_held_by_sonnet_5_5_alone() {
         let c = real_catalog();
         let holders: Vec<_> = c
             .models
@@ -562,8 +562,8 @@ mod tests {
             .filter(|(_, e)| e.capabilities.iter().any(|x| x == "deep_reasoning"))
             .map(|(k, _)| k.as_str())
             .collect();
-        assert_eq!(holders, vec!["claude-sonnet-5"]);
-        assert_eq!(routes_to(&c, "deep_reasoning", TIER2), "claude-sonnet-5");
+        assert_eq!(holders, vec!["claude-sonnet-5-5"]);
+        assert_eq!(routes_to(&c, "deep_reasoning", TIER2), "claude-sonnet-5-5");
         assert_eq!(routes_to(&c, "deep_reasoning", TIER1), "");
     }
 

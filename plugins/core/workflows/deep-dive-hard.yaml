@@ -11,7 +11,7 @@ steps:
       # deep-diver itself, pinned to Sonnet for this step only. The pin lives
       # here, not in a profile, so no model can delegate to Sonnet on its own.
       agent: deep-diver
-      model: claude-sonnet-5
+      model: claude-sonnet-5-5
       max_rounds: 16
       # Why: dev_docs get yaml/chains-deep-dive-hard-2
       verify:

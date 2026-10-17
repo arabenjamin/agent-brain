@@ -414,7 +414,10 @@ models:
 
   # ── Anthropic (https://www.anthropic.com) ─────────────────────────────────
   #
-  # `deep_reasoning` is held by claude-sonnet-5 ALONE, on purpose. Selection is
+  # `deep_reasoning` is held by claude-sonnet-5-5 ALONE, on purpose (moved from
+  # claude-sonnet-5 2026-10-17: same price, newer; ranks swapped so 5.5 is also
+  # the Sonnet any other paid pick prefers; not yet measured on the write-ups
+  # against 5's). Selection is
   # `cost ASC` first, so a paid model can never win a capability a $0 model also
   # holds — a step that should spend money must ask for a capability only the
   # paid model has. When the policy refuses it (ROUTING_PAID_FOR unset, the
@@ -429,28 +432,31 @@ models:
     context_window: 1000000
     cost_per_1k_input: 0.002
     cost_per_1k_output: 0.010
+    selection_rank: 320
+    capabilities:
+      - reasoning
+      - code
+      - vision
+      - orchestration
+
+  # Sonnet 5.5 (2026-09-28; replaced Sonnet 4.6 here 2026-10-17): $2 / $10 per
+  # MTok, the same as Sonnet 5 and two-thirds of 4.6's $3 / $15; 1M tokens in.
+  # No `temperature`: like every 5-family model it rejects sampling parameters
+  # (anthropic.rs NO_SAMPLING, matched by the `claude-sonnet-5` prefix).
+  claude-sonnet-5-5:
+    provider: anthropic
+    model: "claude-sonnet-5-5"
+    context_window: 1000000
+    cost_per_1k_input: 0.002
+    cost_per_1k_output: 0.010
     selection_rank: 315
     capabilities:
       - deep_reasoning
       - reasoning
       - code
       - vision
-      - orchestration
-
-  claude-sonnet-4-6:
-    provider: anthropic
-    model: "claude-sonnet-4-6"
-    context_window: 200000
-    cost_per_1k_input: 0.003
-    cost_per_1k_output: 0.015
-    selection_rank: 320
-    capabilities:
-      - reasoning
-      - code
-      - vision
       - fast
       - orchestration
-    temperature: 0.5
     system_prompt: |
       You are agent-brain running on Claude Sonnet. Prioritize efficiency
       and tool use. Be concise.

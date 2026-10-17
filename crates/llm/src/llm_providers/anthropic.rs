@@ -268,6 +268,7 @@ mod tests {
             "claude-opus-4-8",
             "claude-fable-5-1",
             "claude-haiku-5-5",
+            "claude-sonnet-5-5",
         ] {
             assert!(!accepts_sampling(m), "{m} rejects sampling params");
         }

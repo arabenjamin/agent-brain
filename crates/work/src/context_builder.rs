@@ -1136,12 +1136,12 @@ mod tests {
         .unwrap();
         let args = &wf["steps"][0]["arguments"];
         assert_eq!(args["agent"].as_str(), Some("deep-diver"));
-        assert_eq!(args["model"].as_str(), Some("claude-sonnet-5"));
+        assert_eq!(args["model"].as_str(), Some("claude-sonnet-5-5"));
         let profile: ContextProfile = serde_yaml::from_str(
             &std::fs::read_to_string(root.join("contexts/deep-diver.yaml")).unwrap(),
         )
         .unwrap();
-        assert_ne!(profile.model_preference.as_deref(), Some("claude-sonnet-5"));
+        assert_ne!(profile.model_preference.as_deref(), Some("claude-sonnet-5-5"));
     }
 
     /// The schedule-author drafting specialist must be spawnable — the
