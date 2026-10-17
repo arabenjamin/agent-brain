@@ -27,4 +27,4 @@ workflows:
   - entity-linking
   - program-reviews
   - program-review
-review: { every: 1w }
+review: { every: 30d }

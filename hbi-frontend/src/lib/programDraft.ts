@@ -52,7 +52,7 @@ export function buildProgramTask(c: DraftContext): string {
     "",
     "Rules: `name` is a lowercase slug and is the program's identity. Use only the names listed above. " +
       "Write `charter` (what it is for) and `success` (what good output looks like) plainly from the request. " +
-      "Leave out `status` and `finding`. Set `review` ({\"every\": \"1w\"}) for a department.",
+      "Leave out `status` and `finding`. Set `review` ({\"every\": \"30d\"}) for a department.",
   ];
   if (c.fix) {
     lines.push(

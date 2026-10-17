@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Phases 0–4 and 2b built 2026-10-17. Open: turn on `program-reviews`; per-program budget enforcement once costs are measured.
+Workflow Admin" (`0fcc6502`). Phases 0–4 and 2b built 2026-10-17; `program-reviews` on since 2026-10-17 with every program reviewed every 30 days (owner). Open: per-program budget enforcement once costs are measured.
 
 ## 1. Why
 
@@ -310,3 +310,11 @@ manager separate keeps chat a conversation and the review a scheduled job.
   a second review the same day had its proposals swallowed as "filed
   already" by the first's (the message showed the old title). Now keyed by
   the review run's task id.
+
+## 14. Reviews turned on (owner, 2026-10-17)
+
+`program-reviews` is enabled, and every reviewed program's `review.every` is
+`30d` (was `1w`): about a cent a month for the ten programs on Haiku 5.5. The
+dispatcher still runs daily, deterministically and without a model call; it
+starts only the reviews that are due. Shared services is not reviewed. The
+form's agent assist now drafts `review: 30d` for a department.
