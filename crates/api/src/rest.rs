@@ -1157,9 +1157,14 @@ pub async fn handle_upsert_context_profile(
         return unavailable("Context builder not yet initialised");
     };
     match cb.save_profile(&body).await {
-        Ok(p) => Json(json!({ "success": true, "name": p.name, "managed_by": "runtime" }))
-            .into_response(),
-        Err(e) => bad_request(format!("Failed to save profile: {e}")),
+        Ok((p, warnings)) => Json(json!({
+            "success": true,
+            "name": p.name,
+            "managed_by": "runtime",
+            "warnings": warnings,
+        }))
+        .into_response(),
+        Err(e) => bad_request(format!("Profile not saved: {e}")),
     }
 }
 

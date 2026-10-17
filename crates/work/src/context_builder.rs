@@ -263,6 +263,9 @@ pub struct ContextBuilderService {
     /// What each profile names that does not exist (`audit_profiles`).
     audits: Arc<RwLock<HashMap<String, ProfileAudit>>>,
     llm_config: Arc<RwLock<Option<LlmConfig>>>,
+    /// The model catalog's source, for the profile validator (a model a
+    /// profile names must be in it). None: model checks are skipped.
+    telemetry: Option<agent_brain_repository::TelemetryClient>,
 }
 
 /// The profile used when nothing else selects one.
@@ -300,7 +303,48 @@ impl ContextBuilderService {
             registry: Arc::new(RwLock::new(Vec::new())),
             audits: Arc::new(RwLock::new(HashMap::new())),
             llm_config,
+            telemetry: None,
         }
+    }
+
+    /// Give the validator the model catalog (read live, so a model registered
+    /// at run time counts).
+    pub fn with_telemetry(
+        mut self,
+        telemetry: Option<agent_brain_repository::TelemetryClient>,
+    ) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    fn catalog(&self) -> Vec<agent_brain_llm::model_router::CatalogModel> {
+        self.telemetry
+            .as_ref()
+            .map(agent_brain_llm::model_router::catalog_models)
+            .unwrap_or_default()
+    }
+
+    /// Tools a plugin owns whose plugin is off (`(:PluginTool)`, kept by the
+    /// self-model sync): not missing, they come back with the plugin.
+    async fn plugin_off_tools(&self) -> HashMap<String, String> {
+        let mut plugin_off: HashMap<String, String> = HashMap::new();
+        if let Some(neo4j) = &self.neo4j
+            && let Ok(rows) = neo4j
+                .execute(neo4rs::query(
+                    "MATCH (p:PluginTool) RETURN p.name AS name, p.plugin AS plugin",
+                ))
+                .await
+        {
+            let plugins = agent_brain_graph::bundles::Plugins::global();
+            for r in rows {
+                if let (Ok(n), Ok(p)) = (r.get::<String>("name"), r.get::<String>("plugin"))
+                    && !plugins.is_loaded(&p)
+                {
+                    plugin_off.insert(n, p);
+                }
+            }
+        }
+        plugin_off
     }
 
     /// Also load the profiles in these bundles' `contexts/`, after the core's.
@@ -376,35 +420,37 @@ impl ContextBuilderService {
                 }
             }
         }
-        // Tools a plugin owns whose plugin is off (`(:PluginTool)`, kept by the
-        // self-model sync): not missing, they come back with the plugin.
-        let mut plugin_off: HashMap<String, String> = HashMap::new();
-        if let Some(neo4j) = &self.neo4j
-            && let Ok(rows) = neo4j
-                .execute(neo4rs::query(
-                    "MATCH (p:PluginTool) RETURN p.name AS name, p.plugin AS plugin",
-                ))
-                .await
-        {
-            let plugins = agent_brain_graph::bundles::Plugins::global();
-            for r in rows {
-                if let (Ok(n), Ok(p)) = (r.get::<String>("name"), r.get::<String>("plugin"))
-                    && !plugins.is_loaded(&p)
-                {
-                    plugin_off.insert(n, p);
-                }
-            }
-        }
+        let plugin_off = self.plugin_off_tools().await;
         let ext = self.extensions.read().await.clone();
+        let catalog = self.catalog();
+        let all = self.list_profiles().await;
         let mut audits = HashMap::new();
-        for p in self.list_profiles().await {
-            let a = crate::profiles::audit(
-                &p,
+        for p in &all {
+            let mut a = crate::profiles::audit(
+                p,
                 &registry,
                 &removed,
                 ext.get(&p.name).map(Vec::as_slice).unwrap_or(&[]),
                 &plugin_off,
             );
+            // The save-time validator over what is stored: a seeded file or a
+            // profile saved before the validator existed. Reported, never
+            // dropped: a bad checked-in file must not wedge the boot.
+            let found = crate::profiles::validate(
+                None,
+                p,
+                &crate::profiles::ProfileChecks {
+                    registry: &registry,
+                    plugin_off: &plugin_off,
+                    catalog: &catalog,
+                    profiles: &all,
+                },
+            );
+            if !found.hard.is_empty() {
+                warn!(profile = %p.name, problems = %found.hard.join("; "), "Profile fails the validator");
+            }
+            a.problems = found.hard;
+            a.warnings = found.soft;
             if !a.missing_tools.is_empty() || !a.stale_mentions.is_empty() {
                 warn!(
                     profile = %p.name,
@@ -420,7 +466,11 @@ impl ContextBuilderService {
         // A plugin being off is not a finding: counted only what is wrong.
         let n = audits
             .values()
-            .filter(|a: &&ProfileAudit| !a.missing_tools.is_empty() || !a.stale_mentions.is_empty())
+            .filter(|a: &&ProfileAudit| {
+                !a.missing_tools.is_empty()
+                    || !a.stale_mentions.is_empty()
+                    || !a.problems.is_empty()
+            })
             .count();
         *self.audits.write().await = audits;
         n
@@ -479,6 +529,8 @@ impl ContextBuilderService {
             "missing_tools": audit.missing_tools,
             "stale_mentions": audit.stale_mentions,
             "plugin_off": audit.plugin_off,
+            "problems": audit.problems,
+            "warnings": audit.warnings,
         })
     }
 
@@ -518,7 +570,15 @@ impl ContextBuilderService {
     /// profile becomes runtime-owned: the seeder leaves it alone until
     /// [`Self::reset_profile`] hands it back to its file. With no Neo4j it is
     /// written to the core bundle's `contexts/`.
-    pub async fn save_profile(&self, body: &serde_json::Value) -> anyhow::Result<ContextProfile> {
+    ///
+    /// The body is checked first (`profiles::validate`): an unknown key, a
+    /// tool or model that does not exist, a bad name or router target is
+    /// refused and nothing is saved. Returns the profile and the validator's
+    /// advice.
+    pub async fn save_profile(
+        &self,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<(ContextProfile, Vec<String>)> {
         let name = body
             .get("name")
             .and_then(serde_json::Value::as_str)
@@ -533,6 +593,31 @@ impl ContextBuilderService {
         }
         let stored = self.get_profile(&name).await;
         let profile = crate::profiles::overlay(stored.as_ref(), body)?;
+        let registry: Vec<String> = self
+            .registry
+            .read()
+            .await
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        let plugin_off = self.plugin_off_tools().await;
+        let catalog = self.catalog();
+        let mut others = self.list_profiles().await;
+        others.retain(|q| q.name != name);
+        others.push(profile.clone());
+        let found = crate::profiles::validate(
+            Some(body),
+            &profile,
+            &crate::profiles::ProfileChecks {
+                registry: &registry,
+                plugin_off: &plugin_off,
+                catalog: &catalog,
+                profiles: &others,
+            },
+        );
+        if !found.hard.is_empty() {
+            anyhow::bail!("{}", found.hard.join("; "));
+        }
         match &self.neo4j {
             Some(neo4j) => {
                 let meta = self
@@ -564,7 +649,9 @@ impl ContextBuilderService {
             }
         }
         self.profiles.write().await.insert(name, profile.clone());
-        Ok(profile)
+        // What the HBI shows on reopening is this profile now, not the boot audit.
+        self.audit_profiles().await;
+        Ok((profile, found.soft))
     }
 
     /// Hand a runtime-owned profile back to its file: rewrite it from the

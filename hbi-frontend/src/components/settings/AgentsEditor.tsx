@@ -36,6 +36,10 @@ interface ProfileInfo {
   extensions?: { plugin: string; section: string; requires?: string[] }[];
   missing_tools?: string[];
   stale_mentions?: string[];
+  /** What a save would refuse, found in the stored profile (profiles::validate). */
+  problems?: string[];
+  /** The validator's advice. */
+  warnings?: string[];
 }
 
 interface SkillGroup {
@@ -219,18 +223,23 @@ export default function ContextProfileModal({
         provider_hint: form.provider_hint?.trim() || null,
       };
       const res = await apiRequest(`/api/contexts`, { method: "POST", body: JSON.stringify(payload) });
+      const body = (await res.json().catch(() => ({}))) as { error?: string; warnings?: string[] };
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+        throw new Error(body.error ?? `HTTP ${res.status}`);
       }
       onProfilesChanged();
+      // Saved with advice: reopen it, so the (refreshed) warnings are read, not lost.
+      if (body.warnings && body.warnings.length > 0) {
+        await startEdit(payload.name);
+        return;
+      }
       setMode("list");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
     }
-  }, [form, onProfilesChanged]);
+  }, [form, onProfilesChanged, startEdit]);
 
   const handleDelete = useCallback(
     async (name: string) => {
@@ -251,7 +260,7 @@ export default function ContextProfileModal({
         setDeleting(null);
       }
     },
-    [activeProfile, onProfileChange, onProfilesChanged]
+    [activeProfile, defaultProfile, onProfileChange, onProfilesChanged]
   );
 
   const toggleTool = useCallback((tool: string) => {
@@ -820,6 +829,8 @@ function ProfileNotice({ info, onReset }: { info: ProfileInfo; onReset: () => vo
   const ext = info.extensions ?? [];
   const missing = info.missing_tools ?? [];
   const stale = info.stale_mentions ?? [];
+  const problems = info.problems ?? [];
+  const warnings = info.warnings ?? [];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {info.managed_by === "yaml" && (
@@ -847,6 +858,16 @@ function ProfileNotice({ info, onReset }: { info: ProfileInfo; onReset: () => vo
         <div style={box("#f87171")}>
           {missing.length > 0 && <>Tools it lists that do not exist: {missing.join(", ")}. </>}
           {stale.length > 0 && <>Its prompt names removed tools: {stale.join(", ")}.</>}
+        </div>
+      )}
+      {problems.length > 0 && (
+        <div style={box("#f87171")}>
+          A save would be refused until these are fixed: {problems.join("; ")}.
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <div style={box("#facc15")}>
+          {warnings.join("; ")}.
         </div>
       )}
     </div>

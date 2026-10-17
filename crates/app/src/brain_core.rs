@@ -411,7 +411,8 @@ impl BrainCore {
                     self.storage.contexts_dir.clone(),
                     Arc::clone(&self.llm_config),
                 )
-                .with_plugin_dirs(plugin_contexts),
+                .with_plugin_dirs(plugin_contexts)
+                .with_telemetry(self.storage.telemetry.clone()),
             );
             let n = svc.load_profiles().await.unwrap_or(0);
             info!(count = n, "Loaded context profiles");

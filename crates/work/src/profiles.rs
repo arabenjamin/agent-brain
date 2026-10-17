@@ -75,6 +75,13 @@ pub struct ProfileAudit {
     /// missing, and not warned about; they return with the plugin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugin_off: Vec<String>,
+    /// What the validator refuses on save, found in a stored profile (one
+    /// seeded from a file, or saved before the validator existed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
+    /// The validator's advice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// What the bundles declare: profiles and extensions, each with its plugin
@@ -393,6 +400,215 @@ pub fn render(
     parts.join("\n\n")
 }
 
+// ── The profile validator: a profile save is a form ──────────────────────
+
+/// The field names serde reads for a struct `T`, asked of serde itself so the
+/// list cannot drift from the struct: a probe deserializer records the
+/// `fields` serde hands `deserialize_struct`, then stops.
+pub fn struct_fields<T: serde::de::DeserializeOwned>() -> &'static [&'static str] {
+    use serde::de::{Error as _, Visitor};
+    #[derive(Debug)]
+    struct Stop;
+    impl std::fmt::Display for Stop {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("field probe")
+        }
+    }
+    impl std::error::Error for Stop {}
+    impl serde::de::Error for Stop {
+        fn custom<M: std::fmt::Display>(_: M) -> Self {
+            Stop
+        }
+    }
+    struct Probe<'a>(&'a mut Option<&'static [&'static str]>);
+    impl<'de> serde::Deserializer<'de> for Probe<'_> {
+        type Error = Stop;
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Stop> {
+            Err(Stop::custom("not a struct"))
+        }
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, Stop> {
+            *self.0 = Some(fields);
+            Err(Stop)
+        }
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map enum identifier ignored_any
+        }
+    }
+    let mut out = None;
+    let _ = T::deserialize(Probe(&mut out));
+    out.unwrap_or(&[])
+}
+
+/// What a profile is checked against. An empty list disables that check
+/// (fail-open on our own wiring, as for workflows).
+pub struct ProfileChecks<'a> {
+    /// Live tool names.
+    pub registry: &'a [String],
+    /// Tools whose plugin is off: not missing, they return with the plugin.
+    pub plugin_off: &'a HashMap<String, String>,
+    pub catalog: &'a [agent_brain_llm::model_router::CatalogModel],
+    /// Every stored profile, for the router's targets.
+    pub profiles: &'a [ContextProfile],
+}
+
+/// Refused on save (`hard`) and advice (`soft`).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ProfileFindings {
+    pub hard: Vec<String>,
+    pub soft: Vec<String>,
+}
+
+/// A local small-model prompt is a size budget (CLAUDE.md): past this the
+/// local E4B was measured to stop delegating.
+const LOCAL_PROMPT_BUDGET: usize = 3_000;
+
+/// Check one profile. `body`, when given, is what a save sent: its keys are
+/// checked against the profile's fields (serde drops an unknown one, so a
+/// typo such as `spawnabel` saved as if it were not there) and its tools
+/// against the registry. Without a body (the startup audit of stored
+/// profiles) tools are left to [`audit`], which already reports them.
+pub fn validate(body: Option<&Value>, p: &ContextProfile, c: &ProfileChecks) -> ProfileFindings {
+    use agent_brain_llm::model_router::find_model;
+    let mut f = ProfileFindings::default();
+
+    if let Some(obj) = body.and_then(Value::as_object) {
+        let known: Vec<String> = struct_fields::<ContextProfile>()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for k in obj.keys().filter(|k| !known.contains(k)) {
+            let hint = crate::validation::closest(k, &known)
+                .map(|m| format!(" (did you mean `{m}`?)"))
+                .unwrap_or_default();
+            f.hard.push(format!("`{k}` is not a profile field{hint}"));
+        }
+        if !c.registry.is_empty() {
+            for t in &p.tools {
+                if !c.registry.contains(t) && !c.plugin_off.contains_key(t) {
+                    f.hard.push(format!("tool `{t}` does not exist"));
+                }
+            }
+        }
+    }
+
+    let n = &p.name;
+    let ok_name = n.len() <= 64
+        && n.chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        && n.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
+    if !ok_name {
+        f.hard.push(format!(
+            "name `{n}` must be letters, digits and '-', start with a letter or digit, at most 64 characters"
+        ));
+    }
+
+    let pref = p
+        .model_preference
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
+    let hint = p
+        .provider_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty());
+    if !c.catalog.is_empty() {
+        if let Some(m) = pref
+            && find_model(c.catalog, m).is_none()
+        {
+            match hint {
+                None => f.hard.push(format!(
+                    "model_preference `{m}` is not in the model catalog (models.yaml); with no \
+                     provider_hint it can never resolve, and the profile would run on the chat default"
+                )),
+                Some(h) => f.soft.push(format!(
+                    "model_preference `{m}` is not in the model catalog; it runs only if provider `{h}` serves it"
+                )),
+            }
+        }
+        for m in &p.fallback_models {
+            if find_model(c.catalog, m).is_none() {
+                f.hard.push(format!(
+                    "fallback model `{m}` is not in the model catalog; that rung would be skipped"
+                ));
+            }
+        }
+    }
+
+    if let Some(s) = p.side_effects.as_deref().map(str::trim)
+        && !matches!(s, "read_only" | "writes")
+    {
+        f.hard.push(format!(
+            "side_effects `{s}` must be read_only or writes (anything else asks first, every time)"
+        ));
+    }
+
+    if let Some(r) = &p.routing {
+        for (role, target) in [("stored", &r.stored), ("web", &r.web)] {
+            match c.profiles.iter().find(|q| q.name == *target) {
+                None if !c.profiles.is_empty() => {
+                    f.hard.push(format!("routing.{role} names `{target}`, which is not a profile"))
+                }
+                Some(q) if !q.spawnable => f.hard.push(format!(
+                    "routing.{role} names `{target}`, which cannot run as a sub-agent (spawnable: false)"
+                )),
+                _ => {}
+            }
+        }
+        for ch in &r.choices {
+            if let Some(tool) = ch.name.strip_prefix("self:")
+                && !p.tools.iter().any(|t| t == tool)
+            {
+                f.hard.push(format!(
+                    "routing choice `{}` names a tool this profile does not hold",
+                    ch.name
+                ));
+            }
+        }
+        let mut patterns = vec![("routing.web_words".to_string(), r.web_words.clone())];
+        for b in &r.behaviors {
+            patterns.push((format!("behavior `{}`.when", b.name), b.when.clone()));
+            patterns.push((format!("behavior `{}`.unless", b.name), b.unless.clone()));
+        }
+        for (what, pat) in patterns.into_iter().filter(|(_, p)| !p.trim().is_empty()) {
+            if let Err(e) = regex::RegexBuilder::new(&pat)
+                .case_insensitive(true)
+                .build()
+            {
+                f.hard.push(format!("{what} is not a valid regex: {e}"));
+            }
+        }
+    }
+
+    if p.spawnable && p.specialty.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        f.soft.push(
+            "spawnable with no specialty: the delegate roster describes it by its description"
+                .into(),
+        );
+    }
+    let local = pref
+        .and_then(|m| find_model(c.catalog, m))
+        .is_some_and(|row| matches!(row.provider.as_str(), "llamacpp" | "ollama"));
+    if local {
+        let size = p.system_prompt.len() + p.sections.iter().map(|s| s.text.len()).sum::<usize>();
+        if size > LOCAL_PROMPT_BUDGET {
+            f.soft.push(format!(
+                "pinned to a local model with a {size}-character prompt: a local small-model prompt \
+                 is a size budget (keep it near 2-3k characters)"
+            ));
+        }
+    }
+    f
+}
+
 /// Check a profile against the registry and the tombstones of removed tools.
 pub fn audit(
     profile: &ContextProfile,
@@ -449,6 +665,7 @@ pub fn audit(
         missing_tools,
         stale_mentions,
         plugin_off: off,
+        ..Default::default()
     }
 }
 
@@ -610,6 +827,180 @@ mod tests {
         );
         assert_eq!(saved.sections.len(), 1);
         assert_eq!(saved.tools, ["a"]);
+    }
+
+    fn catalog() -> Vec<agent_brain_llm::model_router::CatalogModel> {
+        use agent_brain_llm::model_config::ModelCatalog;
+        let c =
+            ModelCatalog::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models.yaml"))
+                .expect("models.yaml parses");
+        c.models
+            .iter()
+            .map(|(k, m)| agent_brain_llm::model_router::CatalogModel {
+                name: k.clone(),
+                provider: m.provider.clone(),
+                model: m.model.clone(),
+            })
+            .collect()
+    }
+
+    fn checks<'a>(
+        registry: &'a [String],
+        off: &'a HashMap<String, String>,
+        cat: &'a [agent_brain_llm::model_router::CatalogModel],
+        profiles: &'a [ContextProfile],
+    ) -> ProfileChecks<'a> {
+        ProfileChecks {
+            registry,
+            plugin_off: off,
+            catalog: cat,
+            profiles,
+        }
+    }
+
+    #[test]
+    fn struct_fields_come_from_serde() {
+        let f = struct_fields::<ContextProfile>();
+        for k in [
+            "name",
+            "tools",
+            "spawnable",
+            "routing",
+            "explicit_only",
+            "fallback_models",
+        ] {
+            assert!(f.contains(&k), "{k} missing from {f:?}");
+        }
+    }
+
+    /// The silent drop on save: a misspelled key saved as if it were not there.
+    #[test]
+    fn an_unknown_key_and_a_missing_tool_are_refused_on_save() {
+        let body = json!({"name": "p", "description": "d", "spawnabel": true, "tools": ["search_notes", "no_such_tool"]});
+        let p = overlay(None, &body).unwrap();
+        let reg = vec!["search_notes".to_string()];
+        let off = HashMap::new();
+        let f = validate(Some(&body), &p, &checks(&reg, &off, &[], &[]));
+        assert!(
+            f.hard
+                .iter()
+                .any(|m| m.contains("`spawnabel`") && m.contains("did you mean `spawnable`")),
+            "{f:?}"
+        );
+        assert!(
+            f.hard
+                .iter()
+                .any(|m| m.contains("tool `no_such_tool` does not exist")),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_off_tool_is_not_missing() {
+        let body = json!({"name": "p", "description": "d", "tools": ["ingest_media"]});
+        let p = overlay(None, &body).unwrap();
+        let reg = vec!["search_notes".to_string()];
+        let off = HashMap::from([("ingest_media".to_string(), "media".to_string())]);
+        assert!(
+            validate(Some(&body), &p, &checks(&reg, &off, &[], &[]))
+                .hard
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn names_models_side_effects_and_router_targets_are_checked() {
+        let cat = catalog();
+        let off = HashMap::new();
+        let worker = profile(json!({"name": "w", "spawnable": true, "specialty": "x"}));
+        let persona = profile(json!({"name": "persona"}));
+        let p = profile(json!({
+            "name": "../bad name",
+            "model_preference": "gpt-9000",
+            "fallback_models": ["also-not-a-model"],
+            "side_effects": "sometimes",
+            "routing": {"rules": "r", "stored": "w", "web": "persona", "web_words": "(unclosed",
+                        "choices": [{"name": "self:manage_todo", "says": "x"}]}
+        }));
+        let all = vec![worker, persona, p.clone()];
+        let f = validate(None, &p, &checks(&[], &off, &cat, &all));
+        let has = |s: &str| f.hard.iter().any(|m| m.contains(s));
+        assert!(has("name `../bad name`"), "{f:?}");
+        assert!(has("model_preference `gpt-9000`"), "{f:?}");
+        assert!(has("fallback model `also-not-a-model`"), "{f:?}");
+        assert!(has("side_effects `sometimes`"), "{f:?}");
+        assert!(
+            has("routing.web names `persona`, which cannot run as a sub-agent"),
+            "{f:?}"
+        );
+        assert!(!has("routing.stored"), "{f:?}");
+        assert!(has("routing choice `self:manage_todo`"), "{f:?}");
+        assert!(has("routing.web_words is not a valid regex"), "{f:?}");
+    }
+
+    #[test]
+    fn a_model_outside_the_catalog_with_a_provider_hint_is_advice() {
+        let cat = catalog();
+        let off = HashMap::new();
+        let p =
+            profile(json!({"model_preference": "some-ollama-model:7b", "provider_hint": "ollama"}));
+        let f = validate(None, &p, &checks(&[], &off, &cat, &[]));
+        assert!(f.hard.is_empty(), "{f:?}");
+        assert!(
+            f.soft
+                .iter()
+                .any(|m| m.contains("only if provider `ollama` serves it")),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn a_spawnable_without_specialty_and_a_big_local_prompt_are_advice() {
+        let cat = catalog();
+        let local = cat
+            .iter()
+            .find(|m| m.provider == "llamacpp")
+            .map(|m| m.name.clone())
+            .expect("a llamacpp model in models.yaml");
+        let off = HashMap::new();
+        let p = profile(
+            json!({"spawnable": true, "model_preference": local, "system_prompt": "x".repeat(4000)}),
+        );
+        let f = validate(None, &p, &checks(&[], &off, &cat, &[]));
+        assert!(f.hard.is_empty(), "{f:?}");
+        assert!(f.soft.iter().any(|m| m.contains("no specialty")), "{f:?}");
+        assert!(
+            f.soft.iter().any(|m| m.contains("4000-character prompt")),
+            "{f:?}"
+        );
+    }
+
+    /// Every profile we ship passes the validator: what the startup audit
+    /// reports as a problem is never our own file.
+    #[test]
+    fn every_shipped_profile_passes_the_validator() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+        let dirs: Vec<(String, PathBuf)> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|d| d.join("contexts").is_dir() && !d.ends_with("core"))
+            .map(|d| {
+                (
+                    d.file_name().unwrap().to_string_lossy().into_owned(),
+                    d.join("contexts"),
+                )
+            })
+            .collect();
+        let b = BundleProfiles::read(&root.join("core/contexts"), &dirs);
+        let all: Vec<ContextProfile> = b.profiles.iter().map(|(_, _, p)| p.clone()).collect();
+        let cat = catalog();
+        let off = HashMap::new();
+        for p in &all {
+            let f = validate(None, p, &checks(&[], &off, &cat, &all));
+            assert!(f.hard.is_empty(), "{}: {:?}", p.name, f.hard);
+        }
+        assert!(all.len() >= 10, "{} profiles", all.len());
     }
 
     #[test]

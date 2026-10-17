@@ -824,7 +824,7 @@ pub fn check_tool_arguments(tool: &str, schema: &Value, args: Option<&Value>) ->
 /// The declared argument a misspelled key most likely meant: edit distance
 /// at most 2, or one name containing the other (`top_n` → `count` does not
 /// qualify; `querry` → `query` and `max_results` → `results` would).
-fn closest<'a>(key: &str, props: &'a [String]) -> Option<&'a String> {
+pub fn closest<'a>(key: &str, props: &'a [String]) -> Option<&'a String> {
     let k = key.to_ascii_lowercase();
     props
         .iter()
