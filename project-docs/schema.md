@@ -84,6 +84,9 @@ Per-invocation telemetry for every LLM call. Aggregated by `get_model_stats`.
 | `tokens_in` | INTEGER | — | Prompt tokens consumed |
 | `tokens_out` | INTEGER | — | Completion tokens generated |
 | `cost` | DOUBLE | — | Computed cost in USD (may be NULL) |
+| `error_kind` | TEXT | — | A notable failure class (`rate_limited`, …) |
+| `provider` | TEXT | — | Provider-registry name; NULL before 2026-09-13 |
+| `task_id` | TEXT | — | The Task that owned the call (a workflow run's record, `ctx::current_owner_task`); NULL on chat turns and before 2026-10-17. Joins cost to workflows (`workflow_scorecard` view) |
 | `created_at` | TIMESTAMPTZ | DEFAULT `current_timestamp` | — |
 
 ### `search_usage`
@@ -546,6 +549,7 @@ One node, `{id: 'scheduler'}`: the scheduler's last tick, so the HBI shows when 
 | `task_created` | `Task` | `created_at` | RANGE | Recency ordering in `list_tasks` |
 | `note_content_fulltext` | `Note` | `content` | FULLTEXT | BM25 hybrid search |
 | `note_next_review` | `Note` | `next_review_at` | RANGE | Spaced repetition query |
+| `note_produced_by_task` | `Note` | `produced_by_task` | RANGE | What a run produced: the `workflow_scorecard` view, run provenance |
 | `working_memory_session` | `WorkingMemory` | `session_id` | RANGE | Session context lookup |
 | `entity_type_idx` | `Entity` | `entity_type` | RANGE | Filter by entity type |
 | `entity_key_idx` | `Entity` | `key` | RANGE | Write-time resolution by normalised key |

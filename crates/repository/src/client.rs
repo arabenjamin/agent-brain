@@ -77,6 +77,10 @@ impl Neo4jClient {
             // Task.status is scanned every scheduler tick via list_tasks(status='created').
             "CREATE INDEX task_status IF NOT EXISTS FOR (t:Task) ON (t.status)",
             "CREATE INDEX task_workflow IF NOT EXISTS FOR (t:Task) ON (t.workflow)",
+            // What a run produced (`produced_by_task`): the workflow scorecard
+            // looks every run's notes up by it; unindexed it scanned all notes
+            // once per workflow (45 s for 41 workflows, 2026-10-17).
+            "CREATE INDEX note_produced_by_task IF NOT EXISTS FOR (n:Note) ON (n.produced_by_task)",
             "CREATE INDEX todo_status IF NOT EXISTS FOR (t:Todo) ON (t.status)",
             "CREATE INDEX todo_priority IF NOT EXISTS FOR (t:Todo) ON (t.priority)",
             // AgentNotification index

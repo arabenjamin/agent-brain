@@ -1,0 +1,59 @@
+# The workflow scorecard (PROGRAMS_PLAN.md Phase 0, 2026-10-17): measure
+# before managing. Runs, failures and what a run produced come from the graph;
+# cost comes from the DuckDB ledger, joined on the runs' task ids (a call made
+# under a workflow run carries its task id since 2026-10-17, so cost before
+# that day reads null, not zero). "reads" is the notes' access_count and
+# "cited" counts notes a claim points at (ASSERTED_IN, CORROBORATED_BY,
+# CONTRADICTED_BY): thin proxies for value, until the owner rates work.
+name: workflow_scorecard
+kind: cypher
+description: >-
+  How each workflow is doing over a window (default the last 30 days): its
+  runs, how many succeeded and failed, the notes its runs wrote, how often
+  those notes were read again and cited by claims, its model calls and cost
+  (cost is recorded only from 2026-10-17), and its last run. Name a workflow
+  for just that one.
+words: [scorecard, workflow scorecard, how are the workflows doing, which workflows are worth it, workflow value, workflow cost, what does each workflow cost]
+limit: 100
+input_schema:
+  type: object
+  properties:
+    days:
+      type: integer
+      default: 30
+      description: The window, in days back from now.
+    workflow:
+      type: string
+      default: ""
+      description: One workflow's name; empty for all of them.
+      values_from: "MATCH (w:Workflow) RETURN w.name AS value, w.description AS label ORDER BY value"
+cypher: |-
+  MATCH (w:Workflow)
+  WHERE $workflow = '' OR w.name = $workflow
+  OPTIONAL MATCH (t:Task {workflow: w.name})
+    WHERE t.created_at > datetime() - duration({days: $days})
+  WITH w, collect(t) AS runs
+  OPTIONAL MATCH (n:Note) WHERE n.produced_by_task IN [r IN runs | r.id]
+  WITH w, runs, collect(n) AS notes
+  RETURN w.name AS workflow, w.kind AS kind, w.topic AS topic, w.enabled AS enabled,
+         size(runs) AS runs,
+         size([r IN runs WHERE r.status IN ['completed', 'done']]) AS ok,
+         size([r IN runs WHERE r.status IN ['failed', 'dead']]) AS failed,
+         size(notes) AS notes,
+         reduce(s = 0, x IN notes | s + coalesce(x.access_count, 0)) AS reads,
+         size([x IN notes WHERE EXISTS { (x)<-[:ASSERTED_IN|CORROBORATED_BY|CONTRADICTED_BY]-() }]) AS cited,
+         CASE WHEN size(runs) = 0 THEN null
+              ELSE toString(reduce(m = runs[0].created_at, r IN runs |
+                     CASE WHEN r.created_at > m THEN r.created_at ELSE m END)) END AS last_run,
+         [r IN runs | r.id] AS tasks
+  ORDER BY runs DESC, workflow
+sql: |-
+  SELECT task_id AS tasks,
+         count(*) AS model_calls,
+         sum(coalesce(tokens_in, 0)) AS tokens_in,
+         round(sum(coalesce(cost, 0)), 6) AS cost_usd
+  FROM model_usage
+  WHERE task_id IS NOT NULL
+    AND CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+  GROUP BY task_id
+join: tasks

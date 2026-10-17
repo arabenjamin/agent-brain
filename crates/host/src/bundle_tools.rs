@@ -162,8 +162,8 @@ pub(crate) fn params(input_schema: &Value, args: &Map<String, Value>) -> Map<Str
         .collect()
 }
 
-/// The `$name` parameters a Cypher query uses.
-fn cypher_params(cypher: &str) -> Vec<String> {
+/// The `$name` parameters a Cypher query uses (a view's `sql` too).
+pub(crate) fn cypher_params(cypher: &str) -> Vec<String> {
     let mut out = Vec::new();
     let b = cypher.as_bytes();
     let mut i = 0;

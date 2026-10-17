@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Nothing built yet.
+Workflow Admin" (`0fcc6502`). Phase 0 built 2026-10-17; Phase 1 next.
 
 ## 1. Why
 
@@ -95,7 +95,7 @@ review: { every: 1w }           # the manager's review cadence
   The Jobs Board todo's follow-up research workflows land here.
 - **AI & ML Research** (department; topic `ai-ml`): slm-benchmark-watch,
   rust-training-data-scout, deep-dive-pick
-- **Off-grid Networking** (project; topic `off-grid-networking`):
+- **Off-grid & Decentralized Networking** (department; topic `off-grid-networking`; owner: its own program, not under the NIA):
   off-grid-networking-monitor
 - **Briefings & Intake** (department): daily-news, weekly-news,
   news-analysis, media-watch, discover-media-sources, video-learning,
@@ -113,9 +113,18 @@ runs and success rate; notes made; notes read again (`access_count`); notes
 cited later (claim evidence, briefs); cost; last run. Per agent: delegations,
 rounds used, tool calls that failed their schema (`arg_checks`), cost.
 
-Known gaps: `model_usage` has no task id, so cost per workflow run cannot be
-attributed yet (Phase 0 adds it). "Read again" is a thin proxy for value. The
-owner's rating in the HBI is the better signal and comes later.
+**Built (Phase 0, 2026-10-17):** `lookup` view `workflow_scorecard`
+(`plugins/core/views/`; slots `days`, `workflow`). The graph half gives runs,
+ok, failed, notes, reads, cited and last run; a DuckDB half joins
+`model_calls`, `tokens_in` and `cost_usd` per run from `model_usage.task_id`
+(new column, written from the workflow run's owner task). Views gained `sql` +
+`join` for this (integer slots only; dev note "A view may add ledger
+columns"). An index on `Note.produced_by_task` took it from 45 s to 0.1 s.
+
+Known gaps: cost exists only for runs from 2026-10-17 on (older ledger rows
+and chat turns have no task id). Per-program roll-up waits for programs
+(Phase 1); agent rows wait for Phase 4. "Read again" is a thin proxy for
+value. The owner's rating in the HBI is the better signal and comes later.
 
 ## 6. The manager
 
@@ -136,20 +145,25 @@ manager separate keeps chat a conversation and the review a scheduled job.
 
 | Phase | Scope | Done when |
 |---|---|---|
-| 0. Scorecard | `workflow_scorecard` lookup view; task id on `model_usage` | The §1 table, with cost, comes from one view |
+| 0. Scorecard (**done** 2026-10-17) | `workflow_scorecard` lookup view; task id on `model_usage` | The §1 table, with cost, comes from one view |
 | 1. Programs | Seed kind, validator, `manage_program`, REST, graph nodes, the §4 tree seeded, `program` on todos | Every enabled workflow is in a program or shared; a bad save is refused with what fits |
 | 2. HBI | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
 | 3. Manager | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
 | 4. Agents | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
 
-## 8. Decisions for the owner
+## 8. Decisions (owner, 2026-10-17)
 
-1. The §4 tree: is it right? In particular: does Off-grid belong under the
-   NIA, and does Accountability (the Trump-benefit monitor) belong there or in
-   its own program?
-2. Does pausing a program pause its workflows (recommended: yes, without
-   editing each workflow)?
-3. Program budgets: a monthly cap per program inside the provider caps, or
-   not yet (recommended: not yet; cost goes on the scorecard first)?
-4. Should an *investigation* close itself when its question is answered, or
-   only on the owner's say?
+1. **Tree:** as §4, except **Off-grid & decentralized networking is its own
+   top-level program**, and **Accountability (the Trump-benefit monitor) stays
+   under the NIA**.
+2. **Pausing a program pauses its workflows**, generally speaking (a workflow
+   may opt out; to settle in Phase 1).
+3. **Programs get their own budgets**, like departments in a company: a
+   monthly cap per program, inside the provider caps, enforced by the routing
+   policy for the program's work. Cost goes on the scorecard first (Phase 0),
+   so the caps are set from measured spend.
+4. **An investigation may close itself** when its question is answered, but
+   **closed is not deleted**: closed investigations are cold case files, kept
+   whole and **re-openable** (by the owner, or a manager proposal the owner
+   approves). Status: `active | paused | closed`, and a closed program keeps
+   its history, notes and workflows (disabled).

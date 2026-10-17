@@ -512,6 +512,112 @@ pub fn note_slots_schema(fixed: &[&str]) -> Value {
 
 // ── View files ──────────────────────────────────────────────────────────────
 
+/// A ledger value as a number. DuckDB returns some aggregates as strings
+/// ("12", a HUGEINT sum); those count too.
+fn number(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// A view's `sql` with each `$slot` replaced by that integer slot's value.
+/// Load-time checks allow only integer slots; this refuses anything else a
+/// caller sent for one, so no text reaches the SQL.
+fn integer_sql(sql: &str, params: &Map<String, Value>) -> Result<String, String> {
+    let mut out = sql.to_string();
+    let mut names = crate::bundle_tools::cypher_params(sql);
+    // Longest first, so `$days` is not replaced inside `$days_back`.
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    for name in names {
+        let n = params
+            .get(&name)
+            .and_then(Value::as_i64)
+            .ok_or_else(|| format!("slot '{name}' must be a whole number"))?;
+        out = out.replace(&format!("${name}"), &n.to_string());
+    }
+    Ok(out)
+}
+
+/// Add the SQL rows' columns to the graph rows with the same `join` value.
+/// A graph row with no match gets those columns as null, so every row has
+/// the same shape; SQL rows with no graph row are counted, not dropped.
+///
+/// When a graph row's `join` value is a list (a workflow's run ids, against a
+/// ledger grouped by task), the SQL rows matching any member are summed into
+/// it (numbers only) and the list is dropped from the row: it was the key, not
+/// an answer.
+fn join_rows(out: &mut Value, extra: &[Value], join: &str) {
+    let key = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let mut by_key: std::collections::HashMap<String, &Map<String, Value>> = Default::default();
+    let mut columns: Vec<String> = Vec::new();
+    for r in extra {
+        if let Some(m) = r.as_object() {
+            for c in m.keys() {
+                if c != join && !columns.contains(c) {
+                    columns.push(c.clone());
+                }
+            }
+            if let Some(k) = m.get(join) {
+                by_key.insert(key(k), m);
+            }
+        }
+    }
+    let mut matched = std::collections::HashSet::new();
+    if let Some(rows) = out["rows"].as_array_mut() {
+        for row in rows.iter_mut() {
+            let Some(obj) = row.as_object_mut() else {
+                continue;
+            };
+            if let Some(Value::Array(members)) = obj.get(join).cloned() {
+                let hits: Vec<&Map<String, Value>> = members
+                    .iter()
+                    .map(key)
+                    .filter_map(|k| {
+                        matched.insert(k.clone());
+                        by_key.get(&k).copied()
+                    })
+                    .collect();
+                for c in &columns {
+                    let sum: Option<f64> = hits
+                        .iter()
+                        .filter_map(|m| m.get(c).and_then(number))
+                        .fold(None, |acc, x| Some(acc.unwrap_or(0.0) + x));
+                    // A count stays a whole number; money keeps six places.
+                    let shown = |x: f64| {
+                        if x.fract() == 0.0 && x.abs() < 1e15 {
+                            json!(x as i64)
+                        } else {
+                            json!((x * 1e6).round() / 1e6)
+                        }
+                    };
+                    obj.insert(c.clone(), sum.map(shown).unwrap_or(Value::Null));
+                }
+                obj.remove(join);
+                continue;
+            }
+            let found = obj.get(join).map(key).and_then(|k| {
+                matched.insert(k.clone());
+                by_key.get(&k).copied()
+            });
+            for c in &columns {
+                obj.insert(
+                    c.clone(),
+                    found.and_then(|m| m.get(c)).cloned().unwrap_or(Value::Null),
+                );
+            }
+        }
+    }
+    let unmatched = by_key.keys().filter(|k| !matched.contains(*k)).count();
+
+    if unmatched > 0 {
+        out["sql_unmatched"] = json!(format!(
+            "{unmatched} ledger row(s) have no graph row with the same {join}"
+        ));
+    }
+}
+
 /// One `views/*.yaml` file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -545,6 +651,15 @@ pub struct ViewFile {
     /// (`learned`: `maintenance`, the brain's upkeep, is not learning).
     #[serde(default)]
     pub except_work_kinds: Option<Vec<String>>,
+    /// `kind: cypher`: a DuckDB SELECT (telemetry) whose columns join the
+    /// graph rows on `join` (the `workflow_scorecard`: runs from the graph,
+    /// cost from the ledger). Its `$name`s are integer slots only, so a
+    /// caller's text never becomes SQL. It runs through `duckdb_query`.
+    #[serde(default)]
+    pub sql: Option<String>,
+    /// `kind: cypher` with `sql`: the column both sides share.
+    #[serde(default)]
+    pub join: Option<String>,
 }
 
 impl ViewFile {
@@ -594,6 +709,22 @@ impl ViewFile {
                 let (Some(schema), Some(cypher)) = (&self.input_schema, &self.cypher) else {
                     return Err("kind: cypher needs input_schema and cypher".into());
                 };
+                match (&self.sql, &self.join) {
+                    (None, None) => {}
+                    (Some(sql), Some(join)) => {
+                        if join.trim().is_empty() {
+                            return Err("join names the column both sides share".into());
+                        }
+                        for p in crate::bundle_tools::cypher_params(sql) {
+                            if schema["properties"][&p]["type"] != "integer" {
+                                return Err(format!(
+                                    "the sql uses ${p}: only an integer slot may reach the SQL"
+                                ));
+                            }
+                        }
+                    }
+                    _ => return Err("sql and join go together".into()),
+                }
                 for (slot, q) in values_from(schema) {
                     if let Some(kw) = agent_brain_retrieve::query::write_keyword(&q) {
                         return Err(format!("slot '{slot}': values_from writes ({kw})"));
@@ -607,9 +738,14 @@ impl ViewFile {
                         "wide is a by_* shape (by_topic, by_kind, by_source, by_day)".into(),
                     );
                 }
-                if self.input_schema.is_some() || self.cypher.is_some() || self.limit.is_some() {
+                if self.input_schema.is_some()
+                    || self.cypher.is_some()
+                    || self.limit.is_some()
+                    || self.sql.is_some()
+                    || self.join.is_some()
+                {
                     return Err(
-                        "kind: notes takes preset and defaults, not input_schema, cypher or limit"
+                        "kind: notes takes preset and defaults, not input_schema, cypher, limit, sql or join"
                             .into(),
                     );
                 }
@@ -1244,10 +1380,41 @@ impl LookupSkill {
                 view.name, view.description
             ));
         }
+        if let (Some(sql), Some(join)) = (&view.sql, &view.join) {
+            match integer_sql(sql, &p) {
+                Ok(sql) => {
+                    match self.run_sql(&sql).await {
+                        Ok(extra) => join_rows(&mut out, &extra, join),
+                        // The graph half stands; the missing half says why.
+                        Err(e) => out["sql_error"] = json!(e),
+                    }
+                    out["sql"] = json!(sql);
+                }
+                Err(e) => return ToolCallResult::error(format!("view '{}': {e}", view.name)),
+            }
+        }
         out["view"] = json!(view.name);
         out["cypher"] = json!(cypher);
         out["params"] = Value::Object(p);
         ToolCallResult::success_json(out)
+    }
+
+    /// A view's DuckDB half, through `duckdb_query` (its read-only gate).
+    async fn run_sql(&self, sql: &str) -> Result<Vec<Value>, String> {
+        let r = self
+            .query
+            .execute("duckdb_query", Some(json!({"sql": sql, "limit": 20000})))
+            .await
+            .ok_or("duckdb_query is not available")?;
+        let text = match r.content.first() {
+            Some(agent_brain_protocol::Content::Text { text }) => text.clone(),
+            _ => String::new(),
+        };
+        if r.is_error == Some(true) {
+            return Err(text);
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|e| format!("duckdb_query: {e}"))?;
+        Ok(v["rows"].as_array().cloned().unwrap_or_default())
     }
 }
 
@@ -1319,6 +1486,86 @@ impl Skill for LookupSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_integer_slots_reach_a_views_sql() {
+        let mut p = Map::new();
+        p.insert("days".into(), json!(30));
+        p.insert("days_back".into(), json!(7));
+        assert_eq!(
+            integer_sql(
+                "WHERE a > now() - INTERVAL $days DAY AND b < $days_back",
+                &p
+            )
+            .unwrap(),
+            "WHERE a > now() - INTERVAL 30 DAY AND b < 7"
+        );
+        p.insert("days".into(), json!("30; DROP TABLE x"));
+        assert!(integer_sql("INTERVAL $days DAY", &p).is_err());
+    }
+
+    #[test]
+    fn ledger_columns_join_the_graph_rows() {
+        let mut out = json!({"rows": [
+            {"workflow": "a", "runs": 3},
+            {"workflow": "b", "runs": 1},
+        ]});
+        let extra = vec![
+            json!({"workflow": "a", "usd": 0.5}),
+            json!({"workflow": "z", "usd": 9.0}),
+        ];
+        join_rows(&mut out, &extra, "workflow");
+        assert_eq!(out["rows"][0]["usd"], json!(0.5));
+        assert_eq!(out["rows"][1]["usd"], Value::Null);
+        assert!(
+            out["sql_unmatched"]
+                .as_str()
+                .unwrap()
+                .starts_with("1 ledger row")
+        );
+    }
+
+    #[test]
+    fn a_list_key_sums_its_members_and_is_dropped() {
+        let mut out = json!({"rows": [
+            {"workflow": "a", "tasks": ["t1", "t2", "t3"]},
+            {"workflow": "b", "tasks": []},
+        ]});
+        let extra = vec![
+            json!({"tasks": "t1", "usd": 0.25, "calls": "2"}),
+            json!({"tasks": "t3", "usd": 0.5, "calls": 1}),
+        ];
+        join_rows(&mut out, &extra, "tasks");
+        assert_eq!(out["rows"][0]["usd"], json!(0.75));
+        assert_eq!(out["rows"][0]["calls"], json!(3));
+        assert!(out["rows"][0].get("tasks").is_none());
+        assert_eq!(out["rows"][1]["usd"], Value::Null);
+        assert!(out.get("sql_unmatched").is_none());
+    }
+
+    #[test]
+    fn a_view_sql_may_use_integer_slots_only() {
+        let v = |sql: &str| ViewFile {
+            name: "x".into(),
+            kind: "cypher".into(),
+            description: "d".into(),
+            words: vec!["x".into()],
+            input_schema: Some(json!({"type": "object", "properties": {
+                "days": {"type": "integer", "default": 30},
+                "name": {"type": "string", "default": "a"}}})),
+            cypher: Some("MATCH (n) RETURN n.name AS workflow".into()),
+            preset: None,
+            defaults: None,
+            limit: None,
+            wide: None,
+            except_work_kinds: None,
+            sql: Some(sql.into()),
+            join: Some("workflow".into()),
+        };
+        assert!(v("SELECT 1 WHERE x > $days").check().is_ok());
+        let e = v("SELECT 1 WHERE x = '$name'").check().unwrap_err();
+        assert!(e.contains("only an integer slot"), "{e}");
+    }
 
     /// 2026-10-13 12:00 UTC; local midnight is 04:00 UTC (America/Detroit, EDT).
     fn clock() -> Clock {

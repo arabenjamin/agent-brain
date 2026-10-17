@@ -682,6 +682,7 @@ pub fn record_call(
                 tokens_in,
                 tokens_out,
                 error_kind,
+                crate::ctx::current_owner_task().as_deref(),
             )
             .ok()
         })
@@ -1236,6 +1237,7 @@ mod tests {
             Some(10),
             Some(5),
             None,
+            None,
         )
         .unwrap();
         tc.record_model_usage(
@@ -1247,6 +1249,7 @@ mod tests {
             None,
             None,
             Some("rate_limited"),
+            None,
         )
         .unwrap();
         tc.record_model_usage(
@@ -1257,6 +1260,7 @@ mod tests {
             Some(1),
             Some(1),
             Some(1),
+            None,
             None,
         )
         .unwrap();

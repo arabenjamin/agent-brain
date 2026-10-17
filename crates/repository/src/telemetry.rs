@@ -151,6 +151,10 @@ impl TelemetryClient {
             -- Provider-registry name (ollama-cloud, mistral, …). NULL on rows
             -- written before 2026-09-13. Per-provider budgets are keyed on it.
             ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS provider TEXT;
+            -- The Task that owned the call (`ctx::current_owner_task`: a
+            -- workflow run's record), so cost is attributable per workflow.
+            -- NULL on chat turns and on rows written before 2026-10-17.
+            ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS task_id TEXT;
 
             CREATE TABLE IF NOT EXISTS search_usage (
                 id           TEXT PRIMARY KEY,
@@ -561,6 +565,7 @@ impl TelemetryClient {
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
         error_kind: Option<&str>,
+        task_id: Option<&str>,
     ) -> Result<Option<f64>> {
         let conn = self
             .conn
@@ -591,8 +596,8 @@ impl TelemetryClient {
 
         conn.execute(
             "INSERT INTO model_usage
-             (id, model_name, provider, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, model_name, provider, tool_name, success, duration_ms, tokens_in, tokens_out, cost, error_kind, task_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 model_name,
@@ -603,7 +608,8 @@ impl TelemetryClient {
                 tokens_in,
                 tokens_out,
                 cost,
-                error_kind
+                error_kind,
+                task_id
             ],
         )?;
         Ok(cost)
@@ -1723,5 +1729,50 @@ mod query_raw_tests {
                 "{sql}: {err}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod model_usage_task_tests {
+    use super::*;
+
+    /// A call made under a workflow run is attributable to it: cost per
+    /// workflow is a join on `task_id` (Programs plan Phase 0).
+    #[test]
+    fn a_call_records_the_task_that_owned_it() {
+        let t = TelemetryClient::new(":memory:").unwrap();
+        t.record_model_usage(
+            "m",
+            Some("p"),
+            Some("reason"),
+            true,
+            Some(1),
+            Some(1000),
+            Some(0),
+            None,
+            Some("task-1"),
+        )
+        .unwrap();
+        t.record_model_usage(
+            "m",
+            Some("p"),
+            Some("chat"),
+            true,
+            Some(1),
+            Some(1000),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        let rows = t
+            .query_raw(
+                "SELECT tool_name, task_id FROM model_usage ORDER BY tool_name",
+                10,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0]["task_id"], serde_json::Value::Null);
+        assert_eq!(rows[1]["task_id"], "task-1");
     }
 }
