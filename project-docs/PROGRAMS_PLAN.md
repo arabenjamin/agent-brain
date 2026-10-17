@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Phases 0–3 and 2b built 2026-10-17; Phase 4 (agents) next.
+Workflow Admin" (`0fcc6502`). Phases 0–4 and 2b built 2026-10-17. Open: turn on `program-reviews`; per-program budget enforcement once costs are measured.
 
 ## 1. Why
 
@@ -150,7 +150,7 @@ manager separate keeps chat a conversation and the review a scheduled job.
 | 2. HBI (**done** 2026-10-17) | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
 | 2b. Assist + schema (owner, 2026-10-17; **done** 2026-10-17) | The New Program drawer gets the `AgentAssist` widget like the workflow form (an agent drafts the program from a prompt, read-only, the draft fills the form); `schemas/program.json` is the program's JSON Schema, checked before any other check on every save (tool, REST, seed), as `schemas/workflow.json` is for workflows | An agent's draft fills the form and saves; a body that breaks the schema is refused with the schema's own error |
 | 3. Manager (**built** 2026-10-17; the daily dispatcher ships off) | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
-| 4. Agents | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
+| 4. Agents (**done** 2026-10-17) | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
 
 ## 8. Decisions (owner, 2026-10-17)
 
@@ -287,7 +287,7 @@ manager separate keeps chat a conversation and the review a scheduled job.
   the NIA into who supplies HBM to Chinese AI labs, reviewed weekly, $2 a
   month", it drafted a program that passed the check on the first try.
 
-## 13. Phase 4 (built 2026-10-17, re-test pending)
+## 13. Phase 4 as built (2026-10-17)
 
 - Telemetry knows the agent: `ctx::CURRENT_AGENT` is scoped around a sub-agent
   run; `arg_checks.agent` records it, and `agent_runs` (DuckDB) records each
@@ -304,4 +304,9 @@ manager separate keeps chat a conversation and the review a scheduled job.
   program relying on scribe and code-analyst got a profile-change proposal
   with numbers (done-when met), but it compared counts not rates and named
   no concrete change. The prompt now requires rates and a named change and
-  the setups are in the context: re-run one free-model review to confirm.
+  the setups are in the context. Re-run: scribe first (7 of 11 calls
+  failed), "scribe: add fallback model", with the rate.
+- The re-run found a real bug: proposals were keyed by program and date, so
+  a second review the same day had its proposals swallowed as "filed
+  already" by the first's (the message showed the old title). Now keyed by
+  the review run's task id.

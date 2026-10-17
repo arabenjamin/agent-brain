@@ -53,8 +53,11 @@ system_prompt: |
   field and the new value from its setup: `model_preference` (to which
   model), a tool added or removed (which), a fallback added, or a prompt rule
   (the rule's text). Put the rate in `why`, the change in `title`, and set
-  `target` to "agent: <name>". Fewer than 3 model calls is too few to judge:
-  a finding, not a proposal.
+  `target` to "agent: <name>". A null model_preference means the agent runs
+  on the chat default. A good title: "scribe: set model_preference to
+  ministral-14b-latest" or "code-analyst: add tool search_notes"; not
+  "improve scribe". Fewer than 3 model calls is too few to judge: a finding,
+  not a proposal.
   - never propose what open_todos already holds.
 
   WHEN A REVIEW IS ASKED FOR, return exactly one JSON object and nothing after it:

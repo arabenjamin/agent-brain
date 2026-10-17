@@ -192,6 +192,12 @@ impl ProgramSkill {
             })
             .unwrap_or_default();
         let date = agent_brain_graph::clock::today();
+        // One key per review run: a retry of this run's record step files
+        // nothing twice, and a later review (even the same day) files anew.
+        // Keyed by date, a second review swallowed its proposals as "filed
+        // already" by the first's (2026-10-17).
+        let run = agent_brain_llm::ctx::current_owner_task()
+            .unwrap_or_else(|| format!("{date}-{}", chrono::Utc::now().timestamp()));
         let mut created = Vec::new();
         let mut skipped = Vec::new();
         for (i, p) in review.proposals.iter().enumerate() {
@@ -227,7 +233,7 @@ impl ProgramSkill {
                 patch: agent_brain_repository::TodoItemPatch {
                     assignee: Some(Some("user".into())),
                     origin_kind: Some(Some("agent".into())),
-                    origin_ref: Some(Some(format!("program-review:{name}:{date}:{i}"))),
+                    origin_ref: Some(Some(format!("program-review:{name}:{run}:{i}"))),
                     ask: Some(Some(ask)),
                     program: Some(Some(name.to_string())),
                     source: Some(Some(format!(
@@ -238,9 +244,10 @@ impl ProgramSkill {
             };
             match items::create_item(&self.neo4j, item).await {
                 Ok((t, true)) => created.push(json!({"id": t.id, "title": t.title})),
-                Ok((t, false)) => {
-                    skipped.push(json!({"title": t.title, "why": "filed already by this review"}))
-                }
+                Ok((t, false)) => skipped.push(json!({
+                    "title": title,
+                    "why": format!("filed already by this review run, as '{}'", t.title),
+                })),
                 Err(e) => skipped.push(json!({"title": title, "why": format!("not filed: {e}")})),
             }
         }
