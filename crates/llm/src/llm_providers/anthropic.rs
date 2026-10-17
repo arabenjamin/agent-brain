@@ -17,13 +17,15 @@ const DEFAULT_MAX_TOKENS: u32 = 16_000;
 /// at 120s is billed anyway.
 const MIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Whether `model` accepts `temperature`. Sonnet 5, Opus 5, Opus 4.7/4.8 and the
-/// Fable/Mythos models reject sampling parameters with a 400; older models
-/// (Sonnet 4.6, Haiku 4.5) still take them.
+/// Whether `model` accepts `temperature`. Sonnet 5, Opus 5, Haiku 5, Opus
+/// 4.7/4.8 and the Fable/Mythos models reject sampling parameters with a 400
+/// (Haiku 5.5: "`temperature` is deprecated for this model", 2026-10-17); older
+/// models (Sonnet 4.6, Haiku 4.5) still take them.
 fn accepts_sampling(model: &str) -> bool {
     const NO_SAMPLING: &[&str] = &[
         "claude-sonnet-5",
         "claude-opus-5",
+        "claude-haiku-5",
         "claude-opus-4-7",
         "claude-opus-4-8",
         "claude-fable",
@@ -265,6 +267,7 @@ mod tests {
             "claude-opus-5",
             "claude-opus-4-8",
             "claude-fable-5-1",
+            "claude-haiku-5-5",
         ] {
             assert!(!accepts_sampling(m), "{m} rejects sampling params");
         }

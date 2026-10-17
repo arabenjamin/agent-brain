@@ -75,7 +75,7 @@ impl ChatService {
         // we already run.
         let default_model = match provider.as_str() {
             "gemini" => std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into()),
-            "anthropic" => "claude-haiku-4-5-20251001".to_string(),
+            "anthropic" => "claude-haiku-5-5".to_string(),
             _ => std::env::var("CHAT_SYNTHESIS_MODEL")
                 .ok()
                 .filter(|m| !m.is_empty())

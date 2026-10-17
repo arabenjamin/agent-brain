@@ -19,8 +19,9 @@ tools:
 # drafts read sound; gemma4-e4b passed 7/7 only after fix-up rounds and its new
 # drafts were weak (placeholder arguments, invented templates); Ministral
 # (free) passed with hardcoded dates. About 1-2 cents a draft. A capped run
-# falls back to the free models.
-model_preference: claude-haiku-4-5
+# falls back to the free models. Measured on Haiku 4.5; moved to Haiku 5.5
+# 2026-10-17 (a tenth of the price) without re-measuring.
+model_preference: claude-haiku-5-5
 provider_hint: anthropic
 fallback_models:
   - ministral-14b-latest

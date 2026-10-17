@@ -2560,9 +2560,9 @@ mod tests {
                 model: "gemma4:latest".into(),
             },
             CatalogModel {
-                name: "claude-haiku-4-5".into(),
+                name: "claude-haiku-5-5".into(),
                 provider: "anthropic".into(),
-                model: "claude-haiku-4-5-20251001".into(),
+                model: "claude-haiku-5-5".into(),
             },
         ];
         let step = |hint: Option<&str>, model: Option<&str>| ChainStep {
@@ -2574,7 +2574,7 @@ mod tests {
         let zt = step(Some("ollama-cloud"), Some("gemma4:latest"));
         assert_eq!(step_provider_hint(&zt, &catalog).as_deref(), Some("ollama"));
         // A cloud pin picks its provider's lane.
-        let haiku = step(None, Some("claude-haiku-4-5"));
+        let haiku = step(None, Some("claude-haiku-5-5"));
         assert_eq!(
             step_provider_hint(&haiku, &catalog).as_deref(),
             Some("anthropic")

@@ -7,7 +7,7 @@ const providers: ProviderInfo[] = [
   { name: "ollama-cloud", kind: "openai_compat", billing: "free", data_policy: "may_train", enabled: true, key_configured: false },
 ];
 const models: CatalogModel[] = [
-  { name: "claude-haiku-4-5", provider: "anthropic", model: "claude-haiku-4-5-20251001" },
+  { name: "claude-haiku-5-5", provider: "anthropic", model: "claude-haiku-5-5" },
   { name: "gpt-oss:120b-cloud", provider: "ollama-cloud", model: "gpt-oss:120b-cloud",
     admission: { background: { private: "private work only reaches no_log providers", public: null } } },
   { name: "gemma4:latest", provider: "ollama", model: "gemma4:latest" },
@@ -15,7 +15,7 @@ const models: CatalogModel[] = [
 
 describe("model catalog", () => {
   it("matches a stored value exactly, by model id or name", () => {
-    expect(findModel(models, "CLAUDE-HAIKU-4-5")?.model).toBe("claude-haiku-4-5-20251001");
+    expect(findModel(models, "CLAUDE-HAIKU-5-5")?.model).toBe("claude-haiku-5-5");
     expect(findModel(models, "gemma4")).toBeUndefined();
     expect(findModel(models, " ")).toBeUndefined();
   });

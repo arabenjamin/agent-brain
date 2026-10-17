@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn a_pin_matches_exactly_never_by_substring() {
         let rows = vec![
-            row("claude-haiku-4-5", "anthropic", "claude-haiku-4-5-20251001"),
+            row("claude-haiku-5-5", "anthropic", "claude-haiku-5-5"),
             row("gemma4:31b-cloud", "ollama-cloud", "gemma4:31b-cloud"),
             row("gemma4:latest", "ollama", "gemma4:latest"),
         ];
@@ -324,8 +324,8 @@ mod tests {
             "ollama"
         );
         assert_eq!(
-            find_model(&rows, "claude-haiku-4-5").unwrap().model,
-            "claude-haiku-4-5-20251001"
+            find_model(&rows, "claude-haiku-5-5").unwrap().model,
+            "claude-haiku-5-5"
         );
         assert!(find_model(&rows, "gemma4").is_none());
         assert!(find_model(&rows, "  ").is_none());
