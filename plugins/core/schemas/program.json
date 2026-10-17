@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-brain/program",
+  "title": "Program",
+  "description": "A program as it is saved (PROGRAMS_PLAN.md): the save body laid over the stored program, or a programs/*.yaml file. Checked before anything else on every save path (manage_program upsert, REST, the seed). What a schema cannot say (the parent exists and does not loop, the workflows exist and belong to no other program, the topics, agents and APIs exist) is checked next by services/programs.rs. Self-contained (remote $ref resolution is disabled).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "kind"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "description": "Slug, at most 64 characters; the file stem. Its identity: it does not change."
+    },
+    "label": { "type": "string", "maxLength": 1500, "description": "What the HBI shows; the name when empty." },
+    "kind": {
+      "enum": ["department", "project", "investigation", "case", "services"],
+      "description": "department: standing work. project: a deliverable, then it ends. investigation / case: a question that closes with a finding. services: on-demand workflows every program uses."
+    },
+    "parent": { "type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9-]{0,63}$", "description": "The program it sits under; null or absent = top level." },
+    "status": {
+      "enum": ["active", "paused", "closed"],
+      "description": "Not active pauses its workflows and those of the programs under it, except keep_running."
+    },
+    "charter": { "type": "string", "maxLength": 1500, "description": "What it is for, in a few sentences. Its manager judges it against this." },
+    "success": { "type": "string", "maxLength": 1500, "description": "What good output looks like." },
+    "topics": { "$ref": "#/$defs/names", "description": "Topics it covers (topics/*.yaml names)." },
+    "workflows": { "$ref": "#/$defs/names", "description": "Workflows it owns. A workflow belongs to at most one program." },
+    "keep_running": { "$ref": "#/$defs/names", "description": "Its workflows that a pause or close leaves on." },
+    "agents": { "$ref": "#/$defs/names", "description": "Agent profiles its work relies on." },
+    "apis": { "$ref": "#/$defs/names", "description": "API contexts and MCP servers its work relies on." },
+    "review": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["every"],
+      "properties": {
+        "every": { "type": "string", "pattern": "^[0-9]+[smhdw]$", "description": "How often its manager reviews it (1w, 30d)." }
+      }
+    },
+    "budget": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["monthly_usd"],
+      "properties": {
+        "monthly_usd": { "type": "number", "minimum": 0, "description": "A monthly cap in US dollars; shown, not enforced yet." }
+      }
+    },
+    "finding": { "type": ["string", "null"], "maxLength": 1500, "description": "What a closed investigation or case found (required to close one)." }
+  },
+  "$defs": {
+    "names": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

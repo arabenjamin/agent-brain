@@ -216,6 +216,7 @@ impl ToolHandler {
                 refused,
                 &problems,
                 &args,
+                agent_brain_llm::ctx::current_agent().as_deref(),
             );
         }
         refused.then(|| {

@@ -722,6 +722,25 @@ pub fn lint_chain_steps(steps: &[ChainStep], live_tools: &[String]) -> Vec<Strin
 static ENVELOPES: std::sync::OnceLock<std::sync::Arc<HashMap<String, Value>>> =
     std::sync::OnceLock::new();
 
+/// Every loaded bundle's `schemas/*.json` (core first; a later bundle cannot
+/// replace one), for [`set_envelope_schemas`]. A bad file is skipped with a
+/// warning by `load_schema_dir`.
+pub fn load_bundle_schemas(
+    plugins: &agent_brain_graph::bundles::Plugins,
+) -> HashMap<String, Value> {
+    let mut all = HashMap::new();
+    for (plugin, dir) in plugins.dirs("schemas") {
+        for (name, schema) in load_schema_dir(&dir) {
+            if all.contains_key(&name) {
+                tracing::warn!(%plugin, schema = %name, "schema already declared by an earlier bundle — skipped");
+                continue;
+            }
+            all.insert(name, schema);
+        }
+    }
+    all
+}
+
 pub fn set_envelope_schemas(schemas: std::sync::Arc<HashMap<String, Value>>) {
     let _ = ENVELOPES.set(schemas);
 }

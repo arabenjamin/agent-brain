@@ -851,3 +851,5 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .prog-checks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; max-height: 180px; overflow-y: auto; }
 .prog-taken { opacity: 0.6; }
 .prog-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.item-hand .prog-checks label.wk-check { flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; }
+.prog-checks .wk-check input { margin: 0; }

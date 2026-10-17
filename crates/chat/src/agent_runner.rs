@@ -809,6 +809,15 @@ impl AgentRunner {
         };
 
         let started = std::time::Instant::now();
+        // Who asked (chat or a background job), read before the run scopes
+        // its own route context; and the ledger to record the run in.
+        let caller = RouteContext::current().purpose;
+        let telemetry = self
+            .tool_handler
+            .read()
+            .await
+            .as_ref()
+            .and_then(|h| h.telemetry().cloned());
         if let Some(ref tx) = sink {
             let _ = tx
                 .send(ChatEvent::Thinking {
@@ -838,15 +847,18 @@ impl AgentRunner {
                 format!("subagent:{agent}"),
                 RETRIEVAL_EXCLUDE.scope(
                     retrieval_exclude,
-                    engine.run_bounded_loop(
-                        cfg,
-                        sub_tools,
-                        handler,
-                        sub_request,
-                        sub_system,
-                        sub_tx,
-                        false,
-                        budget.max_iterations,
+                    agent_brain_llm::ctx::CURRENT_AGENT.scope(
+                        Some(agent.to_string()),
+                        engine.run_bounded_loop(
+                            cfg,
+                            sub_tools,
+                            handler,
+                            sub_request,
+                            sub_system,
+                            sub_tx,
+                            false,
+                            budget.max_iterations,
+                        ),
                     ),
                 ),
             ),
@@ -930,6 +942,21 @@ impl AgentRunner {
         let retrieved = !gathered.is_empty();
 
         let ok = !answer.trim().is_empty();
+        if let Some(tel) = &telemetry {
+            let failed = trace.iter().filter(|t| !t.success).count();
+            if let Err(e) = tel.record_agent_run(
+                agent,
+                caller.as_str(),
+                &model,
+                ok,
+                trace.len(),
+                failed,
+                started.elapsed().as_millis() as u64,
+                agent_brain_llm::ctx::current_owner_task().as_deref(),
+            ) {
+                tracing::warn!(error = %e, agent, "agent run not recorded");
+            }
+        }
         if let Some(ref tx) = sink {
             // Close the delegation bracket in the stream so the whole sub-agent
             // turn reads as one unit that started and finished.

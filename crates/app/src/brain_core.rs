@@ -534,19 +534,10 @@ impl BrainCore {
         // (core first; a later bundle cannot replace one). Loaded once; a
         // missing dir or bad file degrades to no envelope validation (the
         // per-step arg gate still runs). See services/validation.rs.
-        let envelope_schemas_arc: Arc<std::collections::HashMap<String, serde_json::Value>> = {
-            let mut all = std::collections::HashMap::new();
-            for (plugin, dir) in crate::services::plugins::Plugins::global().dirs("schemas") {
-                for (name, schema) in crate::services::validation::load_schema_dir(&dir) {
-                    if all.contains_key(&name) {
-                        warn!(%plugin, schema = %name, "schema already declared by an earlier bundle — skipped");
-                        continue;
-                    }
-                    all.insert(name, schema);
-                }
-            }
-            Arc::new(all)
-        };
+        let envelope_schemas_arc: Arc<std::collections::HashMap<String, serde_json::Value>> =
+            Arc::new(crate::services::validation::load_bundle_schemas(
+                &crate::services::plugins::Plugins::global(),
+            ));
         crate::services::validation::set_envelope_schemas(Arc::clone(&envelope_schemas_arc));
 
         let mut skills: Vec<Arc<dyn Skill>> = Vec::new();

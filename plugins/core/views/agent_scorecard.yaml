@@ -1,0 +1,76 @@
+# The agent scorecard (PROGRAMS_PLAN.md Phase 4, 2026-10-17): how each agent
+# profile is doing. The graph half lists the profiles, the workflows that call
+# each one (a `run_agent` step naming it) and the programs that rely on it;
+# the DuckDB half joins its runs (`agent_runs`, from 2026-10-17), its model
+# calls and cost (`model_usage`, `subagent:<agent>`), and the tool calls whose
+# arguments did not fit the tool's schema (`arg_checks.agent`, from
+# 2026-10-17). Ledger rows for agents that no longer exist are reported in
+# `sql_unmatched`, not dropped.
+name: agent_scorecard
+kind: cypher
+description: >-
+  How each agent (a sub-agent profile such as researcher, knowledge-worker,
+  program-manager) is doing over a window (default 30 days): its runs and how
+  many gave an answer, the tool calls it made and how many failed, model calls
+  and model errors, tokens and cost, and tool calls whose arguments did not fit
+  the tool (runs and misfits are recorded from 2026-10-17). Name a program for
+  the agents its workflows call or that it relies on.
+words: [agent scorecard, how are the agents doing, which agents are worth it, agent cost, agent failures, sub-agent performance]
+limit: 60
+input_schema:
+  type: object
+  properties:
+    days:
+      type: integer
+      default: 30
+      description: The window, in days back from now.
+    program:
+      type: string
+      default: ""
+      description: Only the agents this program (and the programs under it) relies on or calls; empty for all.
+      values_from: "MATCH (p:Program) RETURN p.name AS value, p.label AS label ORDER BY value"
+cypher: |-
+  MATCH (c:ContextProfile)
+  OPTIONAL MATCH (scope:Program {name: $program})<-[:UNDER*0..]-(sub:Program)
+  WITH c, collect(DISTINCT sub) AS subs
+  WITH c, subs,
+       [(x:Program)-[:OWNS]->(w:Workflow)
+          WHERE x IN subs AND w.steps CONTAINS ('"agent":"' + c.name + '"') | w.name] AS scoped_calls
+  WHERE $program = '' OR size(scoped_calls) > 0
+     OR any(s IN subs WHERE c.name IN coalesce(s.agents, []))
+  RETURN c.name AS agent,
+         COLLECT { MATCH (w:Workflow) WHERE w.steps CONTAINS ('"agent":"' + c.name + '"') RETURN w.name } AS called_by_workflows,
+         COLLECT { MATCH (p:Program) WHERE c.name IN coalesce(p.agents, []) RETURN p.name } AS relied_on_by
+  ORDER BY agent
+sql: |-
+  WITH runs AS (
+    SELECT agent, count(*) AS runs,
+           CAST(sum(CASE WHEN ok THEN 1 ELSE 0 END) AS BIGINT) AS answered,
+           CAST(sum(tool_calls) AS BIGINT) AS tool_calls, CAST(sum(tools_failed) AS BIGINT) AS tools_failed,
+           round(avg(duration_ms) / 1000.0, 1) AS avg_secs
+    FROM agent_runs
+    WHERE CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+    GROUP BY agent),
+  usage AS (
+    SELECT substr(tool_name, 10) AS agent, count(*) AS model_calls,
+           CAST(sum(CASE WHEN success THEN 0 ELSE 1 END) AS BIGINT) AS model_errors,
+           CAST(sum(coalesce(tokens_in, 0)) AS BIGINT) AS tokens_in,
+           round(sum(coalesce(cost, 0)), 6) AS cost_usd
+    FROM model_usage
+    WHERE tool_name LIKE 'subagent:%'
+      AND CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+    GROUP BY 1),
+  misfits AS (
+    SELECT agent, count(*) AS arg_misfits
+    FROM arg_checks
+    WHERE agent IS NOT NULL
+      AND CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+    GROUP BY agent)
+  SELECT coalesce(r.agent, u.agent, m.agent) AS agent,
+         r.runs, r.answered, r.tool_calls, r.tools_failed, r.avg_secs,
+         u.model_calls, u.model_errors, u.tokens_in, u.cost_usd,
+         m.arg_misfits
+  FROM runs r
+  FULL OUTER JOIN usage u ON r.agent = u.agent
+  FULL OUTER JOIN misfits m ON m.agent = coalesce(r.agent, u.agent)
+join: agent

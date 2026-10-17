@@ -2,13 +2,18 @@
  * Create or edit a program (PROGRAMS_PLAN.md Phase 2). The server checks the
  * whole program on save (services/programs.rs) and refuses with what would
  * fit; this form only keeps the obvious mistakes out. Status is changed from
- * the drawer's actions, not here.
+ * the drawer's actions, not here. "Ask an agent" drafts the program from a
+ * prompt (program-manager by default, read-only); the draft goes through the
+ * same check as a save, once more to the agent if refused, then into the form.
  */
 import { useMemo, useState, type FormEvent } from "react";
 import {
-  createProgram, PROGRAM_KINDS, PROGRAM_NAME, TEXT_MAX, updateProgram, usePrograms,
-  type ProgramDef, type ProgramSaved,
+  checkProgram, createProgram, PROGRAM_KINDS, PROGRAM_NAME, TEXT_MAX, updateProgram, usePrograms, useProgramSchema,
+  type ProgramCheck, type ProgramDef, type ProgramSaved,
 } from "../../api/programs";
+import { answerBody, runAssist, type AssistRun } from "../../lib/assist";
+import { buildProgramTask, readProgramDraft } from "../../lib/programDraft";
+import AgentAssist from "../ui/AgentAssist";
 import { useProfiles } from "../../api/queries";
 import { useTopics } from "../../api/topics";
 import { useWorkSchedules } from "../../api/work";
@@ -82,10 +87,93 @@ export default function ProgramForm({ existing, onSaved, onCancel }: {
     rows.forEach((r) => r.workflow_names.forEach((w) => m.set(w, { name: r.name, label: r.label })));
     return m;
   }, [rows]);
-  const allWorkflows = useMemo(
-    () => [...(schedules.data?.workflows ?? [])].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)),
-    [schedules.data],
-  );
+  // Its own and the free ones first; another program's last (shown, disabled).
+  const allWorkflows = useMemo(() => {
+    const free = (n: string) => !owner.has(n) || owner.get(n)?.name === existing?.name;
+    return [...(schedules.data?.workflows ?? [])].sort((a, b) =>
+      Number(free(b.name)) - Number(free(a.name)) || Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name));
+  }, [schedules.data, owner, existing]);
+
+  const schema = useProgramSchema();
+
+  /** The form as a save body: what Save sends, what a draft is checked as. */
+  const formBody = (): Partial<ProgramDef> => ({
+    ...(existing ? { name: existing.name } : name ? { name } : {}),
+    label: label.trim(),
+    kind,
+    parent: parent || null,
+    charter: charter.trim(),
+    success: success.trim(),
+    topics: topicSel,
+    workflows,
+    keep_running: keep.filter((k) => workflows.includes(k)),
+    agents,
+    apis: list(apis),
+    review: review.trim() ? { every: review.trim() } : null,
+    budget: budget.trim() ? { monthly_usd: Number(budget) } : null,
+  });
+
+  const assistTask = (prompt: string, fix?: { previous: string; errors: string }) => {
+    const own = new Set(existing?.workflows ?? []);
+    return buildProgramTask({
+      request: prompt,
+      current: formBody(),
+      schema: schema.data ?? "(the schema could not be loaded: follow the fields of the form as it stands)",
+      programs: rows.filter((r) => r.name !== existing?.name).map((r) => ({ name: r.name, label: r.label, kind: r.kind, parent: r.parent })),
+      freeWorkflows: allWorkflows.filter((w) => !owner.has(w.name) || own.has(w.name)),
+      topics: (topics.data?.topics ?? []).map((t) => ({ name: t.name, label: t.label })),
+      agents: (profiles.data ?? []).map((p) => p.name),
+      fix,
+    });
+  };
+
+  const applyDraft = (d: Partial<ProgramDef>) => {
+    if (!existing && typeof d.name === "string") setName(d.name.toLowerCase());
+    if (typeof d.label === "string") setLabel(d.label);
+    if (typeof d.kind === "string") setKind(d.kind);
+    if (d.parent !== undefined) setParent(d.parent ?? "");
+    if (typeof d.charter === "string") setCharter(d.charter);
+    if (typeof d.success === "string") setSuccess(d.success);
+    if (Array.isArray(d.topics)) setTopicSel(d.topics);
+    if (Array.isArray(d.workflows)) setWorkflows(d.workflows);
+    if (Array.isArray(d.keep_running)) setKeep(d.keep_running);
+    if (Array.isArray(d.agents)) setAgents(d.agents);
+    if (Array.isArray(d.apis)) setApis(d.apis.join(", "));
+    if (d.review !== undefined) setReview(d.review?.every ?? "");
+    if (d.budget !== undefined) setBudget(d.budget ? String(d.budget.monthly_usd) : "");
+  };
+
+  const applyAssist = async (body: string, run: AssistRun, _action: string | undefined, prompt: string): Promise<string | null> => {
+    const create = !existing;
+    const checkDraft = (d: Partial<ProgramDef>) =>
+      checkProgram({ ...d, ...(existing ? { name: existing.name } : {}) }, create);
+    const askAgain = async (previous: string, errors: string) =>
+      readProgramDraft(answerBody((await runAssist(run.agent || "program-manager", assistTask(prompt, { previous, errors }), run.requestedModel ?? "")).answer));
+    // No usable draft, or one the save check refuses, goes back to the agent
+    // once with what was wrong, as the workflow form does.
+    let read = readProgramDraft(body);
+    let retried = false;
+    if (typeof read === "string") {
+      read = await askAgain(body.slice(0, 2000), read);
+      retried = true;
+      if (typeof read === "string") return read;
+    }
+    let check: ProgramCheck = await checkDraft(read.draft);
+    if (!check.ok && check.refused && !retried) {
+      const again = await askAgain(read.text, check.error);
+      if (typeof again !== "string") {
+        read = again;
+        check = await checkDraft(read.draft);
+      }
+    }
+    applyDraft(read.draft);
+    if (!check.ok) {
+      return check.refused
+        ? `The draft is in the form, but Save will refuse it until these are fixed:\n${check.error}`
+        : `The draft is in the form, unchecked: ${check.error}`;
+    }
+    return check.warnings.length ? `The draft is in the form and will save. Worth knowing: ${check.warnings.join(" ")}` : null;
+  };
 
   const nameOk = PROGRAM_NAME.test(name);
   const budgetOk = budget.trim() === "" || (Number.isFinite(Number(budget)) && Number(budget) >= 0);
@@ -95,20 +183,7 @@ export default function ProgramForm({ existing, onSaved, onCancel }: {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const body: Partial<ProgramDef> = {
-      label: label.trim(),
-      kind,
-      parent: parent || null,
-      charter: charter.trim(),
-      success: success.trim(),
-      topics: topicSel,
-      workflows,
-      keep_running: keep.filter((k) => workflows.includes(k)),
-      agents,
-      apis: list(apis),
-      review: review.trim() ? { every: review.trim() } : null,
-      budget: budget.trim() ? { monthly_usd: Number(budget) } : null,
-    };
+    const body = formBody();
     try {
       const r = existing ? await updateProgram(existing.name, body) : await createProgram({ ...body, name, kind } as ProgramDef);
       onSaved(r.program.name, r);
@@ -121,6 +196,17 @@ export default function ProgramForm({ existing, onSaved, onCancel }: {
 
   return (
     <form className="item-hand" onSubmit={submit}>
+      <AgentAssist
+        title={existing ? "Ask an agent to revise this program" : "Ask an agent to draft the program"}
+        defaultAgent="program-manager"
+        placeholder={existing
+          ? "What should change, e.g. 'take over the grid-outage workflow and add a budget of $2 a month'."
+          : "Describe the program, e.g. 'An investigation into who supplies HBM memory to Chinese labs, under the NIA'."}
+        buildTask={(prompt) => assistTask(prompt)}
+        onResult={applyAssist}
+        runLabel="Draft"
+        note="Fills the form; nothing is saved until you press Save"
+      />
       <label>
         <span className="wk-dim">Name (its identity: lowercase, digits and hyphens; can't change later)</span>
         <input className="ui-input" value={name} disabled={!!existing} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="e.g. supply-chain-shocks" />

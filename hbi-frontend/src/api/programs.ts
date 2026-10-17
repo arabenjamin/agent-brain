@@ -6,7 +6,7 @@
  * those of the programs under it, except its `keep_running`.
  */
 import { useQuery } from "@tanstack/react-query";
-import { apiJson, apiSend, query } from "./client";
+import { apiJson, apiRequest, apiSend, query } from "./client";
 import { queryClient } from "./queries";
 import type { Tone } from "../components/ui";
 
@@ -169,4 +169,58 @@ export function savedNote(s: ProgramSaved): string {
   if (s.changes.length) parts.push(s.changes.join("; ") + ".");
   if (s.warnings.length) parts.push(s.warnings.join(" "));
   return parts.join(" ");
+}
+
+/** `schemas/program.json`: what an agent drafting a program is given. */
+export function useProgramSchema() {
+  return useQuery({
+    queryKey: ["programs", "schema"],
+    queryFn: () => apiJson<Record<string, unknown>>("/api/programs/schema"),
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export type ProgramCheck =
+  | { ok: true; warnings: string[] }
+  | { ok: false; refused: boolean; error: string };
+
+/** Every check a save runs, nothing written (`POST /api/programs/check`). */
+export async function checkProgram(program: Partial<ProgramDef>, create: boolean): Promise<ProgramCheck> {
+  try {
+    const res = await apiRequest("/api/programs/check", { method: "POST", body: JSON.stringify({ program, create }) });
+    const data = (await res.json().catch(() => ({}))) as { warnings?: string[]; error?: string };
+    if (res.ok) return { ok: true, warnings: data.warnings ?? [] };
+    return { ok: false, refused: res.status === 400, error: data.error ?? `program check: HTTP ${res.status}` };
+  } catch (e) {
+    return { ok: false, refused: false, error: `program check could not run: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** An `agent_scorecard` row: one agent profile over the window. */
+export interface AgentScore {
+  agent: string;
+  called_by_workflows: string[];
+  relied_on_by: string[];
+  /** Runs (recorded from 2026-10-17; null: none recorded). */
+  runs: number | null;
+  answered: number | null;
+  tool_calls: number | null;
+  tools_failed: number | null;
+  avg_secs: number | null;
+  model_calls: number | null;
+  model_errors: number | null;
+  tokens_in: number | null;
+  cost_usd: number | null;
+  /** Tool calls whose arguments did not fit the tool (from 2026-10-17). */
+  arg_misfits: number | null;
+}
+
+/** The agents a program's work uses (its workflows call them or it relies on them). */
+export function useProgramAgents(program: string, days = 30) {
+  return useQuery({
+    queryKey: ["programs", "agents", program, days],
+    queryFn: () => apiJson<{ rows: AgentScore[]; sql_error?: string }>(`/api/programs/agents${query({ program, days })}`),
+    staleTime: 5 * 60_000,
+  });
 }

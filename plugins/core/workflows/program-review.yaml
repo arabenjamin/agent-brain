@@ -3,7 +3,7 @@
 # call (program-manager, read-only). Started by `program-reviews` for each
 # program whose review is due, or by name.
 name: program-review
-description: "Reviews one program against its charter: gathers its definition, workflows, the programs under it and their reviews, and its 30-day workflow scorecard; program-manager judges it; its proposals become todos tagged with the program and the review is stored as a note."
+description: "Reviews one program against its charter: gathers its definition, workflows, the programs under it and their reviews, and its 30-day workflow and agent scorecards; program-manager judges it; its proposals become todos tagged with the program and the review is stored as a note."
 inputs:
   - name: program
     description: The program's name (manage_program list).
@@ -25,6 +25,13 @@ steps:
       view: workflow_scorecard
       program: "{{inputs.program}}"
       days: 30
+  - id: agents
+    tool_name: lookup
+    description: The 30-day agent scorecard for the agents its workflows call or it relies on
+    arguments:
+      view: agent_scorecard
+      program: "{{inputs.program}}"
+      days: 30
   - id: review
     tool_name: run_agent
     description: program-manager judges the program and drafts proposals (read-only)
@@ -42,6 +49,11 @@ steps:
 
         ITS WORKFLOW SCORECARD, LAST 30 DAYS (rows: one per workflow):
         {{steps.scores}}
+
+        THE AGENTS ITS WORK USES, LAST 30 DAYS (rows: one per agent; runs and
+        arg_misfits are recorded from 2026-10-17; `sql_unmatched` counts ledger
+        rows of other or retired agents, ignore it):
+        {{steps.agents}}
   - id: record
     tool_name: manage_program
     description: File the proposals as todos tagged with the program; stamp the verdict

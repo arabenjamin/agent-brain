@@ -333,6 +333,10 @@ async fn run_init_db(config: &Config) -> Result<()> {
     }
 
     let plugins = agent_brain::services::plugins::Plugins::global();
+    // The bundles' schemas, so the seed checks a program file as a save does.
+    agent_brain::services::validation::set_envelope_schemas(std::sync::Arc::new(
+        agent_brain::services::validation::load_bundle_schemas(&plugins),
+    ));
     match workflow_seeder::seed_workflows(&client, &plugins).await {
         Ok(n) => info!(count = n, "Seeded workflows from the plugin bundles"),
         Err(e) => warn!(error = %e, "Failed to seed workflows (non-fatal)"),

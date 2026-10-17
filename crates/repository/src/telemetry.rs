@@ -225,6 +225,25 @@ impl TelemetryClient {
                 args       TEXT,
                 created_at TIMESTAMPTZ DEFAULT current_timestamp
             );
+            -- The agent whose loop made the call (ctx::current_agent); NULL
+            -- outside a sub-agent and before 2026-10-17.
+            ALTER TABLE arg_checks ADD COLUMN IF NOT EXISTS agent TEXT;
+
+            -- One row per sub-agent run (run_agent, delegate): PROGRAMS_PLAN
+            -- Phase 4's agent scorecard. `caller` is chat or background;
+            -- tool_calls / tools_failed come from the run's own trace.
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id           TEXT PRIMARY KEY,
+                agent        TEXT NOT NULL,
+                caller       TEXT,
+                model        TEXT,
+                ok           BOOLEAN,
+                tool_calls   INTEGER,
+                tools_failed INTEGER,
+                duration_ms  BIGINT,
+                task_id      TEXT,
+                created_at   TIMESTAMPTZ DEFAULT current_timestamp
+            );
             ",
         )?;
 
@@ -261,6 +280,7 @@ impl TelemetryClient {
 
     /// Record a tool call whose arguments did not fit its schema. `args` is
     /// cut to 2,000 characters; `problems` is stored as a JSON array.
+    #[allow(clippy::too_many_arguments)]
     pub fn log_arg_check(
         &self,
         tool: &str,
@@ -269,6 +289,7 @@ impl TelemetryClient {
         refused: bool,
         problems: &[String],
         args: &str,
+        agent: Option<&str>,
     ) -> Result<()> {
         let conn = self
             .conn
@@ -276,8 +297,8 @@ impl TelemetryClient {
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         let cut: String = args.chars().take(2000).collect();
         conn.execute(
-            "INSERT INTO arg_checks (id, tool, purpose, mode, refused, problems, args) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO arg_checks (id, tool, purpose, mode, refused, problems, args, agent) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 uuid::Uuid::new_v4().to_string(),
                 tool,
@@ -286,6 +307,42 @@ impl TelemetryClient {
                 refused,
                 serde_json::to_string(problems).unwrap_or_default(),
                 cut,
+                agent,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record one sub-agent run (PROGRAMS_PLAN Phase 4).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_agent_run(
+        &self,
+        agent: &str,
+        caller: &str,
+        model: &str,
+        ok: bool,
+        tool_calls: usize,
+        tools_failed: usize,
+        duration_ms: u64,
+        task_id: Option<&str>,
+    ) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        conn.execute(
+            "INSERT INTO agent_runs (id, agent, caller, model, ok, tool_calls, tools_failed, duration_ms, task_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                agent,
+                caller,
+                model,
+                ok,
+                tool_calls as i64,
+                tools_failed as i64,
+                duration_ms as i64,
+                task_id,
             ],
         )?;
         Ok(())
@@ -1774,5 +1831,53 @@ mod model_usage_task_tests {
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert_eq!(rows[0]["task_id"], serde_json::Value::Null);
         assert_eq!(rows[1]["task_id"], "task-1");
+    }
+}
+
+#[cfg(test)]
+mod agent_attribution_tests {
+    use super::*;
+
+    /// An agent's runs and the misfit arguments it sent are attributable to
+    /// it: the agent scorecard reads both (Programs plan Phase 4).
+    #[test]
+    fn runs_and_misfits_record_their_agent() {
+        let t = TelemetryClient::new(":memory:").unwrap();
+        t.record_agent_run("researcher", "chat", "m", true, 4, 1, 1200, None)
+            .unwrap();
+        t.record_agent_run(
+            "researcher",
+            "background",
+            "m",
+            false,
+            2,
+            2,
+            900,
+            Some("task-1"),
+        )
+        .unwrap();
+        t.log_arg_check(
+            "search_web",
+            "subagent",
+            "shadow",
+            false,
+            &["x".into()],
+            "{}",
+            Some("researcher"),
+        )
+        .unwrap();
+        let conn = t.conn.lock().unwrap();
+        let (runs, ok, failed): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT count(*), sum(CASE WHEN ok THEN 1 ELSE 0 END), sum(tools_failed) FROM agent_runs WHERE agent = 'researcher'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((runs, ok, failed), (2, 1, 3));
+        let agent: String = conn
+            .query_row("SELECT agent FROM arg_checks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(agent, "researcher");
     }
 }

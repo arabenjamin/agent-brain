@@ -397,6 +397,18 @@ impl HttpTransport {
                     .post(crate::clients::programs::handle_create),
             )
             .route(
+                "/api/programs/agents",
+                get(crate::clients::programs::handle_agents),
+            )
+            .route(
+                "/api/programs/schema",
+                get(crate::clients::programs::handle_schema),
+            )
+            .route(
+                "/api/programs/check",
+                post(crate::clients::programs::handle_check),
+            )
+            .route(
                 "/api/programs/scorecard",
                 get(crate::clients::programs::handle_scorecard),
             )

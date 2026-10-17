@@ -115,6 +115,7 @@ impl McpClientSkill {
                 refused,
                 &problems,
                 &arguments.to_string(),
+                agent_brain_llm::ctx::current_agent().as_deref(),
             );
         }
         refused.then(|| {

@@ -1,7 +1,7 @@
 # Programs plan
 
 Planned 2026-10-17 from the owner's todo "Create Workflow groups and Agent
-Workflow Admin" (`0fcc6502`). Phases 0–3 built 2026-10-17; Phase 2b (assist + schema) and Phase 4 (agents) next.
+Workflow Admin" (`0fcc6502`). Phases 0–3 and 2b built 2026-10-17; Phase 4 (agents) next.
 
 ## 1. Why
 
@@ -148,7 +148,7 @@ manager separate keeps chat a conversation and the review a scheduled job.
 | 0. Scorecard (**done** 2026-10-17) | `workflow_scorecard` lookup view; task id on `model_usage` | The §1 table, with cost, comes from one view |
 | 1. Programs (**done** 2026-10-17) | Seed kind, validator, `manage_program`, REST, graph nodes, the §4 tree seeded, `program` on todos | Every enabled workflow is in a program or shared; a bad save is refused with what fits |
 | 2. HBI (**done** 2026-10-17) | Programs panel: tree, editor, scorecard | The owner edits a program and sees its scorecard |
-| 2b. Assist + schema (owner, 2026-10-17; after Phase 3) | The New Program drawer gets the `AgentAssist` widget like the workflow form (an agent drafts the program from a prompt, read-only, the draft fills the form); `schemas/program.json` is the program's JSON Schema, checked before any other check on every save (tool, REST, seed), as `schemas/workflow.json` is for workflows | An agent's draft fills the form and saves; a body that breaks the schema is refused with the schema's own error |
+| 2b. Assist + schema (owner, 2026-10-17; **done** 2026-10-17) | The New Program drawer gets the `AgentAssist` widget like the workflow form (an agent drafts the program from a prompt, read-only, the draft fills the form); `schemas/program.json` is the program's JSON Schema, checked before any other check on every save (tool, REST, seed), as `schemas/workflow.json` is for workflows | An agent's draft fills the form and saves; a body that breaks the schema is refused with the schema's own error |
 | 3. Manager (**built** 2026-10-17; the daily dispatcher ships off) | `program-manager` profile, `program-review` workflow, proposals as todos | One week of NIA reviews read by the owner |
 | 4. Agents | Agent rows in the scorecard; agent-tweak proposals | The manager proposes a profile change with evidence |
 
@@ -259,3 +259,49 @@ manager separate keeps chat a conversation and the review a scheduled job.
 - Found by the test: `lookup` refused the queue's `__owner_task_id` as an
   unknown slot (no workflow had used `lookup` as a step before); the queue's
   `__` stamps are now dropped before the slot check.
+
+## 12. Phase 2b as built (2026-10-17)
+
+- **`schemas/program.json`** (core bundle): the program's JSON Schema
+  (`additionalProperties: false`, slug name, kind and status enums, text
+  limits, unique name lists, `review.every` pattern, `budget.monthly_usd >= 0`).
+  It is the first check everywhere: `programs::save` checks the merged
+  candidate before parsing it, and `load_file` checks a seed or reset file
+  the same way. `init-db` now loads the bundles' schemas too
+  (`validation::load_bundle_schemas`), so the seed it runs is checked as a
+  save is. What a schema cannot say (the parent exists and does not loop,
+  the workflows exist and are free, the topics, agents and APIs exist, the
+  status rules) is `programs::check`, next.
+- **`POST /api/programs/check`** `{program, create}`: every check a save runs,
+  nothing written (`programs::check_save`); **`GET /api/programs/schema`**
+  serves the schema.
+- **Agent assist in the program form** (new and edit), as the workflow form
+  has it: `program-manager` by default (read-only; the model picker can pick
+  a free one). The task (`lib/programDraft.ts`) carries the request, the form
+  as it stands, the schema, the existing programs, the workflows in no
+  program, the topics and the agents. The answer's JSON object goes through
+  the check; a refusal goes back to the agent once with the errors; then it
+  fills the form, saying whether Save will take it. Nothing is saved until
+  the person presses Save.
+- Measured on free `ministral-14b-latest`: asked for "an investigation under
+  the NIA into who supplies HBM to Chinese AI labs, reviewed weekly, $2 a
+  month", it drafted a program that passed the check on the first try.
+
+## 13. Phase 4 (built 2026-10-17, re-test pending)
+
+- Telemetry knows the agent: `ctx::CURRENT_AGENT` is scoped around a sub-agent
+  run; `arg_checks.agent` records it, and `agent_runs` (DuckDB) records each
+  run (agent, caller, model, ok, tool calls and failures, duration, task id).
+  Both from 2026-10-17; `model_usage` (`subagent:<agent>`) covers 30 days.
+- `agent_scorecard` view (slot `program`: agents it relies on or its
+  workflows call via `run_agent`); `GET /api/programs/agents`; an "Agents its
+  work uses" section in the program drawer.
+- `program-review` gains an agents step; review_context adds each workflow's
+  schedule and description and each agent's setup (model, fallbacks, tools),
+  so a proposed profile change names the field and the new value.
+- Program names `new`, `schema`, `check`, `scorecard`, `agents` are reserved.
+- Free-model tests (Ministral): Brain Ops reviewed end to end; a temporary
+  program relying on scribe and code-analyst got a profile-change proposal
+  with numbers (done-when met), but it compared counts not rates and named
+  no concrete change. The prompt now requires rates and a named change and
+  the setups are in the context: re-run one free-model review to confirm.

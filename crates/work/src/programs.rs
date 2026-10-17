@@ -41,6 +41,10 @@ pub const PROGRAM_STATUSES: &[&str] = &["active", "paused", "closed"];
 /// a workflow carrying it is resumed by a program.
 pub const PROGRAM_PAUSE: &str = "PROGRAM_PAUSE";
 
+/// Names a program cannot take: the HBI drawer's `new` and the REST paths
+/// under `/api/programs/`.
+pub const RESERVED_NAMES: &[&str] = &["new", "schema", "check", "scorecard", "agents"];
+
 /// Kinds that end with an answer: closing one needs a `finding`.
 const QUESTION_KINDS: &[&str] = &["investigation", "case"];
 
@@ -148,6 +152,13 @@ pub fn check(def: &ProgramDef, inv: &Inventory) -> Result<Vec<String>, String> {
         hard.push(format!(
             "name '{}' must be a slug of at most 64 characters: lowercase letters, digits and dashes",
             def.name
+        ));
+    }
+    if RESERVED_NAMES.contains(&def.name.as_str()) {
+        hard.push(format!(
+            "'{}' is reserved ({}); pick another name",
+            def.name,
+            RESERVED_NAMES.join(", ")
         ));
     }
     if !PROGRAM_KINDS.contains(&def.kind.as_str()) {
@@ -513,7 +524,7 @@ async fn write(
          {status_set}\
          SET p.definition = $definition, p.label = $label, p.kind = $kind, p.parent = $parent, \
              p.workflows = $workflows, p.topics = $topics, p.managed_by = $managed_by, \
-             p.budget_monthly_usd = $budget, \
+             p.budget_monthly_usd = $budget, p.agents = $agents, p.apis = $apis, \
              p.plugin = $plugin, p.source = $source, p.updated_at = datetime()"
     );
     let null = || neo4rs::BoltType::Null(neo4rs::BoltNull);
@@ -533,6 +544,8 @@ async fn write(
                 .param("parent", opt(def.parent.as_deref()))
                 .param("workflows", def.workflows.clone())
                 .param("topics", def.topics.clone())
+                .param("agents", def.agents.clone())
+                .param("apis", def.apis.clone())
                 .param(
                     "budget",
                     def.budget
@@ -675,7 +688,9 @@ pub async fn exists(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<bool> {
 /// Parse one `programs/*.yaml`; its name must equal the file stem.
 pub fn load_file(path: &Path) -> Result<ProgramDef, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
-    let def: ProgramDef = serde_yaml::from_str(&text).map_err(|e| format!("YAML: {e}"))?;
+    let raw: Value = serde_yaml::from_str(&text).map_err(|e| format!("YAML: {e}"))?;
+    schema_problems(&raw)?;
+    let def: ProgramDef = serde_json::from_value(raw).map_err(|e| format!("YAML: {e}"))?;
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if def.name != stem {
         return Err(format!(
@@ -892,6 +907,43 @@ fn check_status_change(
     Ok(())
 }
 
+/// Check a program against the bundles' `schemas/program.json`, the first
+/// check on every save path. Without loaded schemas (unit tests) it passes;
+/// the checks after it still run.
+pub fn schema_problems(candidate: &Value) -> Result<(), String> {
+    let Some(schema) = crate::validation::envelope_schema("program") else {
+        return Ok(());
+    };
+    let v = crate::validation::validate_against_schema("program", &schema, candidate);
+    if crate::validation::has_hard(&v) {
+        Err(format!(
+            "it does not fit the program schema (schemas/program.json): {}",
+            crate::validation::render_hard(&v)
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// A save checked and resolved, not yet written.
+struct Prepared {
+    def: ProgramDef,
+    current: Option<Stored>,
+    managed_by: String,
+    warnings: Vec<String>,
+}
+
+/// Every check a save runs, with nothing written: what [`save`] would
+/// write and warn about, or the refusal. The HBI checks an agent's draft
+/// with it before it shows the draft as ready.
+pub async fn check_save(
+    neo4j: &Neo4jClient,
+    body: &Value,
+    create_only: bool,
+) -> Result<Vec<String>, SaveError> {
+    prepare(neo4j, body, create_only).await.map(|p| p.warnings)
+}
+
 /// Create or edit the program `body.name`: the body is laid over the stored
 /// program (a key set to null goes back to its default), the result is
 /// checked whole, and nothing is written on a hard error. An edit of anything
@@ -901,6 +953,40 @@ pub async fn save(
     body: &Value,
     create_only: bool,
 ) -> Result<Saved, SaveError> {
+    let Prepared {
+        def,
+        current,
+        managed_by,
+        warnings,
+    } = prepare(neo4j, body, create_only).await?;
+    write(
+        neo4j,
+        &def,
+        &managed_by,
+        current.as_ref().and_then(|c| c.plugin.as_deref()),
+        current.as_ref().and_then(|c| c.source.as_deref()),
+        true,
+    )
+    .await
+    .map_err(storage)?;
+    relink(neo4j).await.map_err(storage)?;
+    let changes = reconcile(neo4j).await.map_err(storage)?;
+    Ok(Saved {
+        program: def,
+        created: current.is_none(),
+        managed_by,
+        warnings,
+        changes: changes.iter().map(Change::describe).collect(),
+    })
+}
+
+/// The checking half of [`save`]: the stored program with the body laid
+/// over it, the schema first, then every other check.
+async fn prepare(
+    neo4j: &Neo4jClient,
+    body: &Value,
+    create_only: bool,
+) -> Result<Prepared, SaveError> {
     let name = body
         .get("name")
         .and_then(Value::as_str)
@@ -934,6 +1020,7 @@ pub async fn save(
             }
         }
     }
+    schema_problems(&cand).map_err(SaveError::Invalid)?;
     let def: ProgramDef =
         serde_json::from_value(cand).map_err(|e| SaveError::Invalid(e.to_string()))?;
 
@@ -969,24 +1056,11 @@ pub async fn save(
         }
         None => "runtime".to_string(),
     };
-    write(
-        neo4j,
-        &def,
-        &managed_by,
-        current.as_ref().and_then(|c| c.plugin.as_deref()),
-        current.as_ref().and_then(|c| c.source.as_deref()),
-        true,
-    )
-    .await
-    .map_err(storage)?;
-    relink(neo4j).await.map_err(storage)?;
-    let changes = reconcile(neo4j).await.map_err(storage)?;
-    Ok(Saved {
-        program: def,
-        created: current.is_none(),
+    Ok(Prepared {
+        def,
+        current,
         managed_by,
         warnings,
-        changes: changes.iter().map(Change::describe).collect(),
     })
 }
 
@@ -1373,6 +1447,44 @@ pub async fn review_context(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<O
         .iter()
         .find(|r| r.get::<String>("name").ok().as_deref() == Some(name))
         .map(review_of);
+    // Each workflow with its schedule and what it does: without them a
+    // reviewer read an on-demand workflow's few runs as a fault, and guessed
+    // why a workflow shipped off was off (2026-10-17, first Brain Ops review).
+    let workflows: Vec<Value> = neo4j
+        .execute(
+            neo4rs::query(
+                "MATCH (w:Workflow) WHERE w.name IN $names \
+                 RETURN w.name AS name, coalesce(w.enabled, true) AS enabled, \
+                        w.paused_reason AS paused_reason, w.interval_seconds AS every, \
+                        left(coalesce(w.description, ''), 200) AS what ORDER BY name",
+            )
+            .param(
+                "names",
+                d["workflows"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .await?
+        .iter()
+        .map(|r| {
+            let every = r.get::<i64>("every").ok();
+            json!({
+                "name": r.get::<String>("name").unwrap_or_default(),
+                "enabled": r.get::<bool>("enabled").unwrap_or(true),
+                "paused_reason": r.get::<String>("paused_reason").ok(),
+                "schedule": match every {
+                    Some(s) => format!("every {}", crate::workflow_seeder::format_every(s)),
+                    None => "on demand (runs only when started by name)".to_string(),
+                },
+                "what": r.get::<String>("what").unwrap_or_default(),
+            })
+        })
+        .collect();
     Ok(Some(json!({
         "program": {
             "name": d["name"], "label": d["label"], "kind": d["kind"], "status": d["status"],
@@ -1380,12 +1492,70 @@ pub async fn review_context(neo4j: &Neo4jClient, name: &str) -> anyhow::Result<O
             "topics": d["topics"], "agents": d["agents"], "apis": d["apis"],
             "keep_running": d["keep_running"], "budget": d["budget"], "review": d["review"],
         },
-        "workflows": d["workflow_state"],
+        "workflows": workflows,
+        "agent_setups": agent_setups(neo4j, &d).await,
         "programs_under_it": children,
         "previous_review": own,
         "open_todos": d["open_todos"],
         "issues": d["issues"],
     })))
+}
+
+/// How each agent the program relies on, or its workflows call, is set up
+/// (model, fallbacks, tools, round budget), so a proposed profile change can
+/// name the field and the new value.
+async fn agent_setups(neo4j: &Neo4jClient, d: &Value) -> Vec<Value> {
+    let mut names: Vec<String> = d["agents"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let wf_names: Vec<String> = d["workflows"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(rows) = neo4j
+        .execute(
+            neo4rs::query("MATCH (w:Workflow) WHERE w.name IN $n RETURN w.steps AS steps")
+                .param("n", wf_names),
+        )
+        .await
+    {
+        for r in rows {
+            let steps: Vec<Value> =
+                serde_json::from_str(&r.get::<String>("steps").unwrap_or_default())
+                    .unwrap_or_default();
+            for s in steps {
+                if let Some(a) = s["arguments"]["agent"].as_str()
+                    && !names.iter().any(|n| n == a)
+                {
+                    names.push(a.to_string());
+                }
+            }
+        }
+    }
+    let profiles = crate::profiles::load(neo4j).await.unwrap_or_default();
+    names
+        .iter()
+        .filter_map(|n| profiles.iter().find(|(p, _)| &p.name == n))
+        .map(|(p, _)| {
+            json!({
+                "agent": p.name,
+                "model_preference": p.model_preference,
+                "fallback_models": p.fallback_models,
+                "tools": p.tools,
+                "token_budget": p.token_budget,
+                "specialty": p.specialty,
+            })
+        })
+        .collect()
 }
 
 /// Whether a review that last started `last` (None: never) is due under a
@@ -1552,6 +1722,11 @@ mod tests {
         let c = p("c1", Some("a1"), &[]);
         let e = check(&a, &inv(vec![a.clone(), b, c])).unwrap_err();
         assert!(e.contains("loops: a1 → b1 → c1 → a1"), "{e}");
+        assert!(
+            check(&p("new", None, &["a"]), &inv(vec![]))
+                .unwrap_err()
+                .contains("reserved")
+        );
         let own = p("x", Some("x"), &[]);
         assert!(
             check(&own, &inv(vec![]))
@@ -1737,6 +1912,39 @@ mod tests {
             now
         ));
         assert!(review_due(Some(now - chrono::Duration::days(7)), week, now));
+    }
+
+    /// `schemas/program.json` takes every shipped program file and refuses the
+    /// mistakes a form or an agent's draft makes.
+    #[test]
+    fn the_program_schema_fits_the_files_and_refuses_bad_drafts() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core");
+        let schema = crate::validation::load_schema_dir(&root.join("schemas"))
+            .remove("program")
+            .expect("schemas/program.json loads");
+        let fits = |v: &Value| crate::validation::validate_against_schema("program", &schema, v);
+        for f in std::fs::read_dir(root.join("programs")).unwrap().flatten() {
+            let v: Value =
+                serde_yaml::from_str(&std::fs::read_to_string(f.path()).unwrap()).unwrap();
+            assert!(
+                fits(&v).is_empty(),
+                "{}: {:?}",
+                f.path().display(),
+                fits(&v).iter().map(|x| x.render()).collect::<Vec<_>>()
+            );
+        }
+        for bad in [
+            json!({"name": "x"}),
+            json!({"name": "Bad Name", "kind": "department"}),
+            json!({"name": "x", "kind": "team"}),
+            json!({"name": "x", "kind": "department", "owner": "me"}),
+            json!({"name": "x", "kind": "department", "review": {"every": "weekly"}}),
+            json!({"name": "x", "kind": "department", "budget": {"monthly_usd": -1}}),
+            json!({"name": "x", "kind": "department", "workflows": ["a", "a"]}),
+            json!({"name": "x", "kind": "department", "charter": "c".repeat(1501)}),
+        ] {
+            assert!(!fits(&bad).is_empty(), "the schema let through {bad}");
+        }
     }
 
     #[test]

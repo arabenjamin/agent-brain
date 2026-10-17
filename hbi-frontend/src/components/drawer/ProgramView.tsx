@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { ApiError } from "../../api/client";
 import {
-  deleteProgram, programTone, QUESTION_KINDS, resetProgram, savedNote, updateProgram, useProgram, useProgramScorecard,
+  deleteProgram, programTone, QUESTION_KINDS, resetProgram, savedNote, updateProgram, useProgram, useProgramAgents, useProgramScorecard,
   type ProgramDetail, type ProgramSaved,
 } from "../../api/programs";
 import { useWorkSchedules } from "../../api/work";
@@ -37,6 +37,7 @@ export default function ProgramView({ name }: { name: string }) {
 function OneProgram({ name }: { name: string }) {
   const q = useProgram(name);
   const score = useProgramScorecard(30);
+  const agents = useProgramAgents(name, 30);
   const schedules = useWorkSchedules();
   const [editing, setEditing] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -190,6 +191,31 @@ function OneProgram({ name }: { name: string }) {
             ))}
           </ul>
         )}
+      </Section>
+
+      <Section title="Agents its work uses" aside="last 30 days">
+        {!agents.data ? (
+          <div className="loading">{agents.error ? agents.error.message : "Loading the agents…"}</div>
+        ) : agents.data.rows.length === 0 ? (
+          <div className="dw-note">No workflow of this program calls an agent, and it names none it relies on.</div>
+        ) : (
+          <ul className="dw-list">
+            {agents.data.rows.map((a) => (
+              <li key={a.agent} title={a.called_by_workflows.length ? `Called by ${a.called_by_workflows.join(", ")}` : undefined}>
+                <span>{a.agent}</span>
+                <span className="dw-dim">
+                  {a.runs != null ? `${a.answered ?? 0}/${a.runs} answered` : "no runs recorded"}
+                  {a.tools_failed ? ` · ${a.tools_failed}/${a.tool_calls} tool calls failed` : ""}
+                  {a.model_errors ? ` · ${a.model_errors} model errors` : ""}
+                  {a.arg_misfits ? ` · ${a.arg_misfits} misfit arguments` : ""}
+                  {a.model_calls != null ? ` · ${a.model_calls} model calls` : ""}
+                  {a.cost_usd != null ? ` · $${a.cost_usd.toFixed(2)}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {agents.data?.sql_error && <div className="dw-note tone-text-yellow">Agent numbers could not be read: {agents.data.sql_error}</div>}
       </Section>
 
       {((p.topics ?? []).length > 0 || (p.agents ?? []).length > 0 || (p.apis ?? []).length > 0) && (

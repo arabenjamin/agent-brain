@@ -31,6 +31,16 @@ tokio::task_local! {
     /// after its completed jobs are pruned (about two days), including notes
     /// an agent writes inside a `run_agent` step.
     pub static CURRENT_OWNER_TASK: Option<String>;
+
+    /// The agent profile whose loop this runs under (`AgentRunner` scopes it
+    /// around a sub-agent run), so a tool call's telemetry (`arg_checks`)
+    /// says which agent made it (PROGRAMS_PLAN Phase 4).
+    pub static CURRENT_AGENT: Option<String>;
+}
+
+/// The agent whose loop this code runs under, if any.
+pub fn current_agent() -> Option<String> {
+    CURRENT_AGENT.try_with(|v| v.clone()).unwrap_or(None)
 }
 
 /// The owning task of the job this code runs under, if any.
