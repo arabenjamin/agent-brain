@@ -674,12 +674,31 @@ impl ChatService {
         // turn's context and the front door only phrases them. Any other route,
         // or a behavior that fails, becomes a hint; a failed behavior's hint is
         // the stored agent.
+        //
+        // Behaviors are help for a small model, which needs the retrieval done
+        // for it and delegation taken away. A model the catalog marks
+        // `orchestration` (2026-10-17: Haiku 5.5 got a week's counts by topic,
+        // was told to drill down, and had no tool to do it with) plans the turn
+        // itself: the pick becomes a hint and it keeps `delegate`. Behaviors
+        // stay for the free models a capped or failed pin falls back to.
+        let turn_model = config.as_ref().map(|c| c.model.clone()).unwrap_or_default();
+        let plans_itself = self
+            .telemetry
+            .as_ref()
+            .is_some_and(|t| agent_brain_llm::model_router::plans_turns(t, &turn_model));
         let mut behavior_line: Option<String> = None;
         // The route as logged, kept for the turn's `turn:` row at the end.
         let mut route_log: Option<Value> = None;
         if let (Some(r), Some(spec)) = (&route, &profile_routing) {
             let mut ran: Option<(Value, Value)> = None;
-            if let Some(b) = super::route::behavior(spec, &r.plan[0]) {
+            let picked_behavior = super::route::behavior(spec, &r.plan[0]);
+            if let (Some(b), true) = (picked_behavior, plans_itself) {
+                behavior_line = Some(format!(
+                    "⚙ router picked lookup:{}; {turn_model} plans its own turn, so it is a hint",
+                    b.name
+                ));
+            }
+            if let Some(b) = picked_behavior.filter(|_| !plans_itself) {
                 let handler = self.tool_handler.read().await.clone();
                 if let Some(h) = handler {
                     let t0 = std::time::Instant::now();

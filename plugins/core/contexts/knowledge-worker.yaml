@@ -59,7 +59,11 @@ system_prompt: |
   search is thin, try a genuinely different phrasing before concluding anything.
 token_budget: 4000
 pre_load_query: recent notes and active knowledge
-model_preference: ""
-provider_hint: ""
+# PAID since 2026-10-17 (owner): Haiku 5.5, about a cent a delegation. Unpinned
+# it ran on the sub-agent ladder, and on ministral-14b (gpt-oss unavailable) it
+# guessed filters that matched nothing, missed whole topics and gave a video id
+# as a note id. A refused pin (spend cap) falls to the free chat ladder.
+model_preference: claude-haiku-5-5
+provider_hint: anthropic
 spawnable: true
 specialty: what the brain already knows — search and synthesise stored notes in the knowledge graph

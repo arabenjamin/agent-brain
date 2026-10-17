@@ -142,6 +142,18 @@ providers:
 #
 # Unranked entries sort behind every ranked one and keep the old
 # widest-window order among themselves, so omitting the field is safe.
+#
+# ── orchestration: the model plans its own chat turn ─────────────────────────
+#
+# Not a routing capability (no step asks for it). It tells the front door's
+# router (chat/route.rs) to stop helping: for a model without it, a picked
+# behavior (`lookup:learned`, …) is fetched in code and `delegate` is taken
+# away, because a small model ignored the rows and delegated anyway; for a
+# model with it, the pick is only a hint and the model keeps `delegate`
+# (2026-10-17, owner: Haiku 5.5 got a week's counts by topic and no tool to
+# drill down with). Held by the Anthropic models. Give it to another model
+# only after watching it run a few real front-door turns: the free fallbacks
+# keep the behaviors, so a capped or failed pin still gets the help.
 models:
   # ── Ollama Local (http://localhost:11434) ─────────────────────────────────────
   qwen3.5:4b:
@@ -423,6 +435,7 @@ models:
       - reasoning
       - code
       - vision
+      - orchestration
 
   claude-sonnet-4-6:
     provider: anthropic
@@ -436,6 +449,7 @@ models:
       - code
       - vision
       - fast
+      - orchestration
     temperature: 0.5
     system_prompt: |
       You are agent-brain running on Claude Sonnet. Prioritize efficiency
@@ -458,6 +472,7 @@ models:
       - reasoning
       - code
       - fast
+      - orchestration
     system_prompt: |
       You are agent-brain. Use tools efficiently and be concise.
 

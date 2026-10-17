@@ -32,6 +32,7 @@ use crate::llm::{LlmConfig, LlmProviderType};
 use crate::provider_registry::{self, ProviderEntry, ProviderKind};
 use crate::routing::{RouteContext, RoutingPolicy, route};
 use agent_brain_repository::TelemetryClient;
+use serde_json::Value;
 
 /// Turn a catalog entry's `provider` + `model` into a full [`LlmConfig`].
 ///
@@ -172,6 +173,39 @@ pub fn find_model<'a>(rows: &'a [CatalogModel], wanted: &str) -> Option<&'a Cata
         .or_else(|| rows.iter().find(|m| m.name.eq_ignore_ascii_case(wanted)))
 }
 
+/// The capability that marks a model able to plan its own chat turn: follow
+/// a tool's next-step hint, delegate, iterate on what comes back. The front
+/// door's router runs its behaviors (pre-fetched lookups, delegation removed)
+/// only for a model without it. Declared per model in models.yaml.
+pub const PLANS_TURNS: &str = "orchestration";
+
+/// Whether the catalog marks `model` (its `model` id or `name`) as planning
+/// its own turn. Unknown models do not: the router's help stays on.
+pub fn plans_turns(telemetry: &TelemetryClient, model: &str) -> bool {
+    plans_turns_in(&telemetry.list_models().unwrap_or_default(), model)
+}
+
+fn plans_turns_in(rows: &[Value], model: &str) -> bool {
+    let wanted = model.trim();
+    let row = rows
+        .iter()
+        .find(|m| {
+            m["model"]
+                .as_str()
+                .is_some_and(|x| x.eq_ignore_ascii_case(wanted))
+        })
+        .or_else(|| {
+            rows.iter().find(|m| {
+                m["name"]
+                    .as_str()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(wanted))
+            })
+        });
+    row.and_then(|m| m["capabilities"].as_str())
+        .and_then(|c| serde_json::from_str::<Vec<String>>(c).ok())
+        .is_some_and(|caps| caps.iter().any(|c| c == PLANS_TURNS))
+}
+
 /// The step `provider_hint` a provider implies: `ollama` (the queue's local
 /// lane) for any provider billed as local, else the provider's own name. The
 /// queue gives `anthropic` and `gemini` their own semaphores; every other name
@@ -298,6 +332,30 @@ pub fn resolve_model_config(
         "Model routing: resolved step model"
     );
     Some(cfg)
+}
+
+#[cfg(test)]
+mod plans_turns_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn rows() -> Vec<Value> {
+        vec![
+            json!({"name": "claude-haiku-5-5", "model": "claude-haiku-5-5",
+                   "capabilities": "[\"reasoning\",\"orchestration\"]"}),
+            json!({"name": "gemma4:31b-cloud", "model": "gemma4:31b-cloud",
+                   "capabilities": "[\"reasoning\",\"code\"]"}),
+        ]
+    }
+
+    #[test]
+    fn only_a_model_marked_orchestration_plans_its_own_turn() {
+        assert!(plans_turns_in(&rows(), "claude-haiku-5-5"));
+        assert!(plans_turns_in(&rows(), " CLAUDE-HAIKU-5-5 "));
+        assert!(!plans_turns_in(&rows(), "gemma4:31b-cloud"));
+        assert!(!plans_turns_in(&rows(), "not-in-the-catalog"));
+        assert!(!plans_turns_in(&[], "claude-haiku-5-5"));
+    }
 }
 
 #[cfg(test)]
