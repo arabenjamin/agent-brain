@@ -1,0 +1,7 @@
+(^|\.)youtube\.com$
+(^|\.)youtu\.be$
+(^|\.)youtube-nocookie\.com$
+(^|\.)googlevideo\.com$
+(^|\.)ytimg\.com$
+(^|\.)ggpht\.com$
+^youtubei\.googleapis\.com$
