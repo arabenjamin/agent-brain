@@ -144,9 +144,14 @@ topology:
     - name: ai-network
       external: true
       note: Shared with the HBI.
+    - name: yt-egress
+      note: yt-proxy's only gateway. A host policy rule routes this subnet out of the LAN, past the Tailscale exit node.
+    - name: yt-link
+      internal: true
+      note: Only the brain and yt-proxy. No gateway, so the brain's own traffic keeps the VPN route.
   containers:
     - name: agent-brain
-      networks: [brain-internal, sandbox-net, ai-network]
+      networks: [brain-internal, sandbox-net, ai-network, yt-link]
       ports: ["3001:3000"]
       note: This process.
     - name: neo4j
@@ -168,6 +173,9 @@ topology:
     - name: hbi-frontend
       networks: [ai-network]
       ports: ["3002:80"]
+    - name: yt-proxy
+      networks: [yt-egress, yt-link]
+      note: yt-dlp's way to YouTube past the VPN exit; passes only YouTube's domains.
   host:
     - name: ollama
       component: ollama

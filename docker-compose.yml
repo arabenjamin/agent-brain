@@ -248,6 +248,7 @@ services:
       # Bundles the brain drafts (manage_plugin). Inert until PLUGINS_ENABLED names one.
       - PLUGINS_RUNTIME_DIR=/home/agent/agent-brain/plugins-runtime
       - YT_DLP_PATH=/usr/local/bin/yt-dlp                        # yt-dlp baked into the image
+      - YT_DLP_PROXY=http://yt-proxy:8888                        # YouTube past the VPN exit (yt-proxy below)
       - MEDIA_WATCH_ENABLED=true                                 # autonomous channel polling (12h schedule)
       # 1, paired with the 6h interval in workflows/media-watch.yaml — see the
       # note there. Halves the burst (30 videos at once -> 15) while keeping the
@@ -295,9 +296,12 @@ services:
         condition: service_started
       llamacpp:
         condition: service_started
+      yt-proxy:
+        condition: service_started
     networks:
       - brain-internal
       - sandbox-net
+      - yt-link
       - ai-network
     restart: unless-stopped
 
@@ -472,6 +476,28 @@ services:
       - sandbox-net
     restart: unless-stopped
 
+  # yt-dlp's way out to YouTube, past the host's Tailscale exit node (Mullvad):
+  # YouTube's bot check blocked those exits (2026-10-17, one call each time,
+  # not a burst). A host policy rule (plugins/media/yt-proxy/host/) routes
+  # yt-egress (172.30.250.0/24) out of the LAN, so only this container skips
+  # the VPN. Its filter lets only YouTube's own domains through. The brain
+  # reaches it over yt-link, which is internal (no gateway), so the brain's own
+  # default route, and so its traffic, still leaves through the VPN.
+  yt-proxy:
+    build:
+      context: ./plugins/media/yt-proxy
+      dockerfile: Dockerfile
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    networks:
+      - yt-egress
+      - yt-link
+    restart: unless-stopped
+
   hbi-frontend:
     build:
       context: ./hbi-frontend
@@ -493,6 +519,19 @@ networks:
     internal: true
   ai-network:
     external: true
+  # yt-proxy's only gateway; the host routes this subnet past the VPN. The
+  # subnet is fixed because the host rule names it.
+  yt-egress:
+    ipam:
+      config:
+        - subnet: 172.30.250.0/24
+  # brain <-> yt-proxy. Internal: no gateway, so it never becomes the brain's
+  # default route. tinyproxy.conf allows only this subnet.
+  yt-link:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.251.0/24
 
 volumes:
   whisper_cache:

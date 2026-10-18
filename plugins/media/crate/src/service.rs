@@ -254,16 +254,21 @@ impl MediaService {
             debug!(what, wait_ms = wait.as_millis() as u64, "yt-dlp paced");
             tokio::time::sleep(wait).await;
         }
-        let out = tokio::process::Command::new(&self.yt_dlp_path)
-            .args(args)
-            .output()
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to run yt-dlp ('{}') for {what}: {e}. Install yt-dlp or set YT_DLP_PATH.",
-                    self.yt_dlp_path
-                )
-            })?;
+        let mut cmd = tokio::process::Command::new(&self.yt_dlp_path);
+        // The yt-proxy service: YouTube past the host's VPN exit, whose
+        // addresses its bot check blocks (docker-compose.yml, yt-proxy).
+        if let Some(proxy) = std::env::var("YT_DLP_PROXY")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+        {
+            cmd.arg("--proxy").arg(proxy.trim());
+        }
+        let out = cmd.args(args).output().await.map_err(|e| {
+            anyhow::anyhow!(
+                "failed to run yt-dlp ('{}') for {what}: {e}. Install yt-dlp or set YT_DLP_PATH.",
+                self.yt_dlp_path
+            )
+        })?;
         if !out.status.success() && is_bot_check(&String::from_utf8_lossy(&out.stderr)) {
             let mins = env_secs("MEDIA_YTDLP_BOT_BACKOFF_MINS", 60);
             let until_utc = chrono::Utc::now() + chrono::Duration::minutes(mins as i64);
