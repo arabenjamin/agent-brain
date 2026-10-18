@@ -342,10 +342,32 @@ pub trait Workflows: Send + Sync {
     ) -> Result<String, String>;
 }
 
+/// One call to an outside service a plugin paces or budgets (yt-dlp, a
+/// quota'd API): a row in the host's `external_calls` table.
+#[derive(Debug, Clone, Default)]
+pub struct ExternalCall {
+    pub service: String,
+    /// What was asked for, from the plugin's own closed list (`probe`, `captions`, …).
+    pub op: String,
+    /// `ok`, `error`, `bot_check`, or `backoff` (refused by the plugin, nothing sent).
+    pub outcome: String,
+    pub duration_ms: u64,
+    /// The service's quota cost, when it has one.
+    pub units: Option<i64>,
+    /// The thing asked about (a video URL), so repeats show.
+    pub subject: Option<String>,
+    /// The Task whose run made the call ([`PluginContext::current_task`]).
+    pub task_id: Option<String>,
+}
+
 /// Telemetry the host keeps.
 pub trait Telemetry: Send + Sync {
     /// Record something the brain could not find or fetch.
     fn log_gap(&self, query: &str, tool: Option<&str>, reason: &str);
+
+    /// Record one call to an outside service. Hosts that keep no such
+    /// table ignore it.
+    fn log_external_call(&self, _call: &ExternalCall) {}
 }
 
 /// Every loaded bundle's files of one seed kind: `(plugin, path)`, core first.

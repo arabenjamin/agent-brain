@@ -117,6 +117,10 @@ pub struct MediaService {
     /// The host's page readers, `fetch_article`'s fallback for a page our own
     /// fetch cannot read (rendering services in rotation: TinyFish, Anakin).
     reader: Option<Arc<dyn agent_brain_plugin_api::Reader>>,
+    /// Where every yt-dlp call is recorded (`external_calls`), with the Task
+    /// whose run made it.
+    telemetry: Option<Arc<dyn agent_brain_plugin_api::Telemetry>>,
+    current_task: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 impl MediaService {
@@ -136,6 +140,32 @@ impl MediaService {
             // A media or article URL comes from a model: public hosts only.
             http: net_policy::guarded_client(),
             reader: None,
+            telemetry: None,
+            current_task: None,
+        }
+    }
+
+    /// Record every yt-dlp call through the host's telemetry
+    /// (YOUTUBE_DATA_API_PLAN Phase 0).
+    pub fn with_telemetry(mut self, ctx: &agent_brain_plugin_api::PluginContext) -> Self {
+        self.telemetry = ctx.telemetry.clone();
+        let c = ctx.clone();
+        self.current_task = Some(Arc::new(move || c.current_task()));
+        self
+    }
+
+    /// One `external_calls` row for a yt-dlp call (or a refusal).
+    fn record_call(&self, op: &str, outcome: &str, started: std::time::Instant, subject: &str) {
+        if let Some(t) = &self.telemetry {
+            t.log_external_call(&agent_brain_plugin_api::ExternalCall {
+                service: "yt-dlp".into(),
+                op: op.into(),
+                outcome: outcome.into(),
+                duration_ms: started.elapsed().as_millis() as u64,
+                units: None,
+                subject: Some(subject.to_string()).filter(|s| !s.is_empty()),
+                task_id: self.current_task.as_ref().and_then(|f| f()),
+            });
         }
     }
 
@@ -236,13 +266,22 @@ impl MediaService {
 
     /// Run yt-dlp through the gate ([`YtDlpGate`]): wait for its slot, refuse
     /// while backing off, and start a back-off when the answer is a bot check.
-    async fn yt_dlp(&self, args: &[&str], what: &str) -> anyhow::Result<std::process::Output> {
+    /// `what` is the op recorded in `external_calls` (probe, metadata,
+    /// captions, audio, channel); `subject` is the URL or search asked for.
+    async fn yt_dlp(
+        &self,
+        args: &[&str],
+        what: &str,
+        subject: &str,
+    ) -> anyhow::Result<std::process::Output> {
         let wait = {
             let mut gate = YT_DLP_GATE.lock().await;
             let now = tokio::time::Instant::now();
             if let Some((at, utc)) = gate.backoff_until
                 && at > now
             {
+                drop(gate);
+                self.record_call(what, "backoff", std::time::Instant::now(), subject);
                 anyhow::bail!(backoff_message(utc));
             }
             let start = gate.next_start.max(now);
@@ -254,6 +293,7 @@ impl MediaService {
             debug!(what, wait_ms = wait.as_millis() as u64, "yt-dlp paced");
             tokio::time::sleep(wait).await;
         }
+        let started = std::time::Instant::now();
         let mut cmd = tokio::process::Command::new(&self.yt_dlp_path);
         // The yt-proxy service: YouTube past the host's VPN exit, whose
         // addresses its bot check blocks (docker-compose.yml, yt-proxy).
@@ -263,13 +303,25 @@ impl MediaService {
         {
             cmd.arg("--proxy").arg(proxy.trim());
         }
-        let out = cmd.args(args).output().await.map_err(|e| {
-            anyhow::anyhow!(
-                "failed to run yt-dlp ('{}') for {what}: {e}. Install yt-dlp or set YT_DLP_PATH.",
-                self.yt_dlp_path
-            )
-        })?;
-        if !out.status.success() && is_bot_check(&String::from_utf8_lossy(&out.stderr)) {
+        let out = match cmd.args(args).output().await {
+            Ok(o) => o,
+            Err(e) => {
+                self.record_call(what, "error", started, subject);
+                anyhow::bail!(
+                    "failed to run yt-dlp ('{}') for {what}: {e}. Install yt-dlp or set YT_DLP_PATH.",
+                    self.yt_dlp_path
+                );
+            }
+        };
+        let bot_check =
+            !out.status.success() && is_bot_check(&String::from_utf8_lossy(&out.stderr));
+        let outcome = match (out.status.success(), bot_check) {
+            (true, _) => "ok",
+            (false, true) => "bot_check",
+            (false, false) => "error",
+        };
+        self.record_call(what, outcome, started, subject);
+        if bot_check {
             let mins = env_secs("MEDIA_YTDLP_BOT_BACKOFF_MINS", 60);
             let until_utc = chrono::Utc::now() + chrono::Duration::minutes(mins as i64);
             YT_DLP_GATE.lock().await.backoff_until = Some((
@@ -281,9 +333,11 @@ impl MediaService {
         Ok(out)
     }
 
-    async fn run_yt_dlp_json(&self, url: &str) -> anyhow::Result<Value> {
+    /// `what`: `probe` (a feed poll checking a candidate) or `metadata`
+    /// (a video being watched).
+    async fn run_yt_dlp_json(&self, url: &str, what: &str) -> anyhow::Result<Value> {
         let output = self
-            .yt_dlp(&["-J", "--no-warnings", "--no-playlist", url], "metadata")
+            .yt_dlp(&["-J", "--no-warnings", "--no-playlist", url], what, url)
             .await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -299,7 +353,7 @@ impl MediaService {
     /// Tasks (RSS feeds carry no duration, so a probe is the only way to know).
     pub async fn fetch_meta(&self, url: &str) -> anyhow::Result<VideoMeta> {
         net_check(url).await?;
-        let v = self.run_yt_dlp_json(url).await?;
+        let v = self.run_yt_dlp_json(url, "probe").await?;
         self.parse_meta(&v)
     }
 
@@ -334,7 +388,7 @@ impl MediaService {
         args.push("--playlist-items");
         args.push("1");
         args.push(&target);
-        let output = self.yt_dlp(&args, "channel resolution").await?;
+        let output = self.yt_dlp(&args, "channel", &target).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("yt-dlp channel resolution failed: {}", stderr.trim());
@@ -441,6 +495,7 @@ impl MediaService {
                     url,
                 ],
                 "captions",
+                url,
             )
             .await;
 
@@ -491,7 +546,7 @@ impl MediaService {
 
     /// Captions-first path for yt-dlp-extractable URLs (YouTube et al.).
     async fn fetch_via_ytdlp(&self, url: &str) -> anyhow::Result<(VideoMeta, String, String)> {
-        let raw = self.run_yt_dlp_json(url).await?;
+        let raw = self.run_yt_dlp_json(url, "metadata").await?;
         let meta = self.parse_meta(&raw)?;
 
         // ── Live-stream guard ────────────────────────────────────────────────
@@ -650,6 +705,7 @@ impl MediaService {
                     url,
                 ],
                 "audio",
+                url,
             )
             .await?;
         if !out.status.success() {

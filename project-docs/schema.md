@@ -119,6 +119,10 @@ One row per `read_page` reader attempt (`crates/retrieve/src/read.rs`): the page
 
 One row per tool call whose arguments did not fit the tool's registered `input_schema` (the dispatch check, `ToolHandler::execute`; `TOOL_ARG_CHECK`). Columns: `id`, `tool` (`mcp_call:<server>/<tool>` for an `mcp_call` checked against the remote tool's schema), `purpose` (`chat`, `subagent`, `background` = a workflow step or an operator call), `mode` (`shadow`, `enforce`), `refused` (false in shadow: the call ran), `problems` (JSON array of what did not fit, each naming the argument and, for an unknown key, the closest declared one and the tool's arguments), `args` (the call's arguments, first 2,000 chars), `created_at`. Started 2026-10-16 in shadow mode. To see what enforcement would refuse: `SELECT tool, count(*) n FROM arg_checks GROUP BY 1 ORDER BY 2 DESC`.
 
+### `external_calls`
+
+One row per call to an outside service a plugin paces or budgets, through the plugin API's `Telemetry::log_external_call` (YOUTUBE_DATA_API_PLAN Phase 0; from 2026-10-17). Today every yt-dlp call (`service = 'yt-dlp'`), recorded at the media plugin's one gate. Columns: `id`, `service`, `op` (yt-dlp: `probe` = a feed poll checking a new item, `metadata`, `captions`, `audio`, `channel`), `outcome` (`ok`, `error`, `bot_check`, `backoff` = refused by the plugin's own back-off, nothing sent), `duration_ms`, `units` (the service's quota cost, NULL when it has none), `subject` (the URL or search asked for, so repeats show), `task_id` (the workflow run's Task; NULL for a direct call), `created_at`. Counted by the media view `youtube_calls`.
+
 ### `search_results`
 
 Each successful attempt's result links in rank order (`usage_id` → `search_usage.id`, `rank`, `link`, `created_at`), kept 90 days. `get_search_usage` matches them against links cited as claim evidence (`CORROBORATED_BY`/`CONTRADICTED_BY` `sources`) or ingested (`Note.source_url`) to report each engine's *used* share.

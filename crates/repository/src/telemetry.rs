@@ -244,6 +244,24 @@ impl TelemetryClient {
                 task_id      TEXT,
                 created_at   TIMESTAMPTZ DEFAULT current_timestamp
             );
+
+            -- One row per call to an outside service the brain paces or
+            -- budgets (YOUTUBE_DATA_API_PLAN Phase 0: every yt-dlp call, from
+            -- 2026-10-17). `outcome` is ok, error, bot_check or backoff (refused
+            -- by the brain's own back-off, nothing sent); `units` is the
+            -- service's quota cost when it has one; `subject` is what was
+            -- asked for (a video URL), so repeats show.
+            CREATE TABLE IF NOT EXISTS external_calls (
+                id           TEXT PRIMARY KEY,
+                service      TEXT NOT NULL,
+                op           TEXT NOT NULL,
+                outcome      TEXT NOT NULL,
+                duration_ms  BIGINT,
+                units        BIGINT,
+                subject      TEXT,
+                task_id      TEXT,
+                created_at   TIMESTAMPTZ DEFAULT current_timestamp
+            );
             ",
         )?;
 
@@ -342,6 +360,39 @@ impl TelemetryClient {
                 tool_calls as i64,
                 tools_failed as i64,
                 duration_ms as i64,
+                task_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record one call to an outside service (YOUTUBE_DATA_API_PLAN Phase 0).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_external_call(
+        &self,
+        service: &str,
+        op: &str,
+        outcome: &str,
+        duration_ms: u64,
+        units: Option<i64>,
+        subject: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+        conn.execute(
+            "INSERT INTO external_calls (id, service, op, outcome, duration_ms, units, subject, task_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                service,
+                op,
+                outcome,
+                duration_ms as i64,
+                units,
+                subject,
                 task_id,
             ],
         )?;
@@ -1879,5 +1930,33 @@ mod agent_attribution_tests {
             .query_row("SELECT agent FROM arg_checks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(agent, "researcher");
+    }
+
+    /// Every yt-dlp call is a row, a refused one included, so the count
+    /// drills down to what was asked for (YouTube Data API plan Phase 0).
+    #[test]
+    fn external_calls_record_outcome_and_subject() {
+        let t = TelemetryClient::new(":memory:").unwrap();
+        t.record_external_call(
+            "yt-dlp",
+            "probe",
+            "ok",
+            2100,
+            None,
+            Some("u1"),
+            Some("task-1"),
+        )
+        .unwrap();
+        t.record_external_call("yt-dlp", "probe", "backoff", 0, None, Some("u1"), None)
+            .unwrap();
+        let conn = t.conn.lock().unwrap();
+        let (n, refused, subjects): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT count(*), sum(CASE WHEN outcome = 'backoff' THEN 1 ELSE 0 END), count(DISTINCT subject) FROM external_calls WHERE service = 'yt-dlp' AND op = 'probe'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((n, refused, subjects), (2, 1, 1));
     }
 }

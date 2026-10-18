@@ -1,0 +1,43 @@
+# YOUTUBE_DATA_API_PLAN.md Phase 0 (2026-10-17): every yt-dlp call, counted by
+# what it fetched. The graph half is the closed list of ops and what triggers
+# each, so an op with no calls still shows; the DuckDB half joins
+# `external_calls` (recorded from 2026-10-17). `repeats` is calls minus
+# distinct subjects: a live broadcast re-probed every poll shows there. Drill
+# down with duckdb_query on external_calls (service = 'yt-dlp').
+name: youtube_calls
+kind: cypher
+description: >-
+  How many yt-dlp (YouTube) calls the brain made over a window (default 7
+  days), by what each fetched: probe (a feed poll checking a new video's length
+  and live state), metadata, captions and audio (watching a video), channel
+  (resolving a channel). Per op: calls, ok, bot checks, calls refused by the
+  bot-check back-off, other errors, repeated subjects, average seconds.
+  Recorded from 2026-10-17.
+words: [youtube calls, yt-dlp calls, how many youtube requests, youtube bot check, youtube usage]
+input_schema:
+  type: object
+  properties:
+    days: { type: integer, default: 7, description: "The window, in days back from now." }
+cypher: |-
+  UNWIND [
+    {op: 'probe', trigger: 'poll_media_sources: a new feed item, before a task'},
+    {op: 'metadata', trigger: 'ingest_media: a video being watched'},
+    {op: 'captions', trigger: 'ingest_media: after metadata'},
+    {op: 'audio', trigger: 'ingest_media: no captions, for Whisper'},
+    {op: 'channel', trigger: 'discover-media-sources: resolving a channel'}
+  ] AS o
+  RETURN o.op AS op, o.trigger AS trigger
+sql: |-
+  SELECT op, count(*) AS calls,
+         CAST(sum(CASE WHEN outcome = 'ok' THEN 1 ELSE 0 END) AS BIGINT) AS ok,
+         CAST(sum(CASE WHEN outcome = 'bot_check' THEN 1 ELSE 0 END) AS BIGINT) AS bot_checks,
+         CAST(sum(CASE WHEN outcome = 'backoff' THEN 1 ELSE 0 END) AS BIGINT) AS refused_in_backoff,
+         CAST(sum(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS BIGINT) AS errors,
+         CAST(count(*) - count(DISTINCT subject) AS BIGINT) AS repeats,
+         round(avg(CASE WHEN outcome <> 'backoff' THEN duration_ms END) / 1000.0, 1) AS avg_secs
+  FROM external_calls
+  WHERE service = 'yt-dlp'
+    AND CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+  GROUP BY op
+join: op
+limit: 10

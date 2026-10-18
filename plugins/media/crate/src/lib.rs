@@ -87,7 +87,11 @@ impl Plugin for Media {
     }
 
     fn tools(&self, ctx: &PluginContext) -> Vec<Arc<dyn Skill>> {
-        let svc = Arc::new(service::MediaService::from_env().with_reader(ctx.reader.clone()));
+        let svc = Arc::new(
+            service::MediaService::from_env()
+                .with_reader(ctx.reader.clone())
+                .with_telemetry(ctx),
+        );
         match skill::MediaSkill::new(svc, ctx) {
             Some(s) => vec![Arc::new(s) as Arc<dyn Skill>],
             None => {

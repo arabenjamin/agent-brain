@@ -71,6 +71,21 @@ telemetry store, so the count drills down to its rows. Run a week with no other
 change and replace §2's estimate with the measured table, including the live
 re-probes.
 
+**Built 2026-10-17.** `external_calls` (DuckDB, `project-docs/schema.md`),
+written through the plugin API's `Telemetry::log_external_call` from the one
+gate in `plugins/media/crate/src/service.rs`; ops `probe`, `metadata`,
+`captions`, `audio`, `channel`; outcomes `ok`, `error`, `bot_check`, `backoff`.
+`lookup youtube_calls` (days, default 7) counts them per op with repeated
+subjects. The baseline week ends 2026-10-24; Phase 1 waits for it.
+
+First rows (2026-10-17, one poll, three videos): 3 probes, 3 metadata,
+3 captions, 1 audio, all through `yt-proxy`, no bot checks. One caption
+download got **HTTP 429** and the run fell back to audio + Whisper: a
+rate-limited caption costs a heavier call. The week's count should say how
+many Whisper runs were 429s (a `captions` error, then `audio` for the same
+subject) rather than videos with no captions; if many, the caption call's
+pacing matters more than the metadata calls.
+
 ### Phase 1: one yt-dlp call per watched video (no key)
 
 `ingest_media` makes two calls today (metadata, then captions). One call does

@@ -325,6 +325,20 @@ impl Telemetry for HostTelemetry {
             tracing::warn!(error = %e, "plugin host: knowledge gap not logged");
         }
     }
+
+    fn log_external_call(&self, c: &agent_brain_plugin_api::ExternalCall) {
+        if let Err(e) = self.0.record_external_call(
+            &c.service,
+            &c.op,
+            &c.outcome,
+            c.duration_ms,
+            c.units,
+            c.subject.as_deref(),
+            c.task_id.as_deref(),
+        ) {
+            tracing::warn!(error = %e, service = %c.service, "plugin host: external call not logged");
+        }
+    }
 }
 
 struct HostEntities(Neo4jClient);
