@@ -1,0 +1,101 @@
+name: api-retire-check
+description: "Weekly (API_USE_PLAN Phase 4): lists registered APIs no enabled workflow names and nothing has called for 60 days, with each one's probe history, in code, no model. Stored as a source_record; one Feed item asking retire-or-keep only when the list changes."
+topic: agent-brain
+kind: maintenance
+every: 1w
+enabled: false   # seeded off; turned on after a verified manual run
+steps:
+  # Owner decision 2026-10-19: 60 days, not 30, so a monthly workflow's API is
+  # never caught between runs. The clock is the latest of last_used_at
+  # (stamped by every http_request through the context), created_at, and
+  # use_tracked_from (2026-10-19 for every API registered before tracking:
+  # nothing recorded use before then). Exempt: retire_exempt (the search
+  # engines behind search_web, GitHub behind the developer tools, the brain's
+  # own API), set from apis/*.yaml or scripts/api_use_tracking.cypher.
+  # The check proposes; deleting an API is the owner's call.
+  - id: stale
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (c:ApiContext) WHERE NOT coalesce(c.retire_exempt, false) WITH c, [x IN [c.last_used_at, c.created_at, c.use_tracked_from] WHERE x IS NOT NULL] AS ts WITH c, reduce(m = null, x IN ts | CASE WHEN m IS NULL OR x > m THEN x ELSE m END) AS since WHERE since IS NULL OR since < datetime() - duration('P60D') OPTIONAL MATCH (w:Workflow) WHERE w.enabled AND (w.steps CONTAINS ('\"context_name\":\"' + c.name + '\"') OR (coalesce(c.base_url, '') <> '' AND w.steps CONTAINS c.base_url)) WITH c, since, count(w) AS users WHERE users = 0 OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) WITH c, since, e ORDER BY e.path RETURN c.name AS name, coalesce(c.api_kind, 'untagged') AS kind, CASE WHEN since IS NULL THEN 'never recorded' ELSE toString(date(since)) END AS since, CASE WHEN c.last_used_at IS NULL THEN 'never, since tracking began' ELSE toString(date(c.last_used_at)) END AS last_call, [x IN collect(e) WHERE x IS NOT NULL | x.method + ' ' + x.path + ': ' + CASE WHEN x.probe IS NULL THEN 'never probed' ELSE x.probe + ' on ' + toString(date(x.probed_at)) END][0..8] AS probes, count(e) AS endpoints ORDER BY name"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "APIs unused 60+ days that no enabled workflow names"
+
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'api_retire_check' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "The prior check, for the change check"
+
+  - id: report
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 15000
+      code: |
+        import json
+        rows = json.loads(r"""{{steps.stale.rows}}""")
+        print(f"## UNUSED 60+ DAYS ({len(rows)})")
+        print("Registered APIs that no enabled workflow names and nothing has called in 60 days (search engines, GitHub and the brain's own API are exempt).")
+        print()
+        for r in rows:
+            print(f"### {r['name']} ({r['kind']}; idle since {r['since']}; last call {r['last_call']}; {r['endpoints']} endpoints)")
+            for p in r["probes"]:
+                print(f"- {p}")
+            if r["endpoints"] > len(r["probes"]):
+                print(f"- … {r['endpoints'] - len(r['probes'])} more (list_endpoints api={r['name']})")
+        if not rows:
+            print("None.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "The list with probe history, in code"
+
+  - id: record
+    tool_name: store_note
+    arguments:
+      content: "# API retirement check — {{date}}\n\n{{steps.report.stdout}}"
+      note_type: source_record
+      source_context: api_retire_check
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the check"
+
+  - id: change
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 15000
+      code: |
+        import re
+        prior = r"""{{steps.prior}} """
+        now = r"""{{steps.report.stdout}} """
+        names = lambda t: sorted(re.findall(r"^### (\S+) \(", t, re.M))
+        old, new = names(prior), names(now)
+        fresh = [n for n in new if n not in old]
+        if fresh:
+            print(f"The weekly API retirement check ({{date}}) found {len(fresh)} registered API(s) unused for 60 days that no workflow names: {', '.join(fresh)}.")
+            print()
+            print(now.strip())
+            print()
+            print("For each: retire it (delete its ApiContext and endpoints), keep it for a workflow you mean to build, or mark it retire_exempt if it is used outside workflows.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "A message only for newly idle APIs"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.change.stdout}}"
+      context: "APIs to retire? {{date}}"
+      needs: action
+      ask: "Decide, for each listed API, whether to retire it (delete its ApiContext and endpoints), keep it for a planned workflow, or mark it retire_exempt."
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Feed item only when an API newly went idle"

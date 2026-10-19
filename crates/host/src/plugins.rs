@@ -238,6 +238,11 @@ pub(crate) struct ApiContextFile {
     /// The topics it serves, set when the node is created.
     #[serde(default)]
     topics: Vec<String>,
+    /// Used outside workflows (a search engine behind `search_web`, GitHub
+    /// behind the developer tools), so never offered for retirement for going
+    /// unused. Set from the file on every start.
+    #[serde(default)]
+    retire_exempt: Option<bool>,
 }
 
 /// `apis/_kinds.yaml`: the closed list of API data kinds (API_USE_PLAN).
@@ -435,7 +440,7 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
              ON CREATE SET c.base_url = $base_url, c.auth_scheme = $auth_scheme, \
                            c.auth_param = $auth_param, c.auth_env_var = $auth_env_var, \
                            c.description = $description, c.default_headers = $headers, \
-                           c.plugin = $plugin, c.__new = true \
+                           c.plugin = $plugin, c.created_at = datetime(), c.__new = true \
              WITH c, coalesce(c.__new, false) AS new REMOVE c.__new RETURN new",
         )
         .param("name", a.name.as_str())
@@ -468,6 +473,15 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
                 }
             }
             Err(e) => warn!(name = %a.name, error = %e, "seed apis: failed"),
+        }
+        if let Some(exempt) = a.retire_exempt {
+            let q =
+                neo4rs::query("MATCH (c:ApiContext {name: $name}) SET c.retire_exempt = $exempt")
+                    .param("name", a.name.as_str())
+                    .param("exempt", exempt);
+            if let Err(e) = neo4j.run(q).await {
+                warn!(name = %a.name, error = %e, "seed apis: retire_exempt not set");
+            }
         }
         for (prop, var) in &a.env_props {
             let Some(v) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) else {

@@ -80,19 +80,21 @@ system_prompt: |
      values you saw), and the client filename if you wrote one. Put the source URL
      in source_context.
 
-  SCOUTING — when the task asks you to SCOUT for new APIs in some areas rather
+  SCOUTING — when the task asks you to SCOUT for new APIs for some needs rather
   than integrate a named one, do this instead of steps 1-6:
     a. list_apis first, so you never re-propose one we hold.
-    b. search_web for free public REST APIs in the area(s) the task names. A
+    b. search_web for free public REST APIs that serve the need(s) the task
+       names (a kind of data on a topic, for named workflow steps). A
        candidate with no docs URL you can cite is not a candidate.
     c. Decide KEYLESS vs KEY-GATED from its docs — never assume.
        KEYLESS with an OpenAPI/Swagger spec: ingest_api it, read the endpoints
        back (neo4j_query MATCH (c:ApiContext {name:$n})-[:EXPOSES]->(e) RETURN
        count(e)), and store_note what it is, why it helps us, the endpoint
        count, and the source URL in source_context.
-       KEY-GATED: do NOT ingest and do NOT sign up. notify_user once, in a few
-       sentences: the name, its docs URL, what it offers, why it helps us, and
-       that it needs a key the human must create.
+       KEY-GATED: do NOT ingest and do NOT sign up. notify_user once, with
+       needs: "action" and an `ask` naming where to get the key, the env var
+       name to add, and the workflow step(s) it would feed; the message gives
+       the name, its docs URL, and what it offers.
     d. Never create an account, submit a form, or invent a key; only GET.
        Unsure whether it is free? Treat it as key-gated. Keep to the budget the
        task sets. An empty run is a fine outcome; a fabricated one is not.

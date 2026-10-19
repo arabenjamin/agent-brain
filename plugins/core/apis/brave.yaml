@@ -5,3 +5,4 @@ auth_scheme: header
 auth_param: X-Subscription-Token
 auth_env_var: BRAVE_API_KEY
 kind: search
+retire_exempt: true

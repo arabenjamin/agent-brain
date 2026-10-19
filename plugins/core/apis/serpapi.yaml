@@ -5,3 +5,4 @@ auth_scheme: query_param
 auth_param: api_key
 auth_env_var: SERPAPI_KEY
 kind: search
+retire_exempt: true

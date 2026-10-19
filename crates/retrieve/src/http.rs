@@ -359,7 +359,10 @@ impl HttpSkill {
     /// Load an ApiContext from Neo4j by name. Returns None if not found or no neo4j.
     async fn fetch_context(&self, name: &str) -> Option<ApiContext> {
         let neo4j = self.neo4j.as_ref()?;
+        // Every call through a context stamps it: `last_used_at` is what the
+        // retirement check (api-retire-check, API_USE_PLAN Phase 4) reads.
         let cypher = "MATCH (c:ApiContext {name: $name}) \
+                      SET c.last_used_at = datetime() \
                       RETURN c.base_url AS base_url, c.auth_scheme AS auth_scheme, \
                              c.auth_param AS auth_param, c.auth_env_var AS auth_env_var, \
                              c.default_headers AS default_headers";
@@ -605,6 +608,7 @@ impl HttpSkill {
                           c.auth_env_var    = $auth_env_var, \
                           c.default_headers = $default_headers, \
                           c.description     = $description, \
+                          c.created_at      = coalesce(c.created_at, datetime()), \
                           c.updated_at      = datetime()";
 
         if let Err(e) = neo4j
@@ -1100,6 +1104,7 @@ impl HttpSkill {
               c.spec_version     = $spec_version,
               c.source           = $source,
               c.discovered_from  = $discovered_from,
+              c.created_at       = coalesce(c.created_at, datetime($ts)),
               c.updated_at       = datetime($ts)
         WITH c
         UNWIND $endpoints AS ep

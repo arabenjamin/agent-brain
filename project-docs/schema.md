@@ -462,6 +462,9 @@ HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; a
 | `api_kind` | String? | Its data kind, one `(:ApiKind)` name (API_USE_PLAN Phase 1). Absent = untagged |
 | `tags_by` / `tagged_at` | String? / DateTime? | Who set the tags: `caller` (passed to `define_api_context` / `ingest_api`), `nimble` (proposed when none were passed, ≥ 0.7 only), `seed` (an `apis/*.yaml` file, on create), `owner` (hand tags, `eval/api_tags_golden.yaml`) |
 | `tag_scores` | String? | JSON: nimble's probabilities for kind and each topic, when it tagged |
+| `created_at` / `last_used_at` | DateTime? | When it was registered; when `http_request` last called through it (every call stamps it). Read by `api-retire-check` |
+| `use_tracked_from` | DateTime? | 2026-10-19 for every API registered before use was tracked (`scripts/api_use_tracking.cypher`): the 60-day clock starts there, never at a guessed use |
+| `retire_exempt` | Boolean? | Used outside workflows (search engines behind `search_web`, GitHub, the brain's own API): never offered for retirement. From `apis/*.yaml` on every start |
 
 Edges: `(:ApiContext)-[:EXPOSES]->(:ApiEndpoint)`; `(:ApiContext)-[:SERVES]->(:Topic)` for each topic it serves (0..n; an API of kind `search` serves none). `list_apis` shows both, plus `used_by`: the workflows whose steps name the context or call under its `base_url`.
 

@@ -26,6 +26,7 @@ workflows:
   - relation-extraction
   - model-metadata-drift
   - api-match-digest
+  - api-retire-check
   - entity-linking
   - program-reviews
   - program-review

@@ -1,6 +1,6 @@
 # API Use Plan: an API is registered to be used, not collected
 
-**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0–3 built 2026-10-19; the HN trial runs weekly until the owner's call. Next: Phase 4.**
+**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0–4 built 2026-10-19; the HN trial runs weekly until the owner's call; the ladder waits for a real pair.**
 
 The brain can now find, register and prove a keyless API end to end
 (the api-scout workflow on a schedule and api-integrator from chat, both run
@@ -219,6 +219,29 @@ Both chosen so the payoff is checkable, not assumed:
   workflow's API is never caught between runs (owner, 2026-10-19).
 - Between APIs that serve the same need, a ladder with a ledger, built on the
   search-rotation machinery, only once a real pair exists.
+
+- **Built 2026-10-19.**
+  - **Use is recorded.** Every `http_request` through a context stamps
+    `last_used_at`; registration sets `created_at`. Existing APIs start their
+    clock at `use_tracked_from` (today), because nothing recorded use before.
+    `retire_exempt` (search engines, GitHub, the brain's own API) keeps an API
+    used outside workflows off the list.
+  - **`api-retire-check`** (weekly, brain-ops, no model) lists APIs that no
+    enabled workflow names and nothing has called for 60 days, with their
+    probe history. A Feed item asking retire / keep / exempt opens only when
+    an API newly goes idle. Today the candidates are aidevboard (reached
+    through its MCP server, not this context), hacker_news, home_assistant
+    and open_meteo; none is due before 2026-12-18.
+  - **`api-scout`** works from demand: it takes the latest digest's NEEDS NO
+    API COVERS, picks the two largest groups not scouted in its last four
+    runs, and gives api-integrator those needs. It names the steps that need
+    them and carries a not-again list (GDELT, Currents, Webz, ApiTube,
+    SearXNG). A news API must be measured on the step's own query first.
+    Key-gated finds become `needs: action` items naming where to get the key,
+    the env var, and the steps they would feed.
+  - **The ladder** waits for a real pair: two APIs serving one need, both in
+    use. `weather_gov` and `open_meteo` share the forecast kind, but only
+    one is used.
 
 ## 4. Owner decisions (2026-10-19)
 

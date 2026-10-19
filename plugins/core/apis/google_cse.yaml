@@ -8,3 +8,4 @@ auth_env_var: GOOGLE_API_KEY
 env_props:
   google_cx: GOOGLE_CX
 kind: search
+retire_exempt: true
