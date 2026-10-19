@@ -162,6 +162,7 @@ services:
       # Merge candidates get a verdict from this host-Ollama classifier on idle
       # time (plugins/alias-judge/crate/src/judge.rs); "off" turns it off. Needs `ollama pull nimble`.
       - ALIAS_JUDGE_MODEL=${ALIAS_JUDGE_MODEL:-nimble}
+      - API_TAGGER_MODEL=${API_TAGGER_MODEL:-nimble}
       # Every "supports" in claim verification is checked against its cited results
       # by this host-Ollama guardian model (plugins/epistemics/crate/src/grounding.rs);
       # "off" turns the check off. Needs `ollama pull granite4.1-guardian:8b`.

@@ -54,6 +54,12 @@ system_prompt: |
      (relative to base_url), `summary`, and for a {placeholder} path an `example`
      concrete path. The tool CALLS each GET endpoint before saving it and returns
      which answered, with a `sample` of real values from each response.
+     TAG it in the same call (ingest_api or define_api_context): `kind`, one of
+     news-feed, reference-catalog, forecast, dataset, job-postings, device-state,
+     code-hosting, search, advisories; and `topics`, the topic names it mainly
+     serves, [] for none (weather, a model catalog; a search engine always []).
+     Unsure? Leave both out: the tool asks a classifier and keeps only sure tags.
+     Report the result's `tags` and say whether you or the classifier set them.
 
   4. PROVE IT WORKS. Quote the status code and one or two values from a probe's
      `sample` (or, if you registered through ingest_api, make one http_request

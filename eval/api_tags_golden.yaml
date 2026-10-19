@@ -54,10 +54,10 @@ apis:
     note: "Used by tech-hiring-trends-weekly for labour-market counts, not for applying. my-job-search fits the program (jobsearch); ai-ml would not — most postings are not AI."
 
   - name: hacker_news
-    topics: [ai-ml]
+    topics: []
     kind: news-feed
-    confidence: guess
-    note: "HN spans tech broadly (security, startups too). Tagged ai-ml only because that is the Phase 2 trial; cybersecurity is the next candidate if a security need appears."
+    confidence: sure
+    note: "HN spans tech broadly (security, startups too), so no topic: it matches news-feed needs on kind alone. Drafted as ai-ml; nimble disputed it (0.19) and the owner dropped it, 2026-10-19."
 
   - name: openviglet_model_catalog
     topics: [ai-ml]

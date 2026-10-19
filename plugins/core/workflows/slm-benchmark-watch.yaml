@@ -35,6 +35,7 @@ steps:
 
   # 2-4. Release sweep, benchmark sweep, quantization/serving sweep.
   - tool_name: search_web
+    needs: { kind: reference-catalog, topic: ai-ml }
     arguments:
       query: "new small language model release 1B 3B 7B parameters Qwen Phi Gemma DeepSeek Mistral weights open"
       recency: month
@@ -56,6 +57,7 @@ steps:
     description: "Bank releases sweep"
 
   - tool_name: search_web
+    needs: { kind: dataset, topic: ai-ml }
     arguments:
       query: "small language model benchmark results MMLU GPQA coding math arXiv evaluation 7B frontier parity"
       recency: month
@@ -77,6 +79,7 @@ steps:
     description: "Bank benchmark sweep"
 
   - tool_name: search_web
+    needs: { kind: news-feed, topic: ai-ml }
     arguments:
       query: "quantization GGUF local inference VRAM requirements small model Ollama llama.cpp throughput"
       recency: month

@@ -1,0 +1,24 @@
+# The closed list of API data kinds (API_USE_PLAN, owner decision 2026-10-19).
+# Every (:ApiContext) has at most one (`api_kind`), and a workflow step's
+# `needs.kind` is one of these. Mirrored into the graph as (:ApiKind) on every
+# start: this file is the list, so a kind removed here leaves the graph too.
+# The description is what a tagger (nimble) reads; keep it a definition.
+kinds:
+  - name: news-feed
+    description: "Dated stories or posts on a beat, newest first (RSS, a news API, HN)."
+  - name: reference-catalog
+    description: "A maintained list of things with their properties, looked up rather than read as news (model catalog, paper index)."
+  - name: forecast
+    description: "Predicted values for a place and time (weather)."
+  - name: dataset
+    description: "Bulk records for counting or comparing (market prices, benchmark tables, training data)."
+  - name: job-postings
+    description: "Open roles with their requirements."
+  - name: device-state
+    description: "The live state of the owner's own devices and services."
+  - name: code-hosting
+    description: "Repositories, releases, issues and commits."
+  - name: search
+    description: "A general web or news search engine: answers any query, belongs to no beat. Never serves a topic."
+  - name: advisories
+    description: "Official notices from a security or government body (CISA KEV, OFAC actions)."

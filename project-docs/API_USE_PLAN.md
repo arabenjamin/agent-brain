@@ -1,6 +1,6 @@
 # API Use Plan: an API is registered to be used, not collected
 
-**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4); nothing built. Next: Phase 0.**
+**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0 and 1 done 2026-10-19. Next: Phase 2.**
 
 The brain can now find, register and prove a keyless API end to end
 (the api-scout workflow on a schedule and api-integrator from chat, both run
@@ -110,6 +110,27 @@ catalog" candidates.
 - `list_apis` shows tags and "used by" (the workflows whose steps name the
   context), so an unused API is visible where the agents look.
 - api-integrator proposes tags at registration and says which.
+- **Built 2026-10-19.**
+  - The kinds list is `plugins/core/apis/_kinds.yaml`, mirrored as `(:ApiKind)`
+    on every start.
+  - `define_api_context` / `ingest_api` take `kind` and `topics`, checked before
+    anything is saved. With neither, an untagged API is tagged by nimble
+    (`crates/retrieve/src/api_tags.rs`, `API_TAGGER_MODEL`): kind first,
+    a `search` API serves no topic, only answers ≥ 0.7 are stored.
+  - `list_apis` shows `kind`, `topics`, `tags_by` and `used_by` (steps naming
+    the context or calling under its `base_url`), and lists the untagged and
+    unused APIs by name.
+  - A step's `needs` is checked on every save; a seeded file's bad one is
+    dropped with a warning.
+  - The owner's tags are applied by `scripts/api_tags_owner.cypher` (10 APIs).
+    The 37 needs are in 12 workflows.
+  - Verified live: a bad kind and topics on a `search` API are refused with
+    nothing saved; nimble tagged a test KEV context `advisories` (0.97) and
+    `cybersecurity` (0.99) in about 39 s.
+  - Not yet live: api-integrator's new tagging step. The agent is
+    runtime-owned and shadows its file; reset it to pick the step up.
+  - Not tested live: `ingest_api`'s tags. It shares the code path with
+    `define_api_context`.
 
 ### Phase 2: the first two real uses
 

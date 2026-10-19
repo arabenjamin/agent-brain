@@ -223,6 +223,7 @@ pub async fn seed_workflows(
         );
     }
     let topic_names = declared_topics();
+    let kinds = crate::workflows::api_kinds(neo4j).await;
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut seeded = 0usize;
     for (plugin, path) in plugins.files("workflows", "yaml") {
@@ -239,6 +240,26 @@ pub async fn seed_workflows(
         }
         seen.insert(def.name.clone(), plugin.clone());
         def.plugin = Some(plugin);
+        // A wrong `needs` is dropped with a warning, like a wrong topic: it only
+        // labels the step, so the workflow still runs.
+        if let Ok(mut steps) = serde_json::from_str::<Vec<serde_json::Value>>(&def.steps) {
+            let bad = crate::validation::validate_step_needs(&steps, &kinds, &topic_names);
+            if !bad.is_empty() {
+                for v in &bad {
+                    warn!(name = %def.name, at = %v.path, error = %v.message, "seed_workflows: step needs dropped");
+                }
+                for s in steps.iter_mut() {
+                    let single = std::slice::from_ref(s);
+                    if !crate::validation::validate_step_needs(single, &kinds, &topic_names)
+                        .is_empty()
+                        && let Some(m) = s.as_object_mut()
+                    {
+                        m.remove("needs");
+                    }
+                }
+                def.steps = serde_json::Value::Array(steps).to_string();
+            }
+        }
         match neo4j.sync_yaml_workflow(&def, enabled).await {
             Ok(YamlSyncOutcome::Created) => info!(name = %def.name, "Seeded Workflow (yaml-owned)"),
             Ok(YamlSyncOutcome::Updated) => {}

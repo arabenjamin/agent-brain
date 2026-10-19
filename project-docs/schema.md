@@ -371,7 +371,7 @@ Background job records executed by `QueueService`. Supports chaining, retry, and
 
 #### `Workflow`
 
-A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `SchedulerChain` on 2026-10-10). Runs on its schedule when it has one, and by name with inputs whenever something asks (`manage_workflow action=run`, `create_task workflow=…`, REST, the media and gap pipelines, the perception scan). Each run is a `:Task` with `workflow` set. Seeded from each loaded plugin bundle's `workflows/*.yaml` by `services/workflow_seeder.rs`. Template variables in steps: `{{task_id}}`, `{{goal}}`, `{{date}}` / `{{now}}` / `{{weekday}}` (local wall clock), `{{inputs.<name>}}`, `{{_prev}}`, `{{steps.<id>}}`. Rule: `dev_docs get workflows/model`.
+A named job chain (CORE_AND_PLUGINS_PLAN Phase 2; replaced `ScheduledTask` and `SchedulerChain` on 2026-10-10). Runs on its schedule when it has one, and by name with inputs whenever something asks (`manage_workflow action=run`, `create_task workflow=…`, REST, the media and gap pipelines, the perception scan). Each run is a `:Task` with `workflow` set. Seeded from each loaded plugin bundle's `workflows/*.yaml` by `services/workflow_seeder.rs`. Template variables in steps: `{{task_id}}`, `{{goal}}`, `{{date}}` / `{{now}}` / `{{weekday}}` (local wall clock), `{{inputs.<name>}}`, `{{_prev}}`, `{{steps.<id>}}`. Rule: `dev_docs get workflows/model`. A step may carry `needs: {kind, topic?}`: the data it wants, from the `(:ApiKind)` list and the declared topics, checked on every save and dropped with a warning when a seeded file's is wrong (API_USE_PLAN Phase 1). A label for matching a registered API to the step; it changes nothing about how the step runs.
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -459,6 +459,15 @@ HTTP API connection profiles used by `HttpSkill`. Seeded at startup from code; a
 | `auth_env_var` | String? | Env var name that holds the secret value |
 | `default_headers` | String? | JSON object of default request headers |
 | `description` | String? | Human-readable summary |
+| `api_kind` | String? | Its data kind, one `(:ApiKind)` name (API_USE_PLAN Phase 1). Absent = untagged |
+| `tags_by` / `tagged_at` | String? / DateTime? | Who set the tags: `caller` (passed to `define_api_context` / `ingest_api`), `nimble` (proposed when none were passed, ≥ 0.7 only), `seed` (an `apis/*.yaml` file, on create), `owner` (hand tags, `eval/api_tags_golden.yaml`) |
+| `tag_scores` | String? | JSON: nimble's probabilities for kind and each topic, when it tagged |
+
+Edges: `(:ApiContext)-[:EXPOSES]->(:ApiEndpoint)`; `(:ApiContext)-[:SERVES]->(:Topic)` for each topic it serves (0..n; an API of kind `search` serves none). `list_apis` shows both, plus `used_by`: the workflows whose steps name the context or call under its `base_url`.
+
+#### `ApiKind`
+
+The closed list of API data kinds (9: news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories), mirrored from every bundle's `apis/_kinds.yaml` on each start; a kind no file names is deleted. `name` (String), `description` (String, what a tagger reads), `plugin`, `updated_at`. `define_api_context`, `ingest_api` and a workflow step's `needs` are checked against it.
 
 #### `DevNote`
 

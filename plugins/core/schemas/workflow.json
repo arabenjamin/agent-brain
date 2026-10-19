@@ -195,6 +195,27 @@
         "optional": {
           "type": "boolean",
           "description": "A failed optional step does not cancel the rest of the run."
+        },
+        "needs": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "One of the closed (:ApiKind) list (apis/_kinds.yaml)."
+            },
+            "topic": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A declared topic; absent or null for none."
+            }
+          },
+          "description": "The data this step wants (API_USE_PLAN Phase 1), so a registered API can be matched to it. A label only: it does not change how the step runs. Kind and topic are checked against the closed lists on save."
         }
       }
     }

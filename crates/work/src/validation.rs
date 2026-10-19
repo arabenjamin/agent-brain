@@ -355,6 +355,61 @@ pub fn validate_input_refs(steps: &[Value], declared: &[String]) -> Vec<Violatio
     out
 }
 
+/// A step's `needs` (API_USE_PLAN Phase 1): `{kind, topic?}` from the two
+/// closed lists, `(:ApiKind)` and the declared topics. It names the data the
+/// step wants so a registered API can be matched to it; it changes nothing
+/// about how the step runs. With `kinds` empty (not seeded yet) only the shape
+/// is checked.
+pub fn validate_step_needs(steps: &[Value], kinds: &[String], topics: &[String]) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let Some(needs) = step.get("needs") else {
+            continue;
+        };
+        let tool = step.get("tool_name").and_then(Value::as_str).unwrap_or("");
+        let at = format!("steps[{i}] (`{tool}`).needs");
+        let Some(m) = needs.as_object() else {
+            out.push(Violation::hard(at, "must be an object: {kind, topic}"));
+            continue;
+        };
+        if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "kind" | "topic")) {
+            out.push(Violation::hard(
+                at.clone(),
+                format!("unknown key '{k}' (only kind and topic)"),
+            ));
+        }
+        match m.get("kind").and_then(Value::as_str) {
+            None => out.push(Violation::hard(at.clone(), "`kind` is required")),
+            Some(k) if !kinds.is_empty() && !kinds.iter().any(|x| x == k) => {
+                out.push(Violation::hard(
+                    at.clone(),
+                    format!(
+                        "kind '{k}' is not an API kind (kinds: {})",
+                        kinds.join(", ")
+                    ),
+                ))
+            }
+            Some(_) => {}
+        }
+        match m.get("topic") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(t)) if topics.iter().any(|x| x == t) => {}
+            Some(Value::String(t)) => out.push(Violation::hard(
+                at.clone(),
+                format!(
+                    "topic '{t}' is not a topic (topics: {}); omit it for none",
+                    topics.join(", ")
+                ),
+            )),
+            Some(_) => out.push(Violation::hard(
+                at.clone(),
+                "`topic` must be a string or null",
+            )),
+        }
+    }
+    out
+}
+
 /// The step ids a string refers to via `{{steps.<id>}}` / `{{steps.<id>.<path>}}`.
 fn step_refs(s: &str) -> Vec<String> {
     s.split("{{steps.")
@@ -1233,6 +1288,31 @@ mod tests {
         });
         let v = validate_step_arguments(0, "http_request", Some(&args), &schemas());
         assert!(!has_hard(&v), "templated strings must pass: {:?}", v);
+    }
+
+    #[test]
+    fn step_needs_come_from_the_closed_lists() {
+        let kinds = vec!["news-feed".to_string(), "advisories".to_string()];
+        let topics = vec!["cybersecurity".to_string()];
+        let ok = vec![
+            json!({"tool_name": "search_web", "needs": {"kind": "news-feed", "topic": "cybersecurity"}}),
+            json!({"tool_name": "http_request", "needs": {"kind": "advisories"}}),
+            json!({"tool_name": "reason"}),
+        ];
+        assert!(validate_step_needs(&ok, &kinds, &topics).is_empty());
+        let bad = vec![
+            json!({"tool_name": "a", "needs": {"kind": "weather"}}),
+            json!({"tool_name": "b", "needs": {"topic": "cybersecurity"}}),
+            json!({"tool_name": "c", "needs": {"kind": "news-feed", "topic": "sports"}}),
+            json!({"tool_name": "d", "needs": {"kind": "news-feed", "why": "x"}}),
+            json!({"tool_name": "e", "needs": "news-feed"}),
+        ];
+        let v = validate_step_needs(&bad, &kinds, &topics);
+        assert_eq!(v.len(), 5, "{v:?}");
+        assert!(v[0].message.contains("news-feed, advisories"));
+        // Kinds not loaded yet: only the shape is checked.
+        let unseeded = vec![json!({"tool_name": "a", "needs": {"kind": "weather"}})];
+        assert!(validate_step_needs(&unseeded, &[], &topics).is_empty());
     }
 
     #[test]

@@ -20,6 +20,7 @@ steps:
     description: "Fetch the prior report for the delta"
 
   - id: spyware
+    needs: { kind: news-feed, topic: cybersecurity }
     tool_name: search_web
     arguments:
       query: "spyware government surveillance investigation"
@@ -33,6 +34,7 @@ steps:
     description: "Sweep: spyware and state surveillance"
 
   - id: privacy
+    needs: { kind: news-feed, topic: cybersecurity }
     tool_name: search_web
     arguments:
       query: "privacy lawsuit data collection regulators"
@@ -46,6 +48,7 @@ steps:
     description: "Sweep: privacy lawsuits and regulators"
 
   - id: tracking
+    needs: { kind: news-feed, topic: cybersecurity }
     tool_name: search_web
     arguments:
       query: "police facial recognition data broker location tracking"

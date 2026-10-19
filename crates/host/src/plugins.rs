@@ -232,6 +232,55 @@ pub(crate) struct ApiContextFile {
     /// Node property → env var, set from the environment at every start.
     #[serde(default)]
     env_props: std::collections::BTreeMap<String, String>,
+    /// Its data kind (`apis/_kinds.yaml`), set when the node is created.
+    #[serde(default)]
+    kind: Option<String>,
+    /// The topics it serves, set when the node is created.
+    #[serde(default)]
+    topics: Vec<String>,
+}
+
+/// `apis/_kinds.yaml`: the closed list of API data kinds (API_USE_PLAN).
+/// Not an API context: the `_` prefix keeps it out of the context loop.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApiKindsFile {
+    kinds: Vec<ApiKindDef>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApiKindDef {
+    name: String,
+    description: String,
+}
+
+/// `_`-prefixed files in a seed dir are not seeds of that kind.
+fn is_meta_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f.starts_with('_'))
+}
+
+fn check_kinds(k: &ApiKindsFile) -> Result<(), String> {
+    if k.kinds.is_empty() {
+        return Err("the kinds list is empty".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for d in &k.kinds {
+        if d.name.is_empty()
+            || !d
+                .name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(format!("kind '{}' must be a lowercase slug", d.name));
+        }
+        if !seen.insert(d.name.as_str()) {
+            return Err(format!("kind '{}' is listed twice", d.name));
+        }
+    }
+    Ok(())
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(path: &Path, what: &str) -> Option<T> {
@@ -279,6 +328,12 @@ pub fn check_seed_file(kind: &str, path: &Path) -> Result<(), String> {
             if !s.url.starts_with("http://") && !s.url.starts_with("https://") {
                 return Err(format!("url '{}' must be http(s)", s.url));
             }
+        }
+        "apis" if path.file_name().and_then(|f| f.to_str()) == Some("_kinds.yaml") => {
+            check_kinds(&strict::<ApiKindsFile>(path)?)?;
+        }
+        "apis" if is_meta_file(path) => {
+            return Err("only `_kinds.yaml` may start with `_` in apis/".into());
         }
         "apis" => {
             let a: ApiContextFile = strict(path)?;
@@ -357,7 +412,11 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
             Err(e) => warn!(name = %s.name, error = %e, "seed mcp-servers: failed"),
         }
     }
+    seed_api_kinds(neo4j, plugins).await;
     for (plugin, path) in plugins.files("apis", "yaml") {
+        if is_meta_file(&path) {
+            continue;
+        }
         let Some(a) = parse::<ApiContextFile>(&path, "seed apis") else {
             continue;
         };
@@ -387,6 +446,20 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
                 if rows.first().and_then(|r| r.get::<bool>("new").ok()) == Some(true) {
                     info!(name = %a.name, %plugin, "Seeded ApiContext (graph-owned from now on)");
                     created += 1;
+                    if a.kind.is_some() || !a.topics.is_empty() {
+                        let q = neo4rs::query(
+                            "MATCH (c:ApiContext {name: $name}) \
+                             SET c.api_kind = $kind, c.tags_by = 'seed' \
+                             WITH c UNWIND $topics AS t MATCH (topic:Topic {name: t}) \
+                             MERGE (c)-[:SERVES]->(topic)",
+                        )
+                        .param("name", a.name.as_str())
+                        .param("kind", a.kind.clone())
+                        .param("topics", a.topics.clone());
+                        if let Err(e) = neo4j.run(q).await {
+                            warn!(name = %a.name, error = %e, "seed apis: tags not set");
+                        }
+                    }
                 }
             }
             Err(e) => warn!(name = %a.name, error = %e, "seed apis: failed"),
@@ -410,6 +483,51 @@ pub async fn seed_on_create(neo4j: &Neo4jClient, plugins: &Plugins) -> usize {
         }
     }
     created
+}
+
+/// Mirror every bundle's `apis/_kinds.yaml` into `(:ApiKind)` nodes. The
+/// files are the list: a kind none of them names any more is deleted.
+async fn seed_api_kinds(neo4j: &Neo4jClient, plugins: &Plugins) {
+    let mut names: Vec<String> = Vec::new();
+    for (plugin, path) in plugins.files("apis", "yaml") {
+        if path.file_name().and_then(|f| f.to_str()) != Some("_kinds.yaml") {
+            continue;
+        }
+        let Some(file) = parse::<ApiKindsFile>(&path, "seed api kinds") else {
+            continue;
+        };
+        if let Err(e) = check_kinds(&file) {
+            warn!(path = %path.display(), error = %e, "seed api kinds: file refused");
+            continue;
+        }
+        for k in &file.kinds {
+            if names.contains(&k.name) {
+                warn!(kind = %k.name, %plugin, "seed api kinds: already declared, skipped");
+                continue;
+            }
+            let q = neo4rs::query(
+                "MERGE (k:ApiKind {name: $name}) \
+                 SET k.description = $description, k.plugin = $plugin, k.updated_at = datetime()",
+            )
+            .param("name", k.name.as_str())
+            .param("description", k.description.as_str())
+            .param("plugin", plugin.as_str());
+            if let Err(e) = neo4j.run(q).await {
+                warn!(kind = %k.name, error = %e, "seed api kinds: failed");
+                continue;
+            }
+            names.push(k.name.clone());
+        }
+    }
+    if names.is_empty() {
+        return; // no list loaded (a parse error): never wipe the graph's copy
+    }
+    let q = neo4rs::query("MATCH (k:ApiKind) WHERE NOT k.name IN $names DETACH DELETE k")
+        .param("names", names.clone());
+    if let Err(e) = neo4j.run(q).await {
+        warn!(error = %e, "seed api kinds: stale kinds not removed");
+    }
+    info!(kinds = names.len(), "API kinds loaded");
 }
 
 /// Record which plugin seeded a node (by `name`).
@@ -550,6 +668,35 @@ mod tests {
             assert!(p.core_dir(k).is_dir(), "core bundle lacks {k}/");
         }
         assert!(p.files("workflows", "yaml").len() >= 15);
+    }
+
+    #[test]
+    fn every_shipped_api_seed_checks_and_the_kinds_list_is_its_own_file() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/core/apis");
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            assert_eq!(check_seed_file("apis", &e.path()), Ok(()), "{:?}", e.path());
+        }
+        let kinds: ApiKindsFile =
+            serde_yaml::from_str(&std::fs::read_to_string(dir.join("_kinds.yaml")).unwrap())
+                .unwrap();
+        assert!(kinds.kinds.iter().any(|k| k.name == "advisories"));
+        let tmp = tempfile::tempdir().unwrap();
+        let stray = tmp.path().join("_notes.yaml");
+        std::fs::write(&stray, "x: 1\n").unwrap();
+        assert!(check_seed_file("apis", &stray).is_err());
+        let twice = ApiKindsFile {
+            kinds: vec![
+                ApiKindDef {
+                    name: "a".into(),
+                    description: String::new(),
+                },
+                ApiKindDef {
+                    name: "a".into(),
+                    description: String::new(),
+                },
+            ],
+        };
+        assert!(check_kinds(&twice).is_err());
     }
 
     #[test]

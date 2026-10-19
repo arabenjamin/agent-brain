@@ -38,6 +38,7 @@ steps:
   # 2-5. Datasets, fine-tuning prior work, verifiable-reward training, benchmarks.
   #      Datasets don't turn over monthly, so the window is a year.
   - tool_name: search_web
+    needs: { kind: dataset, topic: ai-ml }
     arguments:
       query: "Rust code instruction tuning dataset huggingface SFT compiled tested Rust programs"
       recency: year
@@ -59,6 +60,7 @@ steps:
     description: "Bank dataset sweep"
 
   - tool_name: search_web
+    needs: { kind: reference-catalog, topic: ai-ml }
     arguments:
       query: "fine-tuning small language model Rust code generation results paper LoRA"
       recency: year
@@ -80,6 +82,7 @@ steps:
     description: "Bank prior-work sweep"
 
   - tool_name: search_web
+    needs: { kind: reference-catalog, topic: ai-ml }
     arguments:
       query: "Rust compiler feedback reinforcement learning verifiable rewards cargo test LLM training"
       recency: year
@@ -101,6 +104,7 @@ steps:
     description: "Bank verified-training sweep"
 
   - tool_name: search_web
+    needs: { kind: dataset, topic: ai-ml }
     arguments:
       query: "Rust benchmark LLM code generation hard evaluation repository-level SWE-bench Rust"
       recency: year

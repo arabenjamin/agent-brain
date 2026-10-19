@@ -21,6 +21,7 @@ steps:
     description: "Fetch the prior report for the delta"
 
   - id: sanctions
+    needs: { kind: news-feed, topic: geopolitics }
     tool_name: search_web
     arguments:
       query: "sanctions announced against"
@@ -34,6 +35,7 @@ steps:
     description: "Sweep: sanctions in the news"
 
   - id: treasury
+    needs: { kind: advisories, topic: geopolitics }
     tool_name: search_web
     arguments:
       query: "Treasury imposes sanctions on"
@@ -47,6 +49,7 @@ steps:
     description: "Sweep: designations and penalties"
 
   - id: trade
+    needs: { kind: news-feed, topic: geopolitics }
     tool_name: search_web
     arguments:
       query: "tariffs export controls trade agreement"

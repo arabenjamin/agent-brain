@@ -30,6 +30,7 @@ steps:
 
   # Why: dev_docs get yaml/schedules-hardware-tripwire-3
   - tool_name: search_web
+    needs: { kind: news-feed, topic: semiconductors }
     arguments:
       query: "HBM3e HBM4 supply SK Hynix Micron Samsung memory yield capacity allocation"
       source_list: semiconductors
@@ -51,6 +52,7 @@ steps:
     description: "Bank memory signal"
 
   - tool_name: search_web
+    needs: { kind: news-feed, topic: semiconductors }
     arguments:
       query: "CoWoS advanced packaging TSMC capacity expansion substrate constraint AI accelerator"
       source_list: semiconductors
@@ -72,6 +74,7 @@ steps:
     description: "Bank packaging signal"
 
   - tool_name: search_web
+    needs: { kind: news-feed, topic: semiconductors }
     arguments:
       query: "semiconductor raw materials export controls gallium neon ABF substrate rare earth supply disruption"
       source_list: semiconductors
@@ -94,6 +97,7 @@ steps:
 
   # Why: dev_docs get yaml/schedules-hardware-tripwire-4
   - tool_name: search_web
+    needs: { kind: news-feed, topic: semiconductors }
     arguments:
       query: "alternative memory architecture 3D X-DRAM HBM substitute qualification timeline"
       source_list: semiconductors
@@ -118,6 +122,7 @@ steps:
   #     and neon are already covered by the raw-materials sweep above, and the
   #     list returned generic metals updates for them, not gallium news.
   - tool_name: search_web
+    needs: { kind: news-feed, topic: batteries-materials }
     arguments:
       query: "sodium-ion nickel-zinc solid-state battery materials commercialization qualification timeline"
       source_list: batteries-materials

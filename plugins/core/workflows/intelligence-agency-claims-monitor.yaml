@@ -33,6 +33,7 @@ steps:
   # aggregator copies or fringe) while the sweeps carried the report.
   # ── News sweeps (approved domains only) ──
   - tool_name: search_web
+    needs: { kind: news-feed, topic: national-security }
     arguments:
       query: "CIA NSA FBI intelligence agency claims allegations report"
       recency: week
@@ -55,6 +56,7 @@ steps:
     description: "Bank US sweep"
 
   - tool_name: search_web
+    needs: { kind: news-feed, topic: national-security }
     arguments:
       query: "Russian intelligence GRU FSB SVR operation accused"
       recency: week
@@ -80,6 +82,7 @@ steps:
     description: "Bank Russia sweep"
 
   - tool_name: search_web
+    needs: { kind: news-feed, topic: national-security }
     arguments:
       query: "Mossad MI6 Chinese Ministry of State Security spy agency claims"
       recency: week

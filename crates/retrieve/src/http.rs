@@ -24,6 +24,8 @@ use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition};
 use agent_brain_repository::Neo4jClient;
 
+use crate::api_tags;
+
 // ── Response field projection (http_request `pick`) ─────────────────────────
 //
 // Keep only the requested paths from a JSON body, dropping everything else, so a
@@ -256,6 +258,15 @@ impl HttpSkill {
                         "type": "string",
                         "description": "Human-readable description of what this context is for"
                     },
+                    "kind": {
+                        "type": "string",
+                        "description": "Its data kind, one of the closed list in the graph ((:ApiKind): news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories). Omit it and pass no topics to let the tagger (nimble) propose tags for an untagged API; \"\" clears."
+                    },
+                    "topics": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The (:Topic) names it serves (0..n); [] for none (weather, a model catalog). A `search` API serves none. Replaces the stored set."
+                    },
                     "endpoints": {
                         "type": "array",
                         "description": "For an API with no OpenAPI spec: the endpoints you found, saved so list_endpoints shows them. Each GET endpoint is CALLED once before it is saved, and the result says which answered (status, response shape, and `sample`: a few real values from the response, the only values you may quote): that is the proof it works. A path with a {placeholder} needs `example`, a concrete path to call.",
@@ -320,6 +331,15 @@ impl HttpSkill {
                     "description": {
                         "type": "string",
                         "description": "Optional human-readable description. Defaults to the spec's info.title."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Its data kind, one of the closed list in the graph ((:ApiKind): news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories). Omit it and pass no topics to let the tagger (nimble) propose tags for an untagged API; \"\" clears."
+                    },
+                    "topics": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The (:Topic) names it serves (0..n); [] for none (weather, a model catalog). A `search` API serves none. Replaces the stored set."
                     },
                     "prune": {
                         "type": "boolean",
@@ -552,6 +572,8 @@ impl HttpSkill {
             description: Option<String>,
             #[serde(default)]
             endpoints: Vec<EndpointInput>,
+            #[serde(flatten)]
+            tags: api_tags::Requested,
         }
 
         let input: Input = match serde_json::from_value(args.unwrap_or_default()) {
@@ -562,6 +584,14 @@ impl HttpSkill {
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("Neo4j not available".to_string());
         };
+        // Tags are checked before anything is written.
+        let vocab = match api_tags::Vocab::load(neo4j).await {
+            Ok(v) => v,
+            Err(e) => return ToolCallResult::error(e),
+        };
+        if let Err(e) = api_tags::check(&input.tags, &vocab) {
+            return ToolCallResult::error(e);
+        }
         let description = input.description.clone().unwrap_or_default();
 
         let default_headers_json =
@@ -596,11 +626,26 @@ impl HttpSkill {
             return ToolCallResult::error(format!("Failed to store ApiContext: {}", e));
         }
 
+        let summaries: Vec<String> = input
+            .endpoints
+            .iter()
+            .map(|e| {
+                let m = e.method.as_deref().unwrap_or("GET").trim().to_uppercase();
+                format!(
+                    "{m} {}: {}",
+                    e.path.trim(),
+                    e.summary.as_deref().unwrap_or_default()
+                )
+            })
+            .collect();
+        let text = api_tags::api_text(&input.name, &description, &summaries);
+        let tags = api_tags::apply(neo4j, &input.name, &input.tags, &vocab, &text).await;
         if input.endpoints.is_empty() {
             return ToolCallResult::success_json(json!({
                 "stored": true,
                 "name": input.name,
                 "base_url": input.base_url,
+                "tags": tags,
             }));
         }
         self.store_probed_endpoints(
@@ -609,6 +654,7 @@ impl HttpSkill {
             &input.base_url,
             &description,
             &input.endpoints,
+            tags,
         )
         .await
     }
@@ -623,6 +669,7 @@ impl HttpSkill {
         base_url: &str,
         description: &str,
         endpoints: &[EndpointInput],
+        tags: Value,
     ) -> ToolCallResult {
         let mut parsed = Vec::with_capacity(endpoints.len());
         let mut probes: Vec<Value> = Vec::with_capacity(endpoints.len());
@@ -726,6 +773,7 @@ impl HttpSkill {
                 format!("{ok} of {probed} probed endpoint(s) answered; the others are marked failed")
             },
             "probes": probes,
+            "tags": tags,
         }))
     }
 
@@ -778,7 +826,58 @@ impl HttpSkill {
         None
     }
 
+    /// `ingest_api` with its tags: checked before anything is fetched, applied
+    /// to the context the ingest wrote (API_USE_PLAN Phase 1).
     async fn handle_ingest_api(&self, args: Option<Value>) -> ToolCallResult {
+        let Some(ref neo4j) = self.neo4j else {
+            return ToolCallResult::error("Neo4j not available".to_string());
+        };
+        let req: api_tags::Requested =
+            serde_json::from_value(args.clone().unwrap_or_default()).unwrap_or_default();
+        let vocab = match api_tags::Vocab::load(neo4j).await {
+            Ok(v) => v,
+            Err(e) => return ToolCallResult::error(e),
+        };
+        if let Err(e) = api_tags::check(&req, &vocab) {
+            return ToolCallResult::error(e);
+        }
+        let result = self.ingest_api_untagged(args).await;
+        if result.is_error == Some(true) {
+            return result;
+        }
+        let Ok(mut v) = serde_json::from_str::<Value>(&result.model_text()) else {
+            return result;
+        };
+        let Some(name) = v["api_name"].as_str().map(String::from) else {
+            return result;
+        };
+        let rows = neo4j
+            .execute(
+                neo4rs::query(
+                    "MATCH (c:ApiContext {name: $name}) \
+                     OPTIONAL MATCH (c)-[:EXPOSES]->(e:ApiEndpoint) WITH c, e ORDER BY e.path \
+                     RETURN coalesce(c.description, '') AS d, \
+                            [x IN collect(e) WHERE x IS NOT NULL | x.method + ' ' + x.path + ': ' + coalesce(x.summary, '')] AS eps",
+                )
+                .param("name", name.as_str()),
+            )
+            .await
+            .unwrap_or_default();
+        let (desc, eps) = rows
+            .first()
+            .map(|r| {
+                (
+                    r.get::<String>("d").unwrap_or_default(),
+                    r.get::<Vec<String>>("eps").unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default();
+        let text = api_tags::api_text(&name, &desc, &eps);
+        v["tags"] = api_tags::apply(neo4j, &name, &req, &vocab, &text).await;
+        ToolCallResult::success_json(v)
+    }
+
+    async fn ingest_api_untagged(&self, args: Option<Value>) -> ToolCallResult {
         #[derive(Deserialize)]
         struct Input {
             #[serde(default)]

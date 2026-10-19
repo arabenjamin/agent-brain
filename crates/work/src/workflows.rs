@@ -350,6 +350,21 @@ pub async fn save(
     })
 }
 
+/// The `(:ApiKind)` names (`apis/_kinds.yaml`); empty when not seeded or unreadable.
+pub async fn api_kinds(neo4j: &Neo4jClient) -> Vec<String> {
+    neo4j
+        .execute(neo4rs::query(
+            "MATCH (k:ApiKind) RETURN k.name AS name ORDER BY name",
+        ))
+        .await
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r.get::<String>("name").ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The checking half of `save`: the stored workflow with the body laid over
 /// it, every hard check run, and the definition it would write.
 async fn prepare(
@@ -431,6 +446,11 @@ async fn prepare(
     ));
     hard.extend(validation::validate_step_models(&steps, checks.catalog));
     hard.extend(validation::validate_input_refs(&steps, &declared));
+    hard.extend(validation::validate_step_needs(
+        &steps,
+        &api_kinds(neo4j).await,
+        &workflow_seeder::declared_topics(),
+    ));
     if validation::model_driven_call() {
         let stored: Vec<Value> = current
             .as_ref()

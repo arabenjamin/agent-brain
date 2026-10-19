@@ -7,3 +7,4 @@ auth_env_var: GOOGLE_API_KEY
 # Set from the environment at every start (not a secret, but per deployment).
 env_props:
   google_cx: GOOGLE_CX
+kind: search
