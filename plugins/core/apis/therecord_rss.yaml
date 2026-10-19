@@ -1,0 +1,9 @@
+# The Record — an outlet of the `cybersecurity` SourceList, fetched as RSS
+# (XML: parse in a code step). Registered 2026-10-19 (API_USE_PLAN Phase 4) for
+# the news-feed / cybersecurity steps the api-match-digest found no API for.
+name: therecord_rss
+description: "The Record (Recorded Future News) RSS (keyless): cyber and intelligence reporting, newest first; title, link, pubDate, description per item. Owned by a threat-intel vendor."
+base_url: https://therecord.media
+auth_scheme: none
+kind: news-feed
+topics: [cybersecurity]

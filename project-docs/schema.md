@@ -470,7 +470,7 @@ Edges: `(:ApiContext)-[:EXPOSES]->(:ApiEndpoint)`; `(:ApiContext)-[:SERVES]->(:T
 
 #### `ApiKind`
 
-The closed list of API data kinds (9: news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories), mirrored from every bundle's `apis/_kinds.yaml` on each start; a kind no file names is deleted. `name` (String), `description` (String, what a tagger reads), `beat` (Boolean: news-feed, advisories, job-postings; a topic-less API of a beat kind matches only topic-less needs in `api-match-digest`), `plugin`, `updated_at`. `define_api_context`, `ingest_api` and a workflow step's `needs` are checked against it.
+The closed list of API data kinds (9: news-feed, reference-catalog, forecast, dataset, job-postings, device-state, code-hosting, search, advisories), mirrored from every bundle's `apis/_kinds.yaml` on each start; a kind no file names is deleted. `name` (String), `description` (String, what a tagger reads), `beat` (Boolean: news-feed, advisories, job-postings; for a beat kind `api-match-digest` needs the topics to agree both ways: a topic-less feed matches only topic-less needs, and a topic-less need only topic-less feeds), `plugin`, `updated_at`. `define_api_context`, `ingest_api` and a workflow step's `needs` are checked against it.
 
 #### `DevNote`
 

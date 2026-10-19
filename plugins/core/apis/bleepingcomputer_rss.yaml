@@ -1,0 +1,9 @@
+# BleepingComputer news RSS — an outlet of the `cybersecurity` SourceList, fetched as RSS
+# (XML: parse in a code step). Registered 2026-10-19 (API_USE_PLAN Phase 4) for
+# the news-feed / cybersecurity steps the api-match-digest found no API for.
+name: bleepingcomputer_rss
+description: "BleepingComputer news RSS (keyless): breaches, exploited vulnerabilities, ransomware and patches, newest first; title, link, pubDate, description per item."
+base_url: https://www.bleepingcomputer.com
+auth_scheme: none
+kind: news-feed
+topics: [cybersecurity]

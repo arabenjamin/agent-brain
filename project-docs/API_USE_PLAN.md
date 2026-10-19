@@ -239,6 +239,18 @@ Both chosen so the payoff is checkable, not assumed:
     SearXNG). A news API must be measured on the step's own query first.
     Key-gated finds become `needs: action` items naming where to get the key,
     the env var, and the steps they would feed.
+  - **First scout runs** went to free nemotron / gpt-oss-20b once the reset
+    dropped api-integrator's Haiku pin. One asked a question no one reads;
+    the other said no outlet serves a keyless RSS feed, without fetching any.
+    In fact BleepingComputer, The Record, SecurityWeek and EE Times all serve
+    one. The owner registered those four as `news-feed` APIs
+    (`apis/*_rss.yaml`) and pinned api-integrator to `ministral-14b-latest`
+    until the Ollama Cloud quota resets (about 2026-10-21; OpenRouter has no
+    free gpt-oss). The scout's task now requires a fetch behind any "does not
+    exist".
+  - **The beat rule works both ways:** a topic-less need no longer matches
+    topical feeds. The cybersecurity feeds had been proposed for daily-news
+    business.
   - **The ladder** waits for a real pair: two APIs serving one need, both in
     use. `weather_gov` and `open_meteo` share the forecast kind, but only
     one is used.

@@ -10,10 +10,13 @@ steps:
   #   already uses them);
   # - a need with no topic matches on kind alone (owner decision 2, 2026-10-19);
   # - a need with a topic matches an API that serves it, or a topic-less API
-  #   of a non-beat kind (code-hosting, forecast, ...). A topic-less API of a
-  #   beat kind (news-feed, advisories, job-postings; `beat` in
-  #   apis/_kinds.yaml) matches only topic-less needs: the dry run proposed HN
-  #   for 26 topical news steps, Michigan news included.
+  #   of a non-beat kind (code-hosting, forecast, ...).
+  # - beat kinds (news-feed, advisories, job-postings; `beat` in
+  #   apis/_kinds.yaml) need the topics to agree both ways: a topic-less feed
+  #   matches only topic-less needs (the dry run proposed HN for 26 topical
+  #   news steps, Michigan news included), and a topic-less need matches only
+  #   topic-less feeds (the cybersecurity RSS feeds were proposed for
+  #   daily-news business, 2026-10-19).
   # - a step that already calls the API (context_name or base_url) is not a
   #   match; it is counted as through the catalog.
   # Approving a match is the owner handing the digest item to schedule-author,
@@ -64,11 +67,9 @@ steps:
             if api["kind"] != need["kind"] or api["kind"] == "search":
                 return False
             t = need.get("topic")
-            if not t:
-                return True
-            if t in api["topics"]:
-                return True
-            return not api["topics"] and not api["beat"]
+            if api["beat"]:  # a feed is about its topic: the topics must agree
+                return t in api["topics"] if t else not api["topics"]
+            return not t or t in api["topics"] or not api["topics"]
         matches, uncovered, served = [], {}, []
         for w in workflows:
             for i, s in enumerate(json.loads(w["steps"])):
