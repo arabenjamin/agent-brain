@@ -1,0 +1,217 @@
+# API tags golden set — API_USE_PLAN Phase 0 (hand tags).
+#
+# STATUS: DRAFT 2026-10-19, written by Claude Code for the owner to correct.
+#   Every tag carries `confidence: sure | guess`. Read the guesses; a sure tag
+#   is one the API's own description or the step's query settles.
+#
+# WHY THIS FILE EXISTS
+#   Two jobs. (1) It is the hand tagging Phase 1 writes into the graph
+#   ((:ApiContext)-[:SERVES]->(:Topic), `api_kind`, a step's `needs`).
+#   (2) It is the answer key for the nimble measurement: nimble is asked one
+#   fixed-choice question per axis (topics, kind) from an API's description and
+#   endpoint summaries, and goes in only if its confident answers match these.
+#   A "can't tell" counts as untagged, not wrong.
+#
+# THE TWO CLOSED LISTS
+#   topics: the (:Topic) list, 12 names (plugins/core/topics/*.yaml). An API or
+#     a need may have none (owner, 2026-10-19): it then matches on kind alone.
+#   kinds: below, 9 names (owner, 2026-10-19). Exactly one per API and per need.
+
+kinds:
+  news-feed:         "Dated stories or posts on a beat, newest first (RSS, a news API, HN)."
+  reference-catalog: "A maintained list of things with their properties, looked up rather than read as news (model catalog, paper index)."
+  forecast:          "Predicted values for a place and time (weather)."
+  dataset:           "Bulk records for counting or comparing (market prices, benchmark tables, training data)."
+  job-postings:      "Open roles with their requirements."
+  device-state:      "The live state of the owner's own devices and services."
+  code-hosting:      "Repositories, releases, issues and commits."
+  search:            "A general web or news search engine: answers any query, belongs to no beat."
+  advisories:        "Official notices from a security or government body (CISA KEV, OFAC actions)."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APIS: the 11 registered (:ApiContext) records, plus 2 to register in Phase 2.
+# `match: false` = never offered to a need (the brain's own API).
+# `seeded_engine: true` = exempt from the 60-day retirement item.
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+  - name: agent-brain
+    topics: [agent-brain]
+    kind: null
+    confidence: sure
+    match: false
+    note: "The brain's own API. No kind fits and none should: nothing outside the brain needs it."
+
+  - name: aidevboard
+    topics: [my-job-search, ai-ml]
+    kind: job-postings
+    confidence: sure
+    note: "AI/ML engineering roles; feeds ai-dev-board-job-search (disabled)."
+
+  - name: jobs-board-remoteok
+    topics: [my-job-search]
+    kind: job-postings
+    confidence: guess
+    note: "Used by tech-hiring-trends-weekly for labour-market counts, not for applying. my-job-search fits the program (jobsearch); ai-ml would not — most postings are not AI."
+
+  - name: hacker_news
+    topics: [ai-ml]
+    kind: news-feed
+    confidence: guess
+    note: "HN spans tech broadly (security, startups too). Tagged ai-ml only because that is the Phase 2 trial; cybersecurity is the next candidate if a security need appears."
+
+  - name: openviglet_model_catalog
+    topics: [ai-ml]
+    kind: reference-catalog
+    confidence: guess
+    note: "Model metadata. The ai-ml topic's own description names models, so a topic is not invented for it; the alternative is no topic, matched on reference-catalog alone."
+
+  - name: open_meteo
+    topics: []
+    kind: forecast
+    confidence: sure
+    note: "Topic-less on purpose (owner decision 2): weather is a kind, not a beat."
+
+  - name: home_assistant
+    topics: []
+    kind: device-state
+    confidence: sure
+    note: "Tailnet, bearer token. No workflow needs device state yet."
+
+  - name: github
+    topics: []
+    kind: code-hosting
+    confidence: sure
+    seeded_engine: true
+    note: "Used via the developer plugin, not by context. Topic-less: repos span every topic. First need it could serve: off-grid-networking-monitor step #2 (Meshtastic/Reticulum releases)."
+
+  - name: brave
+    topics: []
+    kind: search
+    confidence: sure
+    seeded_engine: true
+
+  - name: google_cse
+    topics: []
+    kind: search
+    confidence: sure
+    seeded_engine: true
+
+  - name: serpapi
+    topics: []
+    kind: search
+    confidence: sure
+    seeded_engine: true
+
+  # To register in Phase 2 (called directly today, bypassing the catalog):
+  - name: cisa_kev
+    unregistered: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+    topics: [cybersecurity]
+    kind: advisories
+    confidence: sure
+    note: "vulnerability-watch step `feed`."
+
+  - name: weather_gov
+    unregistered: "https://api.weather.gov"
+    topics: []
+    kind: forecast
+    confidence: sure
+    note: "daily-news step `weather`. Same need as open_meteo: the first real pair for a ladder, or pick one and retire the other."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEEDS: every search_web / http_request step of an enabled workflow with a
+# fixed beat (2026-10-19: 12 workflows, 37 steps). Steps are named by `id`, or
+# `#<index>` where the workflow has none. `candidate` = a registered or
+# to-register API that could serve the need (what Phase 3 would propose).
+# Dynamic-query steps (fill-knowledge-gap, discover-media-sources) have no
+# fixed need and are left out.
+# ─────────────────────────────────────────────────────────────────────────────
+needs:
+  daily-news:
+    detroit:  { topic: michigan,     kind: news-feed, confidence: sure }
+    michigan: { topic: michigan,     kind: news-feed, confidence: sure }
+    national: { topic: us-politics,  kind: news-feed, confidence: guess, note: "US national headlines are wider than politics; us-politics is the nearest topic." }
+    world:    { topic: geopolitics,  kind: news-feed, confidence: sure }
+    tech:     { topic: ai-ml,        kind: news-feed, confidence: sure, candidate: hacker_news }
+    business: { topic: null,         kind: news-feed, confidence: sure, note: "No business/economy topic exists." }
+    markets:  { topic: null,         kind: dataset,   confidence: guess, note: "Index closes are numbers, not stories: a market-data API would answer exactly. None registered." }
+    weather:  { topic: null,         kind: forecast,  confidence: sure, candidate: [open_meteo, weather_gov] }
+
+  hardware-tripwire:
+    "#2":  { topic: semiconductors,      kind: news-feed, confidence: sure }
+    "#4":  { topic: semiconductors,      kind: news-feed, confidence: sure }
+    "#6":  { topic: semiconductors,      kind: news-feed, confidence: guess, note: "Export controls on gallium/neon: bis.gov notices would make it advisories." }
+    "#8":  { topic: semiconductors,      kind: news-feed, confidence: sure }
+    "#10": { topic: batteries-materials, kind: news-feed, confidence: sure }
+
+  intelligence-agency-claims-monitor:
+    "#2": { topic: national-security, kind: news-feed, confidence: sure }
+    "#4": { topic: national-security, kind: news-feed, confidence: sure }
+    "#6": { topic: national-security, kind: news-feed, confidence: sure }
+
+  off-grid-networking-monitor:
+    "#2": { topic: off-grid-networking, kind: code-hosting, confidence: guess, candidate: github, note: "Firmware and protocol releases live on GitHub (meshtastic/firmware, markqvist/Reticulum); releases are exact where search is not." }
+    "#4": { topic: off-grid-networking, kind: news-feed,    confidence: sure }
+    "#6": { topic: off-grid-networking, kind: news-feed,    confidence: sure }
+
+  rust-training-data-scout:
+    "#2": { topic: ai-ml, kind: dataset,           confidence: sure,  note: "Hugging Face datasets; HF's API is unregistered." }
+    "#4": { topic: ai-ml, kind: reference-catalog, confidence: guess, note: "Papers. arXiv's API would be the catalog; there is no 'papers' kind." }
+    "#6": { topic: ai-ml, kind: reference-catalog, confidence: guess }
+    "#8": { topic: ai-ml, kind: dataset,           confidence: guess, note: "Benchmark repositories: dataset or reference-catalog." }
+
+  slm-benchmark-watch:
+    "#2": { topic: ai-ml, kind: reference-catalog, confidence: guess, candidate: openviglet_model_catalog, note: "New model releases with sizes: the catalog lists them exactly; the search finds them late or not at all." }
+    "#4": { topic: ai-ml, kind: dataset,           confidence: guess, note: "Benchmark results tables." }
+    "#6": { topic: ai-ml, kind: news-feed,         confidence: guess, note: "Quantization / VRAM how-tos: closer to a news-feed than a catalog." }
+
+  sanctions-trade-watch:
+    sanctions: { topic: geopolitics, kind: news-feed,  confidence: sure }
+    treasury:  { topic: geopolitics, kind: advisories, confidence: sure, note: "OFAC recent actions is the primary record; unregistered." }
+    trade:     { topic: geopolitics, kind: news-feed,  confidence: sure }
+
+  surveillance-privacy-watch:
+    spyware:  { topic: cybersecurity, kind: news-feed, confidence: sure }
+    privacy:  { topic: cybersecurity, kind: news-feed, confidence: sure }
+    tracking: { topic: cybersecurity, kind: news-feed, confidence: sure }
+
+  tech-hiring-trends-weekly:
+    feed: { topic: my-job-search, kind: job-postings, confidence: sure, candidate: jobs-board-remoteok, note: "Already uses it: the one registered API in use." }
+
+  trump-benefit-daily-monitor:
+    news: { topic: us-politics, kind: news-feed, confidence: guess, note: "The workflow's topic is nia (the program); the step's beat is US policy." }
+
+  vulnerability-watch:
+    feed:  { topic: cybersecurity, kind: advisories, confidence: sure, candidate: cisa_kev }
+    sweep: { topic: cybersecurity, kind: news-feed,  confidence: sure }
+
+  zero-trust-architecture-research:
+    sweep: { topic: cybersecurity, kind: news-feed, confidence: sure }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOPIC-LESS WORKFLOWS: 20 of the 37 enabled have no `topic`. Proposed where
+# it is obvious; `keep_none` where the workflow spans topics or takes its
+# subject as an input. Changing these is a workflow edit, not a Phase 1 tag.
+# ─────────────────────────────────────────────────────────────────────────────
+workflow_topics:
+  codebase:             { topic: agent-brain, confidence: sure }
+  consolidate:          { topic: agent-brain, confidence: sure }
+  diagnose:             { topic: agent-brain, confidence: sure }
+  item-dispatch:        { topic: agent-brain, confidence: sure }
+  overdue-todo-review:  { topic: agent-brain, confidence: sure }
+  todo-snapshot:        { topic: agent-brain, confidence: sure }
+  program-review:       { topic: agent-brain, confidence: guess, note: "Reviews any program; the machinery is the brain's own." }
+  claim-verification:   { topic: agent-brain, confidence: guess, note: "Maintenance over claims of every topic; agent-brain as the brain's own upkeep, or keep_none." }
+  tech-hiring-trends-weekly: { topic: my-job-search, confidence: guess, note: "Has topic ai-ml today; its program is jobsearch and most RemoteOK postings are not AI." }
+  keep_none:
+    - api-scout            # spans the brain's interest areas
+    - daily-news           # spans michigan, us-politics, geopolitics, ai-ml
+    - discover-media-sources
+    - media-watch
+    - article-learning     # subject is the input
+    - video-learning
+    - fill-knowledge-gap
+    - deep-dive
+    - deep-dive-hard
+    - deep-dive-pick
+    - deep-research
+    - default

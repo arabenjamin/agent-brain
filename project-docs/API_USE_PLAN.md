@@ -78,6 +78,10 @@ catalog" candidates.
   summaries as the text, struct-ordered request. It goes in only if its
   confident answers are right; a "can't tell" counts as untagged.
 - Exit: the two lists, the hand tags, and nimble's score with a yes/no.
+- **Draft (2026-10-19):** `eval/api_tags_golden.yaml` holds the kinds, the
+  13 APIs (11 registered, 2 to register), 37 step needs across 12 workflows,
+  and topics for the 20 topic-less workflows; 17 tags are marked `guess` for
+  the owner to settle. It is also nimble's answer key.
 
 ### Phase 1: tags in the graph
 
