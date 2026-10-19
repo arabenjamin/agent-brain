@@ -1,0 +1,130 @@
+name: surveillance-privacy-watch
+description: "Weekly: new surveillance and digital-privacy developments (spyware and state surveillance, privacy lawsuits and regulators, police and commercial tracking) from three news sweeps, written as a dated, cited delta against the prior report and stored as a source_record with claims extracted."
+topic: cybersecurity
+kind: monitor
+every: 1w
+enabled: false   # seeded off; turned on after a verified manual run
+data_class: public
+steps:
+  # Built 2026-10-19 from the Cybersecurity & Privacy program review (todo
+  # a54ce4bd): the charter names surveillance and digital privacy and no
+  # workflow covered either. Sweep queries measured that day on the
+  # cybersecurity list; "privacy law ... fine" phrasings returned mostly noise.
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'surveillance_privacy_watch' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch the prior report for the delta"
+
+  - id: spyware
+    tool_name: search_web
+    arguments:
+      query: "spyware government surveillance investigation"
+      recency: week
+      count: 8
+      source_list: cybersecurity
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: spyware and state surveillance"
+
+  - id: privacy
+    tool_name: search_web
+    arguments:
+      query: "privacy lawsuit data collection regulators"
+      recency: week
+      count: 8
+      source_list: cybersecurity
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: privacy lawsuits and regulators"
+
+  - id: tracking
+    tool_name: search_web
+    arguments:
+      query: "police facial recognition data broker location tracking"
+      recency: week
+      count: 8
+      source_list: news
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: police and commercial tracking"
+
+  - id: report
+    tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT holds a PRIOR REPORT (its title line carries its date),
+        then three news sweeps: spyware and state surveillance, privacy
+        lawsuits and regulators, police and commercial tracking. Today is
+        {{date}}.
+
+        Write a weekly watch report with exactly these sections:
+
+        Answer in plain markdown under these headings: no code fences, never
+        a JSON object or the headings as keys.
+
+        ## NEW SINCE THE PRIOR REPORT
+        One line per item: `<date> — <who> — <what happened> — <outlet> — <URL>`.
+        Gates, applied in order:
+        1. DATE OR DROP. An item needs a date from the CONTEXT. A relative date
+           ("4 days ago") is counted back from {{date}}. No date: leave it out.
+        2. LAST 7 DAYS, and newer than the prior report's date. An item the
+           prior report already lists is known: leave it out.
+        3. ON TOPIC. Surveillance of people (by states, police, employers or
+           companies), spyware, or the collection, sale or protection of
+           personal data, including the laws, rulings and fines about it.
+           Banking supervision, general AI regulation and product launches are
+           not items unless personal data is the point.
+        4. ATTRIBUTE. "X reports / alleges / rules that Y"; name who says so.
+           An advocacy group's finding (EFF, Citizen Lab) is its claim, not a
+           fact; a court ruling or a regulator's fine is a fact.
+        If nothing passes, write "Nothing new since the prior report." That is
+        a valid result; do not pad it.
+
+        ## PATTERNS
+        Two or three sentences at most: a vendor, government, technique or
+        legal theory that recurs across several independent outlets. Name the
+        outlets. If there is no pattern, write "None."
+
+        Ground every line in the CONTEXT and cite its URL. If a sweep came back
+        empty or off-topic, say so plainly.
+      context: "## PRIOR REPORT (may be empty on first run)\n{{steps.prior}}\n\n## SWEEP — SPYWARE AND STATE SURVEILLANCE\n{{steps.spyware}}\n\n## SWEEP — PRIVACY LAWSUITS AND REGULATORS\n{{steps.privacy}}\n\n## SWEEP — POLICE AND COMMERCIAL TRACKING\n{{steps.tracking}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    description: "Dated delta report with attributed claims"
+
+  - id: record
+    tool_name: store_note
+    arguments:
+      content: "# Surveillance & privacy watch — {{date}}\n\n{{steps.report}}"
+      note_type: source_record
+      source_context: surveillance_privacy_watch
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the watch report"
+
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{steps.report}}"
+      source_note_id: "{{_prev.id}}"
+      source_context: surveillance_privacy_watch
+      asserted_by: "Surveillance & privacy watch (news sources as cited)"
+      limit: 8
+    optional: true
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract claims as checkable, attributed propositions"

@@ -1,0 +1,30 @@
+# Bootstrap definition for the `cybersecurity` SourceList.
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query,
+# delete the node to re-seed.
+#
+# Security newsrooms and government advisories, for the vulnerability watch and
+# the surveillance & privacy watch (Cybersecurity & Privacy program, 2026-10-19).
+# Vendor blogs are left out: a vendor's own write-up of a threat it sells
+# protection against is context, not corroboration. Max 15 domains (Google
+# caps the site: list).
+name: cybersecurity
+description: >
+  Vulnerability, exploitation, surveillance and digital-privacy reporting.
+  Graph-owned after first seed — edit via neo4j_query; delete the node to
+  re-seed from sources/cybersecurity.yaml.
+domains:
+  - therecord.media       # cyber/intel; owned by Recorded Future (threat-intel vendor)
+  - cyberscoop.com        # cyber policy and government security
+  - bleepingcomputer.com  # breaches, exploited bugs, ransomware
+  - securityweek.com      # vulnerability and patch coverage
+  - darkreading.com       # Informa; enterprise security news
+  - krebsonsecurity.com   # investigative, cybercrime
+  - arstechnica.com
+  - wired.com
+  - theregister.com
+  - 404media.co           # surveillance and data-broker investigations
+  - techcrunch.com
+  - eff.org               # advocacy: its claims are attributed, not corroboration
+  - citizenlab.ca         # spyware forensics (University of Toronto)
+  - cisa.gov              # advisories and the KEV catalog
+  - reuters.com

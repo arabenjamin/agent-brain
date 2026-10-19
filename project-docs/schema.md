@@ -437,7 +437,7 @@ Edges: `(:Todo)-[:SPAWNED {run}]->(:Task)` for each agent run (and "Hand to the 
 
 #### `AgentNotification`
 
-What `notify_user` writes. A Feed row: a read, or, with `needs_action`, represented by its item.
+What `notify_user` writes. A Feed row: a read, or, with `needs_action`, represented by its item. An empty (or whitespace-only) `message` writes nothing and returns `{"sent": false}`, so a workflow notifies only when an earlier step printed something (slm-benchmark-watch: only when its Tier 2 list changed).
 
 | Property | Type | Description |
 |----------|------|-------------|

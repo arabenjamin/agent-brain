@@ -1,0 +1,30 @@
+# Bootstrap definition for the `trade-sanctions` SourceList.
+# Seeded ON CREATE only — graph-owned after first seed; edit via neo4j_query,
+# delete the node to re-seed.
+#
+# Newsrooms with trade and sanctions desks plus the issuing governments' own
+# pages, for the NIA sanctions & trade watch (2026-10-19). A government page
+# is the primary record of what was imposed; who gains or loses is reporting
+# and assessment, never the press release. Max 15 domains (Google caps the
+# site: list).
+name: trade-sanctions
+description: >
+  Sanctions, tariffs, export controls and trade-agreement reporting.
+  Graph-owned after first seed — edit via neo4j_query; delete the node to
+  re-seed from sources/trade-sanctions.yaml.
+domains:
+  - reuters.com
+  - bloomberg.com
+  - ft.com
+  - wsj.com
+  - apnews.com
+  - politico.com
+  - asia.nikkei.com
+  - scmp.com
+  - economist.com
+  - cnbc.com
+  - treasury.gov          # OFAC actions (primary record)
+  - bis.gov               # US export controls (primary record)
+  - ustr.gov              # US tariffs and trade agreements (primary record)
+  - ec.europa.eu          # EU sanctions packages and trade measures
+  - gov.uk                # UK sanctions designations

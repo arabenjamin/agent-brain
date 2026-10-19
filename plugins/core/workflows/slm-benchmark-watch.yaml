@@ -12,7 +12,8 @@ steps:
   # 1. Prior run (or the original hand-written BASELINE note on the first run).
   #    `NOT (n)-[:PART_OF]->()` excludes store_note's semantic chunks, which
   #    inherit source_context and would otherwise return a partial section.
-  - tool_name: neo4j_query
+  - id: prior
+    tool_name: neo4j_query
     arguments:
       # Claims are stored under the same source_context after the report: without
       # this filter the "prior report" was the last claim (fixed 2026-10-14).
@@ -106,7 +107,8 @@ steps:
     description: "Reassemble prior list + sweeps"
 
   # 6. Material goes in `context`, not `question` (RAG contamination guard).
-  - tool_name: reason
+  - id: report
+    tool_name: reason
     arguments:
       question: |
         The CONTEXT contains a PRIOR TIER 2 MODEL LIST followed by three fresh
@@ -235,3 +237,71 @@ steps:
     max_attempts: 2
     provider_hint: ollama
     description: "Delete scratch session"
+
+  # 8. Tell the owner only when the Tier 2 list moved (AI & ML Research review,
+  #    2026-10-17, todo ef4afc05: 13 notes, 0 reads — nobody saw the list).
+  #    The comparison is in code, by model name; an unchanged list prints
+  #    nothing and notify_user sends nothing for an empty message.
+  - id: tier2
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import re
+        prior = r"""{{steps.prior}} """
+        report = r"""{{steps.report}} """
+        def tier2(text):
+            # A model is a bullet line (`- Model — params — …`) or a table data
+            # row (`| Model | params | …`); prose, headers and separators are not.
+            m = re.search(r"## UPDATED TIER 2 LIST\s*\n(.*?)(?=\n## |\Z)", text, re.S)
+            if not m:
+                return None, []
+            names, lines = set(), []
+            for l in (x.strip() for x in m.group(1).splitlines()):
+                if l.startswith("|"):
+                    cells = [c.strip() for c in l.strip("|").split("|")]
+                    if not cells or set(cells[0]) <= set("-: ") or cells[0].lower() == "model":
+                        continue
+                    name = cells[0]
+                elif re.match(r"^([-*•]|\d+[.)])\s+", l):
+                    name = re.split(r"\s+[—–]\s+|\s+-\s+", re.sub(r"^([-*•]|\d+[.)])\s+", "", l), 1)[0]
+                else:
+                    continue
+                name = name.replace("\u2011", "-").strip("`* ").lower()
+                if name:
+                    names.add(name)
+                    lines.append(l)
+            return names, lines
+        old, _ = tier2(prior)
+        new, new_lines = tier2(report)
+        if new is None:
+            pass  # the report has no Tier 2 section: nothing to compare, nothing sent
+        elif old != new:
+            added = sorted(new - (old or set()))
+            removed = sorted((old or set()) - new)
+            print("The SLM benchmark watch ({{date}}) changed its Tier 2 list of models for local deployment.")
+            if old is None:
+                print("No prior list to compare against; this is the first list.")
+            if added:
+                print("Added: " + ", ".join(added))
+            if removed:
+                print("Removed: " + ", ".join(removed))
+            print()
+            print("Current list:")
+            print("\n".join(new_lines))
+            print()
+            print("The full report, with evidence and the relevance to this brain, is the note `# SLM benchmark watch — {{date}}` (source_context slm_benchmark_watch).")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Compare the Tier 2 list with the prior one, in code"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.tier2.stdout}}"
+      context: "SLM Tier 2 list changed {{date}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Notify only when the Tier 2 list changed"

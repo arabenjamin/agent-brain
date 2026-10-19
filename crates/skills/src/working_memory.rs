@@ -88,7 +88,7 @@ impl WorkingMemorySkill {
                 "properties": {
                     "message": {
                         "type": "string",
-                        "description": "The message to show the user in chat"
+                        "description": "The message to show the user in chat. Empty (or only whitespace) sends nothing, so a workflow can notify only when an earlier step found a change"
                     },
                     "context": {
                         "type": "string",
@@ -122,6 +122,15 @@ impl WorkingMemorySkill {
             Ok(v) => v,
             Err(e) => return e,
         };
+
+        // A workflow step that has nothing to say sends nothing: a code step
+        // before it prints a message only when something changed (e.g.
+        // slm-benchmark-watch notifies only when its Tier 2 list moves).
+        if input.message.trim().is_empty() {
+            return ToolCallResult::success_text(
+                json!({"sent": false, "reason": "empty message: nothing to send"}).to_string(),
+            );
+        }
 
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("notify_user is not available: no database configured");
@@ -352,6 +361,19 @@ mod tests {
             .unwrap()
             .block_on(s.execute("not_a_tool", None));
         assert!(r.is_none());
+    }
+
+    // -- notify_user ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn notify_user_empty_message_sends_nothing() {
+        let r = result_json(
+            skill(MockWorkingMemoryStore::default())
+                .execute("notify_user", Some(serde_json::json!({"message": "  \n"})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(r["sent"], false);
     }
 
     // -- push_context ---------------------------------------------------------

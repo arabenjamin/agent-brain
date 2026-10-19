@@ -1,0 +1,135 @@
+name: sanctions-trade-watch
+description: "Weekly NIA vertical: new sanctions, tariffs, export controls and trade agreements from three news sweeps, written as a dated, cited delta against the prior report that keeps reported facts apart from the assessment of who gains or loses; stored as a source_record with claims extracted."
+topic: geopolitics
+kind: monitor
+every: 1w
+enabled: false   # seeded off; turned on after a verified manual run
+data_class: public
+steps:
+  # Built 2026-10-19 from the NIA program review (todo 42243dff): the charter
+  # promises who gains or loses from policy, trade, sanctions and supply-chain
+  # events, and no vertical watched sanctions or trade. Sweep queries measured
+  # that day: "new sanctions OFAC EU designations" returned OFAC reference
+  # pages (FAQs, the SDN list PDF), not actions.
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'sanctions_trade_watch' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Fetch the prior report for the delta"
+
+  - id: sanctions
+    tool_name: search_web
+    arguments:
+      query: "sanctions announced against"
+      recency: week
+      count: 8
+      source_list: news
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: sanctions in the news"
+
+  - id: treasury
+    tool_name: search_web
+    arguments:
+      query: "Treasury imposes sanctions on"
+      recency: week
+      count: 8
+      source_list: trade-sanctions
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: designations and penalties"
+
+  - id: trade
+    tool_name: search_web
+    arguments:
+      query: "tariffs export controls trade agreement"
+      recency: week
+      count: 8
+      source_list: trade-sanctions
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Sweep: tariffs, export controls, trade deals"
+
+  - id: report
+    tool_name: reason
+    arguments:
+      question: |
+        The CONTEXT holds a PRIOR REPORT (its title line carries its date),
+        then three news sweeps: sanctions, designations and penalties, and
+        tariffs / export controls / trade agreements. Today is {{date}}.
+
+        Write a weekly watch report with exactly these sections:
+
+        Answer in plain markdown under these headings: no code fences, never
+        a JSON object or the headings as keys.
+
+        ## NEW SINCE THE PRIOR REPORT
+        One line per event: `<date> — <who imposed, waived or agreed what> — <on whom / between whom> — <outlet> — <URL>`.
+        Gates, applied in order:
+        1. DATE OR DROP. An event needs a date from the CONTEXT. A relative
+           date ("2 days ago") is counted back from {{date}}. No date: leave it
+           out.
+        2. LAST 7 DAYS, and newer than the prior report's date. An event the
+           prior report already lists is known: leave it out.
+        3. AN ACTION, NOT A PAGE. A sanction imposed, waived or lifted; a
+           tariff set or changed; an export control; a trade agreement signed
+           or stalled. Reference pages, FAQs, lists and company tear sheets are
+           not events. A money-laundering fine is not a sanction.
+        4. FACTS ONLY HERE. Report what was done, by whom, on whom. No
+           motives and no consequences in this section.
+        Collapse duplicates of one event into one line citing its best
+        outlet. If nothing passes, write "Nothing new since the prior report."
+
+        ## WHO GAINS, WHO LOSES (ASSESSMENT)
+        For the two or three most consequential events above: one line each
+        naming who likely gains and who likely loses, and why. This is the
+        agency's assessment, not a reported fact: when an outlet in the
+        CONTEXT says it, cite it; when it is your inference, say "assessment:"
+        and give the reasoning. Write "None." when there are no events.
+
+        ## PATTERNS
+        Two sentences at most: a target, issuer or sector that recurs across
+        events. If there is no pattern, write "None."
+
+        Ground every fact in the CONTEXT and cite its URL. If a sweep came back
+        empty or off-topic, say so plainly.
+      context: "## PRIOR REPORT (may be empty on first run)\n{{steps.prior}}\n\n## SWEEP — SANCTIONS IN THE NEWS\n{{steps.sanctions}}\n\n## SWEEP — DESIGNATIONS AND PENALTIES\n{{steps.treasury}}\n\n## SWEEP — TARIFFS, EXPORT CONTROLS, TRADE AGREEMENTS\n{{steps.trade}}"
+      store_inference: false
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama-cloud
+    description: "Dated delta with facts apart from assessment"
+
+  - id: record
+    tool_name: store_note
+    arguments:
+      content: "# Sanctions & trade watch — {{date}}\n\n{{steps.report}}"
+      note_type: source_record
+      source_context: sanctions_trade_watch
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the watch report"
+
+  - tool_name: claim
+    arguments:
+      action: extract
+      text: "{{steps.report}}"
+      source_note_id: "{{_prev.id}}"
+      source_context: sanctions_trade_watch
+      asserted_by: "Sanctions & trade watch (news sources as cited)"
+      limit: 8
+    optional: true
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Extract claims as checkable, attributed propositions"
