@@ -19,8 +19,12 @@ steps:
   #   daily-news business, 2026-10-19).
   # - a step that already calls the API (context_name or base_url) is not a
   #   match; it is counted as through the catalog.
-  # Approving a match is the owner handing the digest item to schedule-author,
-  # who drafts the changed workflow, disabled, for review. Nothing changes here.
+  # Taking a match: the owner opens the item in chat and names the matches;
+  # the front door (which has manage_workflow) has schedule-author draft each
+  # change and saves it as a disabled copy <workflow>-<suffix> for review.
+  # Handing the item to schedule-author directly does NOT work: it is
+  # read-only (it drafts, the orchestrator saves), and four drafts in one
+  # answer ran past its output limit (2026-10-19). Nothing changes here.
   - id: workflows
     tool_name: neo4j_query
     arguments:
@@ -93,7 +97,7 @@ steps:
         print(f"{sum(len(json.loads(w['steps'])) for w in workflows)} steps in {len(workflows)} enabled workflows with needs; {len(apis)} tagged APIs.")
         print()
         print(f"## MATCHES ({len(matches)})")
-        print("A registered API whose tags cover a step that does not use it. A proposal only: handing this item to schedule-author drafts the changed workflow, disabled, for review.")
+        print("A registered API whose tags cover a step that does not use it. A proposal only: to take one, open the item in chat and name it; the brain drafts the changed workflow as a disabled copy for review.")
         print("\n".join(sorted(matches)) or "None.")
         print()
         print(f"## NEEDS NO API COVERS ({len(uncovered)} kinds, {sum(len(v) for v in uncovered.values())} steps)")
@@ -140,7 +144,7 @@ steps:
             print()
             print("\n".join(new))
             print()
-            print("Hand this item to schedule-author to draft the changed workflows (each disabled, for your review), naming the matches to take; or dismiss it. The full digest, with the needs no API covers, is the note `# API match digest — {{date}}`.")
+            print("To take matches, open this item in chat and name them: the brain drafts each changed workflow (with schedule-author) and saves it as a disabled copy for your review. Or dismiss it. The full digest, with the needs no API covers, is the note `# API match digest — {{date}}`.")
     priority: 1
     max_attempts: 2
     provider_hint: ollama
@@ -151,7 +155,7 @@ steps:
       message: "{{steps.change.stdout}}"
       context: "API matches {{date}}"
       needs: action
-      ask: "Decide which proposed matches to take. To take one, hand this item to schedule-author: it drafts each changed workflow disabled, for your review. Or dismiss the item."
+      ask: "Decide which proposed matches to take. To take one, open this item in chat and name it: the brain drafts the changed workflow and saves it as a disabled copy for your review. Or dismiss the item."
     priority: 2
     max_attempts: 2
     provider_hint: ollama

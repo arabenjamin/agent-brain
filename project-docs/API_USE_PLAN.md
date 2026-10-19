@@ -204,7 +204,18 @@ Both chosen so the payoff is checkable, not assumed:
   - Also on the first run: 30 steps in 12 kind/topic groups that no API
     covers (the Phase 4 input), and 8 steps already through the catalog.
   - **One Feed item** (`needs: action`) opens only when the set of matches
-    changes; its ask is to hand it to schedule-author or dismiss it.
+    changes. To take a match, open the item in chat and name it: the front
+    door has schedule-author draft the change and saves it as a disabled copy
+    for review.
+  - **First handoff (2026-10-19):** handing the item straight to
+    schedule-author failed. It is read-only by design (it drafts, the
+    orchestrator saves), and four drafts in one answer ran past its output
+    limit, so nothing was saved. Claude Code wrote the four RSS drafts
+    instead: `vulnerability-watch-rss`, `surveillance-privacy-watch-rss`,
+    `zero-trust-architecture-research-rss` and `hardware-tripwire-rss`.
+    - Each is disabled with no schedule, its feeds added beside the
+      searches, and it stores under `*_rss_draft`.
+    - Feed and parse tested: 9, 2, 0 and 1 items kept in the last 7 days.
   - **Lesson:** the steps it reads hold placeholders (`{{date}}`,
     `{{_prev}}`) that the match step's own templating filled in, which broke
     the JSON. The query defuses `{{` first.
