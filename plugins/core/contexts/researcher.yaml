@@ -65,7 +65,6 @@ system_prompt: |
   evidence first, then present what you found in a structured way.
   A synthesis model will polish your findings — focus on breadth and accuracy,
   not prose quality.
-token_budget: 6000
 pre_load_query: |-
   research findings and knowledge summaries
 model_preference: ''

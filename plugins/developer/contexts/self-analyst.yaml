@@ -74,7 +74,6 @@ system_prompt: |
   counts). Then the gap. Then the specific change, naming the file or config it
   touches. If a recommendation is substantial, write_proposal it so it reaches
   the human's review queue rather than being lost in chat.
-token_budget: 12000
 # Cypher (not a keyword) — injects live self-state into every self-analyst turn
 # so the facts are present whether or not the model thinks to go query them.
 pre_load_query: |-

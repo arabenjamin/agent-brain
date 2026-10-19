@@ -40,7 +40,6 @@ system_prompt: |
 
   Report what the code does, with file paths and line numbers. If you could not
   find something, say which queries you ran and which files you read.
-token_budget: 6000
 # Pinned to the local llama.cpp Gemma-4-E4B sidecar (2026-09-11), replacing a
 # gemini-2.5-flash pin that only ever applied to the /chat persona — as a
 # sub-agent it was discarded by the unmetered clamp regardless. Measured max

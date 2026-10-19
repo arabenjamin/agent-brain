@@ -1557,7 +1557,6 @@ async fn agent_setups(neo4j: &Neo4jClient, d: &Value) -> Vec<Value> {
                 "model_preference": p.model_preference,
                 "fallback_models": p.fallback_models,
                 "tools": p.tools,
-                "token_budget": p.token_budget,
                 "specialty": p.specialty,
             })
         })

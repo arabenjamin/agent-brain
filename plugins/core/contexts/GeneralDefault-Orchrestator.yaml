@@ -101,7 +101,6 @@ system_prompt: |
   If `delegate` is not among your tools (some clients bound to this profile see
   `run_agent` instead), use `run_agent(agent, task)` the same way — same roster,
   same rules. `select_agent(goal)` names the best agent without running it.
-token_budget: 8000
 pre_load_query: |-
   MATCH (t:Todo) WHERE t.status IN ['pending','in_progress']
   RETURN '## Active Todo: ' + t.title +

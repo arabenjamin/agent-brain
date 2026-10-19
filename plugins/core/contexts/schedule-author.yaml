@@ -25,7 +25,6 @@ model_preference: claude-haiku-5-5
 provider_hint: anthropic
 fallback_models:
   - ministral-14b-latest
-token_budget: 6000
 pre_load_query: "MATCH (w:Workflow) WHERE w.interval_seconds IS NOT NULL RETURN w.name AS name, w.interval_seconds AS interval_seconds, w.steps AS steps ORDER BY w.name"
 system_prompt: |
   You draft SCHEDULED WORKFLOWS. You do not create the workflow yourself (you

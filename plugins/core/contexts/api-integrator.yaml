@@ -102,7 +102,6 @@ system_prompt: |
   Report what you actually did and observed at each step, and say which checks
   were live calls and which were not. If something could not be found or a step
   failed, say so plainly — do not paper over it.
-token_budget: 8000
 pre_load_query: |-
   REST API clients and integrations
 # Pinned 2026-10-19 (owner): unpinned, routing sent the scout to free

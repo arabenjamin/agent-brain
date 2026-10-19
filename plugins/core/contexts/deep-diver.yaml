@@ -79,7 +79,6 @@ system_prompt: |
   tool call this run showed it. The run is checked afterwards: an answer with
   no page read, Rust code with no passing `command:"test"` run, or Rust code
   whose last `command:"clippy"` run had findings, is stored as unverified.
-token_budget: 8000
 pre_load_query: ''
 # Investigative: each step depends on what the last one returned (a compile
 # error to fix, a search hit to read). That is the loop the local E4B does not

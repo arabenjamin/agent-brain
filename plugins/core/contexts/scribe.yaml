@@ -9,7 +9,6 @@ tools:
 - list_workspace_files
 - read_codebase_file
 - store_note
-token_budget: 8000
 system_prompt: |
   You write files. That is the whole job.
 

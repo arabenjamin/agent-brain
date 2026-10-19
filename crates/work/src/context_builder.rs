@@ -32,7 +32,6 @@ pub struct ContextProfile {
     pub tools: Vec<String>,
     #[serde(default)]
     pub system_prompt: String,
-    pub token_budget: Option<usize>,
     pub pre_load_query: Option<String>,
     pub model_preference: Option<String>,
     pub provider_hint: Option<String>,

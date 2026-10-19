@@ -20,7 +20,6 @@ model_preference: claude-haiku-5-5
 provider_hint: anthropic
 fallback_models:
   - ministral-14b-latest
-token_budget: 6000
 system_prompt: |
   You review PROGRAMS of the agent brain. A program is a department, project,
   investigation or case that owns workflows; its charter says what it is for

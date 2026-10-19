@@ -21,7 +21,6 @@ interface AgentDetail {
   description: string;
   tools: string[];
   system_prompt: string;
-  token_budget?: number;
   pre_load_query?: string;
   model_preference?: string;
   provider_hint?: string;
@@ -74,7 +73,6 @@ const EMPTY_FORM: AgentDetail = {
   description: "",
   system_prompt: "",
   tools: [],
-  token_budget: 8000,
   pre_load_query: "",
   model_preference: "",
   provider_hint: "",
@@ -192,7 +190,6 @@ export default function ContextProfileModal({
         description: data.description ?? "",
         system_prompt: data.system_prompt ?? "",
         tools: data.tools ?? [],
-        token_budget: data.token_budget ?? 8000,
         pre_load_query: data.pre_load_query ?? "",
         model_preference: data.model_preference ?? "",
         provider_hint: data.provider_hint ?? "",
@@ -734,7 +731,6 @@ function EditPane({
               ...availableProviders.map((p) => ({ value: p.type, label: p.name })),
             ]}
           />
-          {field("Token Budget", "token_budget", { type: "number", placeholder: "8000" })}
         </div>
 
         {field("Pre-load Query (Cypher)", "pre_load_query", {

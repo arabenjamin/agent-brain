@@ -40,7 +40,6 @@ system_prompt: |
      they add it to PLUGINS_ENABLED and restart. Say so. State what you tested
      (the queries you ran and their row counts), what you could not test, and
      where it is brittle. Do not oversell a partial result.
-token_budget: 10000
 pre_load_query: "plugin bundles, declared tools and workflows"
 # Spawnable as a sub-agent. Runs on the unmetered base config (Ollama Cloud
 # gpt-oss:120b). Now pinned local — see below.
