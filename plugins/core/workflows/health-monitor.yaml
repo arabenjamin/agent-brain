@@ -2,7 +2,7 @@ name: health-monitor
 description: "Periodic brain health check — reviews scheduler state, queue depth, and failure trends."
 topic: agent-brain
 kind: maintenance
-every: 12h
+every: 1d
 steps:
   # Why: dev_docs get yaml/schedules-health-monitor-1
   - tool_name: neo4j_query
