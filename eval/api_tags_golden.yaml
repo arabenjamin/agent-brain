@@ -1,6 +1,6 @@
 # API tags golden set — API_USE_PLAN Phase 0 (hand tags).
 #
-# STATUS: DRAFT 2026-10-19, written by Claude Code for the owner to correct.
+# STATUS: accepted by the owner as drafted, 2026-10-19 (guesses included).
 #   Every tag carries `confidence: sure | guess`. Read the guesses; a sure tag
 #   is one the API's own description or the step's query settles.
 #

@@ -82,6 +82,23 @@ catalog" candidates.
   13 APIs (11 registered, 2 to register), 37 step needs across 12 workflows,
   and topics for the 20 topic-less workflows; 17 tags are marked `guess` for
   the owner to settle. It is also nimble's answer key.
+  The owner accepted the draft as written, guesses included (2026-10-19).
+- **nimble measured (2026-10-19, `scripts/measure_api_tags_nimble.py`):** 12
+  APIs (10 registered; `cisa_kev` and `weather_gov` from a one-line
+  description), one `choice` over the nine kinds and one `noul` per topic,
+  confident at ≥ 0.7 (topics: no at ≤ 0.3), about 5 minutes.
+  - **Kind: 12 of 12 right, all confident** (lowest 0.95, `cisa_kev`).
+  - **Topics: 125 right, 16 can't tell, 3 wrong of 144 pairs.** It found 5 of
+    the 6 hand "yes" pairs at ≥ 0.78. Two of the three wrong answers are
+    false "yes" on search engines whose description is one line (`brave` →
+    geopolitics 0.77, `serpapi` → semiconductors 0.83); 15 of the 16 "can't
+    tell" are those two as well. The third is `hacker_news` → ai-ml at 0.19:
+    a hand guess nimble disputes (HN is not mainly about AI).
+  - **Reading:** yes for kind. Yes for topics when the kind is asked first and
+    an API of kind `search` gets no topics (by definition a search engine
+    belongs to no beat); then the only disagreement is the HN guess. Small
+    sample: 12 APIs, 6 positive topic pairs. Re-run it on each API registered
+    from here on before trusting it further.
 
 ### Phase 1: tags in the graph
 
