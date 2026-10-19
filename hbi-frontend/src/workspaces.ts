@@ -40,10 +40,11 @@ export const WORKSPACES: Workspace[] = [
     keywords: "feed inbox items tasks jobs queue todos scheduled schedules workflows programs departments projects investigations nia proposals history running",
     views: [
       { id: "feed", label: "Feed" },
-      { id: "active", label: "Active" },
-      { id: "scheduled", label: "Workflows" },
-      { id: "programs", label: "Programs" },
       { id: "todos", label: "Todos" },
+      { id: "programs", label: "Programs" },
+      { id: "scheduled", label: "Workflows" },
+      // History's first tab is Active (running and queued work); Active was
+      // its own view until 2026-10-19.
       { id: "history", label: "History" },
     ],
   },
@@ -83,8 +84,8 @@ export const SETTINGS: Workspace = {
 };
 
 /** Old tab ids → the workspace and view that replaced them. */
-export const LEGACY_PATHS: Record<string, { path: WorkspaceId; view?: string }> = {
-  tasks: { path: "work", view: "active" },
+export const LEGACY_PATHS: Record<string, { path: WorkspaceId; view?: string; mode?: string }> = {
+  tasks: { path: "work", view: "history", mode: "active" },
   todos: { path: "work", view: "todos" },
   "scheduled-tasks": { path: "work", view: "scheduled" },
   graph: { path: "knowledge", view: "graph" },
@@ -97,8 +98,9 @@ export const DEFAULT_WORKSPACE: WorkspaceId = "home";
 
 /**
  * Views that were replaced inside a workspace (Phase 2 turned Work's four
- * panels into lanes; Phase 3 renamed Knowledge's "notes" to "list"). A filtered `jobs` link lands in History, an unfiltered
- * one in Active, so Phase-1 links keep working.
+ * panels into lanes; Phase 3 renamed Knowledge's "notes" to "list"). A filtered `jobs` link lands in History's
+ * Tasks or Jobs tab, an unfiltered one in its Active tab, so Phase-1 links keep working. The Active view itself
+ * became History's Active tab (2026-10-19).
  */
 function legacyView(path: string, params: Record<string, string>): string | null {
   if (path === "knowledge") return params.view === "notes" ? "list" : null;
@@ -109,7 +111,9 @@ function legacyView(path: string, params: Record<string, string>): string | null
     case "jobs":
       if (params.job_status) return "history";
       if (params.task_status || params.tab === "tasks") return "history";
-      return "active";
+      return "history";
+    case "active":
+      return "history";
     case "proposals":
       return "feed";
     // Phase 12: the Inbox became the Feed.
@@ -140,13 +144,19 @@ export function resolveRoute(route: Route): Resolved {
   }
   const legacy = LEGACY_PATHS[route.path];
   if (legacy) {
-    return { kind: "redirect", path: legacy.path, params: legacy.view ? { view: legacy.view } : {} };
+    return {
+      kind: "redirect",
+      path: legacy.path,
+      params: { ...(legacy.view ? { view: legacy.view } : {}), ...(legacy.mode ? { mode: legacy.mode } : {}) },
+    };
   }
   const workspace = workspaceById(route.path);
   if (!workspace) return { kind: "redirect", path: DEFAULT_WORKSPACE, params: {} };
   const renamed = legacyView(route.path, route.params);
   if (renamed) {
-    const mode = route.params.job_status ? "jobs" : route.params.task_status || route.params.tab === "tasks" ? "tasks" : null;
+    const mode = route.params.job_status ? "jobs"
+      : route.params.task_status || route.params.tab === "tasks" ? "tasks"
+      : renamed === "history" ? "active" : null;
     return { kind: "redirect", path: route.path, params: { view: renamed, tab: null, ...(mode ? { mode } : {}) } };
   }
   const views = workspace.views ?? [];

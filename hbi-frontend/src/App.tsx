@@ -13,7 +13,6 @@ import { Tabs } from "./components/ui";
 
 const HomePanel          = lazy(() => import("./components/home/HomePanel"));
 const FeedLane           = lazy(() => import("./components/work/FeedLane"));
-const ActiveLane         = lazy(() => import("./components/work/ActiveLane"));
 const ScheduledLane      = lazy(() => import("./components/work/ScheduledLane"));
 const TodosLane          = lazy(() => import("./components/work/TodosLane"));
 const ProgramsLane       = lazy(() => import("./components/work/ProgramsLane"));
@@ -182,10 +181,9 @@ export default function App() {
           {ws === "work" && workspace && (
             <WorkspaceFrame workspace={workspace} view={view}>
               {view === "feed"      && <FeedLane openId={openId} mode={p.mode} />}
-              {view === "active"    && <ActiveLane openId={openId} />}
-              {view === "scheduled" && <ScheduledLane mode={p.mode} openId={openId} />}
-              {view === "programs"  && <ProgramsLane openId={p.program} />}
               {view === "todos"     && <TodosLane openId={openId} />}
+              {view === "programs"  && <ProgramsLane openId={p.program} />}
+              {view === "scheduled" && <ScheduledLane mode={p.mode} openId={openId} />}
               {view === "history"   && <HistoryLane key={JSON.stringify(historyDrill)} drill={historyDrill} openId={openId} />}
             </WorkspaceFrame>
           )}

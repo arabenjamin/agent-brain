@@ -1,15 +1,18 @@
 /**
- * History: what came of the work. Finished tasks, or the whole job log
- * (including dead letters), filtered by status on the server. Home's
- * drill-downs land here with `task_status` / `job_status` / `since`.
+ * History: the work, live and done. Active shows what is running or about to
+ * (it was its own Work view until 2026-10-19); Tasks and Jobs show what came
+ * of it, filtered by status on the server. Home's drill-downs land here with
+ * `task_status` / `job_status` / `since`.
  */
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useJobList, useTaskList } from "../../api/work";
 import { formatLocal, relTime } from "../../lib/time";
 import { goTo } from "../../nav";
 import { StatusPill } from "../drawer/parts";
 import { DrillBanner, EmptyState, Tabs } from "../ui";
 import Row from "./Row";
+
+const ActiveLane = lazy(() => import("./ActiveLane"));
 
 const LIMIT = 300;
 
@@ -36,17 +39,23 @@ export interface HistoryDrill {
 }
 
 export default function HistoryLane({ drill, openId }: { drill: HistoryDrill; openId?: string }) {
-  const mode = drill.mode === "jobs" ? "jobs" : "tasks";
+  // No mode: a drill-down's filter picks its tab, otherwise Active.
+  const mode = drill.mode === "active" || drill.mode === "jobs" || drill.mode === "tasks" ? drill.mode
+    : drill.jobStatus ? "jobs"
+    : drill.taskStatus || drill.since ? "tasks"
+    : "active";
   return (
     <div className="wk-lane-frame">
       <div className="wk-lane-bar">
         <Tabs
-          tabs={[{ id: "tasks", label: "Tasks" }, { id: "jobs", label: "Jobs" }]}
+          tabs={[{ id: "active", label: "Active" }, { id: "tasks", label: "Tasks" }, { id: "jobs", label: "Jobs" }]}
           active={mode}
           onChange={(id) => goTo("work", { view: "history", mode: id })}
         />
       </div>
-      {mode === "tasks"
+      {mode === "active"
+        ? <Suspense fallback={<div className="loading">Loading active work…</div>}><ActiveLane openId={openId} /></Suspense>
+        : mode === "tasks"
         ? <TaskHistory drillStatus={drill.taskStatus} since={drill.since} openId={openId} />
         : <JobHistory drillStatus={drill.jobStatus} since={drill.since} openId={openId} />}
     </div>

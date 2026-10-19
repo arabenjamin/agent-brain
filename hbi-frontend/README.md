@@ -42,7 +42,8 @@ src/
   components/system/ System: Health, Logs, Registry, Architecture (drawn from the developer plugin's /api/plugins/developer/architecture + plugins/developer/layout.yaml)
   components/home/   the dashboard
   components/knowledge/ search bar + Results / Map (topic hubs) / Neighbourhood / Timeline
-  components/work/   Work's lanes (Inbox, Active, Scheduled + timeline, Todos, History); the Inbox holds entity merge proposals
+  components/work/   Work's lanes, in tab order: Feed, Todos, Programs, Workflows (+ timeline), History
+                     (tabs Active, Tasks, Jobs; Active was its own view until 2026-10-19); the Feed holds entity merge proposals
   components/schedules/ the schedule and routing-chain editors; a save keeps every step field they don't edit
   components/todos/  todo model (overdue rule) and form
   components/settings/ the Settings page and its sections (Agents = AgentsEditor)

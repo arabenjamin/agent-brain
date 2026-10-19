@@ -116,7 +116,7 @@ function QueueCard({ q, lease }: { q: any; lease: any }) {
   if (q?.error) return <Card title="Job queue"><EmptyState tone="yellow" title="Queue unavailable" checked={q.error} /></Card>;
   const providers = Object.entries(q?.per_provider ?? {}) as [string, { running: number; max: number }][];
   return (
-    <Card title="Job queue" actions={<a className="wk-dim" href={hrefTo("work", { view: "active" })}>jobs →</a>}>
+    <Card title="Job queue" actions={<a className="wk-dim" href={hrefTo("work", { view: "history", mode: "active" })}>jobs →</a>}>
       <div className="ui-stats">
         <Stat label="Coordinator" value={q?.coordinator?.alive ? "alive" : "stopped"} title={`last heartbeat ${formatLocal(q?.coordinator?.last_heartbeat)}`} />
         <Stat label="Waiting" value={q?.in_memory_pending ?? 0} />

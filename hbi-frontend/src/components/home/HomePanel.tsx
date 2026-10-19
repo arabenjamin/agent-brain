@@ -85,9 +85,9 @@ function BrainTile() {
         <div className="home-dim home-detail">{s.detail}</div>
         <div className="ui-stats">
           <Stat label="Running" value={q.running_now} tone={q.running_now > 0 ? "green" : undefined}
-            href={hrefTo("work", { view: "active" })} title="Active jobs" />
+            href={hrefTo("work", { view: "history", mode: "active" })} title="Active jobs" />
           <Stat label="Pending" value={q.in_memory_pending} tone={q.in_memory_pending > 20 ? "yellow" : undefined}
-            href={hrefTo("work", { view: "active" })} title="Active jobs" />
+            href={hrefTo("work", { view: "history", mode: "active" })} title="Active jobs" />
           <Stat label="Failed / dead" value={dead} tone={dead > 0 ? "red" : undefined}
             href={hrefTo("work", { view: "history", mode: "jobs", job_status: DEAD_JOB_STATUSES })}
             title="Every job that will not run again (all time, as the queue counts them)" />

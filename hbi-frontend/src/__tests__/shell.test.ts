@@ -31,13 +31,20 @@ describe("resolveRoute", () => {
   it("redirects every old tab URL to its new view", () => {
     for (const [old, target] of Object.entries(LEGACY_PATHS)) {
       const r = resolveRoute({ path: old, params: { note: "n1" } });
-      expect(r).toEqual({ kind: "redirect", path: target.path, params: target.view ? { view: target.view } : {} });
+      expect(r).toEqual({
+        kind: "redirect",
+        path: target.path,
+        params: { ...(target.view ? { view: target.view } : {}), ...(target.mode ? { mode: target.mode } : {}) },
+      });
     }
   });
 
   it("redirects Phase-1 Work views into the lanes that replaced them", () => {
     expect(resolveRoute({ path: "work", params: { view: "jobs" } }))
-      .toEqual({ kind: "redirect", path: "work", params: { view: "active", tab: null } });
+      .toEqual({ kind: "redirect", path: "work", params: { view: "history", tab: null, mode: "active" } });
+    // 2026-10-19: Active became History's first tab.
+    expect(resolveRoute({ path: "work", params: { view: "active" } }))
+      .toEqual({ kind: "redirect", path: "work", params: { view: "history", tab: null, mode: "active" } });
     expect(resolveRoute({ path: "work", params: { view: "jobs", job_status: "dead" } }))
       .toEqual({ kind: "redirect", path: "work", params: { view: "history", tab: null, mode: "jobs" } });
     expect(resolveRoute({ path: "work", params: { view: "jobs", tab: "tasks", task_status: "failed" } }))
