@@ -25,6 +25,7 @@ workflows:
   - claim-verification
   - relation-extraction
   - model-metadata-drift
+  - api-match-digest
   - entity-linking
   - program-reviews
   - program-review

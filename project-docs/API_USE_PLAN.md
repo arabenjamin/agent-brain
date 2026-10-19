@@ -1,6 +1,6 @@
 # API Use Plan: an API is registered to be used, not collected
 
-**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0 and 1 done and Phase 2 built 2026-10-19; the HN trial runs weekly until the owner's call. Next: Phase 3.**
+**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0–3 built 2026-10-19; the HN trial runs weekly until the owner's call. Next: Phase 4.**
 
 The brain can now find, register and prove a keyless API end to end
 (the api-scout workflow on a schedule and api-integrator from chat, both run
@@ -186,6 +186,28 @@ Both chosen so the payoff is checkable, not assumed:
   disabled, for review.
 - It also lists needs no API covers: that list becomes the api-scout workflow's input
   (Phase 4).
+
+- **Built 2026-10-19: `api-match-digest`** (weekly, brain-ops, no model).
+  - **The rule:** kinds must be equal, and `search` APIs are never proposed.
+    A need with no topic matches on kind alone. A need with a topic matches
+    an API that serves it, or a topic-less API of a non-beat kind.
+  - **`beat` kinds** (news-feed, advisories, job-postings) are marked in
+    `apis/_kinds.yaml`. A topic-less API of a beat kind matches only
+    topic-less needs. Without that, the dry run proposed HN for 26 topical
+    news steps, Michigan news included.
+  - **First run:** 5 matches.
+    - GitHub for off-grid-networking-monitor's firmware-release step.
+    - openviglet for slm-benchmark-watch's model-release step.
+    - HN for daily-news `business`.
+    - openviglet for two rust-training-data-scout paper searches. These two
+      are weak: reference-catalog / ai-ml is coarser than "papers".
+  - Also on the first run: 30 steps in 12 kind/topic groups that no API
+    covers (the Phase 4 input), and 8 steps already through the catalog.
+  - **One Feed item** (`needs: action`) opens only when the set of matches
+    changes; its ask is to hand it to schedule-author or dismiss it.
+  - **Lesson:** the steps it reads hold placeholders (`{{date}}`,
+    `{{_prev}}`) that the match step's own templating filled in, which broke
+    the JSON. The query defuses `{{` first.
 
 ### Phase 4: demand-driven discovery and retirement
 

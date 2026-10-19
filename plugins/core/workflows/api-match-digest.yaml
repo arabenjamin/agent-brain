@@ -1,0 +1,157 @@
+name: api-match-digest
+description: "Weekly (API_USE_PLAN Phase 3): matches every enabled workflow step's `needs` against the registered APIs' tags, in code, no model. Lists the steps a registered API could feed that do not use it, and the needs no API covers (the input for API discovery). Stored as a source_record; one Feed digest item only when the set of matches changes."
+topic: agent-brain
+kind: maintenance
+every: 1w
+enabled: false   # seeded off; turned on after a verified manual run
+steps:
+  # The match rule:
+  # - kinds must be equal; `search` APIs are never proposed (search_web
+  #   already uses them);
+  # - a need with no topic matches on kind alone (owner decision 2, 2026-10-19);
+  # - a need with a topic matches an API that serves it, or a topic-less API
+  #   of a non-beat kind (code-hosting, forecast, ...). A topic-less API of a
+  #   beat kind (news-feed, advisories, job-postings; `beat` in
+  #   apis/_kinds.yaml) matches only topic-less needs: the dry run proposed HN
+  #   for 26 topical news steps, Michigan news included.
+  # - a step that already calls the API (context_name or base_url) is not a
+  #   match; it is counted as through the catalog.
+  # Approving a match is the owner handing the digest item to schedule-author,
+  # who drafts the changed workflow, disabled, for review. Nothing changes here.
+  - id: workflows
+    tool_name: neo4j_query
+    arguments:
+      # ~91 KB on 2026-10-19; the sandbox takes 256 KB of code.
+      # `{{` is defused: the steps hold placeholders ({{date}}, {{_prev}}) that
+      # the match step's own templating would fill in, breaking the JSON
+      # (first run, 2026-10-19). Matching reads only needs and arguments.
+      cypher: "MATCH (w:Workflow) WHERE w.enabled AND w.steps CONTAINS '\"needs\"' RETURN w.name AS name, replace(w.steps, '{{', '{ {') AS steps ORDER BY name"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Enabled workflows with step needs"
+
+  - id: apis
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (c:ApiContext) WHERE c.api_kind IS NOT NULL OPTIONAL MATCH (k:ApiKind {name: c.api_kind}) OPTIONAL MATCH (c)-[:SERVES]->(t:Topic) RETURN c.name AS name, c.api_kind AS kind, coalesce(k.beat, false) AS beat, coalesce(c.base_url, '') AS base_url, coalesce(c.description, '') AS description, collect(t.name) AS topics ORDER BY name"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Tagged APIs"
+
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'api_match_digest' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "The prior digest, for the change check"
+
+  - id: match
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import json
+        workflows = json.loads(r"""{{steps.workflows.rows}}""")
+        apis = json.loads(r"""{{steps.apis.rows}}""")
+        def label(n):
+            return n["kind"] + (f" / {n['topic']}" if n.get("topic") else "")
+        def fits(need, api):
+            if api["kind"] != need["kind"] or api["kind"] == "search":
+                return False
+            t = need.get("topic")
+            if not t:
+                return True
+            if t in api["topics"]:
+                return True
+            return not api["topics"] and not api["beat"]
+        matches, uncovered, served = [], {}, []
+        for w in workflows:
+            for i, s in enumerate(json.loads(w["steps"])):
+                need = s.get("needs")
+                if not need:
+                    continue
+                sid = s.get("id") or f"#{i}"
+                args = json.dumps(s.get("arguments") or {})
+                used = [a["name"] for a in apis
+                        if f'"context_name": "{a["name"]}"' in args or (a["base_url"] and a["base_url"] in args)]
+                if used:
+                    served.append(f"- {w['name']} step `{sid}` ({label(need)}) ← {', '.join(used)}")
+                    continue
+                cands = [a for a in apis if fits(need, a)]
+                if cands:
+                    now = s.get("arguments", {}).get("query") or s.get("arguments", {}).get("url") or s["tool_name"]
+                    names = ", ".join(f"{a['name']} ({a['kind']}{'; ' + ', '.join(a['topics']) if a['topics'] else ''})" for a in cands)
+                    matches.append(f"- {w['name']} step `{sid}` ({label(need)}; now `{s['tool_name']}`: {str(now)[:80]}) ← {names}")
+                else:
+                    uncovered.setdefault(label(need), []).append(f"{w['name']}:{sid}")
+        print(f"{sum(len(json.loads(w['steps'])) for w in workflows)} steps in {len(workflows)} enabled workflows with needs; {len(apis)} tagged APIs.")
+        print()
+        print(f"## MATCHES ({len(matches)})")
+        print("A registered API whose tags cover a step that does not use it. A proposal only: handing this item to schedule-author drafts the changed workflow, disabled, for review.")
+        print("\n".join(sorted(matches)) or "None.")
+        print()
+        print(f"## NEEDS NO API COVERS ({len(uncovered)} kinds, {sum(len(v) for v in uncovered.values())} steps)")
+        print("What API discovery should look for (API_USE_PLAN Phase 4).")
+        for k in sorted(uncovered, key=lambda k: (-len(uncovered[k]), k)):
+            print(f"- {k}: {len(uncovered[k])} — {', '.join(uncovered[k])}")
+        if not uncovered:
+            print("None.")
+        print()
+        print(f"## ALREADY THROUGH THE CATALOG ({len(served)})")
+        print("\n".join(sorted(served)) or "None.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Match needs to API tags, in code (no model)"
+
+  - id: record
+    tool_name: store_note
+    arguments:
+      content: "# API match digest — {{date}}\n\n{{steps.match.stdout}}"
+      note_type: source_record
+      source_context: api_match_digest
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the digest"
+
+  - id: change
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 15000
+      code: |
+        import re
+        prior = r"""{{steps.prior}} """
+        now = r"""{{steps.match.stdout}} """
+        def matches(t):
+            m = re.search(r"## MATCHES \(\d+\)\n(.*?)(?=\n## |\Z)", t, re.S)
+            return None if not m else sorted(l for l in m.group(1).splitlines() if l.startswith("- "))
+        old, new = matches(prior), matches(now)
+        if new and new != old:
+            added = [l for l in new if l not in (old or [])]
+            print(f"The weekly API match ({{date}}) found {len(new)} step(s) a registered API could feed" + (f", {len(added)} new since the last digest" if old else "") + ":")
+            print()
+            print("\n".join(new))
+            print()
+            print("Hand this item to schedule-author to draft the changed workflows (each disabled, for your review), naming the matches to take; or dismiss it. The full digest, with the needs no API covers, is the note `# API match digest — {{date}}`.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "A message only when the matches changed"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.change.stdout}}"
+      context: "API matches {{date}}"
+      needs: action
+      ask: "Decide which proposed matches to take. To take one, hand this item to schedule-author: it drafts each changed workflow disabled, for your review. Or dismiss the item."
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "One digest item, only when the matches changed"

@@ -3,8 +3,13 @@
 # `needs.kind` is one of these. Mirrored into the graph as (:ApiKind) on every
 # start: this file is the list, so a kind removed here leaves the graph too.
 # The description is what a tagger (nimble) reads; keep it a definition.
+# `beat: true` marks a kind whose items are about a subject (a news feed, an
+# advisory feed, a job board): a topic-less API of that kind matches only a
+# topic-less need, or a topic-less HN feed would be proposed for every news
+# step (the Phase 3 dry run, 2026-10-19: 26 of 30 matches were that).
 kinds:
   - name: news-feed
+    beat: true
     description: "Dated stories or posts on a beat, newest first (RSS, a news API, HN)."
   - name: reference-catalog
     description: "A maintained list of things with their properties, looked up rather than read as news (model catalog, paper index)."
@@ -13,6 +18,7 @@ kinds:
   - name: dataset
     description: "Bulk records for counting or comparing (market prices, benchmark tables, training data)."
   - name: job-postings
+    beat: true
     description: "Open roles with their requirements."
   - name: device-state
     description: "The live state of the owner's own devices and services."
@@ -21,4 +27,5 @@ kinds:
   - name: search
     description: "A general web or news search engine: answers any query, belongs to no beat. Never serves a topic."
   - name: advisories
+    beat: true
     description: "Official notices from a security or government body (CISA KEV, OFAC actions)."

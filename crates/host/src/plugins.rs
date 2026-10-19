@@ -253,6 +253,11 @@ pub(crate) struct ApiKindsFile {
 pub(crate) struct ApiKindDef {
     name: String,
     description: String,
+    /// A beat kind (a news feed, an advisory feed, a job board): its items are
+    /// about a subject, so a topic-less API of this kind matches only a
+    /// topic-less need (the Phase 3 matcher, `api-match-digest`).
+    #[serde(default)]
+    beat: bool,
 }
 
 /// `_`-prefixed files in a seed dir are not seeds of that kind.
@@ -507,10 +512,12 @@ async fn seed_api_kinds(neo4j: &Neo4jClient, plugins: &Plugins) {
             }
             let q = neo4rs::query(
                 "MERGE (k:ApiKind {name: $name}) \
-                 SET k.description = $description, k.plugin = $plugin, k.updated_at = datetime()",
+                 SET k.description = $description, k.beat = $beat, k.plugin = $plugin, \
+                     k.updated_at = datetime()",
             )
             .param("name", k.name.as_str())
             .param("description", k.description.as_str())
+            .param("beat", k.beat)
             .param("plugin", plugin.as_str());
             if let Err(e) = neo4j.run(q).await {
                 warn!(kind = %k.name, error = %e, "seed api kinds: failed");
@@ -689,10 +696,12 @@ mod tests {
                 ApiKindDef {
                     name: "a".into(),
                     description: String::new(),
+                    beat: false,
                 },
                 ApiKindDef {
                     name: "a".into(),
                     description: String::new(),
+                    beat: false,
                 },
             ],
         };
