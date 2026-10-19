@@ -1,0 +1,131 @@
+name: hn-ai-trial
+description: "Weekly trial (API_USE_PLAN Phase 2): does Hacker News find AI/ML stories the daily brief's tech search misses? Each run takes one day of HN stories (hn_algolia, 50+ points), keeps the AI/ML ones by keyword in code, runs daily-news's own tech search with the same arguments, and records both lists, their overlap and what each found alone, as a source_record. No model."
+topic: ai-ml
+kind: monitor
+every: 1w
+enabled: false   # seeded off; turned on after a verified manual run
+steps:
+  # Owner decision 2026-10-19: a separate weekly workflow, not a step in the
+  # bi-weekly slm-benchmark-watch, so the trial has several samples. The
+  # comparison is like for like: daily-news's `tech` step searches one day
+  # (recency: day, 6 results), so each run measures one day of HN against it.
+  # The trial ends with the owner's call, from the runs' TRIAL lines: replace
+  # the search step, add HN beside it, or drop HN.
+  - id: since
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 10000
+      code: |
+        import time
+        print(int(time.time()) - 86400, end="")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "The window: the last 24 hours, as a Unix time"
+
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'hn_ai_trial' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "The prior run, for what is new"
+
+  - id: hn
+    needs: { kind: news-feed, topic: ai-ml }
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: hn_algolia
+      url: "search_by_date"
+      query_params:
+        tags: "story"
+        numericFilters: "points>50,created_at_i>{{steps.since.stdout}}"
+        hitsPerPage: "200"
+      pick: ["nbHits", "hits[].objectID", "hits[].title", "hits[].url", "hits[].points", "hits[].created_at"]
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "One day of Hacker News stories with 50+ points"
+
+  # The same arguments as daily-news's `tech` step: what HN would replace.
+  # prior_knowledge: false only drops the "what we already know" preface, so
+  # the result parses as JSON; the search itself is unchanged.
+  - id: search
+    needs: { kind: news-feed, topic: ai-ml }
+    tool_name: search_web
+    arguments:
+      query: "latest artificial intelligence technology news"
+      count: 6
+      engine: exa
+      recency: day
+      news: true
+      prior_knowledge: false
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "daily-news's tech search, same arguments"
+
+  - id: compare
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import json, re
+        from urllib.parse import urlparse
+        hn = json.loads(r"""{{steps.hn.body}}""")
+        prior = r"""{{steps.prior}} """
+        raw = r"""{{steps.search}}"""
+        try:
+            found = json.loads(raw[raw.index("["):]) if "[" in raw else []
+            found = found if isinstance(found, list) else found.get("results", [])
+        except Exception:
+            found = []
+        # AI/ML by keyword, word-bounded and case-insensitive ("agent" alone
+        # matched an ICE agent on the first run, 2026-10-19). Crude on purpose:
+        # transparent, and the report lists every title for the owner to judge.
+        KEY = re.compile(r"\b(ai|a\.i\.|llms?|gpts?|chatgpt|openai|anthropic|claude|gemini|llama|mistral|qwen|deepseek|"
+                         r"machine learning|deep learning|neural|transformers?|inference|fine-?tun\w*|diffusion|"
+                         r"embeddings?|ai agents?|llm agents?|agentic|copilot|benchmark\w*|gpu|nvidia|ml)\b", re.I)
+        def key(u):
+            p = urlparse(u or "")
+            return (p.netloc.lower().removeprefix("www.") + p.path.rstrip("/")).lower()
+        stories = hn.get("hits", [])
+        ai = [s for s in stories if KEY.search(s.get("title") or "")]
+        hn_keys = {key(s.get("url")): s for s in ai if s.get("url")}
+        search_keys = {key(r.get("link") or r.get("url")): r for r in found}
+        both = sorted(set(hn_keys) & set(search_keys))
+        new_hn = [s for s in ai if f"item?id={s['objectID']}" not in prior]
+        def hn_line(s):
+            link = s.get("url") or f"https://news.ycombinator.com/item?id={s['objectID']}"
+            return f"- {s.get('points')} pts — {s.get('title')} — {link} — https://news.ycombinator.com/item?id={s['objectID']}"
+        print(f"TRIAL: hn_stories={len(stories)} hn_ai={len(ai)} search={len(found)} overlap={len(both)} "
+              f"hn_only={len(hn_keys) - len(both)} search_only={len(search_keys) - len(both)} hn_ai_new={len(new_hn)}")
+        print()
+        print("One day of Hacker News stories with 50+ points (hn_algolia), AI/ML by keyword, against daily-news's tech search (exa, recency day, 6 results).")
+        print()
+        print(f"## HACKER NEWS AI/ML ({len(ai)} of {len(stories)})")
+        print("\n".join(hn_line(s) for s in sorted(ai, key=lambda s: -(s.get("points") or 0))) or "None.")
+        print()
+        print(f"## SEARCH ({len(found)})")
+        print("\n".join(f"- {r.get('title')} — {r.get('link') or r.get('url')}" for r in found) or "None (the search returned nothing or could not be read).")
+        print()
+        print(f"## IN BOTH ({len(both)})")
+        print("\n".join(f"- {k}" for k in both) or "None.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Keyword filter and overlap, in code (no model)"
+
+  - tool_name: store_note
+    arguments:
+      content: "# Hacker News AI/ML trial — {{date}}\n\n{{steps.compare.stdout}}"
+      note_type: source_record
+      source_context: hn_ai_trial
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the run's measurement"

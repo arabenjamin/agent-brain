@@ -1,0 +1,10 @@
+# Hacker News search (Algolia, keyless). One call returns a week of stories
+# with titles and points; the Firebase API (hacker_news) needs one call per
+# item, which a workflow step cannot fan out. Used by hn-ai-trial
+# (API_USE_PLAN Phase 2, 2026-10-19).
+name: hn_algolia
+description: "Hacker News search API (Algolia, keyless): stories and comments with title, url, points, comment count and created time; search by query, tag (story, front_page) and numeric filters (points, created_at_i). One call returns a filtered set, unlike the Firebase API's one call per item."
+base_url: https://hn.algolia.com/api/v1
+auth_scheme: none
+kind: news-feed
+topics: []

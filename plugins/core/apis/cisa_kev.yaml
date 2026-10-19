@@ -1,0 +1,8 @@
+# CISA Known Exploited Vulnerabilities catalog (keyless JSON feed), the
+# primary record vulnerability-watch reads (API_USE_PLAN Phase 2, 2026-10-19).
+name: cisa_kev
+description: "CISA Known Exploited Vulnerabilities (KEV) catalog: JSON feed of vulnerabilities CISA has evidence are exploited in the wild, each with CVE id, vendor, product, date added, required action and due date."
+base_url: https://www.cisa.gov
+auth_scheme: none
+kind: advisories
+topics: [cybersecurity]

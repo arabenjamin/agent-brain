@@ -1,0 +1,206 @@
+name: model-metadata-drift
+description: "Weekly: compares the models the brain routes to (models.yaml, as (:ModelDef)) with the openviglet model catalog — context windows, and list prices for the models we pay for — in code, no model. Stores the comparison as a source_record and opens one Feed item only when the set of differences changes."
+topic: agent-brain
+kind: maintenance
+every: 1w
+enabled: false   # seeded off; turned on after a verified manual run
+steps:
+  # API_USE_PLAN Phase 2 (2026-10-19): the first real use of
+  # openviglet_model_catalog. Success is counts either way: a real difference,
+  # or every comparable model confirmed.
+  #
+  # What is compared, and why not more:
+  # - context_window vs the catalog's contextWindow, for every model matched by id.
+  # - price only where models.yaml charges (cost > 0): a 0 there is a free tier
+  #   on purpose (Gemini free, the Mistral free key, ollama-cloud), not drift.
+  # - output limits are shown for reference: models.yaml has none to compare.
+  # - ollama: the catalog lists families by id with no limits; llamacpp is local.
+  - id: models
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (m:ModelDef) RETURN m.name AS name, m.provider AS provider, m.model AS model, m.context_window AS context_window, m.cost_per_1k_input AS cost_in, m.cost_per_1k_output AS cost_out ORDER BY provider, name"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "The models the brain routes to"
+
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (n:Note) WHERE n.source_context = 'model_metadata_drift' AND n.note_type = 'source_record' AND NOT (n)-[:PART_OF]->() RETURN n.content AS content ORDER BY n.created_at DESC LIMIT 1"
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "The prior comparison, for the change check"
+
+  - id: anthropic
+    needs: { kind: reference-catalog, topic: ai-ml }
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: openviglet_model_catalog
+      url: "by-vendor/anthropic.json"
+      pick: ["lastUpdated", "vendors.anthropic[].id", "vendors.anthropic[].contextWindow", "vendors.anthropic[].maxOutputTokens", "vendors.anthropic[].pricing.inputPer1M", "vendors.anthropic[].pricing.outputPer1M"]
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Catalog: Anthropic"
+
+  - id: gemini
+    needs: { kind: reference-catalog, topic: ai-ml }
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: openviglet_model_catalog
+      url: "by-vendor/gemini.json"
+      pick: ["vendors.gemini[].id", "vendors.gemini[].contextWindow", "vendors.gemini[].maxOutputTokens", "vendors.gemini[].pricing.inputPer1M", "vendors.gemini[].pricing.outputPer1M"]
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Catalog: Gemini"
+
+  - id: mistral
+    needs: { kind: reference-catalog, topic: ai-ml }
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: openviglet_model_catalog
+      url: "by-vendor/mistral.json"
+      pick: ["vendors.mistral[].id", "vendors.mistral[].contextWindow", "vendors.mistral[].maxOutputTokens", "vendors.mistral[].pricing.inputPer1M", "vendors.mistral[].pricing.outputPer1M"]
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Catalog: Mistral"
+
+  # ~58 KB picked; the sandbox takes 256 KB of code.
+  - id: openrouter
+    needs: { kind: reference-catalog, topic: ai-ml }
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: openviglet_model_catalog
+      url: "by-vendor/openrouter.json"
+      pick: ["vendors.openrouter[].id", "vendors.openrouter[].contextWindow", "vendors.openrouter[].maxOutputTokens", "vendors.openrouter[].pricing.inputPer1M", "vendors.openrouter[].pricing.outputPer1M"]
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Catalog: OpenRouter"
+
+  - id: compare
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import json
+        models = json.loads(r"""{{steps.models.rows}}""")
+        anth = json.loads(r"""{{steps.anthropic.body}}""")
+        catalog = {
+            "anthropic": anth.get("vendors", {}).get("anthropic", []),
+            "gemini": json.loads(r"""{{steps.gemini.body}}""").get("vendors", {}).get("gemini", []),
+            "mistral": json.loads(r"""{{steps.mistral.body}}""").get("vendors", {}).get("mistral", []),
+            "openrouter": json.loads(r"""{{steps.openrouter.body}}""").get("vendors", {}).get("openrouter", []),
+        }
+        by_id = {v: {m["id"]: m for m in ms if "id" in m} for v, ms in catalog.items()}
+        diffs, same, missing, skipped, limits = [], [], [], [], []
+        for m in models:
+            prov, mid = m.get("provider"), m.get("model") or m.get("name")
+            if prov not in by_id:
+                why = "local, not in a public catalog" if prov == "llamacpp" else "the catalog lists ollama families with no limits"
+                skipped.append(f"{mid} ({prov}: {why})")
+                continue
+            c = by_id[prov].get(mid)
+            if c is None:
+                missing.append(f"{mid} ({prov})")
+                continue
+            rows = []
+            if c.get("contextWindow") and m.get("context_window") != c["contextWindow"]:
+                rows.append(f"| {mid} | context window | {m.get('context_window'):,} | {c['contextWindow']:,} |")
+            price = c.get("pricing") or {}
+            for ours, theirs, label in (("cost_in", "inputPer1M", "input $/1M"), ("cost_out", "outputPer1M", "output $/1M")):
+                mine = (m.get(ours) or 0) * 1000
+                if mine > 0 and price.get(theirs) is not None and abs(mine - price[theirs]) > 1e-9:
+                    rows.append(f"| {mid} | {label} | {mine:g} | {price[theirs]:g} |")
+            (diffs.extend(rows) if rows else same.append(mid))
+            if c.get("maxOutputTokens"):
+                limits.append(f"{mid}: {c['maxOutputTokens']:,}")
+        print(f"Catalog: openviglet model catalog, updated {anth.get('lastUpdated', 'unknown')}. Brain: {len(models)} models in models.yaml.")
+        print()
+        print(f"## DIFFERENCES ({len(diffs)})")
+        if diffs:
+            print("| model | field | models.yaml | catalog |")
+            print("|---|---|---|---|")
+            print("\n".join(sorted(diffs)))
+        else:
+            print("None.")
+        print()
+        print(f"## CONFIRMED ({len(same)})")
+        print(", ".join(same) or "None.")
+        print()
+        print(f"## NOT IN THE CATALOG ({len(missing)})")
+        print(", ".join(missing) or "None.")
+        print()
+        print(f"## NOT COMPARABLE ({len(skipped)})")
+        print(", ".join(skipped) or "None.")
+        print()
+        print(f"## OUTPUT LIMITS, FOR REFERENCE ({len(limits)})")
+        print("models.yaml sets none; the catalog's maxOutputTokens: " + ("; ".join(limits) or "none listed."))
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Compare in code (no model): context windows, paid prices"
+
+  - id: record
+    tool_name: store_note
+    arguments:
+      content: "# Model metadata drift — {{date}}\n\n{{steps.compare.stdout}}"
+      note_type: source_record
+      source_context: model_metadata_drift
+    priority: 1
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Store the comparison"
+
+  # One Feed item when the DIFFERENCES section changed since the prior run;
+  # an unchanged set prints nothing and notify_user sends nothing.
+  - id: change
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import re
+        prior = r"""{{steps.prior}} """
+        now = r"""{{steps.compare.stdout}} """
+        def diffs(t):
+            m = re.search(r"## DIFFERENCES \(\d+\)\n(.*?)(?=\n## |\Z)", t, re.S)
+            return None if not m else sorted(l for l in m.group(1).splitlines() if l.startswith("| ") and not l.startswith("| model"))
+        old, new = diffs(prior), diffs(now)
+        if new and new != old:
+            print("The model catalog check ({{date}}) found models.yaml values that differ from the openviglet catalog:")
+            print()
+            print("| model | field | models.yaml | catalog |")
+            print("|---|---|---|---|")
+            print("\n".join(new))
+            if old:
+                gone = sorted(set(old) - set(new))
+                if gone:
+                    print()
+                    print("No longer different: " + "; ".join(gone))
+            print()
+            print("The catalog is indicative (list prices, vendor-stated limits); check the vendor before changing models.yaml. Full comparison: the note `# Model metadata drift — {{date}}`.")
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "A message only when the differences changed"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.change.stdout}}"
+      context: "Model catalog drift {{date}}"
+      needs: action
+      ask: "Check each differing value with its vendor and correct models.yaml where the brain is wrong (or note why ours is deliberate, e.g. a cheap-tier context window)."
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Feed item only on a changed set of differences"

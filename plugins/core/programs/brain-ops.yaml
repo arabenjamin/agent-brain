@@ -24,6 +24,7 @@ workflows:
   - brain-api-sync
   - claim-verification
   - relation-extraction
+  - model-metadata-drift
   - entity-linking
   - program-reviews
   - program-review

@@ -1,6 +1,6 @@
 # API Use Plan: an API is registered to be used, not collected
 
-**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0 and 1 done 2026-10-19. Next: Phase 2.**
+**Status: planned 2026-10-16; reviewed by the owner 2026-10-19 (decisions in §4). Phases 0 and 1 done and Phase 2 built 2026-10-19; the HN trial runs weekly until the owner's call. Next: Phase 3.**
 
 The brain can now find, register and prove a keyless API end to end
 (the api-scout workflow on a schedule and api-integrator from chat, both run
@@ -150,6 +150,32 @@ Both chosen so the payoff is checkable, not assumed:
   registered `weather_gov`), and `vulnerability-watch`'s CISA KEV feed is
   registered (`cisa_kev`, kind `advisories`), so no direct call bypasses the
   catalog.
+
+- **Built 2026-10-19.**
+  - **Through the catalog:** `cisa_kev` (`apis/cisa_kev.yaml`, advisories,
+    cybersecurity) feeds `vulnerability-watch`. `weather_gov` (personal
+    bundle; its User-Agent carries the owner's contact) feeds `daily-news`.
+    `list_apis` shows both under `used_by`, and `open_meteo` is now the
+    unused forecast API (a 60-day retire candidate).
+  - **`model-metadata-drift`** (weekly, brain-ops, no model) compares every
+    `(:ModelDef)` with openviglet. First run: 10 confirmed, 0 differences; 3
+    not in the catalog (Haiku 5.5, Sonnet 5.5, ministral-14b: the catalog
+    was last updated 09-26); 12 not comparable (the catalog lists Ollama
+    families with no limits; llamacpp is local). Prices are compared only
+    where models.yaml charges. A Feed item opens only when the set of
+    differences changes.
+  - **`hn-ai-trial`** (weekly, ai-ml-research, no model) uses `hn_algolia`,
+    registered for it: the Firebase `hacker_news` API needs one call per
+    item, which a step cannot fan out. Each run takes one day of HN stories
+    with 50+ points, keeps the AI/ML ones by keyword, and runs daily-news's
+    own tech search with the same arguments. It records a `TRIAL:` line of
+    counts plus both lists. The owner decides after several runs.
+  - **Fixed after the first runs:**
+    - vulnerability-watch's KEV window is now the prior report's date minus 3
+      days; a fixed 14-day window re-listed old entries.
+    - A code step drops news lines whose URL the prior report already cited
+      (the model repeated them).
+    - The trial's keywords no longer match a bare "agent".
 
 ### Phase 3: matching, as proposals
 

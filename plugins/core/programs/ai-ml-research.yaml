@@ -14,4 +14,5 @@ workflows:
   - slm-benchmark-watch
   - rust-training-data-scout
   - deep-dive-pick
+  - hn-ai-trial
 review: { every: 30d }
