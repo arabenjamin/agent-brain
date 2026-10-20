@@ -1,8 +1,9 @@
 /**
  * System → Registry: what the brain is made of, read-only. Skills and their
- * tools (with the existing tool explorer), agents (context profiles), workflows,
- * external MCP servers, providers, and the services it depends on. Edits go
- * through Settings; this is for looking.
+ * tools (with the existing tool explorer), workflows, external MCP servers,
+ * providers, and the services it depends on. Edits go through Settings; this
+ * is for looking. Agents live in Settings → Agents & profiles, where they are
+ * edited too, so the count links there instead of a second read-only list.
  */
 import { useState } from "react";
 import { useRegistry, type Registry } from "../../api/system";
@@ -10,7 +11,7 @@ import { hrefTo } from "../../nav";
 import ToolPanel from "../tools/ToolPanel";
 import { EmptyState, Pill, Stat, Tabs } from "../ui";
 
-type Tab = "tools" | "agents" | "workflows" | "mcp" | "providers" | "services";
+type Tab = "tools" | "workflows" | "mcp" | "providers" | "services";
 
 export default function RegistryView() {
   const r = useRegistry();
@@ -23,7 +24,7 @@ export default function RegistryView() {
         <div className="ui-stats reg-counts">
           <Stat label="Tools" value={c.tools} title={`${c.skills} skills`} onClick={() => setTab("tools")} />
           <Stat label="Declared tools" value={c.declared_tools} onClick={() => setTab("tools")} />
-          <Stat label="Agents" value={c.agents} onClick={() => setTab("agents")} />
+          <Stat label="Agents" value={c.agents} title="edited in Settings → Agents & profiles" href={hrefTo("settings", { section: "agents" })} />
           <Stat label="Workflows" value={c.workflows} onClick={() => setTab("workflows")} />
           <Stat label="MCP servers" value={c.mcp_servers} onClick={() => setTab("mcp")} />
           <Stat label="Scheduled" value={`${c.schedules_enabled}/${c.schedules}`} title="scheduled workflows: on / all" href={hrefTo("work", { view: "scheduled" })} />
@@ -33,7 +34,6 @@ export default function RegistryView() {
       <Tabs
         tabs={[
           { id: "tools", label: "Tools" },
-          { id: "agents", label: "Agents" },
           { id: "workflows", label: "Workflows" },
           { id: "mcp", label: "MCP servers" },
           { id: "providers", label: "Providers" },
@@ -52,24 +52,6 @@ export default function RegistryView() {
 }
 
 function Section({ tab, d }: { tab: Exclude<Tab, "tools">; d: Registry }) {
-  if (tab === "agents") {
-    return (
-      <table className="reg-table">
-        <thead><tr><th>Agent</th><th>Tools</th><th>Model</th><th>Data</th><th>What it does</th></tr></thead>
-        <tbody>
-          {d.agents.map((a) => (
-            <tr key={a.name}>
-              <td><strong>{a.name}</strong>{a.spawnable && <Pill tone="accent">sub-agent</Pill>}</td>
-              <td>{a.tool_count}</td>
-              <td className="wk-dim">{a.model_preference ?? "—"}{a.provider_hint ? ` · ${a.provider_hint}` : ""}</td>
-              <td><Pill tone={a.data_class === "public" ? "muted" : "purple"}>{a.data_class ?? "private"}</Pill></td>
-              <td className="reg-desc">{a.description}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
-  }
   if (tab === "workflows") {
     return d.workflows.length === 0 ? <EmptyState title="No workflows" checked="No (:Workflow) nodes; they are seeded from each plugin bundle's workflows/*.yaml." /> : (
       <table className="reg-table">

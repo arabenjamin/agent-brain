@@ -63,7 +63,7 @@ export default function ArchitectureView() {
         <Stat label="Skills" value={c.skills} href={hrefTo("system", { view: "registry" })} />
         <Stat label="Routes" value={c.routes} title="HTTP routes, read from the router source"
           onClick={() => { setTab("diagram"); setSel(allRoutes(d)); }} />
-        <Stat label="Agents" value={c.agents} href={hrefTo("system", { view: "registry" })} />
+        <Stat label="Agents" value={c.agents} href={hrefTo("settings", { section: "agents" })} />
         <Stat label="Workflows" value={c.workflows} href={hrefTo("work", { view: "scheduled" })} />
         <Stat label="Providers" value={c.providers} />
         <Stat label="Services" value={c.components} href={hrefTo("system", { view: "health" })} />
