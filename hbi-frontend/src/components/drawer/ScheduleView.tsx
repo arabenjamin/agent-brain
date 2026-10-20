@@ -14,6 +14,7 @@ import {
   type WorkSchedule,
 } from "../../api/work";
 import { useTopics } from "../../api/topics";
+import { moveWorkflow, usePrograms } from "../../api/programs";
 import { KIND_LABELS, mixFlag, type TopicMix } from "../../lib/scheduleGroups";
 import { fmtEvery } from "../../lib/status";
 import { formatLocal, parseTime, relTime } from "../../lib/time";
@@ -169,6 +170,8 @@ export default function ScheduleView({ id }: { id: string }) {
             </Section>
           )}
 
+          <ProgramSection name={s.name} />
+
           <TopicSection s={s} />
 
           <Section title="Runs" aside={d.runs_total > d.runs_shown ? `latest ${d.runs_shown} of ${d.runs_total}` : `${d.runs_total}`}>
@@ -224,6 +227,77 @@ export default function ScheduleView({ id }: { id: string }) {
         </>
       )}
     </Drawer>
+  );
+}
+
+/**
+ * The program that owns this workflow, and a picker to assign or move it.
+ * Membership lives on the program (its `workflows` list), so this edits the
+ * programs involved; a seeded program edited here becomes runtime-owned.
+ */
+function ProgramSection({ name }: { name: string }) {
+  const tree = usePrograms();
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const rows = tree.data?.programs ?? [];
+  const owner = rows.find((r) => r.workflow_names.includes(name)) ?? null;
+  const choices = rows.filter((r) => r.name !== owner?.name && r.status !== "closed");
+
+  const move = async (to: string | null) => {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const lines = await moveWorkflow(name, owner?.name ?? null, to);
+      setSaid({ ok: true, text: lines.join(" ") });
+      setTarget("");
+    } catch (e) {
+      setSaid({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="Program">
+      {tree.error ? (
+        <EmptyState tone="red" title="Couldn't load programs" checked={tree.error.message} />
+      ) : !tree.data ? (
+        <div className="dw-dim">loading…</div>
+      ) : (
+        <>
+          <div className="dw-grid">
+            <span>Owned by</span>
+            <span>
+              {owner
+                ? <><EntityLink kind="program" id={owner.name}>{owner.label}</EntityLink> <span className="dw-dim">{owner.kind}{owner.status !== "active" ? ` · ${owner.status}` : ""}</span></>
+                : <span className="tone-text-yellow">no program: no one is accountable for it</span>}
+            </span>
+          </div>
+          <div className="dw-row" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+            <select className="ui-input" value={target} disabled={busy} onChange={(e) => setTarget(e.target.value)} style={{ flex: "1 1 200px" }}>
+              <option value="">{owner ? "Move to…" : "Assign to…"}</option>
+              {choices.map((r) => (
+                <option key={r.name} value={r.name}>{"\u00a0\u00a0".repeat(r.depth)}{r.label} ({r.kind}{r.status !== "active" ? `, ${r.status}` : ""})</option>
+              ))}
+            </select>
+            <button type="button" className="btn" disabled={busy || !target} onClick={() => move(target)}>
+              {owner ? "Move" : "Assign"}
+            </button>
+            {owner && (
+              <button type="button" className="btn-ghost" disabled={busy}
+                onClick={() => window.confirm(`Take “${name}” out of ${owner.label}? It will belong to no program.`) && move(null)}>
+                Remove
+              </button>
+            )}
+          </div>
+          {target && rows.find((r) => r.name === target)?.status === "paused" && (
+            <div className="tone-text-yellow dw-dim">That program is paused: assigning it there turns this workflow off until the program resumes.</div>
+          )}
+          {said && <div className={said.ok ? "tone-text-green" : "tone-text-red"}>{said.text}</div>}
+        </>
+      )}
+    </Section>
   );
 }
 

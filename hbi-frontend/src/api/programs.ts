@@ -163,6 +163,37 @@ export const resetProgram = (name: string) => refresh(apiSend<ProgramSaved>("POS
 export const deleteProgram = (name: string) =>
   refresh(apiSend<{ deleted: string; changes: string[] }>("DELETE", path(name)));
 
+/**
+ * Move one workflow between programs (a workflow has one program): off `from`
+ * first, so the one-program rule does not refuse the add, then onto `to`.
+ * Either may be null (assign, or release). Returns what each save said.
+ */
+export async function moveWorkflow(workflow: string, from: string | null, to: string | null): Promise<string[]> {
+  const said: string[] = [];
+  try {
+    if (from) {
+      const p = await apiJson<ProgramDetail>(path(from));
+      const s = await apiSend<ProgramSaved>("PUT", path(from), {
+        workflows: (p.workflows ?? []).filter((w) => w !== workflow),
+        keep_running: (p.keep_running ?? []).filter((w) => w !== workflow),
+      });
+      said.push(`${p.label || from}: ${savedNote(s)}`);
+    }
+    if (to) {
+      const p = await apiJson<ProgramDetail>(path(to));
+      const s = await apiSend<ProgramSaved>("PUT", path(to), { workflows: [...(p.workflows ?? []).filter((w) => w !== workflow), workflow] });
+      said.push(`${p.label || to}: ${savedNote(s)}`);
+    }
+  } catch (e) {
+    // The release may have landed before the add failed: say so.
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(said.length && to ? `${said.join(" ")} Then adding it to ${to} failed: ${msg}. It is in no program now.` : msg);
+  } finally {
+    await refresh(Promise.resolve(null));
+  }
+  return said;
+}
+
 /** What a save did, in one line for the user. */
 export function savedNote(s: ProgramSaved): string {
   const parts = [s.created ? "Created." : "Saved."];

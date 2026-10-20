@@ -37,7 +37,7 @@ src/
   nav.ts             goTo / hrefTo: move between workspaces, keeping only the open drawer
   lib/               time (UTC in, local out), ids, scheduler state, useNow, chatDock (what a chat turn did, from its events)
   components/ui/     kit: Pill, Card, Stat, Tabs, EmptyState, Drawer, DrillBanner
-  components/drawer/ entity drawer: note (a claim shows the article or video it was asserted in), entity, topic, task (lineage), job, schedule, todo, proposal
+  components/drawer/ entity drawer: note (a claim shows the article or video it was asserted in), entity, topic, task (lineage), job, schedule (workflow; its Program section assigns or moves it between programs), todo, program, proposal
   components/chat/   Ask: the modal, the chat panel inside it, and the context dock under each answer
   components/system/ System: Health, Logs, Registry, Architecture (drawn from the developer plugin's /api/plugins/developer/architecture + plugins/developer/layout.yaml)
   components/home/   the dashboard
