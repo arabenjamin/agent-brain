@@ -458,60 +458,65 @@ impl MediaService {
         })
     }
 
-    /// Download the caption track via `yt-dlp` itself (into a per-call scratch
+    /// Download a caption track via `yt-dlp` itself (into a per-call scratch
     /// dir) and parse it to plain text. Letting yt-dlp fetch the subtitle file
     /// is far more robust than fetching the timedtext URL directly — auto-
-    /// captions in particular require yt-dlp's session handling. Returns `None`
-    /// when the video has no caption track. Human subs are preferred over
-    /// auto-captions (yt-dlp writes `<id>.<lang>.json3`, auto to the same name;
-    /// we pass `--write-subs` before `--write-auto-subs` so manual wins).
-    async fn download_captions(&self, url: &str, id: &str) -> anyhow::Result<Option<String>> {
-        let dir = self
-            .media_dir
-            .join(format!("brain-media-{id}-{}", uuid::Uuid::new_v4()));
-        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-            anyhow::anyhow!("could not create media scratch dir {}: {e}", dir.display())
-        })?;
-
-        // Match the exact lang plus regional variants (en, en-US, en-orig, …).
-        let lang_pat = format!("{lang},{lang}-.*,{lang}.*", lang = self.caption_lang);
-        let dir_s = dir.to_string_lossy().to_string();
-        let out = self
-            .yt_dlp(
-                &[
-                    "--skip-download",
-                    "--no-warnings",
-                    "--no-playlist",
-                    "--write-subs",
-                    "--write-auto-subs",
-                    "--sub-langs",
-                    &lang_pat,
-                    "--sub-format",
-                    "json3",
-                    "-o",
-                    "%(id)s",
-                    "-P",
-                    &dir_s,
-                    url,
-                ],
-                "captions",
-                url,
-            )
-            .await;
-
-        let text = self.read_first_json3(&dir).await;
-        // Best-effort cleanup regardless of outcome.
-        let _ = tokio::fs::remove_dir_all(&dir).await;
-
-        match out {
-            Ok(o) if !o.status.success() => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                warn!(video = %id, stderr = %stderr.trim(), "yt-dlp subtitle download reported failure");
+    /// captions in particular require yt-dlp's session handling. `tries` come
+    /// from [`caption_tries`], best first; each runs only if the one before
+    /// wrote no file. Returns `None` when none did.
+    async fn download_captions(
+        &self,
+        url: &str,
+        id: &str,
+        tries: &[CaptionTry],
+    ) -> anyhow::Result<Option<String>> {
+        for t in tries {
+            let dir = self
+                .media_dir
+                .join(format!("brain-media-{id}-{}", uuid::Uuid::new_v4()));
+            tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+                anyhow::anyhow!("could not create media scratch dir {}: {e}", dir.display())
+            })?;
+            let dir_s = dir.to_string_lossy().to_string();
+            let mut args = vec![
+                "--skip-download",
+                "--no-warnings",
+                "--no-playlist",
+                "--write-subs",
+            ];
+            if t.auto {
+                args.push("--write-auto-subs");
             }
-            Err(e) => return Err(e),
-            _ => {}
+            args.extend([
+                "--sub-langs",
+                &t.langs,
+                "--sub-format",
+                "json3",
+                "-o",
+                "%(id)s",
+                "-P",
+                &dir_s,
+                url,
+            ]);
+            let out = self.yt_dlp(&args, "captions", url).await;
+
+            let text = self.read_first_json3(&dir).await;
+            // Best-effort cleanup regardless of outcome.
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+
+            match out {
+                Ok(o) if !o.status.success() => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    warn!(video = %id, langs = %t.langs, stderr = %stderr.trim(), "yt-dlp subtitle download reported failure");
+                }
+                Err(e) => return Err(e),
+                _ => {}
+            }
+            if let Some(text) = text.filter(|t| !t.trim().is_empty()) {
+                return Ok(Some(text));
+            }
         }
-        Ok(text.filter(|t| !t.trim().is_empty()))
+        Ok(None)
     }
 
     /// Read and parse the first `*.json3` subtitle file in `dir`, if any.
@@ -571,7 +576,8 @@ impl MediaService {
         }
 
         debug!(video = %meta.id, "downloading caption track via yt-dlp");
-        if let Some(text) = self.download_captions(url, &meta.id).await? {
+        let tries = caption_tries(&raw, &self.caption_lang);
+        if let Some(text) = self.download_captions(url, &meta.id, &tries).await? {
             return Ok((meta, text, "captions".to_string()));
         }
 
@@ -1346,6 +1352,82 @@ fn format_upload_date(s: &str) -> String {
     }
 }
 
+/// One caption download: the `--sub-langs` value, and whether auto-captions
+/// may answer it.
+#[derive(Debug, PartialEq)]
+struct CaptionTry {
+    langs: String,
+    auto: bool,
+}
+
+/// The caption downloads to try for a video, best first, from its yt-dlp
+/// metadata (`subtitles` are uploaded by a person, `automatic_captions` are
+/// YouTube's speech recognition):
+///
+/// 1. the uploaded tracks in `lang`, uploaded only;
+/// 2. `<lang>-orig`, the speech-recognition track itself.
+///
+/// Measured 2026-10-17..20 (YOUTUBE_DATA_API_PLAN §2): the old single pattern
+/// `en,en-.*,en.*` asked for YouTube's `en` rendition first, which answered
+/// HTTP 429 for 46% of watched videos, every time, while the same videos'
+/// `en-orig` downloaded at once. yt-dlp stops at the 429 before writing
+/// `en-orig`, so each of those videos fell to audio + Whisper. The old pattern
+/// stays only for metadata that lists neither track.
+fn caption_tries(meta: &Value, lang: &str) -> Vec<CaptionTry> {
+    let in_lang = |key: &str| -> Vec<String> {
+        let mut ks: Vec<String> = meta
+            .get(key)
+            .and_then(|s| s.as_object())
+            .map(|o| {
+                o.keys()
+                    .filter(|k| *k == lang || k.starts_with(&format!("{lang}-")))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        ks.sort();
+        ks
+    };
+    // `--sub-langs` entries are regexes; track names are taken literally.
+    let literal = |k: &str| -> String {
+        k.chars()
+            .flat_map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    vec![c]
+                } else {
+                    vec!['\\', c]
+                }
+            })
+            .collect()
+    };
+    let mut tries = Vec::new();
+    let uploaded = in_lang("subtitles");
+    if !uploaded.is_empty() {
+        tries.push(CaptionTry {
+            langs: uploaded
+                .iter()
+                .map(|k| literal(k))
+                .collect::<Vec<_>>()
+                .join(","),
+            auto: false,
+        });
+    }
+    let orig = format!("{lang}-orig");
+    if in_lang("automatic_captions").contains(&orig) {
+        tries.push(CaptionTry {
+            langs: literal(&orig),
+            auto: true,
+        });
+    }
+    if tries.is_empty() {
+        tries.push(CaptionTry {
+            langs: format!("{lang},{lang}-.*,{lang}.*"),
+            auto: true,
+        });
+    }
+    tries
+}
+
 /// Parse a YouTube `json3` caption body into plain text.
 fn parse_json3(body: &str) -> String {
     let v: Value = match serde_json::from_str(body) {
@@ -1689,6 +1771,42 @@ async fn net_check(url: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_tries_skip_the_rendition_youtube_rate_limits() {
+        let langs = |v: &Value| {
+            caption_tries(v, "en")
+                .into_iter()
+                .map(|t| (t.langs, t.auto))
+                .collect::<Vec<_>>()
+        };
+        // Speech recognition only (CkKwQocFGts, 2026-10-20): `en-orig`, never `en`.
+        let asr = serde_json::json!({
+            "subtitles": {},
+            "automatic_captions": {"en": [], "en-orig": [], "fr": []},
+        });
+        assert_eq!(langs(&asr), vec![("en-orig".to_string(), true)]);
+        // An uploaded track first, uploaded only; then `en-orig` (ecCrC56NorY).
+        let uploaded = serde_json::json!({
+            "subtitles": {"en-uYU-mmqFLq8": [], "live_chat": [], "de": []},
+            "automatic_captions": {"en": [], "en-orig": []},
+        });
+        assert_eq!(
+            langs(&uploaded),
+            vec![
+                ("en-uYU-mmqFLq8".to_string(), false),
+                ("en-orig".to_string(), true)
+            ]
+        );
+        // Track names are literal in yt-dlp's regex list.
+        let dotted = serde_json::json!({"subtitles": {"en-x.y": []}});
+        assert_eq!(langs(&dotted), vec![("en-x\\.y".to_string(), false)]);
+        // Metadata naming neither keeps the old pattern.
+        assert_eq!(
+            langs(&serde_json::json!({})),
+            vec![("en,en-.*,en.*".to_string(), true)]
+        );
+    }
 
     #[test]
     fn an_upcoming_premiere_is_recognised() {

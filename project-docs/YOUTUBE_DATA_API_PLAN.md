@@ -122,7 +122,7 @@ pacing matters more than the metadata calls.
 **Interim result 2026-10-20** (§2 Measured): the 429s are 100% of the Whisper
 runs and come from asking for the wrong caption track, not from pacing.
 
-### Phase 0b: ask for the original caption track first (no key; proposed 2026-10-20)
+### Phase 0b: ask for the original caption track first (no key)
 
 `download_captions` asks for `{lang}-orig` alone first, and only if that
 writes no file, the current pattern (a video with only uploaded captions has
@@ -131,6 +131,15 @@ run Whisper get YouTube's own transcript instead: ~290 fewer audio calls a
 month, no GPU Whisper time for them, and a better transcript than
 faster-whisper-base. A manual-captions-only video costs one extra light call.
 The outcome stays countable: `captions` errors should fall to near zero.
+
+**Built 2026-10-20** (dev note `media-yt-dlp/caption-tracks-are-tried-by-name-uploaded-then-lang-orig`).
+`caption_tries` reads the metadata `ingest_media` already fetched: the
+uploaded tracks in the language first (`--write-subs` only), then
+`<lang>-orig`; the old pattern only when the metadata lists neither. Note
+that `en` was refused for a video with an uploaded track too (ecCrC56NorY's
+`en` has no `tlang`), so the 429 is not only on translations. The rest of
+the baseline week (to 2026-10-24) measures it: `captions` errors and `audio`
+calls should be near zero.
 
 ### Phase 1: one yt-dlp call per watched video (no key)
 
