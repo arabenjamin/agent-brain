@@ -169,10 +169,9 @@ runs before anything is summarised (it reads the same JSON).
 - A bot check while `YT_DLP_PROXY` is set means the bypass is probably gone:
   the warning and a one-time `notify_user` say to check
   `ip rule | grep 5200` (the host rule) instead of only backing off.
-- The host rule survives a reboot only if the owner installs it, e.g. as a
-  systemd oneshot that runs
-  `ip rule add from 172.30.250.0/24 lookup main priority 5200` at boot
-  (owner's choice).
+- The host rule survives a reboot as the systemd oneshot
+  `plugins/media/yt-proxy/host/yt-egress-route.service` (owner, 2026-10-20),
+  which runs `ip rule add from 172.30.250.0/24 lookup main priority 5200`.
 
 ## 5. Expected result
 
@@ -190,13 +189,15 @@ User-agent spoofing; the PO-token plugin; paid residential proxies; the Data
 API for captions (owner-only). Browser cookies stay a last resort, and if ever
 used, from a throwaway account, never the owner's.
 
-## 7. Decisions for the owner
+## 7. Decisions for the owner (answered 2026-10-20)
 
-1. A Google Cloud project with **YouTube Data API v3** enabled, and an API key
-   restricted to that API (not the Gemini key; a separate key keeps one
-   leak from reaching the other), in `.env` as `YOUTUBE_API_KEY`. Needed for
-   Phase 2 only.
-2. Keep RSS as the listing source (free, unblocked), with `playlistItems` as
-   the fallback only? Recommended: yes.
-3. The daily unit cap (proposed 5,000).
-4. Install the host rule as a systemd unit, or leave it manual.
+1. **Key: done.** `YOUTUBE_API_KEY` is in `.env`, restricted to YouTube Data
+   API v3; checked 2026-10-20 with one `videos.list` (2 ids: duration, live
+   state, `caption` true/false) and one `channels.list forHandle` (2 units).
+2. **RSS stays the listing source**, `playlistItems` only as the fallback.
+3. **Daily cap 5,000 units.**
+4. **The host rule is a systemd unit**:
+   `plugins/media/yt-proxy/host/yt-egress-route.service` (install lines in
+   its header).
+5. **Order kept**: the baseline week runs to 2026-10-24 with Phase 0b in it,
+   then Phase 1, then Phase 2.

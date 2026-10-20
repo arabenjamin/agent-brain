@@ -1,0 +1,30 @@
+# Host policy rule for yt-proxy: send the yt-egress Docker network
+# (172.30.250.0/24) out of the LAN, ahead of Tailscale's exit-node rules
+# (priorities 5210-5270), so only yt-proxy skips the VPN. Without it,
+# yt-dlp reaches YouTube through the Mullvad exit and hits the bot check
+# (2026-10-17). Dev note: media-yt-dlp/yt-dlp-reaches-youtube-through-yt-proxy-past-the-vpn-exit
+#
+# Install (owner decision 2026-10-20: a unit, so the rule survives a reboot):
+#   sudo install -m 0644 plugins/media/yt-proxy/host/yt-egress-route.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now yt-egress-route.service
+# Check:  ip rule | grep 5200
+#
+# The rule names a source subnet, not an interface, so it can be added before
+# Docker creates the network. Start removes any copy first, so a rule added
+# by hand earlier is not doubled.
+
+[Unit]
+Description=Route yt-proxy's network (172.30.250.0/24) past the Tailscale exit node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/bin/ip rule del from 172.30.250.0/24 lookup main priority 5200
+ExecStart=/usr/bin/ip rule add from 172.30.250.0/24 lookup main priority 5200
+ExecStop=/usr/bin/ip rule del from 172.30.250.0/24 lookup main priority 5200
+
+[Install]
+WantedBy=multi-user.target
