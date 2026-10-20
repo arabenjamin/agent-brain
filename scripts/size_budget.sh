@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lines of Rust per crate, split into code and inline tests (everything after a
 # `#[cfg(test)]` line counts as test). Fails when a crate's code lines exceed
-# its hard limit. Budget: project-docs/CORE_AND_PLUGINS_PLAN.md §3.
+# its hard limit. Budget: dev note core-and-plugins-plan/3-size-budget.
 #
 #   scripts/size_budget.sh            # table + check
 #   HARD_LIMIT=8000 scripts/size_budget.sh
