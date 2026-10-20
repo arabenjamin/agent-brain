@@ -23,9 +23,42 @@ address and a proof-of-origin token. The PO-token provider plugin's own docs
 say it no longer gets past the check in most cases (bgutil-ytdlp-pot-provider
 on PyPI).
 
-## 2. The count (estimated 2026-10-17)
+## 2. The count
 
-The brain does not record yt-dlp calls; this is graph counts (last 30 days) ×
+### Measured (interim, 2026-10-17 22:46 → 2026-10-20 11:06, 2.5 days)
+
+`lookup youtube_calls` over `external_calls` (Phase 0). The week ends
+2026-10-24; this is the first 2.5 days, all through `yt-proxy`.
+
+| Op | Calls | ok | errors | bot checks | repeats | ~30 days |
+|---|---|---|---|---|---|---|
+| probe (poll, new feed item) | 50 | 50 | 0 | 0 | 0 | ~600 |
+| metadata (`ingest_media`) | 51 | 51 | 0 | 0 | 1 | ~610 |
+| captions | 51 | 27 | **24** | 0 | 1 | ~610 |
+| audio (Whisper fallback) | 24 | 23 | 1 | 0 | 1 | ~290 |
+| channel | 1 | 1 | 0 | 0 | 0 | a few |
+| **Total** | **177** (≈70/day) | | | **0** | | **~2,100, 58% metadata** |
+
+- **No bot checks and no backoffs** since `yt-proxy`.
+- **No live re-probes**: probe repeats are 0 (the estimate's worry).
+- **Every Whisper run was a caption 429, none a video without captions.**
+  All 24 audio calls follow a failed caption call for the same video
+  (23 videos, one retried): 46% of watched videos went to Whisper. A video
+  with no captions makes yt-dlp exit 0 and is never counted as an error;
+  each error still in the logs is `Unable to download video subtitles for
+  'en': HTTP Error 429`.
+- **The 429 is per track, not pacing.** Failed and successful caption calls
+  had the same load before them (5.6 vs 5.8 yt-dlp calls in the prior
+  10 minutes). Re-run by hand on 2026-10-20 hours later, two failed videos
+  429'd again on `en`; the same videos with `--sub-langs en-orig` (the
+  original speech-recognition track) downloaded at once (202 KB and 59 KB
+  json3). The brain's pattern `en,en-.*,en.*` asks for `en` (YouTube's
+  translated rendition) first, and yt-dlp stops at its 429 before writing
+  `en-orig`. See Phase 0b.
+
+### Estimated (2026-10-17, before Phase 0)
+
+The brain did not record yt-dlp calls; this is graph counts (last 30 days) ×
 the code paths in `plugins/media/crate/src/service.rs` and `skill.rs`. Retries
 are not included, so the real numbers are higher.
 
@@ -85,6 +118,19 @@ rate-limited caption costs a heavier call. The week's count should say how
 many Whisper runs were 429s (a `captions` error, then `audio` for the same
 subject) rather than videos with no captions; if many, the caption call's
 pacing matters more than the metadata calls.
+
+**Interim result 2026-10-20** (§2 Measured): the 429s are 100% of the Whisper
+runs and come from asking for the wrong caption track, not from pacing.
+
+### Phase 0b: ask for the original caption track first (no key; proposed 2026-10-20)
+
+`download_captions` asks for `{lang}-orig` alone first, and only if that
+writes no file, the current pattern (a video with only uploaded captions has
+no `-orig` track). Expected: the ~46% of videos that now download audio and
+run Whisper get YouTube's own transcript instead: ~290 fewer audio calls a
+month, no GPU Whisper time for them, and a better transcript than
+faster-whisper-base. A manual-captions-only video costs one extra light call.
+The outcome stays countable: `captions` errors should fall to near zero.
 
 ### Phase 1: one yt-dlp call per watched video (no key)
 
