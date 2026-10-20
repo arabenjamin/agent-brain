@@ -373,6 +373,17 @@ impl HttpTransport {
             .route("/api/plugins", get(crate::clients::system::handle_plugins))
             // Each loaded plugin's own routes (`Plugin::routes`), under its name.
             .route("/api/plugins/{plugin}/{*rest}", any(plugin_route))
+            // --- Todo tags as references (clients/refs.rs) ---
+            .route("/api/refs", get(crate::clients::refs::handle_search))
+            .route(
+                "/api/refs/suggest",
+                post(crate::clients::refs::handle_suggest),
+            )
+            .route(
+                "/api/refs/resolve",
+                get(crate::clients::refs::handle_resolve),
+            )
+            .route("/api/refs/todos", get(crate::clients::refs::handle_todos))
             // --- Topics (clients/topics.rs) ---
             .route(
                 "/api/topics",

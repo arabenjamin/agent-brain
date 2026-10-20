@@ -35,6 +35,8 @@ export interface Todo {
   source_task?: string | null;
   /** Who made it, in words; absent = the user, in the HBI. */
   source?: string | null;
+  /** The program it counts on (its scorecard); tags may name others it serves. */
+  program?: string | null;
 }
 
 /** Who an item is for, in words. */

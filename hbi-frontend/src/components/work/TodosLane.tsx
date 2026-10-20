@@ -9,6 +9,7 @@ import { useNow } from "../../lib/useNow";
 import { openEntity } from "../drawer/entities";
 import { ORIGIN_LABELS, PRIORITY_LABELS, SORT_LABELS, STATUS_LABELS, assigneeLabel, compareTodos, isTodoOverdue, type SortBy, type Todo } from "../todos/model";
 import { EmptyState, Pill, Tabs } from "../ui";
+import { tagLabel } from "../../api/refs";
 
 type Filter = "open" | "pending" | "in_progress" | "awaiting" | "done" | "all";
 type Who = "mine" | "agents" | "all";
@@ -94,7 +95,7 @@ export default function TodosLane({ openId }: { openId?: string }) {
                 <input type="checkbox" checked={t.status === "done"} onChange={() => toggle(t)} title={t.status === "done" ? "Reopen" : "Mark done"} />
                 <button type="button" className="wk-row-main wk-link" onClick={() => openEntity("todo", t.id)}>
                   <span className="wk-row-title">{t.title}</span>
-                  {t.tags.length > 0 && <span className="wk-dim"> · {t.tags.join(", ")}</span>}
+                  {t.tags.length > 0 && <span className="wk-dim"> · for {t.tags.map(tagLabel).join(", ")}</span>}
                   {!isMine(t) && <span className="wk-dim"> · for {assigneeLabel(t.assignee)}</span>}
                   {t.origin && t.origin.kind !== "user" && <span className="wk-dim"> · {ORIGIN_LABELS[t.origin.kind] ?? t.origin.kind}</span>}
                 </button>

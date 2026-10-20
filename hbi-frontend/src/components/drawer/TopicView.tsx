@@ -14,6 +14,7 @@ import { Drawer, EmptyState, Pill, Stat } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import TopicForm from "./TopicForm";
 import { EntityLink, LoadState, Section } from "./parts";
+import TodosFor from "./TodosFor";
 
 function NewTopic() {
   return (
@@ -120,6 +121,8 @@ function OneTopic({ name }: { name: string }) {
         <a className="btn" href={hrefTo("knowledge", { view: "list", within: t.name })}>Search within this topic</a>
         <a className="btn-ghost" href={hrefTo("knowledge", { view: "map" })}>On the map</a>
       </div>
+
+      <TodosFor tag={`topic:${name}`} what="topic" />
 
       <Section title="Watched by" aside={d.schedules.length ? `${d.schedules.length}` : undefined}>
         {d.schedules.length === 0 ? (

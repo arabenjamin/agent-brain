@@ -8,6 +8,7 @@ pub mod entities;
 pub mod feed;
 pub mod items;
 pub mod programs;
+pub mod refs;
 pub mod related;
 pub mod rest;
 pub mod search;

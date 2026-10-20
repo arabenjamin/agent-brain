@@ -16,6 +16,7 @@ import { Drawer, EmptyState, Pill, Stat } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import ProgramForm from "./ProgramForm";
 import { EntityLink, LoadState, Section } from "./parts";
+import TodosFor from "./TodosFor";
 
 function NewProgram() {
   return (
@@ -244,6 +245,7 @@ function OneProgram({ name }: { name: string }) {
           </ul>
         )}
       </Section>
+      <TodosFor tag={`program:${name}`} what="program" />
     </Drawer>
   );
 }

@@ -10,6 +10,7 @@ import { deleteTodo, invalidateWork, setTodoStatus, todoToTask, useTodoDetail } 
 import { formatLocal } from "../../lib/time";
 import { useNow } from "../../lib/useNow";
 import TodoForm from "../todos/TodoForm";
+import { TagChips } from "../todos/TagPicker";
 import { ORIGIN_LABELS, PRIORITY_LABELS, STATUS_LABELS, assigneeLabel, isTodoOverdue, type Todo } from "../todos/model";
 import { ensureThread, openSession } from "../../api/feed";
 import { HandToAgent, ReviewActions } from "../items/ItemActions";
@@ -114,8 +115,12 @@ export default function TodoView({ id }: { id: string }) {
             {t.due_at && (
               <Pill tone={overdue ? "yellow" : "muted"}>due {t.due_at.slice(0, 10)}{overdue && " · overdue"}</Pill>
             )}
-            {t.tags.map((tag) => <Pill key={tag}>{tag}</Pill>)}
           </div>
+          {t.tags.length > 0 && (
+            <div className="dw-grid">
+              <span>For</span><span><TagChips tags={t.tags} /></span>
+            </div>
+          )}
           {result && <div className={result.ok ? "tone-text-green" : "tone-text-red"}>{result.text}</div>}
 
           <AskBox item={t} />
@@ -139,7 +144,10 @@ export default function TodoView({ id }: { id: string }) {
               {t.origin && t.origin.kind !== "user" && (
                 <><span>Kind</span><span>{ORIGIN_LABELS[t.origin.kind] ?? t.origin.kind}{t.origin.ref && <span className="dw-dim"> · {t.origin.ref}</span>}</span></>
               )}
-              <span>For</span><span>{assigneeLabel(t.assignee)}</span>
+              <span>Done by</span><span>{assigneeLabel(t.assignee)}</span>
+              {t.program && (
+                <><span>Program</span><span><EntityLink kind="program" id={t.program}>{t.program}</EntityLink></span></>
+              )}
               {t.snoozed_until && Date.parse(t.snoozed_until) > now && (
                 <><span>Snoozed</span><span>until {formatLocal(t.snoozed_until)}</span></>
               )}

@@ -386,6 +386,10 @@ pub async fn handle_create_todo(
         .get("tags")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+    let tags = match crate::refs::check_tags(&state, &tags, &[]).await {
+        Ok(t) => t,
+        Err(e) => return bad_request(format!("Item rejected — nothing was saved: {e}")),
+    };
     let due_at = body
         .get("due_at")
         .and_then(|v| v.as_str())
@@ -403,6 +407,13 @@ pub async fn handle_create_todo(
         .await
     {
         Ok(todo) => match neo4j.patch_todo_item(&todo.id, &patch).await {
+            Ok(Some(todo))
+                if crate::refs::sync_links(neo4j, &todo.id, &todo.tags)
+                    .await
+                    .is_err() =>
+            {
+                internal("created, but its tag links were not saved")
+            }
             Ok(Some(todo)) => (
                 StatusCode::CREATED,
                 Json(agent_brain_scheduler::items::item_json(&todo)),
@@ -480,6 +491,20 @@ pub async fn handle_update_todo(
     } else {
         None
     };
+    let tags = match tags {
+        Some(new) => {
+            let old = match neo4j.get_todo(&id).await {
+                Ok(Some(t)) => t.tags,
+                Ok(None) => return not_found(),
+                Err(e) => return internal(e),
+            };
+            match crate::refs::check_tags(&state, &new, &old).await {
+                Ok(t) => Some(t),
+                Err(e) => return bad_request(format!("Item rejected — nothing was saved: {e}")),
+            }
+        }
+        None => None,
+    };
 
     let due_at: Option<Option<String>> = if body
         .as_object()
@@ -511,6 +536,14 @@ pub async fn handle_update_todo(
         .await
     {
         Ok(Some(_)) => match neo4j.patch_todo_item(&id, &patch).await {
+            Ok(Some(todo))
+                if tags.is_some()
+                    && crate::refs::sync_links(neo4j, &todo.id, &todo.tags)
+                        .await
+                        .is_err() =>
+            {
+                internal("saved, but its tag links were not")
+            }
             Ok(Some(todo)) => Json(agent_brain_scheduler::items::item_json(&todo)).into_response(),
             Ok(None) => not_found(),
             Err(e) => internal(format!("saved, but its item fields were not: {e}")),

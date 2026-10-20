@@ -416,7 +416,7 @@ The one record for work that wants doing, the user's or an agent's (HBI plan §9
 | `title` / `description` | String | What it asks |
 | `status` | String | `pending` · `in_progress` · `awaiting_approval` (an agent that writes, not yet started) · `awaiting_review` (an agent finished) · `done` (`TODO_STATUSES`) |
 | `priority` | Integer | 0 urgent … 3 low |
-| `tags` | String | JSON array |
+| `tags` | String | JSON array of references, `kind:name`, each naming something that exists: `workflow`, `agent` (a profile), `program`, `topic`, `entity` (by its unique name), `tool`, `skill`. What the item is *for* (serves or benefits); who does it is `assignee`, the program it counts on is `program`. Checked on every REST write (`clients/refs.rs` `check_tags`); a free word from before 2026-10-20 stays until removed and cannot be added again. Search them with `GET /api/refs?q=` |
 | `due_at` | DateTime? | A calendar date stored at 00:00 UTC; overdue once it is before today's *local* date |
 | `assignee` | String? | `user`, `agent:<spawnable profile>` or `agent:auto`, checked against the live roster when written; only the user assigns an agent. Absent = the user's own (every todo before 2026-10-09) |
 | `origin_kind` / `origin_ref` | String? | Who asked: `user`, `schedule`, `proposal` (ref = filename), `agent` (ref = the notification id), `deep_research` (ref = the Parallel run id). An item is found again by its origin, so it is never made twice |
@@ -432,7 +432,7 @@ The one record for work that wants doing, the user's or an agent's (HBI plan §9
 | `approved_dispatch` | Integer? | The run number the user approved. Single-use: an agent that asks first runs only when it equals `dispatch_count + 1` |
 | `closed_reason` | String? | `became a schedule` when a schedule drafted from it was turned on |
 
-Edges: `(:Todo)-[:SPAWNED {run}]->(:Task)` for each agent run (and "Hand to the brain"); `(:Todo)-[:BECAME]->(:Workflow)` for a workflow drafted from it.
+Edges: `(:Todo)-[:SPAWNED {run}]->(:Task)` for each agent run (and "Hand to the brain"); `(:Todo)-[:BECAME]->(:Workflow)` for a workflow drafted from it; `(:Todo)-[:TAGGED {created_at}]->(:Workflow|:ContextProfile|:Program|:Topic|:Entity)` mirroring its graph-backed tags, rewritten on every tag save (tools and skills are not graph nodes and have none).
 | `created_at` / `updated_at` | DateTime | Native `DATETIME`, UTC |
 
 #### `AgentNotification`

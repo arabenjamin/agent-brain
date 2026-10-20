@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "../../api/client";
+import { assignItem } from "../../api/feed";
+import { usePrograms } from "../../api/programs";
+import { useProfiles } from "../../api/queries";
 import AgentAssist from "../ui/AgentAssist";
+import TagPicker from "./TagPicker";
 import { todosUrl, type Todo } from "./model";
 
 export default function TodoForm({
@@ -20,7 +24,14 @@ export default function TodoForm({
   const [description, setDescription] = useState(existing?.description ?? "");
   const [status, setStatus] = useState<Todo["status"]>(existing?.status ?? "pending");
   const [priority, setPriority] = useState<number>(existing?.priority ?? 2);
-  const [tags, setTags] = useState(existing?.tags.join(", ") ?? "");
+  const [tags, setTags] = useState<string[]>(existing?.tags ?? []);
+  // Who does it: an agent (the item's assignee), or no one (it is yours).
+  const doerNow = existing?.assignee?.startsWith("agent:") ? existing.assignee.slice(6) : "";
+  const [doer, setDoer] = useState(doerNow);
+  // The one program it counts on (its scorecard); tags may name others it serves.
+  const [program, setProgram] = useState(existing?.program ?? "");
+  const agents = (useProfiles().data ?? []).filter((p) => p.spawnable);
+  const programs = (usePrograms().data?.programs ?? []).filter((p) => p.status !== "closed" || p.name === program);
   const [dueAt, setDueAt] = useState(existing?.due_at?.slice(0, 10) ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,15 +65,15 @@ export default function TodoForm({
     setSaving(true);
     setError(null);
 
-    const tagsArr = tags.split(",").map((t) => t.trim()).filter(Boolean);
     const body: Record<string, unknown> = {
       title: title.trim(),
       description: description.trim() || null,
       status,
       priority,
-      tags: tagsArr,
+      tags,
       due_at: dueAt || null,
     };
+    if (program !== (existing?.program ?? "")) body.program = program || null;
 
     try {
       const res = existing
@@ -72,7 +83,18 @@ export default function TodoForm({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as { error?: string }).error ?? `${res.status}`);
       const saved = data as { id?: string; todo?: { id?: string } };
-      onSaved(existing?.id ?? saved.id ?? saved.todo?.id ?? null);
+      const id = existing?.id ?? saved.id ?? saved.todo?.id ?? null;
+      // Handing it to an agent is the item's own flow: it starts when due, or
+      // waits for approval when the agent asks first.
+      if (id && doer !== doerNow) {
+        try {
+          await assignItem(id, doer ? `agent:${doer}` : "user");
+        } catch (e) {
+          setError(`Saved, but not handed to ${doer || "you"}: ${String(e)}`);
+          return;
+        }
+      }
+      onSaved(id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -158,10 +180,34 @@ export default function TodoForm({
             </label>
           </div>
 
-          <label style={labelStyle}>
-            Tags (comma-separated)
-            <input style={inputStyle} value={tags} onChange={(e) => setTags(e.target.value)} placeholder="e.g. work, urgent" />
-          </label>
+          <div style={{ display: "flex", gap: "12px" }}>
+            <label style={{ ...labelStyle, flex: 1 }}>
+              Do it
+              <select style={inputStyle} value={doer} onChange={(e) => setDoer(e.target.value)}>
+                <option value="">me</option>
+                {agents.map((a) => <option key={a.name} value={a.name}>{a.name}</option>)}
+                {doer && !agents.some((a) => a.name === doer) && <option value={doer}>{doer}</option>}
+              </select>
+            </label>
+            <label style={{ ...labelStyle, flex: 1 }}>
+              Program
+              <select style={inputStyle} value={program} onChange={(e) => setProgram(e.target.value)}>
+                <option value="">none</option>
+                {programs.map((p) => <option key={p.name} value={p.name}>{"\u00a0\u00a0".repeat(p.depth)}{p.label || p.name}</option>)}
+              </select>
+            </label>
+          </div>
+          {doer !== doerNow && doer && (
+            <p className="dw-dim" style={{ margin: 0, fontSize: "0.8rem" }}>
+              Saving hands it to {doer}: it starts when due (today if there is no due date), or waits for your approval if {doer} asks first.
+            </p>
+          )}
+
+          <div style={labelStyle}>
+            For
+            <TagPicker tags={tags} onChange={setTags} context={`${title}\n${description}`} inputStyle={inputStyle} />
+            <span className="dw-dim" style={{ fontSize: "0.75rem" }}>What it serves or benefits: existing workflows, agents, programs, topics, entities, tools or skills.</span>
+          </div>
 
           <label style={labelStyle}>
             Due date

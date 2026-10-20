@@ -7,11 +7,11 @@
 //!   (`agent-brain-chat`)
 //! - the HBI's REST API (`agent-brain-api`): [`rest`] (shared plumbing, todos,
 //!   workflows, scheduler config), [`entities`], [`feed`], [`items`],
-//!   [`related`], [`search`], [`system`], [`topics`], [`work`]
+//!   [`refs`], [`related`], [`search`], [`system`], [`topics`], [`work`]
 
 #[cfg(feature = "http-transport")]
 pub use agent_brain_api::{
-    entities, feed, items, programs, related, rest, search, system, topics, work,
+    entities, feed, items, programs, refs, related, rest, search, system, topics, work,
 };
 pub use agent_brain_chat::chat;
 

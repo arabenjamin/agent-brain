@@ -24,6 +24,7 @@ import ScheduledTaskForm from "../schedules/ScheduleForm";
 import { Drawer, EmptyState, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section, StatusPill } from "./parts";
+import TodosFor from "./TodosFor";
 
 /** The editor's shape: `steps` as the JSON string it round-trips. */
 function forEditor(s: WorkSchedule): ScheduledTask {
@@ -171,6 +172,7 @@ export default function ScheduleView({ id }: { id: string }) {
           )}
 
           <ProgramSection name={s.name} />
+          <TodosFor tag={`workflow:${s.name}`} what="workflow" />
 
           <TopicSection s={s} />
 

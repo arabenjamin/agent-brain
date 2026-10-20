@@ -45,7 +45,7 @@ src/
   components/work/   Work's lanes, in tab order: Feed, Todos, Programs, Workflows (+ timeline), History
                      (tabs Active, Tasks, Jobs; Active was its own view until 2026-10-19); the Feed holds entity merge proposals
   components/schedules/ the schedule and routing-chain editors; a save keeps every step field they don't edit
-  components/todos/  todo model (overdue rule) and form
+  components/todos/  todo model (overdue rule) and form: "Do it" (an agent, through the item's hand-over), Program, and "For" tags picked by TagPicker (inline search of workflows, agents, programs, topics, entities, tools and skills over `/api/refs`, with suggestions from the title and description); the workflow, program, topic and entity drawers list the todos tagged for them
   components/settings/ the Settings page and its sections (Agents = AgentsEditor)
   components/palette/ Ctrl-K
   components/<panel>/ the workspaces

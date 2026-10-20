@@ -14,6 +14,7 @@ import MergeCandidates from "../work/MergeCandidates";
 import { Drawer, EmptyState, Pill } from "../ui";
 import { closeEntity, openEntity } from "./entities";
 import { EntityLink, LoadState, Section } from "./parts";
+import TodosFor from "./TodosFor";
 import RelatedEntities from "./RelatedEntities";
 import EntityRelations from "./EntityRelations";
 import EntityReference from "./EntityReference";
@@ -80,6 +81,8 @@ function Body({ d }: { d: EntityDetail }) {
           <MergeCandidates items={cands.data!.candidates} />
         </Section>
       )}
+
+      {d.entity.name && <TodosFor tag={`entity:${d.entity.name}`} what="entity" />}
 
       <EntityRelations id={id} name={d.entity.name ?? id} />
 
