@@ -40,7 +40,10 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: Build & Test
-    runs-on: ubuntu-latest
+    # Pinned: this binary runs in the Debian trixie runtime image (glibc
+    # 2.41), and a binary linked against a newer glibc will not start there.
+    # ubuntu-latest moves to Ubuntu 26 from 2026-10-19.
+    runs-on: ubuntu-24.04
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -121,7 +124,9 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile.ci
+          file: Dockerfile
+          # The runtime image around the binary built and tested above.
+          target: ci
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev

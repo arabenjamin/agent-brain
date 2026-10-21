@@ -116,7 +116,12 @@ RUN cargo build --release --locked
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM debian:trixie-slim AS runtime
+# The runtime image without its binary: shared by `runtime` (the binary
+# built above; compose and local builds) and `ci` (the binary CI built and
+# tested; .github/workflows/ci.yml). One definition, so the two cannot drift:
+# a separate Dockerfile.ci did, still copying a `contexts/` dir that moved
+# into plugins/ long ago, and Ship failed on every run.
+FROM debian:trixie-slim AS runtime-base
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -150,9 +155,6 @@ COPY --from=denoland/deno:bin-2.9.7 /deno /usr/local/bin/deno
 
 # Create non-root user
 RUN useradd -m -u 1000 agent
-
-# Copy binary from builder
-COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
 
 # Seed bundles (services/plugins.rs). Compose points PLUGINS_DIR at the
 # bind-mounted repo instead; this copy is the default (./plugins from WORKDIR).
@@ -191,3 +193,12 @@ CMD ["serve"]
 # Labels
 LABEL org.opencontainers.image.title="agent-brain" \
       org.opencontainers.image.description="General Intelligence Agent Core with Graph RAG and MCP"
+
+# CI: the binary the Build & Test job built and tested, downloaded into
+# target/release/ (.dockerignore keeps only it). BuildKit skips the builder.
+FROM runtime-base AS ci
+COPY target/release/agent-brain /usr/local/bin/
+
+# Local and compose builds (the default target: last).
+FROM runtime-base AS runtime
+COPY --from=builder /app/target/release/agent-brain /usr/local/bin/
