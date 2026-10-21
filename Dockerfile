@@ -44,6 +44,7 @@ COPY plugins/epistemics/crate/Cargo.toml ./plugins/epistemics/crate/
 COPY plugins/sandbox/crate/Cargo.toml ./plugins/sandbox/crate/
 COPY plugins/research/crate/Cargo.toml ./plugins/research/crate/
 COPY plugins/websocket/crate/Cargo.toml ./plugins/websocket/crate/
+COPY plugins/maps/crate/Cargo.toml ./plugins/maps/crate/
 
 # Create dummy source files matching the workspace structure so that
 # cargo can resolve and compile all dependencies without the real source.
@@ -70,7 +71,8 @@ RUN mkdir -p crates/protocol/src \
              plugins/epistemics/crate/src \
              plugins/sandbox/crate/src \
              plugins/research/crate/src \
-             plugins/websocket/crate/src && \
+             plugins/websocket/crate/src \
+             plugins/maps/crate/src && \
     echo "" > crates/protocol/src/lib.rs && \
     echo "" > crates/models/src/lib.rs && \
     echo "" > crates/repository/src/lib.rs && \
@@ -95,6 +97,7 @@ RUN mkdir -p crates/protocol/src \
     echo "" > plugins/sandbox/crate/src/lib.rs && \
     echo "" > plugins/research/crate/src/lib.rs && \
     echo "" > plugins/websocket/crate/src/lib.rs && \
+    echo "" > plugins/maps/crate/src/lib.rs && \
     echo "fn main() {}" > crates/app/src/main.rs && \
     cargo build --release --locked 2>/dev/null || true && \
     rm -rf crates/*/src plugins/*/crate/src \

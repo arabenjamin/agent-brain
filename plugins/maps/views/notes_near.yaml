@@ -1,0 +1,91 @@
+# MAP_PLAN Phase 2 (2026-10-21): what the brain's notes say about things
+# around a place, newest first. A note is near when it mentions a located
+# entity within the radius (claims inherit their subjects' points; nothing is
+# copied), or carries a point of its own (store_note lat/lon: an event, an
+# observation). Whole notes only (no chunks). Broad areas (a country, a
+# state, a region) are left out unless `broad`: their point is a centre, so a
+# note about Iran would otherwise count as near Hormuz (measured 2026-10-21:
+# all 30 notes near Hormuz came through "iran"). The centre resolves as in
+# places_near.
+name: notes_near
+kind: cypher
+description: >-
+  Notes about things within a radius of a place over the last days, newest
+  first: notes that mention a specific located place nearby (a town, port,
+  base, site; with which one), and notes that carry their own location.
+  Countries, states and regions count only with broad: true. Name the centre (`place`), or pass
+  `lat` and `lon` from geocode.
+words: [news near, what happened near, notes near, reports near, events near, activity around, what do we know about the area]
+input_schema:
+  type: object
+  properties:
+    place:
+      type: string
+      default: ""
+      description: A place the brain knows, by name. Leave empty to use lat and lon.
+    lat:
+      type: number
+      default: null
+      description: Latitude of the centre (from geocode), when `place` is empty.
+    lon:
+      type: number
+      default: null
+      description: Longitude of the centre, with lat.
+    km:
+      type: number
+      default: 300
+      description: Radius in kilometres.
+    days:
+      type: integer
+      default: 30
+      description: How far back, in days.
+    broad:
+      type: boolean
+      default: false
+      description: Also count notes that only mention a country, state or region whose centre is in range (loose; off by default).
+cypher: |-
+  OPTIONAL MATCH (c:Entity)-[cl:REFERS_TO]->(cw:WikiItem)
+    WHERE $place <> '' AND cl.status IN ['confirmed', 'proposed'] AND cw.location IS NOT NULL
+      AND (toLower(c.name) = toLower(trim($place))
+           OR EXISTS { MATCH (a:EntityAlias)-[:ALIAS_OF]->(c) WHERE toLower(a.name) = toLower(trim($place)) })
+  WITH c, cw, cl ORDER BY CASE cl.status WHEN 'confirmed' THEN 0 ELSE 1 END LIMIT 1
+  OPTIONAL MATCH (wi:WikiItem)
+    WHERE $place <> '' AND cw IS NULL AND wi.location IS NOT NULL AND toLower(wi.label) = toLower(trim($place))
+  WITH c, coalesce(cw, wi) AS cw LIMIT 1
+  OPTIONAL MATCH (pl:Place {key: toLower(trim($place))})
+    WHERE $place <> '' AND cw IS NULL AND pl.location IS NOT NULL
+  WITH c, cw, pl LIMIT 1
+  WITH c, cw, pl,
+       CASE WHEN cw IS NOT NULL THEN cw.location
+            WHEN pl IS NOT NULL THEN pl.location
+            WHEN $place = '' AND $lat IS NOT NULL AND $lon IS NOT NULL
+              THEN point({latitude: $lat, longitude: $lon}) END AS centre
+  WITH centre, coalesce(c.name, cw.label, pl.name,
+         CASE WHEN centre IS NOT NULL THEN toString($lat) + ', ' + toString($lon) END) AS centre_name
+  OPTIONAL CALL (centre) {
+    MATCH (n:Note)-[:MENTIONS]->(e:Entity)-[l:REFERS_TO]->(w:WikiItem)
+      WHERE centre IS NOT NULL AND l.status IN ['confirmed', 'proposed'] AND w.location IS NOT NULL
+        AND ($broad OR NOT coalesce(e.kind, '') IN ['country', 'state or province', 'region'])
+        AND point.distance(centre, w.location) <= $km * 1000
+        AND n.created_at > datetime() - duration({days: $days})
+        AND NOT (n)-[:PART_OF]->()
+    RETURN n, e.name AS via, point.distance(centre, w.location) AS d
+    UNION
+    MATCH (n:Note)
+      WHERE centre IS NOT NULL AND n.location IS NOT NULL
+        AND point.distance(centre, n.location) <= $km * 1000
+        AND n.created_at > datetime() - duration({days: $days})
+        AND NOT (n)-[:PART_OF]->()
+    RETURN n, '(its own location)' AS via, point.distance(centre, n.location) AS d
+  }
+  WITH centre, centre_name, n, collect(DISTINCT via) AS near, min(d) AS d
+  ORDER BY n.created_at DESC
+  RETURN centre_name AS centre,
+         CASE WHEN centre IS NULL
+                THEN CASE WHEN $place = '' THEN 'No centre: give a place the brain knows, or lat and lon.'
+                          ELSE 'The brain has no located place named "' + $place + '": geocode it first (then this name works), or pass its lat and lon.' END
+              WHEN n IS NULL THEN 'No notes about a located place within ' + toString($km) + ' km in the last ' + toString($days) + ' days'
+                + CASE WHEN $broad THEN '.' ELSE ' (mentions of countries, states and regions left out; broad: true counts them).' END END AS note,
+         n.id AS id, n.note_type AS type, toString(n.created_at) AS created_at,
+         left(n.content, 240) AS excerpt, near, round(d / 1000.0) AS km
+  LIMIT 50

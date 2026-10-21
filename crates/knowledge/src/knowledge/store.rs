@@ -473,6 +473,27 @@ impl KnowledgeService {
         Ok(())
     }
 
+    /// Put a point on a note and its chunks: where what it describes happened
+    /// (MAP_PLAN Phase 2). A note about a place it only mentions needs none;
+    /// it is found near that place through the entity's own point.
+    pub async fn set_note_location(&self, note_id: &str, lat: f64, lon: f64) -> Result<()> {
+        self.neo4j
+            .run(
+                neo4rs::query(
+                    "MATCH (p:Note {id: $id}) \
+                     SET p.location = point({latitude: $lat, longitude: $lon}) \
+                     WITH p OPTIONAL MATCH (c:Note)-[:PART_OF]->(p) \
+                     FOREACH (_ IN CASE WHEN c IS NULL THEN [] ELSE [1] END | \
+                       SET c.location = p.location)",
+                )
+                .param("id", note_id.to_string())
+                .param("lat", lat)
+                .param("lon", lon),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Store a note with optional metadata. Chunks long content automatically.
     pub async fn store_note(
         &self,

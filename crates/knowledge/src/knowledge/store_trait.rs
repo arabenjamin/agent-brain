@@ -27,6 +27,10 @@ impl crate::traits::KnowledgeStore for KnowledgeService {
         KnowledgeService::mark_verification_failed(self, note_id, reason).await
     }
 
+    async fn set_note_location(&self, note_id: &str, lat: f64, lon: f64) -> anyhow::Result<()> {
+        KnowledgeService::set_note_location(self, note_id, lat, lon).await
+    }
+
     async fn store_context_inference(
         &self,
         question: &str,

@@ -94,7 +94,7 @@ build is daily, a refresh every few months is plenty.
   state, municipality, facility), with a marker; "no coordinates" says why
   (not linked, or the item has none).
 
-**Phase 2: located data and `geocode`.** A `location` point on notes and
+**Phase 2: located data and `geocode`.** *Built 2026-10-21 (§4).* A `location` point on notes and
 items; `geocode` (Nominatim, cached as `(:Place)`, public work only: private
 places are placed by hand on the map, §5.2); ACLED requests latitude/longitude and its
 events carry a point; claims about a linked place inherit its point. Spatial
@@ -116,7 +116,10 @@ or leaves, and an item when the owner asked to be told. Areas are layers.
 (NUFORC's public data); boundaries (country and state polygons) for
 "within a country".
 
-## 4. Phase 1 as built (2026-10-21)
+## 4. As built
+
+### Phase 1 (2026-10-21)
+
 
 - **Coordinates.** `wiki.rs` reads P625 from the claims every lookup already
   fetches (`coord_of`: preferred rank, else first normal; never deprecated;
@@ -150,6 +153,38 @@ or leaves, and an item when the owner asked to be told. Areas are layers.
   tiles on the server. Checked in headless Chromium: Detroit (Michigan
   detail, z10) and Yemen (world, z3.5) render with no console errors and no
   failed requests.
+
+### Phase 2 (2026-10-21)
+
+- **`geocode`** (new `maps` plugin): the brain's own knowledge first, so
+  most lookups send nothing: a located entity by name or alias, then any
+  stored Wikidata item of that label, then the `(:Place)` cache (misses
+  included, retried after 30 days), then Nominatim (one request a second
+  process-wide, a contact in the User-Agent, through the net policy). Public
+  names only (§5.2). Live: Detroit from the graph; Strait of Hormuz from
+  Nominatim, then from the cache for a re-spelled name; Bab-el-Mandeb; a
+  nonsense name "not found", naming both tiers tried.
+- **`places_near` / `notes_near`** (`lookup` views, YAML only): the centre
+  is a located entity, a Wikidata item, a geocoded `Place`, or a lat/lon;
+  an unresolved centre or an empty radius is a row that says so. Each view
+  carries its own `LIMIT` (the engine adds one only when a query has none).
+- **Broad areas are left out of `notes_near` by default.** A country is one
+  point at its centre, so every note mentioning Iran counted as near Hormuz
+  (all 30 rows of the first run). Countries, states and regions now count
+  only with `broad: true`, and the empty answer says they were left out.
+  Measured after: near Hormuz, no specific located place is known yet (no
+  port or town there is linked), which is the gap Phase 4 events and
+  located notes fill; near Detroit, the local notes at 0 km.
+- **Located notes:** `store_note` takes `lat` + `lon` (both or neither, in
+  range, checked before anything is stored); the point goes on the note and
+  its chunks, and the response says if the store could not keep it.
+  Verified live with a throwaway note 26 km from the strait, found by
+  `notes_near` "through its own location", then deleted.
+- **ACLED** requests `latitude`, `longitude` and `geo_precision`; each
+  sampled event carries `point: {lat, lon, precision}`, the precision in
+  words (the town, near it, only the region). Unit-tested; not live:
+  `ACLED_EMAIL`/`ACLED_PASSWORD` are not set, so the osint-data plugin is
+  not loaded.
 
 ## 5. Decisions (owner, 2026-10-21)
 

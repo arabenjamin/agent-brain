@@ -33,7 +33,8 @@ const EVENTS_URL: &str = "https://acleddata.com/api/acled/read";
 /// Columns requested. Fewer than the full 31 keeps the payload small; these
 /// are the ones a summary or a claim check reads.
 const FIELDS: &str = "event_id_cnty|event_date|disorder_type|event_type|sub_event_type|actor1|\
-                      actor2|country|admin1|location|fatalities|notes|source|civilian_targeting";
+                      actor2|country|admin1|location|latitude|longitude|geo_precision|\
+                      fatalities|notes|source|civilian_targeting";
 
 /// Rows fetched when the caller names no limit, and the ceiling. ACLED's own
 /// per-call ceiling is 5,000; past a couple of thousand the aggregates are
@@ -321,6 +322,37 @@ fn s<'a>(row: &'a Value, key: &str) -> &'a str {
 }
 
 /// ACLED sends numbers as strings.
+/// A coordinate ACLED sends as a string ("15.3547") or a number, in range.
+fn coord(row: &Value, key: &str, max: f64) -> Option<f64> {
+    let v = match row.get(key)? {
+        Value::Number(n) => n.as_f64()?,
+        Value::String(t) => t.trim().parse().ok()?,
+        _ => return None,
+    };
+    (v.abs() <= max).then_some(v)
+}
+
+/// Where an event happened (MAP_PLAN Phase 2): `{lat, lon, precision}`, with
+/// ACLED's geo_precision said in words, since a map point is only as exact
+/// as this. None when ACLED gave no usable coordinates.
+fn event_point(row: &Value) -> Option<Value> {
+    let (lat, lon) = (
+        coord(row, "latitude", 90.0)?,
+        coord(row, "longitude", 180.0)?,
+    );
+    let precision = match row
+        .get("geo_precision")
+        .map(|p| p.to_string().trim_matches('"').to_string())
+        .as_deref()
+    {
+        Some("1") => "the town itself",
+        Some("2") => "near the named town (within its area)",
+        Some("3") => "only the region (a provincial capital or larger area stands in)",
+        _ => "unstated",
+    };
+    Some(json!({ "lat": lat, "lon": lon, "precision": precision }))
+}
+
 fn fatalities(row: &Value) -> i64 {
     match row.get("fatalities") {
         Some(Value::Number(n)) => n.as_i64().unwrap_or(0),
@@ -379,6 +411,7 @@ pub fn summarize_events(rows: &[Value], q: &EventQuery, today: NaiveDate, sample
                 "country": s(r, "country"),
                 "admin1": s(r, "admin1"),
                 "location": s(r, "location"),
+                "point": event_point(r),
                 "event_type": s(r, "event_type"),
                 "sub_event_type": s(r, "sub_event_type"),
                 "actor1": s(r, "actor1"),
@@ -502,6 +535,29 @@ mod tests {
         json!({"event_id_cnty": format!("{country}{date}"), "event_date": date,
                "country": country, "event_type": et, "sub_event_type": "x",
                "actor1": a1, "actor2": "", "admin1": "A", "fatalities": fat, "notes": "n"})
+    }
+
+    #[test]
+    fn an_event_point_reads_string_coordinates_and_says_its_precision() {
+        let r = json!({"latitude": "15.3547", "longitude": "44.2066", "geo_precision": "1"});
+        assert_eq!(
+            event_point(&r),
+            Some(json!({"lat": 15.3547, "lon": 44.2066, "precision": "the town itself"}))
+        );
+        let r = json!({"latitude": 12.8, "longitude": 45.03, "geo_precision": 3});
+        assert_eq!(
+            event_point(&r).unwrap()["precision"],
+            "only the region (a provincial capital or larger area stands in)"
+        );
+        assert_eq!(
+            event_point(&json!({"latitude": "x", "longitude": "1"})),
+            None
+        );
+        assert_eq!(
+            event_point(&json!({"latitude": "95", "longitude": "1"})),
+            None
+        );
+        assert_eq!(event_point(&json!({"location": "Aden"})), None);
     }
 
     #[test]

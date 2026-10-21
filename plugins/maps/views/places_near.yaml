@@ -1,0 +1,65 @@
+# MAP_PLAN Phase 2 (2026-10-21): what the brain knows around a place.
+# The centre is a located entity (by name or alias), a Wikidata item of that
+# label, or a place `geocode` cached (:Place), else a lat/lon. Points come from
+# the entities' Wikidata links (:WikiItem.location). An unresolved centre and
+# an empty radius each return one row saying so. The query has its own
+# LIMIT (the centre lookup uses one, so the engine adds none).
+name: places_near
+kind: cypher
+description: >-
+  Places and organisations the brain knows within a radius of a place,
+  nearest first: cities, countries, regions, bases, headquarters, each with
+  its distance in km. Name the centre (`place`, a place the brain knows), or
+  pass `lat` and `lon` from geocode for anywhere else.
+words: [near, nearby, around, close to, within km, places near, what is near, surrounding, in the region of]
+input_schema:
+  type: object
+  properties:
+    place:
+      type: string
+      default: ""
+      description: A place the brain knows, by name ("Detroit", "Taiwan"). Leave empty to use lat and lon.
+    lat:
+      type: number
+      default: null
+      description: Latitude of the centre (from geocode), when `place` is empty.
+    lon:
+      type: number
+      default: null
+      description: Longitude of the centre, with lat.
+    km:
+      type: number
+      default: 300
+      description: Radius in kilometres.
+cypher: |-
+  OPTIONAL MATCH (c:Entity)-[cl:REFERS_TO]->(cw:WikiItem)
+    WHERE $place <> '' AND cl.status IN ['confirmed', 'proposed'] AND cw.location IS NOT NULL
+      AND (toLower(c.name) = toLower(trim($place))
+           OR EXISTS { MATCH (a:EntityAlias)-[:ALIAS_OF]->(c) WHERE toLower(a.name) = toLower(trim($place)) })
+  WITH c, cw, cl ORDER BY CASE cl.status WHEN 'confirmed' THEN 0 ELSE 1 END LIMIT 1
+  OPTIONAL MATCH (wi:WikiItem)
+    WHERE $place <> '' AND cw IS NULL AND wi.location IS NOT NULL AND toLower(wi.label) = toLower(trim($place))
+  WITH c, coalesce(cw, wi) AS cw LIMIT 1
+  OPTIONAL MATCH (pl:Place {key: toLower(trim($place))})
+    WHERE $place <> '' AND cw IS NULL AND pl.location IS NOT NULL
+  WITH c, cw, pl LIMIT 1
+  WITH c, cw, pl,
+       CASE WHEN cw IS NOT NULL THEN cw.location
+            WHEN pl IS NOT NULL THEN pl.location
+            WHEN $place = '' AND $lat IS NOT NULL AND $lon IS NOT NULL
+              THEN point({latitude: $lat, longitude: $lon}) END AS centre
+  WITH centre, coalesce(c.name, cw.label, pl.name,
+         CASE WHEN centre IS NOT NULL THEN toString($lat) + ', ' + toString($lon) END) AS centre_name
+  OPTIONAL MATCH (e:Entity)-[l:REFERS_TO]->(w:WikiItem)
+    WHERE centre IS NOT NULL AND l.status IN ['confirmed', 'proposed'] AND w.location IS NOT NULL
+      AND point.distance(centre, w.location) <= $km * 1000
+  WITH centre, centre_name, e, w, l, point.distance(centre, w.location) AS d
+  ORDER BY d
+  RETURN centre_name AS centre,
+         CASE WHEN centre IS NULL
+                THEN CASE WHEN $place = '' THEN 'No centre: give a place the brain knows, or lat and lon.'
+                          ELSE 'The brain has no located place named "' + $place + '": geocode it first (then this name works), or pass its lat and lon.' END
+              WHEN e IS NULL THEN 'Nothing the brain knows is within ' + toString($km) + ' km.' END AS note,
+         e.name AS name, e.entity_type AS type, e.kind AS kind,
+         round(d / 1000.0) AS km, w.qid AS qid, l.status AS link
+  LIMIT 100

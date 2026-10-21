@@ -181,6 +181,7 @@ Long-term memory entries with hybrid vector+BM25 retrieval and spaced-repetition
 | `review_interval_days` | Float? | Current review interval |
 | `source_context` | String? | Where/how the note was created |
 | `event_at` | DateTime | Native Neo4j `DATETIME`, UTC — when the described event occurred (episodic notes) |
+| `location` | Point? | Where what the note describes happened (WGS 84), from `store_note` `lat`/`lon` (MAP_PLAN Phase 2): an event or an observation, never a place it only mentions (that note is found near the place through the entity's own point). Copied to its chunks. `notes_near` reads it |
 | `created_at` | DateTime | Native Neo4j `DATETIME`, UTC |
 | `topics_version` | String? | The topic-definitions hash it was classified against (`services/topics.rs`). Equal to the current version and no `IN_TOPIC` ⇒ assessed, fits no topic; anything else ⇒ waiting |
 | `topics_locked` | Boolean? | The user set its topics (`PUT /api/notes/{id}/topics`). The classifier skips it, and each new version is stamped on it |
@@ -497,6 +498,24 @@ Which plugin owns a tool (`services/self_model.rs`, CORE_AND_PLUGINS_PLAN Phase 
 | `name` | String | Tool name; MERGE key |
 | `plugin` | String | The bundle that registers it |
 | `seen_at` | DateTime | Last start that registered it (UTC) |
+
+#### `Place`
+
+A geocoded place name (MAP_PLAN Phase 2, the `maps` plugin's `geocode`, `plugins/maps/crate/src/geocode.rs`): every Nominatim answer, misses included, so a name is asked once. Unique `key`, constraint created in the plugin's `start`. The `places_near` / `notes_near` views resolve a centre from it after entities and Wikidata items.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `key` | String | The asked name, lower case, inner whitespace collapsed; unique |
+| `query` | String | The name as asked |
+| `found` | Boolean | Whether Nominatim matched it. A miss is asked again after 30 days |
+| `source` | String | `nominatim` |
+| `name` / `display_name` | String? | The best match's name and full OSM display name |
+| `kind` | String? | `category:type` (`natural:strait`, `place:city`) |
+| `osm` | String? | `relation/123`, the OSM object |
+| `location` | Point? | The best match's point (WGS 84) |
+| `bbox` | Float[]? | `[south, north, west, east]` of the best match |
+| `candidates_json` | String | Up to 3 candidates, best first, as returned to the caller |
+| `fetched_at` | DateTime | When Nominatim was asked |
 
 #### `ResearchRun`
 

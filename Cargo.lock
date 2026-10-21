@@ -134,6 +134,7 @@ dependencies = [
  "agent-brain-plugin-api",
  "agent-brain-plugin-developer",
  "agent-brain-plugin-epistemics",
+ "agent-brain-plugin-maps",
  "agent-brain-plugin-media",
  "agent-brain-plugin-osint-data",
  "agent-brain-plugin-reference",
@@ -268,6 +269,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "agent-brain-plugin-maps"
+version = "0.1.0"
+dependencies = [
+ "agent-brain-plugin-api",
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -61,6 +61,13 @@ pub trait KnowledgeStore: Send + Sync {
         Ok(())
     }
 
+    /// Put a point (WGS 84) on a stored note and its chunks (MAP_PLAN Phase 2).
+    /// The default refuses rather than dropping it: a store that keeps no
+    /// locations says so.
+    async fn set_note_location(&self, _note_id: &str, _lat: f64, _lon: f64) -> anyhow::Result<()> {
+        anyhow::bail!("this knowledge store keeps no locations")
+    }
+
     /// Store an inference note for a context-grounded `reason()` call.
     /// Default no-op so test mocks and minimal stores compile unchanged.
     async fn store_context_inference(

@@ -56,6 +56,18 @@ impl KnowledgeSkill {
                         "type": "string",
                         "description": "Optional ISO-8601 timestamp of the event this note describes"
                     },
+                    "lat": {
+                        "type": "number",
+                        "minimum": -90,
+                        "maximum": 90,
+                        "description": "Optional: where what the note describes happened (latitude, WGS 84), with `lon`. Only for a note about an event or observation at a place (a reported incident, a ship's position); a note that merely mentions a place is found near it already."
+                    },
+                    "lon": {
+                        "type": "number",
+                        "minimum": -180,
+                        "maximum": 180,
+                        "description": "Optional: longitude, with `lat`."
+                    },
                     "provenance": {
                         "type": "string",
                         "enum": ["user_input", "synthesis_inference", "core_training"],
@@ -338,6 +350,13 @@ impl KnowledgeSkill {
             Err(e) => return e,
         };
 
+        // Checked before anything is stored: a half-given point is refused,
+        // never stored without it.
+        let point = match note_point(input.lat, input.lon) {
+            Ok(p) => p,
+            Err(e) => return ToolCallResult::error(format!("Not stored: {e}.")),
+        };
+
         info!(content_len = input.content.len(), "Storing note");
 
         // Who is writing decides the default; see `effective_provenance`.
@@ -386,6 +405,10 @@ impl KnowledgeSkill {
                 {
                     warn!(error = %e, note_id = %id, "store_note: could not flag failed verification");
                 }
+                let location_error = match point {
+                    Some((lat, lon)) => self.svc.set_note_location(&id, lat, lon).await.err(),
+                    None => None,
+                };
                 // "answer" echoes the stored content so downstream {{_prev}} steps
                 // (e.g. notify_user after store_note) receive the original text, not metadata JSON.
                 let mut response = json!({
@@ -395,6 +418,12 @@ impl KnowledgeSkill {
                     "message": "Note stored successfully",
                     "answer": input.content
                 });
+                if let Some((lat, lon)) = point {
+                    response["location"] = match &location_error {
+                        None => json!({ "lat": lat, "lon": lon }),
+                        Some(e) => json!({ "error": format!("stored without its location: {e}") }),
+                    };
+                }
                 if unverified {
                     response["note_type"] = json!("unsourced_synthesis");
                     response["message"] = json!(
@@ -1425,6 +1454,22 @@ struct StoreNoteInput {
     event_at: Option<String>,
     #[serde(default)]
     provenance: Option<String>,
+    #[serde(default)]
+    lat: Option<f64>,
+    #[serde(default)]
+    lon: Option<f64>,
+}
+
+/// A note's point: both coordinates or neither, each in range.
+fn note_point(lat: Option<f64>, lon: Option<f64>) -> Result<Option<(f64, f64)>, String> {
+    match (lat, lon) {
+        (None, None) => Ok(None),
+        (Some(la), Some(lo)) if (-90.0..=90.0).contains(&la) && (-180.0..=180.0).contains(&lo) => {
+            Ok(Some((la, lo)))
+        }
+        (Some(_), Some(_)) => Err("lat must be within -90..90 and lon within -180..180".into()),
+        _ => Err("a location needs both lat and lon".into()),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1654,6 +1699,27 @@ mod tests {
     use crate::test_helpers::*;
     use std::sync::Arc;
 
+    #[test]
+    fn a_note_point_needs_both_coordinates_in_range() {
+        assert_eq!(note_point(None, None), Ok(None));
+        assert_eq!(
+            note_point(Some(26.56), Some(56.25)),
+            Ok(Some((26.56, 56.25)))
+        );
+        assert!(note_point(Some(26.5), None).unwrap_err().contains("both"));
+        assert!(note_point(None, Some(56.0)).unwrap_err().contains("both"));
+        assert!(
+            note_point(Some(91.0), Some(0.0))
+                .unwrap_err()
+                .contains("within")
+        );
+        assert!(
+            note_point(Some(0.0), Some(-181.0))
+                .unwrap_err()
+                .contains("within")
+        );
+    }
+
     fn skill_ok() -> KnowledgeSkill {
         KnowledgeSkill::new(
             Arc::new(MockKnowledgeStore::default()),
@@ -1713,6 +1779,32 @@ mod tests {
             json!({"content": "## Research: x\n\nNO FINDINGS — nothing.", "note_type": "semantic"});
         let r = result_json(skill.execute("store_note", Some(args)).await.unwrap());
         assert_eq!(r["note_type"], "episodic");
+    }
+
+    #[tokio::test]
+    async fn a_half_location_stores_nothing_and_a_store_without_locations_says_so() {
+        let skill = skill_ok();
+        let r = skill
+            .execute(
+                "store_note",
+                Some(json!({"content": "ship sighted", "lat": 26.5})),
+            )
+            .await
+            .unwrap();
+        assert!(r.is_error.unwrap_or(false), "{r:?}");
+        assert!(format!("{r:?}").contains("Not stored") && format!("{r:?}").contains("both"));
+        // The mock keeps no locations: the note is stored and the response
+        // says its point was not, rather than dropping it quietly.
+        let args = json!({"content": "ship sighted", "lat": 26.5, "lon": 56.2});
+        let r = result_json(skill.execute("store_note", Some(args)).await.unwrap());
+        assert_eq!(r["success"], true);
+        assert!(
+            r["location"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("keeps no locations"),
+            "{r}"
+        );
     }
 
     #[tokio::test]
