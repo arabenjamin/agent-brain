@@ -754,7 +754,8 @@ impl MediaService {
             let mut partials = Vec::with_capacity(windows.len());
             for (i, w) in windows.iter().enumerate() {
                 let prompt = format!(
-                    "This is segment {}/{} of {} titled \"{}\". \
+                    "This is segment {}/{} of {} titled \"{}\" (a headline: take \
+                     facts from the segment, never the title). \
                      Summarize its key points, claims, and any named concepts as concise \
                      bullet points. Do not add preamble.\n\nSEGMENT:\n{}",
                     i + 1,
@@ -774,15 +775,25 @@ impl MediaService {
             partials.join("\n\n")
         };
 
+        // The title is the uploader's headline, not a fact source: local E4B
+        // read "CBS Reporter's Abdul El Sayed Post Just Backfired" as "CBS
+        // reporter Abdul El-Sayed" (a Senate candidate) in 4/4 runs, and the
+        // error rode into a claim and the daily brief. With the title fenced
+        // off and roles and pronouns tied to the transcript: 0/4 (2026-10-20).
         let reduce_prompt = format!(
-            "You are summarizing {} {} titled \"{}\" by {}. Below are notes taken from {}. \
+            "You are summarizing {} {} by {}. Its title is \"{}\"; a title is a \
+             headline, often clipped or ambiguous, so take every fact from the \
+             notes below, never from the title. Below are notes taken from {}. \
              Write a cohesive 200-400 word prose summary and extract the key \
-             concepts.\n\nNOTES:\n{}\n\nReturn ONLY a JSON object of the form:\n\
+             concepts. Describe each person only by a role the notes give them, \
+             and keep each \"his\", \"her\" and \"their\" attached to the person \
+             the notes mean; when it is unclear, use the name.\n\nNOTES:\n{}\n\n\
+             Return ONLY a JSON object of the form:\n\
              {{\"summary\": \"<prose summary>\", \"key_concepts\": [\"concept\", ...]}}",
             if medium == Medium::Article { "an" } else { "a" },
             medium.noun(),
-            meta.title,
             meta.channel,
+            meta.title,
             if medium == Medium::Article {
                 "it"
             } else {
