@@ -52,6 +52,11 @@ export function basemapStyle(m: MapManifest): StyleSpecification {
     };
     const ls = layers(s.name, flavor, { lang: "en" }) as LayerSpecification[];
     for (const l of ls) {
+      // One background, the world's: a background layer is not clipped to
+      // its source, so a region's painted over every region before it (with
+      // the US, Alaska's and Hawaii's hid the contiguous US's roads and
+      // buildings, leaving only labels: 2026-10-21).
+      if (l.type === "background" && s.name !== "world") continue;
       // A region's detail draws over the world from where the world's tiles end.
       const detail = s.name !== "world" && world ? { minzoom: Math.max(l.minzoom ?? 0, world.maxzoom) } : {};
       all.push({ ...l, id: `${s.name}:${l.id}`, ...detail } as LayerSpecification);
