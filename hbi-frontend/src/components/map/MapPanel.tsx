@@ -15,6 +15,7 @@ import { basemapStyle, loadManifest, type MapManifest } from "../../lib/map";
 import { DRAWER_KINDS, openEntity, type DrawerKind } from "../drawer/entities";
 import type { FeatureCollection, Point } from "geojson";
 import { ensureMapSetup } from "./setup";
+import WatchAreas from "./WatchAreas";
 
 const ON_KEY = "hbi.map.layers";
 const DAYS_KEY = "hbi.map.days";
@@ -167,6 +168,8 @@ export default function MapPanel() {
             <div className="dw-dim">For the layers with a time (marked ⏱).</div>
           </div>
         )}
+
+        <WatchAreas map={map} placingRef={placingRef} />
 
         <MyPlaces placing={placing} setPlacing={setPlacing} draft={draft} setDraft={setDraft} map={map} />
       </aside>

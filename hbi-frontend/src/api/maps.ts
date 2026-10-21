@@ -100,3 +100,83 @@ export async function deletePlace(name: string) {
   await apiSend("DELETE", `${MAPS}/places/${encodeURIComponent(name)}`);
   refreshPlaces();
 }
+
+// ── Watch areas and tracks (MAP_PLAN Phase 4) ──────────────────────────────
+
+export interface AreaCoverage {
+  /** `covered`, `partial`, `too early`, `no coverage`, `not collected`. */
+  state: string;
+  says: string;
+  reports: number;
+}
+
+export interface CollectorStatus {
+  state: string;
+  detail: string | null;
+  since: number | null;
+  last_message_at: number | null;
+  messages: number;
+  stored: number;
+  errors: number;
+  areas: string[];
+}
+
+export interface AreaList {
+  type: "FeatureCollection";
+  features: {
+    type: "Feature";
+    geometry: { type: "Polygon"; coordinates: number[][][] };
+    properties: {
+      name: string;
+      title: string;
+      description: string;
+      ships: boolean;
+      aircraft: boolean;
+      /** The last day's coverage, per watched kind (`ships`, `aircraft`). */
+      coverage: Record<string, AreaCoverage>;
+    };
+  }[];
+  problems: string[];
+  collectors: Record<string, CollectorStatus>;
+  /** Why the tracks store did not open, if it did not. */
+  store: string | null;
+}
+
+export interface TrackProps {
+  source: "ais" | "adsb";
+  id: string;
+  area: string;
+  name?: string;
+  class?: string;
+  speed?: number;
+  course?: number;
+  altitude?: number;
+  destination?: string;
+  at: number;
+}
+
+export interface Positions {
+  type: "FeatureCollection";
+  features: { type: "Feature"; geometry: { type: "Point"; coordinates: [number, number] }; properties: TrackProps }[];
+  count: number;
+  minutes: number;
+  truncated: boolean;
+  note: string | null;
+}
+
+export function useAreas() {
+  return useQuery({
+    queryKey: ["maps", "areas"],
+    queryFn: () => apiJson<AreaList>(`${MAPS}/areas`),
+    refetchInterval: 120_000,
+  });
+}
+
+export function usePositions(minutes: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ["maps", "positions", minutes],
+    queryFn: () => apiJson<Positions>(`${MAPS}/areas/positions${query({ minutes })}`),
+    enabled,
+    refetchInterval: 60_000,
+  });
+}

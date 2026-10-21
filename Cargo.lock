@@ -279,12 +279,16 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "duckdb",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
+ "url",
 ]
 
 [[package]]

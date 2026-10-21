@@ -129,6 +129,30 @@ Each successful attempt's result links in rank order (`usage_id` → `search_usa
 
 ---
 
+## DuckDB — Tracks (maps plugin)
+
+A file of its own (`TRACKS_DB_PATH`, default `/home/agent/telemetry/tracks.duckdb`), written only by the maps plugin's collectors (MAP_PLAN Phase 4, `plugins/maps/crate/src/tracks/store.rs`): ship and aircraft positions over the watch areas (`areas/*.yaml`). Kept 14 days. Times are unix seconds (BIGINT). Not reachable from `duckdb_query`; read through `area_traffic` and `/api/plugins/maps/areas*`.
+
+### `positions`
+
+| Column | Type | Description |
+|---|---|---|
+| `source` | VARCHAR | `ais` (ships, aisstream.io) · `adsb` (aircraft, OpenSky) |
+| `id` | VARCHAR | MMSI or ICAO 24-bit address |
+| `area` | VARCHAR | The watch area it was in (the first whose box contains it) |
+| `lat` / `lon` | DOUBLE | WGS 84 |
+| `speed` / `course` / `altitude` | DOUBLE? | Knots (ships) or m/s (aircraft); degrees; metres (aircraft) |
+| `seen` | BIGINT | Unix seconds (`at` is reserved in DuckDB). Ships: one row per ship per 5 minutes; aircraft: every poll (10 minutes) |
+| `name` / `class` | VARCHAR? | Ship name or callsign; `tanker`, `cargo`, `military` … from the ship's AIS type, or the aircraft category |
+
+### `vessels`
+
+What a ship says about itself (AIS static data): `mmsi` (key), `name`, `ship_type` (AIS code), `callsign`, `imo`, `destination`, `updated`.
+
+### `coverage`
+
+One row per `source`, `area` and `hour` (unix seconds) the collector ran, **zeros included**: `messages` (reports heard), `ids` (distinct, the most seen in the hour), `up_secs` (seconds collected). What keeps "no ships" from reading as "quiet": ran and heard nothing = no receivers there.
+
 ## Neo4j — Knowledge Graph
 
 Schema initialised by `Neo4jClient::init_schema()` (run via `cargo run -- init-db`).

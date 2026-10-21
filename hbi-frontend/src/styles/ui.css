@@ -874,6 +874,10 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .map-problem { font-size: 11px; }
 .map-window { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--border); }
 .map-window input { width: 100%; }
+.map-watch { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.map-watch select { font-size: 11px; }
+.map-area { padding-left: 4px; }
+.map-area-title { font-size: 12px; }
 .map-places { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
 .map-place-form { display: flex; flex-direction: column; gap: 6px; }
 .map-place-actions { display: flex; gap: 6px; }

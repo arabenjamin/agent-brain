@@ -10,9 +10,13 @@ agent-brain-plugin-api = { path = "../../../crates/plugin-api" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+duckdb = { workspace = true }
+futures-util = "0.3"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tracing = { workspace = true }
+url = "2"

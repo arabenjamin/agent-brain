@@ -109,10 +109,18 @@ stored as located notes.
 **Phase 4: NIA tracks and tripwires.** Sources measured (§6): ships through
 aisstream.io (a client of its own that injects the key, not the `ws_*`
 tools), flights through OpenSky's REST API (OAuth2). Every count carries
-its coverage: the Red Sea has none from either. Positions to
-DuckDB (`tracks`, retention window); a geofence workflow per area of interest
-that writes an event note when a watched class of vessel or aircraft enters
-or leaves, and an item when the owner asked to be told. Areas are layers.
+its coverage: the Red Sea has none from either. Split in two so the
+tripwires are designed against real data, not guesses:
+
+- **4a: tracks.** *Built 2026-10-21 (§4).* Watch areas (`areas/*.yaml`,
+  the NIA's in its private bundle), the two collectors, positions and
+  coverage in DuckDB (`tracks.duckdb`, 14 days), `area_traffic` for
+  workflows, the areas and live positions on the Map.
+- **4b: tripwires.** A workflow per area of interest that writes an event
+  note when something changes (a watched class of vessel or aircraft enters
+  or leaves; a count far off its baseline) and an item when the owner asked
+  to be told. Designed after a week of 4a data: which classes appear, what
+  a normal day's counts are, how much the coverage itself moves.
 
 **Later.** Trip planning (routing, the private-data story first); UFO reports
 (NUFORC's public data); boundaries (country and state polygons) for
@@ -232,6 +240,46 @@ or leaves, and an item when the owner asked to be told. Areas are layers.
 - Checked in headless Chromium: the world with all layers drawn, a place
   added through the UI, the window moved to a day; no console errors, no
   failed requests. Test places and the one cached test miss deleted.
+
+### Phase 4a (2026-10-21)
+
+- **Watch areas** are a seed kind (`areas/*.yaml`, the maps plugin owns
+  it): a box, `ships` and/or `aircraft`, an optional owner. An aircraft
+  area is at most 100 square degrees (OpenSky's 2-credit size). What the
+  owner watches can reveal an interest, so the maps plugin ships none: the
+  NIA's four (Strait of Hormuz, Bab-el-Mandeb, Taiwan Strait, Black Sea)
+  are in the private bundle. Bab-el-Mandeb is watched knowing it is blind,
+  so every answer about it says so.
+- **Ships:** one aisstream.io WebSocket for every ship area, the key in the
+  subscription message to a fixed URL (never a model, never logged), the
+  net policy on the connection, reconnect with backoff, renewed after 10
+  minutes of silence or when the areas change. One stored position per
+  ship per 5 minutes; a ship's type, name and destination come in their
+  own messages and class it when read (its first positions arrive before
+  them).
+- **Aircraft:** OpenSky `states/all` per aircraft area every 10 minutes,
+  OAuth2 client credentials, the token renewed before its 30 minutes run
+  out; a 429 waits as long as OpenSky says, and polling pauses for the hour
+  under 100 credits. Four areas cost 6 credits a round, about 860 a day of
+  4,000.
+- **Store:** `tracks.duckdb` beside the telemetry (`TRACKS_DB_PATH`),
+  `positions`, `vessels`, `coverage` (schema.md), 14 days. Coverage is one
+  row per source, area and hour the collector ran, zeros included, with
+  the seconds it ran.
+- **`area_traffic`** (a tool, for workflows): distinct ships and aircraft
+  in an area over a window, by class, the most recently seen with their
+  last position, and **coverage** per source: `covered`, `partial`, `too
+  early` (silence under an hour, or a quarter of the window, says nothing
+  yet), `no coverage` ("zero is NOT quiet, it is unseen"), `not
+  collected`. With no area it lists the areas and the collectors' state.
+- **The Map:** a "Watch areas" section (outlines, ships in cyan and
+  aircraft in violet seen in the last 15 minutes to a day, each area's
+  last-day coverage per source, each collector's state and when it last
+  heard anything). Routes `/areas`, `/areas/positions`, `/tracks/status`.
+- **First minutes, live:** both collectors running at once; Hormuz 46
+  ships and 31 aircraft in the first poll and minutes, Bab-el-Mandeb
+  nothing from either, as measured. `at` is a reserved word in DuckDB (the
+  column is `seen`); found by the store's own tests.
 
 ## 5. Decisions (owner, 2026-10-21)
 

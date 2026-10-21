@@ -12,6 +12,12 @@
 //! - `DELETE /places/{name}` — remove one (hand-placed only: the geocode
 //!   cache is never touched here).
 //!
+//! - `GET    /areas` — the watch areas (Phase 4) as GeoJSON outlines, each
+//!   with its last day's coverage per source.
+//! - `GET    /areas/positions?minutes=60` — the latest position of each ship
+//!   and aircraft seen in the areas in that window (at most 2,000).
+//! - `GET    /tracks/status` — what the collectors are doing.
+//!
 //! Places added by hand are private (§5.2): they live only in the graph,
 //! and geocode never reads them (their key is `hand:<name>`).
 
@@ -32,6 +38,7 @@ use serde_json::{Value, json};
 
 use crate::geocode::key_of;
 use crate::layers::{self, Layer};
+use crate::tracks::{self, Tracks, tool::judge};
 
 const MAX_NAME: usize = 80;
 const MAX_NOTE: usize = 500;
@@ -39,6 +46,7 @@ const MAX_NOTE: usize = 500;
 pub struct RouteState {
     pub graph: Arc<dyn Graph>,
     pub ctx: PluginContext,
+    pub tracks: Tracks,
 }
 
 type St = State<Arc<RouteState>>;
@@ -49,6 +57,9 @@ pub fn router(state: Arc<RouteState>) -> Router {
         .route("/layers/{name}", get(handle_layer))
         .route("/places", get(handle_places).post(handle_add_place))
         .route("/places/{name}", delete(handle_delete_place))
+        .route("/areas", get(handle_areas))
+        .route("/areas/positions", get(handle_positions))
+        .route("/tracks/status", get(handle_tracks_status))
         .with_state(state)
 }
 
@@ -248,6 +259,110 @@ async fn handle_delete_place(State(s): St, Path(name): Path<String>) -> Response
         Ok(_) => Json(json!({"deleted": name})).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
+}
+
+const MAX_POSITIONS: usize = 2000;
+
+async fn handle_areas(State(s): St) -> Response {
+    let (areas, problems) = s.tracks.areas();
+    let store = s.tracks.store.clone();
+    let since = tracks::now() - 86_400;
+    let mut features = Vec::new();
+    for a in areas {
+        let mut cov = serde_json::Map::new();
+        for (source, what, on) in [("ais", "ships", a.ships), ("adsb", "aircraft", a.aircraft)] {
+            if !on {
+                continue;
+            }
+            let c = match &store {
+                Ok(st) => {
+                    let name = a.name.clone();
+                    st.blocking(move |st| st.coverage(source, &name, since))
+                        .await
+                        .ok()
+                }
+                Err(_) => None,
+            };
+            let (_, up, reports) = c.unwrap_or((0, 0, 0));
+            let (state, says) = judge(what, 86_400, up, reports);
+            cov.insert(
+                what.into(),
+                json!({"state": state, "says": says, "reports": reports}),
+            );
+        }
+        let [w, so, e, n] = a.bbox;
+        features.push(json!({
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [[[w, so], [e, so], [e, n], [w, n], [w, so]]]},
+            "properties": {
+                "name": a.name, "title": a.title, "description": a.description,
+                "ships": a.ships, "aircraft": a.aircraft, "coverage": cov,
+            },
+        }));
+    }
+    Json(json!({
+        "type": "FeatureCollection", "features": features, "problems": problems,
+        "collectors": s.tracks.status.snapshot(),
+        "store": s.tracks.store.as_ref().err(),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct Minutes {
+    minutes: Option<i64>,
+}
+
+async fn handle_positions(State(s): St, Query(q): Query<Minutes>) -> Response {
+    let minutes = q.minutes.unwrap_or(60);
+    if !(1..=1440).contains(&minutes) {
+        return error(StatusCode::BAD_REQUEST, "minutes must be 1 to 1440");
+    }
+    let store = match &s.tracks.store {
+        Ok(st) => st.clone(),
+        Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, e),
+    };
+    let since = tracks::now() - minutes * 60;
+    let rows = store
+        .blocking(move |st| st.latest(None, None, since, MAX_POSITIONS + 1))
+        .await;
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let truncated = rows.len() > MAX_POSITIONS;
+    let features: Vec<Value> = rows
+        .into_iter()
+        .take(MAX_POSITIONS)
+        .map(|r| {
+            let (lat, lon) = (r["lat"].clone(), r["lon"].clone());
+            let mut p = r;
+            if let Some(o) = p.as_object_mut() {
+                o.remove("lat");
+                o.remove("lon");
+                o.retain(|_, v| !v.is_null());
+            }
+            json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]}, "properties": p})
+        })
+        .collect();
+    let count = features.len();
+    Json(json!({
+        "type": "FeatureCollection", "features": features, "count": count, "minutes": minutes,
+        "truncated": truncated,
+        "note": if truncated { Some(format!("Showing the {MAX_POSITIONS} most recently seen.")) } else { None },
+    }))
+    .into_response()
+}
+
+async fn handle_tracks_status(State(s): St) -> Response {
+    let (areas, problems) = s.tracks.areas();
+    Json(json!({
+        "collectors": s.tracks.status.snapshot(),
+        "areas": areas.iter().map(|a| &a.name).collect::<Vec<_>>(),
+        "problems": problems,
+        "store": s.tracks.store.as_ref().err(),
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

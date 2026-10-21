@@ -235,6 +235,9 @@ services:
       # `language: "rust"`. See plugins/sandbox/rust/ and RUST_FINETUNE_EXPERIMENT.md.
       - RUST_SANDBOX_URL=http://rust-sandbox:8000
       - TELEMETRY_DB_PATH=/home/agent/telemetry/telemetry.duckdb
+      # The maps plugin's ship/aircraft tracks (MAP_PLAN Phase 4); keys in .env:
+      # AISSTREAM_API_KEY, OPENSKY_CLIENT_ID, OPENSKY_CLIENT_SECRET.
+      - TRACKS_DB_PATH=/home/agent/telemetry/tracks.duckdb
       - MODEL_CATALOG_PATH=/home/agent/agent-brain/models.yaml
       - WORKSPACE_DIR=/home/agent/workspace
       - LOG_LEVEL=info
