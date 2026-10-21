@@ -1,6 +1,7 @@
 # MAP_PLAN Phase 2 (2026-10-21): what the brain knows around a place.
 # The centre is a located entity (by name or alias), a Wikidata item of that
-# label, or a place `geocode` cached (:Place), else a lat/lon. Points come from
+# label, a place `geocode` cached or one added by hand on the map (:Place),
+# else a lat/lon. Points come from
 # the entities' Wikidata links (:WikiItem.location). An unresolved centre and
 # an empty radius each return one row saying so. The query has its own
 # LIMIT (the centre lookup uses one, so the engine adds none).
@@ -40,8 +41,9 @@ cypher: |-
   OPTIONAL MATCH (wi:WikiItem)
     WHERE $place <> '' AND cw IS NULL AND wi.location IS NOT NULL AND toLower(wi.label) = toLower(trim($place))
   WITH c, coalesce(cw, wi) AS cw LIMIT 1
-  OPTIONAL MATCH (pl:Place {key: toLower(trim($place))})
+  OPTIONAL MATCH (pl:Place)
     WHERE $place <> '' AND cw IS NULL AND pl.location IS NOT NULL
+      AND pl.key IN [toLower(trim($place)), 'hand:' + toLower(trim($place))]
   WITH c, cw, pl LIMIT 1
   WITH c, cw, pl,
        CASE WHEN cw IS NOT NULL THEN cw.location

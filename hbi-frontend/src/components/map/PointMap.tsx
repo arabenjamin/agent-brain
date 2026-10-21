@@ -4,15 +4,9 @@
  * never show a map.
  */
 import { useEffect, useRef, useState } from "react";
-import { addProtocol, Map as MapLibreMap, Marker, NavigationControl, Popup, setWorkerUrl } from "maplibre-gl";
-// MapLibre 6 decodes tiles in an ES-module worker that imports a shared
-// chunk: Vite bundles it as a worker and hands back its URL.
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-import { Protocol } from "pmtiles";
-import "maplibre-gl/dist/maplibre-gl.css";
+import { Map as MapLibreMap, Marker, NavigationControl, Popup } from "maplibre-gl";
 import { basemapStyle, type MapManifest } from "../../lib/map";
-
-let protocolAdded = false;
+import { ensureMapSetup } from "./setup";
 
 export default function PointMap({ manifest, lat, lon, zoom, label }: {
   manifest: MapManifest;
@@ -25,11 +19,7 @@ export default function PointMap({ manifest, lat, lon, zoom, label }: {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!el.current) return;
-    if (!protocolAdded) {
-      setWorkerUrl(workerUrl);
-      addProtocol("pmtiles", new Protocol().tile);
-      protocolAdded = true;
-    }
+    ensureMapSetup();
     const map = new MapLibreMap({
       container: el.current,
       style: basemapStyle(manifest),

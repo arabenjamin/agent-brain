@@ -1,0 +1,11 @@
+# MAP_PLAN Phase 3: what geocode found on Nominatim (the :Place cache).
+name: geocoded
+title: Geocoded names
+description: Public place names geocode looked up on OpenStreetMap's Nominatim, at the point it found.
+color: "#a3a3a3"
+on: false
+cypher: |-
+  MATCH (p:Place {source: 'nominatim', found: true})
+    WHERE p.location IS NOT NULL
+  RETURN p.location.y AS lat, p.location.x AS lon, p.query AS label,
+         p.kind AS kind, p.display_name AS detail

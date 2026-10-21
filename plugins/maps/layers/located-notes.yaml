@@ -1,0 +1,16 @@
+# MAP_PLAN Phase 3: notes about something that happened at a place
+# (store_note lat/lon, Phase 2), at their own point.
+name: located-notes
+title: Located notes
+description: Notes about an event or observation at a place (stored with lat and lon), at their own point and time.
+color: "#38bdf8"
+timed: true
+cypher: |-
+  MATCH (n:Note)
+    WHERE n.location IS NOT NULL AND NOT (n)-[:PART_OF]->()
+      AND ($since IS NULL OR coalesce(n.event_at, n.created_at) >= datetime($since))
+      AND ($until IS NULL OR coalesce(n.event_at, n.created_at) < datetime($until))
+  WITH n ORDER BY coalesce(n.event_at, n.created_at) DESC
+  RETURN n.location.y AS lat, n.location.x AS lon, left(n.content, 80) AS label,
+         n.id AS id, 'note' AS drawer, n.note_type AS kind,
+         toString(coalesce(n.event_at, n.created_at)) AS at

@@ -10,7 +10,7 @@
  */
 import type { Route } from "./router";
 
-export type WorkspaceId = "home" | "work" | "knowledge" | "system" | "settings";
+export type WorkspaceId = "home" | "work" | "knowledge" | "map" | "system" | "settings";
 
 export interface View {
   id: string;
@@ -56,11 +56,19 @@ export const WORKSPACES: Workspace[] = [
     shared: ["q", "mode", "type", "hops", "since", "verified_since", "within"],
     views: [
       { id: "list", label: "Results" },
-      { id: "map", label: "Map" },
+      { id: "map", label: "Topic map" },
       { id: "graph", label: "Neighbourhood" },
       { id: "timeline", label: "Timeline" },
       { id: "references", label: "References" },
     ],
+  },
+  // Places on a map (MAP_PLAN Phase 3): layers from the bundles, hand-placed
+  // private places. Knowledge's "Topic map" is the map of topics.
+  {
+    id: "map",
+    icon: "🗺",
+    label: "Map",
+    keywords: "map places geography layers locations pins geocode near nia theaters trip",
   },
   {
     id: "system",

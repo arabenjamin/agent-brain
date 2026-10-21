@@ -1,0 +1,11 @@
+# MAP_PLAN Phase 3: every entity linked to a Wikidata item that has a point.
+name: places
+title: Places the brain knows
+description: Entities linked to a Wikidata item with coordinates (places, headquarters, venues), at the item's point.
+color: "#f59e0b"
+cypher: |-
+  MATCH (e:Entity)-[l:REFERS_TO]->(w:WikiItem)
+    WHERE l.status IN ['confirmed', 'proposed'] AND w.location IS NOT NULL
+  RETURN w.location.y AS lat, w.location.x AS lon, e.name AS label,
+         e.id AS id, 'entity' AS drawer, coalesce(e.kind, e.entity_type) AS kind,
+         w.label + CASE l.status WHEN 'proposed' THEN ' (link proposed)' ELSE '' END AS detail

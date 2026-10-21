@@ -1,0 +1,20 @@
+# MAP_PLAN Phase 3: where the notes of a period are about. One point per
+# located entity, with how many notes mentioned it in the window; a country is
+# one point at its centre. Sized by that count (`weight`).
+name: mentioned
+title: Places in the notes
+description: Located places the notes mention, one point each with how many notes in the chosen time mentioned it (a country is one point at its centre).
+color: "#ef4444"
+timed: true
+cypher: |-
+  MATCH (n:Note)-[:MENTIONS]->(e:Entity)-[l:REFERS_TO]->(w:WikiItem)
+    WHERE l.status IN ['confirmed', 'proposed'] AND w.location IS NOT NULL
+      AND NOT (n)-[:PART_OF]->()
+      AND ($since IS NULL OR n.created_at >= datetime($since))
+      AND ($until IS NULL OR n.created_at < datetime($until))
+  WITH e, w, count(DISTINCT n) AS notes, max(n.created_at) AS latest
+  ORDER BY notes DESC
+  RETURN w.location.y AS lat, w.location.x AS lon, e.name AS label,
+         e.id AS id, 'entity' AS drawer, coalesce(e.kind, e.entity_type) AS kind,
+         toString(latest) AS at, notes AS weight,
+         toString(notes) + CASE notes WHEN 1 THEN ' note' ELSE ' notes' END AS detail

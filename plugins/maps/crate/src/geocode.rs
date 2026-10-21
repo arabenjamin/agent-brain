@@ -3,6 +3,9 @@
 //! What the brain already knows comes first, so a lookup costs nothing and
 //! sends nothing when it can:
 //!
+//! 0. **The owner's own places**, added by hand on the map (Phase 3, key
+//!    `hand:<name>`): answered from the graph, so a private place's name is
+//!    never sent out even when a workflow asks for it by name.
 //! 1. **The graph:** an entity of that name or alias linked to a Wikidata
 //!    item with a point, then any stored Wikidata item of that label with a
 //!    point (lookups store every candidate they see).
@@ -154,6 +157,30 @@ impl GeocodeSkill {
                 "required": ["place"]
             }),
         }
+    }
+
+    /// Tier 0: a place the owner added by hand (private).
+    async fn own_place(&self, key: &str) -> anyhow::Result<Option<Value>> {
+        let rows = self
+            .graph
+            .execute(
+                query(
+                    "MATCH (p:Place {key: $key, source: 'hand'}) WHERE p.location IS NOT NULL \
+                     RETURN p.name AS name, p.location.latitude AS lat, \
+                            p.location.longitude AS lon, p.note AS note",
+                )
+                .param("key", format!("hand:{key}")),
+            )
+            .await?;
+        Ok(rows.first().and_then(|r| {
+            Some(json!({
+                "name": r.get::<String>("name").ok(),
+                "lat": r.get::<f64>("lat").ok()?,
+                "lon": r.get::<f64>("lon").ok()?,
+                "note": r.get::<String>("note").ok(),
+                "private": true,
+            }))
+        }))
     }
 
     /// Tier 1: a located entity, then any stored Wikidata item of that label.
@@ -312,6 +339,22 @@ impl GeocodeSkill {
         }
         let mut tried = vec![];
 
+        match self.own_place(&key).await {
+            Ok(Some(p)) => {
+                return ToolCallResult::success_json(json!({
+                    "query": place, "found": true, "source": "my places", "place": p,
+                    "note": "One of the owner's places, added by hand on the map: private, nothing was sent out.",
+                }));
+            }
+            Ok(None) => {}
+            // Unsure whether it is private: send nothing.
+            Err(e) => {
+                warn!(error = %e, "geocode: own-place lookup failed");
+                return ToolCallResult::error(format!(
+                    "geocode could not check the owner's own places, so it sent nothing out: {e}"
+                ));
+            }
+        }
         match self.in_graph(&key).await {
             Ok(Some(p)) => {
                 return ToolCallResult::success_json(json!({

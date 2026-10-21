@@ -1216,6 +1216,7 @@ async fn plugin_route(
     // A fresh request, not the old one with its URI swapped: axum keeps this
     // route's path parameters (`plugin`, `rest`) in the extensions, and the
     // plugin's own `Path` extractor would see them too.
+    let rest = forwarded_path(req.uri().path(), &plugin, &rest);
     let (parts, body) = req.into_parts();
     let Ok(uri) = format!("/{rest}{query}").parse::<axum::http::Uri>() else {
         return StatusCode::BAD_REQUEST.into_response();
@@ -1231,9 +1232,50 @@ async fn plugin_route(
     }
 }
 
+/// The plugin's part of the path, still percent-encoded: the `rest`
+/// parameter axum hands over is decoded, and a decoded space (`/places/My
+/// hotel`) is not a valid URI, so it would answer 400.
+fn forwarded_path(raw: &str, plugin: &str, decoded: &str) -> String {
+    let prefix = format!("/api/plugins/{plugin}/");
+    match raw.find(&prefix) {
+        Some(i) => raw[i + prefix.len()..].to_string(),
+        None => decoded
+            .bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_path_is_forwarded_still_encoded() {
+        assert_eq!(
+            forwarded_path(
+                "/api/plugins/maps/places/My%20hotel",
+                "maps",
+                "places/My hotel"
+            ),
+            "places/My%20hotel"
+        );
+        assert_eq!(
+            forwarded_path("/places/My hotel", "maps", "places/My hotel"),
+            "places/My%20hotel"
+        );
+        let p = forwarded_path(
+            "/api/plugins/maps/places/My%20hotel",
+            "maps",
+            "places/My hotel",
+        );
+        assert!(format!("/{p}").parse::<axum::http::Uri>().is_ok());
+    }
 
     #[test]
     fn test_http_transport_config_default() {

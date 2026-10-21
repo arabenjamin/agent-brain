@@ -501,14 +501,14 @@ Which plugin owns a tool (`services/self_model.rs`, CORE_AND_PLUGINS_PLAN Phase 
 
 #### `Place`
 
-A geocoded place name (MAP_PLAN Phase 2, the `maps` plugin's `geocode`, `plugins/maps/crate/src/geocode.rs`): every Nominatim answer, misses included, so a name is asked once. Unique `key`, constraint created in the plugin's `start`. The `places_near` / `notes_near` views resolve a centre from it after entities and Wikidata items.
+A geocoded place name (MAP_PLAN Phase 2, the `maps` plugin's `geocode`, `plugins/maps/crate/src/geocode.rs`): every Nominatim answer, misses included, so a name is asked once. Also a place the owner added by hand on the Map panel (MAP_PLAN Phase 3, `source: 'hand'`, key `hand:<name>`, `plugins/maps/crate/src/routes.rs`): private, so `geocode` never reads it; `places_near` / `notes_near` resolve it by name. Unique `key`, constraint created in the plugin's `start`. The `places_near` / `notes_near` views resolve a centre from it after entities and Wikidata items.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `key` | String | The asked name, lower case, inner whitespace collapsed; unique |
+| `key` | String | The asked name, lower case, inner whitespace collapsed; unique. A hand-placed place's is `hand:` + its name, so it never answers a geocode |
 | `query` | String | The name as asked |
 | `found` | Boolean | Whether Nominatim matched it. A miss is asked again after 30 days |
-| `source` | String | `nominatim` |
+| `source` | String | `nominatim` · `hand` (added on the map; also `private: true`, `note`, `created_at`, `updated_at`; no `query`, `found` or `fetched_at`) |
 | `name` / `display_name` | String? | The best match's name and full OSM display name |
 | `kind` | String? | `category:type` (`natural:strait`, `place:city`) |
 | `osm` | String? | `relation/123`, the OSM object |

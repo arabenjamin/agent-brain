@@ -1,6 +1,8 @@
 # Maps (MAP_PLAN.md): the brain's sense of place. Phase 2 (2026-10-21):
 # `geocode` (crate/) and the spatial views places_near and notes_near
-# (views/). Layers (Phase 3) and NIA tracks (Phase 4) come here too.
+# (views/). Phase 3 (2026-10-21): map layers (layers/, a seed kind any
+# bundle may ship) and the routes the HBI's Map panel draws them through,
+# with places added by hand (private). NIA tracks (Phase 4) come here too.
 name: maps
 version: 1
-description: "Places and spatial questions: geocode (a place name to a point: the brain's own located entities first, then a cache, then OpenStreetMap's Nominatim, public names only), and the views places_near and notes_near."
+description: "Places and spatial questions: geocode (a place name to a point: the brain's own located entities first, then a cache, then OpenStreetMap's Nominatim, public names only), the views places_near and notes_near, and map layers (layers/*.yaml, read-only queries the HBI's Map panel draws) with places added by hand."

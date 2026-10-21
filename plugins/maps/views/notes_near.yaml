@@ -52,8 +52,9 @@ cypher: |-
   OPTIONAL MATCH (wi:WikiItem)
     WHERE $place <> '' AND cw IS NULL AND wi.location IS NOT NULL AND toLower(wi.label) = toLower(trim($place))
   WITH c, coalesce(cw, wi) AS cw LIMIT 1
-  OPTIONAL MATCH (pl:Place {key: toLower(trim($place))})
+  OPTIONAL MATCH (pl:Place)
     WHERE $place <> '' AND cw IS NULL AND pl.location IS NOT NULL
+      AND pl.key IN [toLower(trim($place)), 'hand:' + toLower(trim($place))]
   WITH c, cw, pl LIMIT 1
   WITH c, cw, pl,
        CASE WHEN cw IS NOT NULL THEN cw.location

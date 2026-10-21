@@ -19,6 +19,7 @@ const ProgramsLane       = lazy(() => import("./components/work/ProgramsLane"));
 const HistoryLane        = lazy(() => import("./components/work/HistoryLane"));
 const AskModal           = lazy(() => import("./components/chat/AskModal"));
 const KnowledgeWorkspace = lazy(() => import("./components/knowledge/KnowledgeWorkspace"));
+const MapPanel           = lazy(() => import("./components/map/MapPanel"));
 const HealthView         = lazy(() => import("./components/system/HealthView"));
 const LogsView           = lazy(() => import("./components/system/LogsView"));
 const RegistryView       = lazy(() => import("./components/system/RegistryView"));
@@ -192,6 +193,7 @@ export default function App() {
               <KnowledgeWorkspace view={view} params={knowledgeParams} />
             </WorkspaceFrame>
           )}
+          {ws === "map" && <MapPanel />}
           {ws === "system" && workspace && (
             <WorkspaceFrame workspace={workspace} view={view}>
               {view === "health"       && <HealthView />}

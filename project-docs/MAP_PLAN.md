@@ -100,9 +100,11 @@ places are placed by hand on the map, §5.2); ACLED requests latitude/longitude 
 events carry a point; claims about a linked place inherit its point. Spatial
 helpers in the views (`near`, `within`).
 
-**Phase 3: layers and the Map panel.** The `layers/` seed kind (query, style,
-owner); `lookup`-backed layer queries; the HBI Map panel with layer toggles,
-entity points, ACLED events, and a time slider for anything with a time.
+**Phase 3: layers and the Map panel.** *Built 2026-10-21 (§4).* The `layers/` seed kind (query, style,
+owner); the HBI Map panel with layer toggles,
+entity points, and a time window for anything with a time; places added by
+hand (§5.2). ACLED events reach the map once ACLED is loaded and they are
+stored as located notes.
 
 **Phase 4: NIA tracks and tripwires.** Sources measured (§6): ships through
 aisstream.io (a client of its own that injects the key, not the `ws_*`
@@ -185,6 +187,51 @@ or leaves, and an item when the owner asked to be told. Areas are layers.
   words (the town, near it, only the region). Unit-tested; not live:
   `ACLED_EMAIL`/`ACLED_PASSWORD` are not set, so the osint-data plugin is
   not loaded.
+
+### Phase 3 (2026-10-21)
+
+- **Layers are a seed kind** (`layers/*.yaml`, the maps plugin owns it, any
+  bundle may ship one): a title, a colour, an optional owner (one program,
+  topic or workflow), and a read-only Cypher returning `lat`, `lon`,
+  `label` and optionally `id` + `drawer`, `kind`, `at`, `detail`, `weight`.
+  Checked when loaded and when `manage_plugin` writes one: no write
+  keyword and no procedure `CALL` outside strings (a property named `set` or
+  a `CALL {}` subquery is fine), only `$since`/`$until` and only on a
+  `timed` layer, no `LIMIT` (the engine adds one past the layer's `limit`,
+  default 1000, so a cut is said). A layer stores its query, so it is always
+  live. Not `lookup` views: a view answers a question in text, a layer
+  draws points, and the plugin cannot run the host's views.
+- **Shipped:** `places` (124 linked entities with a point), `mentioned`
+  (where the notes are about: one point per located entity, sized by how
+  many notes mentioned it in the window: 103 in 30 days, 23 in the last
+  day, led by the United States, Russia and Ukraine), `located-notes`
+  (empty until a workflow stores one), `geocoded` (off by default),
+  `my-places` (private).
+- **Routes** under `/api/plugins/maps/`: `GET /layers` (and the files that
+  did not load), `GET /layers/{name}?since=&until=` (GeoJSON, with `count`,
+  `skipped`, `truncated`, `note`; a time on an untimed layer is a 400),
+  `GET`/`POST /places`, `DELETE /places/{name}`.
+- **The Map workspace** (🗺, its own: Knowledge's map tab is now "Topic
+  map"): the layer list with counts and what each could not show, a time
+  window (a day to all time) for the timed layers, a popup with "Open" in
+  the drawer, and **My places**: "+ Add a place", click the map, drag the
+  marker, name it. Layer choice and window are remembered per browser.
+- **Places added by hand are private**: `(:Place {source: 'hand'})`, key
+  `hand:<name>`. `places_near` / `notes_near` resolve them by name.
+  **`geocode` answers them first, from the graph**: the first build sent a
+  hand-placed name to Nominatim when a workflow asked for it, so a private
+  place's name would have left the network. Now nothing is sent, and if the
+  own-place check itself fails, geocode sends nothing at all. A move
+  without a note keeps the old note.
+- **Found on the way:** the host's plugin route forwarder rebuilt the URI
+  from the decoded path, so any encoded character (`/places/My%20hotel`)
+  was an empty 400; it forwards the raw path now. MapLibre's own CSS sets
+  `position: relative` on the map container, which silently collapsed an
+  absolutely positioned canvas to 0 px (blank map, no error); found in the
+  headless screenshot, not the build.
+- Checked in headless Chromium: the world with all layers drawn, a place
+  added through the UI, the window moved to a day; no console errors, no
+  failed requests. Test places and the one cached test miss deleted.
 
 ## 5. Decisions (owner, 2026-10-21)
 

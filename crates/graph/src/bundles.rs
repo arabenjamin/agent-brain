@@ -56,6 +56,7 @@ pub const MERGED_KINDS: &[&str] = &[
     "search-engines",
     "page-readers",
     "exact-patterns",
+    "layers",
 ];
 
 /// Seed dirs read from the core bundle only, for now: each builds one global

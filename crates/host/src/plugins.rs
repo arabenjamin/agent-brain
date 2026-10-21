@@ -687,13 +687,18 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
         let p = Plugins::load(&dir, &[], &|_| None);
         assert_eq!(p.core_loaded(), Ok(()));
-        // `sources-media/` left the core with the media plugin (a97fe5f); the
-        // empty dir git left behind on disk hid that, and a fresh checkout
-        // (CI) failed here.
+        // A kind a compiled plugin owns (`sources-media`, `layers`) ships in
+        // that plugin's bundle, not the core's. `sources-media/` left the core
+        // with the media plugin (a97fe5f); the empty dir git left behind on
+        // disk hid that, and a fresh checkout (CI) failed here.
+        let owned: Vec<&str> = compiled()
+            .iter()
+            .flat_map(|p| p.seed_kinds().to_vec())
+            .collect();
         for k in MERGED_KINDS
             .iter()
             .chain(CORE_ONLY_KINDS)
-            .filter(|k| **k != "sources-media")
+            .filter(|k| !owned.contains(k))
         {
             assert!(p.core_dir(k).is_dir(), "core bundle lacks {k}/");
         }
