@@ -22,11 +22,12 @@ pub mod tool;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use agent_brain_plugin_api::PluginContext;
+use agent_brain_plugin_api::{Graph, PluginContext};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::sync::watch;
 
-pub use areas::Area;
+pub use areas::{Area, WatchArea};
 pub use store::Store;
 
 /// Where the store lives unless `TRACKS_DB_PATH` says.
@@ -91,6 +92,13 @@ pub struct Tracks {
     pub store: Result<Store, String>,
     pub status: Status,
     ctx: PluginContext,
+    graph: Option<Arc<dyn Graph>>,
+    /// Bumped when an area changes, so the collectors re-read at once.
+    changes: Arc<watch::Sender<u64>>,
+    /// Area files that did not load or clash with a drawn area.
+    problems: Arc<Mutex<Vec<String>>>,
+    /// OpenSky, one token for the collector and the map's snapshots.
+    pub opensky: Arc<opensky::Client>,
 }
 
 impl Tracks {
@@ -106,12 +114,73 @@ impl Tracks {
             store,
             status: Status::default(),
             ctx: ctx.clone(),
+            graph: ctx.graph.clone(),
+            changes: Arc::new(watch::channel(0).0),
+            problems: Arc::default(),
+            opensky: Arc::default(),
         }
     }
 
-    /// Every loaded bundle's areas, and the files that did not load.
-    pub fn areas(&self) -> (Vec<Area>, Vec<String>) {
-        areas::load_all(self.ctx.files("areas"))
+    fn graph(&self) -> Result<&Arc<dyn Graph>, String> {
+        self.graph
+            .as_ref()
+            .ok_or_else(|| "the host gave the maps plugin no graph".to_string())
+    }
+
+    /// Sync the bundles' area files into the graph (on start).
+    pub async fn seed(&self) -> Result<(), String> {
+        let g = self.graph()?;
+        let (files, mut problems) = areas::load_all(self.ctx.files("areas"));
+        areas::ensure_schema(g.as_ref())
+            .await
+            .map_err(|e| e.to_string())?;
+        problems.extend(
+            areas::seed(g.as_ref(), &files)
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        for p in &problems {
+            tracing::warn!(problem = %p, "maps: a watch area did not load");
+        }
+        if let Ok(mut m) = self.problems.lock() {
+            *m = problems;
+        }
+        Ok(())
+    }
+
+    /// Every area in the graph, on or off.
+    pub async fn all_areas(&self) -> Result<Vec<WatchArea>, String> {
+        areas::list(self.graph()?.as_ref())
+            .await
+            .map_err(|e| format!("watch areas could not be read: {e}"))
+    }
+
+    /// The areas switched on: what the collectors watch.
+    pub async fn areas(&self) -> Result<Vec<Area>, String> {
+        Ok(self
+            .all_areas()
+            .await?
+            .into_iter()
+            .filter(|w| w.enabled)
+            .map(|w| w.area)
+            .collect())
+    }
+
+    pub fn problems(&self) -> Vec<String> {
+        self.problems.lock().map(|p| p.clone()).unwrap_or_default()
+    }
+
+    pub fn graph_handle(&self) -> Result<Arc<dyn Graph>, String> {
+        self.graph().cloned()
+    }
+
+    /// An area changed: wake the collectors.
+    pub fn changed(&self) {
+        self.changes.send_modify(|v| *v += 1);
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     /// Start the collectors (deployed brain only).
@@ -143,6 +212,14 @@ impl Tracks {
 
     pub fn env(&self, key: &str) -> Option<String> {
         self.ctx.env(key).filter(|v| !v.trim().is_empty())
+    }
+}
+
+/// Sleep `d`, or less if an area changes.
+pub async fn wait(rx: &mut watch::Receiver<u64>, d: std::time::Duration) {
+    tokio::select! {
+        _ = rx.changed() => {}
+        _ = tokio::time::sleep(d) => {}
     }
 }
 

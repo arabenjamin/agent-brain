@@ -6,8 +6,10 @@ title: My places
 description: Places added by hand on the map (private, never geocoded or sent anywhere).
 color: "#22c55e"
 private: true
+view: true
 cypher: |-
   MATCH (p:Place {source: 'hand'})
     WHERE p.location IS NOT NULL
+      AND ($west IS NULL OR point.withinBBox(p.location, point({longitude: $west, latitude: $south}), point({longitude: $east, latitude: $north})))
   RETURN p.location.y AS lat, p.location.x AS lon, p.name AS label,
          p.name AS id, 'place' AS kind, p.note AS detail

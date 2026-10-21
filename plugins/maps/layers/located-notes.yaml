@@ -5,9 +5,11 @@ title: Located notes
 description: Notes about an event or observation at a place (stored with lat and lon), at their own point and time.
 color: "#38bdf8"
 timed: true
+view: true
 cypher: |-
   MATCH (n:Note)
     WHERE n.location IS NOT NULL AND NOT (n)-[:PART_OF]->()
+      AND ($west IS NULL OR point.withinBBox(n.location, point({longitude: $west, latitude: $south}), point({longitude: $east, latitude: $north})))
       AND ($since IS NULL OR coalesce(n.event_at, n.created_at) >= datetime($since))
       AND ($until IS NULL OR coalesce(n.event_at, n.created_at) < datetime($until))
   WITH n ORDER BY coalesce(n.event_at, n.created_at) DESC

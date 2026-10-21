@@ -124,28 +124,34 @@ impl AreaTrafficSkill {
             Ok(s) => s.clone(),
             Err(e) => return ToolCallResult::error(e.clone()),
         };
-        let (areas, problems) = self.tracks.areas();
+        let all = match self.tracks.all_areas().await {
+            Ok(a) => a,
+            Err(e) => return ToolCallResult::error(e),
+        };
+        let problems = self.tracks.problems();
         let collectors = self.tracks.status.snapshot();
         let area = input.area.trim().to_lowercase();
         if area.is_empty() {
-            let list: Vec<Value> = areas
+            let list: Vec<Value> = all
                 .iter()
-                .map(|a| {
+                .map(|w| {
+                    let a = &w.area;
                     json!({
                         "name": a.name, "title": a.title, "description": a.description,
                         "ships": a.ships, "aircraft": a.aircraft, "bbox": a.bbox,
+                        "on": w.enabled, "from": if w.managed_by == "yaml" { "a bundle file" } else { "drawn on the map" },
                     })
                 })
                 .collect();
             return ToolCallResult::success_json(json!({
                 "areas": list,
-                "note": if list.is_empty() { Some("No watch areas: a bundle's areas/*.yaml declares them.") } else { None },
+                "note": if list.is_empty() { Some("No watch areas: draw one on the HBI's Map, or ship one in a bundle's areas/.") } else { None },
                 "collectors": collectors,
                 "problems": problems,
             }));
         }
-        let Some(a) = areas.iter().find(|a| a.name == area).cloned() else {
-            let names: Vec<&str> = areas.iter().map(|a| a.name.as_str()).collect();
+        let Some(w) = all.iter().find(|w| w.area.name == area).cloned() else {
+            let names: Vec<&str> = all.iter().map(|w| w.area.name.as_str()).collect();
             return ToolCallResult::error(format!(
                 "no watch area named '{area}'; the areas are: {}",
                 if names.is_empty() {
@@ -155,9 +161,16 @@ impl AreaTrafficSkill {
                 }
             ));
         };
+        let a = w.area;
         let window = input.hours * 3600;
         let since = now() - window;
         let mut out = Map::new();
+        if !w.enabled {
+            out.insert(
+                "note".into(),
+                json!("This area is switched off: nothing new is collected; counts cover what was collected before."),
+            );
+        }
         out.insert("area".into(), json!(a.name));
         out.insert("title".into(), json!(a.title));
         out.insert(
@@ -174,7 +187,7 @@ impl AreaTrafficSkill {
                 .blocking(move |s| {
                     let cov = s.coverage(source, &name, since)?;
                     let classes = s.by_class(source, &name, since)?;
-                    let recent = s.latest(Some(source), Some(&name), since, RECENT)?;
+                    let recent = s.latest(Some(source), Some(&name), since, None, RECENT)?;
                     Ok((cov, classes, recent))
                 })
                 .await;

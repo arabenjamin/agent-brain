@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Map as MapLibreMap, Marker, NavigationControl, Popup, type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import { addPlace, deletePlace, useLayerFeatures, useLayers, usePlaces, type FeatureProps, type LayerInfo } from "../../api/maps";
-import { basemapStyle, loadManifest, type MapManifest } from "../../lib/map";
+import { basemapStyle, loadManifest, viewOf, viewParams, type MapManifest, type MapView } from "../../lib/map";
 import { DRAWER_KINDS, openEntity, type DrawerKind } from "../drawer/entities";
 import type { FeatureCollection, Point } from "geojson";
 import { ensureMapSetup } from "./setup";
@@ -83,6 +83,8 @@ export default function MapPanel() {
   // Fixed when the window is chosen, so a re-render never shifts it.
   const [since, setSince] = useState<string | null>(() => sinceFor(WINDOWS[dayIdx]));
   const [map, setMap] = useState<MapLibreMap | null>(null);
+  // What the map shows: layers and tracks load for it (Phase 5b).
+  const [view, setView] = useState<MapView | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const el = useRef<HTMLDivElement>(null);
 
@@ -105,7 +107,8 @@ export default function MapPanel() {
     });
     m.addControl(new NavigationControl({ showCompass: false }), "top-right");
     m.on("error", (e) => setMapError(e.error?.message ?? "the map failed to load"));
-    m.on("load", () => setMap(m));
+    m.on("load", () => { setMap(m); setView(viewOf(m)); });
+    m.on("moveend", () => setView(viewOf(m)));
     m.on("click", (e) => {
       if (!placingRef.current) return;
       setDraft({ lat: e.lngLat.lat, lon: e.lngLat.lng });
@@ -152,7 +155,7 @@ export default function MapPanel() {
         )}
         {list.map((l) => (
           <LayerRow key={l.name} layer={l} on={isOn(l)} onToggle={() => toggle(l)} map={map}
-            since={l.timed ? since : null} placingRef={placingRef} />
+            since={l.timed ? since : null} view={view} placingRef={placingRef} />
         ))}
         {(layers.data?.problems ?? []).map((p) => (
           <div key={p.file} className="tone-text-red map-problem" title={p.file}>
@@ -169,7 +172,7 @@ export default function MapPanel() {
           </div>
         )}
 
-        <WatchAreas map={map} placingRef={placingRef} />
+        <WatchAreas map={map} view={view} placingRef={placingRef} />
 
         <MyPlaces placing={placing} setPlacing={setPlacing} draft={draft} setDraft={setDraft} map={map} />
       </aside>
@@ -187,29 +190,72 @@ export default function MapPanel() {
   );
 }
 
-function LayerRow({ layer, on, onToggle, map, since, placingRef }: {
+/** Points merge into count bubbles up to this zoom. */
+const CLUSTER_MAX_ZOOM = 8;
+
+function LayerRow({ layer, on, onToggle, map, since, view, placingRef }: {
   layer: LayerInfo;
   on: boolean;
   onToggle: () => void;
   map: MapLibreMap | null;
   since: string | null;
+  view: MapView | null;
   placingRef: MutableRefObject<boolean>;
 }) {
-  const q = useLayerFeatures(layer.name, on, since);
+  // Under its minzoom a layer is not loaded at all; a view layer loads for
+  // the view, others once.
+  const below = layer.minzoom != null && view != null && view.zoom < layer.minzoom;
+  const q = useLayerFeatures(layer.name, on && view != null && !below, since, layer.view ? viewParams(view) : {});
   const id = `layer:${layer.name}`;
+  const ids = [id, `${id}:cl`, `${id}:cl-n`];
 
-  // Draw: one GeoJSON source and one circle layer per map layer.
+  // Draw: one GeoJSON source; its points, and its clusters with their counts.
   useEffect(() => {
     if (!map) return;
-    const data = q.data ?? { type: "FeatureCollection" as const, features: [] };
+    const data = (q.data ?? { type: "FeatureCollection" as const, features: [] }) as FeatureCollection;
     const src = map.getSource(id) as GeoJSONSource | undefined;
-    if (src) src.setData(data as FeatureCollection);
+    if (src) src.setData(data);
     else {
-      map.addSource(id, { type: "geojson", data: data as FeatureCollection });
+      map.addSource(id, {
+        type: "geojson",
+        data,
+        cluster: layer.cluster,
+        clusterMaxZoom: CLUSTER_MAX_ZOOM,
+        clusterRadius: 42,
+        // A weighted layer's bubble carries the sum (notes, not places).
+        clusterProperties: { weight: ["+", ["coalesce", ["get", "weight"], 1]] },
+      });
+      map.addLayer({
+        id: `${id}:cl`,
+        type: "circle",
+        source: id,
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": layer.color,
+          "circle-opacity": 0.75,
+          "circle-radius": ["step", ["get", "point_count"], 11, 10, 15, 50, 20, 200, 26],
+          "circle-stroke-color": "#0b0e14",
+          "circle-stroke-width": 1,
+        },
+      });
+      map.addLayer({
+        id: `${id}:cl-n`,
+        type: "symbol",
+        source: id,
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": ["get", "point_count_abbreviated"],
+          "text-font": ["Noto Sans Medium"],
+          "text-size": 11,
+          "text-allow-overlap": true,
+        },
+        paint: { "text-color": "#0b0e14" },
+      });
       map.addLayer({
         id,
         type: "circle",
         source: id,
+        filter: ["!", ["has", "point_count"]],
         paint: {
           "circle-color": layer.color,
           // A weighted point (a count) grows with its square root: 1 → 5 px, 400 → 24 px.
@@ -220,8 +266,23 @@ function LayerRow({ layer, on, onToggle, map, since, placingRef }: {
         },
       });
     }
-    map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
-  }, [map, q.data, on, id, layer.color]);
+    for (const l of ids) map.setLayoutProperty(l, "visibility", on && !below ? "visible" : "none");
+  }, [map, q.data, on, below, id, layer.color, layer.cluster]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A cluster's click zooms to where it splits.
+  useEffect(() => {
+    if (!map) return;
+    const click = (e: MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      const cid = f?.properties?.cluster_id;
+      if (cid == null || placingRef.current) return;
+      (map.getSource(id) as GeoJSONSource).getClusterExpansionZoom(cid).then((z) => {
+        map.easeTo({ center: (f!.geometry as Point).coordinates as [number, number], zoom: z + 0.2 });
+      }).catch(() => { /* the source changed under it */ });
+    };
+    map.on("click", `${id}:cl`, click);
+    return () => { map.off("click", `${id}:cl`, click); };
+  }, [map, id, placingRef]);
 
   // Click: what it is, and open it in the drawer when it has one.
   useEffect(() => {
@@ -250,12 +311,14 @@ function LayerRow({ layer, on, onToggle, map, since, placingRef }: {
     };
   }, [map, id, placingRef]);
 
-  const d = q.data;
-  const said = [
-    d && `${d.count}`,
-    d && d.skipped > 0 && `${d.skipped} without a point`,
-    d?.note,
-  ].filter(Boolean).join(" · ");
+  const d = below ? null : q.data;
+  const said = below
+    ? `Zoom in to see it (from zoom ${layer.minzoom}).`
+    : [
+      d && `${d.count}${layer.view && view?.bbox && view.zoom >= 3 ? " in view" : ""}`,
+      d && d.skipped > 0 && `${d.skipped} without a point`,
+      d?.note,
+    ].filter(Boolean).join(" · ");
   return (
     <div className="map-layer">
       <label className="map-layer-head" title={layer.description}>
@@ -267,7 +330,7 @@ function LayerRow({ layer, on, onToggle, map, since, placingRef }: {
       </label>
       {on && (
         <div className="dw-dim map-layer-said">
-          {q.isLoading ? "Loading…" : q.error ? <span className="tone-text-red">{String((q.error as Error).message)}</span> : said}
+          {q.isLoading && !below ? "Loading…" : q.error ? <span className="tone-text-red">{String((q.error as Error).message)}</span> : said}
           {layer.owner && (
             <span> · {Object.entries(layer.owner).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join("")}</span>
           )}

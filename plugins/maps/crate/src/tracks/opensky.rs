@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use super::areas::Area;
 use super::store::{Coverage, Position, Store};
-use super::{Tracks, hour_of, now};
+use super::{Tracks, hour_of, now, wait};
 
 const TOKEN_URL: &str =
     "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
@@ -25,6 +25,8 @@ const STATES_URL: &str = "https://opensky-network.org/api/states/all";
 const SOURCE: &str = "adsb";
 const EVERY: Duration = Duration::from_secs(600);
 const CREDIT_FLOOR: i64 = 100;
+/// Seconds between on-demand snapshots.
+const SNAPSHOT_GAP: i64 = 60;
 
 /// OpenSky's aircraft category (`extended=1`, state index 17).
 pub fn category(c: i64) -> Option<&'static str> {
@@ -86,72 +88,77 @@ struct Token {
     until: i64,
 }
 
-pub fn spawn(t: Tracks, store: Store) {
-    tokio::spawn(async move {
-        let http = net_policy::guard(reqwest::Client::builder())
-            .timeout(Duration::from_secs(60))
-            .build()
-            .unwrap_or_default();
-        let mut token: Option<Token> = None;
-        // Let the brain finish starting.
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        loop {
-            let (all, _) = t.areas();
-            let areas: Vec<Area> = all.into_iter().filter(|a| a.aircraft).collect();
-            t.status.update(SOURCE, |s| {
-                s.areas = areas.iter().map(|a| a.name.clone()).collect()
-            });
-            let wait = poll(&t, &store, &http, &mut token, &areas).await;
-            tokio::time::sleep(wait).await;
-        }
-    });
+/// Why a `states/all` call gave no positions.
+#[derive(Debug)]
+pub enum Refused {
+    /// Credits used up: wait this many seconds.
+    RateLimited(u64),
+    /// No credentials set.
+    Off(String),
+    Failed(String),
 }
 
-/// One round over the areas; returns how long to wait before the next.
-async fn poll(
-    t: &Tracks,
-    store: &Store,
-    http: &reqwest::Client,
-    token: &mut Option<Token>,
-    areas: &[Area],
-) -> Duration {
-    if areas.is_empty() {
-        t.status.set(
-            SOURCE,
-            "off",
-            Some("no area watches aircraft (areas/*.yaml, aircraft: true)".into()),
-        );
-        return EVERY;
-    }
-    let (Some(id), Some(secret)) = (t.env("OPENSKY_CLIENT_ID"), t.env("OPENSKY_CLIENT_SECRET"))
-    else {
-        t.status.set(
-            SOURCE,
-            "off",
-            Some("OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET are not set".into()),
-        );
-        return EVERY;
-    };
-    if token.as_ref().is_none_or(|k| k.until <= now() + 60) {
-        match fetch_token(http, &id, &secret).await {
-            Ok(k) => *token = Some(k),
-            Err(e) => {
-                warn!(error = %e, "opensky: no token");
-                t.status.set(SOURCE, "error", Some(e));
-                return EVERY;
-            }
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::RateLimited(s) => write!(f, "OpenSky credits used up; retry in {s}s"),
+            Refused::Off(w) | Refused::Failed(w) => f.write_str(w),
         }
     }
-    let bearer = token.as_ref().map(|k| k.value.clone()).unwrap_or_default();
-    let started = now();
-    let mut failed = 0;
-    let mut credits: Option<i64> = None;
-    for (i, a) in areas.iter().enumerate() {
-        if i > 0 {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+}
+
+/// OpenSky, shared by the collector and the map's snapshots: one token.
+pub struct Client {
+    http: reqwest::Client,
+    token: tokio::sync::Mutex<Option<Token>>,
+    /// The last on-demand snapshot (one a minute).
+    last_snapshot: std::sync::Mutex<i64>,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self {
+            http: net_policy::guard(reqwest::Client::builder())
+                .timeout(Duration::from_secs(60))
+                .build()
+                .unwrap_or_default(),
+            token: tokio::sync::Mutex::new(None),
+            last_snapshot: std::sync::Mutex::new(0),
         }
-        let [w, s, e, n] = a.bbox;
-        let resp = http
+    }
+}
+
+impl Client {
+    async fn bearer(&self, t: &Tracks) -> Result<String, Refused> {
+        let (Some(id), Some(secret)) = (t.env("OPENSKY_CLIENT_ID"), t.env("OPENSKY_CLIENT_SECRET"))
+        else {
+            return Err(Refused::Off(
+                "OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET are not set".into(),
+            ));
+        };
+        let mut tok = self.token.lock().await;
+        if tok.as_ref().is_none_or(|k| k.until <= now() + 60) {
+            *tok = Some(
+                fetch_token(&self.http, &id, &secret)
+                    .await
+                    .map_err(Refused::Failed)?,
+            );
+        }
+        Ok(tok.as_ref().map(|k| k.value.clone()).unwrap_or_default())
+    }
+
+    /// The aircraft in a box `[w, s, e, n]`, as positions in `area`, and
+    /// the credits left today.
+    pub async fn states(
+        &self,
+        t: &Tracks,
+        bbox: [f64; 4],
+        area: &str,
+    ) -> Result<(Vec<Position>, Option<i64>), Refused> {
+        let bearer = self.bearer(t).await?;
+        let [w, s, e, n] = bbox;
+        let resp = self
+            .http
             .get(STATES_URL)
             .bearer_auth(&bearer)
             .query(&[
@@ -162,20 +169,13 @@ async fn poll(
                 ("extended", "1".to_string()),
             ])
             .send()
-            .await;
-        let resp = match resp {
-            Ok(r) => r,
-            Err(err) => {
-                let why = match net_policy::refusal_in(&err) {
+            .await
+            .map_err(|err| {
+                Refused::Failed(match net_policy::refusal_in(&err) {
                     Some(w) => format!("not asked: {w}"),
                     None => format!("request failed: {err}"),
-                };
-                t.status
-                    .set(SOURCE, "error", Some(format!("{}: {why}", a.name)));
-                failed += 1;
-                continue;
-            }
-        };
+                })
+            })?;
         let remaining = resp
             .headers()
             .get("x-rate-limit-remaining")
@@ -189,48 +189,128 @@ async fn poll(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(3600);
-            t.status.set(
-                SOURCE,
-                "waiting",
-                Some(format!("OpenSky credits used up; retrying in {retry}s")),
-            );
-            return Duration::from_secs(retry.max(60));
+            return Err(Refused::RateLimited(retry));
         }
         if status.as_u16() == 401 {
-            *token = None;
-            t.status.set(
-                SOURCE,
-                "error",
-                Some("OpenSky refused the token (401); a new one next round".into()),
-            );
-            return Duration::from_secs(60);
+            *self.token.lock().await = None;
+            return Err(Refused::Failed(
+                "OpenSky refused the token (401); a new one next time".into(),
+            ));
         }
         if !status.is_success() {
-            t.status.set(
-                SOURCE,
-                "error",
-                Some(format!(
-                    "{}: OpenSky answered HTTP {}",
-                    a.name,
-                    status.as_u16()
-                )),
-            );
-            failed += 1;
-            continue;
+            return Err(Refused::Failed(format!(
+                "OpenSky answered HTTP {}",
+                status.as_u16()
+            )));
         }
-        let body: Value = match resp.json().await {
-            Ok(b) => b,
-            Err(err) => {
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|err| Refused::Failed(format!("unreadable answer: {err}")))?;
+        Ok((parse(&body, area), remaining))
+    }
+
+    /// One snapshot of a view for the map (MAP_PLAN Phase 5d): not stored.
+    /// At most one a minute, and only a box OpenSky charges 2 credits or
+    /// fewer for.
+    pub async fn snapshot(
+        &self,
+        t: &Tracks,
+        bbox: [f64; 4],
+    ) -> Result<(Vec<Position>, Option<i64>), String> {
+        let [w, s, e, n] = bbox;
+        let sq = (e - w) * (n - s);
+        if !(w < e && s < n) || sq <= 0.0 {
+            return Err("the view is not a box".into());
+        }
+        if sq > super::areas::MAX_AIRCRAFT_SQ_DEG {
+            return Err(format!(
+                "the view is {sq:.0} square degrees: zoom in to {} or less (OpenSky charges more above it)",
+                super::areas::MAX_AIRCRAFT_SQ_DEG
+            ));
+        }
+        {
+            let mut last = self
+                .last_snapshot
+                .lock()
+                .map_err(|_| "lock poisoned".to_string())?;
+            let since = now() - *last;
+            if since < SNAPSHOT_GAP {
+                return Err(format!(
+                    "one snapshot a minute: try again in {}s",
+                    SNAPSHOT_GAP - since
+                ));
+            }
+            *last = now();
+        }
+        self.states(t, bbox, "(snapshot)")
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+pub fn spawn(t: Tracks, store: Store) {
+    tokio::spawn(async move {
+        let mut rx = t.subscribe();
+        // Let the brain finish starting.
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        loop {
+            let areas: Vec<Area> = match t.areas().await {
+                Ok(all) => all.into_iter().filter(|a| a.aircraft).collect(),
+                Err(e) => {
+                    t.status.set(SOURCE, "error", Some(e));
+                    wait(&mut rx, Duration::from_secs(60)).await;
+                    continue;
+                }
+            };
+            t.status.update(SOURCE, |s| {
+                s.areas = areas.iter().map(|a| a.name.clone()).collect()
+            });
+            let pause = poll(&t, &store, &areas).await;
+            wait(&mut rx, pause).await;
+        }
+    });
+}
+
+/// One round over the areas; returns how long to wait before the next.
+async fn poll(t: &Tracks, store: &Store, areas: &[Area]) -> Duration {
+    if areas.is_empty() {
+        t.status.set(
+            SOURCE,
+            "off",
+            Some("no watch area watches aircraft: draw one on the map".into()),
+        );
+        return EVERY;
+    }
+    let started = now();
+    let mut failed = 0;
+    let mut credits: Option<i64> = None;
+    for (i, a) in areas.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        let (positions, remaining) = match t.opensky.states(t, a.bbox, &a.name).await {
+            Ok(v) => v,
+            Err(Refused::Off(why)) => {
+                t.status.set(SOURCE, "off", Some(why));
+                return EVERY;
+            }
+            Err(Refused::RateLimited(retry)) => {
                 t.status.set(
                     SOURCE,
-                    "error",
-                    Some(format!("{}: unreadable answer: {err}", a.name)),
+                    "waiting",
+                    Some(format!("OpenSky credits used up; retrying in {retry}s")),
                 );
+                return Duration::from_secs(retry.max(60));
+            }
+            Err(Refused::Failed(why)) => {
+                warn!(area = %a.name, error = %why, "opensky: poll failed");
+                t.status
+                    .set(SOURCE, "error", Some(format!("{}: {why}", a.name)));
                 failed += 1;
                 continue;
             }
         };
-        let positions = parse(&body, &a.name);
         let ids: std::collections::HashSet<&str> =
             positions.iter().map(|p| p.id.as_str()).collect();
         let cov = Coverage {

@@ -10,7 +10,8 @@
 # go-pmtiles in Docker (nothing installed on the host): only the tiles asked
 # for are downloaded. Re-run to refresh; a few times a year is plenty.
 # Sizes measured 2026-10-21: world to z6 45 MB, z7 189 MB, z8 559 MB;
-# Michigan to z12 128 MB, z14 561 MB, z15 1.2 GB.
+# Michigan to z12 128 MB, z14 561 MB, z15 1.2 GB; contiguous US to z12
+# 1.9 GB, z14 8.9 GB, z15 19 GB; Alaska z14 765 MB; Hawaii z14 15 MB.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,23 +26,42 @@ SRC="https://build.protomaps.com/$BUILD"
 mkdir -p "$OUT"
 if [ ! -f "$OUT/regions.yaml" ]; then
   cat > "$OUT/regions.yaml" <<'EOF'
-# Regions extracted in detail on top of the world tiles (MAP_PLAN.md §5.1).
-# bbox: min_lon,min_lat,max_lon,max_lat. Add an NIA area as one more entry.
+# Regions extracted in detail on top of the world tiles (MAP_PLAN.md §5.1,
+# Phase 5: the whole US at street detail). bbox: min_lon,min_lat,max_lon,max_lat.
+# Add a theater the NIA watches as one more entry.
 regions:
-  - name: michigan
-    label: Michigan
-    bbox: [-90.5, 41.6, -82.1, 48.4]
+  - name: conus
+    label: Contiguous US
+    bbox: [-125.0, 24.5, -66.9, 49.5]
+    maxzoom: 14
+  - name: alaska
+    label: Alaska
+    bbox: [-180.0, 51.0, -129.9, 71.5]
+    maxzoom: 14
+  - name: hawaii
+    label: Hawaii
+    bbox: [-160.6, 18.8, -154.7, 22.4]
     maxzoom: 14
 EOF
-  echo "wrote $OUT/regions.yaml (default: Michigan to zoom 14)"
+  echo "wrote $OUT/regions.yaml (default: the US to zoom 14, ~9.7 GB)"
 fi
 
 extract() { # name, extra args...
   local name=$1; shift
-  echo "== $name.pmtiles from $BUILD $*"
-  docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/$OUT:/out" "$PMTILES_IMAGE" \
-    extract "$SRC" "/out/$name.pmtiles.tmp" "$@"
-  mv "$OUT/$name.pmtiles.tmp" "$OUT/$name.pmtiles"
+  # An extract cannot resume, and a multi-GB one can lose its connection
+  # (2026-10-21: reset at 52% of the US): try again from the start.
+  for try in 1 2 3; do
+    echo "== $name.pmtiles from $BUILD $* (try $try)"
+    if docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/$OUT:/out" "$PMTILES_IMAGE" \
+        extract "$SRC" "/out/$name.pmtiles.tmp" "$@"; then
+      mv "$OUT/$name.pmtiles.tmp" "$OUT/$name.pmtiles"
+      return 0
+    fi
+    rm -f "$OUT/$name.pmtiles.tmp"
+    sleep 30
+  done
+  echo "extract of $name failed 3 times" >&2
+  return 1
 }
 
 extract world --maxzoom="$WORLD_MAXZOOM"

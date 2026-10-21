@@ -3,9 +3,11 @@ name: places
 title: Places the brain knows
 description: Entities linked to a Wikidata item with coordinates (places, headquarters, venues), at the item's point.
 color: "#f59e0b"
+view: true
 cypher: |-
   MATCH (e:Entity)-[l:REFERS_TO]->(w:WikiItem)
     WHERE l.status IN ['confirmed', 'proposed'] AND w.location IS NOT NULL
+      AND ($west IS NULL OR point.withinBBox(w.location, point({longitude: $west, latitude: $south}), point({longitude: $east, latitude: $north})))
   RETURN w.location.y AS lat, w.location.x AS lon, e.name AS label,
          e.id AS id, 'entity' AS drawer, coalesce(e.kind, e.entity_type) AS kind,
          w.label + CASE l.status WHEN 'proposed' THEN ' (link proposed)' ELSE '' END AS detail

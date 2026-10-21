@@ -9,6 +9,13 @@
 //! (ISO strings or null; compare them as `datetime($since)`, since a
 //! datetime compared to a string is null and drops the row). The engine adds
 //! the LIMIT, one past the layer's own, so a cut is said, not hidden.
+//!
+//! Phase 5b, a map that follows the zoom: a `view` layer takes the map's box
+//! (`$west $south $east $north`, all null for the whole world: test
+//! `$west IS NULL` first), so a zoomed-in view loads only its own points;
+//! `minzoom` hides a layer (no query at all) until the map is zoomed in that
+//! far. The HBI clusters a layer's points when zoomed out unless `cluster:
+//! false`.
 
 use std::collections::BTreeSet;
 
@@ -60,6 +67,15 @@ pub struct Layer {
     pub on: bool,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// Takes the map's box (`$west $south $east $north`).
+    #[serde(default)]
+    pub view: bool,
+    /// Not drawn, and not queried, below this zoom.
+    #[serde(default)]
+    pub minzoom: Option<f64>,
+    /// Points merge into count bubbles when zoomed out (default true).
+    #[serde(default = "yes")]
+    pub cluster: bool,
     pub cypher: String,
 }
 
@@ -127,18 +143,31 @@ impl Layer {
         if let Some(w) = scan.write {
             return Err(format!("a layer only reads: its cypher writes ({w})"));
         }
-        let allowed: BTreeSet<&str> = ["since", "until"].into();
+        let allowed: BTreeSet<&str> = ["since", "until", "west", "south", "east", "north"].into();
         if let Some(p) = scan.params.iter().find(|p| !allowed.contains(p.as_str())) {
             return Err(format!(
-                "the cypher uses ${p}: a layer takes only $since and $until"
+                "the cypher uses ${p}: a layer takes only $since, $until and the view ($west $south $east $north)"
             ));
         }
         let uses = scan.params.contains("since") && scan.params.contains("until");
         if self.timed && !uses {
             return Err("a timed layer filters on both $since and $until".into());
         }
-        if !self.timed && !scan.params.is_empty() {
+        if !self.timed && (scan.params.contains("since") || scan.params.contains("until")) {
             return Err("$since and $until are for a timed layer (timed: true)".into());
+        }
+        let view_params = ["west", "south", "east", "north"]
+            .iter()
+            .filter(|p| scan.params.contains(**p))
+            .count();
+        if self.view && view_params != 4 {
+            return Err("a view layer filters on all of $west, $south, $east and $north".into());
+        }
+        if !self.view && view_params > 0 {
+            return Err("$west $south $east $north are for a view layer (view: true)".into());
+        }
+        if self.minzoom.is_some_and(|z| !(0.0..=22.0).contains(&z)) {
+            return Err("minzoom is 0 to 22".into());
         }
         let ret = scan.last_return.as_deref().unwrap_or("");
         if ret.is_empty() {
@@ -255,14 +284,22 @@ pub async fn features(
     layer: &Layer,
     since: Option<String>,
     until: Option<String>,
+    view: Option<[f64; 4]>,
 ) -> anyhow::Result<Value> {
     let limit = layer.limit();
     let cypher = format!("{}\nLIMIT {}", layer.cypher.trim_end(), limit + 1);
-    let params = if layer.timed {
-        json!({"since": since, "until": until})
-    } else {
-        json!({})
-    };
+    let mut params = serde_json::Map::new();
+    if layer.timed {
+        params.insert("since".into(), json!(since));
+        params.insert("until".into(), json!(until));
+    }
+    if layer.view {
+        let v = view.map(|v| v.map(Some)).unwrap_or([None; 4]);
+        for (k, x) in ["west", "south", "east", "north"].into_iter().zip(v) {
+            params.insert(k.into(), json!(x));
+        }
+    }
+    let params = Value::Object(params);
     let rows = graph.query(&cypher, params).await?;
     Ok(collect(layer, rows, limit))
 }
@@ -374,6 +411,21 @@ mod tests {
         assert!(layer("timed: true\n", timed).is_ok());
         assert!(layer("", timed).unwrap_err().contains("timed"));
         assert!(layer("timed: true\n", OK).unwrap_err().contains("$since"));
+    }
+
+    #[test]
+    fn a_view_layer_takes_the_whole_box() {
+        let v = "MATCH (p:Place) WHERE $west IS NULL OR point.withinBBox(p.location, point({longitude: $west, latitude: $south}), point({longitude: $east, latitude: $north})) RETURN p.location.y AS lat, p.location.x AS lon, p.name AS label";
+        assert!(layer("view: true\nminzoom: 4\n", v).is_ok());
+        assert!(layer("", v).unwrap_err().contains("view: true"));
+        assert!(layer("view: true\n", OK).unwrap_err().contains("all of"));
+        let three = v.replace("latitude: $north", "latitude: 90");
+        assert!(
+            layer("view: true\n", &three)
+                .unwrap_err()
+                .contains("all of")
+        );
+        assert!(layer("minzoom: 30\n", OK).unwrap_err().contains("minzoom"));
     }
 
     #[test]

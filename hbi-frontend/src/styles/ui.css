@@ -876,8 +876,11 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .map-window input { width: 100%; }
 .map-watch { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
 .map-watch select { font-size: 11px; }
-.map-area { padding-left: 4px; }
-.map-area-title { font-size: 12px; }
+.map-area { padding: 2px 0 2px 4px; border-left: 2px solid transparent; }
+.map-area.selected { border-left-color: #f59e0b; }
+.map-area.off { opacity: 0.55; }
+.map-area-head { display: flex; align-items: center; gap: 6px; }
+.map-look { display: flex; flex-direction: column; gap: 4px; }
 .map-places { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
 .map-place-form { display: flex; flex-direction: column; gap: 6px; }
 .map-place-actions { display: flex; gap: 6px; }

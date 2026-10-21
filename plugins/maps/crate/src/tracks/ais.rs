@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use super::areas::{Area, area_of};
 use super::store::{Coverage, Position, Store, Vessel};
-use super::{Tracks, hour_of, now};
+use super::{Tracks, hour_of, now, wait};
 
 const URL: &str = "wss://stream.aisstream.io/v0/stream";
 const SOURCE: &str = "ais";
@@ -31,7 +31,8 @@ const KEEP_EVERY: i64 = 300;
 const FLUSH: Duration = Duration::from_secs(60);
 /// No message for this long: reconnect.
 const SILENCE: Duration = Duration::from_secs(600);
-/// How often the areas are re-read; a change reconnects.
+/// The longest wait before the areas are re-read when nothing wakes the
+/// collector (a change in the graph wakes it at once and reconnects).
 const REREAD: Duration = Duration::from_secs(600);
 const TYPES: &[&str] = &[
     "PositionReport",
@@ -153,6 +154,20 @@ pub fn parse(msg: &str, areas: &[Area], types: &HashMap<String, i64>, at: i64) -
     }
 }
 
+/// A position, once for every area that contains it (areas may overlap).
+pub fn in_every_area(p: Position, areas: &[Area]) -> Vec<Position> {
+    let mut out: Vec<Position> = areas
+        .iter()
+        .filter(|a| a.name != p.area && a.contains(p.lat, p.lon))
+        .map(|a| Position {
+            area: a.name.clone(),
+            ..p.clone()
+        })
+        .collect();
+    out.insert(0, p);
+    out
+}
+
 /// The subscription: every ship area's box, as aisstream wants it
 /// (`[[lat, lon], [lat, lon]]` corners).
 pub fn subscription(key: &str, areas: &[Area]) -> String {
@@ -177,8 +192,16 @@ struct Tally {
 pub fn spawn(t: Tracks, store: Store) {
     tokio::spawn(async move {
         let mut backoff = 30;
+        let mut rx = t.subscribe();
         loop {
-            let (all, _) = t.areas();
+            let all = match t.areas().await {
+                Ok(a) => a,
+                Err(e) => {
+                    t.status.set(SOURCE, "error", Some(e));
+                    wait(&mut rx, Duration::from_secs(60)).await;
+                    continue;
+                }
+            };
             let areas: Vec<Area> = all.into_iter().filter(|a| a.ships).collect();
             t.status.update(SOURCE, |s| {
                 s.areas = areas.iter().map(|a| a.name.clone()).collect()
@@ -187,19 +210,19 @@ pub fn spawn(t: Tracks, store: Store) {
                 t.status.set(
                     SOURCE,
                     "off",
-                    Some("no area watches ships (areas/*.yaml, ships: true)".into()),
+                    Some("no watch area watches ships: draw one on the map".into()),
                 );
-                tokio::time::sleep(REREAD).await;
+                wait(&mut rx, REREAD).await;
                 continue;
             }
             let Some(key) = t.env("AISSTREAM_API_KEY") else {
                 t.status
                     .set(SOURCE, "off", Some("AISSTREAM_API_KEY is not set".into()));
-                tokio::time::sleep(REREAD).await;
+                wait(&mut rx, REREAD).await;
                 continue;
             };
             t.status.set(SOURCE, "connecting", None);
-            match run(&t, &store, &key, &areas).await {
+            match run(&t, &store, &key, &areas, &mut rx).await {
                 Ok(why) => {
                     info!(why = %why, "ais: reconnecting");
                     backoff = 30;
@@ -221,7 +244,13 @@ pub fn spawn(t: Tracks, store: Store) {
 }
 
 /// One connection, until it drops (`Err`) or should be renewed (`Ok(why)`).
-async fn run(t: &Tracks, store: &Store, key: &str, areas: &[Area]) -> Result<String, String> {
+async fn run(
+    t: &Tracks,
+    store: &Store,
+    key: &str,
+    areas: &[Area],
+    rx: &mut tokio::sync::watch::Receiver<u64>,
+) -> Result<String, String> {
     let url = url::Url::parse(URL).map_err(|e| e.to_string())?;
     let addrs = net_policy::connect_addrs(&url).await?;
     let mut last = format!("{URL} resolved to no address");
@@ -256,8 +285,6 @@ async fn run(t: &Tracks, store: &Store, key: &str, areas: &[Area]) -> Result<Str
     let mut flush = tokio::time::interval(FLUSH);
     flush.tick().await;
     let mut last_flush = now();
-    let mut reread = tokio::time::interval(REREAD);
-    reread.tick().await;
     let mut heard = false;
     let mut last_msg = now();
     t.status.set(SOURCE, "running", None);
@@ -288,11 +315,17 @@ async fn run(t: &Tracks, store: &Store, key: &str, areas: &[Area]) -> Result<Str
                     }
                     Parsed::Position(p) => {
                         heard = true;
-                        *tally.messages.entry(p.area.clone()).or_default() += 1;
-                        tally.ids.entry(p.area.clone()).or_default().insert(p.id.clone());
-                        if kept.get(&p.id).is_none_or(|k| at - k >= KEEP_EVERY) {
+                        let keep = kept.get(&p.id).is_none_or(|k| at - k >= KEEP_EVERY);
+                        if keep {
                             kept.insert(p.id.clone(), at);
-                            positions.push(p);
+                        }
+                        // A ship in overlapping areas counts in each of them.
+                        for p in in_every_area(p, areas) {
+                            *tally.messages.entry(p.area.clone()).or_default() += 1;
+                            tally.ids.entry(p.area.clone()).or_default().insert(p.id.clone());
+                            if keep {
+                                positions.push(p);
+                            }
                         }
                     }
                     Parsed::Skip => {}
@@ -339,8 +372,8 @@ async fn run(t: &Tracks, store: &Store, key: &str, areas: &[Area]) -> Result<Str
                 // Forget ships not heard from in a day.
                 kept.retain(|_, k| at - *k < 86_400);
             }
-            _ = reread.tick() => {
-                let (all, _) = t.areas();
+            _ = rx.changed() => {
+                let Ok(all) = t.areas().await else { continue };
                 let now_areas: Vec<String> = all.iter().filter(|a| a.ships).map(|a| format!("{}{:?}", a.name, a.bbox)).collect();
                 let had: Vec<String> = areas.iter().map(|a| format!("{}{:?}", a.name, a.bbox)).collect();
                 if now_areas != had {
@@ -403,6 +436,32 @@ mod tests {
             Parsed::Error("Api Key Is Not Valid".into())
         );
         assert_eq!(ship_class(35), "military");
+    }
+
+    #[test]
+    fn a_ship_in_overlapping_areas_counts_in_each() {
+        let mut both = areas();
+        both.push(
+            Area::parse("name: gulf\ntitle: G\nbbox: [56.0, 25.0, 60.0, 27.0]\nships: true\n")
+                .unwrap(),
+        );
+        let msg = r#"{"MessageType":"PositionReport","MetaData":{"MMSI":1},"Message":{"PositionReport":{"Latitude":26.5,"Longitude":56.2}}}"#;
+        let Parsed::Position(p) = parse(msg, &both, &HashMap::new(), 1) else {
+            panic!("not a position");
+        };
+        let all = in_every_area(p, &both);
+        assert_eq!(
+            all.iter().map(|p| p.area.as_str()).collect::<Vec<_>>(),
+            vec!["hormuz", "gulf"]
+        );
+        let outside = Parsed::Position(Position {
+            lon: 59.0,
+            ..all[1].clone()
+        });
+        let Parsed::Position(o) = outside else {
+            unreachable!()
+        };
+        assert_eq!(in_every_area(o, &both).len(), 1);
     }
 
     #[test]

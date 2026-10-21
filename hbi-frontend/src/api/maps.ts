@@ -3,7 +3,7 @@
  * `routes.rs`). A layer is a named read-only query from a bundle's
  * `layers/*.yaml`; its points are fetched live, never stored.
  */
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiJson, apiSend, pluginApi, query } from "./client";
 import { queryClient } from "./queries";
 
@@ -20,6 +20,12 @@ export interface LayerInfo {
   on: boolean;
   owner: { program: string | null; topic: string | null; workflow: string | null } | null;
   plugin: string;
+  /** Takes the map's view box (Phase 5b). */
+  view: boolean;
+  /** Not drawn below this zoom. */
+  minzoom: number | null;
+  /** Clustered when zoomed out. */
+  cluster: boolean;
 }
 
 export interface LayerList {
@@ -49,6 +55,8 @@ export interface LayerFeatures {
   skipped: number;
   truncated: boolean;
   note: string | null;
+  /** Under the layer's minzoom: not queried. */
+  hidden?: boolean;
 }
 
 export interface HandPlace {
@@ -68,13 +76,16 @@ export function useLayers() {
   });
 }
 
-/** One layer's points; `since` only reaches a timed layer. */
-export function useLayerFeatures(name: string, enabled: boolean, since: string | null) {
+/** One layer's points; `since` only reaches a timed layer, `view` (zoom
+ * and box, `viewParams`) only a view layer. */
+export function useLayerFeatures(name: string, enabled: boolean, since: string | null, view: Record<string, number>) {
   return useQuery({
-    queryKey: ["maps", "layer", name, since],
-    queryFn: () => apiJson<LayerFeatures>(`${MAPS}/layers/${encodeURIComponent(name)}${query({ since })}`),
+    queryKey: ["maps", "layer", name, since, view],
+    queryFn: () => apiJson<LayerFeatures>(`${MAPS}/layers/${encodeURIComponent(name)}${query({ since, ...view })}`),
     enabled,
     staleTime: 60_000,
+    // Keep the points on screen while the next view loads.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -108,6 +119,8 @@ export interface AreaCoverage {
   state: string;
   says: string;
   reports: number;
+  /** Distinct ships or aircraft seen in the list's window (`minutes`). */
+  seen: number;
 }
 
 export interface CollectorStatus {
@@ -134,6 +147,12 @@ export interface AreaList {
       aircraft: boolean;
       /** The last day's coverage, per watched kind (`ships`, `aircraft`). */
       coverage: Record<string, AreaCoverage>;
+      on: boolean;
+      /** `yaml` (a bundle file: can only be switched off) or `map` (drawn). */
+      from: string;
+      bbox: [number, number, number, number];
+      center: [number, number];
+      sq_deg: number;
     };
   }[];
   problems: string[];
@@ -145,7 +164,8 @@ export interface AreaList {
 export interface TrackProps {
   source: "ais" | "adsb";
   id: string;
-  area: string;
+  /** The watch area (absent on a snapshot). */
+  area?: string;
   name?: string;
   class?: string;
   speed?: number;
@@ -172,11 +192,45 @@ export function useAreas() {
   });
 }
 
-export function usePositions(minutes: number, enabled: boolean) {
+/** The latest positions, inside `view` (`viewParams`, the box only). */
+export function usePositions(minutes: number, enabled: boolean, view: Record<string, number>) {
+  // The box only: positions do not change with the zoom itself.
+  const box = Object.fromEntries(Object.entries(view).filter(([k]) => k !== "zoom"));
   return useQuery({
-    queryKey: ["maps", "positions", minutes],
-    queryFn: () => apiJson<Positions>(`${MAPS}/areas/positions${query({ minutes })}`),
+    queryKey: ["maps", "positions", minutes, box],
+    queryFn: () => apiJson<Positions>(`${MAPS}/areas/positions${query({ minutes, ...box })}`),
     enabled,
     refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
   });
+}
+
+function refreshAreas() {
+  queryClient.invalidateQueries({ queryKey: ["maps", "areas"] });
+}
+
+export async function addArea(a: { title: string; bbox: [number, number, number, number]; ships: boolean; aircraft: boolean }) {
+  const r = await apiSend<{ created: string }>("POST", `${MAPS}/areas`, a);
+  refreshAreas();
+  return r;
+}
+
+export async function setAreaOn(name: string, enabled: boolean) {
+  await apiSend("PUT", `${MAPS}/areas/${encodeURIComponent(name)}`, { enabled });
+  refreshAreas();
+}
+
+export async function deleteArea(name: string) {
+  await apiSend("DELETE", `${MAPS}/areas/${encodeURIComponent(name)}`);
+  refreshAreas();
+}
+
+export interface Snapshot extends Positions {
+  at: number;
+  credits_left: number | null;
+}
+
+/** One OpenSky look at the view (Phase 5d): shown, not stored. */
+export function snapshotAircraft(bbox: [number, number, number, number]) {
+  return apiSend<Snapshot>("POST", `${MAPS}/aircraft/snapshot`, { bbox });
 }

@@ -4,8 +4,11 @@ title: Geocoded names
 description: Public place names geocode looked up on OpenStreetMap's Nominatim, at the point it found.
 color: "#a3a3a3"
 on: false
+view: true
+minzoom: 4
 cypher: |-
   MATCH (p:Place {source: 'nominatim', found: true})
     WHERE p.location IS NOT NULL
+      AND ($west IS NULL OR point.withinBBox(p.location, point({longitude: $west, latitude: $south}), point({longitude: $east, latitude: $north})))
   RETURN p.location.y AS lat, p.location.x AS lon, p.query AS label,
          p.kind AS kind, p.display_name AS detail

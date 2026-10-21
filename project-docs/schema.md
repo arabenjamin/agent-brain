@@ -131,7 +131,7 @@ Each successful attempt's result links in rank order (`usage_id` → `search_usa
 
 ## DuckDB — Tracks (maps plugin)
 
-A file of its own (`TRACKS_DB_PATH`, default `/home/agent/telemetry/tracks.duckdb`), written only by the maps plugin's collectors (MAP_PLAN Phase 4, `plugins/maps/crate/src/tracks/store.rs`): ship and aircraft positions over the watch areas (`areas/*.yaml`). Kept 14 days. Times are unix seconds (BIGINT). Not reachable from `duckdb_query`; read through `area_traffic` and `/api/plugins/maps/areas*`.
+A file of its own (`TRACKS_DB_PATH`, default `/home/agent/telemetry/tracks.duckdb`), written only by the maps plugin's collectors (MAP_PLAN Phase 4, `plugins/maps/crate/src/tracks/store.rs`): ship and aircraft positions over the watch areas (`:WatchArea`, seeded from `areas/*.yaml`). Kept 14 days. Times are unix seconds (BIGINT). Not reachable from `duckdb_query`; read through `area_traffic` and `/api/plugins/maps/areas*`.
 
 ### `positions`
 
@@ -540,6 +540,21 @@ A geocoded place name (MAP_PLAN Phase 2, the `maps` plugin's `geocode`, `plugins
 | `bbox` | Float[]? | `[south, north, west, east]` of the best match |
 | `candidates_json` | String | Up to 3 candidates, best first, as returned to the caller |
 | `fetched_at` | DateTime | When Nominatim was asked |
+
+#### `WatchArea`
+
+A box the maps plugin's collectors watch for ships and aircraft (MAP_PLAN Phase 5a, `plugins/maps/crate/src/tracks/areas.rs`). Unique `name`, constraint `watch_area_name`. The positions themselves are in the tracks DuckDB, never here.
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | String | Lowercase letters, digits and hyphens; a drawn area's comes from its title |
+| `title` / `description` | String | |
+| `bbox` | Float[] | `[min_lon, min_lat, max_lon, max_lat]` |
+| `ships` / `aircraft` | Boolean | Watched by aisstream / OpenSky (aircraft only up to 100 square degrees) |
+| `owner_program` / `owner_topic` / `owner_workflow` | String? | One of them, or none |
+| `managed_by` | String | `yaml` (a bundle's `areas/*.yaml`, synced on start; the map can only switch it off) · `map` (drawn on the map; edit and delete there) |
+| `enabled` | Boolean | Off = not collected (persists over restarts) |
+| `created_at` / `updated_at` | DateTime | |
 
 #### `ResearchRun`
 

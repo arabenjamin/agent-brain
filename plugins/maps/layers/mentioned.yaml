@@ -6,9 +6,11 @@ title: Places in the notes
 description: Located places the notes mention, one point each with how many notes in the chosen time mentioned it (a country is one point at its centre).
 color: "#ef4444"
 timed: true
+view: true
 cypher: |-
   MATCH (n:Note)-[:MENTIONS]->(e:Entity)-[l:REFERS_TO]->(w:WikiItem)
     WHERE l.status IN ['confirmed', 'proposed'] AND w.location IS NOT NULL
+      AND ($west IS NULL OR point.withinBBox(w.location, point({longitude: $west, latitude: $south}), point({longitude: $east, latitude: $north})))
       AND NOT (n)-[:PART_OF]->()
       AND ($since IS NULL OR n.created_at >= datetime($since))
       AND ($until IS NULL OR n.created_at < datetime($until))

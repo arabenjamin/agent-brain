@@ -248,15 +248,29 @@ impl Store {
         })
     }
 
+    /// Distinct ids per area and source seen since `since`.
+    pub fn area_counts(&self, since: i64) -> Result<Vec<(String, String, i64)>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT area, source, count(DISTINCT id) FROM positions WHERE seen >= ? GROUP BY area, source",
+            )?;
+            let rows = st.query_map(params![since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            Ok(rows.filter_map(|r| r.ok()).collect())
+        })
+    }
+
     /// The latest position of each id seen since `since`, newest first.
-    /// `area` None = every area.
+    /// `area` None = every area; `bbox` `[w, s, e, n]` keeps positions inside
+    /// it (the map's view).
     pub fn latest(
         &self,
         source: Option<&str>,
         area: Option<&str>,
         since: i64,
+        bbox: Option<[f64; 4]>,
         limit: usize,
     ) -> Result<Vec<Value>> {
+        let [w, so, e, n] = bbox.map(|b| b.map(Some)).unwrap_or([None; 4]);
         self.with(|c| {
             let mut st = c.prepare(
                 "SELECT p.source, p.id, p.area, arg_max(p.lat, p.seen), arg_max(p.lon, p.seen),
@@ -265,11 +279,12 @@ impl Store {
                         arg_max(p.class, p.seen), any_value(v.destination), any_value(v.ship_type)
                  FROM positions p LEFT JOIN vessels v ON p.source = 'ais' AND v.mmsi = p.id
                  WHERE p.seen >= ? AND (? IS NULL OR p.source = ?) AND (? IS NULL OR p.area = ?)
+                   AND (? IS NULL OR (p.lon BETWEEN ? AND ? AND p.lat BETWEEN ? AND ?))
                  GROUP BY p.source, p.id, p.area
                  ORDER BY max(p.seen) DESC LIMIT ?",
             )?;
             let rows = st.query_map(
-                params![since, source, source, area, area, limit as i64],
+                params![since, source, source, area, area, w, w, e, so, n, limit as i64],
                 |r| {
                     Ok(json!({
                         "source": r.get::<_, String>(0)?,
@@ -351,14 +366,31 @@ mod tests {
                 ("tanker".into(), 1)
             ]
         );
-        let latest = s.latest(Some("ais"), Some("hormuz"), 0, 10).unwrap();
+        let latest = s.latest(Some("ais"), Some("hormuz"), 0, None, 10).unwrap();
         assert_eq!(latest.len(), 4);
         assert_eq!(latest[0]["id"], "1");
         assert_eq!(latest[0]["class"], "tanker");
         assert_eq!(latest[1]["class"], "military");
         assert_eq!(latest[2]["name"], "EVER GIVEN");
         assert_eq!(latest[2]["destination"], "JEBEL ALI");
-        assert!(s.latest(Some("adsb"), None, 0, 10).unwrap().is_empty());
+        assert!(
+            s.latest(Some("adsb"), None, 0, None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        // The view: only what is inside it.
+        let inside = s
+            .latest(None, None, 0, Some([56.000_12, 25.0, 56.000_17, 27.0]), 10)
+            .unwrap();
+        assert_eq!(
+            inside
+                .iter()
+                .map(|r| r["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["4", "2"]
+        );
+        let counts = s.area_counts(0).unwrap();
+        assert_eq!(counts, vec![("hormuz".to_string(), "ais".to_string(), 4)]);
     }
 
     #[test]
@@ -386,6 +418,6 @@ mod tests {
         s.insert_positions(&[pos("1", 1, None), pos("2", now - 3600, None)])
             .unwrap();
         assert_eq!(s.prune(now).unwrap(), 1);
-        assert_eq!(s.latest(None, None, 0, 10).unwrap().len(), 1);
+        assert_eq!(s.latest(None, None, 0, None, 10).unwrap().len(), 1);
     }
 }

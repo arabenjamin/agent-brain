@@ -79,3 +79,36 @@ export function zoomForKind(kind: string | null | undefined): number {
     default: return 8;
   }
 }
+
+/** What the map shows now (MAP_PLAN Phase 5b): its zoom and, when it is a
+ * plain box, its bounds `[west, south, east, north]`. A view across the
+ * antimeridian, or wider than half the world, is `bbox: null`: the whole
+ * world, which clustering handles. */
+export interface MapView {
+  zoom: number;
+  bbox: [number, number, number, number] | null;
+  /** The view's size in square degrees (Infinity for the whole world). */
+  sqDeg: number;
+}
+
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
+
+export function viewOf(map: { getZoom(): number; getBounds(): { getWest(): number; getSouth(): number; getEast(): number; getNorth(): number } }): MapView {
+  const b = map.getBounds();
+  const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  const zoom = Math.round(map.getZoom() * 10) / 10;
+  if (w < -180 || e > 180 || e - w >= 180) return { zoom, bbox: null, sqDeg: Infinity };
+  const bbox: [number, number, number, number] = [r3(w), r3(Math.max(s, -90)), r3(e), r3(Math.min(n, 90))];
+  return { zoom, bbox, sqDeg: (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) };
+}
+
+/** Query params for a view: the box only from `fromZoom` in (below it the
+ * whole world is cheap and clustered). */
+export function viewParams(v: MapView | null, fromZoom = 3): Record<string, number> {
+  if (!v) return {};
+  const p: Record<string, number> = { zoom: v.zoom };
+  if (v.bbox && v.zoom >= fromZoom) {
+    [p.west, p.south, p.east, p.north] = v.bbox;
+  }
+  return p;
+}

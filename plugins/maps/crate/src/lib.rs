@@ -56,8 +56,9 @@ impl Plugin for Maps {
             tracing::warn!(%bad, "maps: a layer did not load");
         }
         let t = tracks(ctx);
-        for bad in t.areas().1 {
-            tracing::warn!(%bad, "maps: a watch area did not load");
+        // The bundles' area files into the graph, before the collectors read it.
+        if let Err(e) = t.seed().await {
+            tracing::warn!(error = %e, "maps: watch areas not seeded");
         }
         t.spawn();
         Ok(())

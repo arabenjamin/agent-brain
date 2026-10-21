@@ -4,7 +4,8 @@
 # bundle may ship) and the routes the HBI's Map panel draws them through,
 # with places added by hand (private). Phase 4a (2026-10-21): ship and
 # aircraft tracks over watch areas (areas/, a seed kind; the NIA's are in its
-# private bundle) and `area_traffic` (crate/src/tracks/).
+# private bundle) and `area_traffic` (crate/src/tracks/). Phase 5: areas in the
+# graph, drawn on the HBI Map (files are seeds); layers by view and zoom.
 name: maps
 version: 1
 description: "Places and spatial questions: geocode (a place name to a point: the brain's own located entities first, then a cache, then OpenStreetMap's Nominatim, public names only), the views places_near and notes_near, map layers (layers/*.yaml, read-only queries the HBI's Map panel draws) with places added by hand, and ship (aisstream.io) and aircraft (OpenSky) tracks over watch areas (areas/*.yaml) with area_traffic, every count with its coverage."

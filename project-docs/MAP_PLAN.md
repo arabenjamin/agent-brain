@@ -122,6 +122,39 @@ tripwires are designed against real data, not guesses:
   to be told. Designed after a week of 4a data: which classes appear, what
   a normal day's counts are, how much the coverage itself moves.
 
+**Phase 5: a map that follows the zoom.** *Built 2026-10-21 (§4).* Owner, 2026-10-21: "if we're
+zoomed out and can view the entire world we want to cluster things, and
+when we zoom into a region of interest bring in the data we want to see for
+that zoom level of that region"; outlines should not be fixed, and a region
+to watch should be something applied on the map.
+
+- **5a: watch areas in the graph.** `(:WatchArea)` nodes, private like the
+  rest of the graph. An area drawn on the map is the map's (`managed_by:
+  map`: edit, delete). The `areas/*.yaml` files become seeds (`managed_by:
+  yaml`, synced from the file on start); from the map they can only be
+  switched off, which persists. Collectors read the enabled areas from the
+  graph, and a change wakes them at once instead of in 10 minutes.
+- **5b: data by view and zoom.** A layer may declare `minzoom` (below it the
+  route answers "zoom in", without a query) and take the view's box
+  (`$west $south $east $north`, `point.withinBBox`), so a zoomed-in view
+  loads only its own points. Points cluster in the browser below zoom 9 (a
+  bubble with the count; a weighted layer sums its weight; a click zooms
+  in). Ships and aircraft: one summary bubble per area below zoom 5, the
+  positions in the view from there in.
+- **5c: outlines on demand.** An area's outline shows from zoom 4 or when it
+  is picked in the list (which flies to it). "Watch an area": drag a box,
+  name it, choose ships and/or aircraft (aircraft only up to 100 square
+  degrees, said when bigger).
+- **5d: look here now.** Over a view nobody watches, one OpenSky snapshot of
+  the view on request (1 to 2 credits; the view at most 100 square
+  degrees; one a minute), shown until the next and not stored. Ships stay
+  watch-area only: aisstream is one standing subscription.
+- **Tiles:** the whole US to zoom 14 (contiguous US 8.9 GB, Alaska 0.77 GB,
+  Hawaii 15 MB; z15 would be 20.5 GB for little visible gain), replacing
+  the Michigan extract it covers. Measured 2026-10-21 with `pmtiles extract
+  --dry-run`: contiguous US z10 384 MB, z12 1.9 GB, z13 4.3 GB, z14 8.9 GB,
+  z15 19 GB.
+
 **Later.** Trip planning (routing, the private-data story first); UFO reports
 (NUFORC's public data); boundaries (country and state polygons) for
 "within a country".
@@ -281,6 +314,53 @@ tripwires are designed against real data, not guesses:
   nothing from either, as measured. `at` is a reserved word in DuckDB (the
   column is `seen`); found by the store's own tests.
 
+### Phase 5 (2026-10-21)
+
+- **Watch areas live in the graph** (`(:WatchArea {name})`, unique). The
+  bundles' `areas/*.yaml` are synced in on start as `managed_by: yaml`
+  (all fields but `enabled`); an area drawn on the map is `managed_by:
+  map`. From the map a file's area can only be switched off (that
+  persists; deleting it would not survive a restart, and editing it there
+  would silently shadow the file, the trap CLAUDE.md names for workflows),
+  and the refusal says so. A name the map already uses is reported, not
+  overwritten. Routes: `POST /areas`, `PUT /areas/{name}` (only the given
+  fields change; an unknown field is refused), `DELETE /areas/{name}`.
+- **A change wakes the collectors** (a `watch` channel): drawing an area
+  reconnected the ship stream with it within a second, and switching the
+  Black Sea off dropped it from both collectors at once.
+- **Overlapping areas:** a ship in two areas counts in both (it counted only
+  in the first one at first; a drawn Gulf of Aden overlapping
+  Bab-el-Mandeb showed it). Aircraft were already right, each area being
+  polled on its own.
+- **Layers follow the view:** `view: true` layers take
+  `$west $south $east $north` (`point.withinBBox`), null for the whole
+  world; `minzoom` hides a layer and skips its query ("Zoom in to see this
+  layer"). Live: places 128 for the world, 5 in a Middle East view;
+  geocoded names hidden at zoom 2. The HBI sends the view from zoom 3 and
+  refetches on every move, keeping the old points until the new ones
+  arrive. A view across the antimeridian or wider than half the world is
+  sent as the whole world.
+- **Clustering:** each layer's points merge into numbered bubbles up to
+  zoom 8 (a click zooms to where the bubble splits; a weighted layer's
+  bubble sums its weight). Below zoom 5 each watch area is one bubble
+  labelled with its ships and aircraft (or "no coverage"); from zoom 5 the
+  outlines (from zoom 4) and every position in the view
+  (`/areas/positions` takes the view; Hormuz 505, Taiwan 296 in an hour).
+  Picking an area in the list flies to it and highlights it.
+- **Watch an area:** drag a box on the map (panning stops while drawing),
+  name it, ships and/or aircraft (aircraft off and said above 100 square
+  degrees). Checked in headless Chromium end to end: the world with
+  clusters and area bubbles, Hormuz zoomed in, a box drawn and watched, no
+  console errors.
+- **Look here now:** `POST /aircraft/snapshot` with the view: refused over
+  100 square degrees and more than once a minute; over Detroit 44 aircraft
+  for 1 credit, shown as hollow rings, not stored. It shares the
+  collector's OpenSky token.
+- **Tiles:** the US to zoom 14 (`maps/regions.yaml`: contiguous US, Alaska,
+  Hawaii). The first try lost its connection at 52% of 8.7 GB, and an
+  extract cannot resume: `scripts/fetch_map_tiles.sh` now tries each
+  extract three times.
+
 ## 5. Decisions (owner, 2026-10-21)
 
 1. **Detail regions: whatever theater we need to monitor.** No fixed list. A
@@ -300,6 +380,10 @@ tripwires are designed against real data, not guesses:
    `AISSTREAM_API_KEY`, `OPENSKY_CLIENT_ID` / `OPENSKY_CLIENT_SECRET` (OAuth2
    client credentials) in `.env`; the downloaded OpenSky file moved out of
    the repo to `~/.config/agent-brain/`.
+
+5. **Phase 5 (owner, 2026-10-21): US tiles to zoom 14 (~9.7 GB); watch
+   areas in the graph, drawn on the map, the YAML files as seeds;
+   aircraft-only live snapshots on request.**
 
 ## 6. Phase 4 sources, measured (2026-10-21)
 
