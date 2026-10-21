@@ -48,3 +48,7 @@ ingress/ingress
 
 # self-hosted map tiles (scripts/fetch_map_tiles.sh)
 maps/
+
+# downloaded API credentials never belong in the repo (move them to .env)
+credentials*.json
+*-credentials.json

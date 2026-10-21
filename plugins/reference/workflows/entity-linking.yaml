@@ -9,6 +9,9 @@ kind: maintenance
 # used), and these two are its largest background callers (1,228 gpt-oss calls
 # on 10-10). Off until the quota resets and background sharing is decided;
 # while it is spent their runs only dead-letter. See the dev note on this pause.
+# Back on 2026-10-21 (owner, MAP_PLAN §5.3) on ministral-14b (the free Mistral
+# key, 30 requests/min): linking is what grows the set of entities with a point
+# on the map. The pinned model decides the provider; `enabled` is graph-owned.
 enabled: false
 # topic: none — spans topics on purpose
 every: 1h
@@ -16,8 +19,7 @@ steps:
   - tool_name: link_entities
     arguments:
       limit: 20
-    model: gpt-oss:120b-cloud
-    provider_hint: ollama-cloud
+    model: ministral-14b-latest
     priority: 3
     max_attempts: 1
     description: "Propose reference links for 20 entities"

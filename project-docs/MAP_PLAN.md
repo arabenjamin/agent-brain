@@ -15,11 +15,10 @@ track UFO reports. **NIA first.** Tiles: **Protomaps**, self-hosted (owner).
 - **Wikidata has the coordinates; linking is the limit.** Of the 351 linked
   entities, 95 are locations and **93 have a coordinate (P625)** (the two
   without are untyped); organisations 17 of 94 (headquarters), events 2 of 10,
-  people 0. Only 95 of 542 locations are linked so far, and **linking has
-  stopped**: the `entity-linking` workflow (gpt-oss cloud) has been off since
-  2026-10-11, when the free quota ran out. More points need linking back on
-  (a model choice, §5.3), or a drawer "Look up" per entity. 3 items carry
-  more than one coordinate.
+  people 0. Only 95 of 542 locations were linked: the `entity-linking`
+  workflow (gpt-oss cloud) was off from 2026-10-11, when the free quota ran
+  out, until 2026-10-21 (back on ministral-14b, §5.3). 3 items carry more
+  than one coordinate.
 - **The fetch already exists.** The reference plugin reads each linked item's
   claims through the Wikimedia gate (`wbgetentities`, 50 per request) for its
   kind walk; P625 is one more claim in the same response.
@@ -96,8 +95,8 @@ build is daily, a refresh every few months is plenty.
   (not linked, or the item has none).
 
 **Phase 2: located data and `geocode`.** A `location` point on notes and
-items; `geocode` (Nominatim for public work, cached as `(:Place)`, refused for
-private work until §5's decision); ACLED requests latitude/longitude and its
+items; `geocode` (Nominatim, cached as `(:Place)`, public work only: private
+places are placed by hand on the map, §5.2); ACLED requests latitude/longitude and its
 events carry a point; claims about a linked place inherit its point. Spatial
 helpers in the views (`near`, `within`).
 
@@ -105,9 +104,10 @@ helpers in the views (`near`, `within`).
 owner); `lookup`-backed layer queries; the HBI Map panel with layer toggles,
 entity points, ACLED events, and a time slider for anything with a time.
 
-**Phase 4: NIA tracks and tripwires.** First live sources, measured before
-building (rate limits, coverage, volume per day): ships through aisstream.io
-over the websocket plugin, flights through OpenSky's REST API. Positions to
+**Phase 4: NIA tracks and tripwires.** Sources measured (§6): ships through
+aisstream.io (a client of its own that injects the key, not the `ws_*`
+tools), flights through OpenSky's REST API (OAuth2). Every count carries
+its coverage: the Red Sea has none from either. Positions to
 DuckDB (`tracks`, retention window); a geofence workflow per area of interest
 that writes an event note when a watched class of vessel or aircraft enters
 or leaves, and an item when the owner asked to be told. Areas are layers.
@@ -151,18 +151,51 @@ or leaves, and an item when the owner asked to be told. Areas are layers.
   detail, z10) and Yemen (world, z3.5) render with no console errors and no
   failed requests.
 
-## 5. Decisions for the owner
+## 5. Decisions (owner, 2026-10-21)
 
-1. **Default regions.** World to zoom 7 plus Michigan to zoom 14 (~750 MB).
-   More detail is per region; which NIA areas first (Strait of Hormuz,
-   Taiwan Strait, Black Sea, Red Sea and Bab-el-Mandeb)?
-2. **Private geocoding.** For trips: self-host a geocoder (Nominatim or
-   Photon on a regional extract, GBs of disk and an import), or geocode only
-   public places and enter private stops by hand on the map.
-3. **Linking again.** `entity-linking` is the only thing that grows the set
-   of entities with a point. It was paused for the free gpt-oss quota; turn
-   it back on (on what model), or leave linking to the drawer's on-demand
-   "Look up".
-4. **Phase 4 sources.** aisstream.io needs a free key; OpenSky allows
-   anonymous use at low limits and more with a free account. Measure both
-   on the NIA's areas before choosing.
+1. **Detail regions: whatever theater we need to monitor.** No fixed list. A
+   theater the NIA watches gets a detail extract (`maps/regions.yaml`) when
+   its watch is set up; the world tiles cover the rest.
+2. **Private places are added by hand on the map.** No self-hosted geocoder:
+   `geocode` serves public work only, and a trip's private stops are placed
+   by clicking on the map (Phase 3's Map panel), so they never leave the
+   network.
+3. **Linking back on, on ministral-14b** (the free Mistral key). Done
+   2026-10-21: `entity-linking` re-enabled, hourly, 20 entities a run. First
+   run: 20 read, 17 proposed, 3 none, 0 failed; the 17 picks all right on
+   inspection (e.g. "north tower" to the original 1 World Trade Center,
+   "democrats" to the Democratic Party). Links stay proposals the owner
+   confirms. New links store their point as they are made.
+4. **Phase 4 sources: aisstream.io and OpenSky**, credentials obtained.
+   `AISSTREAM_API_KEY`, `OPENSKY_CLIENT_ID` / `OPENSKY_CLIENT_SECRET` (OAuth2
+   client credentials) in `.env`; the downloaded OpenSky file moved out of
+   the repo to `~/.config/agent-brain/`.
+
+## 6. Phase 4 sources, measured (2026-10-21)
+
+One OpenSky `states/all` snapshot and 60 s of aisstream (`PositionReport` and
+`ShipStaticData`) per theater, from a throwaway container:
+
+| Theater (lat, lon box) | OpenSky aircraft | credits | aisstream msgs / 60 s (ships) | ~msgs / day |
+|---|---|---|---|---|
+| Strait of Hormuz (24–27.5, 54–58.5) | 31 | 1 | 22 (22) | ~32,000 |
+| Red Sea, Bab-el-Mandeb (11–16.5, 41–45.5) | **0** | 1 | **0** | 0 |
+| Taiwan Strait (21.5–26.5, 117–122.5) | 32 | 2 | 15 (15) | ~22,000 |
+| Black Sea (40.5–47, 27.5–42) | 81 | 2 | 39 (35) | ~56,000 |
+
+- **The Red Sea is a blind spot for both.** Both networks are crowdsourced
+  terrestrial receivers, and there are almost none near Yemen. "No ships" in
+  a box must never read as "quiet": every count carries its coverage, and a
+  theater with no receivers says so. Satellite AIS (paid) is the only fix
+  for that theater; not now.
+- **OpenSky:** 4,000 credits a day (authenticated); a snapshot costs 1 credit
+  under 25 square degrees, 2 up to 100. Four theaters every 5 minutes is
+  about 1,700 a day. The token lasts 30 minutes.
+- **aisstream:** the key goes inside the WebSocket subscription message, not a
+  header, so the `ws_*` tools cannot carry it without the key passing
+  through a model's context. Phase 4 needs a small client of its own that
+  injects the key (and the secrets index binds it to `stream.aisstream.io`).
+  Volume is small enough for DuckDB with a retention window.
+- Military aircraft often do not broadcast, or are filtered: a callsign
+  heuristic found none in any theater. Positions are what is visible, not
+  what is there.
