@@ -27,7 +27,9 @@ let manifest: Promise<MapManifest | null> | null = null;
 
 /** The tile manifest, or null when no tiles were fetched (said, not hidden). */
 export function loadManifest(): Promise<MapManifest | null> {
-  manifest ??= fetch("/maps/manifest.json")
+  // `no-cache`: revalidate even a copy the browser was told to keep (a
+  // day-old manifest hid newly fetched regions).
+  manifest ??= fetch("/maps/manifest.json", { cache: "no-cache" })
     .then((r) => (r.ok ? (r.json() as Promise<MapManifest>) : null))
     .catch(() => null);
   return manifest;
