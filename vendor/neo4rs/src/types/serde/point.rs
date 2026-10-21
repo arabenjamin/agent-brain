@@ -491,6 +491,18 @@ mod tests {
         }
     }
 
+    /// agent-brain patch (2026-10-21): a point converts to plain JSON, keyed
+    /// by field name; it used to fail on the map key.
+    #[test]
+    fn point2d_to_a_json_value() {
+        let point = test_point2d();
+        let v = serde_json::Value::deserialize(
+            IntoDeserializer::<serde::de::value::Error>::into_deserializer(&point),
+        )
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"sr_id": 420, "x": 42.0, "y": 13.37}));
+    }
+
     #[test]
     fn point2d_full_struct() {
         #[derive(Debug, PartialEq, Deserialize)]

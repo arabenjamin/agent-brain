@@ -103,8 +103,27 @@ macro_rules! cenum {
                     visitor.visit_str(self.value.name())
                 }
 
+                // agent-brain patch (2026-10-21): a string request gets the
+                // field's name, not its discriminant. serde_json's `Value`
+                // reads map keys as strings, so a row holding a point failed
+                // to convert ("expected a string key") and query tools
+                // nulled the whole row.
+                fn deserialize_str<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    visitor.visit_str(self.value.name())
+                }
+
+                fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+                where
+                    V: ::serde::de::Visitor<'de>,
+                {
+                    visitor.visit_str(self.value.name())
+                }
+
                 ::serde::forward_to_deserialize_any! {
-                    char str string bytes byte_buf option unit unit_struct seq map
+                    char bytes byte_buf option unit unit_struct seq map
                     tuple tuple_struct struct enum newtype_struct ignored_any
                     bool i8 i16 i32 i64 i128 u8 u16 u32 u64 f32 f64
                 }

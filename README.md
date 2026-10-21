@@ -88,7 +88,7 @@ also names tools that were removed and what replaced them. A guide by group:
 
 Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `media`: `ingest_media`, `ingest_article`, `poll_media_sources`, `manage_media_source`, `discover_media_sources`, `spawn_gap_tasks`
-- `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`
+- `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`; entity coordinates from Wikidata (P625) as native Neo4j points, read on its idle loop, which put an entity on the drawer map. Map tiles are self-hosted Protomaps: `scripts/fetch_map_tiles.sh` fills `./maps` (world to zoom 7 plus the regions in `maps/regions.yaml`), served by the HBI at `/maps/` (`project-docs/MAP_PLAN.md`)
 - `alias-judge`: no tools; ranks entity merge candidates on idle time (`ALIAS_JUDGE_MODEL`)
 - `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`, `dev_docs` (the dev notes, `scripts/dev_docs.sh`); the architecture view at `/api/plugins/developer/architecture`
 - `epistemics`: `claim` (extract facts, and a named source's opinions, predictions and hypotheticals labelled as theirs; verify against independent web evidence with a local grounding check; list; sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off

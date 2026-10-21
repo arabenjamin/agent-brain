@@ -853,3 +853,7 @@ button.wk-group-head:hover { color: var(--text-dim); }
 .prog-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .item-hand .prog-checks label.wk-check { flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; }
 .prog-checks .wk-check input { margin: 0; }
+
+/* MAP_PLAN Phase 1: an entity's point on the self-hosted map. */
+.point-map { height: 260px; border-radius: 6px; overflow: hidden; background: var(--bg-card); border: 1px solid var(--border, #262b3a); }
+.point-map .maplibregl-ctrl-attrib { font-size: 10px; }

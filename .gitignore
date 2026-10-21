@@ -45,3 +45,6 @@ workspace/
 
 # Compiled Go ingress binary (build output)
 ingress/ingress
+
+# self-hosted map tiles (scripts/fetch_map_tiles.sh)
+maps/

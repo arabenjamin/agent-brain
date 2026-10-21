@@ -510,6 +510,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3002:80"
+    volumes:
+      # Self-hosted map tiles (scripts/fetch_map_tiles.sh, MAP_PLAN).
+      - ./maps:/usr/share/nginx/maps:ro
     depends_on:
       - agent-brain
     networks:

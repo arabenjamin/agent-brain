@@ -18,6 +18,7 @@ import TodosFor from "./TodosFor";
 import RelatedEntities from "./RelatedEntities";
 import EntityRelations from "./EntityRelations";
 import EntityReference from "./EntityReference";
+import EntityMap from "./EntityMap";
 import EntityType from "./EntityType";
 
 const METHOD_LABEL: Record<string, string> = {
@@ -71,6 +72,8 @@ function Body({ d }: { d: EntityDetail }) {
       <EntityType key={`${id}:${d.entity.entity_type}:${d.entity.kind}`} e={d.entity} />
 
       <EntityReference id={id} name={d.entity.name ?? id} />
+
+      <EntityMap id={id} name={d.entity.name ?? id} entityType={d.entity.entity_type} kind={d.entity.kind} />
 
       <Aliases aliases={d.aliases ?? []} />
 

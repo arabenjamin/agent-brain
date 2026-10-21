@@ -30,6 +30,9 @@ export interface WikiLink extends WikiItem {
   query: string | null;
   model: string | null;
   at: string | null;
+  /** Where it is (Wikidata P625, MAP_PLAN Phase 1): null = not read yet;
+   * `lat: null` = read, Wikidata has none. */
+  location?: { lat: number | null; lon: number | null; coord_count: number } | null;
 }
 
 export interface EntityReference {

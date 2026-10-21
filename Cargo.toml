@@ -54,5 +54,8 @@ duckdb = { version = "1.0", features = ["bundled", "json"] }
 # mode "r", so Neo4j itself refuses a write in a query that must only read
 # (neo4j_query, views, declared tools, profile pre-loads). Upstream has no
 # auto-commit read mode; carry it forward before dropping vendor/neo4rs.
+# Third patch (2026-10-21, ours): a point's field names deserialize as strings
+# when asked (`types/serde/cenum.rs`), so a row holding a point converts to
+# serde_json::Value; before, query tools nulled the whole row (MAP_PLAN).
 [patch.crates-io]
 neo4rs = { path = "vendor/neo4rs" }

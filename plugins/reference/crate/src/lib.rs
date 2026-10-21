@@ -21,6 +21,7 @@ use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait, axum};
 
 mod background;
 mod db;
+mod geo;
 mod kinds;
 mod routes;
 mod skill;
@@ -72,6 +73,13 @@ impl Plugin for Reference {
                 vec![]
             }
         }
+    }
+
+    async fn start(&self, ctx: &PluginContext) -> anyhow::Result<()> {
+        if let Some(d) = db(ctx) {
+            geo::spawn(ctx, d);
+        }
+        Ok(())
     }
 
     fn routes(&self, ctx: &PluginContext) -> Option<axum::Router> {

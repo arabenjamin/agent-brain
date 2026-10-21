@@ -176,6 +176,76 @@ pub struct Item {
     pub aliases: Vec<String>,
     /// English Wikipedia title, when it has an article.
     pub wiki_title: Option<String>,
+    /// Where it is (P625), when Wikidata says (MAP_PLAN Phase 1).
+    pub location: Option<LatLon>,
+    /// How many coordinate claims it has; more than one is said, not hidden.
+    pub coord_count: usize,
+}
+
+/// A WGS 84 point.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+pub struct LatLon {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// An item's coordinate location (P625): the preferred-rank claim, else the
+/// first normal one, never a deprecated one, and on Earth only (Wikidata also
+/// places craters on the Moon and Mars). With how many claims it had.
+pub(crate) fn coord_of(e: &Value) -> (Option<LatLon>, usize) {
+    let claims: Vec<&Value> = e["claims"]["P625"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["rank"].as_str() != Some("deprecated"))
+        .collect();
+    let on_earth = |c: &&&Value| {
+        c["mainsnak"]["datavalue"]["value"]["globe"]
+            .as_str()
+            .is_none_or(|g| g.ends_with("/Q2"))
+    };
+    let pick = claims
+        .iter()
+        .filter(on_earth)
+        .find(|c| c["rank"].as_str() == Some("preferred"))
+        .or_else(|| claims.iter().find(on_earth));
+    let point = pick
+        .and_then(|c| {
+            let v = &c["mainsnak"]["datavalue"]["value"];
+            Some(LatLon {
+                lat: v["latitude"].as_f64()?,
+                lon: v["longitude"].as_f64()?,
+            })
+        })
+        .filter(|p| p.lat.abs() <= 90.0 && p.lon.abs() <= 180.0);
+    (point, claims.len())
+}
+
+/// The coordinate location of each of `ids` (50 per request). An item
+/// Wikidata no longer has comes back with none, so it is not asked again.
+pub(crate) async fn coords_of(ids: &[String]) -> Result<HashMap<String, (Option<LatLon>, usize)>> {
+    let mut out = HashMap::new();
+    for chunk in ids.chunks(50) {
+        let joined = chunk.join("|");
+        let v = wikidata(&[
+            ("action", "wbgetentities"),
+            ("ids", &joined),
+            ("props", "claims"),
+        ])
+        .await?;
+        for id in chunk {
+            let e = &v["entities"][id.as_str()];
+            out.insert(
+                id.clone(),
+                if e.get("missing").is_some() {
+                    (None, 0)
+                } else {
+                    coord_of(e)
+                },
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// The English label, else the language-neutral one.
@@ -230,6 +300,7 @@ async fn details(ids: &[String]) -> Result<Vec<Item>> {
         .filter(|i| ents[i.as_str()].get("missing").is_none())
         .map(|i| {
             let e = &ents[i.as_str()];
+            let (location, coord_count) = coord_of(e);
             Item {
                 qid: i.clone(),
                 label: label(e).unwrap_or(i).to_string(),
@@ -252,6 +323,8 @@ async fn details(ids: &[String]) -> Result<Vec<Item>> {
                     .map(String::from)
                     .collect(),
                 wiki_title: e["sitelinks"]["enwiki"]["title"].as_str().map(String::from),
+                location,
+                coord_count,
             }
         })
         .collect())
@@ -541,6 +614,15 @@ async fn store_items(neo4j: &Db, items: &[Item]) -> Result<()> {
                 "wiki_title".into(),
                 i.wiki_title.clone().map(Into::into).unwrap_or(Value::Null),
             );
+            m.insert(
+                "lat".into(),
+                i.location.map(|p| p.lat.into()).unwrap_or(Value::Null),
+            );
+            m.insert(
+                "lon".into(),
+                i.location.map(|p| p.lon.into()).unwrap_or(Value::Null),
+            );
+            m.insert("coord_count".into(), i.coord_count.into());
             Value::Object(m)
         })
         .collect();
@@ -550,6 +632,9 @@ async fn store_items(neo4j: &Db, items: &[Item]) -> Result<()> {
                 "UNWIND $rows AS r MERGE (w:WikiItem {qid: r.qid}) \
                  SET w.label = r.label, w.description = r.description, w.kinds = r.kinds, \
                      w.class_qids = r.class_qids, w.aliases = r.aliases, w.wiki_title = r.wiki_title, \
+                     w.location = CASE WHEN r.lat IS NULL THEN null \
+                                       ELSE point({latitude: r.lat, longitude: r.lon}) END, \
+                     w.coord_count = r.coord_count, w.coords_at = datetime(), \
                      w.fetched_at = datetime()",
             )
             .param("rows", rows),
@@ -812,6 +897,15 @@ pub async fn link_entities(
     } else {
         json!({ "skipped": "throttled" })
     };
+    // Coordinates for linked items stored before MAP_PLAN Phase 1.
+    let located = if throttled.is_none() {
+        match crate::geo::refresh(neo4j, None, crate::geo::BACKGROUND_BUDGET).await {
+            Ok(g) => json!(g),
+            Err(e) => json!({ "error": e.to_string() }),
+        }
+    } else {
+        json!({ "skipped": "throttled" })
+    };
     let waiting = waiting_count(neo4j).await.unwrap_or(-1);
     info!(
         read = results.len(),
@@ -830,6 +924,7 @@ pub async fn link_entities(
         "waiting": waiting,
         "model": model,
         "kinds": kinds,
+        "located": located,
         "results": results,
     }))
 }
@@ -1025,6 +1120,32 @@ fn item_json(r: &Row, prefix: &str) -> Option<Value> {
     }))
 }
 
+/// A stored item's point and how many coordinates it had: `{lat, lon,
+/// coord_count}`, `{lat: null, ..}` when read and none, or null when unread.
+async fn item_location(neo4j: &Db, qid: &str) -> Result<Value> {
+    let rows = neo4j
+        .execute(
+            query(
+                "MATCH (w:WikiItem {qid: $q}) \
+                 RETURN w.coords_at IS NOT NULL AS read, w.location.latitude AS lat, \
+                        w.location.longitude AS lon, coalesce(w.coord_count, 0) AS n",
+            )
+            .param("q", qid),
+        )
+        .await?;
+    let Some(r) = rows.first() else {
+        return Ok(Value::Null);
+    };
+    if !r.get::<bool>("read").unwrap_or(false) {
+        return Ok(Value::Null);
+    }
+    Ok(json!({
+        "lat": r.get::<f64>("lat").ok(),
+        "lon": r.get::<f64>("lon").ok(),
+        "coord_count": r.get::<i64>("n").unwrap_or(0),
+    }))
+}
+
 /// GET /api/entities/{id}/wiki — the entity's reference link, the candidates
 /// the lookup saw, what the user rejected, and the article's first paragraph.
 pub async fn entity_reference(neo4j: &Db, id: &str) -> Result<Option<Value>> {
@@ -1042,6 +1163,7 @@ pub async fn entity_reference(neo4j: &Db, id: &str) -> Result<Option<Value>> {
                    toString(l.at) AS at, \
                    w.qid AS w_qid, w.label AS w_label, w.description AS w_description, w.kinds AS w_kinds, \
                    w.aliases AS w_aliases, w.wiki_title AS w_wiki_title, w.summary AS summary, \
+                   w.coords_at IS NOT NULL AS coords_read, \
                    w.summary_at IS NOT NULL AND w.summary_at > datetime() - duration({days: $sd}) AS summary_fresh",
             )
             .param("id", id)
@@ -1060,6 +1182,22 @@ pub async fn entity_reference(neo4j: &Db, id: &str) -> Result<Option<Value>> {
         v["model"] = json!(r.get::<String>("model").ok());
         v["at"] = json!(r.get::<String>("at").ok());
         v
+    });
+    // Where it is (MAP_PLAN Phase 1): read now if this item never was.
+    let location = match link.as_ref().and_then(|l| l["qid"].as_str()) {
+        Some(qid) => {
+            if !r.get::<bool>("coords_read").unwrap_or(true)
+                && let Err(e) = crate::geo::refresh(neo4j, Some(qid), 1).await
+            {
+                warn!(qid, error = %e, "geo: on-demand read failed");
+            }
+            item_location(neo4j, qid).await?
+        }
+        None => Value::Null,
+    };
+    let link = link.map(|mut l| {
+        l["location"] = location;
+        l
     });
     let mut summary = r.get::<String>("summary").ok();
     let mut summary_error = None;
@@ -1265,7 +1403,49 @@ mod tests {
             class_qids: vec!["Q5".into()],
             aliases: vec![],
             wiki_title: None,
+            location: None,
+            coord_count: 0,
         }
+    }
+
+    fn coord(lat: f64, lon: f64, rank: &str, globe: &str) -> Value {
+        json!({"rank": rank, "mainsnak": {"datavalue": {"value": {
+            "latitude": lat, "longitude": lon, "globe": format!("http://www.wikidata.org/entity/{globe}")}}}})
+    }
+
+    #[test]
+    fn a_coordinate_is_the_preferred_earthly_one() {
+        // Detroit-ish, a normal and a preferred claim: the preferred wins.
+        let e = json!({"claims": {"P625": [coord(1.0, 2.0, "normal", "Q2"), coord(42.33, -83.05, "preferred", "Q2")]}});
+        assert_eq!(
+            coord_of(&e),
+            (
+                Some(LatLon {
+                    lat: 42.33,
+                    lon: -83.05
+                }),
+                2
+            )
+        );
+        // A crater on Mars (Q111) is not a place on Earth's map.
+        let e = json!({"claims": {"P625": [coord(4.5, 137.4, "normal", "Q111")]}});
+        assert_eq!(coord_of(&e), (None, 1));
+        // Deprecated claims are neither picked nor counted.
+        let e = json!({"claims": {"P625": [coord(9.0, 9.0, "deprecated", "Q2"), coord(48.85, 2.35, "normal", "Q2")]}});
+        assert_eq!(
+            coord_of(&e),
+            (
+                Some(LatLon {
+                    lat: 48.85,
+                    lon: 2.35
+                }),
+                1
+            )
+        );
+        // No claim, or an impossible value: no point.
+        assert_eq!(coord_of(&json!({"claims": {}})), (None, 0));
+        let e = json!({"claims": {"P625": [coord(123.0, 2.0, "normal", "Q2")]}});
+        assert_eq!(coord_of(&e).0, None);
     }
 
     #[test]

@@ -304,6 +304,8 @@ A Wikidata item, shared by every entity linked to it (HBI plan Phase 18, `plugin
 | `aliases` | String[] | English and `mul` aliases, at most 8 |
 | `wiki_title` | String? | English Wikipedia article title; absent when it has none |
 | `summary` / `summary_at` | String? / DateTime? | The article's first paragraph (REST `page/summary`), fetched when a drawer shows it, cached 30 days |
+| `location` | Point? | Where it is: Wikidata's coordinate location (P625) as a native WGS 84 `point` (srid 4326; `.latitude`/`.longitude`), the preferred-rank claim else the first normal one, Earth only (MAP_PLAN Phase 1, `plugins/reference/crate/src/geo.rs`). The first native point in the graph: spatial Cypher (`point.distance`, `point.withinBBox`) works on it, and a generic query returns it as `{sr_id, x: lon, y: lat}` (vendored neo4rs, third patch) |
+| `coord_count` / `coords_at` | Integer / DateTime? | How many coordinate claims it had (more than one is shown, not hidden), and when they were read. `coords_at` null = not read yet: the reference plugin's idle loop and the drawer read them; read with none = `location` null |
 | `fetched_at` | DateTime | Last refreshed from Wikidata |
 
 #### `WikiClass`
