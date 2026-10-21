@@ -1,0 +1,127 @@
+name: ci-watch
+description: "Hourly: the latest completed GitHub Actions run per workflow and branch of the repos we work on, compared in code (no model) with the previous check. A newly failed run opens an action item; a failing branch that passes again sends a note. Nothing changed: nothing is sent or stored."
+topic: agent-brain
+kind: monitor
+every: 1h
+steps:
+  # State lives in this workflow's own last `state` result (AgentJob
+  # result_json, found by its marker), not in a note per hour. If that job has
+  # been pruned, the next check treats every current failure as new: one
+  # repeat, never a missed failure.
+  - id: prior
+    tool_name: neo4j_query
+    arguments:
+      cypher: "MATCH (j:AgentJob) WHERE j.tool_name = 'execute_code' AND j.status = 'completed' AND j.result_json CONTAINS 'CI_WATCH_STATE v1' RETURN j.result_json AS result ORDER BY j.completed_at DESC LIMIT 1"
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "The previous check's state"
+
+  # One fetch per repo. Another repo with Actions: copy this step (new id),
+  # and add it to REPOS in `state`. (resume and agent-api run none, 2026-10-21.)
+  - id: agent_brain
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: github
+      url: "repos/arabenjamin/agent-brain/actions/runs"
+      query_params: { per_page: "30" }
+      pick: ["workflow_runs[].id", "workflow_runs[].name", "workflow_runs[].head_branch", "workflow_runs[].status", "workflow_runs[].conclusion", "workflow_runs[].display_title", "workflow_runs[].head_sha", "workflow_runs[].html_url", "workflow_runs[].updated_at"]
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Latest runs: arabenjamin/agent-brain"
+
+  - id: state
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 30000
+      code: |
+        import json, re
+        REPOS = {
+            "arabenjamin/agent-brain": r"""{{steps.agent_brain.body}}""",
+        }
+        FAIL = {"failure", "timed_out", "startup_failure"}
+        prior = r"""{{steps.prior}} """
+        old = {(r, w, b): (int(i), c) for r, w, b, i, c in
+               re.findall(r"STATE\|([^|]+)\|([^|]+)\|([^|]+)\|(\d+)\|([a-z_]+)", prior)}
+        latest = {}
+        for repo, body in REPOS.items():
+            try:
+                runs = json.loads(body).get("workflow_runs", [])
+            except Exception:
+                print(f"NOTE|{repo}|could not read the runs")
+                continue
+            for run in runs:  # newest first
+                if run.get("status") == "completed" and run.get("conclusion"):
+                    latest.setdefault((repo, run.get("name") or "?", run.get("head_branch") or "?"), run)
+        print("CI_WATCH_STATE v1")
+        for (repo, wf, br), run in sorted(latest.items()):
+            print(f"STATE|{repo}|{wf}|{br}|{run['id']}|{run['conclusion']}")
+        for key, run in sorted(latest.items()):
+            seen = old.get(key)
+            if seen and seen[0] == run["id"]:
+                continue
+            repo, wf, br = key
+            line = f"{wf} on `{br}`: {run.get('display_title', '').strip()} ({(run.get('head_sha') or '')[:7]}) {run.get('html_url', '')}"
+            if run["conclusion"] in FAIL:
+                print(f"EVENT|failed|{repo}|{run['conclusion']}|{line}")
+            elif seen and seen[1] in FAIL and run["conclusion"] == "success":
+                print(f"EVENT|recovered|{repo}|success|{line}")
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Latest completed run per workflow and branch, and what changed"
+
+  - id: failed
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 10000
+      code: |
+        ev = [l.split("|", 4) for l in r"""{{steps.state.stdout}} """.splitlines() if l.startswith("EVENT|failed|")]
+        if ev:
+            print("CI failed:")
+            for _, _, repo, how, line in ev:
+                print(f"- {repo}: {line} ({how})")
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "A message only for newly failed runs"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.failed.stdout}}"
+      context: "CI watch {{date}}"
+      needs: action
+      ask: "Open the failing run, fix the cause (or re-run it if it was a flake), and push."
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Action item only when a run newly failed"
+
+  - id: recovered
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 10000
+      code: |
+        ev = [l.split("|", 4) for l in r"""{{steps.state.stdout}} """.splitlines() if l.startswith("EVENT|recovered|")]
+        if ev:
+            print("CI passing again:")
+            for _, _, repo, _, line in ev:
+                print(f"- {repo}: {line}")
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "A message only for branches that recovered"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.recovered.stdout}}"
+      context: "CI watch {{date}}"
+    priority: 2
+    max_attempts: 2
+    provider_hint: ollama
+    description: "A note when a failing branch passes again"

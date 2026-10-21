@@ -1,0 +1,9 @@
+# GitHub: watching the repos we work on, over the REST API through the core's
+# `github` API context (GITHUB_TOKEN, bound to api.github.com in the secrets
+# index). No gh CLI in the image and no Rust: http_request + code steps.
+# Built 2026-10-21 from todo 16cbd1dd (split from "Fix Brains CI/CD").
+name: github
+version: 1
+description: "GitHub repo watches over the REST API: ci-watch tells the owner when a CI run newly fails, and when a failing branch recovers."
+requires:
+  env: [GITHUB_TOKEN]
