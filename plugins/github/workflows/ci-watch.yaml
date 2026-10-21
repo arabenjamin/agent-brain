@@ -17,8 +17,10 @@ steps:
     provider_hint: ollama
     description: "The previous check's state"
 
-  # One fetch per repo. Another repo with Actions: copy this step (new id),
-  # and add it to REPOS in `state`. (resume and agent-api run none, 2026-10-21.)
+  # One fetch per repo. Another repo with Actions: copy a fetch step (new id)
+  # and add it to REPOS in `state`. (resume and agent-api run none,
+  # 2026-10-21.) A repo the token cannot read (404/401) is reported once as a
+  # failure, and as recovered when it reads again; never silently empty.
   - id: agent_brain
     tool_name: http_request
     arguments:
@@ -32,6 +34,33 @@ steps:
     provider_hint: ollama
     description: "Latest runs: arabenjamin/agent-brain"
 
+  # The Gizmatron project (owner, 2026-10-21): the robot and its server.
+  - id: gizmatron
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: github
+      url: "repos/arabenjamin/gizmatron/actions/runs"
+      query_params: { per_page: "30" }
+      pick: ["workflow_runs[].id", "workflow_runs[].name", "workflow_runs[].head_branch", "workflow_runs[].status", "workflow_runs[].conclusion", "workflow_runs[].display_title", "workflow_runs[].head_sha", "workflow_runs[].html_url", "workflow_runs[].updated_at"]
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Latest runs: arabenjamin/gizmatron"
+
+  - id: gizmo_server
+    tool_name: http_request
+    arguments:
+      method: GET
+      context_name: github
+      url: "repos/arabenjamin/gizmo-server/actions/runs"
+      query_params: { per_page: "30" }
+      pick: ["workflow_runs[].id", "workflow_runs[].name", "workflow_runs[].head_branch", "workflow_runs[].status", "workflow_runs[].conclusion", "workflow_runs[].display_title", "workflow_runs[].head_sha", "workflow_runs[].html_url", "workflow_runs[].updated_at"]
+    priority: 2
+    max_attempts: 3
+    provider_hint: ollama
+    description: "Latest runs: arabenjamin/gizmo-server"
+
   - id: state
     tool_name: execute_code
     arguments:
@@ -40,19 +69,31 @@ steps:
       code: |
         import json, re
         REPOS = {
-            "arabenjamin/agent-brain": r"""{{steps.agent_brain.body}}""",
+            "arabenjamin/agent-brain": (r"""{{steps.agent_brain.status_code}}""", r"""{{steps.agent_brain.body}}"""),
+            "arabenjamin/gizmatron": (r"""{{steps.gizmatron.status_code}}""", r"""{{steps.gizmatron.body}}"""),
+            "arabenjamin/gizmo-server": (r"""{{steps.gizmo_server.status_code}}""", r"""{{steps.gizmo_server.body}}"""),
         }
-        FAIL = {"failure", "timed_out", "startup_failure"}
+        FAIL = {"failure", "timed_out", "startup_failure", "unreadable"}
         prior = r"""{{steps.prior}} """
         old = {(r, w, b): (int(i), c) for r, w, b, i, c in
                re.findall(r"STATE\|([^|]+)\|([^|]+)\|([^|]+)\|(\d+)\|([a-z_]+)", prior)}
         latest = {}
-        for repo, body in REPOS.items():
+        for repo, (status, body) in REPOS.items():
+            # A repo we cannot read is a pseudo-run, so the change check reports
+            # it once and reports its recovery; it is never silently empty.
+            # ids differ by state, so a change of state is a new "run"
+            access = {"id": 1, "conclusion": "success", "display_title": "the runs are readable",
+                      "html_url": f"https://github.com/{repo}/actions"}
             try:
-                runs = json.loads(body).get("workflow_runs", [])
+                runs = json.loads(body).get("workflow_runs")
             except Exception:
-                print(f"NOTE|{repo}|could not read the runs")
-                continue
+                runs = None
+            if runs is None:
+                access.update(id=0, conclusion="unreadable", display_title=(
+                    f"GitHub answered HTTP {status.strip() or '?'}; a 404 here usually means "
+                    "the token has no access to this repo (private, or not granted to a fine-grained token)"))
+                runs = []
+            latest[(repo, "(access)", "-")] = access
             for run in runs:  # newest first
                 if run.get("status") == "completed" and run.get("conclusion"):
                     latest.setdefault((repo, run.get("name") or "?", run.get("head_branch") or "?"), run)
@@ -64,7 +105,10 @@ steps:
             if seen and seen[0] == run["id"]:
                 continue
             repo, wf, br = key
-            line = f"{wf} on `{br}`: {run.get('display_title', '').strip()} ({(run.get('head_sha') or '')[:7]}) {run.get('html_url', '')}"
+            if wf == "(access)":
+                line = f"{run['display_title']} ({run['html_url']})"
+            else:
+                line = f"{wf} on `{br}`: {run.get('display_title', '').strip()} ({(run.get('head_sha') or '')[:7]}) {run.get('html_url', '')}"
             if run["conclusion"] in FAIL:
                 print(f"EVENT|failed|{repo}|{run['conclusion']}|{line}")
             elif seen and seen[1] in FAIL and run["conclusion"] == "success":

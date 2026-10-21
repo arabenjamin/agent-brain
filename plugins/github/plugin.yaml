@@ -4,6 +4,6 @@
 # Built 2026-10-21 from todo 16cbd1dd (split from "Fix Brains CI/CD").
 name: github
 version: 1
-description: "GitHub repo watches over the REST API: ci-watch tells the owner when a CI run newly fails, and when a failing branch recovers."
+description: "GitHub repo watches over the REST API: ci-watch tells the owner when a CI run newly fails, and when a failing branch recovers. Watches agent-brain, gizmatron and gizmo-server."
 requires:
   env: [GITHUB_TOKEN]
