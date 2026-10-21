@@ -46,6 +46,18 @@ pub(super) fn cloud_config(server: &wiremock::MockServer) -> LlmConfig {
         // The routing policy refuses a keyed provider whose key is absent, so
         // a rung meant to reach the mock must carry one.
         api_key: Some("test-key".into()),
+        // A fresh model per call. A 5xx benches its model in the process-global
+        // budget book for 60s, so a shared model name let one test's 500
+        // refuse the next test's primary ("cooling down"): CI failed six ladder
+        // tests whenever they ran in that order. (Not the port: freed ports
+        // are reused within a run.)
+        model: {
+            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            format!(
+                "test-model-{}",
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        },
         timeout: Duration::from_secs(30),
         ..Default::default()
     }
