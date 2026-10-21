@@ -25,6 +25,10 @@ use agent_brain_repository::{Neo4jClient, Workflow};
 use agent_brain_work::context_builder::ContextBuilderService;
 use agent_brain_work::queue::{ChainStep, QueueService};
 
+/// How recent an unfinished run must be to hold back a timed one. Older is
+/// presumed stuck, so a dead run never blocks its schedule for good.
+const LIVE_RUN_WINDOW_HOURS: i64 = 6;
+
 /// The `context` of the Task a firing creates: `trigger` is `schedule` or `run now`.
 pub fn run_context(name: &str, trigger: &str) -> String {
     format!("Run of workflow '{name}' ({trigger})")
@@ -399,6 +403,24 @@ impl SchedulerService {
         let session_id = self.config.read().await.session_id.clone();
         let mut dispatched = 0usize;
         for wf in &due {
+            // One run at a time: a timed run while the last one (or a manual
+            // one) has not finished is skipped, not stacked, and fires on the
+            // next tick after it ends. Two copies of a monitor both read "no
+            // previous state" and both notify (ci-watch, 2026-10-21).
+            match self
+                .neo4j
+                .live_run_of(&wf.name, LIVE_RUN_WINDOW_HOURS)
+                .await
+            {
+                Ok(Some(task_id)) => {
+                    info!(workflow = %wf.name, live_run = %task_id, "Scheduled workflow skipped: a run is still live");
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(workflow = %wf.name, error = %e, "Live-run check failed; firing anyway")
+                }
+            }
             match self
                 .fire_workflow(
                     wf,

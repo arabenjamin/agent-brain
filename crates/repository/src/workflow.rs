@@ -166,6 +166,31 @@ impl Neo4jClient {
         rows.iter().map(row_to_workflow).collect()
     }
 
+    /// A run of workflow `name` that has not finished (created, in progress
+    /// or blocked) and was created within `within_hours`: the id of the
+    /// newest, if any. An older unfinished run is presumed stuck (run repair's
+    /// business), so it never blocks a schedule for good.
+    pub async fn live_run_of(
+        &self,
+        name: &str,
+        within_hours: i64,
+    ) -> Result<Option<String>, RepositoryError> {
+        let since = (Utc::now() - Duration::hours(within_hours)).to_rfc3339();
+        let rows = self
+            .execute(
+                query(
+                    "MATCH (t:Task {workflow: $name}) \
+                     WHERE t.status IN ['created', 'in_progress', 'blocked'] \
+                       AND t.created_at >= datetime($since) \
+                     RETURN t.id AS id ORDER BY t.created_at DESC LIMIT 1",
+                )
+                .param("name", name)
+                .param("since", since),
+            )
+            .await?;
+        Ok(rows.first().and_then(|r| r.get::<String>("id").ok()))
+    }
+
     /// Create a workflow. A scheduled one is first due now.
     pub async fn create_workflow(
         &self,
