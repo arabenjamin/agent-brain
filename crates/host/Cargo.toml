@@ -24,6 +24,7 @@ agent-brain-plugin-reference = { path = "../../plugins/reference/crate" }
 agent-brain-plugin-developer = { path = "../../plugins/developer/crate" }
 agent-brain-plugin-epistemics = { path = "../../plugins/epistemics/crate" }
 agent-brain-plugin-sandbox = { path = "../../plugins/sandbox/crate" }
+agent-brain-plugin-websocket = { path = "../../plugins/websocket/crate" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

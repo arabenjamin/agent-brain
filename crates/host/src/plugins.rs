@@ -40,6 +40,7 @@ pub fn compiled() -> Vec<Arc<dyn Plugin>> {
         Arc::new(agent_brain_plugin_epistemics::Epistemics),
         Arc::new(agent_brain_plugin_sandbox::Sandbox),
         Arc::new(agent_brain_plugin_research::Research),
+        Arc::new(agent_brain_plugin_websocket::Websocket),
     ]
 }
 
@@ -685,7 +686,14 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
         let p = Plugins::load(&dir, &[], &|_| None);
         assert_eq!(p.core_loaded(), Ok(()));
-        for k in MERGED_KINDS.iter().chain(CORE_ONLY_KINDS) {
+        // `sources-media/` left the core with the media plugin (a97fe5f); the
+        // empty dir git left behind on disk hid that, and a fresh checkout
+        // (CI) failed here.
+        for k in MERGED_KINDS
+            .iter()
+            .chain(CORE_ONLY_KINDS)
+            .filter(|k| **k != "sources-media")
+        {
             assert!(p.core_dir(k).is_dir(), "core bundle lacks {k}/");
         }
         assert!(p.files("workflows", "yaml").len() >= 15);

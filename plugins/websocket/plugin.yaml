@@ -1,0 +1,7 @@
+# WebSocket client: ws_connect / ws_send / ws_receive / ws_close (crate/).
+# Back as a plugin 2026-10-20 (owner todo f60d6abd); it was a core skill until
+# Phase 0 removed it unused (commit 1aed101). Every connect goes through the
+# net policy: internal hosts only via HTTP_ALLOW_INTERNAL.
+name: websocket
+version: 1
+description: "WebSocket client (ws_connect, ws_send, ws_receive, ws_close): hold a live connection to a ws:// or wss:// endpoint across tool calls, for streaming feeds and push APIs that http_request cannot read."

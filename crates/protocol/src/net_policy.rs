@@ -138,6 +138,11 @@ pub fn check_url(url: &url::Url) -> Result<(), String> {
             url.scheme()
         ));
     }
+    check_url_host(url)
+}
+
+/// [`check_url`] without the scheme: the host and port.
+fn check_url_host(url: &url::Url) -> Result<(), String> {
     let allow = Allow::from_env();
     let port = url.port_or_known_default();
     match url.host() {
@@ -179,6 +184,29 @@ fn check_ip(allow: &Allow, host: &str, ip: IpAddr, port: Option<u16>) -> Result<
 /// lookup may differ, so this narrows the window, it does not close it.
 pub async fn check_host(host: &str) -> Result<(), String> {
     resolve_checked(host, 0).await.map(|_| ())
+}
+
+/// For a client that opens its own socket (a WebSocket): judge `url` as
+/// [`check_url`] does (ws and wss stand for http and https) and return the
+/// checked addresses to connect to. Connecting to these, never re-resolving
+/// the name, closes the window [`check_host`] leaves open.
+pub async fn connect_addrs(url: &url::Url) -> Result<Vec<SocketAddr>, String> {
+    if !matches!(url.scheme(), "http" | "https" | "ws" | "wss") {
+        return Err(format!(
+            "{MARKER} only http(s) and ws(s) URLs are opened, not {}:",
+            url.scheme()
+        ));
+    }
+    check_url_host(url)?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| format!("{MARKER} the URL has no port"))?;
+    match url.host() {
+        None => Err(format!("{MARKER} the URL has no host")),
+        Some(url::Host::Ipv4(v4)) => Ok(vec![SocketAddr::new(IpAddr::V4(v4), port)]),
+        Some(url::Host::Ipv6(v6)) => Ok(vec![SocketAddr::new(IpAddr::V6(v6), port)]),
+        Some(url::Host::Domain(d)) => resolve_checked(d, port).await,
+    }
 }
 
 async fn resolve_checked(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
@@ -324,6 +352,24 @@ mod tests {
         assert!(a.wrong_port("ha.tailnet.ts.net", Some(22)));
         assert!(a.host_port("192.168.1.5", Some(80)));
         assert!(!a.host("other.ts.net"));
+    }
+
+    #[tokio::test]
+    async fn a_socket_client_gets_checked_addresses_or_a_refusal() {
+        let u = |s: &str| url::Url::parse(s).unwrap();
+        for bad in ["ws://127.0.0.1:8081/ws", "wss://[::1]/", "ws://localhost/"] {
+            let e = connect_addrs(&u(bad)).await.unwrap_err();
+            assert!(e.contains(MARKER) && e.contains("internal"), "{bad}: {e}");
+        }
+        assert!(
+            connect_addrs(&u("ftp://1.1.1.1/"))
+                .await
+                .unwrap_err()
+                .contains("only http(s) and ws(s)")
+        );
+        // An IP literal skips DNS; the scheme's default port is filled in.
+        let a = connect_addrs(&u("wss://1.1.1.1/x")).await.unwrap();
+        assert_eq!(a, vec!["1.1.1.1:443".parse().unwrap()]);
     }
 
     #[tokio::test]
