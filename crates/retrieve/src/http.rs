@@ -418,11 +418,6 @@ impl HttpSkill {
         };
 
         let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(10_000));
-        let client = net_policy::guard(reqwest::Client::builder())
-            .timeout(timeout)
-            .user_agent("agent-brain/1.0")
-            .build()
-            .unwrap_or_else(|_| self.client.clone());
 
         // Load ApiContext if requested. A named context that does not exist is
         // an error, not a silent unauthenticated call.
@@ -450,6 +445,31 @@ impl HttpSkill {
         if let Err(why) = net_policy::check_url_str(&url) {
             return ToolCallResult::error(format!("Not requested: {why}"));
         }
+        // The context's secret goes only to a host the owner bound it to, and
+        // is judged on the URL actually requested: an absolute `url` with a
+        // context named would otherwise carry the key anywhere.
+        let secret = match ctx
+            .as_ref()
+            .and_then(|c| c.auth_env_var.as_deref())
+            .filter(|n| !n.trim().is_empty())
+        {
+            Some(name) => match agent_brain_protocol::secrets::resolve(name, &url) {
+                Ok(v) => v,
+                Err(why) => return ToolCallResult::error(format!("Not requested: {why}")),
+            },
+            None => None,
+        };
+        // A keyed request never follows a redirect off its host.
+        let builder = if secret.is_some() {
+            net_policy::guard_pinned(reqwest::Client::builder())
+        } else {
+            net_policy::guard(reqwest::Client::builder())
+        };
+        let client = builder
+            .timeout(timeout)
+            .user_agent("agent-brain/1.0")
+            .build()
+            .unwrap_or_else(|_| self.client.clone());
 
         // Build the request
         let method = match input.method.to_uppercase().as_str() {
@@ -485,8 +505,7 @@ impl HttpSkill {
 
         // Auth injection
         if let Some(ref c) = ctx
-            && let Some(ref env_var) = c.auth_env_var
-            && let Ok(secret) = std::env::var(env_var)
+            && let Some(secret) = secret
         {
             match c.auth_scheme.as_str() {
                 "bearer" => {
@@ -596,6 +615,13 @@ impl HttpSkill {
             return ToolCallResult::error(e);
         }
         let description = input.description.clone().unwrap_or_default();
+        // Stored either way; said now if the key it names will not be sent
+        // (the owner binds a secret to its hosts in the secrets index).
+        let key_not_sent = input
+            .auth_env_var
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+            .and_then(|n| agent_brain_protocol::secrets::resolve(n, &input.base_url).err());
 
         let default_headers_json =
             serde_json::to_string(&input.default_headers.unwrap_or_default())
@@ -645,12 +671,16 @@ impl HttpSkill {
         let text = api_tags::api_text(&input.name, &description, &summaries);
         let tags = api_tags::apply(neo4j, &input.name, &input.tags, &vocab, &text).await;
         if input.endpoints.is_empty() {
-            return ToolCallResult::success_json(json!({
+            let mut out = json!({
                 "stored": true,
                 "name": input.name,
                 "base_url": input.base_url,
                 "tags": tags,
-            }));
+            });
+            if let Some(why) = key_not_sent {
+                out["key_not_sent"] = json!(why);
+            }
+            return ToolCallResult::success_json(out);
         }
         self.store_probed_endpoints(
             neo4j,

@@ -6,6 +6,7 @@
 
 pub mod net_policy;
 pub mod params;
+pub mod secrets;
 pub mod skill;
 pub mod sse_notifier;
 pub mod tool_handler;

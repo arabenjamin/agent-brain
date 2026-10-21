@@ -11,3 +11,4 @@ chrono = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 url = "2"
+serde_yaml = { workspace = true }

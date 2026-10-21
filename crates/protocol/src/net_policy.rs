@@ -260,6 +260,30 @@ pub fn guard(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
         }))
 }
 
+/// [`guard`], and a redirect never leaves the first request's host: the hop
+/// is not followed and the 3xx comes back as the answer. For a request that
+/// carries a secret: reqwest drops `Authorization` on a cross-host redirect
+/// but keeps a custom header (`X-API-Key`), which would hand the key to
+/// whatever host the redirect names.
+pub fn guard_pinned(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder
+        .dns_resolver(std::sync::Arc::new(GuardedResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let origin =
+                |u: &url::Url| (u.host_str().map(str::to_string), u.port_or_known_default());
+            let first = attempt.previous().first().map(origin);
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if first != Some(origin(attempt.url())) {
+                attempt.stop()
+            } else if let Err(e) = check_url(attempt.url()) {
+                attempt.error(e)
+            } else {
+                attempt.follow()
+            }
+        }))
+}
+
 /// A guarded client with reqwest's defaults otherwise.
 pub fn guarded_client() -> reqwest::Client {
     guard(reqwest::Client::builder())
@@ -370,6 +394,35 @@ mod tests {
         // An IP literal skips DNS; the scheme's default port is filled in.
         let a = connect_addrs(&u("wss://1.1.1.1/x")).await.unwrap();
         assert_eq!(a, vec!["1.1.1.1:443".parse().unwrap()]);
+    }
+
+    /// A keyed client stops at a redirect to another origin and returns the
+    /// 3xx, so a custom key header never reaches the redirect's target.
+    #[tokio::test]
+    async fn a_pinned_client_does_not_follow_a_redirect_off_its_origin() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let other = port.wrapping_add(1);
+                let resp = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{other}/steal\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        let client = guard_pinned(reqwest::Client::builder()).build().unwrap();
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .header("X-API-Key", "k")
+            .send()
+            .await
+            .expect("the 3xx comes back as the answer");
+        assert_eq!(resp.status().as_u16(), 302);
     }
 
     #[tokio::test]

@@ -116,7 +116,9 @@ impl McpClient {
             // Under the network policy: `mcp_call` also takes a bare URL a
             // model chose. The registered servers are public; an internal one
             // goes in HTTP_ALLOW_INTERNAL.
-            http: agent_brain_protocol::net_policy::guard(reqwest::Client::builder())
+            // A server's key rides on every call, so a redirect never leaves
+            // the server's host (`guard_pinned`).
+            http: agent_brain_protocol::net_policy::guard_pinned(reqwest::Client::builder())
                 .user_agent(concat!("agent-brain/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .unwrap_or_default(),
@@ -124,13 +126,16 @@ impl McpClient {
         }
     }
 
+    /// Put the server's secret on `req`, if the secrets index binds it to the
+    /// server's host; a refusal stops the call (`secrets::resolve`).
     fn with_auth(
         &self,
         mut req: reqwest::RequestBuilder,
         cfg: &McpServerConfig,
-    ) -> reqwest::RequestBuilder {
-        if let Some(ref env_var) = cfg.auth_env_var
-            && let Ok(secret) = std::env::var(env_var)
+    ) -> Result<reqwest::RequestBuilder, String> {
+        if let Some(env_var) = cfg.auth_env_var.as_deref().filter(|n| !n.trim().is_empty())
+            && let Some(secret) = agent_brain_protocol::secrets::resolve(env_var, &cfg.url)
+                .map_err(|why| format!("{}: not requested: {why}", cfg.name))?
         {
             match cfg.auth_scheme.as_str() {
                 "bearer" => {
@@ -144,7 +149,7 @@ impl McpClient {
                 _ => {}
             }
         }
-        req
+        Ok(req)
     }
 
     /// One JSON-RPC call. Returns `(response_json, session_id_header)`.
@@ -169,7 +174,7 @@ impl McpClient {
         if let Some(sid) = session {
             req = req.header("Mcp-Session-Id", sid);
         }
-        req = self.with_auth(req, cfg);
+        req = self.with_auth(req, cfg)?;
 
         let resp =
             req.send().await.map_err(|e| {
@@ -226,8 +231,9 @@ impl McpClient {
                 if let Some(ref sid) = sid {
                     req = req.header("Mcp-Session-Id", sid.as_str());
                 }
-                req = self.with_auth(req, cfg);
-                let _ = req.send().await;
+                if let Ok(req) = self.with_auth(req, cfg) {
+                    let _ = req.send().await;
+                }
                 sid
             }
             Err(e) => {
