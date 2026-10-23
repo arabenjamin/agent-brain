@@ -38,6 +38,12 @@ pub struct PromptSection {
     /// from the registry's descriptions. Replaces a hand-written list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generate: Option<String>,
+    /// A regex (case-insensitive): the section is left out of a turn whose
+    /// message (an agent run: its task) does not match, so text that serves
+    /// one kind of turn is not paid on every other (HARNESS2_PLAN Phase 4).
+    /// A render with no turn in hand (a preview) keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
 }
 
 /// A bundle file that adds sections to another bundle's profile.
@@ -358,6 +364,30 @@ pub fn render(
     registry: &[(String, String)],
     extensions: &[(String, PromptSection)],
 ) -> String {
+    render_for(profile, registry, extensions, None)
+}
+
+/// Whether a section with this `when` belongs in a turn: no `when`, no turn
+/// in hand, or the turn matches. A pattern that does not compile keeps the
+/// section (the validator refuses it on save).
+pub fn section_applies(when: Option<&str>, turn: Option<&str>) -> bool {
+    let (Some(pat), Some(turn)) = (when.map(str::trim).filter(|w| !w.is_empty()), turn) else {
+        return true;
+    };
+    regex::RegexBuilder::new(pat)
+        .case_insensitive(true)
+        .build()
+        .map_or(true, |re| re.is_match(turn))
+}
+
+/// [`render`] for one turn: a section whose `when` the turn does not match is
+/// left out.
+pub fn render_for(
+    profile: &ContextProfile,
+    registry: &[(String, String)],
+    extensions: &[(String, PromptSection)],
+    turn: Option<&str>,
+) -> String {
     let available = available_tools(profile, registry);
     let mut parts: Vec<String> = Vec::new();
     if !profile.system_prompt.trim().is_empty() {
@@ -368,7 +398,9 @@ pub fn render(
         .iter()
         .chain(extensions.iter().map(|(_, s)| s));
     for s in sections {
-        if !s.requires.iter().all(|t| available.contains(t)) {
+        if !s.requires.iter().all(|t| available.contains(t))
+            || !section_applies(s.when.as_deref(), turn)
+        {
             continue;
         }
         let mut text = s.text.trim_end().to_string();
@@ -588,6 +620,45 @@ pub fn validate(body: Option<&Value>, p: &ContextProfile, c: &ProfileChecks) -> 
         }
     }
 
+    for s in &p.sections {
+        if let Some(w) = s.when.as_deref().filter(|w| !w.trim().is_empty())
+            && let Err(e) = regex::RegexBuilder::new(w).case_insensitive(true).build()
+        {
+            f.hard.push(format!(
+                "section `{}`.when is not a valid regex: {e}",
+                s.name
+            ));
+        }
+    }
+
+    // A sub-agent's instructions are its prompt; `description` is what the
+    // roster says about it. On 2026-10-23 a drafted bundle put a composer's
+    // whole instructions in `description` and gave a reflector the prompt
+    // "(same as description)": both would have run with no instructions.
+    let prompt_chars = p
+        .system_prompt
+        .split_whitespace()
+        .map(str::len)
+        .sum::<usize>()
+        + p.sections
+            .iter()
+            .map(|s| s.text.trim().len())
+            .sum::<usize>();
+    if p.spawnable && prompt_chars < 40 {
+        let msg = if prompt_chars == 0 {
+            "spawnable with no system_prompt: as a sub-agent it runs with no instructions (`description` is the roster's line, never the agent's prompt)".to_string()
+        } else {
+            format!(
+                "spawnable with a {prompt_chars}-character system_prompt: as a sub-agent that is all it is told (a placeholder such as \"(same as description)\" is not a prompt)"
+            )
+        };
+        if body.is_some() {
+            f.hard.push(msg);
+        } else {
+            f.soft.push(msg);
+        }
+    }
+
     if p.spawnable && p.specialty.as_deref().is_none_or(|s| s.trim().is_empty()) {
         f.soft.push(
             "spawnable with no specialty: the delegate roster describes it by its description"
@@ -752,6 +823,26 @@ mod tests {
     }
 
     #[test]
+    fn a_section_with_when_renders_only_for_a_matching_turn() {
+        let p = profile(json!({
+            "tools": ["search_web"],
+            "system_prompt": "BASE",
+            "sections": [{"name": "link", "text": "LINK RULE", "when": "https?://"}]
+        }));
+        let r = reg(&["search_web"]);
+        assert_eq!(
+            render_for(&p, &r, &[], Some("watch HTTPS://youtu.be/x")),
+            "BASE\n\nLINK RULE"
+        );
+        assert_eq!(
+            render_for(&p, &r, &[], Some("what did we learn today?")),
+            "BASE"
+        );
+        // A preview (no turn) shows everything the profile can say.
+        assert_eq!(render(&p, &r, &[]), "BASE\n\nLINK RULE");
+    }
+
+    #[test]
     fn extensions_follow_the_profile_and_obey_requires() {
         let p = profile(json!({"tools": ["mcp_call"], "system_prompt": "BASE"}));
         let ext = vec![
@@ -762,6 +853,7 @@ mod tests {
                     text: "JOB RULE".into(),
                     requires: vec!["mcp_call".into()],
                     generate: None,
+                    when: None,
                 },
             ),
             (
@@ -771,6 +863,7 @@ mod tests {
                     text: "NEEDS WEB".into(),
                     requires: vec!["search_web".into()],
                     generate: None,
+                    when: None,
                 },
             ),
         ];
@@ -893,6 +986,31 @@ mod tests {
                 .any(|m| m.contains("tool `no_such_tool` does not exist")),
             "{f:?}"
         );
+    }
+
+    #[test]
+    fn a_spawnable_profile_needs_a_prompt_of_its_own() {
+        let off = HashMap::new();
+        let body = json!({"name": "c", "description": "Compares three runs and decides.", "spawnable": true, "specialty": "x"});
+        let p = overlay(None, &body).unwrap();
+        let f = validate(Some(&body), &p, &checks(&[], &off, &[], &[]));
+        assert!(
+            f.hard.iter().any(|m| m.contains("no system_prompt")),
+            "{f:?}"
+        );
+        let body = json!({"name": "r", "description": "d", "spawnable": true, "specialty": "x", "system_prompt": "(same as description)"});
+        let p = overlay(None, &body).unwrap();
+        let f = validate(Some(&body), &p, &checks(&[], &off, &[], &[]));
+        assert!(f.hard.iter().any(|m| m.contains("placeholder")), "{f:?}");
+        // The startup audit of a stored profile only warns.
+        let f = validate(None, &p, &checks(&[], &off, &[], &[]));
+        assert!(f.hard.is_empty() && f.soft.iter().any(|m| m.contains("placeholder")));
+        // A section's `when` must compile.
+        let body = json!({"name": "s", "description": "d", "system_prompt": "Do the job well and report it.",
+                          "sections": [{"name": "x", "text": "y", "when": "(open"}]});
+        let p = overlay(None, &body).unwrap();
+        let f = validate(Some(&body), &p, &checks(&[], &off, &[], &[]));
+        assert!(f.hard.iter().any(|m| m.contains("`x`.when")), "{f:?}");
     }
 
     #[test]

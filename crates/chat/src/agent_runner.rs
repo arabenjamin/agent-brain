@@ -31,8 +31,10 @@ use tokio::sync::{RwLock, mpsc};
 
 use crate::chat::{ChatEvent, ChatRequest};
 use crate::chat::{
-    DELEGATE_TOOL, USAGE_TOOL_LABEL, WRITE_TOOLS, build_system_prompt, filter_tools,
+    DELEGATE_TOOL, PROBE_STUB_PREFIX, USAGE_TOOL_LABEL, WRITE_TOOLS, build_system_prompt,
+    filter_tools,
 };
+use crate::trajectory::Trajectory;
 use agent_brain_knowledge::knowledge::RETRIEVAL_EXCLUDE;
 use agent_brain_llm::llm::LlmConfig;
 use agent_brain_llm::routing::{Purpose, ROUTE_CONTEXT, RouteContext, RoutingPolicy};
@@ -104,6 +106,30 @@ pub struct AgentBudget {
     pub allow_explicit_only: bool,
 }
 
+/// A candidate harness to run an agent under instead of its profile's
+/// (HARNESS2_PLAN Phase 1): its prompt and/or its toolset. Only a probe may
+/// carry one, so a candidate never acts on the world.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Harness {
+    /// The whole system prompt, in place of the profile's (and its sections).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// The toolset, in place of the profile's allowlist; still only tools the
+    /// registry holds, never `delegate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+}
+
+/// How one run differs from the profile's own: the model, a candidate harness,
+/// and whether it is a probe (every call that is not read-only is stubbed).
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    pub model: Option<String>,
+    pub harness: Option<Harness>,
+    pub probe: bool,
+}
+
 /// One tool the sub-agent actually invoked, with the outcome the loop reported.
 /// This is the ground-truth receipt behind a run: an LLM's prose can claim it
 /// "ran X and stored Y" when no such call happened (observed live — the toolsmith
@@ -165,6 +191,10 @@ pub fn passing_tests(tool: &str, result: &str) -> Option<u64> {
 
 /// The Rust code an answer presents: the first ```rust block that holds a
 /// `#[test]`, else the longest ```rust block. `None` when there is none.
+///
+/// A block ends at a line of only backticks, not at the first ``` in it: on
+/// 2026-10-23 an agent's passing tests held `"x\n```rust\n…"` in a string, and
+/// the re-run compiled the code cut there ("unterminated double quote string").
 pub fn answer_rust_code(answer: &str) -> Option<String> {
     let mut blocks = Vec::new();
     let mut rest = answer;
@@ -172,15 +202,32 @@ pub fn answer_rust_code(answer: &str) -> Option<String> {
         let after = &rest[start + "```rust".len()..];
         let body_start = after.find('\n').map_or(after.len(), |i| i + 1);
         let body = &after[body_start..];
-        let Some(end) = body.find("```") else { break };
+        let Some((end, next)) = closing_fence(body) else {
+            break;
+        };
         blocks.push(body[..end].to_string());
-        rest = &body[end + 3..];
+        rest = &body[next..];
     }
     blocks
         .iter()
         .find(|b| b.contains("#[test]"))
         .or_else(|| blocks.iter().max_by_key(|b| b.len()))
         .cloned()
+}
+
+/// Where a fenced block's body ends: the start of its closing fence line (a
+/// line holding only three or more backticks and whitespace) and the offset
+/// just past that line.
+fn closing_fence(body: &str) -> Option<(usize, usize)> {
+    let mut at = 0;
+    for line in body.split_inclusive('\n') {
+        let t = line.trim();
+        if t.len() >= 3 && t.chars().all(|c| c == '`') {
+            return Some((at, at + line.len()));
+        }
+        at += line.len();
+    }
+    None
 }
 
 /// The `[dependencies]` lines of the sandbox's crate manifest
@@ -492,6 +539,12 @@ pub struct AgentFindings {
     pub attempts: Vec<RungAttempt>,
     /// Rungs the routing policy refused before trying (`"model: reason"`).
     pub refused: Vec<String>,
+    /// The run step by step: each call's arguments, outcome and result head,
+    /// then the answer. What a composer contrasts (HARNESS2_PLAN).
+    pub trajectory: Trajectory,
+    /// The harness the run actually used: the profile's prompt (or the
+    /// candidate's) and the tools it was offered. Empty for a rejection.
+    pub harness: Harness,
 }
 
 impl AgentFindings {
@@ -506,6 +559,8 @@ impl AgentFindings {
             model: String::new(),
             attempts: Vec::new(),
             refused: Vec::new(),
+            trajectory: Trajectory::default(),
+            harness: Harness::default(),
         }
     }
 }
@@ -631,7 +686,35 @@ impl AgentRunner {
         sink: Option<mpsc::Sender<ChatEvent>>,
         model: Option<&str>,
     ) -> AgentFindings {
-        let model = model.map(str::trim).filter(|m| !m.is_empty());
+        let opts = RunOptions {
+            model: model.map(str::to_string),
+            ..Default::default()
+        };
+        self.run_with(agent, task, budget, sink, opts).await
+    }
+
+    /// [`run_with_model`](Self::run_with_model) with a candidate harness and
+    /// probe mode as well. A harness without `probe` is refused: a prompt no
+    /// one adopted never runs with real effects.
+    pub async fn run_with(
+        &self,
+        agent: &str,
+        task: &str,
+        budget: AgentBudget,
+        sink: Option<mpsc::Sender<ChatEvent>>,
+        opts: RunOptions,
+    ) -> AgentFindings {
+        let RunOptions {
+            model,
+            harness,
+            probe,
+        } = opts;
+        if harness.is_some() && !probe {
+            return AgentFindings::rejected(
+                "a candidate `harness` runs only as a probe (`probe: true`), so it acts on nothing.",
+            );
+        }
+        let model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         let agent = agent.trim();
         if task.trim().is_empty() {
             return AgentFindings::rejected("agent run called with an empty task.");
@@ -696,7 +779,7 @@ impl AgentRunner {
             ));
         }
 
-        let Ok(bundle) = cb.build_bundle(agent).await else {
+        let Ok(bundle) = cb.build_bundle_for(agent, Some(task)).await else {
             return AgentFindings::rejected(format!(
                 "Sub-agent profile '{agent}' could not be loaded."
             ));
@@ -777,22 +860,32 @@ impl AgentRunner {
         // Toolset: never `delegate` (enforces depth cap 1). Write tools are
         // stripped unless the budget allows writes (chat sub-agents are
         // read-only; a background agent writes but keeps the engine write guard).
+        // A probe keeps the write tools in view (they are stubbed, not run):
+        // what the agent would do with them is the point of the probe.
         let all_tools = self.tool_registry.read().await.list();
-        let allowed: Vec<String> = bundle
-            .profile
-            .tools
+        let candidate_tools = harness.as_ref().and_then(|h| h.tools.clone());
+        let allowed: Vec<String> = candidate_tools
+            .as_ref()
+            .unwrap_or(&bundle.profile.tools)
             .iter()
             .filter(|t| {
                 t.as_str() != DELEGATE_TOOL
-                    && (budget.allow_writes || !WRITE_TOOLS.contains(&t.as_str()))
+                    && (budget.allow_writes || probe || !WRITE_TOOLS.contains(&t.as_str()))
             })
             .cloned()
             .collect();
         let sub_tools = filter_tools(all_tools, &allowed);
         let handler = self.tool_handler.read().await.clone();
+        let prompt_used = harness
+            .as_ref()
+            .and_then(|h| h.system_prompt.clone())
+            .unwrap_or_else(|| bundle.profile.system_prompt.clone());
+        let harness_used = Harness {
+            system_prompt: Some(prompt_used.clone()),
+            tools: Some(sub_tools.iter().map(|t| t.name.clone()).collect()),
+        };
         let sub_system = build_system_prompt(
-            (!bundle.profile.system_prompt.is_empty())
-                .then_some(bundle.profile.system_prompt.as_str()),
+            (!prompt_used.is_empty()).then_some(prompt_used.as_str()),
             &bundle.pre_loaded_notes,
         );
         let sub_request = ChatRequest {
@@ -812,6 +905,7 @@ impl AgentRunner {
         // Who asked (chat or a background job), read before the run scopes
         // its own route context; and the ledger to record the run in.
         let caller = RouteContext::current().purpose;
+        let caller = if probe { "probe" } else { caller.as_str() };
         let telemetry = self
             .tool_handler
             .read()
@@ -841,23 +935,32 @@ impl AgentRunner {
         // RETRIEVAL_EXCLUDE binds the profile's `retrieval_exclude` to every
         // search the agent makes; an absent one scopes an empty (no-op) value.
         let retrieval_exclude = bundle.profile.retrieval_exclude.clone().unwrap_or_default();
-        let provider_loop = ROUTE_CONTEXT.scope(
-            route_ctx,
-            USAGE_TOOL_LABEL.scope(
-                format!("subagent:{agent}"),
-                RETRIEVAL_EXCLUDE.scope(
-                    retrieval_exclude,
-                    agent_brain_llm::ctx::CURRENT_AGENT.scope(
-                        Some(agent.to_string()),
-                        engine.run_bounded_loop(
-                            cfg,
-                            sub_tools,
-                            handler,
-                            sub_request,
-                            sub_system,
-                            sub_tx,
-                            false,
-                            budget.max_iterations,
+        let provider_loop = agent_brain_llm::ctx::PROBE_RUN.scope(
+            probe,
+            ROUTE_CONTEXT.scope(
+                route_ctx,
+                // A probe's calls are `probe:<agent>`, kept out of the agent's
+                // scorecard (it reads `subagent:%`).
+                USAGE_TOOL_LABEL.scope(
+                    if probe {
+                        format!("probe:{agent}")
+                    } else {
+                        format!("subagent:{agent}")
+                    },
+                    RETRIEVAL_EXCLUDE.scope(
+                        retrieval_exclude,
+                        agent_brain_llm::ctx::CURRENT_AGENT.scope(
+                            Some(agent.to_string()),
+                            engine.run_bounded_loop(
+                                cfg,
+                                sub_tools,
+                                handler,
+                                sub_request,
+                                sub_system,
+                                sub_tx,
+                                false,
+                                budget.max_iterations,
+                            ),
                         ),
                     ),
                 ),
@@ -873,6 +976,11 @@ impl AgentRunner {
             let mut gathered: Vec<String> = Vec::new();
             // The real tool-call trace — receipts to check the prose against.
             let mut trace: Vec<ToolInvocation> = Vec::new();
+            // Each call's arguments wait here for its result (results come
+            // back in call order).
+            let mut pending: std::collections::VecDeque<(String, serde_json::Value)> =
+                std::collections::VecDeque::new();
+            let mut trajectory = Trajectory::default();
             while let Some(ev) = sub_rx.recv().await {
                 match ev {
                     ChatEvent::Message { content } => answer = content,
@@ -883,6 +991,7 @@ impl AgentRunner {
                     }
                     ChatEvent::Done => {}
                     ChatEvent::ToolCall { tool, args } => {
+                        pending.push_back((tool.clone(), args.clone()));
                         if let Some(ref tx) = sink {
                             let _ = tx
                                 .send(ChatEvent::ToolCall {
@@ -898,6 +1007,17 @@ impl AgentRunner {
                         preview,
                         model_saw_chars,
                     } => {
+                        let args = match pending.iter().position(|(t, _)| *t == tool) {
+                            Some(i) => pending.remove(i).map(|(_, a)| a).unwrap_or_default(),
+                            None => serde_json::Value::Null,
+                        };
+                        trajectory.push(
+                            &tool,
+                            &args,
+                            success,
+                            preview.starts_with(PROBE_STUB_PREFIX),
+                            &preview,
+                        );
                         trace.push(ToolInvocation {
                             tool: tool.clone(),
                             success,
@@ -933,10 +1053,12 @@ impl AgentRunner {
                     ChatEvent::Token { .. } => {}
                 }
             }
-            (answer, saw_error, gathered, trace)
+            (answer, saw_error, gathered, trace, trajectory)
         };
 
-        let (report, (answer, saw_error, gathered, trace)) = tokio::join!(provider_loop, drain);
+        let (report, (answer, saw_error, gathered, trace, mut trajectory)) =
+            tokio::join!(provider_loop, drain);
+        trajectory.set_answer(&answer);
         let model = model_that_ran(&report);
         // The worker actually consulted the world iff it ran ≥1 successful tool.
         let retrieved = !gathered.is_empty();
@@ -946,13 +1068,15 @@ impl AgentRunner {
             let failed = trace.iter().filter(|t| !t.success).count();
             if let Err(e) = tel.record_agent_run(
                 agent,
-                caller.as_str(),
+                caller,
                 &model,
                 ok,
                 trace.len(),
                 failed,
                 started.elapsed().as_millis() as u64,
                 agent_brain_llm::ctx::current_owner_task().as_deref(),
+                &crate::trajectory::cut(task, crate::trajectory::ANSWER_CHARS),
+                &trajectory.to_json(),
             ) {
                 tracing::warn!(error = %e, agent, "agent run not recorded");
             }
@@ -984,6 +1108,8 @@ impl AgentRunner {
                 model,
                 attempts: report.attempts,
                 refused: report.refused,
+                trajectory,
+                harness: harness_used,
             };
         }
         AgentFindings {
@@ -995,6 +1121,8 @@ impl AgentRunner {
             model,
             attempts: report.attempts,
             refused: report.refused,
+            trajectory,
+            harness: harness_used,
         }
     }
 
@@ -1332,6 +1460,14 @@ mod tests {
         assert!(!cargo.contains("regex") && !cargo.contains("dalek"));
         assert!(files.get("src/lib.rs").is_some());
         assert!(answer_rust_code("no code here").is_none());
+    }
+
+    #[test]
+    fn a_fence_inside_a_string_does_not_end_the_block() {
+        let answer = "```rust\nfn f() {}\n#[test]\nfn t() { let s = \"x\\n```rust\\ny\\n```\\n\"; }\n  ```\nafter";
+        let code = answer_rust_code(answer).unwrap();
+        assert!(code.ends_with("\"; }\n"), "{code}");
+        assert!(!code.contains("after"));
     }
 
     #[test]

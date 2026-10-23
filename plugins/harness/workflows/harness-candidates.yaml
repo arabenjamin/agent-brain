@@ -1,0 +1,58 @@
+name: harness-candidates
+description: "Weekly (HARNESS2_PLAN Phase 3): picks the sub-agent whose real runs failed most this week (2+ bad runs; one is noise) and starts harness-improve on it, its probes on gpt-oss."
+topic: agent-brain
+kind: maintenance
+every: 7d
+# Off until harness-improve's judges prove reliable: on 2026-10-23 three runs on
+# gpt-oss gave one right decision, one keep and one wrong adoption (HARNESS2_PLAN §5).
+enabled: false
+defaults:
+  max_attempts: 1
+  # No model in this workflow: SQL picks, create_task starts.
+  provider_hint: ollama
+steps:
+  - id: pick
+    tool_name: duckdb_query
+    description: The agent with the most bad runs this week, its latest bad task, and why
+    arguments:
+      sql: |-
+        WITH runs AS (
+          SELECT agent, created_at, task, trajectory,
+                 (tools_failed > 0 OR NOT ok) AS bad
+          FROM agent_runs
+          WHERE epoch(created_at) >= epoch(now()) - 7 * 86400
+            AND coalesce(caller, '') <> 'probe'
+            AND agent NOT LIKE 'harness-%'
+            AND trajectory IS NOT NULL
+        ),
+        per AS (
+          SELECT agent, count(*) AS runs, count(*) FILTER (WHERE bad) AS bad_runs
+          FROM runs GROUP BY agent HAVING count(*) FILTER (WHERE bad) >= 2
+        ),
+        worst AS (
+          SELECT * FROM per ORDER BY bad_runs DESC, runs DESC LIMIT 1
+        ),
+        latest AS (
+          SELECT r.agent, r.task, r.trajectory
+          FROM runs r JOIN worst w USING (agent)
+          WHERE r.bad ORDER BY r.created_at DESC LIMIT 1
+        )
+        SELECT w.agent, l.task,
+               w.bad_runs || ' of ' || w.runs || ' runs this week had a failed tool call or no answer; failed calls in the latest: '
+               || coalesce(nullif(array_to_string(list_transform(
+                    list_filter(CAST(json_extract(l.trajectory, '$.steps') AS JSON[]),
+                                s -> json_extract_string(s, '$.ok') = 'false'),
+                    s -> json_extract_string(s, '$.tool') || ' (' || left(json_extract_string(s, '$.result'), 160) || ')'), '; '), ''),
+                  'no answer') AS why
+        FROM worst w JOIN latest l USING (agent)
+  - tool_name: create_task
+    description: Start harness-improve on it (refused when no agent qualified, the quiet week)
+    optional: true
+    arguments:
+      workflow: harness-improve
+      goal: "improve harness: {{steps.pick.rows.0.agent}}"
+      inputs:
+        agent: "{{steps.pick.rows.0.agent}}"
+        task: "{{steps.pick.rows.0.task}}"
+        why: "{{steps.pick.rows.0.why}}"
+        model: gpt-oss:120b-cloud

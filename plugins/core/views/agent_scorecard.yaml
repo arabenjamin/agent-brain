@@ -50,6 +50,7 @@ sql: |-
            round(avg(duration_ms) / 1000.0, 1) AS avg_secs
     FROM agent_runs
     WHERE CAST(created_at AS TIMESTAMP) > CAST(now() AS TIMESTAMP) - INTERVAL $days DAY
+      AND coalesce(caller, '') <> 'probe'
     GROUP BY agent),
   usage AS (
     SELECT substr(tool_name, 10) AS agent, count(*) AS model_calls,

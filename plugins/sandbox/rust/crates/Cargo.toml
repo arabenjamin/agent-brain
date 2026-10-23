@@ -38,3 +38,10 @@ ed25519-dalek = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hex = "0.4"
 base64 = "0.22"
+
+# The brain's own idioms (2026-10-23). A deep-diver asked to write a module for
+# this codebase (a YAML rule file loaded once, an error logged) could not
+# compile it here: two runs, `serde_yaml` and `tracing` missing, so
+# `rerun_answer_code` failed on the environment, not the code.
+serde_yaml = "0.9"
+tracing = "0.1"

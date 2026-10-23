@@ -1,0 +1,12 @@
+# Where to read a page instead of the URL handed over (read_rules.rs). The
+# article keeps the URL it was given (its id, its title, its dedup); only the
+# fetch goes to `read`. First matching rule wins; `$1`… are the pattern's
+# capture groups; matching ignores case.
+#
+# arXiv's /abs/ page is the abstract: 2610.14224 (Harness²) was read as 3,188
+# characters on 2026-10-23 and the brain's summary never saw the method. The
+# /html/ page is the whole paper.
+rules:
+  - name: arxiv-abstract
+    pattern: '^https?://(?:www\.)?arxiv\.org/abs/([^?#]+)'
+    read: 'https://arxiv.org/html/$1'

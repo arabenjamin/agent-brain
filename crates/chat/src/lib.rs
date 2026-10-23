@@ -6,6 +6,7 @@
 
 pub mod agent_runner;
 pub mod chat;
+pub mod trajectory;
 
 pub use agent_runner::{
     AgentBudget, AgentFindings, AgentRunner, AgentSelection, SubagentLoopRunner,

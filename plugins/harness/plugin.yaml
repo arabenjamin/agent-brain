@@ -1,0 +1,14 @@
+# HARNESS2_PLAN.md: the brain improves its own sub-agents from evidence, after
+# Harness² (arXiv 2610.14224). Drafted by the brain's toolsmith (gpt-oss,
+# 2026-10-23, three rounds) with manage_plugin, reviewed and promoted here.
+#   harness-improve    reference probe → invariant + domain candidates → probes
+#                      → composer → final probe → reflector (workspace file,
+#                      harness-library dev note, todo); never adopts by itself
+#   harness-candidates weekly: the sub-agent with 2+ bad runs starts one
+name: harness
+version: 2
+description: "The brain improves its own sub-agents from evidence (Harness²): probe the agent, write candidates, probe them, compose, record the lesson; the owner adopts."
+requires:
+  env: []
+  plugins: []
+author: brain

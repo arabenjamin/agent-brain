@@ -244,6 +244,12 @@ impl TelemetryClient {
                 task_id      TEXT,
                 created_at   TIMESTAMPTZ DEFAULT current_timestamp
             );
+            -- HARNESS2_PLAN Phase 1 (2026-10-23): the run's task (cut) and its
+            -- trajectory (trajectory::Trajectory as JSON: each call's tool,
+            -- args, ok, stubbed, result head; then the answer). `caller` is
+            -- `probe` for a probe run, which acted on nothing.
+            ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS task TEXT;
+            ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS trajectory TEXT;
 
             -- One row per call to an outside service the brain paces or
             -- budgets (YOUTUBE_DATA_API_PLAN Phase 0: every yt-dlp call, from
@@ -333,6 +339,7 @@ impl TelemetryClient {
 
     /// Record one sub-agent run (PROGRAMS_PLAN Phase 4).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn record_agent_run(
         &self,
         agent: &str,
@@ -343,14 +350,16 @@ impl TelemetryClient {
         tools_failed: usize,
         duration_ms: u64,
         task_id: Option<&str>,
+        task: &str,
+        trajectory: &str,
     ) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         conn.execute(
-            "INSERT INTO agent_runs (id, agent, caller, model, ok, tool_calls, tools_failed, duration_ms, task_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO agent_runs (id, agent, caller, model, ok, tool_calls, tools_failed, duration_ms, task_id, task, trajectory) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 uuid::Uuid::new_v4().to_string(),
                 agent,
@@ -361,6 +370,8 @@ impl TelemetryClient {
                 tools_failed as i64,
                 duration_ms as i64,
                 task_id,
+                task,
+                trajectory,
             ],
         )?;
         Ok(())
@@ -1419,8 +1430,16 @@ impl TelemetryClient {
             .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
         check_single_select(&conn, sql)?;
 
+        // A LIMIT of its own counts as a word, not as " LIMIT ": one opening
+        // its own line (how a model writes multi-line SQL) was missed and a
+        // second appended, `LIMIT 1 LIMIT 10`, a syntax error in SQL the
+        // caller wrote correctly (2026-10-23: 6 of a toolsmith's 8 tries).
+        // The Cypher tool had the same bug (`retrieve::query`).
         let base = sql.trim().trim_end_matches(';');
-        let limited = if upper.contains(" LIMIT ") {
+        let limited = if upper
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            .any(|w| w == "LIMIT")
+        {
             base.to_string()
         } else {
             format!("{} LIMIT {}", base, limit)
@@ -1886,6 +1905,25 @@ mod model_usage_task_tests {
 }
 
 #[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn a_limit_on_its_own_line_is_not_doubled() {
+        let t = TelemetryClient::new(":memory:").unwrap();
+        let rows = t
+            .query_raw("SELECT 1 AS a UNION ALL SELECT 2\nORDER BY a\nLIMIT 1", 10)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        // No LIMIT of its own: the caller's cap applies.
+        let rows = t
+            .query_raw("SELECT * FROM range(5) AS r(limit_x)", 3)
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+}
+
+#[cfg(test)]
 mod agent_attribution_tests {
     use super::*;
 
@@ -1894,7 +1932,7 @@ mod agent_attribution_tests {
     #[test]
     fn runs_and_misfits_record_their_agent() {
         let t = TelemetryClient::new(":memory:").unwrap();
-        t.record_agent_run("researcher", "chat", "m", true, 4, 1, 1200, None)
+        t.record_agent_run("researcher", "chat", "m", true, 4, 1, 1200, None, "", "")
             .unwrap();
         t.record_agent_run(
             "researcher",
@@ -1905,6 +1943,8 @@ mod agent_attribution_tests {
             2,
             900,
             Some("task-1"),
+            "look it up",
+            r#"{"steps":[],"answer":""}"#,
         )
         .unwrap();
         t.log_arg_check(

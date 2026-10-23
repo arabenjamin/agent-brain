@@ -380,7 +380,15 @@ impl ExactPatterns {
             return out;
         };
         let ev = evidence.to_lowercase().replace("\\/", "/");
-        let mut found = url.spans(text);
+        // A URL inside code is data, not a citation: marking it rewrites the
+        // code (2026-10-23: a sub-agent's Rust tests came back with
+        // `"https://arxiv.org/abs/x [link not in its sources]"` in a string).
+        let code = code_ranges(text);
+        let mut found: Vec<_> = url
+            .spans(text)
+            .into_iter()
+            .filter(|(start, _, _)| !code.iter().any(|(a, b)| a <= start && start < b))
+            .collect();
         // Edit from the end so earlier offsets stay valid.
         found.sort_by_key(|f| std::cmp::Reverse(f.0));
         for (start, end, link) in found {
@@ -424,6 +432,51 @@ impl ExactPatterns {
     }
 }
 
+/// Byte ranges of the Markdown code in `text`: every fenced block (a line
+/// starting with ``` up to and including the next such line, or to the end
+/// when unclosed) and every inline code span outside fences. Half-open,
+/// sorted. Written by the brain's deep-diver (gpt-oss, 2026-10-23), tests run
+/// in its sandbox.
+pub fn code_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut in_fence = false;
+    let mut fence_start = 0usize;
+    let mut i = 0usize;
+    let len = text.len();
+    while i < len {
+        let line_end = match text[i..].find('\n') {
+            Some(pos) => i + pos + 1,
+            None => len,
+        };
+        let line = &text[i..line_end];
+        if !in_fence {
+            if line.trim_start().starts_with("```") {
+                in_fence = true;
+                fence_start = i;
+            } else {
+                let mut pos = 0usize;
+                while let Some(start_rel) = line[pos..].find('`') {
+                    let start = i + pos + start_rel;
+                    let Some(end_rel) = line[pos + start_rel + 1..].find('`') else {
+                        break;
+                    };
+                    let end = start + 1 + end_rel + 1;
+                    ranges.push((start, end));
+                    pos += start_rel + 1 + end_rel + 1;
+                }
+            }
+        } else if line.trim_start().starts_with("```") {
+            ranges.push((fence_start, line_end));
+            in_fence = false;
+        }
+        i = line_end;
+    }
+    if in_fence {
+        ranges.push((fence_start, len));
+    }
+    ranges
+}
+
 /// Check an answer and its inferences against `evidence`: both rewritten,
 /// and every finding together.
 pub fn check_answer(
@@ -465,6 +518,34 @@ pub fn check_links(text: &str, evidence: &str) -> LinkCheck {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_ranges_cover_fences_and_inline_code() {
+        let s = "see `a` and `b`";
+        assert_eq!(code_ranges(s), vec![(4, 7), (12, 15)]);
+        let s = "x\n```rust\nlet u = \"https://a.b\";\n```\ny";
+        let start = s.find("```").unwrap();
+        let end = s.find("```\n").unwrap() + 4;
+        assert_eq!(code_ranges(s), vec![(start, end)]);
+        let s = "a\n```\ncode";
+        assert_eq!(code_ranges(s), vec![(2, s.len())]);
+        assert!(code_ranges("it's a `").is_empty());
+        let s = "é `ü` 】";
+        assert_eq!(
+            code_ranges(s),
+            vec![(s.find('`').unwrap(), s.rfind('`').unwrap() + 1)]
+        );
+    }
+
+    #[test]
+    fn a_link_in_code_is_not_marked() {
+        let p = core();
+        let text = "Read https://made.up/x.\n```rust\nlet u = \"https://arxiv.org/abs/1\";\n```\nand `https://in.line/y`";
+        let c = p.check_links(text, "");
+        assert_eq!(c.not_in_sources, vec!["https://made.up/x".to_string()]);
+        assert!(c.text.contains("\"https://arxiv.org/abs/1\";"));
+        assert!(c.text.contains("`https://in.line/y`"));
+    }
+
     use super::*;
 
     fn core() -> ExactPatterns {

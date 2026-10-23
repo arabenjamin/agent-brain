@@ -75,8 +75,8 @@ use round_loop::*;
 use tool_calls::*;
 use tool_results::*;
 use turn::*;
-pub use write_guard::WRITE_TOOLS;
 use write_guard::*;
+pub use write_guard::{PROBE_STUB_PREFIX, WRITE_TOOLS};
 
 /// Maximum tool-use iterations per chat turn (prevents infinite loops).
 const MAX_TOOL_ITERATIONS: usize = 10;

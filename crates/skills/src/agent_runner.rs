@@ -31,8 +31,9 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use agent_brain_chat::agent_runner::{
-    AgentBudget, AgentRunner, VerifySpec, answer_crate, answer_rust_code, first_compile_error,
-    label_proposed_placement, mark_unverified_answer, sandbox_dependencies, verification_failures,
+    AgentBudget, AgentRunner, Harness, RunOptions, VerifySpec, answer_crate, answer_rust_code,
+    first_compile_error, label_proposed_placement, mark_unverified_answer, sandbox_dependencies,
+    verification_failures,
 };
 use agent_brain_protocol::Skill;
 use agent_brain_protocol::{ToolCallResult, ToolDefinition, parse_args};
@@ -111,6 +112,18 @@ impl AgentRunnerSkill {
                     "model": {
                         "type": "string",
                         "description": "Run the agent on this model (a catalog model id or name from list_models) instead of its profile's own. Judged by the routing policy; a model that is unknown or not allowed for this work fails the call with the reason, it never falls back."
+                    },
+                    "probe": {
+                        "type": "boolean",
+                        "description": "Run as a probe: every call with effects outside the run (writes, task and todo creation, non-GET requests) is answered with a stub saying what would have happened, and is not executed. The result's `trajectory` shows each call. For trying an agent under a candidate `harness`, or seeing what it would do."
+                    },
+                    "harness": {
+                        "type": ["object", "string"],
+                        "description": "Probe only: run the agent under a candidate harness instead of its profile's: `system_prompt` (the whole prompt) and/or `tools` (its toolset, registry tools only). Other keys are ignored; JSON text is accepted. The result's `harness` is what the run used.",
+                        "properties": {
+                            "system_prompt": { "type": "string" },
+                            "tools": { "type": "array", "items": { "type": "string" } }
+                        }
                     },
                     "read_only": {
                         "type": "boolean",
@@ -257,8 +270,15 @@ impl AgentRunnerSkill {
             .or(input.step_model.as_deref())
             .map(str::trim)
             .filter(|m| !m.is_empty());
+        let harness = match input.harness.as_ref().filter(|v| !v.is_null()) {
+            None => None,
+            Some(v) => match parse_harness(v) {
+                Ok(h) => Some(h),
+                Err(e) => return ToolCallResult::error(e),
+            },
+        };
         let findings = runner
-            .run_with_model(
+            .run_with(
                 agent,
                 task,
                 AgentBudget {
@@ -271,7 +291,11 @@ impl AgentRunnerSkill {
                 },
                 // No sink: collect the findings, do not stream to a user.
                 None,
-                model,
+                RunOptions {
+                    model: model.map(str::to_string),
+                    harness,
+                    probe: input.probe,
+                },
             )
             .await;
 
@@ -325,6 +349,11 @@ impl AgentRunnerSkill {
             "tool_trace": tool_trace,
             "verified": input.verify.is_some().then_some(failures.is_empty()),
             "verification_failures": failures,
+            // The run step by step, as text a model reads (`render`), and the
+            // harness it ran under: what a harness editor and composer need.
+            "trajectory": findings.trajectory.render(),
+            "harness": findings.harness,
+            "probe": input.probe,
         }))
     }
 }
@@ -452,9 +481,56 @@ struct RunAgentInput {
     model: Option<String>,
     #[serde(default)]
     read_only: bool,
+    #[serde(default)]
+    probe: bool,
+    /// A candidate harness: an object, or that object as JSON text (what a
+    /// workflow template renders), read by [`parse_harness`].
+    #[serde(default)]
+    harness: Option<Value>,
     /// A chain step's pinned model, stamped into the job args by the queue.
     #[serde(default, rename = "__model")]
     step_model: Option<String>,
+}
+
+/// A candidate harness from `run_agent`'s `harness`: its `system_prompt` and
+/// `tools`, other keys ignored, so an editor's whole candidate (with its
+/// rationale) can be handed over as it came. JSON text is parsed first.
+fn parse_harness(v: &Value) -> Result<Harness, String> {
+    let parsed;
+    let v = match v {
+        Value::String(text) => {
+            parsed = agent_brain_llm::llm::first_json_object(text, &[])
+                .ok_or("`harness` is text with no JSON object in it")?;
+            &parsed
+        }
+        other => other,
+    };
+    let Some(obj) = v.as_object() else {
+        return Err("`harness` must be an object with `system_prompt` and/or `tools`".into());
+    };
+    let system_prompt = match obj.get("system_prompt") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(p)) if !p.trim().is_empty() => Some(p.clone()),
+        Some(_) => return Err("`harness.system_prompt` must be non-empty text".into()),
+    };
+    let tools = match obj.get("tools") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .map(|t| t.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+                .ok_or("`harness.tools` must be a list of tool names")?,
+        ),
+        Some(_) => return Err("`harness.tools` must be a list of tool names".into()),
+    };
+    if system_prompt.is_none() && tools.is_none() {
+        return Err("`harness` names neither `system_prompt` nor `tools`".into());
+    }
+    Ok(Harness {
+        system_prompt,
+        tools,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -466,6 +542,23 @@ struct SelectAgentInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_is_read_from_an_object_or_its_json_text() {
+        let h = parse_harness(
+            &json!({ "system_prompt": "Do X.", "tools": ["search_web"], "rationale": "why" }),
+        )
+        .unwrap();
+        assert_eq!(h.system_prompt.as_deref(), Some("Do X."));
+        assert_eq!(h.tools, Some(vec!["search_web".to_string()]));
+        let h = parse_harness(&json!("Candidate:\n{\"system_prompt\": \"Do Y.\"}")).unwrap();
+        assert_eq!(h.system_prompt.as_deref(), Some("Do Y."));
+        assert!(h.tools.is_none());
+        assert!(parse_harness(&json!({ "rationale": "only" })).is_err());
+        assert!(parse_harness(&json!({ "system_prompt": "" })).is_err());
+        assert!(parse_harness(&json!({ "tools": "search_web" })).is_err());
+        assert!(parse_harness(&json!("no json here")).is_err());
+    }
 
     fn skill_with_no_runner() -> AgentRunnerSkill {
         AgentRunnerSkill::new(Arc::new(RwLock::new(None)))

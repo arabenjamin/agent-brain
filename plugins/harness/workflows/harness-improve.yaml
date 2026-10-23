@@ -1,0 +1,124 @@
+name: harness-improve
+topic: agent-brain
+kind: maintenance
+inputs:
+  - name: agent
+    description: the sub-agent to improve
+    required: true
+  - name: task
+    description: a real task it was given
+    required: true
+  - name: why
+    description: what went wrong in its real run, the observation that brought it here
+    required: true
+  - name: model
+    description: run the agent's probes on this model instead of its own; leave empty for its own
+    required: false
+defaults:
+  max_attempts: 1
+  # Every step is a run_agent pinned to a free cloud model (its `model`).
+  provider_hint: ollama-cloud
+steps:
+  - id: ref
+    description: reference run
+    tool_name: run_agent
+    arguments:
+      agent: "{{inputs.agent}}"
+      task: "{{inputs.task}}"
+      probe: true
+      model: "{{inputs.model}}"
+      max_rounds: 10
+  - id: inv
+    description: invariant candidate editor
+    tool_name: run_agent
+    arguments:
+      agent: harness-editor
+      model: gpt-oss:120b-cloud
+      max_rounds: 6
+      task: |
+        SCOPE: invariant
+        Agent name: {{inputs.agent}}
+        WHY: {{inputs.why}}
+        CURRENT PROMPT: {{steps.ref.harness.system_prompt}}
+        TOOLS: {{steps.ref.harness.tools}}
+        TASK: {{inputs.task}}
+        REFERENCE RUN: {{steps.ref.trajectory}}
+  - id: dom
+    description: domain candidate editor
+    tool_name: run_agent
+    arguments:
+      agent: harness-editor
+      model: gpt-oss:120b-cloud
+      max_rounds: 6
+      task: |
+        SCOPE: domain
+        Agent name: {{inputs.agent}}
+        WHY: {{inputs.why}}
+        CURRENT PROMPT: {{steps.ref.harness.system_prompt}}
+        TOOLS: {{steps.ref.harness.tools}}
+        TASK: {{inputs.task}}
+        REFERENCE RUN: {{steps.ref.trajectory}}
+  - id: probe_inv
+    description: probe invariant candidate
+    tool_name: run_agent
+    optional: true
+    arguments:
+      agent: "{{inputs.agent}}"
+      task: "{{inputs.task}}"
+      probe: true
+      model: "{{inputs.model}}"
+      max_rounds: 10
+      harness: "{{steps.inv.answer}}"
+  - id: probe_dom
+    description: probe domain candidate
+    tool_name: run_agent
+    optional: true
+    arguments:
+      agent: "{{inputs.agent}}"
+      task: "{{inputs.task}}"
+      probe: true
+      model: "{{inputs.model}}"
+      max_rounds: 10
+      harness: "{{steps.dom.answer}}"
+  - id: compose
+    description: compose decision
+    tool_name: run_agent
+    arguments:
+      agent: harness-composer
+      model: gpt-oss:120b-cloud
+      max_rounds: 4
+      task: |
+        Agent: {{inputs.agent}}
+        WHY: {{inputs.why}}
+        TASK: {{inputs.task}}
+        CURRENT PROMPT AND TOOLS: {{steps.ref.harness.system_prompt}} {{steps.ref.harness.tools}}
+        RUN 1 reference trajectory: {{steps.ref.trajectory}}
+        RUN 2 invariant candidate: {{steps.inv.answer}} and its run {{steps.probe_inv.trajectory}}
+        RUN 3 domain candidate: {{steps.dom.answer}} and its run {{steps.probe_dom.trajectory}}
+  - id: final
+    description: final run with composer decision
+    tool_name: run_agent
+    optional: true
+    arguments:
+      agent: "{{inputs.agent}}"
+      task: "{{inputs.task}}"
+      probe: true
+      model: "{{inputs.model}}"
+      max_rounds: 10
+      harness: "{{steps.compose.answer}}"
+  - id: reflect
+    description: reflect on final run
+    tool_name: run_agent
+    arguments:
+      agent: harness-reflector
+      model: gpt-oss:120b-cloud
+      max_rounds: 6
+      task: |
+        agent: {{inputs.agent}}
+        WHY: {{inputs.why}}
+        TASK: {{inputs.task}}
+        CURRENT PROMPT: {{steps.ref.harness.system_prompt}}
+        COMPOSER DECISION: {{steps.compose.answer}}
+        REFERENCE RUN: {{steps.ref.trajectory}}
+        FINAL RUN: {{steps.final.trajectory}}
+        today's date {{date}}

@@ -17,6 +17,68 @@ pub(super) const HANDOVER_RESULT_CHARS: usize = 4000;
 
 pub(super) const HANDOVER_TOTAL_CHARS: usize = 16000;
 
+/// Tools a probe runs for real: each only reads (the graph, the telemetry, the
+/// web, the codebase) or runs code in the no-network sandbox. Everything else
+/// is stubbed, so a tool added later is stubbed until it is listed here: a
+/// probe that shows a stub where a read was is a worse probe, never a write.
+const PROBE_READ_TOOLS: &[&str] = &[
+    "search_notes",
+    "recall_recent",
+    "search_web",
+    "get_search_usage",
+    "read_page",
+    "neo4j_query",
+    "describe_graph",
+    "recent_tasks",
+    "list_apis",
+    "list_endpoints",
+    "list_capabilities",
+    "duckdb_query",
+    "get_llm_budget",
+    "mcp_list_tools",
+    "list_tasks",
+    "select_agent",
+    "lookup",
+    "wiki_background",
+    "read_codebase_file",
+    "search_codebase",
+    "get_git_log",
+    "analyze_own_structure",
+    "list_workspace_files",
+    "execute_code",
+    "area_traffic",
+    "geocode",
+];
+
+/// Tools with an `action` whose reading actions a probe may run.
+const PROBE_READ_ACTIONS: &[(&str, &[&str])] = &[
+    ("manage_workflow", &["list", "get"]),
+    ("manage_program", &["list", "get", "review_context"]),
+    ("manage_todo", &["list", "get"]),
+    ("manage_plugin", &["list", "get"]),
+    ("manage_media_source", &["list"]),
+    ("dev_docs", &["search", "get"]),
+    ("dead_letter", &["list"]),
+];
+
+/// Whether a probe run may execute this call (HARNESS2_PLAN Phase 1). Reads
+/// run, so the probe sees what the agent would see; a call that could act
+/// outside the run is stubbed. Stricter than [`call_is_read_only`], which
+/// trusts any name that does not look like a write: `reason` stores
+/// inferences, `dev_docs` writes notes, `deep_research` is paid.
+pub(super) fn probe_may_run(tool: &str, args: &Value) -> bool {
+    if matches!(tool, "http_request" | "mcp_call") {
+        return call_is_read_only(tool, args);
+    }
+    if PROBE_READ_TOOLS.contains(&tool) {
+        return true;
+    }
+    let action = args["action"].as_str().unwrap_or("");
+    PROBE_READ_ACTIONS
+        .iter()
+        .any(|(t, actions)| *t == tool && actions.contains(&action))
+}
+
 /// Whether a tool call has no effect outside the turn, so another model may
 /// safely continue from it (and even repeat it). Conservative: an unknown
 /// mutating shape counts as a write.

@@ -712,6 +712,17 @@ impl ContextBuilderService {
 
     /// Build a [`ContextBundle`] for the named profile, optionally fetching pre-load notes.
     pub async fn build_bundle(&self, profile_name: &str) -> anyhow::Result<ContextBundle> {
+        self.build_bundle_for(profile_name, None).await
+    }
+
+    /// [`build_bundle`](Self::build_bundle) for one turn: a section whose
+    /// `when` the turn (a chat message, an agent's task) does not match is
+    /// left out of the prompt.
+    pub async fn build_bundle_for(
+        &self,
+        profile_name: &str,
+        turn: Option<&str>,
+    ) -> anyhow::Result<ContextBundle> {
         let profile = self
             .get_profile(profile_name)
             .await
@@ -766,7 +777,7 @@ impl ContextBuilderService {
             .cloned()
             .unwrap_or_default();
         profile.system_prompt =
-            crate::profiles::render(&profile, &self.registry.read().await, &ext);
+            crate::profiles::render_for(&profile, &self.registry.read().await, &ext, turn);
 
         Ok(ContextBundle {
             profile,

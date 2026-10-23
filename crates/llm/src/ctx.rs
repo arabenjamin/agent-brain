@@ -42,6 +42,17 @@ tokio::task_local! {
     /// can report back there: `workflows::start_run` fills a declared
     /// `session` input from it (the video and article hand-offs).
     pub static CHAT_SESSION: Option<String>;
+
+    /// Set by `AgentRunner` around a probe run (`run_agent probe: true`,
+    /// HARNESS2_PLAN Phase 1): the chat loop answers every call that is not
+    /// read-only with a stub instead of running it, so trying an agent under a
+    /// candidate prompt leaves nothing behind.
+    pub static PROBE_RUN: bool;
+}
+
+/// Whether this code runs inside a probe run.
+pub fn in_probe() -> bool {
+    PROBE_RUN.try_with(|v| *v).unwrap_or(false)
 }
 
 /// The chat session this code runs under, if any.

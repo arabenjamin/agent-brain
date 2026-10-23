@@ -929,9 +929,18 @@ impl MediaService {
     /// paywall or a script-rendered page, permanent for that URL.
     pub async fn fetch_article(&self, url: &str) -> anyhow::Result<(VideoMeta, String)> {
         Self::validate_url(url)?;
-        net_check(url).await?;
+        // The page to read (read-rules.yaml: an arXiv abstract → the paper);
+        // the article keeps `url` for its meta and id.
+        let read = crate::read_rules::rules()
+            .reading_url(url)
+            .unwrap_or_else(|| url.to_string());
+        if read != url {
+            Self::validate_url(&read)?;
+            tracing::info!(url, read = %read, "article read at its reading rule's URL");
+        }
+        net_check(&read).await?;
         // 1. Our own fetch: free, and enough for server-rendered CMS pages.
-        let (html, own_status) = match self.fetch_html(url).await {
+        let (html, own_status) = match self.fetch_html(&read).await {
             Ok(h) => (Some(h), None),
             Err(FetchError::Status(code)) => (None, Some(code)),
             Err(FetchError::Other(e)) => return Err(e),
@@ -953,7 +962,7 @@ impl MediaService {
         //    (rendering services in rotation) may still read it
         //    (paywall-lite, script-rendered, bot-blocked).
         let fallback = match &self.reader {
-            Some(reader) => match reader.read(url).await {
+            Some(reader) => match reader.read(&read).await {
                 Ok(page) => {
                     let text = markdown_article_text(&page.text);
                     if text.len() >= ARTICLE_MIN_CHARS {

@@ -42,6 +42,19 @@ pub(super) const DOWNGRADE_NOTICE: &str = "\n\n[GUARD — NOTE TYPE DOWNGRADED T
      and retrievable, but labelled as unsourced on the way out. Say so in your answer. To \
      store it as `semantic`, search first and write it from what you found.]";
 
+/// How a probe's stubbed call begins (`trajectory::Step::stubbed` is read from it).
+pub const PROBE_STUB_PREFIX: &str = "[PROBE — NOT RUN:";
+
+/// The result a probe run gets for a call with effects outside the turn: it
+/// says what would have happened and lets the agent carry on as if it had.
+pub(super) fn probe_stub(tool: &str, args: &Value) -> String {
+    let args = crate::trajectory::cut(&args.to_string(), crate::trajectory::ARGS_CHARS);
+    format!(
+        "{PROBE_STUB_PREFIX} this run is a probe, so `{tool}` was not executed. It would have \
+         been called with {args}. Treat it as done and continue.]"
+    )
+}
+
 /// Returned in place of a re-executed duplicate write. See [`TurnWriteGuard::screen`].
 pub(super) const DUPLICATE_NOTICE: &str = "[GUARD — DUPLICATE WRITE SUPPRESSED: this exact call was \
      already executed earlier in this turn and was not run again. The earlier call succeeded; \
@@ -194,6 +207,9 @@ pub(super) async fn execute_guarded(
     tool_name: &str,
     tool_args: &Value,
 ) -> (bool, String, Option<String>) {
+    if agent_brain_llm::ctx::in_probe() && !super::handover::probe_may_run(tool_name, tool_args) {
+        return (true, probe_stub(tool_name, tool_args), None);
+    }
     let (args_to_send, notice) = match guard.screen(tool_name, tool_args) {
         Screened::Suppress { notice } => {
             warn!(tool = %tool_name, "Duplicate write suppressed within chat turn");
@@ -249,6 +265,59 @@ pub(super) async fn execute_guarded(
 #[cfg(test)]
 mod write_guard_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_probe_stubs_a_write_and_runs_a_read() {
+        let mut guard = TurnWriteGuard::default();
+        let args = json!({ "action": "upsert", "title": "Pilot it" });
+        let (ok, text, _) = agent_brain_llm::ctx::PROBE_RUN
+            .scope(
+                true,
+                execute_guarded(&None, &mut guard, "manage_todo", &args),
+            )
+            .await;
+        assert!(ok && text.starts_with(PROBE_STUB_PREFIX), "{text}");
+        assert!(text.contains("manage_todo") && text.contains("Pilot it"));
+        // A read runs for real (here: no handler, so it says so).
+        let (ok, text, _) = agent_brain_llm::ctx::PROBE_RUN
+            .scope(
+                true,
+                execute_guarded(&None, &mut guard, "search_web", &json!({ "query": "x" })),
+            )
+            .await;
+        assert!(!ok && text.contains("No tool handler"), "{text}");
+        // A tool that only looks like a read is stubbed too.
+        for (tool, args) in [
+            (
+                "reason",
+                json!({ "question": "q", "store_inference": true }),
+            ),
+            ("dev_docs", json!({ "action": "write", "title": "t" })),
+            ("deep_research", json!({ "question": "q" })),
+            (
+                "http_request",
+                json!({ "url": "https://x.org", "method": "POST" }),
+            ),
+        ] {
+            let (_, text, _) = agent_brain_llm::ctx::PROBE_RUN
+                .scope(true, execute_guarded(&None, &mut guard, tool, &args))
+                .await;
+            assert!(text.starts_with(PROBE_STUB_PREFIX), "{tool}: {text}");
+        }
+        for (tool, args) in [
+            ("dev_docs", json!({ "action": "search", "query": "q" })),
+            ("manage_program", json!({ "action": "list" })),
+            ("http_request", json!({ "url": "https://x.org" })),
+        ] {
+            let (_, text, _) = agent_brain_llm::ctx::PROBE_RUN
+                .scope(true, execute_guarded(&None, &mut guard, tool, &args))
+                .await;
+            assert!(!text.starts_with(PROBE_STUB_PREFIX), "{tool}: {text}");
+        }
+        // Outside a probe a write is not stubbed.
+        let (_, text, _) = execute_guarded(&None, &mut guard, "manage_todo", &args).await;
+        assert!(!text.starts_with(PROBE_STUB_PREFIX));
+    }
 
     fn note(note_type: Option<&str>, content: &str) -> Value {
         match note_type {

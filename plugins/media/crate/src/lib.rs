@@ -11,19 +11,30 @@
 //! The pack owns the `sources-media/` seed kind: `start` seeds `:MediaSource`
 //! from every loaded bundle's files, so another pack can add channels.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use agent_brain_plugin_api::{Plugin, PluginContext, Skill, async_trait};
 use serde::Deserialize;
 use serde_json::json;
 use tracing::{info, warn};
 
+mod read_rules;
 mod service;
 mod skill;
 mod store;
 mod transcribe;
 
 pub struct Media;
+
+static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// The bundle's folder (`read-rules.yaml` lives there); the source tree's in tests.
+pub(crate) fn bundle_root() -> PathBuf {
+    ROOT.get()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/..")))
+}
 
 /// A group of watched sources (`sources-media/*.yaml`).
 #[derive(Debug, Deserialize)]
@@ -87,6 +98,9 @@ impl Plugin for Media {
     }
 
     fn tools(&self, ctx: &PluginContext) -> Vec<Arc<dyn Skill>> {
+        if let Some(r) = ctx.root() {
+            let _ = ROOT.set(r.to_path_buf());
+        }
         let svc = Arc::new(
             service::MediaService::from_env()
                 .with_reader(ctx.reader.clone())

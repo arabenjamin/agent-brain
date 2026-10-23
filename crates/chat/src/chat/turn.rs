@@ -520,7 +520,10 @@ impl ChatService {
             let names = request.tools.as_deref().unwrap_or_default();
             (filter_tools(all_tools, names), None, Vec::new())
         } else if let (Some(profile_name), Some(ref cb)) = (&resolved_profile, cb_opt) {
-            if let Ok(bundle) = cb.build_bundle(profile_name).await {
+            if let Ok(bundle) = cb
+                .build_bundle_for(profile_name, Some(&request.message))
+                .await
+            {
                 let filtered = filter_tools(all_tools, &bundle.profile.tools);
                 let prompt = if bundle.profile.system_prompt.is_empty() {
                     None

@@ -101,6 +101,30 @@ fn paid_cap_refusal(provider: &str, model: &str) -> Option<String> {
     agent_brain_llm::budget::verdict(provider, model, &entry).err()
 }
 
+/// The refusal for a call to a tool this loop did not offer, or `None` when
+/// it did. On 2026-10-23 a `harness-reflector` (offered dev_docs,
+/// write_workspace_file, manage_todo) was handed another agent's prompt that
+/// named search_web, read_page and create_task, called them, and they ran:
+/// a real task and a real todo from an agent that held neither tool.
+pub(super) fn not_offered(
+    name: &str,
+    tools: &[agent_brain_protocol::ToolDefinition],
+    allow_delegate: bool,
+) -> Option<String> {
+    if tools.iter().any(|t| t.name == name) || (allow_delegate && name == DELEGATE_TOOL) {
+        return None;
+    }
+    let yours: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    Some(format!(
+        "`{name}` is not one of your tools, so it was not run. Your tools: {}.",
+        if yours.is_empty() {
+            "none".to_string()
+        } else {
+            yours.join(", ")
+        }
+    ))
+}
+
 impl ChatService {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_round_loop<P: ProviderTurn>(
@@ -331,16 +355,25 @@ impl ChatService {
                     })
                     .await;
 
-                let (success, result_text, bulk) = self
-                    .dispatch_tool_call(
-                        allow_delegate,
-                        &handler,
-                        &mut write_guard,
-                        &call.name,
-                        &call.args,
-                        &tx,
-                    )
-                    .await;
+                // Only a tool this loop offered runs. A model can name any
+                // tool (the text channel, a prompt quoting another agent's
+                // tools), and the handler would run any registered one.
+                let (success, result_text, bulk) =
+                    if let Some(refusal) = not_offered(&call.name, tools, allow_delegate) {
+                        warn!(provider = label, model = %model, tool = %call.name,
+                          "tool call refused: not one of this loop's tools");
+                        (false, refusal, None)
+                    } else {
+                        self.dispatch_tool_call(
+                            allow_delegate,
+                            &handler,
+                            &mut write_guard,
+                            &call.name,
+                            &call.args,
+                            &tx,
+                        )
+                        .await
+                    };
 
                 // THE HUMAN GETS THE WHOLE THING. The model's ration and the
                 // user's view are different concerns and must not share a cap:
@@ -607,6 +640,41 @@ mod round_loop_tests {
         let (seen, _) = drive_given(vec![text(answer)], test_request(), 3, given).await;
         let expected = agent_brain_knowledge::knowledge::exact::check_links(answer, given).text;
         assert_eq!(messages(&seen), vec![expected]);
+    }
+
+    /// Only an offered tool runs: a call naming any other is answered with a
+    /// refusal listing the loop's tools, and never reaches the handler.
+    #[tokio::test]
+    async fn a_tool_the_loop_did_not_offer_is_refused() {
+        let offered = vec![agent_brain_protocol::ToolDefinition {
+            name: "search_notes".into(),
+            description: "d".into(),
+            input_schema: json!({"type": "object"}),
+        }];
+        assert!(not_offered("search_notes", &offered, false).is_none());
+        let r = not_offered("create_task", &offered, false).unwrap();
+        assert!(
+            r.contains("`create_task` is not one of your tools") && r.contains("search_notes"),
+            "{r}"
+        );
+        assert!(not_offered(DELEGATE_TOOL, &offered, true).is_none());
+        assert!(not_offered(DELEGATE_TOOL, &offered, false).is_some());
+
+        let svc = chat_service(vec![]);
+        let log = Arc::new(Mutex::new(Log::default()));
+        let (tx, _rx) = mpsc::channel::<ChatEvent>(256);
+        let turn = FakeTurn {
+            script: vec![call("create_task")],
+            log: log.clone(),
+            given: String::new(),
+        };
+        svc.run_round_loop(turn, &offered, None, &test_request(), tx, false, 3)
+            .await;
+        let results = log.lock().unwrap().tool_results.clone();
+        assert!(
+            results[0].contains("is not one of your tools"),
+            "{results:?}"
+        );
     }
 
     /// Tool results go back to the model, one outcome per call.
