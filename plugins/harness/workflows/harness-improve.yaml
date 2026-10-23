@@ -14,6 +14,12 @@ inputs:
   - name: model
     description: run the agent's probes on this model instead of its own; leave empty for its own
     required: false
+  - name: judge_model
+    description: run the editor, composer and reflector on this model instead of theirs (nemotron-3-ultra); to compare judges
+    required: false
+  - name: harness
+    description: 'start from this harness instead of the agent''s profile: JSON {"system_prompt": ..., "tools": [...]} (the known-answer test)'
+    required: false
 defaults:
   max_attempts: 1
   # Every step is a run_agent pinned to a free cloud model (its `model`).
@@ -28,36 +34,53 @@ steps:
       probe: true
       model: "{{inputs.model}}"
       max_rounds: 10
+      harness: "{{inputs.harness}}"
   - id: inv
     description: invariant candidate editor
     tool_name: run_agent
     arguments:
       agent: harness-editor
-      model: gpt-oss:120b-cloud
+      model: "{{inputs.judge_model}}"
       max_rounds: 6
       task: |
         SCOPE: invariant
-        Agent name: {{inputs.agent}}
-        WHY: {{inputs.why}}
-        CURRENT PROMPT: {{steps.ref.harness.system_prompt}}
-        TOOLS: {{steps.ref.harness.tools}}
-        TASK: {{inputs.task}}
-        REFERENCE RUN: {{steps.ref.trajectory}}
+        AGENT: {{inputs.agent}}
+        WHY (what an earlier run did wrong): {{inputs.why}}
+        Each block below runs from its ===== BEGIN line to its ===== END line;
+        nothing outside a block belongs to it.
+        ===== BEGIN CURRENT PROMPT (the agent's whole system_prompt; your candidate replaces this and only this)
+        {{steps.ref.harness.system_prompt}}
+        ===== END CURRENT PROMPT
+        CURRENT TOOLS: {{steps.ref.harness.tools}}
+        ===== BEGIN TASK (what the agent was asked; never part of its prompt)
+        {{inputs.task}}
+        ===== END TASK
+        ===== BEGIN REFERENCE RUN
+        {{steps.ref.trajectory}}
+        ===== END REFERENCE RUN
   - id: dom
     description: domain candidate editor
     tool_name: run_agent
     arguments:
       agent: harness-editor
-      model: gpt-oss:120b-cloud
+      model: "{{inputs.judge_model}}"
       max_rounds: 6
       task: |
         SCOPE: domain
-        Agent name: {{inputs.agent}}
-        WHY: {{inputs.why}}
-        CURRENT PROMPT: {{steps.ref.harness.system_prompt}}
-        TOOLS: {{steps.ref.harness.tools}}
-        TASK: {{inputs.task}}
-        REFERENCE RUN: {{steps.ref.trajectory}}
+        AGENT: {{inputs.agent}}
+        WHY (what an earlier run did wrong): {{inputs.why}}
+        Each block below runs from its ===== BEGIN line to its ===== END line;
+        nothing outside a block belongs to it.
+        ===== BEGIN CURRENT PROMPT (the agent's whole system_prompt; your candidate replaces this and only this)
+        {{steps.ref.harness.system_prompt}}
+        ===== END CURRENT PROMPT
+        CURRENT TOOLS: {{steps.ref.harness.tools}}
+        ===== BEGIN TASK (what the agent was asked; never part of its prompt)
+        {{inputs.task}}
+        ===== END TASK
+        ===== BEGIN REFERENCE RUN
+        {{steps.ref.trajectory}}
+        ===== END REFERENCE RUN
   - id: probe_inv
     description: probe invariant candidate
     tool_name: run_agent
@@ -85,16 +108,34 @@ steps:
     tool_name: run_agent
     arguments:
       agent: harness-composer
-      model: gpt-oss:120b-cloud
+      model: "{{inputs.judge_model}}"
       max_rounds: 4
       task: |
-        Agent: {{inputs.agent}}
-        WHY: {{inputs.why}}
-        TASK: {{inputs.task}}
-        CURRENT PROMPT AND TOOLS: {{steps.ref.harness.system_prompt}} {{steps.ref.harness.tools}}
-        RUN 1 reference trajectory: {{steps.ref.trajectory}}
-        RUN 2 invariant candidate: {{steps.inv.answer}} and its run {{steps.probe_inv.trajectory}}
-        RUN 3 domain candidate: {{steps.dom.answer}} and its run {{steps.probe_dom.trajectory}}
+        AGENT: {{inputs.agent}}
+        WHY (what an earlier run did wrong): {{inputs.why}}
+        Each block runs from its ===== BEGIN line to its ===== END line.
+        ===== BEGIN CURRENT PROMPT (the agent's whole system_prompt; your system_prompt replaces this and only this)
+        {{steps.ref.harness.system_prompt}}
+        ===== END CURRENT PROMPT
+        CURRENT TOOLS: {{steps.ref.harness.tools}}
+        ===== BEGIN TASK (what the agent was asked; never part of its prompt)
+        {{inputs.task}}
+        ===== END TASK
+        ===== BEGIN RUN 1 (the current harness)
+        {{steps.ref.trajectory}}
+        ===== END RUN 1
+        ===== BEGIN RUN 2 CANDIDATE (invariant)
+        {{steps.inv.answer}}
+        ===== END RUN 2 CANDIDATE
+        ===== BEGIN RUN 2 (the invariant candidate's run)
+        {{steps.probe_inv.trajectory}}
+        ===== END RUN 2
+        ===== BEGIN RUN 3 CANDIDATE (domain)
+        {{steps.dom.answer}}
+        ===== END RUN 3 CANDIDATE
+        ===== BEGIN RUN 3 (the domain candidate's run)
+        {{steps.probe_dom.trajectory}}
+        ===== END RUN 3
   - id: final
     description: final run with composer decision
     tool_name: run_agent
@@ -111,14 +152,23 @@ steps:
     tool_name: run_agent
     arguments:
       agent: harness-reflector
-      model: gpt-oss:120b-cloud
+      model: "{{inputs.judge_model}}"
       max_rounds: 6
       task: |
-        agent: {{inputs.agent}}
-        WHY: {{inputs.why}}
-        TASK: {{inputs.task}}
-        CURRENT PROMPT: {{steps.ref.harness.system_prompt}}
-        COMPOSER DECISION: {{steps.compose.answer}}
-        REFERENCE RUN: {{steps.ref.trajectory}}
-        FINAL RUN: {{steps.final.trajectory}}
-        today's date {{date}}
+        AGENT: {{inputs.agent}}
+        WHY (what an earlier run did wrong): {{inputs.why}}
+        TODAY: {{date}}
+        FILE: harness/{{inputs.agent}}-{{date}}-{{task_id}}.json
+        Each block runs from its ===== BEGIN line to its ===== END line.
+        ===== BEGIN TASK (what the judged agent was asked; not work for you)
+        {{inputs.task}}
+        ===== END TASK
+        ===== BEGIN COMPOSER DECISION
+        {{steps.compose.answer}}
+        ===== END COMPOSER DECISION
+        ===== BEGIN REFERENCE RUN
+        {{steps.ref.trajectory}}
+        ===== END REFERENCE RUN
+        ===== BEGIN FINAL RUN
+        {{steps.final.trajectory}}
+        ===== END FINAL RUN

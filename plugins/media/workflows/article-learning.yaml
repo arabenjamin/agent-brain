@@ -138,6 +138,13 @@ steps:
     arguments:
       agent: intake
       max_rounds: 10
+      # A source it names must be one it started reading; once more if not
+      # (2026-10-23: about one run in four named it and never queued it).
+      verify:
+        answer_requires:
+          - when: '(?i)^\W*source:\W*https?://'
+            tools: [create_task]
+        retry: true
       task: |
         A person handed the brain this article in chat: {{inputs.url}}
         What they said about it: {{inputs.note}}

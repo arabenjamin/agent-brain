@@ -342,6 +342,10 @@ impl MediaSkill {
         };
         let url = MediaService::extract_first_url(&input.url)
             .unwrap_or_else(|| input.url.trim().to_string());
+        // A mirror is known by its original (read-rules.yaml `canonical`).
+        let url = crate::read_rules::rules()
+            .canonical_url(&url)
+            .unwrap_or(url);
         let id = MediaService::article_id(&url);
 
         if !input.force.unwrap_or(false) && self.store.media_exists(&id).await.unwrap_or(false) {

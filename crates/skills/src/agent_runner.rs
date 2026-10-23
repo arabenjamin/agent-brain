@@ -139,10 +139,26 @@ impl AgentRunnerSkill {
                         "type": "object",
                         "description": "Checked against the agent's real tool trace after it runs. If any requirement is unmet, the answer is prefixed with an `UNVERIFIED — …` line naming what was missing, and store_note then stores it as unsourced_synthesis, never semantic.",
                         "properties": {
+                            "answer_requires": {
+                                "type": "array",
+                                "description": "Calls a claim in the answer stands for: when `when` (a regex; `^` is a line start) matches the answer, each of `tools` (`tool` or `tool:action`) must have run, e.g. [{\"when\": \"^Source: https?://\", \"tools\": [\"create_task\"]}].",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "when": { "type": "string" },
+                                        "tools": { "type": "array", "items": { "type": "string" } }
+                                    },
+                                    "required": ["when", "tools"]
+                                }
+                            },
+                            "retry": {
+                                "type": "boolean",
+                                "description": "When a requirement is unmet, run the agent once more on the task, told what fell short and which calls already ran; the result is the second run's (`retried_after` lists the first run's failures). Not in a probe."
+                            },
                             "require_tools": {
                                 "type": "array",
                                 "items": { "type": "string" },
-                                "description": "Tools that must have succeeded at least once (e.g. [\"mcp_call\"] to require a page was read)."
+                                "description": "Tools that must have run and succeeded at least once (e.g. [\"mcp_call\"] to require a page was read); `tool:action` requires that action (e.g. \"manage_plugin:write\"). A probe's stubbed call does not count."
                             },
                             "code_requires_tests": {
                                 "type": "boolean",
@@ -270,33 +286,47 @@ impl AgentRunnerSkill {
             .or(input.step_model.as_deref())
             .map(str::trim)
             .filter(|m| !m.is_empty());
-        let harness = match input.harness.as_ref().filter(|v| !v.is_null()) {
+        // Null or empty text is no harness: a workflow's optional input that
+        // was not given renders as "".
+        let harness = match input
+            .harness
+            .as_ref()
+            .filter(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()))
+        {
             None => None,
             Some(v) => match parse_harness(v) {
-                Ok(h) => Some(h),
+                Ok(h) => {
+                    if let Some(leak) = h
+                        .system_prompt
+                        .as_deref()
+                        .and_then(|p| harness_leak(p, task))
+                    {
+                        return ToolCallResult::error(format!(
+                            "candidate `harness` refused: {leak}. A candidate prompt is the agent's \
+                             instructions only, never the task it is probed on or a tool list."
+                        ));
+                    }
+                    Some(h)
+                }
                 Err(e) => return ToolCallResult::error(e),
             },
         };
-        let findings = runner
-            .run_with(
-                agent,
-                task,
-                AgentBudget {
-                    max_iterations: effective_rounds(input.max_rounds),
-                    // Writing IS the background job; the inner agent keeps its
-                    // own TurnWriteGuard for grounding/duplicate suppression.
-                    // `read_only` (an HBI assist drafting into a form) strips them.
-                    allow_writes: !input.read_only,
-                    allow_explicit_only: true,
-                },
-                // No sink: collect the findings, do not stream to a user.
-                None,
-                RunOptions {
-                    model: model.map(str::to_string),
-                    harness,
-                    probe: input.probe,
-                },
-            )
+        let budget = AgentBudget {
+            max_iterations: effective_rounds(input.max_rounds),
+            // Writing IS the background job; the inner agent keeps its
+            // own TurnWriteGuard for grounding/duplicate suppression.
+            // `read_only` (an HBI assist drafting into a form) strips them.
+            allow_writes: !input.read_only,
+            allow_explicit_only: true,
+        };
+        let opts = RunOptions {
+            model: model.map(str::to_string),
+            harness,
+            probe: input.probe,
+        };
+        // No sink: collect the findings, do not stream to a user.
+        let mut findings = runner
+            .run_with(agent, task, budget, None, opts.clone())
             .await;
 
         // A pre-flight rejection (unknown/non-spawnable agent, empty task,
@@ -322,13 +352,39 @@ impl AgentRunnerSkill {
         // The caller's requirements, checked against what actually ran. A
         // failure does not fail the step (the answer may still be useful); it
         // marks the answer so it is never stored as knowledge.
-        let failures = match input.verify.as_ref() {
+        let mut failures = match input.verify.as_ref() {
             None => Vec::new(),
             Some(spec) => {
                 self.verify(&runner, spec, &findings.findings, &findings.tool_trace)
                     .await
             }
         };
+        // `verify.retry`: once more, told what fell short and what already ran
+        // (so it does not repeat those calls). Not in a probe, where a stub
+        // never meets a requirement.
+        let mut first_failures = Vec::new();
+        if let Some(spec) = input.verify.as_ref()
+            && spec.retry
+            && !input.probe
+            && findings.ok
+            && !failures.is_empty()
+        {
+            let again = retry_task(
+                task,
+                &failures,
+                &findings.trajectory.calls_line(),
+                &findings.findings,
+            );
+            warn!(agent, failures = ?failures, "run_agent: verification failed; retrying once");
+            let second = runner.run_with(agent, &again, budget, None, opts).await;
+            if !second.rejected {
+                first_failures = std::mem::take(&mut failures);
+                failures = self
+                    .verify(&runner, spec, &second.findings, &second.tool_trace)
+                    .await;
+                findings = second;
+            }
+        }
         let answer = label_proposed_placement(&findings.findings);
         let answer = if failures.is_empty() {
             answer
@@ -349,6 +405,9 @@ impl AgentRunnerSkill {
             "tool_trace": tool_trace,
             "verified": input.verify.is_some().then_some(failures.is_empty()),
             "verification_failures": failures,
+            // Set when `verify.retry` ran the agent a second time: what the
+            // first run fell short on. The rest of this result is the second run.
+            "retried_after": (!first_failures.is_empty()).then_some(&first_failures),
             // The run step by step, as text a model reads (`render`), and the
             // harness it ran under: what a harness editor and composer need.
             "trajectory": findings.trajectory.render(),
@@ -533,6 +592,44 @@ fn parse_harness(v: &Value) -> Result<Harness, String> {
     })
 }
 
+/// The task for a `verify.retry` run: the original, then what the first run
+/// fell short on and what it already did.
+fn retry_task(task: &str, failures: &[String], calls: &str, answer: &str) -> String {
+    let head: String = answer.chars().take(1500).collect();
+    format!(
+        "{task}\n\n===== YOUR PREVIOUS RUN OF THIS TASK WAS CHECKED AND FELL SHORT\n{}\n\
+         Its calls already ran and must not be repeated ({calls}).\n\
+         Its answer was:\n{head}\n\
+         Do only what is missing, then give the whole answer again in the same format.\n\
+         ===== END",
+        failures
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+/// What a candidate prompt carries that is not instructions: the probe's own
+/// task pasted in, or a `TOOLS: [...]` line. On 2026-10-23 a composed intake
+/// prompt ended with the editor's TOOLS list and the whole test task, and
+/// the probes run on it answered with a stray TOOLS line.
+fn harness_leak(prompt: &str, task: &str) -> Option<String> {
+    let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let p = norm(prompt);
+    let head: String = norm(task).chars().take(120).collect();
+    if head.chars().count() >= 40 && p.contains(&head) {
+        return Some("it contains the task it is being probed on".into());
+    }
+    if prompt
+        .lines()
+        .any(|l| l.trim_start().starts_with("TOOLS: [") || l.trim_start().starts_with("TOOLS: {"))
+    {
+        return Some("it contains a `TOOLS: [...]` line".into());
+    }
+    None
+}
+
 #[derive(Debug, Deserialize)]
 struct SelectAgentInput {
     #[serde(default)]
@@ -542,6 +639,34 @@ struct SelectAgentInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retry_says_what_fell_short_and_what_already_ran() {
+        let t = retry_task(
+            "Hand-off: x",
+            &["the answer says `Source: https://a.b`, but no successful `create_task` call this run".into()],
+            "CALLS: search_web → read_page → manage_todo",
+            "Source: https://a.b",
+        );
+        assert!(t.starts_with("Hand-off: x\n\n===== YOUR PREVIOUS RUN"));
+        assert!(
+            t.contains("- the answer says")
+                && t.contains("must not be repeated (CALLS: search_web")
+        );
+    }
+
+    #[test]
+    fn a_candidate_prompt_carrying_its_task_or_a_tool_list_is_caught() {
+        let task = "A person handed the brain this in chat: https://youtu.be/x\nTheir note: worth a look for our own agents";
+        let clean = "You decide what to do with something a person handed the brain.\nReply: What / Source.";
+        assert_eq!(harness_leak(clean, task), None);
+        let leaked = format!("{clean}\nTOOLS: [\"search_web\"]\nTASK: {task}");
+        assert!(harness_leak(&leaked, task).unwrap().contains("task"));
+        let tools_only = format!("{clean}\nTOOLS: [\"search_web\",\"read_page\"]");
+        assert!(harness_leak(&tools_only, task).unwrap().contains("TOOLS"));
+        // A short task cannot match by accident.
+        assert_eq!(harness_leak("Do X, then report.", "Do X"), None);
+    }
 
     #[test]
     fn a_harness_is_read_from_an_object_or_its_json_text() {

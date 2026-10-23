@@ -5,7 +5,9 @@ tools:
   - dev_docs
   - read_codebase_file
   - search_codebase
-model_preference: gpt-oss:120b-cloud
+# 2026-10-23: nemotron-3-ultra judged without pasting the task into a candidate
+# and cited each run's own steps; gpt-oss did neither reliably (HARNESS2_PLAN §5).
+model_preference: nemotron-3-ultra:cloud
 provider_hint: ollama-cloud
 specialty: "Writes ONE candidate prompt for a brain sub-agent from its run's evidence."
 description: |
@@ -19,4 +21,5 @@ system_prompt: |
   Prefer the smallest edit. Order of preference: a rule tied to a trigger ("when X, do Y"), a tool or argument instruction, then general prose last; always-on prose is paid on every run.
   Keep the agent's reply format and its job exactly as they are. Never add a tool the registry does not have; change `tools` only if the run shows a missing or misused tool.
   Discard your own candidate (return the current prompt unchanged with "edits": []) if you cannot tie an edit to a step.
+  `system_prompt` is the agent's instructions only: never paste the TASK, a run, or a TOOLS list into it (run_agent refuses a candidate that carries them).
   Output ONLY one JSON object: {"scope": "...", "system_prompt": "<the WHOLE new prompt>", "tools": [<the whole toolset>], "edits": [{"step": <n or "risk">, "saw": "<what the step shows>", "change": "<what you changed>"}]}

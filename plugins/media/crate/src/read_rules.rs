@@ -17,7 +17,14 @@ pub const FILE: &str = "read-rules.yaml";
 pub struct ReadRule {
     pub name: String,
     pub pattern: String,
-    pub read: String,
+    /// The page to fetch instead (captures expanded); none: the URL itself.
+    #[serde(default)]
+    pub read: Option<String>,
+    /// The URL the article is known by: its id, its dedup, what a note
+    /// cites. A mirror's canonical is the original, so reading the mirror
+    /// is reading the original, once.
+    #[serde(default)]
+    pub canonical: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -53,16 +60,27 @@ impl ReadRules {
         Self::parse(&text).with_context(|| format!("parsing {}", p.display()))
     }
 
-    /// The first matching rule's `read`, its captures expanded; `None` when no
-    /// rule matches.
+    /// The first matching rule with a `read`: that URL, its captures
+    /// expanded; `None` when none matches.
     pub fn reading_url(&self, url: &str) -> Option<String> {
+        self.first(url, |r| r.read.as_deref())
+    }
+
+    /// The first matching rule with a `canonical`: that URL; `None` when none
+    /// matches. Applied before the article's id is taken.
+    pub fn canonical_url(&self, url: &str) -> Option<String> {
+        self.first(url, |r| r.canonical.as_deref())
+    }
+
+    fn first(&self, url: &str, field: impl Fn(&ReadRule) -> Option<&str>) -> Option<String> {
         self.rules
             .iter()
             .zip(&self.compiled)
             .find_map(|(rule, re)| {
+                let template = field(rule)?;
                 re.captures(url).map(|caps| {
                     let mut out = String::new();
-                    caps.expand(&rule.read, &mut out);
+                    caps.expand(template, &mut out);
                     out
                 })
             })
@@ -104,6 +122,22 @@ mod tests {
         );
         assert_eq!(r.reading_url("https://arxiv.org/html/2610.14224"), None);
         assert_eq!(r.reading_url("https://example.com/abs/1"), None);
+    }
+
+    #[test]
+    fn a_paper_mirror_is_known_by_its_arxiv_page() {
+        let r = shipped();
+        let canon = r
+            .canonical_url("https://huggingface.co/papers/2610.14224")
+            .unwrap();
+        assert_eq!(canon, "https://arxiv.org/abs/2610.14224");
+        // ... which is then read as the whole paper.
+        assert_eq!(
+            r.reading_url(&canon).as_deref(),
+            Some("https://arxiv.org/html/2610.14224")
+        );
+        assert_eq!(r.canonical_url("https://arxiv.org/abs/2610.14224"), None);
+        assert_eq!(r.canonical_url("https://huggingface.co/papers"), None);
     }
 
     #[test]

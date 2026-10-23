@@ -147,6 +147,11 @@ pub struct ToolInvocation {
     /// For an `execute_code` clippy run: `Some(true)` when it built and
     /// reported no findings, `Some(false)` otherwise. `None` for anything else.
     pub clippy_clean: Option<bool>,
+    /// The call's `action` argument, for a multi-action tool (`manage_plugin`
+    /// write vs get): what `verify.require_tools` `"tool:action"` checks.
+    pub action: Option<String>,
+    /// A probe answered it with a stub: it was not executed.
+    pub stubbed: bool,
 }
 
 /// Whether an `execute_code` result is a clean clippy run, read from the
@@ -279,13 +284,35 @@ pub fn answer_crate(code: &str, deps: &[(String, String)]) -> serde_json::Value 
     serde_json::json!({ "Cargo.toml": manifest, src: code })
 }
 
+/// One `verify.answer_requires` entry.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct AnswerRequirement {
+    pub when: String,
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
 /// What a caller requires an agent run to have actually done, checked against
 /// its tool trace after the run (`run_agent`'s `verify` argument).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct VerifySpec {
-    /// Tools that must have succeeded at least once.
+    /// Tools that must have succeeded at least once, executed (a probe's
+    /// stub does not count). `"tool:action"` requires that action: on
+    /// 2026-10-23 a toolsmith ran `manage_plugin get` three times, never
+    /// `write`, reported a write, and passed `require_tools: [manage_plugin]`.
     #[serde(default)]
     pub require_tools: Vec<String>,
+    /// Tools a claim in the answer stands for: when an entry's `when` (a
+    /// regex, multi-line: `^` is a line start) matches the answer, each of its
+    /// `tools` must have run, as in `require_tools`. On 2026-10-23 intake
+    /// answered "Source: <url>" in about one run in four without the
+    /// create_task that starts the brain reading it.
+    #[serde(default)]
+    pub answer_requires: Vec<AnswerRequirement>,
+    /// When a requirement is unmet, run the agent once more on the same task
+    /// with what fell short and the calls that already ran (`run_agent`).
+    #[serde(default)]
+    pub retry: bool,
     /// If the answer contains a ```rust block, an `execute_code` run with
     /// passing tests must be in the trace.
     #[serde(default)]
@@ -450,9 +477,44 @@ pub fn verification_failures(
         return Vec::new();
     }
     let mut failures = Vec::new();
-    for tool in &spec.require_tools {
-        if !trace.iter().any(|t| &t.tool == tool && t.success) {
-            failures.push(format!("no successful `{tool}` call this run"));
+    // `tool` or `tool:action`, run and succeeded (a probe's stub is not).
+    let unmet = |required: &str| -> Option<String> {
+        let (tool, action) = match required.split_once(':') {
+            Some((t, a)) => (t.trim(), Some(a.trim())),
+            None => (required.trim(), None),
+        };
+        let met = trace.iter().any(|t| {
+            t.tool == tool
+                && t.success
+                && !t.stubbed
+                && action.is_none_or(|a| t.action.as_deref() == Some(a))
+        });
+        (!met).then(|| match action {
+            Some(a) => format!("no successful `{tool}` call with action `{a}` this run"),
+            None => format!("no successful `{tool}` call this run"),
+        })
+    };
+    failures.extend(spec.require_tools.iter().filter_map(|r| unmet(r)));
+    for req in &spec.answer_requires {
+        match regex::RegexBuilder::new(&req.when).multi_line(true).build() {
+            Err(e) => failures.push(format!(
+                "answer_requires `{}` does not compile: {e}",
+                req.when
+            )),
+            Ok(re) => {
+                let Some(m) = re.find(answer) else { continue };
+                // The whole line the claim sits on, as the answer wrote it.
+                let start = answer[..m.start()].rfind('\n').map_or(0, |p| p + 1);
+                let end = answer[m.end()..]
+                    .find('\n')
+                    .map_or(answer.len(), |p| m.end() + p);
+                let line = answer[start..end].trim();
+                for tool in &req.tools {
+                    if let Some(why) = unmet(tool) {
+                        failures.push(format!("the answer says `{line}`, but {why}"));
+                    }
+                }
+            }
         }
     }
     if spec.code_requires_tests
@@ -1023,6 +1085,8 @@ impl AgentRunner {
                             success,
                             tests_passed: passing_tests(&tool, &preview),
                             clippy_clean: clippy_clean(&tool, &preview),
+                            action: args["action"].as_str().map(str::to_string),
+                            stubbed: preview.starts_with(PROBE_STUB_PREFIX),
                         });
                         if success {
                             gathered.push(preview.clone());
@@ -1440,7 +1504,68 @@ mod tests {
             success,
             tests_passed: None,
             clippy_clean: None,
+            action: None,
+            stubbed: false,
         }
+    }
+
+    #[test]
+    fn a_claim_in_the_answer_needs_the_call_behind_it() {
+        let spec = VerifySpec {
+            answer_requires: vec![AnswerRequirement {
+                when: r"^Source: https?://".into(),
+                tools: vec!["create_task".into()],
+            }],
+            ..Default::default()
+        };
+        let named = "What: x\nSource: https://arxiv.org/abs/1\nProgram: y";
+        let f = verification_failures(&spec, named, &[inv("read_page", true)], None);
+        assert_eq!(f.len(), 1);
+        assert!(
+            f[0].contains("Source: https://arxiv.org/abs/1") && f[0].contains("create_task"),
+            "{f:?}"
+        );
+        assert!(verification_failures(&spec, named, &[inv("create_task", true)], None).is_empty());
+        // No source named: nothing required.
+        let none = "What: x\nSource: no source found\nProgram: y";
+        assert!(verification_failures(&spec, none, &[], None).is_empty());
+    }
+
+    #[test]
+    fn a_required_action_must_have_run_not_just_its_tool() {
+        let spec = VerifySpec {
+            require_tools: vec!["manage_plugin:write".into(), "search_web".into()],
+            ..Default::default()
+        };
+        let get = ToolInvocation {
+            action: Some("get".into()),
+            ..inv("manage_plugin", true)
+        };
+        let f = verification_failures(&spec, "done", &[get.clone(), inv("search_web", true)], None);
+        assert_eq!(
+            f,
+            vec!["no successful `manage_plugin` call with action `write` this run"]
+        );
+        let write = ToolInvocation {
+            action: Some("write".into()),
+            ..inv("manage_plugin", true)
+        };
+        assert!(
+            verification_failures(
+                &spec,
+                "done",
+                &[get, write.clone(), inv("search_web", true)],
+                None
+            )
+            .is_empty()
+        );
+        // A probe's stub is not the call having run.
+        let stub = ToolInvocation {
+            stubbed: true,
+            ..write
+        };
+        let f = verification_failures(&spec, "done", &[stub, inv("search_web", true)], None);
+        assert_eq!(f.len(), 1, "{f:?}");
     }
 
     #[test]

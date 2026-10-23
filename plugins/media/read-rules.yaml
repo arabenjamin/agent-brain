@@ -1,7 +1,9 @@
-# Where to read a page instead of the URL handed over (read_rules.rs). The
-# article keeps the URL it was given (its id, its title, its dedup); only the
-# fetch goes to `read`. First matching rule wins; `$1`… are the pattern's
-# capture groups; matching ignores case.
+# Where to read a page instead of the URL handed over (read_rules.rs). `read`:
+# the page to fetch; the article keeps the URL it was given (its id, its
+# title, its dedup). `canonical`: the URL the article is known by instead,
+# taken before its id (a mirror is its original, read once). For each, the
+# first matching rule that has one wins; `$1`… are the pattern's capture
+# groups; matching ignores case.
 #
 # arXiv's /abs/ page is the abstract: 2610.14224 (Harness²) was read as 3,188
 # characters on 2026-10-23 and the brain's summary never saw the method. The
@@ -10,3 +12,9 @@ rules:
   - name: arxiv-abstract
     pattern: '^https?://(?:www\.)?arxiv\.org/abs/([^?#]+)'
     read: 'https://arxiv.org/html/$1'
+  # Hugging Face's papers page mirrors arXiv: on 2026-10-23 intake started the
+  # mirror instead of the paper in 5 of 13 runs. It is the arXiv paper, so it
+  # becomes that one (and is read whole by the rule above).
+  - name: huggingface-paper-mirror
+    pattern: '^https?://(?:www\.)?huggingface\.co/papers/(\d{4}\.\d{4,5}(?:v\d+)?)'
+    canonical: 'https://arxiv.org/abs/$1'

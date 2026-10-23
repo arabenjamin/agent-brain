@@ -156,7 +156,14 @@ has who built what and what failed).
   prompt carried the editor's TOOLS list and the test task appended, so it was not
   copied whole); 4 of 4 probes now start reading the source (was 2 of 5). The
   lesson is `harness-library/intake`. Follow-ups are brain-ops todos.
+- Second round (same day): `verify` gained `tool:action`, `answer_requires` and
+  `retry` (the hand-off now checks that a named source was started); judges moved
+  to nemotron-3-ultra after a same-inputs comparison (gpt-oss editors pasted the
+  task into every candidate; the cause was undelimited task templates, now fixed);
+  a repeated todo title merges into the open item; the Hugging Face mirror became
+  a `canonical` read rule (the defect never showed in a reference run, so no
+  prompt edit could fix it). Known-answer test PASSED (run 5469dba3): from the
+  round-1 intake prompt the loop found the four-field manage_todo fix on its own.
 - harness-candidates ships off (`enabled: false`): turn it on once more runs
   come out like run 5, or with a stronger judge model for composer/reflector.
-- Not done: the known-answer test (needs a `base harness` input to start from
-  the round-1 intake prompt); the front door cannot be probed (not spawnable).
+- Not pursued: probing the front door (not a sub-agent; a probe cannot delegate).

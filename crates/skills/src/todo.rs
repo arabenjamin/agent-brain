@@ -66,7 +66,8 @@ impl TodoSkill {
                 (`count` is every match; at most 50 are listed). action=get: one item by id. \
                 action=upsert: create (no id) or update (id) an item: title, description, \
                 priority (0 urgent … 3 low), due_at, prompt, session_id, status. \
-                action=complete: mark it done. Items you create are assigned to the user and \
+                action=complete: mark it done. An item you create with the title of one still open \
+                 updates that one instead (`merged_into_open_item`). Items you create are assigned to the user and \
                 need `ask`: what exactly the user must do or decide, and what is blocked \
                 until they do; the item records where it came from (this run, workflow or \
                 chat) by itself. Only the user assigns an item to an agent. To ask the user something that \
@@ -245,7 +246,16 @@ impl TodoSkill {
                 .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()))
         };
 
-        let saved = match text("id") {
+        // An item the brain creates with the title of one still open is that
+        // item again: it is updated, not repeated. On 2026-10-23 three
+        // harness-improve runs filed three "Adopt harness edit for intake".
+        let merged_into = match (text("id"), text("title")) {
+            (None, Some(title)) if items::written_by_brain() => {
+                open_item_titled(&self.neo4j, title).await
+            }
+            _ => None,
+        };
+        let saved = match text("id").or(merged_into.as_deref()) {
             Some(id) => self
                 .neo4j
                 .update_todo(
@@ -298,6 +308,7 @@ impl TodoSkill {
                 Ok(Some(t)) => ToolCallResult::success_json(json!({
                     "created": created,
                     "updated": !created,
+                    "merged_into_open_item": merged_into.is_some(),
                     "item": items::item_json(&t),
                 })),
                 Ok(None) => ToolCallResult::error("The item vanished while saving"),
@@ -312,6 +323,20 @@ impl TodoSkill {
             Err(e) => ToolCallResult::error(format!("Failed to save the item: {e}")),
         }
     }
+}
+
+/// The id of an open item (not done) whose title is `title`, ignoring case
+/// and surrounding space: where an item the brain creates again goes.
+async fn open_item_titled(neo4j: &Neo4jClient, title: &str) -> Option<String> {
+    let todos = neo4j.list_todos(None).await.ok()?;
+    pick_open_titled(&todos, title)
+}
+
+fn pick_open_titled(todos: &[agent_brain_repository::Todo], title: &str) -> Option<String> {
+    todos
+        .iter()
+        .find(|t| t.status != "done" && t.title.trim().eq_ignore_ascii_case(title.trim()))
+        .map(|t| t.id.clone())
 }
 
 #[async_trait]
@@ -346,5 +371,36 @@ impl Skill for TodoSkill {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn todo(id: &str, title: &str, status: &str) -> agent_brain_repository::Todo {
+        serde_json::from_value(json!({
+            "id": id, "title": title, "description": null, "status": status, "priority": 2,
+            "tags": [], "due_at": null, "created_at": "", "updated_at": ""
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_repeated_title_goes_to_the_open_item_only() {
+        let todos = vec![
+            todo("a", "Adopt harness edit for intake", "done"),
+            todo("b", "Adopt harness edit for intake ", "pending"),
+            todo("c", "Something else", "pending"),
+        ];
+        assert_eq!(
+            pick_open_titled(&todos, "adopt harness edit for INTAKE").as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            pick_open_titled(&todos[..1], "Adopt harness edit for intake"),
+            None
+        );
+        assert_eq!(pick_open_titled(&todos, "New thing"), None);
     }
 }

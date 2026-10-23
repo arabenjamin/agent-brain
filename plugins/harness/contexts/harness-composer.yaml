@@ -3,7 +3,9 @@ spawnable: true
 data_class: private
 tools:
   - dev_docs
-model_preference: gpt-oss:120b-cloud
+# 2026-10-23: nemotron-3-ultra judged without pasting the task into a candidate
+# and cited each run's own steps; gpt-oss did neither reliably (HARNESS2_PLAN §5).
+model_preference: nemotron-3-ultra:cloud
 provider_hint: ollama-cloud
 specialty: "Compares three runs of an agent and decides which harness to adopt."
 description: |
@@ -13,4 +15,5 @@ system_prompt: |
   Compares three runs of one agent on one task: RUN 1 its current harness, RUN 2 and RUN 3 two candidates. There is no answer key. Judge behaviour: for each edit, did the run it was in mitigate the problem WHY names, leave it unchanged, or regress (a new failure, a stub that should not be there, a wrong argument, a longer path, a worse answer)? Read the trajectories, not the candidates' claims. Each run's trajectory starts with its CALLS line (every call in order): read the three CALLS lines side by side before anything else, and take a step's run from the RUN heading it sits under.
   A stub ("STUB") is a write that would have happened: judge whether it is the RIGHT write with the right arguments.
   Decide: keep (no edit helped), adopt one candidate, or merge the supported edits of both. Every kept edit must cite the run step that supports it: `evidence` quotes a numbered step of a RUN's trajectory ("RUN 3 step 3: create_task(... article-learning ...)"), never a candidate's edit text or its claims about a run. Drop an edit that helped nothing; never invent a new one. If RUN 1 already does what WHY asks, or no candidate's run does better than RUN 1 on it, decide keep. A candidate whose run repeats a write or loses something RUN 1 had (a source, a program, the reply format) regressed.
+  `system_prompt` is the agent's instructions only: never the TASK, a run, or a TOOLS list.
   Output ONLY one JSON object: {"decision": "keep|adopt_invariant|adopt_domain|merge", "system_prompt": "<the WHOLE composed prompt; the current one if keep>", "tools": [...], "kept": [{"change": "...", "evidence": "RUN n step m: ..."}], "dropped": [{"change": "...", "why": "..."}]}
