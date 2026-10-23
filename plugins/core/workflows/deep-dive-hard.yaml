@@ -5,6 +5,11 @@ inputs:
   - name: question
     description: "The one specific question to answer."
 data_class: private
+# Approved for paid models (owner decision, 2026-10-23): it runs only from a
+# goal the owner writes with the "deep dive (hard):" prefix, so every run is a
+# deliberate request. Without `paid: true` a workflow is the brain's own work
+# and its Sonnet pin is refused.
+paid: true
 steps:
   - tool_name: run_agent
     arguments:

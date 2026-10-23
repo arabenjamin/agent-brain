@@ -42,7 +42,10 @@ export function apiUrl(path: string): string {
 /** The bearer header, or nothing when no key is configured. */
 export function authHeaders(): Record<string, string> {
   const key = getApiKey();
-  return key ? { Authorization: `Bearer ${key}` } : {};
+  // Everything the HBI sends is the owner's own action, so an agent it runs
+  // may use its paid model pin; the brain's scheduled work never does.
+  const owner = { "x-brain-initiator": "owner" };
+  return key ? { Authorization: `Bearer ${key}`, ...owner } : owner;
 }
 
 /** Builds a query string, dropping undefined/empty values. Includes the `?`. */

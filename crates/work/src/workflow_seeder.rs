@@ -43,6 +43,10 @@ pub struct WorkflowFile {
     /// Default data class for every step that does not set its own.
     #[serde(default)]
     pub data_class: Option<agent_brain_llm::routing::DataClass>,
+    /// The owner approved this workflow for paid models (stamped onto every
+    /// step). Off by default: a workflow earns it from a month of results.
+    #[serde(default)]
+    pub paid: bool,
     /// The `topics/*.yaml` topic it works on; absent = spans topics.
     #[serde(default)]
     pub topic: Option<String>,
@@ -63,7 +67,19 @@ impl WorkflowFile {
         if let Some(class) = self.data_class {
             agent_brain_llm::routing::stamp_data_class(&mut steps, class);
         }
+        if self.paid {
+            stamp_paid(&mut steps);
+        }
         steps
+    }
+}
+
+/// Mark every step of a workflow the owner approved for paid models.
+pub fn stamp_paid(steps: &mut [serde_json::Value]) {
+    for step in steps {
+        if let serde_json::Value::Object(m) = step {
+            m.insert("paid".into(), serde_json::Value::Bool(true));
+        }
     }
 }
 
@@ -293,6 +309,21 @@ mod tests {
         .iter()
         .map(|d| d.name.clone())
         .collect()
+    }
+
+    #[test]
+    fn a_paid_workflow_marks_every_step_and_the_queue_reads_it() {
+        let yaml = "name: w\ndescription: d\npaid: true\nsteps:\n  - tool_name: a\n  - tool_name: b\n    paid: false\n";
+        let file: WorkflowFile = serde_yaml::from_str(yaml).unwrap();
+        let steps = file.resolved_steps();
+        assert!(steps.iter().all(|s| s["paid"] == serde_json::json!(true)));
+        let chain: Vec<crate::queue::ChainStep> =
+            serde_json::from_value(serde_json::Value::Array(steps)).unwrap();
+        assert!(chain.iter().all(|s| s.paid));
+
+        let free: WorkflowFile =
+            serde_yaml::from_str("name: w\ndescription: d\nsteps:\n  - tool_name: a\n").unwrap();
+        assert!(free.resolved_steps()[0].get("paid").is_none());
     }
 
     /// Every shipped file loads, a scheduled one declares a valid kind, its

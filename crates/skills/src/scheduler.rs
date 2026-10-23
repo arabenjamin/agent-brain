@@ -83,7 +83,7 @@ impl SchedulerSkill {
     /// cooldown or a spend cap passes; the step dies with the same reason if
     /// it still holds when the step runs.
     fn pinned_model_warnings(&self, steps: &[ChainStep]) -> Vec<String> {
-        use agent_brain_llm::routing::{Purpose, RouteContext};
+        use agent_brain_llm::routing::{Initiator, Purpose, RouteContext};
         let Some(tel) = self.telemetry.as_ref() else {
             return Vec::new();
         };
@@ -99,7 +99,12 @@ impl SchedulerSkill {
                     .filter(|m| !m.is_empty())?;
                 agent_brain_llm::model_router::find_model(&rows, model)?;
                 let ctx =
-                    RouteContext::new(Purpose::Background, step.data_class.unwrap_or_default());
+                    RouteContext::new(Purpose::Background, step.data_class.unwrap_or_default())
+                        .with_initiator(if step.paid {
+                            Initiator::Approved
+                        } else {
+                            Initiator::Brain
+                        });
                 agent_brain_llm::model_router::pinned_config(
                     &rows,
                     model,
@@ -347,6 +352,7 @@ impl SchedulerSkill {
                     "topic": { "type": ["string", "null"], "description": "upsert: the topics/*.yaml topic, or \"\"/null for one that spans topics." },
                     "kind": { "type": ["string", "null"], "enum": ["monitor", "brief", "learning", "maintenance", "dataset", "", null] },
                     "data_class": { "type": "string", "enum": ["private", "public"], "description": "upsert: stamped onto steps that set none." },
+                    "paid": { "type": "boolean", "description": "upsert: the owner approves (true) or withdraws (false) paid models for every step. Only the owner may grant it; a model-driven save that adds it is refused." },
                     "next_run_at": { "type": "string", "description": "upsert: RFC3339 instant of the next scheduled run." },
                     "managed_by": { "type": "string", "enum": ["yaml", "runtime"] },
                     "disable_broken": { "type": "boolean", "description": "audit: disable workflows whose every step names a dead tool, and re-enable those an audit paused whose tools are live again." }

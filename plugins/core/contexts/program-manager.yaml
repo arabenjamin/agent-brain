@@ -15,7 +15,9 @@ tools:
 # PAID by default (Haiku 5.5, the plan's choice): a review is one call over
 # a few thousand tokens, about a tenth of a cent. The free fallback carries it
 # when the cap is spent. Development tests pin a free model on run_agent
-# (owner, 2026-10-17: don't spend on testing).
+# (owner, 2026-10-17: don't spend on testing). Since 2026-10-23 the pin holds
+# only for the owner's own requests (chat, the HBI); the scheduled program
+# reviews run on the chat default (free) until the owner approves them.
 model_preference: claude-haiku-5-5
 provider_hint: anthropic
 fallback_models:

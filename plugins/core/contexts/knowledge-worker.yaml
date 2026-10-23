@@ -61,7 +61,8 @@ pre_load_query: recent notes and active knowledge
 # PAID since 2026-10-17 (owner): Haiku 5.5, about a cent a delegation. Unpinned
 # it ran on the sub-agent ladder, and on ministral-14b (gpt-oss unavailable) it
 # guessed filters that matched nothing, missed whole topics and gave a video id
-# as a note id. A refused pin (spend cap) falls to the free chat ladder.
+# as a note id. A refused pin (spend cap) falls to the free chat ladder, and
+# so does the pin on work the brain starts itself (2026-10-23).
 model_preference: claude-haiku-5-5
 provider_hint: anthropic
 spawnable: true

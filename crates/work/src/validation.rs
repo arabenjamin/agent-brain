@@ -198,6 +198,7 @@ const CHAIN_STEP_FIELDS: &[&str] = &[
     "adversarial_task_id",
     "required_capabilities",
     "data_class",
+    "paid",
     "distill_prev",
     "distill_max_chars",
     "distill_focus",

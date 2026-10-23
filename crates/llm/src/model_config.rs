@@ -630,6 +630,22 @@ mod tests {
         class: crate::routing::DataClass,
         policy: &crate::routing::RoutingPolicy,
     ) -> Vec<String> {
+        routes_started_by(
+            c,
+            capability,
+            class,
+            policy,
+            crate::routing::Initiator::Brain,
+        )
+    }
+
+    fn routes_started_by(
+        c: &ModelCatalog,
+        capability: &str,
+        class: crate::routing::DataClass,
+        policy: &crate::routing::RoutingPolicy,
+        initiator: crate::routing::Initiator,
+    ) -> Vec<String> {
         use crate::routing::{Purpose, RouteContext, route};
         let db = TelemetryClient::new(":memory:").unwrap();
         c.sync_to_duckdb(&db).unwrap();
@@ -639,7 +655,7 @@ mod tests {
         let registry = provider_registry::merged(&c.providers);
         route(
             &rows,
-            RouteContext::new(Purpose::Background, class),
+            RouteContext::new(Purpose::Background, class).with_initiator(initiator),
             policy,
             |n| registry.get(n).cloned(),
             |_| true,
@@ -714,19 +730,25 @@ mod tests {
 
     #[test]
     fn paid_models_stay_unroutable_until_a_purpose_may_spend() {
+        use crate::routing::Initiator;
         use crate::routing::{DataClass, RoutingPolicy};
         let c = real_catalog();
-        let paid = |policy: &RoutingPolicy| {
-            routes_under_policy(&c, "reasoning", DataClass::Public, policy)
+        let paid = |policy: &RoutingPolicy, by: Initiator| {
+            routes_started_by(&c, "reasoning", DataClass::Public, policy, by)
                 .into_iter()
                 .filter(|n| c.models[n].provider == "anthropic")
                 .count()
         };
-        assert_eq!(paid(&deployed_policy()), 0);
+        assert_eq!(paid(&deployed_policy(), Initiator::Approved), 0);
         let background = RoutingPolicy::from_values(None, Some("2"), Some("background"));
+        assert_eq!(
+            paid(&background, Initiator::Brain),
+            0,
+            "the brain's own background work never spends"
+        );
         assert!(
-            paid(&background) > 0,
-            "opting background in admits the capped paid provider"
+            paid(&background, Initiator::Approved) > 0,
+            "a workflow the owner approved reaches the capped paid provider"
         );
     }
 

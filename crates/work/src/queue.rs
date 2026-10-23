@@ -154,6 +154,12 @@ pub struct ChainStep {
     /// Stored as `__data_class` in the job args; tools ignore it via serde.
     #[serde(default)]
     pub data_class: Option<agent_brain_llm::routing::DataClass>,
+    /// The owner approved this workflow for paid models (`paid: true` on the
+    /// workflow, stamped onto each step). Without it a queued step is the
+    /// brain's own work and never reaches a `billing: paid` provider.
+    /// Stored as `__paid` in the job args; tools ignore it via serde.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paid: bool,
     /// When `true`, the previous step's output is compressed by the local model
     /// before it is substituted into this step's `{{_prev}}` / `{{result}}`.
     ///
@@ -503,6 +509,17 @@ impl QueueService {
                     Some(a)
                 }
                 None => effective_args,
+            };
+
+            // Inject the owner's paid-model approval (read by execute_job).
+            let effective_args: Option<serde_json::Value> = if step.paid {
+                let mut a = effective_args.unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut m) = a {
+                    m.insert("__paid".to_string(), serde_json::json!(true));
+                }
+                Some(a)
+            } else {
+                effective_args
             };
 
             // Inject distilled-handoff metadata. Read by execute_job before
@@ -1993,17 +2010,25 @@ fn job_arg<'a>(job: &'a AgentJob, key: &str) -> Option<&'a Value> {
 }
 
 /// The work's route context: a queued step is background work, private unless
-/// the step (or its chain/schedule file) declared `data_class: public`. Scoped
-/// around the tool call so every LLM call it makes is judged by the routing
-/// policy.
+/// the step (or its chain/schedule file) declared `data_class: public`, and
+/// the brain's own work (no paid model) unless its workflow is `paid: true`.
+/// Scoped around the tool call so every LLM call it makes is judged by the
+/// routing policy.
 fn route_context_for(job: &AgentJob) -> agent_brain_llm::routing::RouteContext {
-    agent_brain_llm::routing::RouteContext::new(
-        agent_brain_llm::routing::Purpose::Background,
+    use agent_brain_llm::routing::{DataClass, Initiator, Purpose, RouteContext};
+    let paid = job_arg(job, "__paid").and_then(Value::as_bool) == Some(true);
+    RouteContext::new(
+        Purpose::Background,
         job_arg(job, "__data_class")
             .and_then(Value::as_str)
-            .map(agent_brain_llm::routing::DataClass::parse_or_private)
+            .map(DataClass::parse_or_private)
             .unwrap_or_default(),
     )
+    .with_initiator(if paid {
+        Initiator::Approved
+    } else {
+        Initiator::Brain
+    })
 }
 
 /// Prefix of the error a job dies with when its pinned model cannot run.

@@ -57,7 +57,12 @@ pre_load_query: "plugin bundles, declared tools and workflows"
 # stops at the first obstacle or loops undirected. Local is fine for one-shot
 # synthesis (schedule-author) and deterministic lookup (knowledge-worker
 # recall_recent) -- both have no loop to close. Re-test before moving this local.
-model_preference: ""
+# PAID for the owner's own requests (2026-10-23, owner): building agents,
+# workflows and programs is pinned to Haiku when the owner asks for it in chat
+# or the HBI. Work the brain starts by itself is refused the paid pin and runs
+# on the chat default (gpt-oss, which wrote the Harness bundle in three rounds).
+# Not yet measured on Haiku.
+model_preference: claude-haiku-5-5
 provider_hint: ""
 spawnable: true
 specialty: >-

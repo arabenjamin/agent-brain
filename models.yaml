@@ -423,7 +423,9 @@ models:
   # paid model has. When the policy refuses it (ROUTING_PAID_FOR unset, the
   # daily/monthly spend cap reached), no candidate survives and the step falls
   # back to its own `provider_hint` (ollama-cloud → gpt-oss), so a spent budget
-  # degrades the step rather than failing it. Steps that ask for it: the
+  # degrades the step rather than failing it. Since 2026-10-23 a scheduled step
+  # also needs its workflow marked `paid: true` (none of the five is): the
+  # brain's own work never spends. Steps that ask for it: the
   # synthesis `reason` in the five standing-investigation schedules (2026-10-02,
   # ~$0.15-0.20 per run at ~55K in / ~3K out).
   claude-sonnet-5:

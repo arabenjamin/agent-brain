@@ -854,12 +854,17 @@ impl AgentRunner {
         // trap). The data class is the stricter of the caller's and the
         // profile's: a private chat handing a task to a public agent stays
         // private, because the task text is the caller's data.
+        // Who started the work carries over: an agent the owner's chat turn or
+        // HBI action delegated to may use its paid pin; one a scheduled job
+        // started may not (unless the workflow is approved for paid models).
+        let caller = RouteContext::current();
         let route_ctx = RouteContext::new(
             Purpose::Subagent,
-            RouteContext::current()
+            caller
                 .data_class
                 .stricter(bundle.profile.data_class.unwrap_or_default()),
-        );
+        )
+        .with_initiator(caller.initiator);
         // Base config = the current chat model; a profile `model_preference` may
         // override it when the policy admits the pin for this run. A refused pin
         // falls back to `base`; the ladder walk then judges base and every rung.

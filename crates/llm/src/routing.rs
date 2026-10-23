@@ -106,11 +106,38 @@ impl std::fmt::Display for DataClass {
     }
 }
 
+/// Who started the work. A paid model runs only on work a person started, or
+/// on a workflow the owner approved for paid models after reviewing its
+/// results: the brain acting on its own never spends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Initiator {
+    /// A scheduled or brain-started job, an agent the brain delegated to, a
+    /// direct MCP call from a tool or script. The default.
+    #[default]
+    Brain,
+    /// A chat turn, or an HBI action (`x-brain-initiator: owner`).
+    Owner,
+    /// A queued step of a workflow marked `paid: true`.
+    Approved,
+}
+
+impl Initiator {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Initiator::Brain => "brain",
+            Initiator::Owner => "owner",
+            Initiator::Approved => "approved",
+        }
+    }
+}
+
 /// The purpose and data class of the work running on this task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteContext {
     pub purpose: Purpose,
     pub data_class: DataClass,
+    pub initiator: Initiator,
 }
 
 tokio::task_local! {
@@ -118,22 +145,44 @@ tokio::task_local! {
     /// every model call below them — including `SharedLlm` calls made by tools —
     /// is judged against the work that caused it.
     pub static ROUTE_CONTEXT: RouteContext;
+
+    /// Set around an HTTP request the HBI sent for the owner
+    /// (`x-brain-initiator: owner`). Read only as the initiator of an unscoped
+    /// call, so a direct tool call keeps every other unscoped behaviour.
+    pub static OWNER_REQUEST: bool;
 }
 
 impl RouteContext {
+    /// A chat turn is the owner's; anything else starts as the brain's.
     pub fn new(purpose: Purpose, data_class: DataClass) -> Self {
         Self {
             purpose,
             data_class,
+            initiator: if purpose == Purpose::Chat {
+                Initiator::Owner
+            } else {
+                Initiator::Brain
+            },
         }
+    }
+
+    pub fn with_initiator(mut self, initiator: Initiator) -> Self {
+        self.initiator = initiator;
+        self
     }
 
     /// The scoped context, or background/private when nothing scoped one (a
     /// direct MCP tool call, a startup protocol step) — the cautious reading.
+    /// An unscoped call inside an owner's HBI request is the owner's.
     pub fn current() -> Self {
-        ROUTE_CONTEXT
-            .try_with(|c| *c)
-            .unwrap_or(Self::new(Purpose::Background, DataClass::Private))
+        ROUTE_CONTEXT.try_with(|c| *c).unwrap_or_else(|_| {
+            let owner = OWNER_REQUEST.try_with(|o| *o).unwrap_or(false);
+            Self::new(Purpose::Background, DataClass::Private).with_initiator(if owner {
+                Initiator::Owner
+            } else {
+                Initiator::Brain
+            })
+        })
     }
 }
 
@@ -290,6 +339,13 @@ impl RoutingPolicy {
                     "{} work may not spend money (ROUTING_PAID_FOR={})",
                     ctx.purpose,
                     if list.is_empty() { "unset" } else { &list }
+                ));
+            }
+            if ctx.initiator == Initiator::Brain {
+                return Err(format!(
+                    "paid provider '{name}' runs only on work the owner started (chat, the \
+                     HBI) or on a workflow marked `paid: true`; this is the brain's own {} work",
+                    ctx.purpose
                 ));
             }
             let capped = e
@@ -602,6 +658,41 @@ mod tests {
         let chat = RoutingPolicy::from_values(None, Some("2"), Some("chat"));
         assert!(check(&chat, "anthropic", Purpose::Chat, DataClass::Private).is_ok());
         assert!(check(&chat, "anthropic", Purpose::Subagent, DataClass::Private).is_err());
+    }
+
+    #[test]
+    fn paid_runs_only_on_work_the_owner_started_or_approved() {
+        let p = RoutingPolicy::from_values(None, Some("2"), Some("chat,subagent,background"));
+        let r = registry();
+        let at = |purpose, initiator| {
+            p.check_entry(
+                "anthropic",
+                r.get("anthropic"),
+                true,
+                RouteContext::new(purpose, DataClass::Private).with_initiator(initiator),
+            )
+        };
+        // A chat turn is the owner's without saying so.
+        assert!(check(&p, "anthropic", Purpose::Chat, DataClass::Private).is_ok());
+        for purpose in [Purpose::Subagent, Purpose::Background] {
+            let err = at(purpose, Initiator::Brain).unwrap_err();
+            assert!(err.contains("owner started"), "{err}");
+            assert!(at(purpose, Initiator::Owner).is_ok());
+            assert!(at(purpose, Initiator::Approved).is_ok());
+        }
+        // Free and local providers do not care who started the work.
+        assert!(check(&p, "ollama-cloud", Purpose::Background, DataClass::Private).is_ok());
+    }
+
+    #[test]
+    fn an_unscoped_call_is_the_owners_only_inside_an_owner_request() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert_eq!(RouteContext::current().initiator, Initiator::Brain);
+        let got = rt.block_on(OWNER_REQUEST.scope(true, async { RouteContext::current() }));
+        assert_eq!(got.initiator, Initiator::Owner);
+        assert_eq!(got.purpose, Purpose::Background);
     }
 
     #[test]

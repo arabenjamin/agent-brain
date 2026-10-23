@@ -166,6 +166,7 @@ impl StdioTransport {
                                 session_id: None, // stdio has no sessions
                                 request,
                                 response_tx,
+                                owner: false,
                             };
 
                             if tx.send(msg).await.is_err() {

@@ -132,6 +132,10 @@
       "items": {
         "$ref": "#/$defs/step"
       }
+    },
+    "paid": {
+      "type": "boolean",
+      "description": "The owner approved this workflow for paid models; stamped onto every step. Only the owner sets it (YAML or the HBI): a model-driven save that adds it is refused. Absent = the brain's own work, never a paid provider."
     }
   },
   "$defs": {
@@ -220,6 +224,10 @@
             }
           },
           "description": "The data this step wants (API_USE_PLAN Phase 1), so a registered API can be matched to it. A label only: it does not change how the step runs. Kind and topic are checked against the closed lists on save."
+        },
+        "paid": {
+          "type": "boolean",
+          "description": "Stamped from the workflow's `paid: true`; do not set per step."
         }
       }
     }

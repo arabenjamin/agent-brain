@@ -343,8 +343,11 @@ impl McpServerCore {
                     session_id: _,
                     request,
                     response_tx,
+                    owner,
                 } => {
-                    let response = self.handle_request(request).await;
+                    let response = agent_brain_llm::routing::OWNER_REQUEST
+                        .scope(owner, self.handle_request(request))
+                        .await;
                     let _ = response_tx.send(response);
 
                     if self.is_shutting_down().await {

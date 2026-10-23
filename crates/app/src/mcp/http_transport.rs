@@ -285,6 +285,7 @@ impl HttpTransport {
                 header::AUTHORIZATION,
                 mcp_protocol_version_header.clone(),
                 mcp_session_id_header.clone(),
+                HeaderName::from_static(INITIATOR_HEADER),
             ])
             .expose_headers([mcp_session_id_header]);
 
@@ -595,6 +596,7 @@ impl HttpTransport {
             )
             // Inject REST state for the handlers above.
             .layer(axum::Extension(rest_state))
+            .layer(middleware::from_fn(initiator_middleware))
             .layer(cors)
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -851,6 +853,26 @@ async fn relay_brain_event(event: BrainEvent, sessions: &SessionManager) {
 // Middleware
 // ============================================================================
 
+/// The header the HBI sends on every request it makes for the owner. Work it
+/// starts is the owner's (a paid model pin may run); anything else calling the
+/// API — scripts, tools, other agents — is the brain's own.
+pub const INITIATOR_HEADER: &str = "x-brain-initiator";
+
+fn owner_request(headers: &HeaderMap) -> bool {
+    headers
+        .get(INITIATOR_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("owner"))
+}
+
+/// Scope `OWNER_REQUEST` around a REST handler the owner's HBI called.
+async fn initiator_middleware(request: Request<Body>, next: Next) -> Response {
+    let owner = owner_request(request.headers());
+    agent_brain_llm::routing::OWNER_REQUEST
+        .scope(owner, next.run(request))
+        .await
+}
+
 /// Authentication middleware.
 async fn auth_middleware(
     State(state): State<Arc<HttpTransportState>>,
@@ -952,6 +974,7 @@ async fn handle_post_mcp(
                 session_id: Some(session_id.clone()),
                 request,
                 response_tx,
+                owner: owner_request(&headers),
             };
 
             state

@@ -450,7 +450,10 @@ async fn prepare(
         .unwrap_or_else(|| serde_json::json!({}));
     if let Some(obj) = body.as_object() {
         for (k, v) in obj {
-            if !matches!(k.as_str(), "action" | "id" | "from_item" | "data_class") {
+            if !matches!(
+                k.as_str(),
+                "action" | "id" | "from_item" | "data_class" | "paid"
+            ) {
                 cand[k] = v.clone();
             }
         }
@@ -466,6 +469,18 @@ async fn prepare(
         && let Some(steps) = cand.get_mut("steps").and_then(Value::as_array_mut)
     {
         agent_brain_llm::routing::stamp_data_class(steps, class);
+    }
+    // `paid: true|false` approves (or withdraws) paid models for every step.
+    if let Some(paid) = body.get("paid").and_then(Value::as_bool)
+        && let Some(steps) = cand.get_mut("steps").and_then(Value::as_array_mut)
+    {
+        if paid {
+            workflow_seeder::stamp_paid(steps);
+        } else {
+            for s in steps.iter_mut().filter_map(Value::as_object_mut) {
+                s.remove("paid");
+            }
+        }
     }
 
     let mut hard = Vec::new();
@@ -504,6 +519,16 @@ async fn prepare(
             .and_then(|b| b["steps"].as_array().cloned())
             .unwrap_or_default();
         hard.extend(validation::validate_raw_graph_writes(&steps, &stored));
+        // Paid models are the owner's decision: a model may keep a workflow's
+        // approval while editing it, never grant one.
+        let is_paid = |s: &Value| s.get("paid").and_then(Value::as_bool) == Some(true);
+        if steps.iter().any(is_paid) && !stored.iter().any(is_paid) {
+            return Err(SaveError::Invalid(
+                "`paid: true` approves a workflow for paid models, and only the owner grants \
+                 that (in its YAML, or the HBI). Save it without `paid`."
+                    .into(),
+            ));
+        }
     }
     if validation::has_hard(&hard) {
         return Err(SaveError::Invalid(validation::render_hard(&hard)));

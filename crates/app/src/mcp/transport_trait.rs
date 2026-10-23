@@ -45,6 +45,9 @@ pub enum TransportMessage {
         request: JsonRpcRequest,
         /// Channel to send the response back.
         response_tx: oneshot::Sender<OutgoingMessage>,
+        /// Sent for the owner by the HBI (`x-brain-initiator: owner`): the
+        /// call may use a paid model the agent it runs is pinned to.
+        owner: bool,
     },
     /// A JSON-RPC notification (no response expected).
     Notification {
@@ -240,6 +243,7 @@ mod tests {
                 params: None,
             },
             response_tx: tx,
+            owner: false,
         };
 
         // Verify we can match on it
