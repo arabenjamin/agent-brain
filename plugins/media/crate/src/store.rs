@@ -87,6 +87,29 @@ impl Store {
         Ok(count(&rows) > 0)
     }
 
+    /// What the brain wrote the last time it read this item: the newest
+    /// video- or article-learning note naming `needle` (a video id, an
+    /// article URL), so a repeat ingest can hand the run real content instead
+    /// of only "already ingested" (a chat hand-off of something already read).
+    /// `None` when no such note exists.
+    pub async fn prior_summary(&self, needle: &str) -> Result<Option<(String, String)>> {
+        let rows = self
+            .q(
+                "MATCH (n:Note {note_type: 'source_record'}) \
+                 WHERE (n.content STARTS WITH '# Video learning' OR n.content STARTS WITH '# Article') \
+                   AND n.content CONTAINS $needle \
+                 RETURN n.id AS id, n.content AS content ORDER BY n.created_at DESC LIMIT 1",
+                json!({ "needle": needle }),
+            )
+            .await?;
+        Ok(rows.first().and_then(|r| {
+            Some((
+                r.get("id")?.as_str()?.to_string(),
+                r.get("content")?.as_str()?.to_string(),
+            ))
+        }))
+    }
+
     /// Upsert a `:Media` node (MERGE on id). `ingested_at` is stamped ON CREATE
     /// only so re-ingest of the same id preserves the original timestamp.
     pub async fn upsert_media(&self, m: &MediaRecord) -> Result<()> {

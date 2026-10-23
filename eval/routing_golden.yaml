@@ -637,3 +637,13 @@ cases:
     then: rank the roles from the chat against it, with reasons
     decide: "the brain said it had neither the roles nor the résumé; owner: résumé, then rank"
     status: dropped # 2026-10-14: the turn is from session jobsearch-routetest, a test with no roles in it (real job-search chats open with them); the owner's answer for a real one - lookup resume, then rank
+
+  - id: watch-this-video
+    question: "Can you watch this video ? https://youtu.be/yCgfyQmqhPM?si=-3EspYOpW7tPLKeo"
+    source: chat 2026-10-23, x1
+    brain_did: {agents: [knowledge-worker, researcher], tools: [], profile: GeneralDefault-Orchrestator}
+    route: self:manage_workflow
+    first_tool: {manage_workflow: {action: run, name: video-learning, inputs: {url: "https://youtu.be/yCgfyQmqhPM"}}}
+    then: tell the user the run reads it, finds its source article, and reports back in this chat
+    decide: "the brain scraped the watch page, said it could not watch video, then failed ingest_media on store:\"true\" and told the owner it needed a code change; owner 2026-10-23: hand it to the ingest path, find the article it references and read that too"
+    status: accepted

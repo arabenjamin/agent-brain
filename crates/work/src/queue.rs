@@ -190,6 +190,15 @@ pub struct ChainStep {
     /// 2026-09-30 daily news brief. Stored as `__optional` in the job args.
     #[serde(default)]
     pub optional: bool,
+    /// Run this step only when it renders non-empty: `"{{inputs.session}}"`
+    /// keeps the step in a run that was given `session` and leaves it out of
+    /// one that was not (`workflows::render_steps`). Decided when the run
+    /// starts, so it may use only run-start variables (inputs, task id, goal,
+    /// date), never `{{_prev}}` or `{{steps.*}}`. For a step a workflow's
+    /// usual runs skip: the chat hand-off steps on video-learning, which the
+    /// media watcher's ~20 runs a day must not pay for.
+    #[serde(default)]
+    pub when: Option<String>,
 }
 
 /// The `{{_prev}}` a step receives when the optional step before it died.

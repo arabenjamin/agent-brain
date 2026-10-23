@@ -135,6 +135,8 @@ impl WorkingMemorySkill {
         let Some(ref neo4j) = self.neo4j else {
             return ToolCallResult::error("notify_user is not available: no database configured");
         };
+        let mut input = input;
+        input.message = without_relay_header(&input.message);
 
         if let Some(other) = input
             .needs
@@ -337,6 +339,21 @@ struct PushContextInput {
     role: Option<String>,
 }
 
+/// A message for a person, without the "[FINDINGS FROM …]" header
+/// `run_agent` writes for the model that relays an agent's answer: a hand-off
+/// step sends an agent's answer straight to the owner's chat. The tool
+/// receipt and sources stay.
+fn without_relay_header(message: &str) -> String {
+    let Some(start) = message.find("[FINDINGS FROM ") else {
+        return message.to_string();
+    };
+    let Some(len) = message[start..].find("]\n") else {
+        return message.to_string();
+    };
+    let rest = message[start + len + 2..].trim_start_matches('\n');
+    format!("{}{rest}", &message[..start])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +381,16 @@ mod tests {
     }
 
     // -- notify_user ----------------------------------------------------------
+
+    #[test]
+    fn a_message_to_a_person_loses_the_relay_header_only() {
+        let m = "Read x.\n\n[FINDINGS FROM THE `intake` SUB-AGENT — relay these faithfully.]\n\nWhat: y\n\n[TOOLS `intake` ACTUALLY RAN: manage_todo ✗×1]";
+        assert_eq!(
+            without_relay_header(m),
+            "Read x.\n\nWhat: y\n\n[TOOLS `intake` ACTUALLY RAN: manage_todo ✗×1]"
+        );
+        assert_eq!(without_relay_header("plain"), "plain");
+    }
 
     #[tokio::test]
     async fn notify_user_empty_message_sends_nothing() {

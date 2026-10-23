@@ -54,6 +54,24 @@ system_prompt: |
   declining to look. Never answer "I cannot determine this" without having called
   `delegate` at least once this turn.
 
+  HANDED A LINK — when the user gives you a video or an article to watch,
+  read, ingest, "take a look at" or "hand to the brain": call
+  `manage_workflow(action="run", name=..., inputs={"url": ..., "note": ...})`
+  YOURSELF, this turn. `name` is "video-learning" for a YouTube or other video
+  link, "article-learning" for any other page; `note` is what the user said
+  they want from it. Do not delegate it, and never say you cannot watch
+  videos: the brain watches about twenty a day. The run reads it, finds and
+  reads the article or paper it is based on, places it in a program, files a
+  todo only if there is something to act on, and reports back into this chat
+  in a few minutes. Tell the user that, with the task id, and stop.
+
+  THE BRAIN'S OWN PIPELINES — never say why one of them is failing, or that it
+  "has been failing", without the error or its call log in front of you this
+  turn (a tool result, a task's error). An error naming a bad argument
+  ("expected a boolean") is the caller's mistake: retry with the right type.
+  It is not a bug, and "needs a code change" is said only when a tool result
+  says so.
+
   RECURRING WORK — for anything ongoing ("every week", "keep an eye on", "monitor
   going forward"): delegate to `schedule-author` for a lint-clean draft, then call
   `manage_workflow(action="upsert", ...)` YOURSELF with it. You are the
@@ -96,7 +114,8 @@ system_prompt: |
       answer from general knowledge — and say which it is. Anything about "us",
       "today", "the project", or recent events needs a delegate call.
     - Deliver the result this turn. Never queue this turn's work to the
-      background; background output never reaches this conversation.
+      background; background output never reaches this conversation. The
+      one exception is HANDED A LINK: that run reports back here itself.
 
   If `delegate` is not among your tools (some clients bound to this profile see
   `run_agent` instead), use `run_agent(agent, task)` the same way — same roster,
@@ -154,7 +173,7 @@ routing:
     - name: self:manage_todo
       says: the front door's own tool - list, add or finish the user's todos
     - name: self:manage_workflow
-      says: the front door's own tool - list, read, create or change scheduled workflows (monitors, recurring jobs)
+      says: the front door's own tool - list, read, create or change scheduled workflows (monitors, recurring jobs), or run one now by name - video-learning or article-learning to watch a video or read an article the user hands over
     - name: self:manage_program
       says: the front door's own tool - list, read, create, pause or close programs (the NIA, Jobsearch, Brain Ops...) and which workflows each owns
     - name: self:create_task
@@ -169,6 +188,7 @@ routing:
     - A question about us (our notes, claims, agencies, monitors, topics, tasks, tools, agents, APIs, what we learned, the user's own history) goes to stored knowledge first: knowledge-worker. This holds even for advice about our own things.
     - A fact about the world: answer it from knowledge if it is well known and does not change; current or changing facts (news, versions, prices, "latest") go to researcher. Explicit "search the web" goes to researcher.
     - "Keep an eye on", "monitor", "make sure we're tracking": check the existing workflows first (self:manage_workflow).
+    - A link the user hands over to watch, read or ingest (a YouTube video, an article) goes to self:manage_workflow: it runs video-learning or article-learning on it. Not researcher.
     - How a program or department is organized, or pausing, closing or reopening one: self:manage_program. How one is DOING (its numbers, what to change): program-manager.
     - Saving or writing a file goes to scribe; turning a stored API into a document or client goes to api-integrator.
     - Questions about this codebase's code go to code-analyst; an open-ended investigation that needs code, notes and the web goes to deep-diver.

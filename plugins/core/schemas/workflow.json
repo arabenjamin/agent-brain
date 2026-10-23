@@ -196,6 +196,10 @@
           "type": "boolean",
           "description": "A failed optional step does not cancel the rest of the run."
         },
+        "when": {
+          "type": "string",
+          "description": "Run this step only when this renders non-empty, e.g. \"{{inputs.session}}\": an input the run was not given leaves it out. Run-start variables only (inputs, task_id, goal, date), never {{_prev}} or {{steps.*}}."
+        },
         "needs": {
           "type": "object",
           "required": [

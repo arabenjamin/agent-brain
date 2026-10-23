@@ -993,18 +993,23 @@ impl ChatService {
                     };
                     // Scoped per attempt: every tool, synthesis pass and sub-agent
                     // this turn runs is judged as this turn's work.
-                    let outcome = ROUTE_CONTEXT
+                    // The session too, so a workflow run started from this
+                    // turn can report back into this chat (`CHAT_SESSION`).
+                    let outcome = agent_brain_llm::ctx::CHAT_SESSION
                         .scope(
-                            route_ctx,
-                            self.run_one_attempt(
-                                cfg,
-                                tools.clone(),
-                                handler.clone(),
-                                request.clone(),
-                                attempt_prompt,
-                                true,
-                                MAX_TOOL_ITERATIONS,
-                                &inner_tx,
+                            request.session_id.clone(),
+                            ROUTE_CONTEXT.scope(
+                                route_ctx,
+                                self.run_one_attempt(
+                                    cfg,
+                                    tools.clone(),
+                                    handler.clone(),
+                                    request.clone(),
+                                    attempt_prompt,
+                                    true,
+                                    MAX_TOOL_ITERATIONS,
+                                    &inner_tx,
+                                ),
                             ),
                         )
                         .await;

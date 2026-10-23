@@ -327,6 +327,7 @@ mod tests {
                 crate::validation::validate_step_array(&steps, &[], &Default::default())
                     .iter()
                     .chain(crate::validation::validate_input_refs(&steps, &declared).iter())
+                    .chain(crate::validation::validate_step_when(&steps).iter())
                     .map(|v| v.render())
                     .collect();
             assert!(hard.is_empty(), "{}: {hard:?}", path.display());

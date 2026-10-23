@@ -36,6 +36,17 @@ tokio::task_local! {
     /// around a sub-agent run), so a tool call's telemetry (`arg_checks`)
     /// says which agent made it (PROGRAMS_PLAN Phase 4).
     pub static CURRENT_AGENT: Option<String>;
+
+    /// The chat session whose turn this code runs under (the chat turn scopes
+    /// it, and its sub-agents inherit it), so a workflow run a chat starts
+    /// can report back there: `workflows::start_run` fills a declared
+    /// `session` input from it (the video and article hand-offs).
+    pub static CHAT_SESSION: Option<String>;
+}
+
+/// The chat session this code runs under, if any.
+pub fn current_chat_session() -> Option<String> {
+    CHAT_SESSION.try_with(|v| v.clone()).unwrap_or(None)
 }
 
 /// The agent whose loop this code runs under, if any.

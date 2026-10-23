@@ -89,6 +89,7 @@ pub async fn start_run(
     success_criteria: Option<&str>,
 ) -> Result<StartedRun, String> {
     let wf = resolve(neo4j, name, inputs).await?;
+    let inputs = &with_chat_session(&wf, inputs, agent_brain_llm::ctx::current_chat_session());
     let goal = match goal.map(str::trim).filter(|g| !g.is_empty()) {
         Some(g) => g.to_string(),
         None => default_goal(&wf.name, inputs),
@@ -152,9 +153,17 @@ pub fn render_steps(
     let date = agent_brain_graph::clock::today();
     let now = agent_brain_graph::clock::now_stamp();
     let weekday = agent_brain_graph::clock::weekday();
+    // A declared input the run was not given renders empty, so an optional
+    // one ("what the person said") never leaves `{{inputs.note}}` in a prompt.
     let input_vals: Vec<(String, String)> = inputs
         .iter()
         .map(|(k, v)| (format!("inputs.{k}"), input_text(v)))
+        .chain(
+            wf.inputs
+                .iter()
+                .filter(|i| !inputs.contains_key(&i.name))
+                .map(|i| (format!("inputs.{}", i.name), String::new())),
+        )
         .collect();
     let mut vars: Vec<(&str, &str)> = vec![
         ("task_id", task_id),
@@ -165,8 +174,44 @@ pub fn render_steps(
     ];
     vars.extend(input_vals.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let substituted = substitute_template_vars(&raw, &vars);
-    serde_json::from_value(substituted)
-        .map_err(|e| format!("Workflow '{}' steps do not parse: {e}", wf.name))
+    let steps: Vec<ChainStep> = serde_json::from_value(substituted)
+        .map_err(|e| format!("Workflow '{}' steps do not parse: {e}", wf.name))?;
+    Ok(steps.into_iter().filter(step_applies).collect())
+}
+
+/// A run started from a chat turn reports back there: a workflow that
+/// declares a `session` input, started without one, is given the chat's
+/// session. The model is never asked to copy an id, and a run started
+/// anywhere else (the media watcher, a schedule) has no chat and gets none.
+pub fn with_chat_session(
+    wf: &Workflow,
+    inputs: &Map<String, Value>,
+    chat: Option<String>,
+) -> Map<String, Value> {
+    let mut out = inputs.clone();
+    let given = out
+        .get(CHAT_SESSION_INPUT)
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty());
+    if let Some(sid) = chat.filter(|s| !s.trim().is_empty())
+        && !given
+        && wf.inputs.iter().any(|i| i.name == CHAT_SESSION_INPUT)
+    {
+        out.insert(CHAT_SESSION_INPUT.to_string(), Value::String(sid));
+    }
+    out
+}
+
+/// The input name a workflow declares to receive the chat that started it.
+pub const CHAT_SESSION_INPUT: &str = "session";
+
+/// Whether a rendered step stays in its run: no `when`, or a `when` that
+/// rendered to something. An input the run was not given is left as its
+/// `{{inputs.x}}` renders empty; anything still holding `{{` counts as empty.
+fn step_applies(step: &ChainStep) -> bool {
+    step.when
+        .as_deref()
+        .is_none_or(|w| !w.trim().is_empty() && !w.contains("{{"))
 }
 
 // ── Saving (manage_workflow upsert, REST create/update, the HBI editor) ──
@@ -446,6 +491,7 @@ async fn prepare(
     ));
     hard.extend(validation::validate_step_models(&steps, checks.catalog));
     hard.extend(validation::validate_input_refs(&steps, &declared));
+    hard.extend(validation::validate_step_when(&steps));
     hard.extend(validation::validate_step_needs(
         &steps,
         &api_kinds(neo4j).await,
@@ -570,7 +616,7 @@ mod tests {
             "id": "1", "name": "fill-knowledge-gap", "description": null, "enabled": true,
             "interval_seconds": null, "steps": steps.to_string(), "last_run_at": null,
             "next_run_at": null, "created_at": "", "updated_at": "",
-            "inputs": [{"name": "topic"}]
+            "inputs": [{"name": "topic"}, {"name": "session"}]
         }))
         .unwrap()
     }
@@ -593,6 +639,55 @@ mod tests {
         assert_eq!(
             steps[1].arguments.as_ref().unwrap()["content"],
             "fill knowledge gap: x t1\n{{_prev}}"
+        );
+    }
+
+    #[test]
+    fn a_when_step_runs_only_when_it_renders_to_something() {
+        let w = wf(json!([
+            {"tool_name": "search_web", "arguments": {"query": "{{inputs.topic}}"}},
+            {"tool_name": "notify_user", "when": "{{inputs.session}}",
+             "arguments": {"message": "{{_prev}}", "related_session_id": "{{inputs.session}}"}},
+            {"tool_name": "store_note", "arguments": {"content": "{{_prev}}"}}
+        ]));
+        let given = json!({"topic": "x", "session": "chat-1"});
+        let steps = render_steps(&w, "t", "g", given.as_object().unwrap()).unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            steps[1].arguments.as_ref().unwrap()["related_session_id"],
+            "chat-1"
+        );
+        // Not given, or given empty: the step is left out and the chain closes up.
+        for inputs in [json!({"topic": "x"}), json!({"topic": "x", "session": " "})] {
+            let steps = render_steps(&w, "t", "g", inputs.as_object().unwrap()).unwrap();
+            let tools: Vec<&str> = steps.iter().map(|s| s.tool_name.as_str()).collect();
+            assert_eq!(tools, ["search_web", "store_note"]);
+        }
+    }
+
+    #[test]
+    fn a_chat_started_run_gets_its_session_only_if_it_declares_one() {
+        let declares = wf(json!([]));
+        let none = json!({"topic": "x"});
+        let none = none.as_object().unwrap();
+        let got = with_chat_session(&declares, none, Some("chat-9".into()));
+        assert_eq!(got["session"], "chat-9");
+        // Given explicitly: kept. No chat: nothing added.
+        let given = json!({"session": "other"});
+        let got = with_chat_session(&declares, given.as_object().unwrap(), Some("chat-9".into()));
+        assert_eq!(got["session"], "other");
+        assert!(
+            with_chat_session(&declares, none, None)
+                .get("session")
+                .is_none()
+        );
+        // A workflow that does not declare it never gets it.
+        let mut plain = wf(json!([]));
+        plain.inputs.retain(|i| i.name != "session");
+        assert!(
+            with_chat_session(&plain, none, Some("chat-9".into()))
+                .get("session")
+                .is_none()
         );
     }
 

@@ -202,6 +202,7 @@ const CHAIN_STEP_FIELDS: &[&str] = &[
     "distill_max_chars",
     "distill_focus",
     "optional",
+    "when",
     "id",
 ];
 
@@ -327,6 +328,29 @@ fn step_ref_violations(steps: &[Value]) -> Vec<Violation> {
 
 /// Every `{{inputs.<name>}}` a step uses must be a declared input of its
 /// workflow; an undeclared one would never be supplied and resolve to nothing.
+/// A step's `when` is decided when the run starts (`workflows::render_steps`),
+/// so `{{_prev}}`, `{{result}}` and `{{steps.*}}` would never have a value:
+/// such a step would always be left out.
+pub fn validate_step_when(steps: &[Value]) -> Vec<Violation> {
+    steps
+        .iter()
+        .enumerate()
+        .filter_map(|(i, step)| {
+            let w = step.get("when")?.as_str()?;
+            let tool = step.get("tool_name").and_then(Value::as_str).unwrap_or("");
+            (w.contains("{{_prev") || w.contains("{{result") || w.contains("{{steps."))
+                .then(|| {
+                    Violation::hard(
+                        format!("steps[{i}] (`{tool}`)"),
+                        format!(
+                            "`when` is decided when the run starts, so it can use inputs, task_id, goal and date, never {{{{_prev}}}} or {{{{steps.*}}}} (has \"{w}\")"
+                        ),
+                    )
+                })
+        })
+        .collect()
+}
+
 pub fn validate_input_refs(steps: &[Value], declared: &[String]) -> Vec<Violation> {
     let mut out = Vec::new();
     for (i, step) in steps.iter().enumerate() {
@@ -842,6 +866,57 @@ impl ArgCheckMode {
     }
 }
 
+/// Fix a scalar a model wrote as a string when the schema leaves no doubt:
+/// `"true"`/`"false"` for a boolean, a numeral for an integer or number. Only
+/// top-level arguments whose declared type does not also allow a string, so
+/// nothing that could mean the string is touched. Returns what was changed,
+/// one line each (`store: "true" → true`), for the `arg_checks` ledger.
+///
+/// Found 2026-10-23: a chat sub-agent (Claude Haiku) sent `ingest_media`
+/// `store: "true"` twice; the tool's serde refused it, the worker retried the
+/// same call, and the user was told the fix needed a code change.
+pub fn coerce_scalar_strings(schema: &Value, args: &mut Value) -> Vec<String> {
+    let (Some(props), Some(given)) = (
+        schema.get("properties").and_then(Value::as_object),
+        args.as_object_mut(),
+    ) else {
+        return Vec::new();
+    };
+    let mut changed = Vec::new();
+    for (key, value) in given.iter_mut() {
+        let Some(text) = value.as_str() else { continue };
+        let types: Vec<&str> = match props.get(key).and_then(|p| p.get("type")) {
+            Some(Value::String(t)) => vec![t.as_str()],
+            Some(Value::Array(ts)) => ts.iter().filter_map(Value::as_str).collect(),
+            _ => continue,
+        };
+        if types.contains(&"string") {
+            continue;
+        }
+        let t = text.trim();
+        let fixed = if types.contains(&"boolean") && t.eq_ignore_ascii_case("true") {
+            Some(Value::Bool(true))
+        } else if types.contains(&"boolean") && t.eq_ignore_ascii_case("false") {
+            Some(Value::Bool(false))
+        } else if types.contains(&"integer")
+            && let Ok(n) = t.parse::<i64>()
+        {
+            Some(Value::from(n))
+        } else if types.contains(&"number")
+            && let Some(n) = t.parse::<f64>().ok().filter(|n| n.is_finite())
+        {
+            serde_json::Number::from_f64(n).map(Value::Number)
+        } else {
+            None
+        };
+        if let Some(v) = fixed {
+            changed.push(format!("{key}: \"{text}\" → {v}"));
+            *value = v;
+        }
+    }
+    changed
+}
+
 /// What is wrong with one call's `arguments` against the tool's registered
 /// `input_schema`, in words a model can act on; empty when they fit.
 ///
@@ -1328,6 +1403,43 @@ mod tests {
         assert!(v[0].render().contains("steps.later"));
         assert!(v[0].render().contains("earlier step ids: news"));
         assert!(v[1].render().contains("used twice"));
+    }
+
+    #[test]
+    fn a_scalar_written_as_a_string_is_fixed_only_when_the_schema_is_sure() {
+        let schema = json!({"properties": {
+            "store": {"type": "boolean"}, "limit": {"type": "integer"},
+            "score": {"type": "number"}, "query": {"type": "string"},
+            "either": {"type": ["boolean", "string"]}
+        }});
+        let mut a = json!({"store": "true", "limit": " 5", "score": "0.5",
+                           "query": "true", "either": "false", "unknown": "true"});
+        let changed = coerce_scalar_strings(&schema, &mut a);
+        assert_eq!(a["store"], true);
+        assert_eq!(a["limit"], 5);
+        assert_eq!(a["score"], 0.5);
+        // A string is allowed, or the key is undeclared: left alone.
+        assert_eq!(a["query"], "true");
+        assert_eq!(a["either"], "false");
+        assert_eq!(a["unknown"], "true");
+        assert_eq!(changed.len(), 3, "{changed:?}");
+        assert!(changed.iter().any(|c| c == "store: \"true\" → true"));
+        // Not a numeral: unchanged, and the check still reports it.
+        let mut b = json!({"limit": "five"});
+        assert!(coerce_scalar_strings(&schema, &mut b).is_empty());
+        assert_eq!(b["limit"], "five");
+    }
+
+    #[test]
+    fn a_when_cannot_use_what_only_exists_mid_run() {
+        let steps = vec![
+            json!({"tool_name": "notify_user", "when": "{{inputs.session}}"}),
+            json!({"tool_name": "notify_user", "when": "{{_prev}}"}),
+            json!({"tool_name": "notify_user", "when": "{{steps.find.url}}"}),
+        ];
+        let v = validate_step_when(&steps);
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(v[0].render().contains("steps[1]"));
     }
 
     #[test]

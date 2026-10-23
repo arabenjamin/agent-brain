@@ -625,6 +625,7 @@ impl SchedulerSkill {
                     .iter()
                     .chain(validation::validate_step_models(&steps, &catalog).iter())
                     .chain(validation::validate_input_refs(&steps, &declared).iter())
+                    .chain(validation::validate_step_when(&steps).iter())
                     .map(validation::Violation::render)
                     .collect();
             let lint = serde_json::from_value::<Vec<ChainStep>>(Value::Array(steps.clone()))

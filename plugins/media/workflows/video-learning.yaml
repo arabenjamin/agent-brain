@@ -4,6 +4,12 @@ description: "Watch/ingest a video: fetch transcript, map-reduce summarize, comp
 inputs:
   - name: url
     description: "The video URL."
+  - name: session
+    required: false
+    description: "The chat session that handed it over; given, the run ends with the hand-off steps and reports back there."
+  - name: note
+    required: false
+    description: "What the person said about it, for the hand-off."
 steps:
   # Why: dev_docs get yaml/chains-video-learning-2
   - tool_name: ingest_media
@@ -100,7 +106,8 @@ steps:
     description: "Bank the analysis in working memory"
 
   # 6. Reassemble summary + analysis into one blob for the stored note.
-  - tool_name: neo4j_query
+  - id: notes
+    tool_name: neo4j_query
     arguments:
       cypher: "MATCH (w:WorkingMemory {session_id: 'video-{{task_id}}'}) RETURN w.content AS content ORDER BY w.turn_index"
     priority: 1
@@ -142,6 +149,38 @@ steps:
     max_attempts: 2
     provider_hint: ollama
     description: "Extract checkable claims from the video"
+
+  # Hand-off (only when a person handed this video over in chat: the run was
+  # given `session`; the media watcher's runs never are, so they skip these
+  # two). The intake agent finds the article or paper it is based on and
+  # starts reading it, places it in a program, and files a todo only if there
+  # is something to act on; its report goes back into the person's chat.
+  - when: "{{inputs.session}}"
+    tool_name: run_agent
+    arguments:
+      agent: intake
+      max_rounds: 10
+      task: |
+        A person handed the brain this video in chat: {{inputs.url}}
+        What they said about it: {{inputs.note}}
+        The brain has read it (do not start it again). Its video summary and new-vs-known analysis:
+
+        {{steps.notes}}
+    priority: 1
+    max_attempts: 2
+    optional: true
+    description: "Hand-off: find and read its source, place it, act or file"
+
+  - when: "{{inputs.session}}"
+    tool_name: notify_user
+    arguments:
+      message: "Read {{inputs.url}}.\n\n{{_prev}}"
+      related_session_id: "{{inputs.session}}"
+      context: "Hand-off: {{inputs.url}}"
+    priority: 1
+    max_attempts: 2
+    provider_hint: ollama
+    description: "Hand-off: report back in the person's chat"
 
   # 8. Mark the video Task done.
   - tool_name: update_task

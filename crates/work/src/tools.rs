@@ -127,6 +127,8 @@ impl ToolHandler {
         debug!(tool = %name, "Executing tool");
 
         let mode = crate::validation::ArgCheckMode::from_env();
+        let mut arguments = arguments;
+        self.coerce_arguments(mode, name, arguments.as_mut());
         if let Some(refusal) = self.check_arguments(mode, name, arguments.as_ref()) {
             return refusal;
         }
@@ -175,6 +177,48 @@ impl ToolHandler {
 }
 
 impl ToolHandler {
+    /// Fix a scalar written as a string where the tool's schema leaves no
+    /// doubt (`validation::coerce_scalar_strings`), before the check sees it,
+    /// and record each fix in `arg_checks` (mode `coerced`) so it stays
+    /// visible. Off with the check (`TOOL_ARG_CHECK=off`).
+    fn coerce_arguments(
+        &self,
+        mode: crate::validation::ArgCheckMode,
+        name: &str,
+        arguments: Option<&mut Value>,
+    ) {
+        let Some(args) = arguments else { return };
+        if mode == crate::validation::ArgCheckMode::Off {
+            return;
+        }
+        let Some(schema) = self
+            .skills
+            .iter()
+            .find_map(|s| s.tools().into_iter().find(|t| t.name == name))
+            .map(|t| t.input_schema)
+        else {
+            return;
+        };
+        let original = args.to_string();
+        let changed = crate::validation::coerce_scalar_strings(&schema, args);
+        if changed.is_empty() {
+            return;
+        }
+        let purpose = agent_brain_llm::routing::RouteContext::current().purpose;
+        tracing::info!(tool = %name, changed = %changed.join("; "), "tool arguments coerced to the schema's types");
+        if let Some(tel) = &self.telemetry {
+            let _ = tel.log_arg_check(
+                name,
+                purpose.as_str(),
+                "coerced",
+                false,
+                &changed,
+                &original,
+                agent_brain_llm::ctx::current_agent().as_deref(),
+            );
+        }
+    }
+
     /// The dispatch check: the call's arguments against the schema of the
     /// tool that will run it (the first skill that declares the name, the
     /// same skill dispatch picks). Every caller passes here: chat, agents,

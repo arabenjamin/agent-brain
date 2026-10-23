@@ -221,13 +221,18 @@ impl MediaSkill {
         // Dedup: skip the expensive summarize if already ingested.
         if !input.force.unwrap_or(false) && self.store.media_exists(&meta.id).await.unwrap_or(false)
         {
-            return ToolCallResult::success_json(json!({
-                "already_ingested": true,
-                "video_id": meta.id,
-                "title": meta.title,
-                "url": meta.url,
-                "message": "Already ingested; pass force=true to re-summarize."
-            }));
+            return ToolCallResult::success_json(
+                self.already_ingested(
+                    json!({
+                        "already_ingested": true,
+                        "video_id": meta.id,
+                        "title": meta.title,
+                        "url": meta.url,
+                    }),
+                    &meta.id,
+                )
+                .await,
+            );
         }
 
         let (summary, key_concepts) = match self
@@ -309,6 +314,27 @@ impl MediaSkill {
         ToolCallResult::success_json(out)
     }
 
+    /// The answer for an item read before: what the brain wrote then, as
+    /// `summary`, so the run that asked (a chat hand-off, a re-run) works on
+    /// the content rather than on a bare "already ingested".
+    async fn already_ingested(&self, mut out: Value, needle: &str) -> Value {
+        match self.store.prior_summary(needle).await {
+            Ok(Some((note_id, content))) => {
+                out["summary"] = json!(content);
+                out["from_note"] = json!(note_id);
+                out["message"] = json!(
+                    "Already ingested: `summary` is what the brain wrote when it read it; pass force=true to re-summarize."
+                );
+            }
+            _ => {
+                out["message"] = json!(
+                    "Already ingested, and no note from that reading was found; pass force=true to re-summarize."
+                );
+            }
+        }
+        out
+    }
+
     async fn handle_ingest_article(&self, arguments: Option<Value>) -> ToolCallResult {
         let input: IngestArticleInput = match parse_args(arguments) {
             Ok(i) => i,
@@ -319,12 +345,17 @@ impl MediaSkill {
         let id = MediaService::article_id(&url);
 
         if !input.force.unwrap_or(false) && self.store.media_exists(&id).await.unwrap_or(false) {
-            return ToolCallResult::success_json(json!({
-                "already_ingested": true,
-                "article_id": id,
-                "url": url,
-                "message": "Already ingested; pass force=true to re-summarize."
-            }));
+            return ToolCallResult::success_json(
+                self.already_ingested(
+                    json!({
+                        "already_ingested": true,
+                        "article_id": id,
+                        "url": url,
+                    }),
+                    &url,
+                )
+                .await,
+            );
         }
 
         // The feed that surfaced it, by site: an article's link and its feed
