@@ -91,7 +91,7 @@ Plugin tools (each from its bundle in `plugins/`, on by default in compose):
 - `reference`: `link_entities`, `wiki_background` (needs `WIKIMEDIA_CONTACT`); routes under `/api/plugins/reference/`; entity coordinates from Wikidata (P625) as native Neo4j points, read on its idle loop, which put an entity on the drawer map. Map tiles are self-hosted Protomaps: `scripts/fetch_map_tiles.sh` fills `./maps` (world to zoom 7 plus the regions in `maps/regions.yaml`), served by the HBI at `/maps/` (`project-docs/MAP_PLAN.md`)
 - `alias-judge`: no tools; ranks entity merge candidates on idle time (`ALIAS_JUDGE_MODEL`)
 - `developer`: `read_codebase_file`, `search_codebase`, `get_git_log`, `write_codebase_doc`, `write_proposal`, `analyze_own_structure`, `write_workspace_file`, `list_workspace_files`, `snapshot_architecture`, `dev_docs` (the dev notes, `scripts/dev_docs.sh`); the architecture view at `/api/plugins/developer/architecture`
-- `epistemics`: `claim` (extract facts, and a named source's opinions, predictions and hypotheticals labelled as theirs; verify against independent web evidence with a local grounding check; list; sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
+- `epistemics`: `claim` (extract facts, and a named source's opinions, predictions and hypotheticals labelled as theirs; verify against independent web evidence with a local grounding check, and refute only on the cited results' own conflicting words; list; sources), `extract_relations`; typed-relationship routes under `/api/plugins/epistemics/`. Claims are notes, so the core still reads them when it is off
 - `osint-data`: `acled_events` (needs `ACLED_EMAIL`, `ACLED_PASSWORD`)
 - `research`: `deep_research` (needs `PARALLEL_API_KEY`): a cited multi-source report from Parallel's Task API, paid per run and capped monthly (`plugins/research/parallel.yaml`); in chat it returns a run id and the report arrives in the Feed and as a note; the `deep-research` workflow
 - `websocket`: `ws_connect`, `ws_send`, `ws_receive`, `ws_close`: a WebSocket connection held across tool calls, for streaming feeds and push APIs `http_request` cannot read. Connects go through the net policy (internal hosts only via `HTTP_ALLOW_INTERNAL`, to the checked address); at most 8 open, long messages cut and marked
@@ -126,6 +126,8 @@ retry. Offered only when `SANDBOX_URL` (or `RUST_SANDBOX_URL`, for `language: "r
 in `plugins/*/search-engines/` may declare a `budget` (Exa $10/month, Tavily
 1,000/month, TinyFish 12,000/day, Serper's one-time 2,500), and each call goes
 first to the engine that is within its paced allowance and least used today.
+An engine measured better at one tool's job leads that tool's searches while
+on pace (`lead_for`: Exa for claim verification).
 The failover ladder (`SEARCH_ENGINE_ORDER`) stays behind that pick, with
 Brave last, so one exhausted free tier cannot fail the call (`SEARCH_ROTATION=off` restores the plain ladder).
 `get_search_usage` reports each engine's burn, its standing in the rotation,

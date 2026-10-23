@@ -105,7 +105,7 @@ One row per `search_web` engine *attempt* (a failover writes one per engine trie
 | `created_at` | TIMESTAMPTZ | UTC |
 | `call_id` | TEXT | Groups the attempts of one call |
 | `units` | DOUBLE | Cost in the engine's budget unit (Exa: its own `costDollars`; one call elsewhere); NULL when failed |
-| `picked` | TEXT | `rotation`, `pinned` (caller named it), `ladder` (rotation off / nothing on pace), `fallback` |
+| `picked` | TEXT | `rotation`, `lead` (the engine whose YAML `lead_for` names the calling tool, on pace), `pinned` (caller named it), `ladder` (rotation off / nothing on pace), `fallback` |
 | `requested` | TEXT | The engine the caller named |
 | `purpose`, `tool`, `task_id` | TEXT | Who searched: routing purpose (`chat`, `subagent`, `background`, `direct`), the queue job's tool, the workflow run's Task |
 | `recency`, `news` | TEXT, BOOLEAN | What was asked for |

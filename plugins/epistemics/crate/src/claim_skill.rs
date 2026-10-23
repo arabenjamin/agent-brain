@@ -454,6 +454,76 @@ impl ClaimSkill {
             }
         }
 
+        // Contradiction gate: a second, narrower look, which must quote the
+        // cited results' conflicting words (`claims::confirm_contradiction`),
+        // then the grounding model's veto: results that ground the claim do
+        // not refute it. Not an independence gate (one credible refutation is
+        // still worth surfacing), but the judge alone filed "the evidence does
+        // not mention it" as contradicts: 53 of 68 refutations were wrong
+        // (2026-10-22). Anything that fails stays unverified, never refuted.
+        let mut contradiction: Option<claims::Contradiction> = None;
+        if verdict.verdict == "contradicts" {
+            let document = grounding::cited_document(&evidence_text, &cited);
+            let why = if document.is_empty() {
+                Some(format!(
+                    "cited sources {:?} are not among the search results' links",
+                    verdict.sources
+                ))
+            } else {
+                match claims::confirm_contradiction(self.llm.as_ref(), claim_text, &document).await
+                {
+                    Ok(Some(c)) => match grounding::model() {
+                        Some(model) => {
+                            match grounding::is_grounded(&model, &document, claim_text).await {
+                                Ok(true) => Some(format!(
+                                    "{model} found the claim grounded in the cited results, so they do not refute it"
+                                )),
+                                Ok(false) => {
+                                    grounding_status = Some("not grounded".to_string());
+                                    contradiction = Some(c);
+                                    None
+                                }
+                                Err(e) => {
+                                    warn!(claim_id = %claim_id, error = %e, "Grounding veto could not run; contradiction counted unchecked");
+                                    grounding_status = Some(format!("unchecked: {e}"));
+                                    contradiction = Some(c);
+                                    None
+                                }
+                            }
+                        }
+                        None => {
+                            contradiction = Some(c);
+                            None
+                        }
+                    },
+                    Ok(None) => Some(
+                        "a second look found no words in the cited results that conflict with the claim"
+                            .to_string(),
+                    ),
+                    Err(e) => Some(format!("the second look could not run: {e}")),
+                }
+            };
+            if let Some(why) = why {
+                warn!(claim_id = %claim_id, reason = %why, "Contradiction rejected");
+                let status = claims::recompute_status(&self.neo4j, claim_id)
+                    .await
+                    .map(|s| s.as_str().to_string())
+                    .unwrap_or_else(|_| "unverified".to_string());
+                return json!({
+                    "claim_id": claim_id,
+                    "claim": claim_text,
+                    "verdict": "contradiction_rejected",
+                    "evidence_recorded": false,
+                    "cited_sources": cited,
+                    "reasoning": format!(
+                        "the judge said contradicts ({}), but {why}",
+                        verdict.reasoning.as_deref().unwrap_or("no reason given")
+                    ),
+                    "status": status
+                });
+            }
+        }
+
         let attached = claims::attach_evidence(
             &self.neo4j,
             claim_id,
@@ -462,6 +532,7 @@ impl ClaimSkill {
             &cited,
             &domains,
             grounding_status.as_deref(),
+            contradiction.as_ref(),
         )
         .await
         .unwrap_or(false);
@@ -480,6 +551,7 @@ impl ClaimSkill {
             "echo_results_dropped": echoes_dropped,
             "evidence_recorded": attached,
             "grounding": grounding_status,
+            "conflict": contradiction.map(|c| c.conflict),
             "reasoning": verdict.reasoning,
             "status": status
         })

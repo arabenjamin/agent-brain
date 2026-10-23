@@ -115,6 +115,18 @@ pub struct Rung {
     pub weight: f64,
 }
 
+/// The engine that leads for this caller: the first in ladder order that
+/// names the caller's tool in its YAML `lead_for` and is on pace. Measured
+/// better at a job (Exa for claim verification, 2026-10-22) earns the head
+/// of that job's searches while its allowance lasts; past its pace it is
+/// back in the ladder like any other engine.
+pub fn lead<'a>(ladder: &'a [Rung], leads: &[String]) -> Option<&'a str> {
+    ladder
+        .iter()
+        .find(|r| r.standing == Some(Standing::OnPace) && leads.contains(&r.name))
+        .map(|r| r.name.as_str())
+}
+
 /// The ladder, rotation first: on-pace budgeted engines by fewest calls
 /// today per unit of weight (ties keep ladder order), then the rest in
 /// ladder order, then rate-limited and spent engines. `pinned`, if any,
@@ -276,6 +288,22 @@ mod tests {
         let (o, rotated) = order(&ladder, Some("exa"));
         assert!(!rotated);
         assert_eq!(o, ["exa", "tavily", "brave"]);
+    }
+
+    #[test]
+    fn a_lead_engine_leads_only_while_on_pace() {
+        let leads = vec!["exa".to_string()];
+        let on = vec![
+            rung("tavily", Some(Standing::OnPace), 0),
+            rung("exa", Some(Standing::OnPace), 40),
+        ];
+        assert_eq!(lead(&on, &leads), Some("exa"));
+        let ahead = vec![
+            rung("tavily", Some(Standing::OnPace), 0),
+            rung("exa", Some(Standing::AheadOfPace), 40),
+        ];
+        assert_eq!(lead(&ahead, &leads), None);
+        assert_eq!(lead(&on, &[]), None);
     }
 
     #[test]

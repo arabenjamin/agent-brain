@@ -20,6 +20,10 @@
 //!   worse on the measured sets (crude 72/72 either way; hard 9 vs 10 of 14).
 //! - It does not check who said it (0 of 4 attribution faults caught), and it
 //!   passes vague claims; the stand-alone check at extraction owns those.
+//! - **It also vetoes a contradiction** (`claim_skill.rs`): results that
+//!   ground the claim do not refute it. On 68 hand-graded refutations
+//!   (2026-10-22) it found 8 of the 53 wrong ones grounded and none of the 15
+//!   real ones.
 //! - `GROUNDING_CHECK_MODEL` names the model; `off` turns the check off.
 
 use std::time::Duration;

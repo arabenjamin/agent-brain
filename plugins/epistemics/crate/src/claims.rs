@@ -1341,7 +1341,78 @@ pub async fn assess_evidence(
     })
 }
 
+/// A "contradicts" that held up on a second look: the cited results' own
+/// words that conflict with the claim, and the conflict in one sentence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contradiction {
+    pub quote: String,
+    pub conflict: String,
+}
+
+/// A quote shorter than this (normalised) proves nothing: "2024", "no".
+const MIN_QUOTE_CHARS: usize = 12;
+
+/// Is `quote` in `document`, word for word? Compared as lowercase
+/// alphanumeric words, so punctuation, quote marks and spacing the model
+/// changed while copying do not matter, but a paraphrase does.
+pub fn quote_in(document: &str, quote: &str) -> bool {
+    let q = normalise_words(quote);
+    q.len() >= MIN_QUOTE_CHARS && normalise_words(document).contains(&q)
+}
+
+/// The second look at a "contradicts". The judge's verdict alone refuted
+/// claims the evidence merely did not mention, or said in other words: of 68
+/// refutations graded by hand on 2026-10-22, 53 were wrong ("39:47" against
+/// "2387 seconds"; "none of the evidence mentions…" filed as contradicts).
+/// This asks the narrower question of the cited results only, and requires
+/// the conflicting words copied from them; on the same 68 it kept 8 of the 15
+/// real refutations and passed 7 wrong ones (5 once the grounding check
+/// vetoes a claim the results ground). `Ok(None)` is "not a contradiction".
+pub async fn confirm_contradiction(
+    llm: &dyn Llm,
+    claim: &str,
+    document: &str,
+) -> Result<Option<Contradiction>> {
+    let prompt = format!(
+        "A first reader said the EVIDENCE contradicts the CLAIM. Check that.\n\n\
+         A contradiction needs the evidence to state a specific fact that cannot be true \
+         at the same time as the claim: a different number, date, place, person or \
+         outcome for the same event, or a direct denial. These are NOT contradictions:\n\
+         - the evidence does not mention the claim, or mentions only its topic\n\
+         - the evidence says the same thing in other words or rounds a number (39:47 is \
+         2387 seconds; 107,000 is over 100,000)\n\
+         - the evidence adds detail or reports a different, related event\n\
+         - the claim names a different speaker or outlet than the evidence (that is an \
+         attribution question, not a contradiction)\n\n\
+         Respond with JSON only:\n\
+         {{\"contradicts\": true|false, \"evidence_quote\": \"the evidence's exact words that \
+         conflict with the claim, copied character for character, or empty\", \"conflict\": \
+         \"claim says X; evidence says Y, in one sentence, or empty\"}}\n\n\
+         CLAIM:\n{claim}\n\nEVIDENCE:\n{document}"
+    );
+    let value = llm
+        .generate_json(
+            &prompt,
+            Some("You check evidence. You answer only from the evidence given, never from prior knowledge."),
+            &["contradicts"],
+            2,
+        )
+        .await?;
+    let field = |k: &str| {
+        value
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let (quote, conflict) = (field("evidence_quote"), field("conflict"));
+    let says = value.get("contradicts").and_then(|v| v.as_bool()) == Some(true);
+    Ok((says && quote_in(document, &quote)).then_some(Contradiction { quote, conflict }))
+}
+
 /// Attach an evidence note to a claim with the given verdict.
+#[allow(clippy::too_many_arguments)]
 pub async fn attach_evidence(
     neo4j: &Db,
     claim_id: &str,
@@ -1350,6 +1421,7 @@ pub async fn attach_evidence(
     sources: &[String],
     domains: &[String],
     grounding: Option<&str>,
+    contradiction: Option<&Contradiction>,
 ) -> Result<bool> {
     let rel = match verdict {
         "supports" => "CORROBORATED_BY",
@@ -1364,13 +1436,15 @@ pub async fn attach_evidence(
     // pass any count-based test. Storing the domains keeps that inspectable
     // instead of hidden behind a one-word status. `grounding` says whether
     // the grounding check passed it (`grounded`), could not run (`unchecked:
-    // <why>`), or was off (absent); see `grounding.rs`.
+    // <why>`), or was off (absent); see `grounding.rs`. A contradiction
+    // keeps the words it rests on (`quote`, `conflict`), so a refutation can
+    // be read without re-running it.
     let cypher = format!(
         "MATCH (c:Note {{id: $cid}}), (e:Note {{id: $eid}}) \
          MERGE (c)-[r:{rel}]->(e) \
          ON CREATE SET r.source = $source, r.sources = $sources, \
                        r.found_at = datetime($now), r.domains = $domains, \
-                       r.grounding = $grounding"
+                       r.grounding = $grounding, r.quote = $quote, r.conflict = $conflict"
     );
     neo4j
         .run(
@@ -1381,6 +1455,8 @@ pub async fn attach_evidence(
                 .param("sources", sources.to_vec())
                 .param("domains", domains.to_vec())
                 .param("grounding", grounding.map(String::from))
+                .param("quote", contradiction.map(|c| c.quote.clone()))
+                .param("conflict", contradiction.map(|c| c.conflict.clone()))
                 .param("now", chrono::Utc::now().to_rfc3339()),
         )
         .await?;
@@ -1524,6 +1600,26 @@ pub async fn source_claim_profile(neo4j: &Db) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_contradiction_quote_must_be_the_documents_own_words() {
+        let doc = "[1] Kari Lake nominated as ambassador to Jamaica\nPresident Donald Trump has \
+                   nominated Kari Lake as the new United States ambassador to Jamaica, the \
+                   White House announced Monday.";
+        // Copied with its punctuation and spacing changed: still the same words.
+        assert!(quote_in(
+            doc,
+            "has nominated Kari Lake as the new United States ambassador to “Jamaica”"
+        ));
+        // A paraphrase is not a quote.
+        assert!(!quote_in(
+            doc,
+            "Kari Lake was picked to be ambassador to Jamaica"
+        ));
+        // Too short to prove anything, even when present.
+        assert!(!quote_in(doc, "Monday"));
+        assert!(!quote_in(doc, ""));
+    }
 
     fn claim(text: &str, about: &[(&str, &str)]) -> ExtractedClaim {
         ExtractedClaim {

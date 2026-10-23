@@ -53,6 +53,13 @@ pub struct EngineSpec {
     /// when a caller names it.
     #[serde(default)]
     pub budget: Option<Budget>,
+    /// Tools whose searches this engine leads while it is on pace
+    /// (`search_rotation::lead`), because it was measured better at their
+    /// job. Only a budgeted engine is ever on pace, so without a `budget`
+    /// this does nothing: pacing is what keeps a lead from spending the
+    /// allowance early.
+    #[serde(default)]
+    pub lead_for: Vec<String>,
     pub request: RequestSpec,
     pub response: ResponseSpec,
 }

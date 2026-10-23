@@ -15,6 +15,13 @@ budget:
   per: month
   cost_field: costDollars.total
   cost_default: 0.007
+# Claim verification searches the claim's own sentence; a neural ranker
+# finds coverage of it where keyword engines return pages that share words.
+# The same 37 claims (2026-10-22), judged the same way: Exa corroborated 26,
+# Tavily 13, Serper 10, TinyFish 9 (since the rotation began on 10-16, claims
+# went 65% → 25% corroborated). Exa leads them while on pace, so the credit
+# still lasts the month.
+lead_for: [claim]
 request:
   method: post
   url: https://api.exa.ai/search

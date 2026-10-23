@@ -45,6 +45,28 @@ fn rotation_enabled() -> bool {
     )
 }
 
+/// How the head of a call's ladder was chosen: the ledger's `picked` for
+/// the first attempt (a named engine is `pinned`, a later rung `fallback`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Head {
+    /// The engine that leads for the caller's tool (`lead_for`), on pace.
+    Lead,
+    /// The rotation's pick among on-pace budgeted engines.
+    Rotation,
+    /// Plain ladder order (rotation off, or nothing on pace).
+    Ladder,
+}
+
+impl Head {
+    fn as_str(self) -> &'static str {
+        match self {
+            Head::Lead => "lead",
+            Head::Rotation => "rotation",
+            Head::Ladder => "ladder",
+        }
+    }
+}
+
 /// Who is searching: the routing purpose (`direct` when nothing scoped
 /// one: an MCP tool call), the queue job's tool, and the workflow run's Task.
 fn caller() -> (String, Option<String>, Option<String>) {
@@ -432,7 +454,7 @@ impl SearchSkill {
         requested: Option<&str>,
         spec: &QuerySpec,
         today: chrono::NaiveDate,
-    ) -> (Vec<String>, bool) {
+    ) -> (Vec<String>, Head) {
         let configured = std::env::var("SEARCH_ENGINE_ORDER").unwrap_or_default();
         let exhausted = self
             .telemetry
@@ -469,7 +491,7 @@ impl SearchSkill {
             .collect();
         let ladder = retain_configured(ladder, &keep);
         if !rotation_enabled() {
-            return (ladder, false);
+            return (ladder, Head::Ladder);
         }
         let rungs: Vec<Rung> = ladder
             .iter()
@@ -478,7 +500,27 @@ impl SearchSkill {
         let pinned = requested
             .map(|r| r.trim().to_lowercase())
             .filter(|r| !r.is_empty());
-        search_rotation::order(&rungs, pinned.as_deref())
+        if pinned.is_none()
+            && let Some(tool) = caller().1
+        {
+            let leads: Vec<String> = engines
+                .iter()
+                .filter(|e| e.lead_for.contains(&tool))
+                .map(|e| e.name.clone())
+                .collect();
+            if let Some(head) = search_rotation::lead(&rungs, &leads) {
+                return (search_rotation::order(&rungs, Some(head)).0, Head::Lead);
+            }
+        }
+        let (order, rotated) = search_rotation::order(&rungs, pinned.as_deref());
+        (
+            order,
+            if rotated {
+                Head::Rotation
+            } else {
+                Head::Ladder
+            },
+        )
     }
 
     /// One ladder engine as the rotation sees it. Outside the rotation
@@ -919,14 +961,14 @@ impl SearchSkill {
         // 39 jobs and 38 tasks because `search_web` hard-failed on one engine.
         // Its head is the rotation's pick (`search_rotation.rs`).
         let today = chrono::Utc::now().date_naive();
-        let (ladder, rotated) = self
+        let (ladder, head) = self
             .engine_ladder(input.engine.as_deref(), &spec, today)
             .await;
 
         info!(
             query = %effective_query,
             ladder = ?ladder,
-            rotated,
+            head = head.as_str(),
             requested_engine = ?input.engine,
             source_list = ?input.source_list,
             "Searching web"
@@ -951,8 +993,7 @@ impl SearchSkill {
             attempts_made += 1;
             match attempts_made {
                 1 if base.requested.is_some() => "pinned",
-                1 if rotated => "rotation",
-                1 => "ladder",
+                1 => head.as_str(),
                 _ => "fallback",
             }
             .to_string()
