@@ -164,6 +164,6 @@ has who built what and what failed).
   a `canonical` read rule (the defect never showed in a reference run, so no
   prompt edit could fix it). Known-answer test PASSED (run 5469dba3): from the
   round-1 intake prompt the loop found the four-field manage_todo fix on its own.
-- harness-candidates ships off (`enabled: false`): turn it on once more runs
-  come out like run 5, or with a stronger judge model for composer/reflector.
+- harness-candidates turned on 2026-10-23 (owner) after the nemotron judges'
+  3 of 3; first run 2026-10-30.
 - Not pursued: probing the front door (not a sub-agent; a probe cannot delegate).

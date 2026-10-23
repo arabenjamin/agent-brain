@@ -3,9 +3,10 @@ description: "Weekly (HARNESS2_PLAN Phase 3): picks the sub-agent whose real run
 topic: agent-brain
 kind: maintenance
 every: 7d
-# Off until harness-improve's judges prove reliable: on 2026-10-23 three runs on
-# gpt-oss gave one right decision, one keep and one wrong adoption (HARNESS2_PLAN §5).
-enabled: false
+# On since 2026-10-23 (owner): the judges moved to nemotron-3-ultra were right in
+# 3 of 3 runs, after gpt-oss's 2 of 6 (HARNESS2_PLAN §5). `enabled` is graph-owned:
+# this sets it only on a fresh install; pause with manage_workflow enabled=false.
+enabled: true
 defaults:
   max_attempts: 1
   # No model in this workflow: SQL picks, create_task starts.
