@@ -59,6 +59,7 @@ impl KnowledgeService {
                             COALESCE(n.source_context, '') AS source_context, \
                             COALESCE(n.corroboration_tier, '') AS tier, \
                             COALESCE(n.claim_kind, '') AS kind, \
+                            COALESCE(n.verify_skipped, '') AS skipped, \
                             toString(n.created_at) AS created_at",
                 )
                 .param("ids", ids),
@@ -102,7 +103,10 @@ impl KnowledgeService {
                 ),
                 "claim" => super::claim_label::label_claim(
                     "",
-                    &row.get::<String>("status").unwrap_or_default(),
+                    &super::claim_label::shown_status(
+                        &row.get::<String>("status").unwrap_or_default(),
+                        &row.get::<String>("skipped").unwrap_or_default(),
+                    ),
                     Some(&row.get::<String>("asserted_by").unwrap_or_default()),
                     Some(&row.get::<String>("asserted_at").unwrap_or_default()),
                     Some(&row.get::<String>("tier").unwrap_or_default()),

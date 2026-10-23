@@ -27,6 +27,17 @@ pub fn kind_qualifier(kind: &str, status: &str) -> Option<String> {
     }
 }
 
+/// The status a label shows. A claim the verifier skips as said-here (the
+/// epistemics plugin's `said_here.rs`: only that someone in a recording said
+/// it) was never searched for, so "unverified" would read as "looked, found
+/// nothing"; it says what it is instead.
+pub fn shown_status(status: &str, verify_skipped: &str) -> String {
+    match (status, verify_skipped) {
+        ("unverified", "said_here") => "said in its source, not web-checked".to_string(),
+        _ => status.to_string(),
+    }
+}
+
 /// `age` is a pre-rendered relative age ("11 months ago") supplied by the
 /// caller rather than computed here, so this stays a pure function of its
 /// inputs and its tests stay deterministic. An absolute date alone does not
@@ -67,6 +78,17 @@ pub fn label_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_said_here_claim_says_it_was_never_searched() {
+        assert_eq!(
+            shown_status("unverified", "said_here"),
+            "said in its source, not web-checked"
+        );
+        assert_eq!(shown_status("unverified", ""), "unverified");
+        // Evidence that came in before the skip still shows.
+        assert_eq!(shown_status("corroborated", "said_here"), "corroborated");
+    }
 
     #[test]
     fn an_attribution_claim_says_what_corroboration_actually_established() {

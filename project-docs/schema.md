@@ -223,6 +223,8 @@ Claim notes (`note_type: 'claim'`, written by the epistemics plugin: `plugins/ep
 |----------|------|-------------|
 | `claim_status` / `claim_kind` / `asserted_by` / `asserted_at` | | Epistemic status, see `subsystem-rules.md` § Epistemics |
 | `about` | String[] | The named things the claim is about, as the claim names them. Extraction and the rewrite check that each is named in the claim (`standalone_problems`) |
+| `verify_skipped` | String? | Why the verification sweep never searches it: `internal` (about the brain itself) or `said_here` (an attribution that someone in the recording said it, `plugins/epistemics/said-here-claims.yaml`; labelled "said in its source, not web-checked") |
+| `last_verify_attempt_at` / `reset_reason` | DateTime? / String? | The sweep's cursor; why a reset put the claim back in the queue |
 | `source_url` / `source_title` / `source_outlet` | String? | The article or video its `ASSERTED_IN` source records (`source_reference`), on the claim so a reader needn't follow the edge. The topic classifier reads the title with the claim |
 | `standalone_checked_at` | DateTime? | When the stand-alone check last ran on it (new claims: at extraction). Unset ⇒ `rewrite-claims` will check it |
 | `rewritten_at` / `content_v1` | DateTime? / String? | Set when `rewrite-claims` replaced its text: the original stays in `content_v1` |

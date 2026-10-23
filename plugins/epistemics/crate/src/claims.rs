@@ -1478,6 +1478,63 @@ pub async fn mark_verify_skipped(neo4j: &Db, claim_id: &str, why: &str) -> Resul
         .await
 }
 
+/// Take the said-here claims (`said_here.rs`) out of the sweep before it
+/// picks: every unverified attribution from a recording, not yet skipped,
+/// that the bundle's rule matches. Run at the start of each sweep so a
+/// matching claim never spends a search. Returns how many were marked.
+pub async fn skip_said_here(neo4j: &Db, rules: &crate::said_here::SaidHereRules) -> Result<usize> {
+    if rules.recordings.is_empty() {
+        return Ok(0);
+    }
+    let rows = neo4j
+        .execute(
+            query(
+                "MATCH (c:Note {note_type: 'claim', claim_kind: 'attribution'}) \
+                 WHERE COALESCE(c.claim_status, 'unverified') = 'unverified' \
+                   AND c.verify_skipped IS NULL AND c.source_context IN $recordings \
+                 RETURN c.id AS id, c.content AS content, c.asserted_by AS by, \
+                        c.source_context AS ctx",
+            )
+            .param("recordings", rules.recordings.clone()),
+        )
+        .await?;
+    let ids: Vec<String> = rows
+        .iter()
+        .filter_map(|r| {
+            let (id, text) = (
+                r.get::<String>("id").ok()?,
+                r.get::<String>("content").ok()?,
+            );
+            let (by, ctx) = (r.get::<String>("by").ok(), r.get::<String>("ctx").ok());
+            rules
+                .is_said_here(&crate::said_here::ClaimFacts {
+                    text: &text,
+                    kind: Some("attribution"),
+                    asserted_by: by.as_deref(),
+                    source_context: ctx.as_deref(),
+                })
+                .then_some(id)
+        })
+        .collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    neo4j
+        .run(
+            query(
+                "UNWIND $ids AS id MATCH (c:Note {id: id, note_type: 'claim'}) \
+                 SET c.verify_skipped = 'said_here'",
+            )
+            .param("ids", ids.clone()),
+        )
+        .await?;
+    info!(
+        count = ids.len(),
+        "Said-here claims taken out of the verification sweep"
+    );
+    Ok(ids.len())
+}
+
 /// Record that a verification attempt was made against a claim.
 ///
 /// Stamped *before* the attempt runs, not after, so a claim advances the cursor

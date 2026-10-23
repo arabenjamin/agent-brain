@@ -1,0 +1,67 @@
+# What makes a claim SAID HERE: an `attribution` whose subject is someone
+# speaking in the recording it came from ("Louis Rossmann notes…", "the
+# interviewee stated…", "Baron Cohen responded…"). The recording is the proof
+# that it was said, and the claim's ASSERTED_IN source already links to it, so
+# a web search adds nothing. The verifier skips such claims
+# (`verify_skipped: said_here`); they stay attributed to the speaker.
+#
+# Found 2026-10-22: about a third of the video claims checked that day were
+# like this, and they came back "unrelated" (no outside page repeats a
+# YouTube host's aside). On the 4,201 video claims then stored, the rule
+# matched 293 of 1,620 attributions; the 39 of those that had corroborated
+# only confirmed it was said. Reported speech ("Federal investigators
+# suspect…", "Senator Ossoff linked…") and a speaker's checkable fact (kind
+# `event`: "Iran's inflation rate is 301%") do not match and are still
+# verified.
+#
+# A claim matches when it is an `attribution` from one of `recordings`, and
+# within its first `lead_words` words it names the speaker (one of
+# `speakers`, the full `asserted_by`, or one of its words of 4+ letters not
+# in `name_stopwords`) followed within `verb_window` words by one of `verbs`.
+
+# Note source_context values whose text is a recording's transcript.
+recordings:
+  - video_learning
+
+lead_words: 3
+verb_window: 6
+
+# A speaker named by role rather than by name.
+speakers:
+  - the interviewee
+  - the speaker
+  - the host
+  - the guest
+  - the narrator
+  - the presenter
+  - the creator
+  - the commentator
+  - one individual
+  - another individual
+  - an individual
+  - one person
+  - another person
+  - a participant
+  - one participant
+  - an advisor
+  - a caller
+  - the discussion
+  - the conversation
+  - the notes
+  - the video
+  - the episode
+  - the segment
+
+# Words of an asserted_by name that never identify the speaker alone.
+name_stopwords: [with, from, channel, news, show, report, media, network, official, live]
+
+verbs: [said, says, stated, states, suggested, suggests, noted, notes, explained, explains,
+  argued, argues, asserted, asserts, believes, believed, claimed, claims, responded,
+  responds, characterized, characterizes, recounted, recounts, described, describes,
+  mentioned, mentions, emphasized, emphasizes, warned, warns, expressed, expresses,
+  questioned, questions, admitted, admits, insisted, insists, acknowledged, acknowledges,
+  joked, jokes, shared, shares, told, tells, recalled, recalls, highlighted, highlights,
+  pointed, asked, asks, reflected, reflects, discussed, discusses, focused, focuses,
+  indicated, indicates, indicate, proposed, proposes, thinks, thought, feels, felt,
+  considers, considered, referred, refers, dismissed, dismisses, defended, defends,
+  praised, praises, criticized, criticizes]

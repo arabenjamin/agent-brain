@@ -18,7 +18,7 @@ use agent_brain_plugin_api::{
 };
 
 use crate::db::{Db, query};
-use crate::{claims, grounding, internal};
+use crate::{claims, grounding, internal, said_here};
 
 /// How many search results are gathered as candidate evidence per claim.
 /// 8, not 6: echo pages are dropped before judging, and corroboration now
@@ -28,6 +28,10 @@ const EVIDENCE_RESULTS: u8 = 8;
 /// Why an internal claim is dropped or never searched.
 const INTERNAL_PROBLEM: &str = "it is about the brain's own activity: its own ledger answers \
      that, and no web search can";
+
+/// Why a said-here claim is never searched.
+const SAID_HERE_PROBLEM: &str = "it says only that someone in the recording said this: the \
+     recording it came from is the proof, and no web search adds to it";
 
 /// Default number of claims a single `verify` sweep will process.
 const DEFAULT_VERIFY_BATCH: usize = 5;
@@ -562,24 +566,62 @@ impl ClaimSkill {
             .as_u64()
             .unwrap_or(DEFAULT_VERIFY_BATCH as u64) as usize;
 
+        let mut skipped_said_here = 0;
         let targets: Vec<(String, String)> = if let Some(id) = args["claim_id"].as_str() {
             match self
                 .neo4j
                 .execute(
                     query(
-                        "MATCH (c:Note {id: $id, note_type: 'claim'}) RETURN c.content AS content",
+                        "MATCH (c:Note {id: $id, note_type: 'claim'}) \
+                         RETURN c.content AS content, c.claim_kind AS kind, \
+                                c.asserted_by AS by, c.source_context AS ctx",
                     )
                     .param("id", id),
                 )
                 .await
             {
-                Ok(rows) => match rows.first().and_then(|r| r.get::<String>("content").ok()) {
-                    Some(content) => vec![(id.to_string(), content)],
+                Ok(rows) => match rows.first() {
+                    Some(r) => {
+                        let Ok(content) = r.get::<String>("content") else {
+                            return ToolCallResult::error(format!("Claim {id} has no content"));
+                        };
+                        let (kind, by, ctx) = (
+                            r.get::<String>("kind").ok(),
+                            r.get::<String>("by").ok(),
+                            r.get::<String>("ctx").ok(),
+                        );
+                        if said_here::rules().is_said_here(&said_here::ClaimFacts {
+                            text: &content,
+                            kind: kind.as_deref(),
+                            asserted_by: by.as_deref(),
+                            source_context: ctx.as_deref(),
+                        }) {
+                            if let Err(e) =
+                                claims::mark_verify_skipped(&self.neo4j, id, "said_here").await
+                            {
+                                warn!(claim_id = %id, error = %e, "Could not mark said-here claim");
+                            }
+                            return ToolCallResult::success_json(json!({
+                                "verified": 0,
+                                "results": [{
+                                    "claim_id": id,
+                                    "claim": content,
+                                    "verdict": "skipped_said_here",
+                                    "note": SAID_HERE_PROBLEM,
+                                }]
+                            }));
+                        }
+                        vec![(id.to_string(), content)]
+                    }
                     None => return ToolCallResult::error(format!("No claim with id {id}")),
                 },
                 Err(e) => return ToolCallResult::error(format!("Lookup failed: {e}")),
             }
         } else {
+            match claims::skip_said_here(&self.neo4j, said_here::rules()).await {
+                Ok(n) => skipped_said_here = n,
+                Err(e) => warn!(error = %e, "Could not take said-here claims out of the sweep"),
+            }
             match claims::unverified_claims(&self.neo4j, batch).await {
                 Ok(c) => c,
                 Err(e) => return ToolCallResult::error(format!("Backlog query failed: {e}")),
@@ -590,6 +632,7 @@ impl ClaimSkill {
             return ToolCallResult::success_json(json!({
                 "verified": 0,
                 "results": [],
+                "skipped_said_here": skipped_said_here,
                 "note": "No unverified claims outstanding."
             }));
         }
@@ -610,6 +653,7 @@ impl ClaimSkill {
         info!(count = results.len(), "Claim verification sweep complete");
         ToolCallResult::success_json(json!({
             "verified": results.len(),
+            "skipped_said_here": skipped_said_here,
             "results": results
         }))
     }
