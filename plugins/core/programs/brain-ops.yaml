@@ -31,4 +31,6 @@ workflows:
   - entity-linking
   - program-reviews
   - program-review
+  - harness-candidates
+  - harness-improve
 review: { every: 30d }

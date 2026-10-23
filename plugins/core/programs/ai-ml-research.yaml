@@ -1,6 +1,7 @@
 name: ai-ml-research
 label: AI & ML Research
 kind: department
+parent: research-development
 charter: >-
   Follow the field the brain is built from: small-model releases and
   benchmarks for local use, Rust training data and fine-tuning prior work,

@@ -1,0 +1,50 @@
+name: rnd-intake
+description: "Weekly NIA -> R&D hand-off (PROGRAMS_REORG_PLAN.md): the latest report of every workflow the NIA and its verticals own, from the last 7 days, goes to rnd-scout, which files at most two todos under Research & Development for what we could learn from or use. Files nothing in a week with nothing that qualifies."
+topic: agent-brain
+kind: learning
+every: 7d
+enabled: true
+data_class: private
+defaults:
+  max_attempts: 2
+  provider_hint: ollama-cloud
+steps:
+  - id: reports
+    tool_name: neo4j_query
+    description: The latest run's report of each NIA-owned workflow, last 7 days
+    provider_hint: ollama
+    arguments:
+      cypher: |-
+        MATCH (:Program {name: 'nia'})<-[:UNDER*0..]-(:Program)-[:OWNS]->(w:Workflow)
+        MATCH (t:Task {workflow: w.name})
+        WHERE t.created_at > datetime() - duration({days: 7})
+        WITH w, t ORDER BY t.created_at DESC
+        WITH w, collect(t)[0] AS t
+        MATCH (n:Note)
+        WHERE n.produced_by_task = t.id AND n.note_type = 'source_record'
+        WITH w, t, n ORDER BY n.created_at
+        WITH w.name AS workflow, toString(t.created_at) AS run_at,
+             collect(n.id) AS note_ids, collect(n.content) AS parts
+        RETURN workflow, run_at, note_ids,
+               left(reduce(s = '', x IN parts | s + x + '\n'), 4000) AS report
+        ORDER BY workflow
+  - id: scout
+    tool_name: run_agent
+    description: rnd-scout picks at most two things to learn from or use, filed under R&D
+    arguments:
+      agent: rnd-scout
+      max_rounds: 8
+      # A todo it reports filing must be one it filed.
+      verify:
+        answer_requires:
+          - when: '(?im)^\W*filed:'
+            tools: ["manage_todo:upsert"]
+        retry: true
+      task: |-
+        This week's NIA reports (today is {{date}}), one row per workflow: its
+        name, when its latest run was, the ids of the notes the report is in,
+        and the report (cut at 4,000 characters).
+
+        ===== BEGIN NIA REPORTS =====
+        {{steps.reports}}
+        ===== END NIA REPORTS =====

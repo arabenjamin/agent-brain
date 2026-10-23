@@ -1,0 +1,16 @@
+# Research & Development (owner, 2026-10-23; PROGRAMS_REORG_PLAN.md): its
+# areas are the programs under it (parent: research-development).
+name: research-development
+label: Research & Development
+kind: department
+charter: >-
+  Find what the brain could learn from or use (techniques, tools, models,
+  datasets, protocols), from its own research areas and from what the NIA
+  reports, and turn the best into a deep dive or something built and tried.
+success: >-
+  Each week at most two candidates reach the owner with the report they came
+  from; the ones pursued end as a deep dive answered or a change in our own
+  work, and the areas under it report what changed since their last run.
+workflows:
+  - rnd-intake
+review: { every: 30d }

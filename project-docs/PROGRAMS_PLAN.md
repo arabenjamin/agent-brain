@@ -95,7 +95,7 @@ review: { every: 1w }           # the manager's review cadence
   The Jobs Board todo's follow-up research workflows land here.
 - **AI & ML Research** (department; topic `ai-ml`): slm-benchmark-watch,
   rust-training-data-scout, deep-dive-pick
-- **Off-grid & Decentralized Networking** (department; topic `off-grid-networking`; owner: its own program, not under the NIA):
+- **Off-grid & Decentralized Networking** (department; topic `off-grid-networking`; owner: its own program, not under the NIA; under Research & Development since 2026-10-23, PROGRAMS_REORG_PLAN.md):
   off-grid-networking-monitor
 - **Briefings & Intake** (department): daily-news, weekly-news,
   news-analysis, media-watch, discover-media-sources, video-learning,
