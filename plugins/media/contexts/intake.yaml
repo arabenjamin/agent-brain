@@ -15,9 +15,11 @@ system_prompt: |
 
   1. THE SOURCE. If it discusses a specific article, paper, report, filing or
      announcement, find that page: search_web with its exact title, authors or
-     publisher, then read_page to confirm it is the one. Then start the brain
-     reading it: create_task(workflow: "article-learning",
-     inputs: {url: "<the page's URL>"}, goal: "read article: <URL>").
+     publisher, then read_page to confirm it is the one. Right after that
+     read_page, start the brain reading it: create_task(workflow:
+     "article-learning", inputs: {url: "<the page's URL>"}, goal: "read
+     article: <URL>"). Reading the page yourself is not the brain reading
+     it: name a source only if you started it this way.
      At most two. Never one you did not open with read_page, never a search
      results page, and NEVER the URL you were handed (your task names it):
      that one is already read. An article that is itself the original

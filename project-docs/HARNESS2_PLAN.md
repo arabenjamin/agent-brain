@@ -152,6 +152,10 @@ has who built what and what failed).
      trajectory now opens with a one-line CALLS sequence);
   5. clean: defect shown, both candidates fixed it, composer cited the right
      run's step, reflector filed one adoption todo.
+- Adopted 2026-10-23: run 5's edit, applied by hand to `intake.yaml` (its composed
+  prompt carried the editor's TOOLS list and the test task appended, so it was not
+  copied whole); 4 of 4 probes now start reading the source (was 2 of 5). The
+  lesson is `harness-library/intake`. Follow-ups are brain-ops todos.
 - harness-candidates ships off (`enabled: false`): turn it on once more runs
   come out like run 5, or with a stronger judge model for composer/reflector.
 - Not done: the known-answer test (needs a `base harness` input to start from
