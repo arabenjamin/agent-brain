@@ -22,12 +22,14 @@ import mpmath
 from . import metric
 
 DPS = 50
-DIGITS = 40  # significant digits written per coordinate
-# Squares that touch exactly are certified as separated only when the decimals
-# say so; 40-digit decimals of an irrational contact can overlap by 1e-40.
-# Scaling the centres apart by GAP opens every contact by ~GAP and costs
-# about GAP * L in the score.
-GAP = mpmath.mpf("1e-30")
+DIGITS = 40  # significant digits kept while building a packing
+# Kaggle reads the submission with pandas, so every coordinate becomes a
+# double before the metric sees it (measured 2026-10-24: our first upload,
+# written at 40 digits with a 1e-30 gap, scored as all grid). Squares that
+# touch exactly then overlap by a rounding error, about 1e-15. Scaling the
+# centres apart by GAP opens every contact by ~GAP, far above that, at a
+# cost of about GAP in each puzzle's score.
+GAP = mpmath.mpf("1e-12")
 
 
 @dataclass
@@ -43,8 +45,9 @@ class Packing:
         ]
 
     def check(self) -> tuple[bool, float, str | None, str]:
-        """(ok, score, L text, reason), exactly as Kaggle scores it."""
-        _, score, L, reason = metric.evaluate_single_puzzle(self.n, self.rows())
+        """(ok, score, L text, reason), exactly as Kaggle scores it: through
+        doubles, the way pandas hands the submission to the metric."""
+        _, score, L, reason = metric.evaluate_single_puzzle(self.n, as_doubles(self).rows())
         return reason == "ok", score, L, reason
 
     def floats(self) -> list[tuple[float, float, float]]:
@@ -53,6 +56,12 @@ class Packing:
 
 def fmt(v) -> str:
     return mpmath.nstr(mpmath.mpf(v), DIGITS, min_fixed=-math.inf, max_fixed=math.inf)
+
+
+def as_doubles(p: Packing) -> Packing:
+    """The packing as Kaggle will read it: each coordinate a double, written
+    the way pandas writes it back (shortest round-trip repr)."""
+    return Packing(p.n, [(repr(float(x)), repr(float(y)), repr(float(a))) for x, y, a in p.squares], p.source)
 
 
 def grid(n: int) -> Packing:
@@ -125,12 +134,14 @@ class Store:
         return float(rec["L"]) if rec else float(math.ceil(math.sqrt(n)))
 
     def offer(self, p: Packing, note: str = "") -> tuple[bool, str]:
-        """Store p if the metric accepts it and it beats the stored L.
+        """Store p if the metric accepts it as doubles and it beats the stored L.
 
-        Tries the packing as given, then with the contact gap opened."""
+        Tries the packing as given, then with the contact gap opened; what is
+        stored is the double version that passed."""
         cur = self.get(p.n)
         cur_L = float(cur["L"]) if cur else math.inf
-        for cand in (p, with_gap(p), with_gap(p, mpmath.mpf("1e-20"))):
+        for cand in (p, with_gap(p), with_gap(p, mpmath.mpf("1e-10"))):
+            cand = as_doubles(cand)
             ok, score, L, reason = cand.check()
             if ok:
                 break

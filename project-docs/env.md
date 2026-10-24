@@ -127,6 +127,7 @@ Passed to the runner only; the brain never sees the Kaggle token.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KAGGLE_API_TOKEN` | — | Kaggle API token (`KGAT_…`, `.env`), for submitting to Squares in Squares. Empty: the runner builds and scores but submits nothing |
+| `KAGGLE_USERNAME`, `KAGGLE_KEY` | — | The legacy Kaggle key (Settings → API → *Create Legacy API Key*, the `kaggle.json` pair). When both are set they are used for submitting instead of `KAGGLE_API_TOKEN`: on 2026-10-23 a `KGAT_` token could upload a file but was refused (403) at CreateSubmission |
 | `ML_RUNNER_HOURS` | `23-7` | Local hours the overnight search runs (`start-end`, wraps midnight). At the end it builds, scores and submits |
 | `ML_RUNNER_WORKERS` | `12` | Search processes, and the container's CPU cap (owner, 2026-10-23: 12 of 16 cores) |
 | `ML_JOB_SECONDS` | `600` | One search job's time |

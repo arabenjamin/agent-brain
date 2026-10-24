@@ -14,6 +14,8 @@ import time
 import zipfile
 from pathlib import Path
 
+import pandas as pd
+
 from . import metric
 from .packing import Store
 
@@ -31,9 +33,11 @@ def build(root: Path, workers: int = 12) -> dict:
             row += 1
     text = buf.getvalue()
 
-    # Score the text we are about to upload, not the store it came from.
+    # Score the text we are about to upload, read the way Kaggle reads it:
+    # pandas, so every coordinate is a double (metric.score's own path).
     metric.KAGGLE_CORES = workers
-    puzzles = metric._parse_submission_csv(text)
+    sub = pd.read_csv(io.StringIO(text))
+    puzzles = metric._parse_submission_csv(sub.drop(columns=["id"]).to_csv(index=False))
     total, results = metric._evaluate_puzzles_parallel(puzzles, set(range(1, metric.MAX_N + 1)))
     bad = [{"n": n, "reason": why} for n, _, _, why in results if why != "ok"]
 

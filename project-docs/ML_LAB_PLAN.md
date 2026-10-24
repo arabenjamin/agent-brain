@@ -111,9 +111,14 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
 - `best/<n>.json` holds the best packing per n. It was seeded from the grid,
   341 of the record page's 367 SVGs (parsed offline with Ellsworth's
   `parse_svg_packing.py`; the other 26 links are dead) and generated
-  Göbel squares (`gobel.py`, for the n > 324 drawn without an SVG). Exact
-  contacts are opened by a 1e-30 scaling, so 40-digit decimals never read
-  as an overlap.
+  Göbel squares (`gobel.py`, for the n > 324 drawn without an SVG).
+  **Kaggle reads the submission with pandas, so every coordinate reaches
+  the metric as a double.** Our first upload (40-digit decimals, contacts
+  opened by 1e-30) scored 28.94 there, all grid: rounding closed the gaps
+  and every touching pair read as an overlap. Packings are now stored as
+  doubles with contacts opened by 1e-12 (a cost of ~3e-10 in all), and
+  every check, the store's and the build's, goes through the same pandas
+  path.
 - Nightly: `optimize.py` runs 10-minute searches on 12 processes, as random
   restarts below the stored side for n ≤ 120 and as squeezes for packings
   that are a larger one minus squares. It skips proven n (`proven.json`).
@@ -151,8 +156,14 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
 - 2026-10-23: competition read; baseline measured (§1); `ml-lab` program
   created under R&D; scipy and scikit-learn added to the Python sandbox.
   The owner decided §3 the same day; runner, store (23.9235), `ml-study`
-  and `squares-report` built and running. Nothing submitted yet (the owner
-  has not joined the competition).
+  and `squares-report` built and running. First lesson (L01) studied, $0.
+- 2026-10-24: first submissions. Kaggle refused them (403) until the owner
+  verified their identity. The first one through scored 28.94 (the doubles
+  lesson, §4); after the fix, Kaggle's score is **23.9234840650**, our
+  scorer's to every digit. Rank 350 of 454: the median team is 22.39 and
+  the best 22.22, so most teams are ~1.5 past the published records. Finding
+  what they share (the competition's discussion forum, public notebooks)
+  comes before more search.
 
 ## 6. Open
 
