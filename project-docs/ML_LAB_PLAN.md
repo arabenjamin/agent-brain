@@ -241,8 +241,13 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
     blend would be ~22.301 (the top 100 is 22.3039). They are S09-S12 of
     `squares-study`, studied first. Blending stays the owner's call.
   - Playground Series S6E10 ("Predicting Airline Satisfaction", AUC,
-    closes 10-31): pipeline built and tested end to end on synthetic data;
-    it waits for the owner to join.
+    closes 10-31): pipeline built and tested end to end on synthetic data.
+    The owner joined the same evening. Real data: 699,635 rows, 22 features
+    (4 categorical), a boolean target (44% True). Ladder, 5-fold CV AUC on 4
+    threads: baseline 0.957652 (26 s), tuned 0.958510 (74 s), + frequency
+    encodings 0.958414 (96 s: no gain). Tuned sent: Kaggle **0.95806**
+    (CV 0.95851, a gap of 0.0005), rank 2235 of 2922; median 0.95959, top
+    25% 0.96165, best 0.96407.
 
 ## 6. Open
 
@@ -252,7 +257,12 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
 - `fault.py` uses a buffer cell between gadgets. Deotte's zero-buffer chains
   (adjacent gadgets sharing an f×f corner where one corner is empty) gained
   him ~0.001; not built.
-- Playground: the ladder is three rungs. Next rungs come from the study of
+- Playground: the ladder is three rungs and sits below the median. The
+  usual Playground gains, to measure one rung at a time: the original
+  dataset the synthetic one was generated from, added to training; the
+  1-5 ratings as categoricals; target encoding; other GBM libraries and an
+  ensemble of their out-of-fold predictions. Which first comes from
+  studying the competition's forum and top notebooks. Next rungs come from the study of
   the competition's top notebooks and forum (a playground-study, as
   squares-study does), and S6E11 opens ~11-01.
 - Where the leaders' 0.07-0.13 comes from is unknown. Edge-LP local moves
