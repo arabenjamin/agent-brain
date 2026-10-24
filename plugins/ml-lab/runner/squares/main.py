@@ -4,7 +4,9 @@ Inside the overnight window (ML_RUNNER_HOURS, local time, default 23-7) it
 searches on ML_RUNNER_WORKERS processes (default 12, the owner's allowance).
 When the window closes it builds the submission, scores it with Kaggle's
 metric and submits it if it is better than the last one sent. Outside the
-window it only serves GET /status, for the brain's squares-report workflow.
+window it only serves GET /status (and /playground), for the brain's report
+workflows. Each window starts with the Playground competitions in
+ML_PLAYGROUND (playground/run.py), then the squares search.
 """
 
 from __future__ import annotations
@@ -18,8 +20,10 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from playground import run as playground
+
 from . import build as builder
-from . import band, composite, gobel, optimize, seed, submit, tilted
+from . import band, composite, fault, gobel, optimize, seed, submit, tilted
 from .metric import MAX_N
 from .packing import Store
 
@@ -27,6 +31,8 @@ ROOT = Path(os.environ.get("ML_DATA_DIR", "/data"))
 WORKERS = int(os.environ.get("ML_RUNNER_WORKERS", "12"))
 JOB_SECONDS = int(os.environ.get("ML_JOB_SECONDS", "600"))
 HOURS = os.environ.get("ML_RUNNER_HOURS", "23-7")
+# Playground competitions (comma-separated slugs) run first in each window.
+PLAYGROUND = [s for s in os.environ.get("ML_PLAYGROUND", "").split(",") if s.strip()]
 
 
 def window_end(now: datetime) -> datetime | None:
@@ -86,6 +92,8 @@ class Handler(BaseHTTPRequestHandler):
             body = b'{"ok":true}'
         elif self.path == "/status":
             body = json.dumps(status()).encode()
+        elif self.path == "/playground":
+            body = json.dumps(playground.status()).encode()
         else:
             self.send_error(404)
             return
@@ -105,8 +113,9 @@ def log(msg: str) -> None:
 
 def morning() -> None:
     # The constructions build on the store, so a night's improvement can
-    # open a composite (a small packing plus a grid) that was not there.
-    for family in (tilted, band, composite):
+    # open a composite (a small packing plus a grid) or a fault-line gadget
+    # (a crop of it) that was not there.
+    for family in (tilted, band, composite, fault):
         family.main(str(ROOT), WORKERS)
     info = builder.build(ROOT, WORKERS)
     log(f"built: score {info['score']:.9f}, rejected {len(info['rejected'])}")
@@ -121,7 +130,7 @@ def main() -> None:
         log("empty store: seeding")
         seed.main(str(ROOT), str(ROOT / "parsed"), WORKERS)
         gobel.main(str(ROOT))
-        for family in (tilted, band, composite, composite):
+        for family in (tilted, band, composite, composite, fault, fault):
             family.main(str(ROOT), WORKERS)
     if read_json("build.json") is None:
         builder.build(ROOT, 4)
@@ -132,6 +141,11 @@ def main() -> None:
             time.sleep(60)
             continue
         log(f"window open until {stop:%H:%M}")
+        for slug in PLAYGROUND:
+            try:
+                playground.run(slug.strip())
+            except Exception as e:  # a missing join or a bad file must not stop the search
+                log(f"playground {slug}: {type(e).__name__}: {str(e)[:300]}")
         t0 = time.time()
         before = store.total()
         res = optimize.run(ROOT, WORKERS, JOB_SECONDS, stop.timestamp(), log)

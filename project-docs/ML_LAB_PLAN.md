@@ -127,14 +127,27 @@ gpt-oss (HARNESS2_PLAN.md); Rust stays hand-integrated.
   are stored. At the window's close it builds `submission.zip`, scores it,
   and submits when it beats the best one sent (at most 1 a day,
   `ML_SUBMIT=off` stops it).
-- `GET /status` (brain-internal; `HTTP_ALLOW_INTERNAL` lists
-  `ml-runner:8000`).
+- Every morning, before the build, the construction families re-run on the
+  store: `tilted.py`, `band.py`, `composite.py` and `fault.py` (fault-line
+  gadgets, §5 2026-10-24), so a night's find becomes a donor.
+- `weak.py` writes `weak.json`: per puzzle, how far the side is above what
+  the four smaller intervals reach at the same relative position (the
+  excess achievable there does not grow with k).
+- `playground/run.py`: the Playground Series (Track A). At the start of each
+  window, for each slug in `ML_PLAYGROUND`, it fetches the data, runs a
+  5-fold cross-validated ladder (HistGradientBoosting baseline, tuned,
+  + frequency encodings), logs every rung to `experiments.jsonl` and submits
+  the best when its CV beats the last one sent (one a day). Data in
+  `workspace/ml-lab/playground/<slug>`; the owner joins each competition.
+- `GET /status` and `GET /playground` (brain-internal; `HTTP_ALLOW_INTERNAL`
+  lists `ml-runner:8000`).
 
 **Brain** (`plugins/ml-lab`): `squares-report` (daily; written in code; a
 note every day, a notification only for an improved puzzle or a sent or
 refused submission) and `ml-study` (every 3 days: `ml-student` on gpt-oss
 reads the next lesson, runs its exercise in the sandbox, stores
-`# ML study — Lnn` under `ml_study`). The curriculum is the list in
+`# ML study — Lnn` under `ml_study`), `squares-study` (daily: one public
+method, S01-S08) and `playground-report` (daily, from `/playground`). The curriculum is the list in
 `ml-study.yaml`'s pick step.
 
 Measured 2026-10-23:
@@ -207,12 +220,41 @@ lever, and a week of `attempts.jsonl` says whether B3's CPU buys anything.
   sampled puzzles, nothing in 60 s; the 14 public-gap puzzles, one gain of
   7e-6 (n=131) in 120 s. It replaces the annealer tonight, the public-gap
   puzzles first; `attempts.jsonl` says by 10-26 whether it buys anything.
+- 2026-10-24 (evening), owner: rebuild the fault-line method, map the weak
+  puzzles, and enter a Playground competition too ("the competitions serve
+  multiple purposes"). Above 324 sits 10.15 of the 22.36.
+  - `weak.py`: against the smaller intervals' trend the store has 0.009 to
+    gain over 50 puzzles. No cluster of weak puzzles; with the public
+    measure (14 puzzles, 0.005), we sit at the frontier of what is published.
+  - `fault.py`, rebuilt from Deotte's notebook (squares-study S03): a K×K
+    grid split by a staircase, the upper part shifted by (+f, +f), gadgets
+    (corner crops of dense packings, the least bloat per footprint by
+    sorting) along it; a DP over (Σw, Σh, ΣΔ) keeps the least max f, with
+    one buffer cell between gadgets. Donors: the store plus the MIT
+    registers' best file per n up to 3500 (2426 donors, 3802 gadgets).
+    It reproduces the public n=51 gain (7.6904) and stores 134 puzzles:
+    22.3556 → **22.3511**, Kaggle 22.3511248784 (to the digit), rank 263
+    of 690: the field moved faster. Four public notebooks posted the same
+    day (22.3035-22.3079: "Tilt Engine", "Seam Surgery", fault-line v2,
+    "ProjUnion") now beat the store on 162 puzzles, 0.050 in all, 0.049 of
+    it above 324 and 0.031 on puzzles where we hold a register packing; a
+    blend would be ~22.301 (the top 100 is 22.3039). They are S09-S12 of
+    `squares-study`, studied first. Blending stays the owner's call.
+  - Playground Series S6E10 ("Predicting Airline Satisfaction", AUC,
+    closes 10-31): pipeline built and tested end to end on synthetic data;
+    it waits for the owner to join.
 
 ## 6. Open
 
 - After `squares-study` (S08 ≈ 2026-10-29, daily since 10-24): rebuild what
   the brain could reproduce, then blend in public packings for the rest
   (owner, 2026-10-24). The 10-24 measure caps that at ~0.005.
+- `fault.py` uses a buffer cell between gadgets. Deotte's zero-buffer chains
+  (adjacent gadgets sharing an f×f corner where one corner is empty) gained
+  him ~0.001; not built.
+- Playground: the ladder is three rungs. Next rungs come from the study of
+  the competition's top notebooks and forum (a playground-study, as
+  squares-study does), and S6E11 opens ~11-01.
 - Where the leaders' 0.07-0.13 comes from is unknown. Edge-LP local moves
   do not reach it from our records; the candidates are larger structural
   moves (fault-line gadgets, S02-S03) and proposal searches whose output

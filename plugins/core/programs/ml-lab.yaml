@@ -9,7 +9,8 @@ parent: research-development
 charter: >-
   Learn machine learning by doing it: a curriculum worked through with an
   exercise that runs for every lesson, competitions entered as the measure
-  (first Kaggle's Squares in Squares), then models of our own.
+  (Kaggle's Squares in Squares, and the monthly Playground Series for
+  tabular ML), then models of our own.
 success: >-
   Every lesson ends in an exercise that ran; every competition submission
   is scored by our own checker before it is uploaded and improves on the
@@ -19,4 +20,5 @@ workflows:
   - ml-study
   - squares-report
   - squares-study
+  - playground-report
 review: { every: 30d }

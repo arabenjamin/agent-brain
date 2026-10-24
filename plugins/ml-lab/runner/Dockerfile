@@ -1,5 +1,6 @@
 # The ML Lab runner (ML_LAB_PLAN.md Track B): the Squares in Squares store,
-# the overnight optimizer, the scorer (Kaggle's own metric) and the submitter.
+# the overnight optimizer, the scorer (Kaggle's own metric) and the submitter;
+# and the Playground Series pipeline (tabular ML, ML_LAB_PLAN.md Track A).
 #
 # Runs only the code in this directory, never code from a request, which is
 # why it may reach the internet (Kaggle) where the sandboxes may not.
@@ -10,6 +11,7 @@ RUN pip install --no-cache-dir --root-user-action=ignore -r /tmp/requirements.tx
 
 RUN useradd -m -u 1000 runner
 COPY squares /app/squares
+COPY playground /app/playground
 ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 NUMBA_CACHE_DIR=/tmp/numba \
     OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 USER runner

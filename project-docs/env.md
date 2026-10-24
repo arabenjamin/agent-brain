@@ -131,6 +131,7 @@ Passed to the runner only; the brain never sees the Kaggle token.
 | `ML_RUNNER_HOURS` | `23-7` | Local hours the overnight search runs (`start-end`, wraps midnight). At the end it builds, scores and submits |
 | `ML_RUNNER_WORKERS` | `12` | Search processes, and the container's CPU cap (owner, 2026-10-23: 12 of 16 cores) |
 | `ML_JOB_SECONDS` | `600` | One search job's time |
+| `ML_PLAYGROUND` | `playground-series-s6e10` (compose) | Playground competitions (comma-separated slugs) run at the start of each window, before the search; data in `workspace/ml-lab/playground/<slug>`. The owner joins each on Kaggle first |
 | `ML_SEARCH` | `lp` | The overnight search: `lp` (edge-LP basin hopping, `lp.py`) or `anneal` (the earlier annealer, `sa.py`) |
 | `ML_RESTART_MAX_N` | `120` | `anneal` only: largest n searched by random restarts; above it only squeezes |
 | `ML_SUBMIT` | `on` | `off` stops submitting (building and scoring go on) |

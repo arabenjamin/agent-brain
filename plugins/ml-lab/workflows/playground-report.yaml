@@ -1,0 +1,90 @@
+name: playground-report
+description: "Daily report of the Kaggle Playground Series competitions the ML Lab runner works (ML_LAB_PLAN.md Track A, owner 2026-10-24): every experiment's cross-validated score and what each rung of the ladder bought, and the submissions. Stored as a note; the owner is notified only when a submission was sent or refused."
+topic: ai-ml
+kind: monitor
+every: 1d
+enabled: true
+data_class: public
+defaults:
+  max_attempts: 2
+  provider_hint: ollama
+steps:
+  # The runner is on brain-internal; HTTP_ALLOW_INTERNAL lists ml-runner:8000.
+  - id: status
+    tool_name: http_request
+    arguments:
+      url: "http://ml-runner:8000/playground"
+      method: GET
+    priority: 1
+    max_attempts: 3
+    description: "The runner's Playground status"
+
+  # Written in code: the numbers are the report, nothing to reason about.
+  - id: report
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import json
+        raw = r"""{{steps.status.body}} """
+        try:
+            s = json.loads(raw)
+        except ValueError:
+            print("# Playground — {{date}}\n\nThe runner did not answer: " + raw[:300])
+            raise SystemExit
+        out = ["# Playground — {{date}}", ""]
+        if not s:
+            out.append("No competition has data yet: the owner joins it on Kaggle, then the next overnight window fetches it.")
+        for slug, c in s.items():
+            ex, sub = c.get("experiments") or [], c.get("submissions") or []
+            out.append(f"## {slug}")
+            prev = None
+            for e in ex:
+                step = "" if prev is None else f" ({e['cv'] - prev:+.6f} on the rung before)"
+                out.append(f"- {e['name']}: CV {e['metric']} {e['cv']:.6f}, {e['features']} features, {e['seconds']} s{step}")
+                prev = e["cv"]
+            if not ex:
+                out.append("No experiment yet.")
+            for x in sub[-3:]:
+                out.append(f"Submission {x['at']}: {x['experiment']} CV {x['cv']:.6f}, {x['status']}" + (f"; Kaggle: {x['kaggle']}" if x.get("kaggle") else ""))
+            out.append("")
+        print("\n".join(out))
+    priority: 1
+    description: "Write the report from the status, in code"
+
+  - tool_name: store_note
+    arguments:
+      content: "{{steps.report.stdout}}"
+      note_type: source_record
+      source_context: playground_report
+    priority: 1
+    description: "Store the report"
+
+  - id: news
+    tool_name: execute_code
+    arguments:
+      language: python
+      timeout_ms: 20000
+      code: |
+        import json, datetime
+        try:
+            s = json.loads(r"""{{steps.status.body}} """)
+        except ValueError:
+            raise SystemExit
+        day = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = []
+        for slug, c in s.items():
+            for x in c.get("submissions") or []:
+                if x["at"] >= day and not x["status"].startswith("skipped"):
+                    lines.append(f"{slug}: submission {x['status']} ({x['experiment']}, CV {x['cv']:.6f})." + (f" Kaggle: {x['kaggle'][-160:]}" if x.get("kaggle") else ""))
+        print("\n".join(lines))
+    priority: 1
+    description: "Anything the owner should hear about"
+
+  - tool_name: notify_user
+    arguments:
+      message: "{{steps.news.stdout}}"
+      context: "Playground {{date}}"
+    priority: 2
+    description: "Notify only on news"
